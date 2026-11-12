@@ -262,6 +262,55 @@ it.effect.each(["completed", "waiting", "cancelled"] as const)(
 );
 
 it.effect.each([
+  { told: ["id:ci"], wakes: false },
+  { told: ["id:dev"], wakes: true },
+] as const)(
+  "leaves out of a wake what a prompt of the run already told its agent: %j",
+  ({ told, wakes }) =>
+    Effect.gen(function* () {
+      const base = makeProjection();
+      const ci = {
+        kind: "monitor" as const,
+        label: "Watch CI run 42",
+        id: "ci",
+        awaited: true as const,
+      };
+      const dev = { kind: "shell" as const, label: "vp run dev", id: "dev" };
+      // The run started again after it recorded this work, and that prompt named part of it.
+      const projection = {
+        ...base,
+        runs: [
+          { ...base.runs[0]!, status: "completed", restartCancelledBackgroundWork: [ci, dev] },
+        ],
+        providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
+        attempts: [{ id: attemptId, runId, backgroundWorkNote: [{ runId, work: told }] }],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const commands: Parameters<
+        ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+      >[0][] = [];
+      yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+        Effect.provide(
+          Layer.merge(
+            Layer.mock(ThreadManagementService.ThreadManagementService)({
+              getThreadRecords: () => Effect.succeed(projection),
+              recoverDelegatedTask: () => Effect.void,
+              dispatch: (command) => {
+                commands.push(command);
+                return Effect.succeed({} as never);
+              },
+            }),
+            ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+          ),
+        ),
+      );
+      assert.deepEqual(
+        commands.map((command) => (command.type === "message.dispatch" ? command.text : "")),
+        wakes ? [restartCancelledBackgroundWorkNote([ci])] : [],
+      );
+    }),
+);
+
+it.effect.each([
   [false, undefined, false],
   [true, undefined, false],
   [false, true, false],

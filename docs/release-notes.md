@@ -1,3 +1,13 @@
+## 2026-11-12 — A chat is told about stopped background work even when a turn starts at that moment
+
+- An agent could miss the note about background work that stopped with its session when a new turn started while that session was still closing, or when the server had to retry saving what stopped. The note counted as told once any later turn finished, although no message had carried it. The server now records which message told the agent about each piece of stopped work, and keeps the note until a turn that carried it has finished.
+- When you send a message while the agent's session is still closing, that message tells the agent about the work the session stopped. The server now records stopped work before it closes the session, which can take up to 30 seconds. If saving that record fails, the first message after it is saved tells the agent. Work recorded while a message is already being sent is told with the next one. It is not repeated once a turn that carried it has finished.
+- A chat woken for stopped background work is now also told about work that was recorded after its wake was queued.
+- A turn in which a running session only replays the output of a background task that reported sends the agent no message, so it no longer counts as telling it.
+- When more than ten pieces of work stopped, each note names ten and later messages name the rest. Before, the rest were only counted.
+- Stopped work recorded on a turn while it ran is no longer dropped when that turn finishes. A turn that starts again, after a steer or a restart, is told about the work recorded on it, so **Stop and send** in a chat's first turn now tells the agent in the restarted turn instead of with your next message.
+- For contributors: `vp run check:changed` now runs an agent adapter's recorded replay tests when the adapter changes.
+
 ## 2026-11-12 — Several chats of one Claude account no longer sign it out of ThreadPage
 
 - An MCP server whose sign-in renews every hour and replaces its refresh token each time, such as ThreadPage, could sign a Claude account out while several of the account's chats ran. Claude renews in the last five minutes, and when one chat's renewal was slow, another stopped waiting for it and renewed on its own with a token that had just been used, so the server ended the sign-in. T3.CodeShip now has Claude renew each account's MCP sign-ins four minutes before they end, while the old one still works, by running `claude mcp get` for the server, so the chats no longer renew one at the same moment. When a sign-in has already ended, for example after the computer slept, the chats that start then wait a few seconds for one renewal instead of each renewing it.

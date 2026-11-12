@@ -37,6 +37,7 @@ import {
   restartContinuationNote,
   restartRetryNotices,
   supersededRun,
+  toldBackgroundWork,
 } from "./RestartBackgroundNote.ts";
 
 export const CONTINUE_PROMPT =
@@ -434,7 +435,16 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       projection.runs,
       projection.providerTurns,
       projection.attempts,
+      toldBackgroundWork(projection),
     );
+    // A run started again tells its agent its own lost work; a settled run is woken only for
+    // what is still untold, and only for awaited work when that work is what woke it.
+    if (
+      note.settled &&
+      (note.work.length === 0 ||
+        (isRestartNoteSource(source, projection.providerTurns) && !note.work.some(isAwaitedWork)))
+    )
+      return;
     // A cut compaction resumes by compacting again, and a finished one still owes the note of
     // the work it lost; only a person signs a provider out.
     const compaction = sourceMessage !== undefined && isCompactionCommandMessage(sourceMessage);

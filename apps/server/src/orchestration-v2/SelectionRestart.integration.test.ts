@@ -21,6 +21,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -786,10 +787,12 @@ it.live(
 );
 
 // "background-work" is "idle" with work the first account's process still runs for the chat.
+// "queued-background-work" moves the chat with a message queued behind the turn that started it.
 it.live.each([
   "active",
   "idle",
   "background-work",
+  "queued-background-work",
   "selection-command",
   "pooled",
   "separate-home",
@@ -812,16 +815,24 @@ it.live.each([
         nativeId: string | null | undefined;
       }> = [];
       const messages: string[] = [];
+      const backgroundWork = mode === "background-work" || mode === "queued-background-work";
+      const lostWork = [{ taskId: "build", kind: "command", awaited: true }] as const;
+      const scope = yield* Effect.scope;
+      const heldTurnMayComplete = yield* Deferred.make<void>();
       const capabilities = mode === "pooled" ? pooledCapabilities : exclusiveCapabilities;
       const adapters = [providerInstanceId, targetId].map((instanceId) => {
         const base = makeRestartAdapter(state, capabilities, instanceId);
         return {
           ...base,
           openSession: (input) =>
-            base.openSession(input).pipe(
-              Effect.map((session) => ({
+            Effect.all([
+              base.openSession(input),
+              Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>(),
+            ]).pipe(
+              Effect.map(([session, reported]) => ({
                 ...session,
-                ...(mode === "background-work"
+                events: Stream.merge(session.events, Stream.fromQueue(reported)),
+                ...(backgroundWork
                   ? {
                       backgroundTasksEndWithProcess: true as const,
                       hasPendingBackgroundWorkForThread: () =>
@@ -839,7 +850,20 @@ it.live.each([
                 startTurn: (input) =>
                   Effect.gen(function* () {
                     messages.push(input.message.text);
-                    yield* session.startTurn(input);
+                    if (mode !== "queued-background-work" || input.message.text !== "first") {
+                      return yield* session.startTurn(input);
+                    }
+                    // Starts work that outlives the turn, and stays the active turn until a
+                    // message is queued behind it.
+                    yield* Queue.offer(reported, {
+                      type: "provider_thread.updated",
+                      driver,
+                      providerThread: { ...input.providerThread, pendingBackgroundTasks: lostWork },
+                    });
+                    yield* Deferred.await(heldTurnMayComplete).pipe(
+                      Effect.andThen(session.startTurn(input)),
+                      Effect.forkIn(scope),
+                    );
                   }),
               })),
             ),
@@ -881,13 +905,17 @@ it.live.each([
         });
         const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
           Effect.gen(function* () {
+            const held = mode === "queued-background-work" && step === "first";
+            const queued = mode === "queued-background-work" && step === "second";
             const terminal = yield* orchestrator.streamDomainEvents.pipe(
               Stream.filter((event) =>
                 mode === "active" && step === "first"
                   ? event.type === "provider-turn.updated" && event.payload.status === "running"
-                  : event.type === "run.updated" && event.payload.status === "completed",
+                  : event.type === "run.updated" &&
+                    event.payload.status === (held ? "running" : "completed"),
               ),
-              Stream.take(1),
+              // A queued message completes after the turn it waited behind.
+              Stream.take(queued ? 2 : 1),
               Stream.runDrain,
               Effect.forkScoped,
             );
@@ -899,13 +927,15 @@ it.live.each([
               text: step,
               attachments: [],
               modelSelection,
-              dispatchMode:
-                targetRunId === undefined
+              dispatchMode: queued
+                ? { type: "queue_after_active" }
+                : targetRunId === undefined
                   ? { type: "start_immediately" }
                   : { type: "restart_active", targetRunId },
               createdBy: "user",
               creationSource: "web",
             });
+            if (queued) yield* Deferred.succeed(heldTurnMayComplete, undefined);
             yield* worker.drain();
             yield* Fiber.join(terminal);
             yield* worker.drain();
@@ -916,7 +946,6 @@ it.live.each([
           (thread) => thread.id === first.thread.activeProviderThreadId,
         )!;
         const targetSelection = { instanceId: targetId, model: "complete" };
-        const lostWork = [{ taskId: "build", kind: "command", awaited: true }] as const;
         if (mode === "background-work") {
           const eventSink = yield* EventSink.EventSinkV2;
           yield* eventSink.write({
@@ -957,7 +986,8 @@ it.live.each([
           assert.notEqual(messages[1], "second");
           return;
         }
-        assert.equal(targetThread.id, originalThread.id);
+        // A queued move resumes the conversation under the second account's own provider thread.
+        assert.equal(targetThread.id === originalThread.id, mode !== "queued-background-work");
         assert.deepEqual(targetThread.nativeThreadRef, originalThread.nativeThreadRef);
         assert.equal(targetThread.providerInstanceId, targetId);
         assert.notEqual(targetThread.providerSessionId, originalThread.providerSessionId);
@@ -967,12 +997,11 @@ it.live.each([
           { instanceId: targetId, nativeId: originalThread.nativeThreadRef?.nativeId },
         ]);
         // The turn that moved the chat is told what the first account's process took with it.
-        const secondPrompt =
-          mode === "background-work"
-            ? `${restartCancelledBackgroundWorkNote(lostWork.map(cancelledRosterTaskWork))}\n\nUser message:\nsecond`
-            : "second";
+        const secondPrompt = backgroundWork
+          ? `${restartCancelledBackgroundWorkNote(lostWork.map(cancelledRosterTaskWork))}\n\nUser message:\nsecond`
+          : "second";
         assert.deepEqual(messages, ["first", secondPrompt]);
-        if (mode === "background-work") {
+        if (backgroundWork) {
           assert.deepEqual(targetThread.pendingBackgroundTasks ?? [], []);
           assert.deepEqual(
             second.runs.map((run) => [run.status, run.restartContinuationOfRunId]),
@@ -994,7 +1023,7 @@ it.live.each([
         const returnedThread = third.providerThreads.find(
           (thread) => thread.id === third.thread.activeProviderThreadId,
         )!;
-        assert.equal(returnedThread.id, originalThread.id);
+        assert.equal(returnedThread.id, targetThread.id);
         assert.deepEqual(returnedThread.nativeThreadRef, originalThread.nativeThreadRef);
         assert.equal(returnedThread.providerInstanceId, providerInstanceId);
         assert.isEmpty(third.contextHandoffs);
@@ -1116,8 +1145,8 @@ it.live.each(["earlier-run", "first-run"] as const)(
         );
 
         const note = restartCancelledBackgroundWorkNote(lostWork.map(cancelledRosterTaskWork));
-        // The run before the one started again carries the loss, so the restart's prompt tells
-        // it. A chat's first run has none before it, so its next message tells it instead.
+        // The run before the one started again carries the loss; a chat's first run has none
+        // before it and keeps its own. Either way the restart's prompt tells it, once.
         const recordRun = projection.runs[0]!;
         assert.deepEqual(
           projection.runs.map((run) => [run.status, run.restartCancelledBackgroundWork]),
@@ -1146,7 +1175,7 @@ it.live.each(["earlier-run", "first-run"] as const)(
           messages,
           mode === "earlier-run"
             ? ["earlier", "working", `${note}\n\nUser message:\nrestart`, "after", "again"]
-            : ["working", "restart", `${note}\n\nUser message:\nafter`, "again"],
+            : ["working", `${note}\n\nUser message:\nrestart`, "after", "again"],
         );
       }),
     ),

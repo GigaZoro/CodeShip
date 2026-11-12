@@ -803,10 +803,22 @@ export function orchestrationV2RunTurnEnded(status: OrchestrationV2Run["status"]
   }
 }
 
+/** Lost background work one prompt told its agent about: the run that lost it and each entry's key. */
+export const OrchestrationV2BackgroundWorkNote = Schema.Struct({
+  runId: RunId,
+  work: Schema.Array(Schema.String),
+});
+export type OrchestrationV2BackgroundWorkNote = typeof OrchestrationV2BackgroundWorkNote.Type;
+
 export const OrchestrationV2RunAttempt = Schema.Struct({
   id: RunAttemptId,
   // Provider-thread rows can be reused after recovery; retain the native input destination.
   nativeThreadId: Schema.optional(Schema.String),
+  /**
+   * The lost background work (`restartCancelledBackgroundWork`) this attempt's prompt names,
+   * written each time the attempt starts. Absent on attempts from before it was recorded.
+   */
+  backgroundWorkNote: Schema.optional(Schema.Array(OrchestrationV2BackgroundWorkNote)),
   runId: RunId,
   attemptOrdinal: PositiveInt,
   rootNodeId: NodeId,

@@ -864,10 +864,10 @@ function preserveRunRecordedFields(
     ...(next.delegatedCompletion === undefined && current.delegatedCompletion !== undefined
       ? { delegatedCompletion: current.delegatedCompletion }
       : {}),
-    ...(next.restartCancelledBackgroundWork === undefined &&
-    current.restartCancelledBackgroundWork !== undefined
-      ? { restartCancelledBackgroundWork: current.restartCancelledBackgroundWork }
-      : {}),
+    // Only its own event changes it: a run finishes from the snapshot it started with.
+    ...(current.restartCancelledBackgroundWork === undefined
+      ? {}
+      : { restartCancelledBackgroundWork: current.restartCancelledBackgroundWork }),
   };
 }
 
@@ -2049,6 +2049,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       END
     `;
 
+    // Only its own event changes it: a run finishes from the snapshot it started with.
+    const keepStoredRunField = (payload: Statement.Fragment, path: string) => sql`
+      CASE
+        WHEN json_type(orchestration_v2_projection_runs.payload_json, ${path}) IS NOT NULL
+        THEN json_set(
+          ${payload},
+          ${path},
+          json_extract(orchestration_v2_projection_runs.payload_json, ${path})
+        )
+        ELSE ${payload}
+      END
+    `;
+
     const apply: ProjectionStoreV2Shape["apply"] =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(
@@ -2177,7 +2190,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 status = excluded.status,
                 requested_at = excluded.requested_at,
                 completed_at = excluded.completed_at,
-                payload_json = ${keepRecordedRunField(
+                payload_json = ${keepStoredRunField(
                   keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
                   "$.restartCancelledBackgroundWork",
                 )}

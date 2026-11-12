@@ -50,6 +50,7 @@ import { withInlineContext } from "./ContextHandoffDelivery.ts";
 import {
   RESTART_RESEND_NOTE,
   type RestartRetryDelivery,
+  restartCancelledBackgroundWorkNote,
   restartRetryNoticeId,
 } from "./RestartBackgroundNote.ts";
 import * as EventSink from "./EventSink.ts";
@@ -354,6 +355,8 @@ function makeLocalCommandHarness(input: {
   readonly delegatedChild?: boolean;
   /** A restart cut this run before its provider turn was recorded, and it starts again. */
   readonly restartRetry?: RestartRetryDelivery;
+  /** The thread's provider session was already running when this turn started. */
+  readonly sessionLive?: boolean;
 }) {
   const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -1104,6 +1107,7 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
+          isLive: () => Effect.succeed(input.sessionLive === true),
           get: () =>
             Effect.succeed(
               input.previousTurn?.liveSession === false
@@ -1438,6 +1442,87 @@ effectIt.effect.each([
       expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
         withInlineContext(note, "Rebase onto main"),
       ]);
+    }),
+);
+
+effectIt.effect.each([
+  { told: true },
+  // A session that was already running may drain what it buffered instead of sending this text.
+  { wake: true, sessionLive: true, told: false },
+  { wake: true, sessionLive: false, told: true },
+  // A wake's text was written before this work was recorded.
+  { continues: "lost-work", told: true },
+  // A turn that only resumes may send no text at all.
+  { continues: "cut-turn", told: false },
+] as const)(
+  "tells its agent the background work a closing session recorded while this one opened: %j",
+  ({ told, ...turn }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Is the build done?",
+        nativeTurn: true,
+        sessionLive: "sessionLive" in turn && turn.sessionLive,
+      });
+      const seeded = harness.projection();
+      const current = seeded.runs[0]!;
+      const earlier = {
+        ...current,
+        id: RunId.make("run-lost-work"),
+        ordinal: 1,
+        userMessageId: MessageId.make("message-lost-work"),
+        activeAttemptId: RunAttemptId.make("attempt-lost-work"),
+        status: "completed" as const,
+        completedAt: seeded.updatedAt,
+      };
+      const cut = { ...earlier, id: RunId.make("run-cut"), status: "cancelled" as const };
+      const continues = "continues" in turn ? turn.continues : undefined;
+      harness.setProjection({
+        ...seeded,
+        runs: [
+          earlier,
+          cut,
+          {
+            ...current,
+            ...(continues === undefined
+              ? {}
+              : { restartContinuationOfRunId: continues === "cut-turn" ? cut.id : earlier.id }),
+          },
+        ],
+        messages: seeded.messages.map((message) => ({
+          ...message,
+          ...("wake" in turn || continues !== undefined ? { createdBy: "agent" as const } : {}),
+          ...("wake" in turn ? { creationSource: "provider" as const } : {}),
+        })),
+      });
+      const work = [
+        { kind: "shell" as const, label: "vp run build (id build)", id: "build", awaited: true },
+      ] as const;
+      const openSession = harness.open.getMockImplementation()!;
+      harness.open.mockImplementation(() =>
+        Effect.suspend(() => {
+          const opening = harness.projection();
+          harness.setProjection({
+            ...opening,
+            runs: opening.runs.map((run) =>
+              run.id === earlier.id ? { ...run, restartCancelledBackgroundWork: work } : run,
+            ),
+          });
+          return openSession();
+        }),
+      );
+
+      yield* harness.start;
+
+      expect(harness.startTurn.mock.calls.map(([sent]) => sent.message.text)).toEqual([
+        withInlineContext(
+          told ? restartCancelledBackgroundWorkNote(work) : "",
+          "Is the build done?",
+        ),
+      ]);
+      expect(
+        harness.projection().attempts.find((attempt) => attempt.id === harness.attemptId)
+          ?.backgroundWorkNote,
+      ).toEqual(told ? [{ runId: earlier.id, work: ["id:build"] }] : []);
     }),
 );
 

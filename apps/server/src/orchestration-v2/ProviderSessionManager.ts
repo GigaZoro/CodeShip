@@ -811,6 +811,7 @@ export const layerWithOptions = (
                 providerSessionId,
                 providerThreadId: providerThread.id,
                 tasks,
+                recordedByRelease: new Set<string>(),
               });
             }
           }
@@ -832,7 +833,7 @@ export const layerWithOptions = (
 
       // The run that last ran on a released thread records what the release stopped. A run
       // started again has not rebuilt its prompt, so the run before it takes the record and that
-      // prompt carries the note.
+      // prompt carries the note. Work this release recorded itself still decides the wake.
       const releasedWorkRecord = Effect.fnUntraced(function* (input: {
         readonly reason: keyof typeof RELEASED_BACKGROUND_WORK;
         readonly threadId: ThreadId;
@@ -840,18 +841,11 @@ export const layerWithOptions = (
         readonly providerThread: OrchestrationV2ProviderThread;
         readonly runs: ReadonlyArray<OrchestrationV2Run>;
         readonly stopped: ReadonlyArray<OrchestrationV2PendingBackgroundTask>;
+        readonly recordedByRelease: ReadonlySet<string>;
         readonly now: DateTime.Utc;
       }) {
-        const run =
-          input.providerThread.ownerNodeId !== null
-            ? undefined
-            : latestStartedRun(
-                input.runs.filter(
-                  (candidate) =>
-                    candidate.status !== "preparing" && candidate.status !== "starting",
-                ),
-                input.providerThread.id,
-              );
+        const isOwn = (entry: { readonly id?: string | undefined }) =>
+          entry.id !== undefined && input.recordedByRelease.has(entry.id);
         // The process that ended on its own may have reported this work a moment earlier.
         const recorded = new Set(
           input.runs.flatMap((candidate) =>
@@ -860,10 +854,25 @@ export const layerWithOptions = (
         );
         const work = input.stopped
           .map(cancelledRosterTaskWork)
-          .filter((entry) => !recorded.has(entry.id));
-        if (run === undefined || work.length === 0) return { events: [], effects: [] };
+          .filter((entry) => isOwn(entry) || !recorded.has(entry.id));
+        const unrecorded = work.filter((entry) => !recorded.has(entry.id));
+        const run =
+          input.runs.find((candidate) =>
+            (candidate.restartCancelledBackgroundWork ?? []).some(isOwn),
+          ) ??
+          (input.providerThread.ownerNodeId !== null
+            ? undefined
+            : latestStartedRun(
+                input.runs.filter(
+                  (candidate) =>
+                    candidate.status !== "preparing" && candidate.status !== "starting",
+                ),
+                input.providerThread.id,
+              ));
+        if (run === undefined || work.length === 0) {
+          return { events: [], effects: [], recorded: [] };
+        }
         const { cause, wakes } = RELEASED_BACKGROUND_WORK[input.reason];
-        const record = lostBackgroundWorkRecord({ run, cause, work, now: input.now });
         const base = {
           threadId: input.threadId,
           runId: run.id,
@@ -872,29 +881,36 @@ export const layerWithOptions = (
           occurredAt: input.now,
         };
         const allocateEventId = idAllocator.allocate.event(input);
-        const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
-          {
-            ...base,
-            id: yield* allocateEventId,
-            type: "run.background-work-cancelled",
-            payload: {
-              runId: run.id,
-              restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
-            },
-          },
-          ...(record.notice === undefined
+        const record =
+          unrecorded.length === 0
+            ? undefined
+            : lostBackgroundWorkRecord({ run, cause, work: unrecorded, now: input.now });
+        const events: ReadonlyArray<OrchestrationV2DomainEvent> =
+          record === undefined
             ? []
             : [
                 {
                   ...base,
                   id: yield* allocateEventId,
-                  type: "turn-item.updated" as const,
-                  ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
-                  payload: record.notice,
+                  type: "run.background-work-cancelled",
+                  payload: {
+                    runId: run.id,
+                    restartCancelledBackgroundWork: record.restartCancelledBackgroundWork,
+                  },
                 },
-              ]),
-        ];
-        // The wake rides the record's write: the session is already stopped, so a restart
+                ...(record.notice === undefined
+                  ? []
+                  : [
+                      {
+                        ...base,
+                        id: yield* allocateEventId,
+                        type: "turn-item.updated" as const,
+                        ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+                        payload: record.notice,
+                      },
+                    ]),
+              ];
+        // The wake rides the roster's write: the session is already stopped, so a restart
         // would not find this chat by itself.
         const wokenFor = input.runs.find(
           (candidate) => candidate.id === run.restartContinuationOfRunId,
@@ -920,11 +936,64 @@ export const layerWithOptions = (
                 }),
               ]
             : [],
+          recorded: unrecorded.flatMap((entry) => (entry.id === undefined ? [] : [entry.id])),
         };
       });
 
+      // Recorded before the session's scope closes, which can take 30 seconds, so a turn that
+      // opens a session meanwhile builds its prompt with it. The roster and the wake wait for the
+      // close: events the closing process already queued could put a cleared roster back.
+      const recordReleasedBackgroundWork = (
+        released: ReadonlyArray<ReleasedBackgroundTasks>,
+        reason: ProviderSessionReleaseReason,
+      ) =>
+        Effect.forEach(released, (entry) =>
+          reason === "server_shutdown"
+            ? Effect.succeed(entry)
+            : Effect.gen(function* () {
+                for (let attempt = 0; attempt < 3; attempt++) {
+                  const projection = yield* projectionStore.getThreadRecords(entry.threadId, [
+                    "providerThreads",
+                    "runs",
+                  ]);
+                  const providerThread = projection.providerThreads.find(
+                    (candidate) => candidate.id === entry.providerThreadId,
+                  );
+                  if (providerThread === undefined) return entry;
+                  const record = yield* releasedWorkRecord({
+                    reason,
+                    threadId: entry.threadId,
+                    providerSessionId: entry.providerSessionId,
+                    providerThread,
+                    runs: projection.runs,
+                    stopped: entry.tasks,
+                    recordedByRelease: entry.recordedByRelease,
+                    now: yield* DateTime.now,
+                  });
+                  if (record.events.length === 0) return entry;
+                  const { committed } = yield* eventSink.writeIfProviderThreadUnchanged({
+                    expected: providerThread,
+                    events: record.events,
+                  });
+                  if (committed) {
+                    return { ...entry, recordedByRelease: new Set(record.recorded) };
+                  }
+                }
+                return entry;
+              }).pipe(
+                // The roster's own write after the close records it then.
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("orchestration-v2.provider-session-release-record-failed", {
+                    providerSessionId: entry.providerSessionId,
+                    providerThreadId: entry.providerThreadId,
+                    cause,
+                  }).pipe(Effect.as(entry)),
+                ),
+              ),
+        );
+
       // Dead processes cannot report task endings; stale rosters keep threads Waiting. What the
-      // release stopped is recorded in the roster's own write.
+      // release stopped is recorded in the roster's own write unless it was recorded before.
       const writeReleasedBackgroundWorkEvents = (
         released: ReadonlyArray<ReleasedBackgroundTasks>,
         reason: ProviderSessionReleaseReason,
@@ -934,7 +1003,13 @@ export const layerWithOptions = (
           ? Effect.void
           : Effect.forEach(
               released,
-              ({ threadId, providerSessionId, providerThreadId, tasks: stopped }) =>
+              ({
+                threadId,
+                providerSessionId,
+                providerThreadId,
+                tasks: stopped,
+                recordedByRelease,
+              }) =>
                 Effect.gen(function* () {
                   const taskIds = new Set(stopped.map((task) => task.taskId));
                   for (let attempt = 0; attempt < 3; attempt++) {
@@ -958,6 +1033,7 @@ export const layerWithOptions = (
                       providerThread,
                       runs: projection.runs,
                       stopped,
+                      recordedByRelease,
                       now,
                     });
                     const cleared: ReadonlyArray<OrchestrationV2DomainEvent> =
@@ -981,7 +1057,12 @@ export const layerWithOptions = (
                               },
                             },
                           ];
-                    if (cleared.length === 0 && record.events.length === 0) return;
+                    if (
+                      cleared.length === 0 &&
+                      record.events.length === 0 &&
+                      record.effects.length === 0
+                    )
+                      return;
                     const { committed } = yield* eventSink.writeIfProviderThreadUnchanged({
                       expected: providerThread,
                       events: [...cleared, ...record.events],
@@ -1177,13 +1258,16 @@ export const layerWithOptions = (
               onNone: () => Effect.void,
               onSome: (entry) =>
                 Effect.gen(function* () {
-                  const releasedBackgroundTasks = yield* readReleasedBackgroundTasks({
-                    entry,
-                    reason: input.reason,
-                    ...(input.detachedThreadId === undefined
-                      ? {}
-                      : { detachedThreadId: input.detachedThreadId }),
-                  });
+                  const releasedBackgroundTasks = yield* recordReleasedBackgroundWork(
+                    yield* readReleasedBackgroundTasks({
+                      entry,
+                      reason: input.reason,
+                      ...(input.detachedThreadId === undefined
+                        ? {}
+                        : { detachedThreadId: input.detachedThreadId }),
+                    }),
+                    input.reason,
+                  );
                   if (input.cancelIdleFiber !== false) {
                     yield* cancelIdleFiber(entry.idleFiber);
                   }

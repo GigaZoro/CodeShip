@@ -14,7 +14,7 @@ import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import * as DateTime from "effect/DateTime";
 
 type Work = OrchestrationV2RestartCancelledBackgroundWork;
-type Attempt = Pick<OrchestrationV2RunAttempt, "id" | "runId">;
+type Attempt = Pick<OrchestrationV2RunAttempt, "id" | "runId" | "backgroundWorkNote">;
 
 const MAX_LABEL_LENGTH = 160;
 
@@ -147,10 +147,16 @@ export function workStartedBy(
 
 const MAX_NOTE_ENTRIES = 10;
 
+/** Names one entry of a run's lost work, in that run's record and in a prompt's record of it. */
+const workKey = (entry: Work) =>
+  entry.id === undefined ? `label:${entry.kind}:${entry.label}` : `id:${entry.id}`;
+
+const workLine = (entry: Work) => `- ${entry.kind}: ${entry.label}`;
+
 function workList(work: ReadonlyArray<Work>): ReadonlyArray<string> {
   const omitted = work.length - MAX_NOTE_ENTRIES;
   return [
-    ...work.slice(0, MAX_NOTE_ENTRIES).map((entry) => `- ${entry.kind}: ${entry.label}`),
+    ...work.slice(0, MAX_NOTE_ENTRIES).map(workLine),
     ...(omitted > 0 ? [`- and ${omitted} more`] : []),
   ];
 }
@@ -490,12 +496,51 @@ export function isRestartContinuationSource(
     : source.status === "cancelled";
 }
 
-/** Running does not prove prompt acceptance; carry continuation notes until a completed turn proves delivery. */
+/** What completed prompts named of each run's lost work, by the run that lost it. */
+export function toldBackgroundWork(input: {
+  readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "status">>;
+  readonly providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>;
+  readonly attempts: ReadonlyArray<Attempt>;
+}): ReadonlyMap<RunId, ReadonlySet<string>> {
+  const completed = new Set(
+    input.providerTurns
+      .filter((turn) => turn.status === "completed")
+      .map((turn) => turn.runAttemptId),
+  );
+  // A rolled-back run's conversation no longer holds what its prompt said.
+  const prompting = new Set(
+    input.runs.filter((run) => run.status !== "rolled_back").map((run) => run.id),
+  );
+  const told = new Map<RunId, Set<string>>();
+  for (const attempt of input.attempts) {
+    if (!prompting.has(attempt.runId) || !completed.has(attempt.id)) continue;
+    for (const note of attempt.backgroundWorkNote ?? []) {
+      const keys = told.get(note.runId) ?? new Set<string>();
+      for (const key of note.work) keys.add(key);
+      told.set(note.runId, keys);
+    }
+  }
+  return told;
+}
+
+const untoldWork = (
+  run: Pick<OrchestrationV2Run, "id" | "restartCancelledBackgroundWork">,
+  told: ReadonlyMap<RunId, ReadonlySet<string>>,
+) =>
+  (run.restartCancelledBackgroundWork ?? []).filter(
+    (entry) => !told.get(run.id)?.has(workKey(entry)),
+  );
+
+/**
+ * Running does not prove prompt acceptance; carry continuation notes until a completed turn
+ * proves delivery. With `told`, work a completed prompt already named is left out.
+ */
 export function restartContinuationNote(
   source: OrchestrationV2Run,
   runs: ReadonlyArray<OrchestrationV2Run>,
   providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>,
   attempts: ReadonlyArray<Attempt>,
+  told: ReadonlyMap<RunId, ReadonlySet<string>> = new Map(),
 ): { readonly work: ReadonlyArray<Work>; readonly settled: boolean } {
   const completedAttempts = new Set(
     providerTurns.filter((turn) => turn.status === "completed").map((turn) => turn.runAttemptId),
@@ -504,7 +549,7 @@ export function restartContinuationNote(
     attempts.filter((attempt) => completedAttempts.has(attempt.id)).map((attempt) => attempt.runId),
   );
   let current = source;
-  let work = current.restartCancelledBackgroundWork ?? [];
+  let work: ReadonlyArray<Work> = untoldWork(current, told);
   const visited = new Set([current.id]);
   while (
     current.restartContinuationOfRunId !== undefined &&
@@ -515,7 +560,7 @@ export function restartContinuationNote(
     if (previous === undefined || visited.has(previous.id)) break;
     visited.add(previous.id);
     current = previous;
-    work = mergeRestartCancelledBackgroundWork(current.restartCancelledBackgroundWork ?? [], work);
+    work = mergeRestartCancelledBackgroundWork(untoldWork(current, told), work);
   }
   return { work, settled: isRestartNoteSource(current, providerTurns) };
 }
@@ -561,7 +606,17 @@ export function conversationProviderThreadIds(
   ]);
 }
 
-/** Derive delivery from later completed turns of the same native conversation, excluding compactions, resumes, and rolled-back runs. */
+/** Lost work no prompt has delivered yet, by the run that lost it. */
+export type OwedBackgroundWork = ReadonlyArray<{
+  readonly runId: RunId;
+  readonly work: ReadonlyArray<Work>;
+}>;
+
+/**
+ * Lost work of one native conversation still owed to its agent, the run's own included when it
+ * starts again. A prompt delivers what its attempt named once a turn of it completes; an attempt
+ * from before that record, all earlier work unless its run compacted, resumed or was rolled back.
+ */
 export function pendingRestartCancelledBackgroundWork(input: {
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly providerTurns: ReadonlyArray<ProviderTurnState>;
@@ -570,77 +625,103 @@ export function pendingRestartCancelledBackgroundWork(input: {
   readonly conversation?: ReadonlySet<OrchestrationV2ProviderThread["id"]>;
   readonly run: Pick<
     OrchestrationV2Run,
-    | "id"
-    | "ordinal"
-    | "completedAt"
-    | "userMessageId"
-    | "providerThreadId"
-    | "restartContinuationOfRunId"
-    | "activeAttemptId"
+    "id" | "ordinal" | "completedAt" | "userMessageId" | "providerThreadId"
   >;
-
   readonly attempts: ReadonlyArray<Attempt>;
-}): ReadonlyArray<Work> {
-  const isCompaction = (run: typeof input.run) => input.compactionMessageIds.has(run.userMessageId);
-  if (
-    input.run.providerThreadId === null ||
-    input.run.restartContinuationOfRunId !== undefined ||
-    isCompaction(input.run)
-  )
-    return [];
+}): OwedBackgroundWork {
+  const isCompaction = (run: Pick<OrchestrationV2Run, "userMessageId">) =>
+    input.compactionMessageIds.has(run.userMessageId);
+  if (input.run.providerThreadId === null || isCompaction(input.run)) return [];
   const conversation = input.conversation ?? new Set([input.run.providerThreadId]);
-  const deliveredAttemptIds = new Set(
-    input.providerTurns
-      .filter((turn) => conversation.has(turn.providerThreadId) && turn.status === "completed")
-      .map((turn) => turn.runAttemptId),
+  const providerTurns = input.providerTurns.filter((turn) =>
+    conversation.has(turn.providerThreadId),
   );
   const sameThread = input.runs.filter(
     (run) => run.providerThreadId !== null && conversation.has(run.providerThreadId),
   );
-  const prompted = sameThread.filter(
-    (candidate) =>
-      candidate.id !== input.run.id &&
-      candidate.activeAttemptId !== null &&
-      candidate.status !== "rolled_back" &&
-      (deliveredAttemptIds.has(candidate.activeAttemptId) ||
-        input.attempts.some(
-          (attempt) => attempt.runId === candidate.id && deliveredAttemptIds.has(attempt.id),
-        )) &&
-      !isCompaction(candidate) &&
-      (candidate.restartContinuationOfRunId === undefined ||
-        isRestartNoteContinuation(candidate, input.runs, input.providerTurns, input.attempts)),
+  const sources = sameThread.filter(
+    (source) =>
+      (source.id === input.run.id || runRanAfter(input.run, source)) &&
+      (source.restartCancelledBackgroundWork?.length ?? 0) > 0,
   );
-  // Earlier attempts may already have delivered the note; a steer's replacement attempt must not repeat it.
-  const alreadyDelivered = input.attempts.some(
-    (attempt) =>
-      attempt.runId === input.run.id &&
-      attempt.id !== input.run.activeAttemptId &&
-      deliveredAttemptIds.has(attempt.id),
+  if (sources.length === 0) return [];
+  const told = toldBackgroundWork({ runs: sameThread, providerTurns, attempts: input.attempts });
+  const completedAttemptIds = new Set(
+    providerTurns.filter((turn) => turn.status === "completed").map((turn) => turn.runAttemptId),
   );
-  if (alreadyDelivered) return [];
-  return sameThread
-    .filter(
-      (source) =>
-        runRanAfter(input.run, source) &&
-        (source.restartCancelledBackgroundWork?.length ?? 0) > 0 &&
-        !prompted.some((later) => runRanAfter(later, source)),
-    )
-    .reduce<ReadonlyArray<Work>>(
-      (work, source) =>
-        mergeRestartCancelledBackgroundWork(work, source.restartCancelledBackgroundWork ?? []),
-      [],
+  const promptingRuns = new Map(
+    sameThread.filter((run) => run.status !== "rolled_back").map((run) => [run.id, run]),
+  );
+  const unrecordedPrompts = input.attempts.flatMap((attempt) => {
+    const run = promptingRuns.get(attempt.runId);
+    return run !== undefined &&
+      completedAttemptIds.has(attempt.id) &&
+      attempt.backgroundWorkNote === undefined
+      ? [run]
+      : [];
+  });
+  return sources.flatMap((source) => {
+    const toldAll = unrecordedPrompts.some(
+      (run) =>
+        runRanAfter(run, source) &&
+        !isCompaction(run) &&
+        (run.restartContinuationOfRunId === undefined ||
+          isRestartNoteContinuation(run, input.runs, input.providerTurns, input.attempts)),
     );
+    const work = toldAll ? [] : untoldWork(source, told);
+    return work.length === 0 ? [] : [{ runId: source.id, work }];
+  });
+}
+
+/**
+ * The note a prompt adds for owed work, and what its attempt records as told: the entries the
+ * prompt names. A wake's own text lists the work known when the wake was queued, earliest first,
+ * so each of its lines stands for one entry and its note adds what was recorded since. Entries
+ * past the note's cap stay owed for the next prompt.
+ */
+export function promptBackgroundWorkNote(
+  owed: OwedBackgroundWork,
+  wakeText = "",
+): {
+  readonly text: string;
+  readonly told: NonNullable<OrchestrationV2RunAttempt["backgroundWorkNote"]>;
+} {
+  const unclaimedLines = new Map<string, number>();
+  for (const line of wakeText.split("\n")) {
+    unclaimedLines.set(line, (unclaimedLines.get(line) ?? 0) + 1);
+  }
+  const listed = new Set<string>();
+  const unlisted: Array<Work> = [];
+  for (const entry of owed.reduce<ReadonlyArray<Work>>(
+    (work, source) => mergeRestartCancelledBackgroundWork(work, source.work),
+    [],
+  )) {
+    const lines = unclaimedLines.get(workLine(entry)) ?? 0;
+    if (lines > 0) {
+      unclaimedLines.set(workLine(entry), lines - 1);
+      listed.add(workKey(entry));
+    } else {
+      unlisted.push(entry);
+    }
+  }
+  const named = new Set([...listed, ...unlisted.slice(0, MAX_NOTE_ENTRIES).map(workKey)]);
+  return {
+    text: unlisted.length === 0 ? "" : restartCancelledBackgroundWorkNote(unlisted),
+    told: owed.flatMap(({ runId, work }) => {
+      const told = work.map(workKey).filter((key) => named.has(key));
+      return told.length === 0 ? [] : [{ runId, work: told }];
+    }),
+  };
 }
 
 export function mergeRestartCancelledBackgroundWork(
   current: ReadonlyArray<Work>,
   added: ReadonlyArray<Work>,
 ): ReadonlyArray<Work> {
-  const identity = (entry: Work) => entry.id ?? `${entry.kind}\u0000${entry.label}`;
-  const seen = new Set(current.map(identity));
+  const seen = new Set(current.map(workKey));
   const merged = [...current];
   for (const entry of added) {
-    const key = identity(entry);
+    const key = workKey(entry);
     if (seen.has(key)) continue;
     seen.add(key);
     merged.push(entry);

@@ -69,8 +69,8 @@ import {
   conversationProviderThreadIds,
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
+  promptBackgroundWorkNote,
   RESTART_RESEND_NOTE,
-  restartCancelledBackgroundWorkNote,
   restartRetryNotices,
 } from "./RestartBackgroundNote.ts";
 
@@ -827,6 +827,8 @@ export const layer: Layer.Layer<
         });
         if (!repaired.committed) return;
       }
+      // Only a session that was already running can hold output it buffered for a wake.
+      const sessionWasLive = yield* providerSessions.isLive(providerSessionId);
       const sessionResult = yield* Effect.result(
         providerSessions.open({
           threadId: projection.thread.id,
@@ -908,33 +910,48 @@ export const layer: Layer.Layer<
       // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.
       const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
       const goalCommand = goalDriver && parseGoalCommand(message) !== null;
-      // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
+      // A session that was closing while this one opened may have recorded what it stopped since
+      // this turn's first read.
+      const { runs: currentRuns } = yield* projectionStore.getThreadRecords(input.threadId, [
+        "runs",
+      ]);
       const noteContinuation = isRestartNoteContinuation(
         run,
-        projection.runs,
+        currentRuns,
         projection.providerTurns,
         projection.attempts,
       );
-      const restartCancelledWork = pendingRestartCancelledBackgroundWork({
-        runs: projection.runs,
-        providerTurns: projection.providerTurns,
-        compactionMessageIds: new Set(
-          projection.messages
-            .filter(
-              (candidate) =>
-                isCompactionCommandMessage(candidate) ||
-                (goalDriver && parseGoalCommand(candidate) !== null),
-            )
-            .map((candidate) => candidate.id),
-        ),
-        run,
-        attempts: projection.attempts,
-        conversation: conversationProviderThreadIds(providerThread, projection.providerThreads),
-      });
+      // A wake may drain output its session buffered instead of sending this text, and a
+      // continuation without a note may resume natively: neither is sure to tell the agent.
+      const sendsNoPrompt =
+        (sessionWasLive &&
+          message.createdBy === "agent" &&
+          message.creationSource === "provider") ||
+        (run.restartContinuationOfRunId !== undefined && !noteContinuation);
+      const owedBackgroundWork = sendsNoPrompt
+        ? []
+        : pendingRestartCancelledBackgroundWork({
+            runs: currentRuns,
+            providerTurns: projection.providerTurns,
+            compactionMessageIds: new Set(
+              projection.messages
+                .filter(
+                  (candidate) =>
+                    isCompactionCommandMessage(candidate) ||
+                    (goalDriver && parseGoalCommand(candidate) !== null),
+                )
+                .map((candidate) => candidate.id),
+            ),
+            run,
+            attempts: projection.attempts,
+            conversation: conversationProviderThreadIds(providerThread, projection.providerThreads),
+          });
+      const backgroundWorkNote = promptBackgroundWorkNote(
+        owedBackgroundWork,
+        noteContinuation ? message.text : "",
+      );
       const restartNote = [
-        restartCancelledWork.length === 0
-          ? ""
-          : restartCancelledBackgroundWorkNote(restartCancelledWork),
+        backgroundWorkNote.text,
         restartRetryNotices(run.id, projection.turnItems).at(-1)?.delivery === "unconfirmed"
           ? RESTART_RESEND_NOTE
           : "",
@@ -1508,6 +1525,8 @@ export const layer: Layer.Layer<
         ...(runningProviderThread.nativeThreadRef?.nativeId == null
           ? {}
           : { nativeThreadId: runningProviderThread.nativeThreadRef.nativeId }),
+        // Recorded with the start: only a completed turn of this attempt proves the agent read it.
+        backgroundWorkNote: backgroundWorkNote.told,
         status: "running",
         startedAt: now,
       };

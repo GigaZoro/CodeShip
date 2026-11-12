@@ -349,6 +349,8 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly beforeUnload?: Effect.Effect<void>;
     readonly spawnBeforeOpen?: boolean;
     readonly scopeCloseReached?: Deferred.Deferred<void>;
+    /** Ends a held scope close; without it the close never ends. */
+    readonly scopeCloseMayEnd?: Deferred.Deferred<void>;
   } = {},
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
@@ -363,7 +365,13 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     (options.scopeCloseReached === undefined
       ? Effect.void
       : Deferred.succeed(options.scopeCloseReached, undefined)
-    ).pipe(Effect.andThen(Effect.never)),
+    ).pipe(
+      Effect.andThen(
+        options.scopeCloseMayEnd === undefined
+          ? Effect.never
+          : Deferred.await(options.scopeCloseMayEnd),
+      ),
+    ),
   );
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
@@ -499,6 +507,7 @@ function layerTest(input: {
   readonly beforeUnload?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
+  readonly scopeCloseMayEnd?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
 }) {
@@ -537,6 +546,7 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
+      ...(input.scopeCloseMayEnd === undefined ? {} : { scopeCloseMayEnd: input.scopeCloseMayEnd }),
     }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
   );
   const layerConfiguredMcpRegistry =
@@ -2643,6 +2653,70 @@ it.effect.each<ReleasedWorkCase>([
       });
 
       yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 records the work a release stops before its session finishes closing",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const scopeCloseReached = yield* Deferred.make<void>();
+      const scopeCloseMayEnd = yield* Deferred.make<void>();
+      const effect = Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const { threadId, providerSessionId, writeRun, rosters } =
+          yield* openSessionWithBackgroundCommand("provider-session-manager-slow-close", [
+            { taskId: "build", kind: "command", description: "vp run build", awaited: true },
+          ]);
+        const waiting = yield* writeRun(1, "completed");
+        const lostWork = () =>
+          projectionStore
+            .getThreadProjection(threadId)
+            .pipe(
+              Effect.map(
+                (projection) =>
+                  projection.runs.find((run) => run.id === waiting.id)
+                    ?.restartCancelledBackgroundWork,
+              ),
+            );
+        const wake = outbox.get(EffectOutbox.restartContinuationEffectId(waiting.id));
+
+        const release = yield* manager
+          .release({ providerSessionId, reason: "idle_timeout" })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(scopeCloseReached);
+        // A turn that opens the session while the old one is still closing reads what it stopped.
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        assert.deepStrictEqual(yield* lostWork(), [
+          { kind: "shell", label: "vp run build (id build)", id: "build", awaited: true },
+        ]);
+        // The roster and the wake wait for the close.
+        assert.deepStrictEqual(yield* rosters, [["build"], ["build"]]);
+        assert.isTrue(Option.isNone(yield* wake));
+
+        yield* Deferred.succeed(scopeCloseMayEnd, undefined);
+        yield* Fiber.join(release);
+        assert.deepStrictEqual(yield* rosters, [[], ["build"]]);
+        assert.isTrue(Option.isSome(yield* wake));
+        assert.lengthOf((yield* lostWork()) ?? [], 1);
+      });
+
+      yield* effect.pipe(
+        // A failed assertion must not leave the held close waiting at teardown.
+        Effect.ensuring(Deferred.succeed(scopeCloseMayEnd, undefined)),
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            hangSessionScopeClose: true,
+            scopeCloseReached,
+            scopeCloseMayEnd,
+          }),
+        ),
+      );
     }),
 );
 

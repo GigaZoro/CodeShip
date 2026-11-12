@@ -144,11 +144,11 @@ reading while the last roster it stored still lists tasks, or the update that re
 lost would be dropped with the roster left behind.
 
 A session release ends the process without a report from it, so the session manager
-records the loss when it clears the roster. It records what the process ran when it was
-released, minus what a run already carries, and not what the roster still lists: a
-replacement process may have stored its own empty roster first. A release nobody asked
-for (the idle pin expired, or the runtime failed) queues the wake in that write, because
-the session is already stopped and startup recovery would not find the chat. An idle
+records the loss itself. It records what the process ran when it was released, minus what
+a run already carries, and not what the roster still lists: a replacement process may have
+stored its own empty roster first. A release nobody asked for (the idle pin expired, or the
+runtime failed) queues the wake in the write that clears the roster, because the session
+is already stopped and startup recovery would not find the chat. An idle
 close does not wake a run that was itself woken for lost work: an agent that restarts
 quiet work would be closed and woken again every few hours with nobody watching. The wake
 of a finished `/compact` run sends only the note. A release someone asked for records the work
@@ -160,16 +160,40 @@ resumes it under another provider thread.
 Such a change points the provider thread at its next session before the old one is
 released, so the release asks the runtime it closes whose background work it still runs
 instead of trusting the session id on the row. The record goes to the latest run that is
-not being started again, so the prompt that run is about to build includes it.
+not being started again, because the run being started can still build its prompt from it.
+
+A release writes that record before it closes the session's scope, which can take 30
+seconds, so a turn that opens a session meanwhile builds its prompt with it. The roster
+and the wake wait for the close: events the closing process already queued could put a
+cleared roster back, and a woken turn would resume the conversation while the old process
+still runs. A record whose write fails is written again with the roster after the close,
+and retried; turns that start before it lands do not wait for it, since the retry lasts
+as long as the database fails, and the first prompt after it lands tells it. Holding the
+session's open lock for the whole release was set aside: a slow close would block the
+next turn for as long as it takes, and open itself releases inside that lock when its
+attach write fails. No ordering covers every case, since a release can start while a turn
+builds its prompt, so delivery is recorded instead of being inferred from a later turn
+having completed. Each attempt stores the lost work its prompt names
+(`backgroundWorkNote`), and work stays owed until a turn of an attempt that named it
+completes. A wake's text is written when the wake is queued, so its turn adds a note for
+the work recorded since; each line of its text stands for one entry. A run started again
+owes what was recorded on it as well. A wake that a running session may answer from
+buffered output, and a continuation that only resumes, are not sure to send their text:
+they name nothing. An attempt from before the record counts as having delivered all work
+lost before its run. Only `run.background-work-cancelled` changes a run's record: a run
+finishes from the snapshot it started with, so the projection keeps the stored record
+whatever a `run.updated` carries. A wake leaves out work a completed prompt already
+named, since a run started again tells its own, and a settled run whose awaited work was
+all told is not woken.
 
 A restart of a running turn moves its run to the next attempt before it interrupts the
 process the old attempt ran, so the run gate refuses that attempt's last roster, the update
 that reports what the closed process lost. Ingestion still records the loss, without the
 stale roster, on the same run a release would. When no earlier run shares the provider
-thread it stays on the restarted run, and the next message carries it, because a run's own
-record is told only to later runs. The provider reports the loss after the turn's own status
-and before its terminal, so the restart waits until the interrupted attempt's stream has
-ingested that terminal before it detaches a session or builds the next prompt.
+thread it stays on the restarted run, which owes its own record when it starts again. The
+provider reports the loss after the turn's own status and before its terminal, so the
+restart waits until the interrupted attempt's stream has ingested that terminal before it
+detaches a session or builds the next prompt.
 
 A rollback closes the process as well and writes the provider thread itself, so the
 adapter returns the tasks it stopped with the rolled-back thread instead of reporting them

@@ -4,6 +4,7 @@ import {
   ProviderThreadId,
   RunAttemptId,
   RunId,
+  type OrchestrationV2RestartCancelledBackgroundWork as Work,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -17,6 +18,8 @@ import {
   isRestartNoteContinuation,
   lostBackgroundWorkRecord,
   pendingRestartCancelledBackgroundWork,
+  promptBackgroundWorkNote,
+  restartCancelledBackgroundWorkNote,
   restartContinuationNote,
   mergeRestartCancelledBackgroundWork,
 } from "./RestartBackgroundNote.ts";
@@ -47,23 +50,126 @@ const turnFor = (source: OrchestrationV2Run) => ({
   status: "completed" as const,
 });
 
+const attemptFor = (source: OrchestrationV2Run) => ({
+  id: source.activeAttemptId!,
+  runId: source.id,
+});
+
+/** The owed work as one list, as a prompt's note names it. */
+const pendingWork = (input: Parameters<typeof pendingRestartCancelledBackgroundWork>[0]) =>
+  pendingRestartCancelledBackgroundWork(input).flatMap((source) => source.work);
+
 it("keeps the note for the provider thread that lost the work across a provider switch", () => {
   const root = run(1, claudeThread, { restartCancelledBackgroundWork: lost });
   const onCodex = run(2, codexThread);
   const backOnClaude = run(3, claudeThread);
   const pending = (target: OrchestrationV2Run, runs: ReadonlyArray<OrchestrationV2Run>) =>
-    pendingRestartCancelledBackgroundWork({
+    pendingWork({
       runs,
       providerTurns: runs.filter((source) => source.id !== target.id).map(turnFor),
       compactionMessageIds: new Set(),
       run: target,
-      attempts: [{ id: target.activeAttemptId!, runId: target.id }],
+      attempts: runs.map(attemptFor),
     });
 
   assert.deepEqual(pending(onCodex, [root, onCodex]), []);
   assert.deepEqual(pending(backOnClaude, [root, onCodex, backOnClaude]), lost);
   const later = run(4, claudeThread);
   assert.deepEqual(pending(later, [root, onCodex, backOnClaude, later]), []);
+});
+
+it("owes lost work until a prompt that carried it completes a turn", () => {
+  const build: Work = { kind: "shell", label: "vp run build", id: "build", awaited: true };
+  const tests: Work = { kind: "shell", label: "vp test", id: "tests" };
+  const root = run(1, claudeThread, { restartCancelledBackgroundWork: [build] });
+  // Its session was still closing when this turn built its prompt, so the record came later.
+  const startedMeanwhile = run(2, claudeThread);
+  const next = run(3, claudeThread);
+  const later = run(4, claudeThread);
+  const carried = [{ runId: root.id, work: ["id:build"] }];
+  const pending = (input: {
+    readonly target: OrchestrationV2Run;
+    readonly lost?: ReadonlyArray<Work>;
+    readonly nextTurn?: "completed" | "interrupted";
+  }) =>
+    pendingRestartCancelledBackgroundWork({
+      runs: [
+        { ...root, restartCancelledBackgroundWork: input.lost ?? [build] },
+        startedMeanwhile,
+        next,
+        later,
+      ],
+      providerTurns: [
+        turnFor(root),
+        turnFor(startedMeanwhile),
+        ...(input.nextTurn === undefined ? [] : [{ ...turnFor(next), status: input.nextTurn }]),
+      ],
+      compactionMessageIds: new Set(),
+      run: input.target,
+      attempts: [
+        attemptFor(root),
+        { ...attemptFor(startedMeanwhile), backgroundWorkNote: [] },
+        { ...attemptFor(next), backgroundWorkNote: carried },
+      ],
+    });
+
+  assert.deepEqual(pending({ target: next }), [{ runId: root.id, work: [build] }]);
+  // A prompt the agent may not have read does not settle it either.
+  assert.deepEqual(pending({ target: later, nextTurn: "interrupted" }), [
+    { runId: root.id, work: [build] },
+  ]);
+  assert.deepEqual(pending({ target: later, nextTurn: "completed" }), []);
+  // A run started again owes what was recorded on it, until a prompt that named it completes.
+  const steered = { ...startedMeanwhile, restartCancelledBackgroundWork: [tests] };
+  assert.deepEqual(
+    pendingRestartCancelledBackgroundWork({
+      runs: [root, steered],
+      providerTurns: [turnFor(root)],
+      compactionMessageIds: new Set(),
+      run: steered,
+      attempts: [attemptFor(root), { ...attemptFor(steered), backgroundWorkNote: [] }],
+    }),
+    [
+      { runId: root.id, work: [build] },
+      { runId: steered.id, work: [tests] },
+    ],
+  );
+  // Work a retried release recorded on the same run later is owed by itself.
+  assert.deepEqual(pending({ target: later, nextTurn: "completed", lost: [build, tests] }), [
+    { runId: root.id, work: [tests] },
+  ]);
+
+  // A wake's text lists what was known when it was queued; its note adds the rest.
+  const owed = [{ runId: root.id, work: [build, tests] }];
+  assert.deepEqual(promptBackgroundWorkNote(owed, restartCancelledBackgroundWorkNote([build])), {
+    text: restartCancelledBackgroundWorkNote([tests]),
+    told: [{ runId: root.id, work: ["id:build", "id:tests"] }],
+  });
+  assert.deepEqual(promptBackgroundWorkNote(owed, "- shell: vp run build --watch").told, [
+    { runId: root.id, work: ["id:build", "id:tests"] },
+  ]);
+  // One line of the wake stands for one entry, also when a later one reads the same.
+  const rerun: Work = { ...build, id: "build-2" };
+  assert.deepEqual(
+    promptBackgroundWorkNote(
+      [{ runId: root.id, work: [build, rerun] }],
+      restartCancelledBackgroundWorkNote([build]),
+    ),
+    {
+      text: restartCancelledBackgroundWorkNote([rerun]),
+      told: [{ runId: root.id, work: ["id:build", "id:build-2"] }],
+    },
+  );
+  // What the note does not name is not told: it stays owed for the next prompt.
+  const many = Array.from({ length: 12 }, (_, index): Work => {
+    return { kind: "task", label: `task ${index}`, id: `task-${index}` };
+  });
+  const capped = promptBackgroundWorkNote([{ runId: root.id, work: many }]);
+  assert.isTrue(capped.text.endsWith("- task: task 9\n- and 2 more"));
+  assert.deepEqual(
+    capped.told[0]?.work,
+    many.slice(0, 10).map((entry) => `id:${entry.id}`),
+  );
 });
 
 it("delivers the note to the account that resumes the same native conversation", () => {
@@ -84,12 +190,12 @@ it("delivers the note to the account that resumes the same native conversation",
   const moved = run(2, otherAccountThread);
   const later = run(3, otherAccountThread);
   const pending = (target: OrchestrationV2Run, runs: ReadonlyArray<OrchestrationV2Run>) =>
-    pendingRestartCancelledBackgroundWork({
+    pendingWork({
       runs,
       providerTurns: runs.filter((source) => source.id !== target.id).map(turnFor),
       compactionMessageIds: new Set(),
       run: target,
-      attempts: [{ id: target.activeAttemptId!, runId: target.id }],
+      attempts: runs.map(attemptFor),
       conversation,
     });
   assert.deepEqual(pending(moved, [root, moved]), lost);
@@ -107,12 +213,12 @@ it("delivers a resumed queued run's note even after a higher-ordinal run", () =>
   const next = run(4, claudeThread);
   const runs = [resumed, ranFirst, next];
   assert.deepEqual(
-    pendingRestartCancelledBackgroundWork({
+    pendingWork({
       runs,
       providerTurns: [resumed, ranFirst].map(turnFor),
       compactionMessageIds: new Set(),
       run: next,
-      attempts: [{ id: next.activeAttemptId!, runId: next.id }],
+      attempts: runs.map(attemptFor),
     }),
     lost,
   );
@@ -205,7 +311,7 @@ it("does not repeat the note when a steer restarts the run on a new attempt", ()
   });
   const firstAttempt = RunAttemptId.make("attempt:2a");
   const pending = (runAttemptIds: ReadonlyArray<RunAttemptId>, delivered: boolean) =>
-    pendingRestartCancelledBackgroundWork({
+    pendingWork({
       runs: [root, steered],
       providerTurns: [
         turnFor(root),
@@ -243,12 +349,12 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
   );
   const later = run(3, claudeThread);
   const pending = (delivered: boolean) =>
-    pendingRestartCancelledBackgroundWork({
+    pendingWork({
       runs: [cut, continuation, later],
       providerTurns: [cutTurn, ...(delivered ? [turnFor(continuation)] : [])],
       compactionMessageIds: new Set(),
       run: later,
-      attempts: [{ id: later.activeAttemptId!, runId: later.id }],
+      attempts: [cut, continuation, later].map(attemptFor),
     });
   assert.deepEqual(pending(true), []);
   assert.deepEqual(pending(false), lost);
@@ -267,12 +373,12 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
       settled: false,
     });
     assert.deepEqual(
-      pendingRestartCancelledBackgroundWork({
+      pendingWork({
         runs: [cut, unstarted, later],
         providerTurns: turns,
         compactionMessageIds: new Set(),
         run: later,
-        attempts: [{ id: later.activeAttemptId!, runId: later.id }],
+        attempts: [cut, unstarted, later].map(attemptFor),
       }),
       lost,
     );
@@ -288,7 +394,7 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
   assert.deepEqual(restartContinuationNote(steered, [cut, steered], turns, attempts).work, []);
   assert.isFalse(isRestartNoteContinuation(chained, [cut, steered, chained], turns, attempts));
   assert.deepEqual(
-    pendingRestartCancelledBackgroundWork({
+    pendingWork({
       runs: [cut, steered, later],
       providerTurns: turns,
       compactionMessageIds: new Set(),

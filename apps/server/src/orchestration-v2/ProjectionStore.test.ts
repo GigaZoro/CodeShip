@@ -4094,7 +4094,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("preserves delegated completion ownership across stale run and task updates", () =>
+  it.effect("preserves delegated completion and lost work across stale run and task updates", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
@@ -4152,7 +4152,13 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           nextGeneration: 2,
           delivery: null,
         },
+        restartCancelledBackgroundWork: [{ kind: "shell" as const, label: "vp dev", id: "dev" }],
       };
+      // Recorded while the run ran: its finishing snapshot from its start still lists only "dev".
+      const lostWork = [
+        ...run.restartCancelledBackgroundWork,
+        { kind: "shell" as const, label: "vp run build", id: "build", awaited: true as const },
+      ];
       const task = {
         id: taskId,
         threadId,
@@ -4209,6 +4215,16 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         payload: task,
       });
 
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-delegated-completion:lost-work"),
+        type: "run.background-work-cancelled",
+        threadId,
+        runId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: { runId, restartCancelledBackgroundWork: lostWork },
+      });
+
       const { delegatedCompletion: _delegatedCompletion, ...staleRun } = run;
       const { completionDelivery: _completionDelivery, ...staleTask } = task;
       yield* projectionStore.apply({
@@ -4240,6 +4256,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(projection.runs[0]?.delegatedCompletion, run.delegatedCompletion);
+      assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, lostWork);
       assert.deepEqual(projection.subagents[0]?.completionDelivery, task.completionDelivery);
       assert.deepEqual(
         (yield* projectionStore.getThreadRecords(threadId, ["subagents"], {
