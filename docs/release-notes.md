@@ -1,3 +1,9 @@
+## 2026-11-13 — An update you start waits for a chat's running tool calls and subagents
+
+- **Update when it finishes** and the other updates you start from the update button, **Update everything** or a server's update now also wait while a chat is running tool calls or subagents, until that chat has none running. Before, a Safe update with no background work installed at once and cut those calls halfway, and the calls queued behind them never ran. A chat that keeps working holds the update only until its first moment between calls, and a chat that is only answering, waiting for your answer, or waiting for another chat does not hold it.
+- The Safe update and the waiting update list these calls under **Waits for running tool calls**, apart from background work.
+- When a restart still cuts a chat's tool calls, through **Update now** or a crash, the resumed chat is told which calls stopped or never started, so it checks them before running them again.
+
 ## 2026-11-13 — Scheduled tasks skip a run while every account they need is out of usage
 
 - A scheduled run no longer starts when every account it could use is already out of usage, where before it started a chat that stopped at once or spent its tokens and then failed on the limit. **Run history** lists the time as skipped and says until when the accounts are limited, and the skip doesn't count as a run. A **Once** task moves to that time instead.

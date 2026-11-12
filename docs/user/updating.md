@@ -49,20 +49,26 @@ threads after restarts** is off. An update another device starts follows that
 setting instead.
 
 A restart stops background work: a command, task or subagent a chat started and
-is waiting on, such as a test run. When chats are waiting on such work, the Safe
-update lists it, and **Update when it finishes** installs the update once the
-listed work is done, so the chats still get its results. Work the chats start
-after you choose this does not delay the update: the restart stops it, and the
-chats restart it when they resume. While it waits, the update button shows how
-many of the listed tasks are still running; open it to **Update now** or **Stop
-waiting**. A dev server or watcher left running does not hold the update, and
-neither does a chat that is only waiting for another chat or a delegated task:
-it resumes after the restart and waits again, while the other chat's own work
-holds the update if it runs on this server.
+is waiting on, such as a test run. It also stops the tool calls and subagents a
+running chat is waiting on, and the calls it queued behind them never start.
+When chats are waiting on such work or running tool calls, the Safe update lists
+them, and **Update when it finishes** installs the update once the listed work is
+done and each listed chat has no tool call running, so the chats still get their
+results. Background work the chats start after you choose this does not delay
+the update: the restart stops it, and the chats restart it when they resume. A
+chat that keeps working holds the update only until its first moment between
+tool calls. While it waits, the update button shows how many tasks are still
+running; open it to **Update now** or **Stop waiting**. A dev server or watcher
+left running does not hold the update, and neither does a chat that is only
+answering, waiting for your answer, or waiting for another chat or a delegated
+task: it resumes after the restart and waits again, while the other chat's own
+work holds the update if it runs on this server. When a restart does cut a
+chat's tool calls, the resumed chat is told which ones, so it checks them
+before running them again.
 
 Updating a server on another machine waits the same way for the work its chats
-are waiting on, and shows **Waiting for background work** with **Update now**
-and **Cancel**.
+are waiting on, and shows how many tasks it waits for, with **Update now** and
+**Cancel**.
 
 ## Install updates automatically
 
@@ -74,7 +80,7 @@ A machine installs only when no chat on it is answering and none has background 
 restart would stop, chats and work that started while it waited included, and it checks again right
 before it restarts. If a chat started in that moment, it waits again. This is stricter than
 **Update when it finishes** above, which you start yourself and which waits only for the work
-running when you chose it.
+running when you chose it and for each chat then running tool calls to pause between them.
 
 - **Desktop app (Mac, Windows, Linux).** While the app is open, it downloads a new release in the
   background and installs it through a Safe update, so cut chats resume whatever **Continue threads

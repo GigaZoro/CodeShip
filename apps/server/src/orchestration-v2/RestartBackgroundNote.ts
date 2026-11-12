@@ -8,7 +8,10 @@ import type {
   OrchestrationV2TurnItem,
   RunId,
 } from "@t3tools/contracts";
-import { waitsOnAnotherThread } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  isExecutionTurnItemType,
+  waitsOnAnotherThread,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { latestRootProviderFailure, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import * as DateTime from "effect/DateTime";
@@ -75,6 +78,32 @@ export function cancelledTurnItemWork(
     }
     default:
       return undefined;
+  }
+}
+
+/**
+ * A call a running turn waits on: a restart cuts it, and the calls queued behind it never start.
+ * Monitors only watch, so a turn does not wait for them to end.
+ */
+export function turnCallWork(item: OrchestrationV2TurnItem): Work | undefined {
+  const named = (label: string | undefined, fallback: string): Work => ({
+    kind: "task",
+    label: compactLabel(item.title) ?? label ?? fallback,
+    id: item.id,
+  });
+  switch (item.type) {
+    case "file_change":
+      return named(compactLabel(item.fileName), "file change");
+    case "file_search":
+      return named(compactLabel(item.pattern), "file search");
+    case "web_search":
+      return named(compactLabel(item.patterns?.join(", ")), "web search");
+    case "compaction":
+      return named(undefined, "compaction");
+    default: {
+      const work = cancelledTurnItemWork(item);
+      return work?.kind === "monitor" ? undefined : work;
+    }
   }
 }
 
@@ -167,6 +196,45 @@ export function restartCancelledBackgroundWorkNote(work: ReadonlyArray<Work>): s
     "Note: this background work was cancelled before it finished, because the T3 server restarted or the agent process running it ended. It will not report back on its own, so resume or restart what you still need and wait for its result:",
     ...workList(work),
   ].join("\n");
+}
+
+/** Names the calls a restart cut in a turn, and the ones queued behind them that never started. */
+export function restartCutCallsNote(calls: ReadonlyArray<Work>): string {
+  return [
+    "Note: the restart stopped these tool calls of your last turn before they reported a result. Some may have run in part and some may never have started, so check each one before you run it again:",
+    ...workList(calls),
+  ].join("\n");
+}
+
+/**
+ * The calls a restart cut in a run it stopped. It cancels them with the run, so they share the
+ * run's end time. Work the run's own note already names is left out.
+ */
+export function restartCutCalls(
+  run: Pick<OrchestrationV2Run, "id" | "status" | "completedAt">,
+  items: ReadonlyArray<OrchestrationV2TurnItem>,
+  named: ReadonlyArray<Work>,
+): ReadonlyArray<Work> {
+  if (run.status !== "cancelled" || run.completedAt === null) return [];
+  const stoppedAt = DateTime.toEpochMillis(run.completedAt);
+  // The note names background work by its turn item or by the provider's id for it.
+  const namedIds = new Set(
+    named.flatMap((work) => [work.id, work.nativeItemId].filter((id) => id !== undefined)),
+  );
+  return items.flatMap((item) => {
+    if (
+      item.runId !== run.id ||
+      item.status !== "cancelled" ||
+      item.completedAt === null ||
+      DateTime.toEpochMillis(item.completedAt) !== stoppedAt ||
+      namedIds.has(item.id) ||
+      (item.nativeItemRef?.nativeId != null && namedIds.has(item.nativeItemRef.nativeId)) ||
+      !isExecutionTurnItemType(item.type)
+    )
+      return [];
+    const work = turnCallWork(item);
+    return work === undefined ? [] : [work];
+  });
 }
 
 /**

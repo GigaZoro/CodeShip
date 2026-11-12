@@ -3,14 +3,14 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { Fragment } from "react";
 
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
-import { t } from "../../lib/i18n";
+import { t, tn } from "../../lib/i18n";
 import { appAtomRegistry } from "../../state/atom-registry";
 
-/** The status line of an update that waits for chats' background work. */
+/** The status line of an update that waits for chats' tool calls and background work. */
 export function waitingOnWorkText(work: ReadonlyArray<unknown> | undefined) {
   const count = work?.length ?? 0;
   return count > 0
-    ? t("Waiting for background work ({count})", { count })
+    ? tn(count, "Waiting for {count} task", "Waiting for {count} tasks")
     : t("Waiting for background work…");
 }
 

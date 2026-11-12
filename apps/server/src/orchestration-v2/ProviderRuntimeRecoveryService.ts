@@ -36,6 +36,7 @@ import {
   endOrphanedNativeSubagent,
   endRunlessRootTurns,
 } from "@t3tools/provider-core/server/subagentProjection";
+import { isExecutionTurnItemType } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   awaitingProviderThreadId,
   backgroundWorkStoppedNotice,
@@ -44,6 +45,7 @@ import {
   isAwaitedWork,
   latestStartedRun,
   mergeRestartCancelledBackgroundWork,
+  turnCallWork,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderRuntimeRecoveryError extends Schema.TaggedError<ProviderRuntimeRecoveryError>()(
@@ -293,8 +295,10 @@ function restartCancelledBackgroundWork(
   return cancelled;
 }
 
-// Coalesces an agent's bursts of tool events into one projection read per thread.
+// Reads the projections at most about once per interval while tool events keep coming. A debounce
+// would wait for a quiet moment a busy agent never takes, and the hold would stay stale.
 const RESTART_HOLD_SETTLE = Duration.millis(500);
+const RESTART_HOLD_MAX_EVENTS = 1024;
 
 function changesRestartHold(event: OrchestrationV2DomainEvent): boolean {
   switch (event.type) {
@@ -304,7 +308,7 @@ function changesRestartHold(event: OrchestrationV2DomainEvent): boolean {
     case "runtime-request.updated":
       return true;
     case "turn-item.updated":
-      return isBackgroundCapableTurnItemType(event.payload.type);
+      return isExecutionTurnItemType(event.payload.type);
     default:
       return event.type.startsWith("thread.");
   }
@@ -313,6 +317,42 @@ function changesRestartHold(event: OrchestrationV2DomainEvent): boolean {
 /** A turn that is answering now: a restart cuts it mid-answer. */
 function isRunningTurn(run: ProjectionStore.ProjectionRuntimeRecoveryState["runs"][number]) {
   return run.status === "preparing" || run.status === "starting" || run.status === "running";
+}
+
+/**
+ * The tool calls and subagents a running turn waits on, queued calls included. A delegated
+ * task's own turn is listed in its thread, and a wait on another thread loses nothing.
+ */
+function runningTurnCalls(projection: RecoveryProjection): ReadonlyArray<RestartCancelledEntry> {
+  const running = new Set(projection.runs.filter(isRunningTurn).map((run) => run.id));
+  // A turn waiting on the person would hold the update for as long as nobody answers.
+  if (
+    running.size === 0 ||
+    projection.runtimeRequests.some((request) => request.status === "pending")
+  )
+    return [];
+  // Work the agent sent to the background is held as background work; the turn goes on without it.
+  const background = new Set(
+    projection.providerThreads.flatMap((providerThread) =>
+      (providerThread.pendingBackgroundTasks ?? []).flatMap((task) =>
+        task.nativeItemId === undefined ? [task.taskId] : [task.taskId, task.nativeItemId],
+      ),
+    ),
+  );
+  return projection.turnItems.flatMap((item) => {
+    if (
+      item.runId === null ||
+      !running.has(item.runId) ||
+      !isExecutionTurnItemType(item.type) ||
+      !isNonterminalTurnItemStatus(item.status) ||
+      isAppOwnedDelegationItem(item) ||
+      (item.nativeItemRef?.nativeId != null && background.has(item.nativeItemRef.nativeId))
+    )
+      return [];
+    const work = turnCallWork(item);
+    // The same id as its background entry, so a call that moves between the lists stays waited on.
+    return work === undefined ? [] : [{ work, holdId: item.nativeItemRef?.nativeId ?? item.id }];
+  });
 }
 
 function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV2RestartHold) {
@@ -333,7 +373,8 @@ function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV
         entry.threadTitle === other.threadTitle &&
         entry.kind === other.kind &&
         entry.label === other.label &&
-        entry.id === other.id
+        entry.id === other.id &&
+        entry.turnCall === other.turnCall
       );
     })
   );
@@ -1033,6 +1074,18 @@ export const make = Effect.gen(function* () {
       if (projection.runs.some(isRunningTurn)) {
         runningTurns.push({ threadId, threadTitle: projection.thread.title });
       }
+      const calls = runningTurnCalls(projection);
+      for (const { work: call, holdId } of calls) {
+        work.push({
+          threadId,
+          threadTitle: projection.thread.title,
+          kind: call.kind,
+          label: call.label,
+          id: holdId,
+          turnCall: true,
+        });
+      }
+      const callIds = new Set(calls.map((call) => call.holdId));
       const cancelled = restartCancelledBackgroundWork(
         projection,
         yield* cutRuns(projection),
@@ -1040,7 +1093,7 @@ export const make = Effect.gen(function* () {
       );
       for (const entries of cancelled.values()) {
         for (const { work: entry, holdId } of entries) {
-          if (!isAwaitedWork(entry)) continue;
+          if (!isAwaitedWork(entry) || callIds.has(holdId)) continue;
           work.push({
             threadId,
             threadTitle: projection.thread.title,
@@ -1067,7 +1120,7 @@ export const make = Effect.gen(function* () {
               (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
             ),
             Stream.filter(({ event }) => changesRestartHold(event)),
-            Stream.debounce(RESTART_HOLD_SETTLE),
+            Stream.groupedWithin(RESTART_HOLD_MAX_EVENTS, RESTART_HOLD_SETTLE),
             Stream.mapEffect(() => restartHold),
           ),
         ).pipe(Stream.changesWith(sameRestartHold)),

@@ -1,3 +1,4 @@
+import { executionTurnItemTypes } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -35,6 +36,8 @@ import {
   promptNeverDelivered,
   restartCancelledBackgroundWorkNote,
   restartContinuationNote,
+  restartCutCalls,
+  restartCutCallsNote,
   restartRetryNotices,
   supersededRun,
   toldBackgroundWork,
@@ -348,7 +351,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       {
         messageIds: [source.userMessageId],
         turnItemRunIds: [source.id],
-        turnItemTypes: ["run_interrupt_request", "system_notice"],
+        turnItemTypes: ["run_interrupt_request", "system_notice", ...executionTurnItemTypes],
       },
     );
     if (
@@ -453,13 +456,20 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       return;
     const noteText =
       note.work.length === 0 ? undefined : restartCancelledBackgroundWorkNote(note.work);
+    const cutCalls = note.settled
+      ? []
+      : restartCutCalls(source, sourceRecords.turnItems, note.work);
     const text = recompact
       ? IDLE_COMPACTION_TEXT
-      : noteText === undefined
-        ? CONTINUE_PROMPT
-        : note.settled
-          ? noteText
-          : `${noteText}\n\n${CONTINUE_PROMPT}`;
+      : note.settled
+        ? (noteText ?? CONTINUE_PROMPT)
+        : [
+            noteText,
+            cutCalls.length === 0 ? undefined : restartCutCallsNote(cutCalls),
+            CONTINUE_PROMPT,
+          ]
+            .filter((part) => part !== undefined)
+            .join("\n\n");
     yield* threads
       .dispatch({
         type: "message.dispatch",

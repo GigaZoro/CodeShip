@@ -69,12 +69,13 @@ With `installUpdatesAutomatically` on, a launcher-managed server starts the same
 would, but waits by a stricter rule than a user's "Update when it finishes": nobody chose to cut
 anything, so it waits until a restart hold lists no work and no running turn
 (`untilRestartHoldIsEmpty`, shared with the desktop app). A running turn would resume after the
-restart, so a manual update ignores `runningTurns`, but an automatic one must not cut a chat mid
-answer. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
+restart, so a manual update ignores `runningTurns` and waits only for its tool calls (below), but
+an automatic one must not cut a chat mid answer. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
 the hold once more right before the launcher takes over
 ([`autoUpdate.ts`](../../apps/server/src/cloud/autoUpdate.ts)). A busy hold there puts the update
 off to the next check without counting as a failed attempt. A user's update keeps
-`untilListedRestartHoldWorkEnds`: it waits only for the work running when they chose it. Nothing
+`untilListedRestartHoldWorkEnds`: it waits for the background work running when they chose it,
+and for each chat then running tool calls until it is first seen running none. Nothing
 else about the update is special: staging, preflight, trial and rollback all apply. The
 back-off for a release that rolled back reads the launcher's settled outcome, which survives the
 restart that the failed attempt's process did not. Failures before the handoff are remembered only
@@ -250,6 +251,20 @@ and the note cannot disagree. The client that starts the update waits on it befo
 restarting and lets the user update now or cancel. The wait happens outside the
 per-environment config queue so other settings for that server are not held. A
 crash still loses the work; the note reports it.
+
+The hold also lists a running turn's in-flight tool calls and native subagents as `turnCall`
+entries. Claude creates a running item for every `tool_use` block of an assistant message at
+once, so a call queued behind a slow one is already listed, and a restart would cut the slow one
+mid-effect and drop the rest unstarted. Calls that wait on the person, on another thread, or that
+the agent sent to the background are left out: those resume or are reported. A manual wait
+latches each chat that was running calls and releases it the first time that chat runs none, so a
+chat working in rounds cannot hold an update past its next gap; listing only the calls seen at
+the start would miss a subagent that registers after it. A subagent moves between the two lists
+(it outlives its turn, or its turn waits on an approval), so both use the provider's id for it
+and the wait keeps every entry it has waited on, under either list. The hold is recomputed in
+fixed windows rather than after a quiet moment, which a busy agent never takes. When a restart
+cuts calls anyway, the continuation names the run's items the reconcile cancelled (their
+`completedAt` equals the run's) so the agent checks each before repeating it.
 
 Delegated tasks (`delegate_task` child threads) are reconciled as their own threads,
 never as the parent's background work. The orchestrator settles child results and

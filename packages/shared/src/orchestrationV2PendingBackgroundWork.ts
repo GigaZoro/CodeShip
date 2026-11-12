@@ -26,6 +26,15 @@ const EXECUTION_TURN_ITEM_TYPES = new Set<OrchestrationV2TurnItem["type"]>([
   "compaction",
 ]);
 
+/** Tool calls, subagents and compactions: the turn items that do work while they run. */
+export const executionTurnItemTypes: ReadonlyArray<OrchestrationV2TurnItem["type"]> = [
+  ...EXECUTION_TURN_ITEM_TYPES,
+];
+
+export function isExecutionTurnItemType(type: OrchestrationV2TurnItem["type"]): boolean {
+  return EXECUTION_TURN_ITEM_TYPES.has(type);
+}
+
 const TERMINAL_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
   "cancelled",
   "completed",

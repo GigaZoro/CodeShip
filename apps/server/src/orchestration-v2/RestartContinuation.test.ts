@@ -1021,6 +1021,56 @@ it.effect("continues a cut run past queued follow-ups, which stay held", () =>
   }),
 );
 
+it.effect("names the calls the restart cut when it continues the turn", () =>
+  Effect.gen(function* () {
+    const item = (id: string, type: string, completedAt: DateTime.Utc, fields: object) => ({
+      id,
+      runId,
+      nodeId: null,
+      providerThreadId,
+      type,
+      status: "cancelled",
+      title: null,
+      completedAt,
+      nativeItemRef: { nativeId: id },
+      ...fields,
+    });
+    const reviewer = { kind: "subagent" as const, label: "Review (id toolu_1)", id: "item:review" };
+    const devServer = {
+      kind: "shell" as const,
+      label: "vp run dev (id bdev1)",
+      id: "bdev1",
+      nativeItemId: "toolu_dev",
+      awaited: true as const,
+    };
+    const texts = yield* continuationTexts({
+      ...cutMidTurn({ restartCancelledBackgroundWork: [reviewer, devServer] }),
+      turnItems: [
+        // Its own note already names the subagent and the background command the restart cut.
+        item("item:review", "subagent", now, { origin: "provider_native", title: "Review" }),
+        item("item:dev", "command_execution", now, {
+          input: "vp run dev",
+          nativeItemRef: { nativeId: "toolu_dev" },
+        }),
+        item("item:bash", "command_execution", now, { input: "vp run typecheck" }),
+        item("item:edit", "file_change", now, { fileName: "src/a.ts" }),
+        // The agent saw this one end before the restart.
+        item("item:earlier", "command_execution", DateTime.subtract(now, { minutes: 1 }), {
+          input: "rm -rf dist",
+        }),
+        item("item:answer", "assistant_message", now, {}),
+      ],
+    } as unknown as OrchestrationV2ThreadProjection);
+    assert.deepEqual(texts, [
+      [
+        restartCancelledBackgroundWorkNote([reviewer, devServer]),
+        "Note: the restart stopped these tool calls of your last turn before they reported a result. Some may have run in part and some may never have started, so check each one before you run it again:\n- shell: vp run typecheck\n- task: src/a.ts",
+        CONTINUE_PROMPT,
+      ].join("\n\n"),
+    ]);
+  }),
+);
+
 it.effect("continues a resumed queued run that ran after an earlier continuation", () =>
   Effect.gen(function* () {
     const finishedContinuation = {

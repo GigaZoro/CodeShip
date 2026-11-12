@@ -662,12 +662,17 @@ export const OrchestrationV2RestartHoldWork = Schema.Struct({
   label: TrimmedNonEmptyString,
   /** The same while this work runs, so a wait can tell the work it started on from later work. */
   id: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * A tool call or subagent the chat's running turn is waiting on. A restart would cut it, or a
+   * call queued behind it, so a manual update waits until that chat has no call running.
+   */
+  turnCall: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationV2RestartHoldWork = typeof OrchestrationV2RestartHoldWork.Type;
 
 /**
  * A chat whose turn is running now. A restart cuts the turn and the chat resumes it, so a manual
- * update does not wait for it; an automatic one does, since nobody chose to cut it.
+ * update waits only for its calls in `work`; an automatic one waits for the turn to end.
  */
 export const OrchestrationV2RestartHoldTurn = Schema.Struct({
   threadId: ThreadId,

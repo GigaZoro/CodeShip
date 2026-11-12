@@ -885,9 +885,9 @@ export function createServerEnvironmentAtoms<R, E>(
   const updateStateAtom = (environmentId: EnvironmentId | null) =>
     environmentId === null ? EMPTY_SERVER_UPDATE_STATE_ATOM : updateStateValueAtom(environmentId);
   /**
-   * Ends when the work chats there waited on has ended, or when the user decides first. With
-   * `untilIdle`, as for an automatic install, it also waits for work that started meanwhile and
-   * for every running turn to end.
+   * Ends when the work chats there waited on has ended and each chat then running tool calls ran
+   * none, or when the user decides first. With `untilIdle`, as for an automatic install, it also
+   * waits for work that started meanwhile and for every running turn to end.
    */
   const awaitRestartHoldClear = Effect.fn("ServerUpdate.awaitRestartHoldClear")(function* (
     environmentId: EnvironmentId,

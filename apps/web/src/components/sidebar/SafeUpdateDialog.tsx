@@ -30,6 +30,7 @@ import {
   useRestartHoldWorkCount,
 } from "./localInstallWait";
 import { isHostedByThisApp } from "./useUpdateEverything";
+import { splitRestartHoldWork } from "../restartHold.logic";
 
 import { t, tx } from "~/i18n";
 const LISTED_THREADS = 5;
@@ -106,6 +107,7 @@ function SafeUpdateDialogContent({
     useAtomValue(runningThreadsAtom(environmentIds)),
   );
   const work = useRestartHoldWork(useHostedRestartHoldKey());
+  const { background, turnCalls } = splitRestartHoldWork(work);
   return (
     <>
       <AlertDialogHeader className="shrink-0">
@@ -129,7 +131,14 @@ function SafeUpdateDialogContent({
             note={t(
               "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.",
             )}
-            work={work}
+            work={background}
+          />
+          <BackgroundWorkGroup
+            title={t("Waits for running tool calls")}
+            note={t(
+              "The update installs once each of these chats has no tool call running, so none is cut halfway. Restarting now stops them.",
+            )}
+            work={turnCalls}
           />
           <ThreadGroup title={t("Resume after the restart")} threads={resuming} />
           <ThreadGroup

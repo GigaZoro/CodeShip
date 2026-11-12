@@ -1816,6 +1816,182 @@ it.effect("lists a chat that is answering, for an automatic update to wait on", 
   }).pipe(Effect.scoped);
 });
 
+function runningTurnFixture() {
+  const fixture = restartHoldFixture();
+  const item = (id: string, type: string, status: string, fields: object = {}) => ({
+    id: TurnItemId.make(id),
+    runId: fixture.runId,
+    nodeId: null,
+    providerThreadId: fixture.providerThreadId,
+    type,
+    status,
+    title: null,
+    nativeItemRef: { nativeId: id },
+    ...fields,
+  });
+  const running = (
+    turnItems: ReadonlyArray<unknown>,
+    pendingBackgroundTasks: ReadonlyArray<typeof fixture.verify> = [],
+  ) => {
+    const base = fixture.projectionWith(pendingBackgroundTasks, turnItems);
+    return {
+      ...base,
+      runs: base.runs.map((run) => ({ ...run, status: "running", completedAt: null })),
+    } as unknown as OrchestrationV2ThreadProjection;
+  };
+  const call = (
+    kind: OrchestrationV2RestartHold["work"][number]["kind"],
+    label: string,
+    id: string,
+  ) => ({
+    threadId: fixture.threadId,
+    threadTitle: "AB#975 one-sided book",
+    kind,
+    label,
+    id,
+    turnCall: true as const,
+  });
+  const answering = { threadId: fixture.threadId, threadTitle: "AB#975 one-sided book" };
+  return { fixture, item, running, call, answering };
+}
+
+it.effect("lists the calls a running turn waits on, until it runs none", () => {
+  const { fixture, item, running, call, answering } = runningTurnFixture();
+  const answer = item("turn-item:answer", "assistant_message", "running");
+  const bash = (status: string) =>
+    item("turn-item:bash", "command_execution", status, { input: "vp run typecheck" });
+  // Claude lists every tool call of a message at once, so the queued ones are already pending.
+  const edit = (status: string) =>
+    item("turn-item:edit", "file_change", status, { fileName: "apps/server/src/a.ts" });
+  const reviewer = (status: string) =>
+    item("turn-item:reviewer", "subagent", status, {
+      origin: "provider_native",
+      title: "Review the diff",
+      nativeItemRef: { nativeId: "toolu_reviewer" },
+    });
+  // A delegated task runs its own turn in its own chat, which lists its own calls.
+  const delegated = [
+    item("turn-item:delegate", "dynamic_tool", "running", {
+      toolName: "mcp__t3-code__delegate_task",
+      input: { task: "Fix the bug", mode: "wait" },
+    }),
+    item("turn-item:child", "subagent", "running", {
+      origin: "app_owned",
+      title: "Fix the bug",
+      childThreadId: ThreadId.make("thread_child"),
+    }),
+  ];
+  let projection = running([answer, bash("running"), edit("pending"), reviewer("running")]);
+  return Effect.gen(function* () {
+    const live = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+    const pulled = yield* Queue.unbounded<void>();
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+      Effect.provide(
+        restartHoldLayer({
+          threadId: fixture.threadId,
+          projection: () => projection,
+          live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
+        }),
+      ),
+    );
+    const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
+    yield* recovery.watchRestartHold.pipe(
+      Stream.runForEach((hold) => Queue.offer(holds, hold)),
+      Effect.forkScoped({ startImmediately: true }),
+    );
+    const editCall = call("task", "apps/server/src/a.ts", "turn-item:edit");
+    assert.deepEqual(yield* Queue.take(holds), {
+      work: [
+        call("shell", "vp run typecheck", "turn-item:bash"),
+        editCall,
+        call("subagent", "Review the diff (id toolu_reviewer)", "toolu_reviewer"),
+      ],
+      runningTurns: [answering],
+    });
+
+    // A busy agent sends tool events without a pause, and the hold still follows its calls.
+    const next = (turnItems: ReadonlyArray<unknown>) =>
+      Effect.gen(function* () {
+        projection = running(turnItems);
+        for (let sent = 0; sent < 3; sent++) {
+          yield* Queue.offer(live, {
+            sequence: 1,
+            event: {
+              type: "turn-item.updated",
+              threadId: fixture.threadId,
+              payload: { type: "file_change" },
+            },
+          } as unknown as OrchestrationV2StoredEvent);
+          yield* Queue.take(pulled);
+          yield* TestClock.adjust("300 millis");
+        }
+        return yield* Queue.take(holds);
+      });
+    assert.deepEqual(
+      yield* next([answer, bash("completed"), edit("running"), reviewer("completed")]),
+      { work: [editCall], runningTurns: [answering] },
+    );
+    // Streaming its answer, or waiting on a delegated task, the turn runs no call of its own.
+    assert.deepEqual(
+      yield* next([
+        answer,
+        bash("completed"),
+        edit("completed"),
+        reviewer("completed"),
+        ...delegated,
+      ]),
+      { work: [], runningTurns: [answering] },
+    );
+  }).pipe(Effect.scoped);
+});
+
+it.effect("lists no call of a turn that waits on the person or sent it to the background", () => {
+  const { fixture, item, running, call } = runningTurnFixture();
+  const verify = item("turn-item:verify", "command_execution", "running", {
+    input: "node ado-autopilot.mjs verify",
+    nativeItemRef: { nativeId: fixture.verify.taskId },
+  });
+  const edit = item("turn-item:edit", "file_change", "pending", { fileName: "a.ts" });
+  const reviewer = item("turn-item:reviewer", "subagent", "running", {
+    origin: "provider_native",
+    title: "Review the diff",
+    nativeItemRef: { nativeId: "toolu_reviewer" },
+  });
+  const reviewerCall = call("subagent", "Review the diff (id toolu_reviewer)", "toolu_reviewer");
+  // The update would otherwise wait for as long as nobody answers the approval.
+  let projection = {
+    ...running([edit, reviewer]),
+    runtimeRequests: [
+      {
+        id: RuntimeRequestId.make("request:approve"),
+        nodeId: NodeId.make("node:approve"),
+        kind: "command",
+        status: "pending",
+        responseCapability: { type: "live", providerSessionId: "session:approve" },
+      },
+    ],
+  } as unknown as OrchestrationV2ThreadProjection;
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    // Its running subagent is still held, as background work, under the id it has as a call.
+    const { turnCall: _, ...reviewerWork } = reviewerCall;
+    assert.deepEqual((yield* recovery.restartHold).work, [reviewerWork]);
+    projection = running([edit, reviewer]);
+    assert.deepEqual((yield* recovery.restartHold).work, [
+      call("task", "a.ts", "turn-item:edit"),
+      reviewerCall,
+    ]);
+    // A command the agent sent to the background is held as the background work it waits on.
+    projection = running([verify], [fixture.verify]);
+    assert.deepEqual(
+      (yield* recovery.restartHold).work.map((entry) => [entry.id, entry.turnCall]),
+      [[fixture.verify.taskId, undefined]],
+    );
+  }).pipe(
+    Effect.provide(restartHoldLayer({ threadId: fixture.threadId, projection: () => projection })),
+  );
+});
+
 it.effect("keeps the agent's wait on a background command whose turn item still runs", () => {
   const fixture = restartHoldFixture();
   const projection = fixture.projectionWith(

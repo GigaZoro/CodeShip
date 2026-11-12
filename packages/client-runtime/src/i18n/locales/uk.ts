@@ -12109,8 +12109,12 @@ const catalog: MessageCatalog = {
     "Не вдалося завантажити оновлення. Спробуйте «Завантажити оновлення» ще раз.",
   "The update install failed. Try Restart to update again.":
     "Не вдалося встановити оновлення. Спробуйте «Перезапустити для оновлення» ще раз.",
+  "The update installs once each of these chats has no tool call running, so none is cut halfway. Restarting now stops them.":
+    "Оновлення встановиться, коли в жодному з цих чатів не виконуватиметься виклик інструмента, тож жоден не обірветься на півдорозі. Перезапуск зараз зупинить їх.",
   "The update installs once no chat is answering or has background work, including any that starts meanwhile. Restarting now stops it.":
     "Оновлення встановиться, коли жоден чат не відповідатиме і не матиме фонових завдань, зокрема тих, що почнуться тим часом. Перезапуск зараз зупинить їх.",
+  "The update installs once nothing listed here is running. Restarting now stops it.":
+    "Оновлення встановиться, коли ніщо з переліченого тут не виконуватиметься. Перезапуск зараз зупинить це.",
   "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.":
     "Оновлення встановиться, коли ці завдання завершаться, навіть якщо чати тим часом почнуть нові. Перезапуск зараз зупинить їх.",
   "The update track did not change.": "Канал оновлень не змінився.",
@@ -13835,7 +13839,6 @@ const catalog: MessageCatalog = {
   "Waiting for approval · code expires at {time}": "Очікування схвалення · код діє до {time}",
   "Waiting for approval…": "Очікування схвалення…",
   "waiting for background work": "очікує фонові завдання",
-  "Waiting for background work ({count})": "Очікування фонових завдань ({count})",
   "Waiting for background work…": "Очікування фонових завдань…",
   "Waiting for collector health.": "Очікування стану збирача.",
   "Waiting for connection…": "Очікування з’єднання…",
@@ -13863,6 +13866,7 @@ const catalog: MessageCatalog = {
   "Waiting on a subagent": "Очікування субагента",
   "Waits for background work": "Очікує фонові завдання",
   "Waits for chats to finish": "Очікує завершення чатів",
+  "Waits for running tool calls": "Очікує виклики інструментів, що виконуються",
   Wake: "Повернути",
   "Wake {title} now": "Розбудити {title} зараз",
   "Wake now": "Розбудити зараз",

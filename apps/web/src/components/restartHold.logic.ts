@@ -16,6 +16,14 @@ export function waitingOnWorkLabel(count: number, runningTurns = 0): string {
     : t("Waiting for background work…");
 }
 
+/** Background work, apart from the tool calls running turns wait on, which a hold ends differently. */
+export function splitRestartHoldWork(work: ReadonlyArray<OrchestrationV2RestartHoldWork>) {
+  return {
+    background: work.filter((entry) => entry.turnCall !== true),
+    turnCalls: work.filter((entry) => entry.turnCall === true),
+  };
+}
+
 /** One line per entry, for a tooltip. */
 export function restartHoldWorkLines(work: ReadonlyArray<OrchestrationV2RestartHoldWork>): string {
   return work.map((entry) => `${entry.label} · ${entry.threadTitle}`).join("\n");
