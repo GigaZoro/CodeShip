@@ -604,7 +604,7 @@ it.effect("waitForThread returns the cut run once its continuation is declined",
   }),
 );
 
-it.effect.each(["live", "no-session", "unsupported-runtime"] as const)(
+it.effect.each(["live", "no-session", "unsupported-runtime", "write-fails"] as const)(
   "marks background work awaited on the thread's active provider thread with state %s",
   (state) =>
     Effect.gen(function* () {
@@ -645,13 +645,15 @@ it.effect.each(["live", "no-session", "unsupported-runtime"] as const)(
                 readonly taskIds: ReadonlyArray<string>;
                 readonly awaited: boolean;
               }) =>
-                Effect.sync(() => {
-                  calls.push({
-                    providerThreadId: input.providerThread.id,
-                    awaited: input.awaited,
-                  });
-                  return { matched: input.taskIds.filter((taskId) => taskId === "tests") };
-                }),
+                state === "write-fails"
+                  ? Effect.fail(new Error("roster write refused"))
+                  : Effect.sync(() => {
+                      calls.push({
+                        providerThreadId: input.providerThread.id,
+                        awaited: input.awaited,
+                      });
+                      return { matched: input.taskIds.filter((taskId) => taskId === "tests") };
+                    }),
             }),
       } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
       const layerTest = ThreadManagementService.layer.pipe(
@@ -689,6 +691,14 @@ it.effect.each(["live", "no-session", "unsupported-runtime"] as const)(
           success: { matched: ["tests"], unmatched: ["finished"] },
         });
         expect(calls).toEqual([{ providerThreadId, awaited: true }]);
+      } else if (state === "write-fails") {
+        expect(result).toMatchObject({
+          failure: {
+            _tag: "ThreadManagementBackgroundWaitError",
+            reason: "failed",
+            message: "Failed to update the awaited background work: roster write refused",
+          },
+        });
       } else {
         expect(result).toMatchObject({
           failure: {

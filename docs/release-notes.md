@@ -1,3 +1,8 @@
+## 2026-11-12 — A failed background-work mark says why, and unknown ids no longer wait
+
+- When `t3_background_wait` cannot update the awaited background work, the error now names the cause (for example a timeout) instead of only "Failed to update the awaited background work."
+- Task ids that match no running background work come back as unmatched at once. Before, they queued behind whatever the agent's message stream was doing and could fail after 15 seconds.
+
 ## 2026-11-12 — Switch a Codex account's sign-in when ChatGPT's app limit stops it
 
 - **Settings → Providers & models** now has a **Sign-in** choice for each Codex account: **ChatGPT sign-in** or **Codex's own login**, which ChatGPT's app limit does not stop. It works on any linked machine, from web, desktop and mobile. The first Codex account on a machine can turn on **Private login** to sign in apart from the Codex CLI's login there. Changing an account's sign-in releases its hold.

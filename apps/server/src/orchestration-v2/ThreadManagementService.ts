@@ -347,7 +347,9 @@ export class ThreadManagementBackgroundWaitError extends Schema.TaggedError<Thre
       case "unavailable":
         return "This thread has no live provider session.";
       case "failed":
-        return "Failed to update the awaited background work.";
+        return `Failed to update the awaited background work: ${
+          this.cause instanceof Error ? this.cause.message : String(this.cause ?? "unknown cause")
+        }`;
     }
   }
 }

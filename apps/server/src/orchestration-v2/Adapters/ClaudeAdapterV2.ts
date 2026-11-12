@@ -11800,40 +11800,51 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ),
             );
           }),
-          awaitBackgroundTasks: Effect.fn("ClaudeAdapterV2.awaitBackgroundTasks")(
-            function* ({ providerThread, taskIds, awaited }) {
-              const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
-              if (nativeThreadId == null) return { matched: [] };
+          awaitBackgroundTasks: Effect.fn("ClaudeAdapterV2.awaitBackgroundTasks")(function* ({
+            providerThread,
+            taskIds,
+            awaited,
+          }) {
+            const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+            if (nativeThreadId == null) return { matched: [] };
+            const matchRoster = Effect.gen(function* () {
               const roster = rosterForNativeThread(
                 yield* Ref.get(pendingBackgroundTasksByNativeThread),
                 nativeThreadId,
               );
-              const matched = [...new Set(taskIds)].filter((taskId) => roster.has(taskId));
-              if (matched.length === 0) return { matched };
-              if (awaited) {
-                yield* addTaskIdsToNativeThreadSet(
-                  awaitedBackgroundTasksByNativeThread,
-                  nativeThreadId,
-                  matched,
-                );
-              } else {
-                for (const taskId of matched) {
-                  yield* clearTaskIdFromNativeThreadSet(
+              return [...new Set(taskIds)].filter((taskId) => roster.has(taskId));
+            });
+            // Ids that match nothing change nothing, so they must not queue behind a long SDK frame.
+            if ((yield* matchRoster).length === 0) return { matched: [] };
+            // The roster can change while the lock is awaited, so match again under it.
+            return yield* sdkMessageLock.withPermits(1)(
+              Effect.gen(function* () {
+                const matched = yield* matchRoster;
+                if (matched.length === 0) return { matched };
+                if (awaited) {
+                  yield* addTaskIdsToNativeThreadSet(
                     awaitedBackgroundTasksByNativeThread,
                     nativeThreadId,
-                    taskId,
+                    matched,
                   );
+                } else {
+                  for (const taskId of matched) {
+                    yield* clearTaskIdFromNativeThreadSet(
+                      awaitedBackgroundTasksByNativeThread,
+                      nativeThreadId,
+                      taskId,
+                    );
+                  }
                 }
-              }
-              const active = yield* Ref.get(activeTurn);
-              yield* emitRosterUpdate(
-                nativeThreadId,
-                active?.nativeThreadId === nativeThreadId ? active : null,
-              );
-              return { matched };
-            },
-            (effect) => sdkMessageLock.withPermits(1)(effect),
-          ),
+                const active = yield* Ref.get(activeTurn);
+                yield* emitRosterUpdate(
+                  nativeThreadId,
+                  active?.nativeThreadId === nativeThreadId ? active : null,
+                );
+                return { matched };
+              }),
+            );
+          }),
           interruptTurn,
           stopSubagent: Effect.fn("ClaudeAdapterV2.stopSubagent")(function* (input) {
             const existing = yield* Ref.get(queryContext);
