@@ -1,3 +1,7 @@
+## 2026-11-12 — Prompt files: tests for binary and over-long files
+
+- Maintenance only, with no change in behavior. Tests now check that a scheduled task whose prompt file is binary, or longer than a prompt can be, fails its run and names the file and the branch.
+
 ## 2026-11-12 — A turn whose checkpoint can't be saved no longer blocks the chat
 
 - When a turn finished but T3.CodeShip could not save its checkpoint after every retry, the chat kept showing the agent as working and held every queued message until the server restarted, and the restart then marked the finished turn as cut. The turn now completes without a checkpoint and the next queued message starts. Going back to that turn is not offered, since it has no checkpoint.

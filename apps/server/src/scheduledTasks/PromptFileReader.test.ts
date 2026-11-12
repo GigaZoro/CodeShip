@@ -69,6 +69,9 @@ const setup = Effect.gen(function* () {
     "automations/empty.md": " \n",
     // "café" in Latin-1, which is not UTF-8.
     "automations/latin1.md": new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]),
+    "automations/binary.md": new Uint8Array([0x52, 0x75, 0x6e, 0x00, 0x0a]),
+    // One character over the provider limit once trimmed.
+    "automations/long.md": ` ${"a".repeat(120_001)} \n`,
     "README.md": "# test\n",
   });
   yield* git(project, ["clone", origin, "."]);
@@ -119,6 +122,16 @@ it.effect.each([
     path: "automations/latin1.md",
     message:
       "Could not read the prompt file automations/latin1.md from origin/trunk: it is not UTF-8 text.",
+  },
+  {
+    path: "automations/binary.md",
+    message:
+      "Could not read the prompt file automations/binary.md from origin/trunk: it is not a text file.",
+  },
+  {
+    path: "automations/long.md",
+    message:
+      "Could not read the prompt file automations/long.md from origin/trunk: it is longer than a prompt can be (120000 characters).",
   },
 ])("refuses $path, naming the file and the branch", ({ path, message }) =>
   Effect.gen(function* () {
