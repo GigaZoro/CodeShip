@@ -98,6 +98,7 @@ import {
 import { useProjects, useThreadShell } from "../../state/entities";
 import { supportsScheduledTaskGroups } from "../../state/scheduledTaskStats";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { providerDriverDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   pinnedTaskRunThreadId,
   resolveScheduledTaskPlacement,
@@ -296,6 +297,7 @@ const EMPTY_DRAFT: DraftState = {
   followsDefaultModel: true,
   catchUpMissedRun: null,
   runCondition: runConditionDraft(null),
+  delegateProviders: [],
   shared: false,
   sharedExcludedEnvironmentIds: [],
   sharedRunOn: "every",
@@ -2764,6 +2766,11 @@ function ScheduledTaskEditorForm({
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const supportsPromptFiles =
     environment?.serverConfig?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const offersDelegateProviders =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskDelegateProviders === true;
+  const delegateProviderChoices = [
+    ...new Set([...providers.map((provider) => provider.driver), ...draft.delegateProviders]),
+  ];
   const promptSource = effectivePromptSource({ supportsPromptFiles, draft });
   const promptFileLost = promptFileLostOnTarget({
     supportsPromptFiles,
@@ -2982,6 +2989,7 @@ function ScheduledTaskEditorForm({
         ? { catchUpMissedRun: draft.catchUpMissedRun }
         : {}),
       ...(runCondition === undefined ? {} : { runCondition }),
+      ...(offersDelegateProviders ? { delegateProviders: draft.delegateProviders } : {}),
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -4007,6 +4015,45 @@ function ScheduledTaskEditorForm({
                 </p>
               </div>
             </Field>
+          ) : null}
+
+          {offersDelegateProviders && delegateProviderChoices.length > 0 ? (
+            <div className="space-y-2">
+              <p id="scheduled-task-delegates-label" className="text-sm font-medium">
+                {t("Hands work to")}
+              </p>
+              <ToggleGroup
+                multiple
+                variant="outline"
+                size="sm"
+                aria-labelledby="scheduled-task-delegates-label"
+                aria-describedby="scheduled-task-delegates-description"
+                disabled={saving || !connected}
+                value={[...draft.delegateProviders]}
+                onValueChange={(values) =>
+                  setDraft((current) => ({
+                    ...current,
+                    delegateProviders: delegateProviderChoices.filter((driver) =>
+                      values.includes(driver),
+                    ),
+                  }))
+                }
+              >
+                {delegateProviderChoices.map((driver) => (
+                  <Toggle key={driver} value={driver}>
+                    {providerDriverDisplayName(driver)}
+                  </Toggle>
+                ))}
+              </ToggleGroup>
+              <p
+                id="scheduled-task-delegates-description"
+                className="text-xs text-muted-foreground"
+              >
+                {t(
+                  "Providers this task delegates work to. A scheduled run is skipped while every account of one is out of usage.",
+                )}
+              </p>
+            </div>
           ) : null}
 
           {runConditionLost ? (

@@ -13,7 +13,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
@@ -266,6 +266,8 @@ export const ScheduledTaskRunSkipReason = Schema.Literals([
   "no_work",
   /** Too few of the machines answered to confirm this one-machine task was free to run here. */
   "unconfirmed",
+  /** Every account the task could start on, or every account of a delegate provider, was out of usage. */
+  "usage_limited",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
 
@@ -329,6 +331,13 @@ export const ScheduledTaskRunCheck = Schema.Struct({
 });
 export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
 
+/** The provider whose accounts were all out of usage, and when the first of them got room. */
+export const ScheduledTaskRunUsageLimit = Schema.Struct({
+  driver: ProviderDriverKind,
+  until: IsoDateTime,
+});
+export type ScheduledTaskRunUsageLimit = typeof ScheduledTaskRunUsageLimit.Type;
+
 /** One time a task fired, including fires that failed before a thread existed or were skipped. */
 export const ScheduledTaskRunRecord = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -348,6 +357,8 @@ export const ScheduledTaskRunRecord = Schema.Struct({
   failover: Schema.NullOr(Schema.Struct({ from: ProviderInstanceId, to: ProviderInstanceId })),
   /** Null when the task had no run condition, or the run ignored it. Absent from servers without run conditions. */
   check: Schema.optional(Schema.NullOr(ScheduledTaskRunCheck)),
+  /** Set on a `usage_limited` skip. Absent from servers without it. */
+  usageLimit: Schema.optional(Schema.NullOr(ScheduledTaskRunUsageLimit)),
 });
 export type ScheduledTaskRunRecord = typeof ScheduledTaskRunRecord.Type;
 
@@ -519,6 +530,15 @@ export const ScheduledTaskPromptFile = Schema.Struct({
 });
 export type ScheduledTaskPromptFile = typeof ScheduledTaskPromptFile.Type;
 
+/**
+ * Providers a task hands work to through delegates, such as Codex for a Claude task that runs a
+ * Codex reviewer. A scheduled occurrence is skipped while every account of one of them is out of
+ * usage, instead of starting a chat that cannot finish.
+ */
+export const ScheduledTaskDelegateProviders = Schema.Array(ProviderDriverKind).check(
+  Schema.isMaxLength(8),
+);
+
 export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
@@ -576,6 +596,8 @@ export const ScheduledTask = Schema.Struct({
   group: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Paused by pausing its group, so resuming the group turns it back on. */
   pausedWithGroup: Schema.optional(Schema.Boolean),
+  /** Empty when the task needs none. Absent from servers without delegate providers. */
+  delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -673,6 +695,10 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
     description:
       "A command to run before each scheduled occurrence: exit code 0 starts the chat, 10 skips the occurrence. Null clears it. Omitted keeps the stored one.",
   }),
+  delegateProviders: Schema.optional(ScheduledTaskDelegateProviders).annotate({
+    description:
+      "Provider drivers the task delegates to, such as codex. A scheduled occurrence is skipped while every account of one is out of usage. Omitted keeps the stored list.",
+  }),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
@@ -714,6 +740,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunCondition)),
   /** Null: the task runs `prompt`. Absent from machines without prompt files; the receiving machine keeps its own. */
   promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFilePath)),
+  /** Absent from machines without delegate providers; the receiving machine keeps its own. */
+  delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,

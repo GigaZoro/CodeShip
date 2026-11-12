@@ -1,7 +1,11 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { peerNoWorkText, runCheckText } from "@t3tools/client-runtime/scheduled-task-run-condition";
+import {
+  peerNoWorkText,
+  runCheckText,
+  usageLimitSkipText,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { mergeScheduledTaskRuns } from "@t3tools/client-runtime/scheduled-task-sharing";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import type {
@@ -82,6 +86,7 @@ function skipReasonText(
   run: ScheduledTaskRunRecord,
   machine: string,
   machineLabel: (id: EnvironmentId) => string,
+  formatTime: (iso: string) => string,
 ) {
   switch (run.skipReason) {
     case "missed":
@@ -107,6 +112,8 @@ function skipReasonText(
         "{machine} couldn't reach enough of the other machines to make sure no other machine would run it, so it didn't run it.",
         { machine },
       );
+    case "usage_limited":
+      return usageLimitSkipText(run.usageLimit, formatTime);
     default:
       return run.skipReason;
   }
@@ -252,7 +259,9 @@ export function ScheduledTaskRunsDialog({
                     </div>
                     {run.outcome === "skipped" ? (
                       <p className="text-muted-foreground">
-                        {skipReasonText(run, machineLabel(ranOn), machineLabel)}
+                        {skipReasonText(run, machineLabel(ranOn), machineLabel, (iso) =>
+                          formatDayAwareTimestamp(iso, timestampFormat),
+                        )}
                       </p>
                     ) : null}
                     {run.skipReason !== "no_work" &&

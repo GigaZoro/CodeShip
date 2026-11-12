@@ -30,6 +30,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -220,6 +221,21 @@ export function modelScopeHolds(
   return refusalEnds(provider, scoped, input.nowMs, canonicalModel(provider, model)).length > 0;
 }
 
+/** Whether this account can take a turn in the project, usage limits and models aside. */
+function canRun(
+  provider: ServerProvider,
+  input: Pick<AccountRoutingContext, "settings"> & { readonly projectId: ProjectId },
+): boolean {
+  return (
+    provider.enabled &&
+    provider.installed &&
+    provider.status !== "error" &&
+    provider.auth.status !== "unauthenticated" &&
+    isProviderAvailable(provider) &&
+    resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
+  );
+}
+
 /** The model this account would run for `model`, usage limits aside, or null when it cannot. */
 function runnableModel(
   provider: ServerProvider,
@@ -228,16 +244,9 @@ function runnableModel(
     readonly model: string;
   },
 ): string | null {
-  if (
-    !provider.enabled ||
-    !provider.installed ||
-    provider.status === "error" ||
-    provider.auth.status === "unauthenticated" ||
-    !isProviderAvailable(provider) ||
-    !resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
-  )
-    return null;
-  return resolveSelectableModel(provider.driver, input.model, provider.models);
+  return canRun(provider, input)
+    ? resolveSelectableModel(provider.driver, input.model, provider.models)
+    : null;
 }
 
 /** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
@@ -443,6 +452,113 @@ export class UnknownAccountError extends Schema.TaggedError<UnknownAccountError>
   "UnknownAccountError",
   { instanceId: ProviderInstanceId },
 ) {}
+interface UsageWait {
+  readonly driver: ProviderDriverKind;
+  readonly end: number;
+  readonly accounts: ReadonlyArray<ProviderInstanceId>;
+}
+
+/** When every account is limited, when the first gets room; null when one has room or none can run. */
+function waitForRoom(
+  driver: ProviderDriverKind,
+  accounts: ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly end: number | null }>,
+): UsageWait | null {
+  const ends = accounts.flatMap((account) => (account.end === null ? [] : [account.end]));
+  return accounts.length === 0 || ends.length < accounts.length
+    ? null
+    : { driver, end: Math.min(...ends), accounts: accounts.map((account) => account.instanceId) };
+}
+
+/** A new thread on `selection` starts where routing puts it, or with switching on any account of its provider. */
+function launchWait(
+  input: AccountRoutingContext & {
+    readonly selection: ModelSelection;
+    readonly projectId: ProjectId;
+  },
+): UsageWait | null {
+  const selection =
+    input.selection.autoAccount === true
+      ? routeAutoAccount({ ...input, currentInstanceId: null, started: false })
+      : failoverLimitedLaunch(input);
+  const own = input.providers.find((provider) => provider.instanceId === selection.instanceId);
+  if (own === undefined) return null;
+  const switching = input.settings.failoverLimitedThreads && supportsAccountFailover(own.driver);
+  const accounts = input.providers.flatMap((provider) => {
+    const model =
+      provider.instanceId === own.instanceId
+        ? runnableModel(provider, { ...input, model: selection.model })
+        : switching && provider.driver === own.driver
+          ? usableModel(provider, { ...input, model: selection.model })
+          : null;
+    return model === null
+      ? []
+      : [
+          {
+            instanceId: provider.instanceId,
+            end: accountLimitEnd(provider, input.recordedLimits, input.nowMs, model),
+          },
+        ];
+  });
+  return waitForRoom(own.driver, accounts);
+}
+
+/** Delegation can use any account of the provider that can run in the project. */
+function delegateWait(
+  input: AccountRoutingContext & { readonly projectId: ProjectId },
+  driver: ProviderDriverKind,
+): UsageWait | null {
+  return waitForRoom(
+    driver,
+    input.providers.flatMap((provider) =>
+      provider.driver === driver && canRun(provider, input)
+        ? [
+            {
+              instanceId: provider.instanceId,
+              end: accountLimitEnd(provider, input.recordedLimits, input.nowMs),
+            },
+          ]
+        : [],
+    ),
+  );
+}
+
+export interface UsageBlock {
+  /** The provider whose accounts are all out of usage; of several, the one that gets room last. */
+  readonly driver: ProviderDriverKind;
+  /** When the first of that provider's accounts gets room, as an ISO time. */
+  readonly until: string;
+  /** Every out-of-usage account that keeps the run from starting. */
+  readonly accounts: ReadonlyArray<ProviderInstanceId>;
+}
+
+/**
+ * Why a run should not start now: every account a new thread on `selection` could start on, or
+ * every account of a provider it delegates to, is out of usage. Null when it can start, or when
+ * no account could run it at all, which is not a usage limit. A null selection judges only the
+ * delegates, as for a run sent to an existing thread, which waits for its own account.
+ */
+export function usageBlock(
+  input: AccountRoutingContext & {
+    readonly selection: ModelSelection | null;
+    readonly projectId: ProjectId;
+    readonly delegates: ReadonlyArray<ProviderDriverKind>;
+  },
+): UsageBlock | null {
+  const waits = [
+    input.selection === null ? null : launchWait({ ...input, selection: input.selection }),
+    ...[...new Set(input.delegates)].map((driver) => delegateWait(input, driver)),
+  ].filter((wait) => wait !== null);
+  if (waits.length === 0) return null;
+  const last = waits.reduce((latest, wait) => (wait.end > latest.end ? wait : latest));
+  return {
+    driver: last.driver,
+    until: DateTime.formatIso(DateTime.makeUnsafe(last.end)),
+    accounts: [...new Set(waits.flatMap((wait) => wait.accounts))],
+  };
+}
+
+/** A limited account's usage is read again at most this often, so a limit that ended early frees it. */
+const USAGE_PROBE_INTERVAL_MS = 60 * 60_000;
 
 export class AccountRouting extends Context.Service<
   AccountRouting,
@@ -488,6 +604,16 @@ export class AccountRouting extends Context.Service<
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
     }) => Effect.Effect<ModelSelection>;
+    /**
+     * `usageBlock` for a scheduled occurrence. The usage of each account in the way is read again
+     * first, at most once an hour per account, and a reading that shows room lifts its recorded
+     * holds. A failed check returns null, so it never keeps a task from running.
+     */
+    readonly scheduledRunBlock: (input: {
+      readonly selection: ModelSelection | null;
+      readonly projectId: ProjectId;
+      readonly delegates: ReadonlyArray<ProviderDriverKind>;
+    }) => Effect.Effect<UsageBlock | null>;
   }
 >()("t3/orchestration-v2/AccountRouting") {}
 
@@ -521,6 +647,7 @@ export function codexSignInChanges(
     return codexSignIn(before) === codexSignIn(after) ? [] : [id];
   });
 }
+const USAGE_PROBE_TIMEOUT = "20 seconds";
 
 export const layer = Layer.effect(
   AccountRouting,
@@ -563,7 +690,104 @@ export const layer = Layer.effect(
           ),
         ),
       );
+    const readUsageBlock = Effect.fn("AccountRouting.readUsageBlock")(function* (input: {
+      readonly selection: ModelSelection | null;
+      readonly projectId: ProjectId;
+      readonly delegates: ReadonlyArray<ProviderDriverKind>;
+    }) {
+      const now = yield* DateTime.now;
+      const providers = yield* providerRegistry.getProviders;
+      const recordedLimits = yield* readLimits(now, providers);
+      const block = usageBlock({
+        ...input,
+        settings: yield* serverSettings.getSettings,
+        providers,
+        recordedLimits,
+        nowMs: DateTime.toEpochMillis(now),
+      });
+      return { block, providers, recordedLimits };
+    });
+    const probedAt = yield* Ref.make(new Map<ProviderInstanceId, number>());
+    // Only a reading taken after the last refusal can say it no longer holds, as when the
+    // provider reset the account early. A wrong lift costs one refused turn an hour.
+    const probeAccount = Effect.fn("AccountRouting.probeAccount")(
+      function* (instanceId: ProviderInstanceId, lastRefusedAtMs: number) {
+        const providers = yield* providerRegistry
+          .refreshInstance(instanceId)
+          .pipe(Effect.timeout(USAGE_PROBE_TIMEOUT));
+        const provider = providers.find((entry) => entry.instanceId === instanceId);
+        const usage = provider?.usageLimits;
+        const now = yield* DateTime.now;
+        if (
+          usage === undefined ||
+          usage.unavailable !== undefined ||
+          Date.parse(usage.checkedAt) <= lastRefusedAtMs ||
+          exhaustedUsageWindow(provider, DateTime.toEpochMillis(now)) !== undefined
+        ) {
+          return false;
+        }
+        yield* projections.liftUsageLimitHolds(instanceId, now);
+        yield* Effect.logInfo("orchestration-v2.account-routing.probe-found-room", { instanceId });
+        return true;
+      },
+      (effect, instanceId) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("orchestration-v2.account-routing.probe-failed", {
+              instanceId,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        ),
+    );
     return {
+      scheduledRunBlock: Effect.fn("AccountRouting.scheduledRunBlock")(
+        function* (input) {
+          const read = yield* readUsageBlock(input);
+          if (read.block === null) return null;
+          const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+          const probeable = read.block.accounts.filter((instanceId) => {
+            const usage = read.providers.find(
+              (provider) => provider.instanceId === instanceId,
+            )?.usageLimits;
+            return usage !== undefined && usage.unavailable?.reason !== "unsupported";
+          });
+          const due = yield* Ref.modify(probedAt, (probed) => {
+            const accounts = probeable.filter(
+              (instanceId) =>
+                nowMs - (probed.get(instanceId) ?? -Infinity) >= USAGE_PROBE_INTERVAL_MS,
+            );
+            if (accounts.length === 0) return [accounts, probed] as const;
+            const next = new Map(probed);
+            for (const instanceId of accounts) next.set(instanceId, nowMs);
+            return [accounts, next] as const;
+          });
+          const found = yield* Effect.forEach(
+            due,
+            (instanceId) =>
+              probeAccount(
+                instanceId,
+                Math.max(
+                  -Infinity,
+                  ...(read.recordedLimits.get(instanceId) ?? []).map((refusal) =>
+                    Date.parse(refusal.refusedAt),
+                  ),
+                ),
+              ),
+            { concurrency: "unbounded" },
+          );
+          return found.some(Boolean) ? (yield* readUsageBlock(input)).block : read.block;
+        },
+        // Skipping only saves usage; without the check the task runs as it always did.
+        (effect) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.account-routing.scheduled-run-block-failed", {
+                cause,
+              }).pipe(Effect.as(null)),
+            ),
+          ),
+      ),
       accountsWithRoom: Effect.fn("AccountRouting.accountsWithRoom")(
         function* (input) {
           const now = yield* DateTime.now;

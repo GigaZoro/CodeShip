@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { peerNoWorkText, runCheckText } from "@t3tools/client-runtime/scheduled-task-run-condition";
+import {
+  peerNoWorkText,
+  runCheckText,
+  usageLimitSkipText,
+} from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { resolveProviderInstanceDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import type {
   EnvironmentId,
@@ -100,6 +104,8 @@ function skipReasonText(
       return t(
         "This machine couldn't reach enough of the other machines to make sure no other machine would run it, so it didn't run it.",
       );
+    case "usage_limited":
+      return usageLimitSkipText(run.usageLimit, formatScheduledTaskRunTime);
     default:
       return run.skipReason;
   }

@@ -392,6 +392,9 @@ function scheduledTaskSummary(
     ...(task.schedule.type === "fixed_time" && task.catchUpMissedRun !== undefined
       ? { catchUpMissedRun: task.catchUpMissedRun }
       : {}),
+    ...(task.delegateProviders === undefined || task.delegateProviders.length === 0
+      ? {}
+      : { delegateProviders: task.delegateProviders }),
     lastRun,
   };
 }
@@ -2526,6 +2529,9 @@ const make = Effect.gen(function* () {
           ? {}
           : { catchUpMissedRun: input.catchUpMissedRun }),
         ...(input.group === undefined ? {} : { group: input.group }),
+        ...(input.delegateProviders === undefined
+          ? {}
+          : { delegateProviders: input.delegateProviders }),
         // A replay saves over the task it created: what it does not mention stays.
         ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
         ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
@@ -2741,6 +2747,9 @@ const make = Effect.gen(function* () {
             ? {}
             : { catchUpMissedRun: input.catchUpMissedRun }),
           ...(input.group === undefined ? {} : { group: input.group }),
+          ...(input.delegateProviders === undefined
+            ? {}
+            : { delegateProviders: input.delegateProviders }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }

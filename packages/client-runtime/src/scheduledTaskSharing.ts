@@ -100,6 +100,7 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     // Sent whenever the source lists them: a copy without one makes the receiver keep its own.
     ...(task.catchUpMissedRun === undefined ? {} : { catchUpMissedRun: task.catchUpMissedRun }),
     ...(task.runCondition === undefined ? {} : { runCondition: task.runCondition }),
+    ...(task.delegateProviders === undefined ? {} : { delegateProviders: task.delegateProviders }),
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     createdBy: task.createdBy,

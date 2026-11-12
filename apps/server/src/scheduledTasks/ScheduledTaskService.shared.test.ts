@@ -2,6 +2,8 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ScheduledTaskApplySharedInput,
   type ScheduledTaskId,
   type ScheduledTaskRunCheck,
@@ -18,6 +20,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -312,17 +315,28 @@ it.effect(
     withService((service) =>
       Effect.gen(function* () {
         const condition = { command: "node ~/check.mjs", timeoutSeconds: 30 };
-        yield* service.applyShared(copy("2026-09-10T00:00:00.000Z", { runCondition: condition }));
+        yield* service.applyShared(
+          copy("2026-09-10T00:00:00.000Z", {
+            runCondition: condition,
+            delegateProviders: ["codex"],
+          }),
+        );
         // An app without run conditions saves the next revision: this machine keeps its own.
         const at = "2026-09-11T00:00:00.000Z";
         expect(yield* service.applyShared(copy(at, { title: "From an older app" }))).toEqual({
           outcome: "applied",
         });
-        expect((yield* taskOf(service))?.runCondition).toEqual(condition);
+        const kept = yield* taskOf(service);
+        expect([kept?.runCondition, kept?.delegateProviders]).toEqual([condition, ["codex"]]);
         // The fuller copy of that revision, from the link pull, completes it.
-        const full = copy(at, { title: "From an older app", runCondition: null });
+        const full = copy(at, {
+          title: "From an older app",
+          runCondition: null,
+          delegateProviders: [],
+        });
         expect(yield* service.applyShared(full)).toEqual({ outcome: "applied" });
-        expect((yield* taskOf(service))?.runCondition).toBeNull();
+        const completed = yield* taskOf(service);
+        expect([completed?.runCondition, completed?.delegateProviders]).toEqual([null, []]);
         expect(yield* service.applyShared(full)).toEqual({ outcome: "stale" });
         expect(
           yield* service.applyShared(copy("2026-09-10T12:00:00.000Z", { runCondition: condition })),
@@ -998,6 +1012,38 @@ it.effect(
           unchecked: [{ environmentId: OTHER, reason: "It did not answer in time." }],
         });
       }),
+    ),
+);
+
+// A claim held by a machine that skips its run would keep every other machine from taking it.
+it.effect(
+  "a machine whose accounts are all out of usage claims nothing, so the next machine may run it",
+  () =>
+    runScenario([HERE_ENVIRONMENT_ID, OTHER], NO_RUN_THERE, (scenario) =>
+      Effect.gen(function* () {
+        yield* scenario.tick(DUE + 1_000);
+        yield* scenario.settled;
+        expect(yield* Queue.size(scenario.launches)).toBe(0);
+        expect(yield* Ref.get(scenario.peerClaims)).toEqual([]);
+        expect(yield* claimsOf(scenario.sql)).toEqual([]);
+        const { runs } = yield* scenario.service.listRuns({
+          id: "scheduled-task:shared" as ScheduledTaskId,
+        });
+        expect(runs).toEqual([
+          expect.objectContaining({ outcome: "skipped", skipReason: "usage_limited" }),
+        ]);
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () =>
+            Effect.succeed({
+              driver: ProviderDriverKind.make("codex"),
+              until: iso(DUE + 5 * HOUR_MS),
+              accounts: [ProviderInstanceId.make("codex_main")],
+            }),
+        }),
+      ),
     ),
 );
 

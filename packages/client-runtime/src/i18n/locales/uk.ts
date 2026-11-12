@@ -5422,11 +5422,15 @@ const catalog: MessageCatalog = {
   "Every {host} host is turned off.": "Усі хости {host} вимкнено.",
   "Every {interval}": "Кожні {interval}",
   "Every {minutes} min": "Кожні {minutes} хв",
+  "Every {provider} account this task can use was out of usage until {time}.":
+    "В усіх облікових записах {provider}, які може використати це завдання, ліміт використання було вичерпано до {time}.",
   "Every {seconds} sec": "Кожні {seconds} с",
   "Every account is at its limit, and the first resets {time}.":
     "Усі облікові записи досягли ліміту, перший скинеться {time}.",
   "Every account is at its limit, so limited threads wait for a reset.":
     "Усі облікові записи досягли ліміту, тому чати на ліміті чекають на скидання.",
+  "Every account this task can use was out of usage.":
+    "В усіх облікових записах, які може використати це завдання, було вичерпано ліміт використання.",
   "Every connected machine is already on {channel}. This only saves the track.":
     "Усі підключені комп’ютери вже на {channel}. Це лише збереже канал.",
   "Every day": "Щодня",
@@ -6039,6 +6043,7 @@ const catalog: MessageCatalog = {
   "Handed off to": "Передано",
   "Hands routine work to cheaper {provider} models and checks the result.":
     "Передає рутинну роботу дешевшим моделям {provider} і перевіряє результат.",
+  "Hands work to": "Передає роботу",
   "Hard reload": "Жорстке перезавантаження",
   "hardware keyboard": "апаратна клавіатура",
   "Has conflicts": "Має конфлікти",
@@ -8891,6 +8896,8 @@ const catalog: MessageCatalog = {
   Providers: "Провайдери",
   "Providers & models": "Провайдери й моделі",
   "Providers or models": "Провайдери або моделі",
+  "Providers this task delegates work to. A scheduled run is skipped while every account of one is out of usage.":
+    "Провайдери, яким це завдання делегує роботу. Запуск за розкладом пропускається, поки в усіх облікових записах одного з них вичерпано ліміт використання.",
   PRs: "PR",
   Public: "Публічний",
   Publish: "Опублікувати",

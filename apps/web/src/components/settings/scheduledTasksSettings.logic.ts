@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   type ProjectId,
+  type ProviderDriverKind,
   ScheduledTaskId,
   type ScheduledTask,
   type ScheduledTaskSharedRunOn,
@@ -128,6 +129,7 @@ export interface DraftState extends PromptFileDraft {
   readonly catchUpMissedRun: boolean | null;
   /** An empty command means the task has no run condition. */
   readonly runCondition: RunConditionDraft;
+  readonly delegateProviders: ReadonlyArray<ProviderDriverKind>;
   /** Kept on every machine and synced. Exclusions of machines not connected right now stay stored. */
   readonly shared: boolean;
   readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
@@ -344,6 +346,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     followsDefaultModel: task.followsDefaultModel === true,
     catchUpMissedRun: task.catchUpMissedRun ?? null,
     runCondition: runConditionDraft(task),
+    delegateProviders: task.delegateProviders ?? [],
     shared: task.shared != null,
     sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
     sharedRunOn: task.shared?.runOn ?? "every",

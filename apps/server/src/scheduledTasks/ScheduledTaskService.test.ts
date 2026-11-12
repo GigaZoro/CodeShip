@@ -1398,43 +1398,57 @@ it.effect("a check that skips a caught-up missed run records it as a catch-up", 
   ),
 );
 
-it.effect("no-work skips keep their own history, so they never push real runs out", () =>
-  withRunConditions(
-    () => Effect.succeed(NO_WORK),
-    ({ service, sql, poll, whenTask }) =>
-      Effect.gen(function* () {
-        const { task } = yield* service.upsert(conditionTask());
-        yield* service.runNow({ id: task.id });
-        const ranAt = Date.parse((yield* runsOf(service))[0]!.startedAt);
-        // More skips than the whole history keeps, all after the run.
-        for (let index = 1; index <= 60; index += 1) {
-          const at = DateTime.formatIso(DateTime.makeUnsafe(ranAt + index * 1_000));
-          yield* sql`
+it.effect(
+  "no-work and usage-limited skips each keep their own history, so they never push real runs out",
+  () =>
+    withRunConditions(
+      () => Effect.succeed(NO_WORK),
+      ({ service, sql, poll, whenTask }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(conditionTask());
+          yield* service.runNow({ id: task.id });
+          const ranAt = Date.parse((yield* runsOf(service))[0]!.startedAt);
+          // More skips of each kind than the whole history keeps, all after the run.
+          for (let index = 1; index <= 60; index += 1) {
+            const at = DateTime.formatIso(DateTime.makeUnsafe(ranAt + index * 1_000));
+            yield* sql`
             INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at,
               completed_at, outcome, skip_reason, check_json)
             VALUES (${`skip-${index}`}, ${task.id}, 'scheduled', ${at}, ${at}, ${at}, 'skipped',
               'no_work', ${JSON.stringify(NO_WORK)})
           `;
-        }
-        const next = (yield* service.list()).tasks[0]!.nextRunAt!;
-        yield* TestClock.setTime(Math.max(Date.parse(next), ranAt + 61_000) + 1_000);
-        const skipped = yield* whenTask((t) => t.nextRunAt !== next && t.runCheckStartedAt == null);
-        yield* poll;
-        yield* skipped;
+            yield* sql`
+            INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at,
+              completed_at, outcome, skip_reason)
+            VALUES (${`limited-${index}`}, ${task.id}, 'scheduled', ${at}, ${at}, ${at}, 'skipped',
+              'usage_limited')
+          `;
+          }
+          const next = (yield* service.list()).tasks[0]!.nextRunAt!;
+          yield* TestClock.setTime(Math.max(Date.parse(next), ranAt + 61_000) + 1_000);
+          const skipped = yield* whenTask(
+            (t) => t.nextRunAt !== next && t.runCheckStartedAt == null,
+          );
+          yield* poll;
+          yield* skipped;
 
-        const runs = yield* runsOf(service);
-        const skips = runs.filter((run) => run.skipReason === "no_work");
-        assert.lengthOf(skips, 10);
-        assert.deepEqual(
-          skips.slice(1).map((run) => run.id),
-          Array.from({ length: 9 }, (_, index) => `skip-${60 - index}`),
-        );
-        assert.deepEqual(
-          runs.filter((run) => run.skipReason !== "no_work").map((run) => run.trigger),
-          ["manual"],
-        );
-      }),
-  ),
+          const runs = yield* runsOf(service);
+          const skips = runs.filter((run) => run.skipReason === "no_work");
+          assert.lengthOf(skips, 10);
+          assert.deepEqual(
+            skips.slice(1).map((run) => run.id),
+            Array.from({ length: 9 }, (_, index) => `skip-${60 - index}`),
+          );
+          assert.deepEqual(
+            runs.filter((run) => run.skipReason === "usage_limited").map((run) => run.id),
+            Array.from({ length: 10 }, (_, index) => `limited-${60 - index}`),
+          );
+          assert.deepEqual(
+            runs.filter((run) => run.skipReason == null).map((run) => run.trigger),
+            ["manual"],
+          );
+        }),
+    ),
 );
 
 it.effect("a group pause turns off the group's running tasks and resume turns on only those", () =>

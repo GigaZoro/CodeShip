@@ -2,7 +2,13 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
-import { ProviderInstanceId, ScheduledTaskUpsertInput, ThreadId } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ScheduledTask,
+  ScheduledTaskUpsertInput,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -486,30 +492,33 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
       ]);
       expect(runs[1]?.error).toContain("Claude is out of usage until Friday.");
 
-      // Each task keeps its latest 50 runs, and older ones from the last 90 days; the list shows the newest 60.
+      // Each task keeps its latest 50 runs, and older ones from the last 90 days; the list shows
+      // the newest 70, room for 50 runs and both quiet skip buckets.
       const sql = yield* SqlClient.SqlClient;
       const insertRun = (runId: string, startedAt: string) =>
         sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome)
           VALUES (${runId}, ${task.id}, 'scheduled', ${startedAt}, 'succeeded')`;
       yield* insertRun("expired", "2026-08-01T00:00:00.000Z");
       yield* insertRun("in-window", "2026-08-13T00:00:00.000Z");
-      for (let index = 0; index < 60; index += 1) {
+      for (let index = 0; index < 70; index += 1) {
         yield* insertRun(
           `recent-${index}`,
-          `2026-11-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+          DateTime.formatIso(
+            DateTime.makeUnsafe(Date.parse("2026-11-01T00:00:00.000Z") + index * 1000),
+          ),
         );
       }
       yield* TestClock.adjust("1 minute");
       yield* service.runNow({ id: task.id });
       const kept = (yield* service.listRuns({ id: task.id })).runs;
-      expect(kept).toHaveLength(60);
+      expect(kept).toHaveLength(70);
       expect(kept[0]?.threadId).toBe("thread-second");
       const stored = yield* sql<{ run_id: string }>`
         SELECT run_id FROM scheduled_task_runs WHERE run_id IN ('expired', 'in-window')`;
       expect(stored).toEqual([{ run_id: "in-window" }]);
       const counted = yield* sql<{ count: number }>`
         SELECT COUNT(*) AS count FROM scheduled_task_runs WHERE task_id = ${task.id}`;
-      expect(counted).toEqual([{ count: 64 }]);
+      expect(counted).toEqual([{ count: 74 }]);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -526,6 +535,7 @@ it.effect("starts a new thread on another account when the task's account is out
         ),
       Layer.succeed(AccountRouting.AccountRouting, {
         accountsWithRoom: () => Effect.succeed([]),
+        scheduledRunBlock: () => Effect.succeed(null),
         route: (input) => Effect.succeed(input.selection),
         failoverLaunch: (input) => Effect.succeed({ ...input.selection, instanceId: spare }),
         limits: Effect.succeed({
@@ -548,4 +558,91 @@ it.effect("starts a new thread on another account when the task's account is out
       ]);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "skips a scheduled run while every account it needs is out of usage, and runs the next once one has room",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
+      const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+      const until = "2026-11-10T17:00:00.000Z";
+      const codex = ProviderDriverKind.make("codex");
+      const block = yield* Ref.make<AccountRouting.UsageBlock | null>({
+        driver: codex,
+        until,
+        accounts: [ProviderInstanceId.make("codex_main")],
+      });
+      const asked = yield* Ref.make<
+        ReadonlyArray<Parameters<AccountRouting.AccountRouting["Service"]["scheduledRunBlock"]>[0]>
+      >([]);
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launched, (titles) => [...titles, input.title]).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-room"), resumed: false } as never),
+          ),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: (input) =>
+            Ref.update(asked, (inputs) => [...inputs, input]).pipe(Effect.andThen(Ref.get(block))),
+          failoverLaunch: (input) => Effect.succeed(input.selection),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          yield* historyTask("Autopilot", {
+            schedule: { type: "interval", everyMs: 60_000 },
+            delegateProviders: ["codex"],
+          }),
+        );
+        // Its only occurrence would be lost, so a one-time task waits for the room instead.
+        const { task: once } = yield* service.upsert(
+          yield* historyTask("Once", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          }),
+        );
+        expect(task.delegateProviders).toEqual(["codex"]);
+        const settled = (done: (tasks: ReadonlyArray<ScheduledTask>) => boolean) =>
+          service.subscribeList().pipe(
+            Stream.filter(({ tasks }) => done(tasks)),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+        const byId = (tasks: ReadonlyArray<ScheduledTask>, id: string) =>
+          tasks.find((entry) => entry.id === id);
+
+        const skipped = yield* settled(
+          (tasks) =>
+            byId(tasks, task.id)?.nextRunAt !== task.nextRunAt &&
+            byId(tasks, once.id)?.nextRunAt === until,
+        );
+        yield* TestClock.adjust("65 seconds");
+        yield* Fiber.join(skipped);
+
+        expect(yield* Ref.get(launched)).toEqual([]);
+        expect((yield* Ref.get(asked)).find((input) => input.delegates.length > 0)).toMatchObject({
+          selection: { instanceId: "claude_primary" },
+          delegates: ["codex"],
+        });
+        expect((yield* service.listRuns({ id: task.id })).runs).toEqual([
+          expect.objectContaining({
+            trigger: "scheduled",
+            scheduledFor: task.nextRunAt,
+            outcome: "skipped",
+            skipReason: "usage_limited",
+            threadId: null,
+            usageLimit: { driver: "codex", until },
+          }),
+        ]);
+        const listed = (yield* service.list()).tasks;
+        expect(byId(listed, task.id)).toMatchObject({ runCount: 0, lastRunAt: null });
+
+        yield* Ref.set(block, null);
+        const ran = yield* settled((tasks) => byId(tasks, task.id)?.lastRunStatus === "succeeded");
+        yield* TestClock.adjust("65 seconds");
+        yield* Fiber.join(ran);
+        expect(yield* Ref.get(launched)).toContain("Autopilot");
+        expect(byId((yield* service.list()).tasks, task.id)?.runCount).toBe(1);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

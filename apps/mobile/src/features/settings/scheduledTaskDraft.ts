@@ -4,6 +4,7 @@ import type {
   ModelSelection,
   ServerConfig,
   ProjectId,
+  ProviderDriverKind,
   RuntimeMode,
   ScheduledTask,
   ScheduledTaskSharedRunOn,
@@ -219,6 +220,7 @@ export type ScheduledTaskDraft = PromptFileDraft & {
   readonly sharedRunOn: ScheduledTaskSharedRunOn;
   readonly schedule: ScheduleDraft;
   readonly runCondition: RunConditionDraft;
+  readonly delegateProviders: ReadonlyArray<ProviderDriverKind>;
   readonly workspace: Workspace;
   readonly baseRef: string;
   readonly checkoutPath: string;
@@ -257,6 +259,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.schedule.filters.map(({ path, op, value }) => [path, op, value]),
     draft.runCondition.command.trim(),
     draft.runCondition.command.trim() === "" ? null : draft.runCondition.timeoutSeconds.trim(),
+    draft.delegateProviders,
     draft.workspace,
     draft.baseRef,
     draft.checkoutPath,
@@ -305,6 +308,7 @@ export function createDraft(
     sharedRunOn: "every",
     schedule: DEFAULT_SCHEDULE,
     runCondition: runConditionDraft(null),
+    delegateProviders: [],
     workspace: "worktree",
     baseRef: "main",
     checkoutPath: "",
@@ -344,6 +348,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     sharedRunOn: task.shared?.runOn ?? "every",
     schedule: scheduleDraftForTask(task),
     runCondition: runConditionDraft(task),
+    delegateProviders: task.delegateProviders ?? [],
     workspace: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     checkoutPath:

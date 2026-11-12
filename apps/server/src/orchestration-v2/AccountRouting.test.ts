@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -19,7 +20,7 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 
-import { failoverLimitedLaunch, routeAutoAccount } from "./AccountRouting.ts";
+import { failoverLimitedLaunch, routeAutoAccount, usageBlock } from "./AccountRouting.ts";
 
 const nowMs = Date.parse("2026-11-03T12:00:00.000Z");
 const projectId = ProjectId.make("project:routing");
@@ -835,3 +836,180 @@ describe("releasing a held account", () => {
     }),
   );
 });
+
+describe("usageBlock", () => {
+  const codexDriver = ProviderDriverKind.make("codex");
+  const codexMain = ProviderInstanceId.make("codex_main");
+  const codexSpare = ProviderInstanceId.make("codex_spare");
+  const resets = new Map([
+    [primary, "2026-11-03T15:00:00.000Z"],
+    [second, "2026-11-03T14:00:00.000Z"],
+    [third, "2026-11-03T16:00:00.000Z"],
+    [codexMain, "2026-11-03T18:00:00.000Z"],
+    [codexSpare, "2026-11-03T17:00:00.000Z"],
+  ]);
+  const base = settings([primary, second, third]);
+  const block = (input: {
+    readonly limited: ReadonlyArray<ProviderInstanceId>;
+    readonly launches?: boolean;
+    readonly switching?: boolean;
+    readonly delegates?: ReadonlyArray<ProviderDriverKind>;
+  }) =>
+    usageBlock({
+      selection: input.launches === false ? null : { instanceId: third, model: "claude-opus-5-5" },
+      projectId,
+      delegates: input.delegates ?? [],
+      providers: [
+        provider(third),
+        provider(second),
+        provider(primary),
+        provider(codexMain, { driver: codexDriver }),
+        provider(codexSpare, { driver: codexDriver }),
+      ],
+      settings: {
+        ...base,
+        providerInstances: {
+          ...base.providerInstances,
+          [codexMain]: { driver: codexDriver },
+          [codexSpare]: { driver: codexDriver },
+        },
+        failoverLimitedThreads: input.switching ?? true,
+      },
+      recordedLimits: new Map(
+        input.limited.map((id) => [
+          id,
+          [{ resetAt: resets.get(id) ?? null, refusedAt: "2026-11-03T11:00:00Z" }],
+        ]),
+      ),
+      nowMs,
+    });
+
+  it.each([
+    {
+      name: "holds a launch while every account of its provider is out, until the first has room",
+      input: { limited: [primary, second, third] },
+      expected: {
+        driver: claude,
+        until: "2026-11-03T14:00:00.000Z",
+        accounts: [third, second, primary],
+      },
+    },
+    { name: "starts while any account has room", input: { limited: [third, primary] } },
+    {
+      name: "with switching off, judges the task's own account alone",
+      input: { limited: [third], switching: false },
+      expected: { driver: claude, until: "2026-11-03T16:00:00.000Z", accounts: [third] },
+    },
+    {
+      name: "holds a run while every account of a delegate provider is out",
+      input: { limited: [codexMain, codexSpare], delegates: [codexDriver] },
+      expected: {
+        driver: codexDriver,
+        until: "2026-11-03T17:00:00.000Z",
+        accounts: [codexMain, codexSpare],
+      },
+    },
+    {
+      name: "judges a run sent to an existing thread by its delegates alone",
+      input: {
+        limited: [primary, second, third, codexMain],
+        launches: false,
+        delegates: [codexDriver],
+      },
+    },
+    {
+      name: "names the provider that has room last",
+      input: { limited: [primary, second, third, codexMain, codexSpare], delegates: [codexDriver] },
+      expected: {
+        driver: codexDriver,
+        until: "2026-11-03T17:00:00.000Z",
+        accounts: [third, second, primary, codexMain, codexSpare],
+      },
+    },
+  ])("$name", ({ input, expected }) => {
+    assert.deepEqual(block(input), expected ?? null);
+  });
+});
+
+it.effect("reads a held account's usage at most hourly, and frees it once the usage has room", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-03T12:00:00.000Z"));
+    const lifted = yield* Ref.make(false);
+    const reads = yield* Ref.make(0);
+    const usage = (checkedAt: string, usedPercent: number) => ({
+      checkedAt,
+      windows: [
+        {
+          id: "five_hour",
+          kind: "session" as const,
+          label: "5h",
+          usedPercent,
+          resetsAt: "2026-11-03T20:00:00.000Z",
+        },
+      ],
+    });
+    const layer = AccountRouting.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ServerSettings.layerTest({ providerInstances: { [primary]: { driver: claude } } }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUsageLimitedProviderInstances: () =>
+              Ref.get(lifted).pipe(
+                Effect.map(
+                  (done) =>
+                    new Map(
+                      done
+                        ? []
+                        : [
+                            [
+                              primary,
+                              [
+                                {
+                                  refusedAt: "2026-11-03T11:00:00.000Z",
+                                  resetAt: "2026-11-03T20:00:00.000Z",
+                                },
+                              ],
+                            ],
+                          ],
+                    ),
+                ),
+              ),
+            liftUsageLimitHolds: () => Ref.set(lifted, true),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([
+              provider(primary, { usageLimits: usage("2026-11-03T10:00:00.000Z", 40) }),
+            ]),
+            // The first read still finds the window used up; the one an hour later finds room.
+            refreshInstance: () =>
+              Effect.gen(function* () {
+                const count = yield* Ref.updateAndGet(reads, (value) => value + 1);
+                const now = DateTime.formatIso(yield* DateTime.now);
+                return [provider(primary, { usageLimits: usage(now, count === 1 ? 100 : 30) })];
+              }),
+          }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const routing = yield* AccountRouting.AccountRouting;
+      const check = routing.scheduledRunBlock({
+        selection: { instanceId: primary, model: "claude-opus-5-5" },
+        projectId,
+        delegates: [],
+      });
+      assert.deepEqual(yield* check, {
+        driver: claude,
+        until: "2026-11-03T20:00:00.000Z",
+        accounts: [primary],
+      });
+      yield* TestClock.adjust("59 minutes");
+      assert.equal((yield* check)?.until, "2026-11-03T20:00:00.000Z");
+      assert.equal(yield* Ref.get(reads), 1);
+
+      yield* TestClock.adjust("1 minute");
+      assert.equal(yield* check, null);
+      assert.equal(yield* Ref.get(reads), 2);
+    }).pipe(Effect.provide(layer));
+  }),
+);

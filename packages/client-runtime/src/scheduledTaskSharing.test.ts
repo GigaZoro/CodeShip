@@ -132,9 +132,9 @@ describe("planSharedScheduledTaskSync", () => {
 
   it.each([
     {
-      name: "a source that lists them sends its run condition and catch-up choice, cleared ones too",
-      fields: { runCondition: null, catchUpMissedRun: false },
-      expected: { runCondition: null, catchUpMissedRun: false },
+      name: "a source that lists them sends its run condition, catch-up choice and delegate providers, cleared ones too",
+      fields: { runCondition: null, catchUpMissedRun: false, delegateProviders: [] },
+      expected: { runCondition: null, catchUpMissedRun: false, delegateProviders: [] },
     },
     {
       name: "a source on an older version sends neither, so the receiver keeps its own",
@@ -150,6 +150,9 @@ describe("planSharedScheduledTaskSync", () => {
     expect({
       ...("runCondition" in (copy ?? {}) ? { runCondition: copy?.runCondition } : {}),
       ...("catchUpMissedRun" in (copy ?? {}) ? { catchUpMissedRun: copy?.catchUpMissedRun } : {}),
+      ...("delegateProviders" in (copy ?? {})
+        ? { delegateProviders: copy?.delegateProviders }
+        : {}),
     }).toEqual(expected);
   });
 });

@@ -24,11 +24,13 @@ import {
   type ModelSelection,
   type ScheduledTaskListRunsInput,
   type ScheduledTaskListRunsResult,
+  ScheduledTaskDelegateProviders,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskRunCheck,
   ScheduledTaskRunCondition,
   ScheduledTaskRunRecord,
   type ScheduledTaskRunSkipReason,
+  ScheduledTaskRunUsageLimit,
   type ScheduledTaskRunTrigger,
   type ScheduledTaskDeleteInput,
   type ScheduledTaskDeleteResult,
@@ -55,6 +57,7 @@ import {
   type ScheduledTaskSetGroupPausedResult,
   type ServerSettings as ServerSettingsValue,
   type ScheduledTaskUpsertInput,
+  type ProviderDriverKind,
   managedPolicyDeniedMessage,
   resolveProjectProviderInstanceEnabled,
   managedRuntimeModeDenial,
@@ -142,8 +145,13 @@ interface RunConditionRow {
 }
 
 const RUN_HISTORY_RETENTION = 50;
-// Kept apart, so a frequent check that finds no work cannot push real runs out of history.
-const NO_WORK_SKIP_RETENTION = 10;
+// Each kept apart, so a frequent check that finds no work, or a long usage limit, cannot push
+// real runs out of history.
+const QUIET_SKIP_REASONS = [
+  "no_work",
+  "usage_limited",
+] as const satisfies ReadonlyArray<ScheduledTaskRunSkipReason>;
+const QUIET_SKIP_RETENTION = 10;
 // Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over 90 days.
 const RUN_HISTORY_WINDOW_MS = 90 * 24 * 60 * MINUTE_MS;
 const runHistoryCutoff = (startedAt: string) =>
@@ -277,6 +285,14 @@ const decodeNoWorkSkipJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTaskNoWorkSkip),
 );
 const decodeRunCheckJson = Schema.decodeUnknownOption(Schema.fromJsonString(ScheduledTaskRunCheck));
+const RunUsageLimitJson = Schema.fromJsonString(ScheduledTaskRunUsageLimit);
+const decodeRunUsageLimitJson = Schema.decodeUnknownOption(RunUsageLimitJson);
+const encodeRunUsageLimitJson = Schema.encodeSync(RunUsageLimitJson);
+const DelegateProvidersJson = Schema.fromJsonString(ScheduledTaskDelegateProviders);
+const decodeDelegateProvidersJson = Schema.decodeUnknownEffect(DelegateProvidersJson);
+const encodeDelegateProvidersSchema = Schema.encodeSync(DelegateProvidersJson);
+const encodeDelegateProvidersJson = (drivers: ReadonlyArray<ProviderDriverKind>) =>
+  encodeDelegateProvidersSchema([...new Set(drivers)]);
 const HeadersJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 const MissingFieldsJson = Schema.fromJsonString(Schema.Array(Schema.String));
 const decodeHeadersJson = Schema.decodeUnknownOption(HeadersJson);
@@ -336,6 +352,8 @@ interface ScheduledTaskRow {
   /** From scheduled_task_group: null when the task has no group. */
   readonly group_label?: string | null;
   readonly paused_with_group?: number | null;
+  /** From scheduled_task_delegate_providers: null when the task needs none. */
+  readonly delegate_providers_json?: string | null;
 }
 
 interface RunRecordRow {
@@ -352,6 +370,7 @@ interface RunRecordRow {
   readonly failover_from: string | null;
   readonly failover_to: string | null;
   readonly check_json: string | null;
+  readonly usage_limit_json: string | null;
 }
 
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
@@ -753,6 +772,14 @@ const decodeRow = Effect.fnUntraced(
           }),
       ...(row.group_label === undefined ? {} : { group: row.group_label }),
       ...(row.paused_with_group === 1 && row.enabled !== 1 ? { pausedWithGroup: true } : {}),
+      ...(row.delegate_providers_json === undefined
+        ? {}
+        : {
+            delegateProviders:
+              row.delegate_providers_json === null
+                ? []
+                : yield* decodeDelegateProvidersJson(row.delegate_providers_json),
+          }),
     });
   },
   (effect, row, _origin?) =>
@@ -997,6 +1024,17 @@ export const layer = Layer.effect(
         commit_sha TEXT
       )
     `;
+    // A row lists the providers the task delegates to; without one it needs none.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_delegate_providers (
+        task_id TEXT PRIMARY KEY,
+        providers_json TEXT NOT NULL
+      )
+    `;
+    const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
+    if (!runColumns.some((column) => column.name === "usage_limit_json")) {
+      yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
+    }
     // Outlives the task so a stale copy on another machine is removed, not restored.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_shared_deletions (
@@ -1109,7 +1147,9 @@ export const layer = Layer.effect(
         (SELECT label FROM scheduled_task_group g
           WHERE g.task_id = scheduled_tasks.task_id) AS group_label,
         (SELECT paused_with_group FROM scheduled_task_group g
-          WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group
+          WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group,
+        (SELECT providers_json FROM scheduled_task_delegate_providers dp
+          WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -1207,7 +1247,9 @@ export const layer = Layer.effect(
         (SELECT label FROM scheduled_task_group g
           WHERE g.task_id = scheduled_tasks.task_id) AS group_label,
         (SELECT paused_with_group FROM scheduled_task_group g
-          WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group
+          WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group,
+        (SELECT providers_json FROM scheduled_task_delegate_providers dp
+          WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -1483,6 +1525,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_run_conditions WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_delegate_providers WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
       );
@@ -1587,35 +1630,39 @@ export const layer = Layer.effect(
       readonly ranOn?: EnvironmentId;
       readonly failover: { readonly from: string; readonly to: string } | null;
       readonly check?: ScheduledTaskRunCheck | undefined;
+      readonly usageLimit?: ScheduledTaskRunUsageLimit | undefined;
     }) =>
       sql`
         INSERT INTO scheduled_task_runs (
           run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome,
-          skip_reason, ran_on, failover_from, failover_to, check_json
+          skip_reason, ran_on, failover_from, failover_to, check_json, usage_limit_json
         )
         SELECT ${record.id}, ${record.taskId}, ${record.trigger}, ${record.scheduledFor},
           ${record.startedAt}, ${record.completedAt}, ${record.outcome},
           ${record.skipReason ?? null}, ${record.ranOn ?? null},
           ${record.failover?.from ?? null}, ${record.failover?.to ?? null},
-          ${record.check === undefined ? null : JSON.stringify(record.check)}
+          ${record.check === undefined ? null : JSON.stringify(record.check)},
+          ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId})
         ON CONFLICT (run_id) DO NOTHING
       `.pipe(
         Effect.andThen(sql`
-          DELETE FROM scheduled_task_runs
-          WHERE task_id = ${record.taskId} AND (
-            (skip_reason = 'no_work' AND run_id NOT IN (
-              SELECT run_id FROM scheduled_task_runs
-              WHERE task_id = ${record.taskId} AND skip_reason = 'no_work'
-              ORDER BY started_at DESC, run_id DESC LIMIT ${NO_WORK_SKIP_RETENTION}
-            ))
-            OR (skip_reason IS NOT 'no_work'
-              AND (outcome = 'skipped' OR started_at < ${runHistoryCutoff(record.startedAt)})
-              AND run_id NOT IN (
-                SELECT run_id FROM scheduled_task_runs
-                WHERE task_id = ${record.taskId} AND skip_reason IS NOT 'no_work'
-                ORDER BY started_at DESC, run_id DESC LIMIT ${RUN_HISTORY_RETENTION}
-              ))
+          DELETE FROM scheduled_task_runs WHERE run_id IN (
+            SELECT run_id FROM (
+              SELECT run_id, outcome, started_at,
+                skip_reason IN ${sql.in(QUIET_SKIP_REASONS)} AS quiet,
+                ROW_NUMBER() OVER (
+                  PARTITION BY CASE WHEN skip_reason IN ${sql.in(QUIET_SKIP_REASONS)}
+                    THEN skip_reason ELSE '' END
+                  ORDER BY started_at DESC, run_id DESC
+                ) AS position
+              FROM scheduled_task_runs WHERE task_id = ${record.taskId}
+            )
+            WHERE CASE WHEN quiet = 1
+              THEN position > ${QUIET_SKIP_RETENTION}
+              ELSE position > ${RUN_HISTORY_RETENTION}
+                AND (outcome = 'skipped' OR started_at < ${runHistoryCutoff(record.startedAt)})
+            END
           )
         `),
       );
@@ -2117,9 +2164,12 @@ export const layer = Layer.effect(
 
     // A check answers only for the occurrence it was started for, as it was read: a run, a pause,
     // a new time or another condition since then make the answer someone else's.
-    const occurrenceAsChecked = (task: ScheduledTask, condition: RunConditionRow) => sql`
+    const occurrenceUnmoved = (task: ScheduledTask) => sql`
       task_id = ${task.id} AND enabled = 1 AND last_run_status <> 'running'
         AND next_run_at = ${task.nextRunAt}
+    `;
+    const occurrenceAsChecked = (task: ScheduledTask, condition: RunConditionRow) => sql`
+      ${occurrenceUnmoved(task)}
         AND EXISTS (
           SELECT 1 FROM scheduled_task_run_conditions
           WHERE task_id = ${task.id} AND command = ${condition.command}
@@ -2178,6 +2228,79 @@ export const layer = Layer.effect(
       }
       return skipped;
     });
+
+    /**
+     * Skips an occurrence while every account it could start on, or every account of a delegate
+     * provider it needs, is out of usage. Like a no-work skip, nothing ran, so the run columns
+     * stay. A one-time task waits for the room instead, since its only occurrence would be lost.
+     * A failed check never holds a run back.
+     */
+    const skippedForUsage = Effect.fn("ScheduledTaskService.skippedForUsage")(
+      function* (task: ScheduledTask, fire: ScheduledFire) {
+        if (Option.isNone(accountRouting)) return false;
+        // Due rows come without the default model or delegate providers, so read the task afresh.
+        const current = yield* findTask(task.id);
+        if (current === null) return false;
+        const delegates = current.delegateProviders ?? [];
+        if (current.threadId !== null && delegates.length === 0) return false;
+        const block = yield* accountRouting.value.scheduledRunBlock({
+          selection:
+            current.threadId === null ? launchModelSelection(yield* readSettings, current) : null,
+          projectId: current.projectId,
+          delegates,
+        });
+        if (block === null) return false;
+        const now = yield* localNow;
+        const next = current.schedule.type === "once" ? block.until : nextRunAt(current, now);
+        const scheduledFor = fire.scheduledFor ?? task.nextRunAt;
+        const skipped = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const moved = yield* sql`
+              UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
+              WHERE ${occurrenceUnmoved(task)}
+              RETURNING task_id
+            `;
+            if (moved.length === 0) return false;
+            yield* writeRunRecord({
+              id: `${task.id}:${scheduledFor}:usage_limited`,
+              taskId: task.id,
+              trigger: fire.catchUp ? "catch_up" : "scheduled",
+              scheduledFor,
+              startedAt: iso(now),
+              completedAt: iso(now),
+              outcome: "skipped",
+              skipReason: "usage_limited",
+              failover: null,
+              usageLimit: { driver: block.driver, until: block.until },
+            });
+            return true;
+          }),
+        );
+        if (skipped) {
+          yield* Effect.logInfo(
+            "Skipping a schedule task run: every account it can use is out of usage",
+            {
+              taskId: task.id,
+              scheduledFor,
+              driver: block.driver,
+              until: block.until,
+            },
+          );
+          yield* notifyChanged;
+        }
+        // A moved occurrence is someone else's now; the next poll judges it afresh.
+        return true;
+      },
+      (effect, task) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not check the accounts a schedule task run needs", {
+              taskId: task.id,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        ),
+    );
 
     /** "ran" when the answer started a chat, which tells lists itself. */
     const checkThenRun = Effect.fn("ScheduledTaskService.checkThenRun")(function* (
@@ -2382,6 +2505,20 @@ export const layer = Layer.effect(
             INSERT INTO scheduled_task_catch_up (task_id, enabled) VALUES (${id}, ${enabled ? 1 : 0})
             ON CONFLICT (task_id) DO UPDATE SET enabled = excluded.enabled
           `;
+
+    const writeDelegateProviders = (
+      id: ScheduledTaskId,
+      drivers: ReadonlyArray<ProviderDriverKind> | undefined,
+    ) =>
+      drivers === undefined
+        ? Effect.void
+        : drivers.length === 0
+          ? sql`DELETE FROM scheduled_task_delegate_providers WHERE task_id = ${id}`
+          : sql`
+              INSERT INTO scheduled_task_delegate_providers (task_id, providers_json)
+              VALUES (${id}, ${encodeDelegateProvidersJson(drivers)})
+              ON CONFLICT (task_id) DO UPDATE SET providers_json = excluded.providers_json
+            `;
 
     /** "keep" keeps the last read while the path stays the same; null drops it. */
     const writePromptFile = (
@@ -2789,6 +2926,9 @@ export const layer = Layer.effect(
           deferTo(Math.min(nowMs + graceMs, watchUntilMs), holder, decision);
         // Claims the occurrence, taking it from `replaces`, and runs it only when this machine may.
         const takeOccurrence = Effect.fnUntraced(function* (replaces: EnvironmentId | null) {
+          const fire = { scheduledFor: occurrence, catchUp: catchingUp };
+          // A machine that could not start it claims nothing, so the next machine may run it.
+          if (yield* skippedForUsage(task, fire)) return;
           const claim = yield* claimOneMachineOccurrence(
             task.id,
             occurrenceSlot(task.schedule, occurrenceDue),
@@ -2819,7 +2959,7 @@ export const layer = Layer.effect(
               }),
             ),
           );
-          return yield* startScheduledRun(task, { scheduledFor: occurrence, catchUp: catchingUp });
+          return yield* startScheduledRun(task, fire);
         });
         const since = iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs));
         if (watched === null) {
@@ -2884,9 +3024,10 @@ export const layer = Layer.effect(
         SELECT run_on FROM scheduled_task_shared WHERE task_id = ${task.id}
       `.pipe(NodeSqliteClient.readOnly);
       const sharing = runOn?.run_on === "one" ? (yield* findTask(task.id))?.shared : null;
-      return sharing == null
-        ? yield* startScheduledRun(task, { scheduledFor: task.nextRunAt, catchUp })
-        : yield* settleOneMachineOccurrence(task, sharing, now, catchUp);
+      if (sharing != null) return yield* settleOneMachineOccurrence(task, sharing, now, catchUp);
+      const fire = { scheduledFor: task.nextRunAt, catchUp };
+      if (yield* skippedForUsage(task, fire)) return;
+      return yield* startScheduledRun(task, fire);
     });
 
     // A fixed-time run the server reached too late, because the app was off or the machine asleep.
@@ -3140,6 +3281,9 @@ export const layer = Layer.effect(
                     : { catchUpMissedRun: task.catchUpMissedRun }),
                   runCondition: task.runCondition ?? null,
                   promptFile: task.promptFile?.path ?? null,
+                  ...(task.delegateProviders === undefined
+                    ? {}
+                    : { delegateProviders: task.delegateProviders }),
                   runtimeMode: task.runtimeMode,
                   interactionMode: task.interactionMode,
                   createdBy: task.createdBy,
@@ -3564,6 +3708,7 @@ export const layer = Layer.effect(
               : sql`DELETE FROM scheduled_task_default_model WHERE task_id = ${id}`;
             // Omitted keeps the stored choice, or for a new task its schedule's default.
             yield* writeCatchUp(id, input.catchUpMissedRun);
+            yield* writeDelegateProviders(id, input.delegateProviders);
             yield* writeRunCondition(id, runCondition);
             yield* writePromptFile(
               id,
@@ -3676,6 +3821,14 @@ export const layer = Layer.effect(
               SELECT enabled FROM scheduled_task_catch_up WHERE task_id = ${taskId}`;
             const [promptFile] = yield* sql<{ readonly path: string }>`
               SELECT path FROM scheduled_task_prompt_files WHERE task_id = ${taskId}`;
+            const [delegates] = yield* sql<{ readonly providers_json: string }>`
+              SELECT providers_json FROM scheduled_task_delegate_providers WHERE task_id = ${taskId}`;
+            const delegatesDiffer =
+              task.delegateProviders !== undefined &&
+              (task.delegateProviders.length === 0
+                ? delegates !== undefined
+                : encodeDelegateProvidersJson(task.delegateProviders) !==
+                  delegates?.providers_json);
             const promptFileDiffers =
               task.promptFile !== undefined && task.promptFile !== (promptFile?.path ?? null);
             const conditionDiffers =
@@ -3690,12 +3843,13 @@ export const layer = Layer.effect(
                 (catchUp === undefined
                   ? defaultCatchUpMissedRun(task.schedule)
                   : catchUp.enabled === 1);
-            if (!conditionDiffers && !catchUpDiffers && !promptFileDiffers) {
+            if (!conditionDiffers && !catchUpDiffers && !promptFileDiffers && !delegatesDiffer) {
               return { outcome: "stale" as const };
             }
             if (conditionDiffers) yield* writeRunCondition(taskId, task.runCondition);
             if (catchUpDiffers) yield* writeCatchUp(taskId, task.catchUpMissedRun);
             if (promptFileDiffers) yield* writePromptFile(taskId, task.promptFile ?? null, null);
+            if (delegatesDiffer) yield* writeDelegateProviders(taskId, task.delegateProviders);
             return { outcome: "applied" as const };
           }),
         );
@@ -3842,6 +3996,7 @@ export const layer = Layer.effect(
           yield* task.group === undefined
             ? writeGroup(id, undefined, task.enabled ? false : "keep")
             : writeGroup(id, task.group, task.pausedWithGroup === true && !task.enabled);
+          yield* writeDelegateProviders(id, task.delegateProviders);
           yield* writeSharing(id, task.shared);
         }),
         "applied",
@@ -4154,6 +4309,10 @@ export const layer = Layer.effect(
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
             yield* sql`
+            DELETE FROM scheduled_task_delegate_providers
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
             DELETE FROM scheduled_task_runs
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
@@ -4252,10 +4411,10 @@ export const layer = Layer.effect(
     const listRuns: ScheduledTaskService["Service"]["listRuns"] = (input) =>
       sql<RunRecordRow>`
         SELECT run_id, trigger, scheduled_for, started_at, completed_at, outcome, thread_id,
-          error, skip_reason, ran_on, failover_from, failover_to, check_json
+          error, skip_reason, ran_on, failover_from, failover_to, check_json, usage_limit_json
         FROM scheduled_task_runs WHERE task_id = ${input.id}
         ORDER BY started_at DESC, run_id DESC
-        LIMIT ${RUN_HISTORY_RETENTION + NO_WORK_SKIP_RETENTION}
+        LIMIT ${RUN_HISTORY_RETENTION + QUIET_SKIP_REASONS.length * QUIET_SKIP_RETENTION}
       `.pipe(
         NodeSqliteClient.readOnly,
         Effect.map((rows) => ({
@@ -4280,6 +4439,10 @@ export const layer = Layer.effect(
                   row.check_json === null
                     ? null
                     : Option.getOrNull(decodeRunCheckJson(row.check_json)),
+                usageLimit:
+                  row.usage_limit_json === null
+                    ? null
+                    : Option.getOrNull(decodeRunUsageLimitJson(row.usage_limit_json)),
               }),
             ),
           ),

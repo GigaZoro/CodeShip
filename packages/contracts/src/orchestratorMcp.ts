@@ -27,6 +27,7 @@ import {
   ScheduledTaskPlacement,
   ScheduledTaskPromptFile,
   ScheduledTaskPromptFilePath,
+  ScheduledTaskDelegateProviders,
   ScheduledTaskRunCondition,
   ScheduledTaskRunConditionInput,
   ScheduledTaskRunStatus,
@@ -723,6 +724,11 @@ const OrchestratorMcpCatchUpMissedRun = Schema.Boolean.annotate({
     "fixed_time only. True: a run missed while the app was off runs once when it is back, if nearer than the next run. Default true; omit to keep.",
 });
 
+const OrchestratorMcpDelegateProviders = ScheduledTaskDelegateProviders.annotate({
+  description:
+    'Drivers it hands work to with delegate_task, e.g. ["codex"]. A scheduled run is skipped while all accounts of one are out of usage.',
+});
+
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ...scheduledTaskModelFields,
   environmentId: OrchestratorMcpEnvironmentTarget,
@@ -766,6 +772,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
     description:
       'Group label the user\'s task list sorts it under, e.g. "Machine care". Reuse an existing label (list_scheduled_tasks). Null clears; omit to keep.',
   }),
+  delegateProviders: Schema.optional(OrchestratorMcpDelegateProviders),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -832,6 +839,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   catchUpMissedRun: Schema.optional(Schema.Boolean).annotate({
     description: "fixed_time only: a run missed while the app was off runs once when it is back.",
   }),
+  delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   lastRun: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -939,6 +947,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   ...scheduledTaskRunConditionField,
   catchUpMissedRun: Schema.optional(Schema.Boolean),
   group: OrchestratorMcpScheduleTaskInput.fields.group,
+  delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

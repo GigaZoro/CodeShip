@@ -1,3 +1,10 @@
+## 2026-11-13 — Scheduled tasks skip a run while every account they need is out of usage
+
+- A scheduled run no longer starts when every account it could use is already out of usage, where before it started a chat that stopped at once or spent its tokens and then failed on the limit. **Run history** lists the time as skipped and says until when the accounts are limited, and the skip doesn't count as a run. A **Once** task moves to that time instead.
+- A task that hands work to other providers, such as a Claude task that delegates to Codex, can name them under **Hands work to** in its editor, on web, desktop and mobile. Its runs are also skipped while every account of one of them is out of usage. Agents set it with `schedule_task` (`delegateProviders`).
+- T3.CodeShip reads a limited account's usage again at most once an hour, so a limit that ends early frees the next run. A shared task set to **One machine** leaves such a time to the next machine in its order. **Run now** and webhook runs always start.
+- See [Skip runs while accounts are out of usage](user/project-settings.md#skip-runs-while-accounts-are-out-of-usage).
+
 ## 2026-11-13 — A shared task that runs on one machine no longer runs on several at once
 
 - A shared task set to **One machine** could run on every machine for the same time. When a project had no saved machine order, each machine counted itself first, so they all started together. A machine that could not reach the machines ahead of it also ran the task anyway, and so did one whose link only timed out while the machine ahead was still running it.

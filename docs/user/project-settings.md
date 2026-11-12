@@ -299,6 +299,25 @@ from a file** and give the file's path from the repository's root, such as
 - Agents set it with `schedule_task` (`promptFile`, or `null` to type the prompt
   again) and read it, with the last read, from `list_scheduled_tasks`.
 
+## Skip runs while accounts are out of usage
+
+A scheduled run does not start when every account it could use is out of usage:
+the account its model runs on, or, with **Switch to another account, else resume
+when the limit resets** on, every account of that provider. **Run history** lists
+the time as skipped and says until when the accounts are limited; the task's run
+count and last run do not change. A **Once** task moves to that time instead.
+
+- A task that hands work to other providers, such as a Claude task that
+  delegates to Codex, names them under **Hands work to** in its editor. Its runs
+  are also skipped while every account of one of those providers is out of
+  usage.
+- T3.CodeShip reads a limited account's usage again at most once an hour, so a
+  limit that ends early frees the next run.
+- A shared task set to **One machine** leaves a time it skips this way to the
+  next machine in its order.
+- **Run now** and webhook runs always start.
+- Agents set it with `schedule_task` (`delegateProviders`).
+
 ## Shared scheduled tasks
 
 A task's **Runs** choice keeps a copy of it on each of your machines:

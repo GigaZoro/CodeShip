@@ -6,8 +6,11 @@ import {
   type ScheduledTaskNoWorkSkip,
   type ScheduledTaskRunCheck,
   type ScheduledTaskRunConditionInput,
+  type ScheduledTaskRunUsageLimit,
 } from "@t3tools/contracts";
 import { t } from "@t3tools/shared/i18n";
+
+import { providerDriverDisplayName } from "./state/providerInstanceDisplay.ts";
 
 /** The run condition as a task form edits it. An empty command means the task has none. */
 export interface RunConditionDraft {
@@ -80,6 +83,18 @@ export function peerNoWorkText(machine: string | null, detail: string | null): s
   return reason === ""
     ? t("{machine} found no work.", { machine })
     : t("{machine} found no work: {detail}", { machine, detail: reason });
+}
+
+/** Run history's line for an occurrence skipped because every account it needs was out of usage. */
+export function usageLimitSkipText(
+  usageLimit: ScheduledTaskRunUsageLimit | null | undefined,
+  formatTime: (iso: string) => string,
+): string {
+  if (usageLimit == null) return t("Every account this task can use was out of usage.");
+  return t("Every {provider} account this task can use was out of usage until {time}.", {
+    provider: providerDriverDisplayName(usageLimit.driver),
+    time: formatTime(usageLimit.until),
+  });
 }
 
 /** What the task editor says under the check's fields. */

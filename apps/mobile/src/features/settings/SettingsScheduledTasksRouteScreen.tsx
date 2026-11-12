@@ -31,6 +31,7 @@ import {
   runConditionInput,
   runConditionInvalidText,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
+import { providerDriverDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   MAX_SCHEDULED_TASK_GROUP_LENGTH,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
@@ -142,6 +143,7 @@ import {
 } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import {
   SettingsEnvironmentFilterProvider,
   useSettingsEnvironmentFilter,
@@ -1154,6 +1156,14 @@ function TaskForm({
   const offersRunCondition = targetSupportsRunConditions && draft.schedule.mode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const supportsPromptFiles = config?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const offersDelegateProviders =
+    config?.environment.capabilities.scheduledTaskDelegateProviders === true;
+  const delegateProviderChoices = [
+    ...new Set([
+      ...(config?.providers ?? []).map((provider) => provider.driver),
+      ...draft.delegateProviders,
+    ]),
+  ];
   const promptSource = effectivePromptSource({ supportsPromptFiles, draft });
   const promptFileLost = promptFileLostOnTarget({
     supportsPromptFiles,
@@ -1286,6 +1296,7 @@ function TaskForm({
       }),
       schedule,
       ...(offersRunCondition ? { runCondition } : {}),
+      ...(offersDelegateProviders ? { delegateProviders: draft.delegateProviders } : {}),
       enabled: draft.enabled,
       threadId: sharing ? null : (draft.task?.threadId ?? null),
       workspaceStrategy:
@@ -2018,6 +2029,31 @@ function TaskForm({
                 setDraft({ ...draft, runCondition: { ...draft.runCondition, timeoutSeconds } })
               }
             />
+          </SettingsSection>
+        ) : null}
+        {offersDelegateProviders && delegateProviderChoices.length > 0 ? (
+          <SettingsSection
+            title={t("Hands work to")}
+            footer={t(
+              "Providers this task delegates work to. A scheduled run is skipped while every account of one is out of usage.",
+            )}
+          >
+            {delegateProviderChoices.map((driver) => (
+              <SettingsSwitchRow
+                key={driver}
+                label={providerDriverDisplayName(driver)}
+                value={draft.delegateProviders.includes(driver)}
+                disabled={saving || environmentUnavailable}
+                onValueChange={(on) =>
+                  setDraft({
+                    ...draft,
+                    delegateProviders: delegateProviderChoices.filter((choice) =>
+                      choice === driver ? on : draft.delegateProviders.includes(choice),
+                    ),
+                  })
+                }
+              />
+            ))}
           </SettingsSection>
         ) : null}
       </View>
