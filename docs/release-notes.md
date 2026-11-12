@@ -1,3 +1,9 @@
+## 2026-11-12 — Claude agents call `t3_background_wait` with the argument it takes
+
+- Claude's instructions and the tool's description now tell agents to pass `taskIds: ["<task id>"]` to `t3_background_wait`. Before, they said to pass "its task ID", so agents sent `taskId` and every call was refused, leaving the thread out of Working while its tests or build ran.
+- Three other agent texts named arguments their tools do not take, and now name the real ones: `device_open` takes `hostId` and `deviceId`, a prepared upload is sent to `t3_thread_send_attachments` as `attachments: [{ type, id, name, mimeType, sizeBytes }]`, and `preview_snapshot` no longer suggests it targets one element (`preview_act` takes `locator`).
+- A test now fails when any agent instruction or tool description names an argument key its tool's schema lacks.
+
 ## 2026-11-12 — Scheduled runs retry a worktree fetch that timed out after a wake
 
 - When a scheduled run started right after the machine woke from sleep, fetching the project's remote to prepare its worktree could get no answer within 30 seconds, and the run failed for good. A fetch that times out now counts as a lost connection, so the run waits for the network and tries again, as it already did when Git could not reach the remote.

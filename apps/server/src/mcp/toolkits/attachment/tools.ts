@@ -34,7 +34,7 @@ const shared = {
 const AttachmentUploadTool = Tool.make("t3_attachment_prepare_upload", {
   ...shared,
   description:
-    "Get an upload URL. POST the file's exact bytes to `relativeUrl` on this MCP server's HTTP origin, then send via `t3_thread_send_attachments` with the returned `attachmentId`.",
+    "Get an upload URL. POST the file's exact bytes to `relativeUrl` on this MCP server's HTTP origin, then pass the returned `attachmentId` as `id` to `t3_thread_send_attachments` with `attachments: [{ type, id, name, mimeType, sizeBytes }]`.",
   parameters: Schema.Struct({ upload: AttachmentCreateUploadUrlInput }),
   success: AttachmentCreateUploadUrlResult,
 }).annotate(Tool.Destructive, true);

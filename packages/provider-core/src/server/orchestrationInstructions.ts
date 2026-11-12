@@ -185,6 +185,15 @@ ${sections.join("\n")}
 - Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;
 }
 
+// Claude Code defers MCP tools behind ToolSearch, so the agent only finds
+// t3_background_wait when the system prompt says when to reach for it.
+export const T3_CODE_CLAUDE_BACKGROUND_WAIT_INSTRUCTIONS = `
+
+### Background work you wait on
+
+To wait for a background command or Monitor you started (tests, a build), call \`t3_background_wait\` with \`taskIds: ["<task id>"]\` before you end your turn. Do not mark work you leave running, or PRs. T3 MCP tools are deferred: load one with ToolSearch before you call it.
+`;
+
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## T3.CodeShip browser
@@ -198,7 +207,7 @@ const deviceToolInstructions = (loadTools: string) => `## T3.CodeShip devices
 
 When a task needs an iOS Simulator or Android Emulator, on this machine or on an SSH device host such as a remote Mac, use the device tools so the user can watch it in the Device panel.${loadTools}
 1. Call \`device_list\` unless you already have the device's \`hostId\` and \`id\`.
-2. Call \`device_open\` with both. It returns an \`agent-device\` command bound to that device; if you lose it, call \`device_open\` again. Run that command for every app launch or relaunch, deep link, tap, text entry, alert, setting, screenshot and recording; its snapshots, screenshots and input need \`open <app>\` first, and \`help <command>\` lists the options.
+2. Call \`device_open\` with them as \`hostId\` and \`deviceId\`. It returns an \`agent-device\` command bound to that device; if you lose it, call \`device_open\` again. Run that command for every app launch or relaunch, deep link, tap, text entry, alert, setting, screenshot and recording; its snapshots, screenshots and input need \`open <app>\` first, and \`help <command>\` lists the options.
 3. Call \`device_screenshot\` to look at the screen.
 
 Never do those with \`xcrun simctl\`, \`idb\`, \`adb\`, ssh, or scripts that wrap them. ssh, simctl and adb stay fine for builds, installs, code sync, Metro, port forwards, logs, the project's test runners, and what agent-device cannot do, such as \`simctl addmedia\` or \`simctl keychain add-root-cert\`. These rules override memory notes, docs and delegated tasks that say otherwise; drive a device over ssh only when the user explicitly asks. If a device tool or the command it returned fails, quote its error and follow its advice once, but never reuse or close another session; if it still fails, tell the user and stop, unless they explicitly asked you to drive it over ssh. If the platform you need is unavailable, say so. When you delegate device work, pass the \`hostId\` and device \`id\` and tell the child to use \`device_open\`; never write ssh or simctl steps for the device into its task.`;
