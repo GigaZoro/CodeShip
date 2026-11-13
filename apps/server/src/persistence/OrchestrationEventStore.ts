@@ -286,6 +286,7 @@ const makeEventStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const committedEvents = yield* PubSub.unbounded<ApplicationStoredEvent>();
   const promptHints = new Map<string, number>();
+  // oxlint-disable-next-line t3code/require-json-wrapped-subquery -- the prompt is text, which a subquery keeps.
   const restoredPayloadJson = sql`CASE
     WHEN orchestration_events.event_type IN ('subagent.updated', 'turn-item.updated')
       AND json_type(orchestration_events.payload_json, '$.promptSequence') = 'integer'

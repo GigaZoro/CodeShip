@@ -3,6 +3,7 @@
 - A shared task set to **One machine** could skip a time on every machine. When the first machine was off, another machine could take the previous time over late and still be running it when the next time came due. The next machine in the order took that run for the new time's, so it waited for it or skipped, and nobody ran the new time.
 - Machines now say which time each run, no-work skip and run-condition check is for, so another machine counts only a run of the same or a later time. **Run now** and webhook runs count for no time. A machine on an older version still counts by when its run started.
 - A run names its time from the moment it starts, even when its run history could not be saved.
+- Upgrading a database from a much older version on Node 26.13.1 or later no longer turns saved model options into text.
 
 ## 2026-11-13 — `t3 up` waits for the restarted server, so `t3 pair` works right after it
 

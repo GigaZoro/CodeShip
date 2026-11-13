@@ -301,6 +301,7 @@ export default defineConfig({
       "t3code/prefer-catch-tags": "error",
       "t3code/prefer-effect-fn": "error",
       "t3code/require-centered-scroll-gutter": "error",
+      "t3code/require-json-wrapped-subquery": "error",
       "t3code/require-suppression-reason": "error",
     },
     overrides: [
