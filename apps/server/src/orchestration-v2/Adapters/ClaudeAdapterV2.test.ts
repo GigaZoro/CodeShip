@@ -9226,7 +9226,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   it.effect("holds only the background tasks the agent marks awaited, until they end", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const harness = yield* makeWakeHarness;
+        const slowFrameEntered = yield* Deferred.make<void>();
+        const releaseSlowFrame = yield* Deferred.make<void>();
+        const harness = yield* makeWakeHarnessWithOptions({
+          onUsageLimits: () =>
+            Deferred.succeed(slowFrameEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseSlowFrame)),
+            ),
+        });
         const now = yield* DateTime.now;
         const awaitBackgroundTasks = harness.runtime.awaitBackgroundTasks;
         if (awaitBackgroundTasks === undefined) {
@@ -9272,12 +9279,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         yield* nextRoster((tasks) => tasks.length === 2);
 
+        // A slow frame holds the SDK stream; the mark must not wait for it.
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "rate_limit_event",
+            rate_limit_info: {
+              status: "allowed",
+              unifiedWindows: { five_hour: { utilization: 0.2 } },
+            },
+            uuid: "00000000-0000-4000-8000-000000000305",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Deferred.await(slowFrameEntered);
         const marked = yield* awaitBackgroundTasks({
           providerThread: harness.providerThread,
           taskIds: [WAKE_TASK_ID, "already-finished"],
           awaited: true,
         });
         assert.deepStrictEqual(marked.matched, [WAKE_TASK_ID]);
+        yield* Deferred.succeed(releaseSlowFrame, undefined);
         assert.deepStrictEqual(
           marks(yield* nextRoster((tasks) => tasks.some((task) => task.awaited === true))),
           [

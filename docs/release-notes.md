@@ -1,3 +1,7 @@
+## 2026-11-13 — A Claude agent's background wait no longer fails while Claude is busy
+
+- `t3_background_wait` in a Claude chat could fail with "Failed to update the awaited background work" when it marked running work while the chat was handling a burst of Claude messages or a slow one, such as reading a workflow member's transcript. The mark now takes effect at once, and the chat's list of running background work shows it as soon as those messages are handled.
+
 ## 2026-11-13 — Screen readers hear every status a pinned task row shows
 
 - A pinned scheduled task in the sidebar, on web, desktop and mobile, now tells a screen reader when it runs next or last ran, alongside its run status and a skipped run with its reason. Before, the row showed "in 2h" or "5m ago" but its spoken label left the time out. The spoken label names the date and time, such as "Next run Nov 13, 3:00 PM", so it stays right while the row stays on screen.

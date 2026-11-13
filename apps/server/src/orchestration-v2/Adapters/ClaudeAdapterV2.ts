@@ -343,6 +343,8 @@ const CLAUDE_WAKE_TURN_START_DEADLINE = "2 minutes";
 // reply can land after the progress frame that settles it. Its transcript
 // stays the source of its answer this long after it settles.
 const WORKFLOW_MEMBER_TRANSCRIPT_FLUSH_MS = 500;
+// Every frame behind a slow holder waits too, so a hold this long is logged with its holder.
+const CLAUDE_SDK_MESSAGE_LOCK_SLOW_MS = 5_000;
 // A steer waits at most this long, from its request, for its foreground
 // subagents to move to the background before it is sent.
 const BACKGROUND_MOVE_TIMEOUT_MS = 5_000;
@@ -4986,7 +4988,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               Effect.asVoid,
             );
           });
+        // Serializes SDK frames with the work that must stay ordered with them. It is not fair:
+        // a waiter can sit behind a whole burst of frames, so a tool call never waits on it.
         const sdkMessageLock = yield* Semaphore.make(1);
+        const withSdkMessageLock = <A, E, R>(
+          holder: Readonly<Record<string, unknown>>,
+          effect: Effect.Effect<A, E, R>,
+        ) =>
+          sdkMessageLock.withPermits(1)(
+            Effect.gen(function* () {
+              const acquiredAt = yield* Clock.currentTimeMillis;
+              const result = yield* effect;
+              const heldMs = (yield* Clock.currentTimeMillis) - acquiredAt;
+              if (heldMs >= CLAUDE_SDK_MESSAGE_LOCK_SLOW_MS) {
+                yield* Effect.logWarning("orchestration-v2.claude-sdk-message-lock-slow", {
+                  ...holder,
+                  heldMs,
+                });
+              }
+              return result;
+            }),
+          );
         // Members can finish after the launching turn; retain state to emit each transition once.
         const workflowMemberStates = yield* Ref.make(
           new Map<
@@ -5438,6 +5460,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           nativeThreadId: string,
         ): Set<string> => all.get(nativeThreadId) ?? new Set<string>();
 
+        const withTaskIdSetForNativeThread = (
+          all: ReadonlyMap<string, Set<string>>,
+          nativeThreadId: string,
+          taskIds: Set<string>,
+        ): Map<string, Set<string>> => {
+          const updated = new Map(all);
+          if (taskIds.size === 0) updated.delete(nativeThreadId);
+          else updated.set(nativeThreadId, taskIds);
+          return updated;
+        };
+
         const addTaskIdsToNativeThreadSet = (
           ref: Ref.Ref<Map<string, Set<string>>>,
           nativeThreadId: string,
@@ -5470,13 +5503,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             const next = new Set(existing);
             next.delete(taskId);
-            const updated = new Map(current);
-            if (next.size === 0) {
-              updated.delete(nativeThreadId);
-            } else {
-              updated.set(nativeThreadId, next);
-            }
-            return updated;
+            return withTaskIdSetForNativeThread(current, nativeThreadId, next);
           });
 
         const clearNativeThreadTaskIdSet = (
@@ -5663,10 +5690,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               if (awaited === undefined) return current;
               const kept = new Set([...awaited].filter((taskId) => listed.has(taskId)));
               if (kept.size === awaited.size) return current;
-              const updated = new Map(current);
-              if (kept.size === 0) updated.delete(nativeThreadId);
-              else updated.set(nativeThreadId, kept);
-              return updated;
+              return withTaskIdSetForNativeThread(current, nativeThreadId, kept);
             });
           });
 
@@ -10973,7 +10997,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* Ref.set(queryContext, context);
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
-              sdkMessageLock.withPermits(1)(
+              withSdkMessageLock(
+                {
+                  holder: "sdk-frame",
+                  frameType: message.type,
+                  frameSubtype: "subtype" in message ? message.subtype : undefined,
+                },
                 Effect.suspend(() => {
                   if (
                     message.type === "system" &&
@@ -11248,7 +11277,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return;
             }
             // Transcript reads suspend replay; hold SDK frames until the buffer is applied to preserve order.
-            yield* sdkMessageLock.withPermits(1)(
+            yield* withSdkMessageLock(
+              { holder: "wake-replay", nativeThreadId },
               Effect.gen(function* () {
                 if (
                   (yield* Ref.get(queryContext))?.query !== querySession.query ||
@@ -11340,7 +11370,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 } else if (!context.nativeWakeStarted) {
                   yield* Effect.sleep(CLAUDE_WAKE_TURN_START_DEADLINE).pipe(
                     Effect.andThen(
-                      sdkMessageLock.withPermits(1)(
+                      withSdkMessageLock(
+                        { holder: "wake-start-deadline", nativeThreadId },
                         Effect.gen(function* () {
                           if (
                             (yield* Ref.get(activeTurn)) !== context ||
@@ -11885,43 +11916,36 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }) {
             const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
             if (nativeThreadId == null) return { matched: [] };
-            const matchRoster = Effect.gen(function* () {
+            // Match and mark in one step against the live roster: frames drop a task from the
+            // roster before its mark, so a mark never outlives its task.
+            const matched = yield* Ref.modify(awaitedBackgroundTasksByNativeThread, (current) => {
               const roster = rosterForNativeThread(
-                yield* Ref.get(pendingBackgroundTasksByNativeThread),
+                Ref.getUnsafe(pendingBackgroundTasksByNativeThread),
                 nativeThreadId,
               );
-              return [...new Set(taskIds)].filter((taskId) => roster.has(taskId));
+              const ids = [...new Set(taskIds)].filter((taskId) => roster.has(taskId));
+              const existing = taskIdSetForNativeThread(current, nativeThreadId);
+              const next = new Set(existing);
+              for (const taskId of ids) {
+                if (awaited) next.add(taskId);
+                else next.delete(taskId);
+              }
+              if (next.size === existing.size) return [ids, current] as const;
+              return [ids, withTaskIdSetForNativeThread(current, nativeThreadId, next)] as const;
             });
-            // Ids that match nothing change nothing, so they must not queue behind a long SDK frame.
-            if ((yield* matchRoster).length === 0) return { matched: [] };
-            // The roster can change while the lock is awaited, so match again under it.
-            return yield* sdkMessageLock.withPermits(1)(
+            if (matched.length === 0) return { matched };
+            // The roster event stays ordered with frames, but the caller does not wait for them.
+            yield* withSdkMessageLock(
+              { holder: "background-wait-roster", nativeThreadId },
               Effect.gen(function* () {
-                const matched = yield* matchRoster;
-                if (matched.length === 0) return { matched };
-                if (awaited) {
-                  yield* addTaskIdsToNativeThreadSet(
-                    awaitedBackgroundTasksByNativeThread,
-                    nativeThreadId,
-                    matched,
-                  );
-                } else {
-                  for (const taskId of matched) {
-                    yield* clearTaskIdFromNativeThreadSet(
-                      awaitedBackgroundTasksByNativeThread,
-                      nativeThreadId,
-                      taskId,
-                    );
-                  }
-                }
                 const active = yield* Ref.get(activeTurn);
                 yield* emitRosterUpdate(
                   nativeThreadId,
                   active?.nativeThreadId === nativeThreadId ? active : null,
                 );
-                return { matched };
               }),
-            );
+            ).pipe(Effect.forkIn(sessionScope));
+            return { matched };
           }),
           interruptTurn,
           stopSubagent: Effect.fn("ClaudeAdapterV2.stopSubagent")(function* (input) {
