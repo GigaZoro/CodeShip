@@ -21,6 +21,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   formatLastRunAgo,
+  formatScheduledTaskRunTime,
   formatTimeAgo,
   pinnedTaskRunThreadId,
   resolveScheduledTaskPlacement,
@@ -174,7 +175,6 @@ import {
   formatNextScheduledTaskRun,
   formatRunAtDate,
   formatRunAtTime,
-  formatScheduledTaskRunTime,
   formatScheduledTaskTime as formatTime,
   isWeekdaysRepeat,
   repeatLabel,

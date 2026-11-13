@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { formatScheduledTaskRunTime } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
   peerNoWorkText,
   runCheckText,
@@ -26,7 +27,6 @@ import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail"
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
-import { formatScheduledTaskRunTime } from "./scheduledTaskPresentation";
 
 /** Opens a run's thread the way the pull request pages do: Android shows one page at a time. */
 export function useOpenScheduledTaskThread() {

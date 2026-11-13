@@ -58,18 +58,12 @@ export function shownNoWorkSkip(
   return task.lastRunAt !== null && Date.parse(task.lastRunAt) >= Date.parse(skip.at) ? null : skip;
 }
 
-/** A task row's line for a skipped occurrence; `when` is the row's own relative time, such as "5m ago". */
+/** A task row's line for a skipped occurrence; `when` is a time, such as "5m ago" or "Nov 12, 3:00 PM". */
 export function noWorkSkipText(skip: ScheduledTaskNoWorkSkip, when: string): string {
   const reason = skip.reason?.trim() ?? "";
   return reason === ""
     ? t("Skipped {when}", { when })
     : t("Skipped {when}: {reason}", { when, reason });
-}
-
-/** A row's screen-reader words for a skipped occurrence. It names no time, so the label never goes stale. */
-export function noWorkSkipLabel(skip: ScheduledTaskNoWorkSkip): string {
-  const reason = skip.reason?.trim() ?? "";
-  return reason === "" ? t("Last run skipped") : t("Last run skipped: {reason}", { reason });
 }
 
 /** Run history's line for a one-machine occurrence that another machine's check skipped. */

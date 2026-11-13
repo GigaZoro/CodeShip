@@ -26,18 +26,21 @@ import {
   collectPinnedTasks,
   formatLastRunAgo,
   formatNextRunCountdown,
-  formatNextRunIn,
-  formatTimeAgo,
   holdPinOrder,
   intervalWaitProgress,
   pinnedTaskKey,
+  pinnedTaskRowStatus,
   pinnedTaskRunThreadId,
+  pinnedTaskSkippedText,
+  pinnedTaskStatusLabel,
+  pinnedTaskTimingText,
   planPinnedTaskMove,
   resolvePinnedTaskStatus,
   type HeldPinOrder,
   resolveScheduledTaskPlacement,
   scheduledTaskPlacementOptions,
   scheduledTaskHiddenThreadKeys,
+  type PinnedTaskRowStatus,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
@@ -50,7 +53,6 @@ import type {
   EnvironmentId,
   EnvironmentMachineKind,
   ScheduledTask,
-  ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
   ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -78,11 +80,6 @@ import {
   type ReactNode,
 } from "react";
 
-import {
-  noWorkSkipLabel,
-  noWorkSkipText,
-  shownNoWorkSkip,
-} from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { useNowSecond } from "../../hooks/useNowSecond";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import {
@@ -157,7 +154,6 @@ const STATUS_ICON: Record<Exclude<PinnedTaskStatus, "idle">, typeof CircleDashed
 function pinnedTaskStatusDisplay(status: Exclude<PinnedTaskStatus, "idle">) {
   const display = THREAD_STATUS_DISPLAY[status];
   return {
-    label: display.label,
     icon: STATUS_ICON[status],
     className: THREAD_ROW_TONE_CLASS[display.tone],
   };
@@ -184,20 +180,16 @@ function NextRunCountdown(props: { nextRunAt: string }) {
   );
 }
 
-function NextRunIn(props: { nextRunAt: string }) {
-  return <>{formatNextRunIn(props.nextRunAt, useNowSecond())}</>;
-}
-
 function LastRunAgo(props: { lastRunAt: string }) {
   return <>{formatLastRunAgo(props.lastRunAt, useNowSecond())}</>;
 }
 
-function TimeAgo(props: { at: string }) {
-  return <>{formatTimeAgo(props.at, useNowSecond())}</>;
+function TimingText(props: { timing: NonNullable<PinnedTaskRowStatus["timing"]> }) {
+  return <>{pinnedTaskTimingText(props.timing, useNowSecond(), "short")}</>;
 }
 
-function NoWorkSkipAgo(props: { skip: ScheduledTaskNoWorkSkip }) {
-  return <>{noWorkSkipText(props.skip, formatTimeAgo(props.skip.at, useNowSecond()))}</>;
+function SkippedText(props: { skipped: NonNullable<PinnedTaskRowStatus["skipped"]> }) {
+  return <>{pinnedTaskSkippedText(props.skipped, useNowSecond())}</>;
 }
 
 function PinnedTaskDetail(props: { icon: typeof CalendarClockIcon; children: ReactNode }) {
@@ -273,15 +265,15 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
           runtimeStatus: runThread.runtime?.status ?? null,
         },
   );
-  const display = status === "idle" ? null : pinnedTaskStatusDisplay(status);
+  const rowStatus = pinnedTaskRowStatus(task, status);
+  const display =
+    rowStatus.run === null
+      ? null
+      : { ...pinnedTaskStatusDisplay(rowStatus.run.status), text: rowStatus.run.text };
   const isActive = runThreadRef !== null && scopedThreadKey(runThreadRef) === props.routeThreadKey;
-  const noWorkSkip = shownNoWorkSkip(task);
   const accessibility = resolveSidebarRowAccessibility({
     title: task.title,
-    statusLabel:
-      [display ? t(display.label) : null, noWorkSkip === null ? null : noWorkSkipLabel(noWorkSkip)]
-        .filter(Boolean)
-        .join(", ") || null,
+    statusLabel: pinnedTaskStatusLabel(rowStatus),
     projectDisplayName:
       [props.projectDisplayName, props.machineLabel].filter(Boolean).join(", ") || null,
     isActive,
@@ -419,20 +411,16 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
     display !== null && StatusIcon !== undefined ? (
       <span className={cn("inline-flex items-center gap-1 text-xs font-medium", display.className)}>
         <StatusIcon aria-hidden className="size-3 shrink-0" />
-        {t(display.label)}
+        {display.text}
         {status === "working" && runThread !== null ? (
           <span aria-hidden className="font-normal">
             <WorkingDuration startedAt={resolveWorkingStartedAt(runThread)} />
           </span>
         ) : null}
       </span>
-    ) : task.enabled && task.nextRunAt !== null ? (
+    ) : rowStatus.timing !== null ? (
       <span className="text-xs">
-        <NextRunIn nextRunAt={task.nextRunAt} />
-      </span>
-    ) : task.lastRunAt !== null ? (
-      <span className="text-xs">
-        <TimeAgo at={task.lastRunAt} />
+        <TimingText timing={rowStatus.timing} />
       </span>
     ) : null;
   const row = (
@@ -521,9 +509,9 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
                 <LastRunAgo lastRunAt={task.lastRunAt} />
               </PinnedTaskDetail>
             ) : null}
-            {noWorkSkip !== null ? (
+            {rowStatus.skipped !== null ? (
               <PinnedTaskDetail icon={HistoryIcon}>
-                <NoWorkSkipAgo skip={noWorkSkip} />
+                <SkippedText skipped={rowStatus.skipped} />
               </PinnedTaskDetail>
             ) : null}
             {props.projectDisplayName !== null ? (

@@ -3,14 +3,17 @@ import type { MenuAction } from "@react-native-menu/menu";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   collectPinnedTasks,
-  formatLastRunAgo,
-  formatNextRunCountdown,
   intervalWaitProgress,
+  pinnedTaskRowStatus,
   pinnedTaskRunThreadId,
+  pinnedTaskSkippedText,
+  pinnedTaskStatusLabel,
+  pinnedTaskTimingText,
   resolvePinnedTaskStatus,
   resolveScheduledTaskPlacement,
   scheduledTaskHiddenThreadKeys,
   scheduledTaskPlacementOptions,
+  type PinnedTaskRowStatus,
   type PinnedTaskStatus,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
@@ -46,11 +49,7 @@ import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { startScheduledTaskEditor } from "../settings/scheduled-task-editor-state";
 import { editDraft } from "../settings/scheduledTaskDraft";
-import {
-  noWorkSkipLabel,
-  shownNoWorkSkip,
-} from "@t3tools/client-runtime/scheduled-task-run-condition";
-import { describeSchedule, formatNoWorkSkip } from "../settings/scheduledTaskPresentation";
+import { describeSchedule } from "../settings/scheduledTaskPresentation";
 import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
 import {
   THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
@@ -113,28 +112,17 @@ function WorkingDuration(props: { readonly thread: EnvironmentThreadShell }) {
 }
 
 // Ticks once a second while the list is on screen, so only these views re-render.
-function NextRunCountdown(props: { readonly nextRunAt: string }) {
-  return formatNextRunCountdown(props.nextRunAt, useVisibleSecondClock(true));
+function TimingText(props: { readonly timing: NonNullable<PinnedTaskRowStatus["timing"]> }) {
+  return pinnedTaskTimingText(props.timing, useVisibleSecondClock(true), "long");
 }
 
-function LastRunAgo(props: { readonly lastRunAt: string }) {
-  return formatLastRunAgo(props.lastRunAt, useVisibleSecondClock(true));
-}
-
-function NoWorkSkipLine(props: { readonly task: ScheduledTask; readonly className: string }) {
-  if (shownNoWorkSkip(props.task) === null) return null;
-  return <TickingNoWorkSkipLine {...props} />;
-}
-
-function TickingNoWorkSkipLine(props: {
-  readonly task: ScheduledTask;
+function SkippedLine(props: {
+  readonly skipped: NonNullable<PinnedTaskRowStatus["skipped"]>;
   readonly className: string;
 }) {
-  const text = formatNoWorkSkip(props.task, useVisibleSecondClock(true));
-  if (text === null) return null;
   return (
     <Text className={cn("mt-0.5 text-xs", props.className)} numberOfLines={1}>
-      {text}
+      {pinnedTaskSkippedText(props.skipped, useVisibleSecondClock(true))}
     </Text>
   );
 }
@@ -182,8 +170,11 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           runtimeStatus: runThread.runtime?.status ?? null,
         },
   );
-  const display = status === "idle" ? null : STATUS_DISPLAY[status];
-  const noWorkSkip = shownNoWorkSkip(task);
+  const rowStatus = pinnedTaskRowStatus(task, status);
+  const display =
+    rowStatus.run === null
+      ? null
+      : { ...STATUS_DISPLAY[rowStatus.run.status], text: rowStatus.run.text };
   const canOperate = useAtomValue(
     serverEnvironment.setScheduledTaskPlacement.permissionAtom(environmentId),
   );
@@ -283,7 +274,7 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
               type="monochrome"
             />
             <Text className={cn("text-xs font-t3-medium tabular-nums", display.className)}>
-              {t(display.label)}
+              {display.text}
               {status === "working" && runThread !== null ? (
                 <WorkingDuration thread={runThread} />
               ) : null}
@@ -297,15 +288,10 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           numberOfLines={1}
         >
           {describeSchedule(task)}
-          {task.enabled && task.nextRunAt !== null ? (
+          {rowStatus.timing !== null ? (
             <>
               {" · "}
-              <NextRunCountdown nextRunAt={task.nextRunAt} />
-            </>
-          ) : task.lastRunAt !== null ? (
-            <>
-              {" · "}
-              <LastRunAgo lastRunAt={task.lastRunAt} />
+              <TimingText timing={rowStatus.timing} />
             </>
           ) : null}
         </Text>
@@ -318,7 +304,9 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           </Text>
         ) : null}
       </View>
-      <NoWorkSkipLine task={task} className={appearance.mutedForegroundClassName} />
+      {rowStatus.skipped !== null ? (
+        <SkippedLine skipped={rowStatus.skipped} className={appearance.mutedForegroundClassName} />
+      ) : null}
       {status === "idle" || status === "failed" ? <IntervalWaitBar task={task} /> : null}
     </>
   );
@@ -334,8 +322,8 @@ const PinnedTaskRow = memo(function PinnedTaskRow(props: {
           accessibilityRole="button"
           accessibilityLabel={[
             task.title,
-            display ? t(display.label) : null,
-            noWorkSkip === null ? null : noWorkSkipLabel(noWorkSkip),
+            pinnedTaskStatusLabel(rowStatus),
+            describeSchedule(task),
             props.machineLabel,
           ]
             .filter(Boolean)

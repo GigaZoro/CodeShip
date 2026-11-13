@@ -1,3 +1,8 @@
+## 2026-11-13 — Screen readers hear every status a pinned task row shows
+
+- A pinned scheduled task in the sidebar, on web, desktop and mobile, now tells a screen reader when it runs next or last ran, alongside its run status and a skipped run with its reason. Before, the row showed "in 2h" or "5m ago" but its spoken label left the time out. The spoken label names the date and time, such as "Next run Nov 13, 3:00 PM", so it stays right while the row stays on screen.
+- On mobile the spoken label also names the task's schedule, which the row shows under its title.
+
 ## 2026-11-13 — An account that works again stops being marked limited, and its stopped chats continue
 
 - A Claude or Codex account stayed marked as usage-limited, and new threads, delegates and Auto avoided it, while runs on it were working again. Only a run that had finished cleared the hold, so a long run that started fine after the limit kept it until it ended or the five-hour hold ran out. A run on that account that started after the refusal now clears the hold as soon as it gets an answer. A refusal that is still true keeps holding the account.

@@ -1,8 +1,14 @@
-import type { EnvironmentId, ScheduledTask, ScheduledTaskPlacement } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ScheduledTask,
+  ScheduledTaskNoWorkSkip,
+  ScheduledTaskPlacement,
+} from "@t3tools/contracts";
 
-import { msg, t, type Message } from "@t3tools/shared/i18n";
+import { getFormattingLocale, msg, t, type Message } from "@t3tools/shared/i18n";
+import { noWorkSkipText, shownNoWorkSkip } from "./scheduledTaskRunCondition.ts";
 import { planPinnedReorder } from "./state/threadSort.ts";
-import type { ThreadStatus } from "./state/threadStatus.ts";
+import { THREAD_STATUS_DISPLAY, type ThreadStatus } from "./state/threadStatus.ts";
 
 export type PinnedTaskStatus =
   | "starting"
@@ -146,6 +152,106 @@ export function intervalWaitProgress(
   const remainingMs = Date.parse(task.nextRunAt) - nowMs;
   if (Number.isNaN(remainingMs)) return null;
   return Math.min(1, Math.max(0, 1 - remainingMs / task.schedule.everyMs));
+}
+
+/** A run's start, with the year only when it is not this year's. */
+export function formatScheduledTaskRunTime(iso: string): string {
+  // @effect-diagnostics-next-line globalDate:off - Clients format during render, outside an Effect runtime.
+  const value = new Date(iso);
+  // @effect-diagnostics-next-line globalDate:off - Compared with the viewer's current year.
+  const currentYear = new Date().getFullYear();
+  return value.toLocaleString(getFormattingLocale(), {
+    month: "short",
+    day: "numeric",
+    ...(value.getFullYear() !== currentYear ? { year: "numeric" as const } : {}),
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * Every part of its state a pinned task row shows. Each part carries the words a screen
+ * reader speaks for it, with absolute times, so a label built once never goes stale; the
+ * visible relative times come from `pinnedTaskTimingText` and `pinnedTaskSkippedText`.
+ * A new part needs `spoken` too: `pinnedTaskStatusLabel` speaks every field.
+ */
+export type PinnedTaskRowStatus = {
+  readonly run: {
+    readonly status: Exclude<PinnedTaskStatus, "idle">;
+    readonly text: string;
+    readonly spoken: string;
+  } | null;
+  /** The next run while the task is on and has one, else the last run. */
+  readonly timing: {
+    readonly kind: "next" | "last";
+    readonly at: string;
+    readonly spoken: string;
+  } | null;
+  readonly skipped: { readonly skip: ScheduledTaskNoWorkSkip; readonly spoken: string } | null;
+};
+
+function pinnedTaskRunPart(
+  status: Exclude<PinnedTaskStatus, "idle">,
+): NonNullable<PinnedTaskRowStatus["run"]> {
+  const text = t(THREAD_STATUS_DISPLAY[status].label);
+  return { status, text, spoken: text };
+}
+
+export function pinnedTaskRowStatus(
+  task: Pick<ScheduledTask, "enabled" | "nextRunAt" | "lastRunAt" | "lastNoWorkSkip">,
+  status: PinnedTaskStatus,
+): PinnedTaskRowStatus {
+  const skip = shownNoWorkSkip(task);
+  return {
+    run: status === "idle" ? null : pinnedTaskRunPart(status),
+    timing:
+      task.enabled && task.nextRunAt !== null
+        ? {
+            kind: "next",
+            at: task.nextRunAt,
+            spoken: t("Next run {when}", { when: formatScheduledTaskRunTime(task.nextRunAt) }),
+          }
+        : task.lastRunAt !== null
+          ? {
+              kind: "last",
+              at: task.lastRunAt,
+              spoken: t("Last run {when}", { when: formatScheduledTaskRunTime(task.lastRunAt) }),
+            }
+          : null,
+    skipped:
+      skip === null
+        ? null
+        : { skip, spoken: noWorkSkipText(skip, formatScheduledTaskRunTime(skip.at)) },
+  };
+}
+
+/** The row's screen-reader status: the spoken words of every part it shows, or null for none. */
+export function pinnedTaskStatusLabel(status: PinnedTaskRowStatus): string | null {
+  const parts: ReadonlyArray<{ readonly spoken: string } | null> = Object.values(status);
+  const spoken = parts.flatMap((part) => (part === null ? [] : [part.spoken]));
+  return spoken.length === 0 ? null : spoken.join(", ");
+}
+
+/** The timing part as the row shows it: "next in 2h" or "last run 5m ago", or "in 2h" or "5m ago" when short. */
+export function pinnedTaskTimingText(
+  timing: NonNullable<PinnedTaskRowStatus["timing"]>,
+  nowMs: number,
+  form: "long" | "short",
+): string {
+  if (timing.kind === "next") {
+    return form === "long"
+      ? formatNextRunCountdown(timing.at, nowMs)
+      : formatNextRunIn(timing.at, nowMs);
+  }
+  return form === "long" ? formatLastRunAgo(timing.at, nowMs) : formatTimeAgo(timing.at, nowMs);
+}
+
+/** The skipped part as the row shows it: "Skipped 5m ago: No open PRs". */
+export function pinnedTaskSkippedText(
+  skipped: NonNullable<PinnedTaskRowStatus["skipped"]>,
+  nowMs: number,
+): string {
+  return noWorkSkipText(skipped.skip, formatTimeAgo(skipped.skip.at, nowMs));
 }
 
 const SCHEDULED_TASK_PLACEMENTS = [

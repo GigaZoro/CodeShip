@@ -8,9 +8,12 @@ import {
   formatLastRunAgo,
   formatNextRunCountdown,
   formatNextRunIn,
+  formatScheduledTaskRunTime,
   holdPinOrder,
   intervalWaitProgress,
   pinnedTaskKey,
+  pinnedTaskRowStatus,
+  pinnedTaskStatusLabel,
   resolvePinnedTaskStatus,
   resolveScheduledTaskPlacement,
   scheduledTaskHiddenThreadKeys,
@@ -137,6 +140,62 @@ describe("intervalWaitProgress", () => {
         now,
       ),
     ).toBeNull();
+  });
+});
+
+describe("pinnedTaskStatusLabel", () => {
+  const next = "2026-11-13T15:00:00.000Z";
+  const last = "2026-11-13T09:00:00.000Z";
+  const skippedAt = "2026-11-13T12:00:00.000Z";
+  const at = formatScheduledTaskRunTime;
+  it.each([
+    {
+      name: "a working task speaks its run, next run and skip reason",
+      status: "working" as const,
+      task: {
+        enabled: true,
+        nextRunAt: next,
+        lastRunAt: last,
+        lastNoWorkSkip: { at: skippedAt, scheduledFor: null, reason: "No open PRs" },
+      },
+      expected: `Working, Next run ${at(next)}, Skipped ${at(skippedAt)}: No open PRs`,
+    },
+    {
+      name: "an idle task speaks a skip without a reason",
+      status: "idle" as const,
+      task: {
+        enabled: true,
+        nextRunAt: next,
+        lastRunAt: last,
+        lastNoWorkSkip: { at: skippedAt, scheduledFor: null, reason: null },
+      },
+      expected: `Next run ${at(next)}, Skipped ${at(skippedAt)}`,
+    },
+    {
+      name: "a paused task speaks its last run, not the next one",
+      status: "paused" as const,
+      task: { enabled: false, nextRunAt: next, lastRunAt: last, lastNoWorkSkip: null },
+      expected: `Paused, Last run ${at(last)}`,
+    },
+    {
+      name: "a skip the last run came after is not spoken",
+      status: "failed" as const,
+      task: {
+        enabled: true,
+        nextRunAt: null,
+        lastRunAt: last,
+        lastNoWorkSkip: { at: "2026-11-13T08:00:00.000Z", scheduledFor: null, reason: "Quiet" },
+      },
+      expected: `Failed, Last run ${at(last)}`,
+    },
+    {
+      name: "an idle task that never ran and has no next run speaks nothing",
+      status: "idle" as const,
+      task: { enabled: true, nextRunAt: null, lastRunAt: null, lastNoWorkSkip: null },
+      expected: null,
+    },
+  ])("$name", ({ status, task, expected }) => {
+    expect(pinnedTaskStatusLabel(pinnedTaskRowStatus(task, status))).toBe(expected);
   });
 });
 

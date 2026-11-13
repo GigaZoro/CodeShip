@@ -6683,8 +6683,6 @@ const catalog: MessageCatalog = {
   "Last run {when}. {size} recovered.": "Останній запуск {when}. Звільнено {size}.",
   "Last run failed": "Останній запуск завершився помилкою",
   "Last run failed: {error}": "Останній запуск не вдався: {error}",
-  "Last run skipped": "Останній запуск пропущено",
-  "Last run skipped: {reason}": "Останній запуск пропущено: {reason}",
   "Last run succeeded": "Останній запуск успішний",
   "Last Seen": "Востаннє",
   "last seen {time}": "востаннє в мережі {time}",

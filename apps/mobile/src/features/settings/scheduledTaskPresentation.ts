@@ -131,18 +131,6 @@ export function formatRunAtDate(value: Date): string {
   });
 }
 
-/** A run's start, with the year only when it is not this year's. */
-export function formatScheduledTaskRunTime(iso: string): string {
-  const value = new Date(iso);
-  return value.toLocaleString(getFormattingLocale(), {
-    month: "short",
-    day: "numeric",
-    ...(value.getFullYear() !== new Date().getFullYear() ? { year: "numeric" as const } : {}),
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 export function formatRunAtTime(value: Date): string {
   return value.toLocaleTimeString(getFormattingLocale(), { hour: "numeric", minute: "2-digit" });
 }
