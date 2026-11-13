@@ -1,3 +1,7 @@
+## 2026-11-13 — Manual steps are reviewed by a machine that is connected
+
+- While one of your machines was reconnecting, it could stay the one that reviews **Manual steps**, so every step showed "Could not reach the machine that reads ThreadPage." even though your other machines read ThreadPage fine. Reviews and the chats that carry out your decisions now go to a machine that is connected, and a review that loses its machine says "Could not reach the machine that reviews steps."
+
 ## 2026-11-13 — A chat whose turn failed no longer goes on working without its tools
 
 - When a turn failed on a provider error, such as a Claude API error behind a Cloudflare block page, a notice from the agent's own background work queued behind it was held with your messages. Claude went on acting on such notices anyway, with no turn in the chat, so every T3.CodeShip tool refused it ("The calling provider no longer owns an active thread run") and it was offered no later notices. The notice now starts as the next turn; your own queued messages still wait for you.

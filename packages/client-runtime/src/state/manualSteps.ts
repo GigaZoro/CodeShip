@@ -187,7 +187,8 @@ export type ManualStepsView =
       readonly threadPageIssue?: ManualStepsListFailure | "offline";
       /**
        * The one machine that reviews every ThreadPage step for this user: the lowest environment id
-       * among those that list, serve reviews and let this client ask. Null when there is none.
+       * among those that are connected, list, serve reviews and let this client ask. Null when
+       * there is none.
        */
       readonly reviewEnvironmentId: EnvironmentId | null;
       /** By environment id, so every client picks the same one of two that share a name. */
@@ -221,6 +222,7 @@ export type ManualStepReviewProblem = ManualStepReviewFailure | "offline";
 
 const REVIEW_FAILURE_MESSAGES: Record<ManualStepReviewProblem, Message> = {
   ...FAILURE_MESSAGES,
+  offline: msg("Could not reach the machine that reviews steps."),
   "not-connected": msg("ThreadPage is not connected on the machine that reviews steps."),
   "not-found": msg("This step is no longer waiting in ThreadPage."),
   "generation-failed": msg("The review could not be written. Try again."),
@@ -368,7 +370,7 @@ function detectedEntries(
 
 /**
  * Every client picks the same reviewer by comparing ids, not by catalog order, so a user's
- * clients never review one step on two machines.
+ * clients review a step on one machine while the same machines are connected to them.
  */
 function lowestReviewEnvironmentId(sources: ReadonlyArray<ManualStepsSource>) {
   let lowest: EnvironmentId | null = null;
@@ -483,18 +485,22 @@ interface ManualStepsKey {
   readonly list: ReadonlyArray<EnvironmentId>;
   /** Environments that serve `manualSteps.detected`; older servers do not. */
   readonly detected: ReadonlyArray<EnvironmentId>;
-  /** Environments that serve `manualSteps.review`; older servers do not. */
+  /** Connected environments that serve `manualSteps.review`; older servers do not. */
   readonly reviews: ReadonlyArray<EnvironmentId>;
-  /** Environments that serve `manualSteps.startChat`, with their labels; older servers do not. */
+  /** Connected environments that serve `manualSteps.startChat`, with their labels. */
   readonly chats: ReadonlyArray<ManualStepChatHost>;
 }
 
-/** The key of `view` for the connected servers that serve either list, or null when none does. */
+/**
+ * The key of `view` for the servers that serve either list, or null when none does. A server
+ * that is not connected keeps its last list, but only connected ones review and start chats.
+ */
 export function manualStepsEnvironmentIdsKey(
   serverConfigs: ReadonlyMap<
     EnvironmentId,
     Pick<ServerConfig, "environment" | "scratchWorkspaceRoot">
   >,
+  connectedEnvironmentIds: ReadonlyArray<EnvironmentId>,
 ): string | null {
   const serving = (
     capability: "manualSteps" | "detectedManualSteps" | "manualStepReviews" | "manualStepChats",
@@ -502,18 +508,22 @@ export function manualStepsEnvironmentIdsKey(
     [...serverConfigs]
       .filter(([, config]) => config.environment.capabilities[capability] === true)
       .map(([environmentId]) => environmentId);
+  const connected = (environmentId: EnvironmentId) =>
+    connectedEnvironmentIds.includes(environmentId);
   const key: ManualStepsKey = {
     list: serving("manualSteps"),
     detected: serving("detectedManualSteps"),
-    reviews: serving("manualStepReviews"),
+    reviews: serving("manualStepReviews").filter(connected),
     // The chat is a thread without a project, which a server whose data sits inside a checkout
     // cannot host.
-    chats: serving("manualStepChats").flatMap((environmentId) => {
-      const config = serverConfigs.get(environmentId);
-      return config?.scratchWorkspaceRoot === undefined
-        ? []
-        : [{ environmentId, machine: config.environment.label }];
-    }),
+    chats: serving("manualStepChats")
+      .filter(connected)
+      .flatMap((environmentId) => {
+        const config = serverConfigs.get(environmentId);
+        return config?.scratchWorkspaceRoot === undefined
+          ? []
+          : [{ environmentId, machine: config.environment.label }];
+      }),
   };
   return key.list.length === 0 && key.detected.length === 0 ? null : JSON.stringify(key);
 }

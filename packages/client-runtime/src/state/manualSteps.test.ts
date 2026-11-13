@@ -128,22 +128,41 @@ describe("manualStepChatHost", () => {
     ).toBe(expected);
   });
 
-  it("offers only machines that serve the chat and have a No project folder", () => {
-    const config = (label: string, manualStepChats: boolean, scratchWorkspaceRoot?: string) =>
-      ({
-        environment: { label, capabilities: { manualSteps: true, manualStepChats } },
-        ...(scratchWorkspaceRoot === undefined ? {} : { scratchWorkspaceRoot }),
-      }) as Parameters<typeof manualStepsEnvironmentIdsKey>[0] extends ReadonlyMap<unknown, infer C>
-        ? C
-        : never;
+  const config = (
+    label: string,
+    capabilities: { readonly manualStepChats?: boolean; readonly manualStepReviews?: boolean },
+    scratchWorkspaceRoot?: string,
+  ) =>
+    ({
+      environment: { label, capabilities: { manualSteps: true, ...capabilities } },
+      ...(scratchWorkspaceRoot === undefined ? {} : { scratchWorkspaceRoot }),
+    }) as Parameters<typeof manualStepsEnvironmentIdsKey>[0] extends ReadonlyMap<unknown, infer C>
+      ? C
+      : never;
+
+  it("offers only connected machines that serve the chat and have a No project folder", () => {
     const key = manualStepsEnvironmentIdsKey(
       new Map([
-        [mac, config("Mac", true, "/home/scratch")],
-        [vps, config("VPS", true)],
-        ["old-env" as EnvironmentId, config("Old", false, "/home/scratch")],
+        [mac, config("Mac", { manualStepChats: true }, "/home/scratch")],
+        [vps, config("VPS", { manualStepChats: true })],
+        ["old-env" as EnvironmentId, config("Old", { manualStepChats: false }, "/home/scratch")],
+        ["pc-env" as EnvironmentId, config("PC", { manualStepChats: true }, "/home/scratch")],
       ]),
+      [mac, vps, "old-env" as EnvironmentId],
     );
     expect(JSON.parse(key ?? "{}").chats).toEqual([{ environmentId: mac, machine: "Mac" }]);
+  });
+
+  it("lets only a connected machine review, so one that reconnects keeps listing but not reviewing", () => {
+    const pc = "pc-env" as EnvironmentId;
+    const key = manualStepsEnvironmentIdsKey(
+      new Map([
+        [pc, config("PC", { manualStepReviews: true })],
+        [vps, config("VPS", { manualStepReviews: true })],
+      ]),
+      [vps],
+    );
+    expect(JSON.parse(key ?? "{}")).toMatchObject({ list: [pc, vps], reviews: [vps] });
   });
 });
 

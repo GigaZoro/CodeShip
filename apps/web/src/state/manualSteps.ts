@@ -20,6 +20,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { randomUUID } from "../lib/utils";
 import { useServerConfigs, useThreadShell } from "./entities";
+import { useConnectedEnvironmentIds } from "./environments";
 import { useAtomCommand } from "./use-atom-command";
 
 const manualStepsEnvironment = createManualStepsEnvironmentAtoms(connectionAtomRuntime);
@@ -36,7 +37,10 @@ export function useManualSteps(): {
   readonly state: ManualStepsState | null;
   readonly refresh: () => void;
 } {
-  const environmentsKey = manualStepsEnvironmentIdsKey(useServerConfigs());
+  const environmentsKey = manualStepsEnvironmentIdsKey(
+    useServerConfigs(),
+    useConnectedEnvironmentIds(),
+  );
   const atom =
     environmentsKey === null ? NO_MANUAL_STEPS_ATOM : manualStepsEnvironment.view(environmentsKey);
   return { state: useAtomValue(atom), refresh: useAtomRefresh(atom) };
