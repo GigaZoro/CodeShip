@@ -7763,6 +7763,128 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("starts a provider wake when a provider failure holds the queue", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("provider-failure-wake");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Wake after a provider failure",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const send = (index: number, text: string, wake = false) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: wake ? "agent" : "user",
+          creationSource: wake ? "provider" : "web",
+          ...(wake
+            ? {
+                notification: {
+                  source: { kind: "monitor" as const },
+                  outcome: "updated" as const,
+                  summary: "Background command completed",
+                },
+              }
+            : {}),
+          commandId: CommandId.make(`${threadId}:message:${index}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${index}`),
+          text,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      yield* send(0, "Active");
+      yield* send(1, "Queued by the user");
+      yield* send(2, "Background command completed.", true);
+      const [active, queued, wake] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+      ];
+      assert.isNotNull(active.rootNodeId);
+      const settled = yield* eventSink
+        .stream({ threadId, afterSequence: yield* orchestrator.getThreadEventSequence(threadId) })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === wake.id &&
+              (stored.event.payload.status !== "queued" || stored.event.payload.queueHeld === true),
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:error`),
+            type: "turn-item.updated",
+            threadId,
+            runId: active.id,
+            nodeId: active.rootNodeId,
+            providerInstanceId: active.providerInstanceId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make(`${threadId}:error`),
+              type: "error",
+              threadId,
+              runId: active.id,
+              nodeId: active.rootNodeId,
+              providerThreadId: active.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "failed",
+              title: "Provider failure",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              failure: {
+                class: "provider_error",
+                message: "Failed to authenticate. API Error: 403",
+                code: null,
+                retryable: null,
+              },
+            },
+          },
+          {
+            id: EventId.make(`${threadId}:failed`),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            providerInstanceId: active.providerInstanceId,
+            occurredAt: now,
+            payload: { ...active, status: "failed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      assert.isTrue(Option.isSome(yield* Fiber.join(settled)));
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        after.runs.map((run) => [run.id, run.status, run.queueHeld ?? false]),
+        [
+          [active.id, "failed", false],
+          [queued.id, "queued", true],
+          [wake.id, "starting", false],
+        ],
+      );
+    }),
+  );
+
   it.effect("edits and removes queued runs", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

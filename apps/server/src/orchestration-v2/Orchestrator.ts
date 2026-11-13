@@ -1773,17 +1773,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (storedQueuedRun === undefined) {
         return;
       }
-      const queuedMessage = projection.messages.find(
-        (candidate) => candidate.id === storedQueuedRun.userMessageId,
-      );
-      const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
-      const queuedRun = {
-        ...storedQueuedRun,
-        modelSelection,
-        providerInstanceId: modelSelection.instanceId,
+      const withQueuedModel = (run: OrchestrationV2Run) => {
+        const modelSelection = queuedRunModelSelection(projection, run);
+        return { ...run, modelSelection, providerInstanceId: modelSelection.instanceId };
       };
+      const nextRun = withQueuedModel(storedQueuedRun);
       // A limited provider would fail and consume every waiting message.
-      if (usageLimitHoldsQueue(projection, queuedRun.providerInstanceId)) {
+      if (usageLimitHoldsQueue(projection, nextRun.providerInstanceId)) {
         return;
       }
       // Waits without a hold: lowering the thread's mode starts the queue again.
@@ -1803,29 +1799,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const projectOverride =
         settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
-          queuedRun.providerInstanceId
+          nextRun.providerInstanceId
         ]?.enabled;
-      const machineInstance = Object.hasOwn(
-        settings.providerInstances,
-        queuedRun.providerInstanceId,
-      )
-        ? settings.providerInstances[queuedRun.providerInstanceId]
+      const machineInstance = Object.hasOwn(settings.providerInstances, nextRun.providerInstanceId)
+        ? settings.providerInstances[nextRun.providerInstanceId]
         : undefined;
       const instanceDisabledForProject =
         projectOverride !== undefined
           ? !projectOverride
           : machineInstance !== undefined && !resolveProviderInstanceEnabled(machineInstance);
-      if (
-        worktreeMissing ||
-        instanceDisabledForProject ||
-        (failureClass !== undefined &&
-          failureClass !== "validation_error" &&
-          failedRun?.providerInstanceId === queuedRun.providerInstanceId)
-      ) {
+      const providerFailed =
+        failureClass !== undefined &&
+        failureClass !== "validation_error" &&
+        failedRun?.providerInstanceId === nextRun.providerInstanceId;
+      const queueUnusable = worktreeMissing || instanceDisabledForProject;
+      // A buffered wake is a turn the provider already started by itself. Held, that turn has
+      // no run: its tool calls are refused and the provider is offered no further wakes.
+      const wake =
+        providerFailed && !queueUnusable
+          ? queuedRunsInDeliveryOrder(projection)
+              .filter((run) => {
+                const message = projection.messages.find(
+                  (candidate) => candidate.id === run.userMessageId,
+                );
+                return message !== undefined && isBufferedProviderNotification(message);
+              })
+              .map(withQueuedModel)
+              .find((run) => run.providerInstanceId === nextRun.providerInstanceId)
+          : undefined;
+      if (queueUnusable || providerFailed) {
         const now = yield* DateTime.now;
         yield* writeSystemEvents(
           projection.runs
-            .filter((run) => run.status === "queued")
+            .filter((run) => run.status === "queued" && run.id !== wake?.id)
             .map((run) => ({
               type: "run.updated" as const,
               threadId,
@@ -1835,8 +1841,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               payload: withQueueHold(run, true),
             })),
         );
-        return;
+        if (wake === undefined) return;
       }
+      const queuedRun = wake ?? nextRun;
+      const queuedMessage = projection.messages.find(
+        (candidate) => candidate.id === queuedRun.userMessageId,
+      );
       // Move queued ordinals after runs that started while they waited to preserve transcript and checkpoint order.
       // Started runs have prompts; cancelled queued messages do not.
       const newerRunIds = projection.runs

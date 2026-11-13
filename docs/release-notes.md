@@ -1,3 +1,7 @@
+## 2026-11-13 — A chat whose turn failed no longer goes on working without its tools
+
+- When a turn failed on a provider error, such as a Claude API error behind a Cloudflare block page, a notice from the agent's own background work queued behind it was held with your messages. Claude went on acting on such notices anyway, with no turn in the chat, so every T3.CodeShip tool refused it ("The calling provider no longer owns an active thread run") and it was offered no later notices. The notice now starts as the next turn; your own queued messages still wait for you.
+
 ## 2026-11-13 — An account can use its banked reset credits automatically
 
 - Codex and Claude accounts that bank reset credits have a new switch in **Settings → Providers & models**: **Use reset credits automatically**. When a thread stops on that account's usage limit, or Claude holds its turn until the reset, and no other account or model continues it, the server redeems one credit and continues the thread on the same account. Every thread waiting on the account continues on that one credit. A limit that resets within 30 minutes is waited out, nothing is spent while the account's own limits still show room (such as ChatGPT's app limit) or while the account is off for the thread's project, and threads you stopped, snoozed or whose auto-resume you cancelled are left alone. The setting follows the account to your other machines.

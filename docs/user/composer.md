@@ -234,7 +234,9 @@ queues it again, at the end of the queue.
 
 If you stop the agent, queued messages keep their order and are held. After a server
 restart they are held until the interrupted turn resumes and finishes, then they run in
-order; with **Continue threads after restarts** off, they stay held.
+order; with **Continue threads after restarts** off, they stay held. When a turn fails, queued
+messages are held too, but a notice from the agent's own background work still runs, because the
+agent has already started acting on it.
 Press **Resume** in an empty composer to continue. **Resume** also continues a stopped
 run or one that hit a usage limit or lost its connection, even with nothing queued. Sending a new message also resumes the queue, unless it steers a turn that is already
 running. You can edit or remove held messages without starting them.
