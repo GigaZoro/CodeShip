@@ -22,6 +22,10 @@ Uninstalling the service leaves your projects, threads, and settings intact.
 Running `t3 service install` again repairs a service that `t3 service status`
 reports as broken.
 
+A command that starts or restarts the service, such as `t3 up`, returns once
+T3.CodeShip is serving, so `t3 pair` works right after it. When T3.CodeShip has
+not started within 2 minutes, the command says so and names the log to read.
+
 `t3 update` downloads the newest release on your channel and switches `t3`
 and the service to it. Restarting interrupts running agent turns, terminals,
 and remote clients, so it asks first; answer no and the service keeps running

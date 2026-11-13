@@ -85,7 +85,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up with T3 Co
           BootService.BootService,
           BootService.BootService.of({
             status: Effect.succeed(status),
-            withStopped: (operation) => operation,
+            withStopped: () => Effect.die("unexpected withStopped"),
             restart: Effect.sync(() => events.push("restart")).pipe(
               Effect.andThen(
                 Effect.fail(new BootService.BootServiceCommandError({ step: "restart" })),

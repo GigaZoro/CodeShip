@@ -463,6 +463,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     targetEntryPath: runtime.entryPath,
   });
 
+  const replaced = yield* CliService.readServerPublication(input.baseDir);
   // Use today's service manager for the target version. Inside the service it hands off to
   // the target CLI, so stopping this process cannot interrupt the switch.
   let servicePlan: BootService.BootServicePlan | undefined;
@@ -500,6 +501,13 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
       baseDir: input.baseDir,
       keep: [currentVersion, targetVersion],
       references: Option.toArray(Option.flatMapNullishOr(unit, BootService.bootServiceProgramOf)),
+    });
+  }
+  if (servicePlan !== undefined && servicePlan.handedOff !== true && restartService) {
+    yield* CliService.awaitServiceServer({
+      baseDir: input.baseDir,
+      replaced,
+      logPath: servicePlan.logPath,
     });
   }
 

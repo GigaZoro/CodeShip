@@ -1,3 +1,8 @@
+## 2026-11-13 — `t3 up` waits for the restarted server, so `t3 pair` works right after it
+
+- `t3 up --lan` restarted the background service and told you to run `t3 pair` before the server was listening, so `t3 pair` run at once failed with "No running T3.CodeShip server found". `t3 up` now waits until the restarted server serves, and so do `t3 service install`, `t3 service restart`, `t3 update --yes` and `t3 doctor --fix`. Before, only turning on T3 Connect waited.
+- When the server has not started within 2 minutes, these commands say so, name the log to read, and exit with an error instead of reporting success.
+
 ## 2026-11-13 — A scheduled task waits for the network before it gives up on its prompt file
 
 - A scheduled task whose prompt comes from a file in the repository failed when it ran right after the machine woke, because Git could not reach the remote yet. It now waits for the network and reads the file again, on the same delays a chat stopped by a lost connection resumes on. It fails only when the network is not back after 5 minutes, or the read still fails once it is, and **Run history** says which. A missing, empty, binary or too long file still fails at once. The task still runs once: **Run now** reports it as running while it waits, and a task paused or deleted meanwhile does not run.

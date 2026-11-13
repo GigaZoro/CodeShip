@@ -582,7 +582,9 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
 
       control.active = false;
       commands.length = 0;
-      yield* service.withStopped(Effect.sync(() => commands.push("repair")));
+      expect(yield* service.withStopped(Effect.sync(() => commands.push("repair")))).toMatchObject({
+        restarted: true,
+      });
       expect(commands).toEqual([
         "systemctl --user is-enabled t3code.service",
         "systemctl --user is-active t3code.service",
@@ -597,7 +599,9 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       control.active = false;
       control.enabled = false;
       commands.length = 0;
-      yield* service.withStopped(Effect.sync(() => commands.push("repair")));
+      expect(yield* service.withStopped(Effect.sync(() => commands.push("repair")))).toMatchObject({
+        restarted: false,
+      });
       expect(commands).toContain("systemctl --user stop t3code.service");
       expect(commands).not.toContain("systemctl --user restart t3code.service");
       expect(control.active).toBe(false);
@@ -608,7 +612,10 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const otherHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-doctor-other-" });
       const other = yield* makeService(undefined, "1.2.3", otherHome);
       commands.length = 0;
-      expect(yield* other.withStopped(Effect.sync(() => control.active))).toBe(true);
+      expect(yield* other.withStopped(Effect.sync(() => control.active))).toEqual({
+        result: true,
+        restarted: false,
+      });
       expect(commands).toEqual([]);
     }),
   );

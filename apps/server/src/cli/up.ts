@@ -340,6 +340,7 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
       );
     }
   });
+  const replaced = yield* CliService.readServerPublication(baseDir);
   let started = false;
   if (!before.service.supported) {
     yield* printServeCommand("Background service unavailable.");
@@ -369,7 +370,8 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
       yield* printServeCommand(`Service setup failed: ${result.failed}`);
     } else if (result.changed) {
       yield* Console.log(CliService.formatServiceChange(result));
-      started = true;
+      // A handed-off update runs after this session disconnects.
+      started = result.plan.handedOff !== true;
     } else if (restart || (unlinkFailed && before.service.installed)) {
       const confirmed =
         restart ||
@@ -400,7 +402,15 @@ const setUp = Effect.fn("cli.up")(function* (flags: {
       }
     }
   }
-  if (started && routes.connect && !current.connect) yield* waitForReachability();
+  if (started) {
+    // Next steps such as `t3 pair` need the server, not just a started service.
+    yield* CliService.awaitServiceServer({
+      baseDir,
+      replaced,
+      logPath: before.service.logPath,
+    });
+    if (routes.connect && !current.connect) yield* waitForReachability();
+  }
 
   const after = yield* readSetup();
   yield* Console.log(

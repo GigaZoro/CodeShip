@@ -17,11 +17,11 @@ const formatBytes = (bytes: number) =>
       : `${Math.ceil(bytes / 1024)} KiB`;
 
 export const runDoctor = Effect.fn("runDoctor")(function* (
-  databasePath: string,
+  paths: { readonly baseDir: string; readonly dbPath: string },
   options: { readonly fix: boolean; readonly dryRun: boolean; readonly interactive?: boolean },
 ) {
   const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
-  const status = yield* maintenance.inspect(databasePath);
+  const status = yield* maintenance.inspect(paths.dbPath);
   yield* Console.log(
     `Database: ${formatBytes(status.databaseBytes)}, ${formatBytes(status.reclaimableBytes)} reclaimable.`,
   );
@@ -100,11 +100,12 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
   }
   if (selected.includes("database")) {
     const service = yield* BootService.BootService;
+    const replaced = yield* CliService.readServerPublication(paths.baseDir);
     yield* Console.log("\nReclaiming database space. This can take several minutes...");
     // Report the repair before restarting, which can fail independently.
-    yield* service.withStopped(
+    const { restarted } = yield* service.withStopped(
       maintenance
-        .compact(databasePath)
+        .compact(paths.dbPath)
         .pipe(
           Effect.tap((result) =>
             Console.log(
@@ -113,10 +114,14 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
           ),
         ),
     );
+    if (restarted) {
+      const { logPath } = yield* service.status;
+      yield* CliService.awaitServiceServer({ baseDir: paths.baseDir, replaced, logPath });
+    }
   }
   if (selected.includes("legacy")) {
     // Only pre-0.1.0 servers use this file; removal refuses while they hold it open.
-    yield* maintenance.removeLegacyDatabase(databasePath);
+    yield* maintenance.removeLegacyDatabase(paths.dbPath);
     yield* Console.log("\nDeleted the database from before 0.1.0.");
   }
 });
@@ -139,7 +144,7 @@ export const doctorCommand = Command.make("doctor", {
     Effect.gen(function* () {
       const logLevel = yield* GlobalFlag.LogLevel;
       const config = yield* resolveCliAuthConfig(flags, logLevel);
-      yield* runDoctor(config.dbPath, { fix: flags.fix, dryRun: flags.dryRun }).pipe(
+      yield* runDoctor(config, { fix: flags.fix, dryRun: flags.dryRun }).pipe(
         Effect.provide(Layer.merge(DatabaseMaintenance.layer, CliService.layer(config))),
       );
     }),

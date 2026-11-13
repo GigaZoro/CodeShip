@@ -1,12 +1,16 @@
 import * as NodeUtil from "node:util";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
+import * as CliError from "effect/cli/CliError";
 import { FetchHttpClient } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -15,6 +19,11 @@ import * as ServiceProtection from "../cloud/serviceProtection.ts";
 import { compareExactServiceVersions, SERVICE_ENV_FILE } from "../cloud/serviceProtocol.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import {
+  isProcessAlive,
+  readPersistedServerRuntimeState,
+  type PersistedServerRuntimeState,
+} from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { resolveEntryPath } from "./invocation.ts";
 
@@ -85,6 +94,58 @@ export const writeServiceEnv = Effect.fn("cli.service.write_env")(function* (
   yield* fs.writeFileString(current.path, next);
 });
 
+const SERVER_START_WAIT_MINUTES = 2;
+const SERVER_START_POLL = Duration.millis(250);
+
+/** The runtime state last published under `baseDir`, whether or not its server still runs. */
+export const readServerPublication = Effect.fn("cli.service.read_server_publication")(function* (
+  baseDir: string,
+) {
+  // The service never runs the dev variant, so its state is always under userdata.
+  const { serverRuntimeStatePath } = yield* ServerConfig.deriveServerPaths(baseDir, undefined);
+  return Option.getOrUndefined(yield* readPersistedServerRuntimeState(serverRuntimeStatePath));
+});
+
+// Every server start publishes a fresh `ownerId`; older servers differ only by pid and start time.
+const samePublication = (a: PersistedServerRuntimeState, b: PersistedServerRuntimeState) =>
+  a.ownerId === b.ownerId && a.pid === b.pid && a.startedAt === b.startedAt;
+
+/**
+ * Waits for the server a service start launched. Service managers report the start
+ * before the server listens; the server publishes its runtime state once it serves.
+ * A record left by a crashed server is not that server, even if the OS reused its pid.
+ */
+export const awaitServiceServer = Effect.fn("cli.service.await_server")(function* (input: {
+  readonly baseDir: string;
+  /** What `readServerPublication` returned before the start. */
+  readonly replaced: PersistedServerRuntimeState | undefined;
+  readonly logPath: string;
+}) {
+  yield* Console.log("Waiting for T3.CodeShip to start...");
+  const deadline =
+    (yield* Clock.currentTimeMillis) +
+    Duration.toMillis(Duration.minutes(SERVER_START_WAIT_MINUTES));
+  // The deadline is checked between reads, so a record being read when time runs out still counts.
+  while (true) {
+    const published = yield* readServerPublication(input.baseDir);
+    if (
+      published !== undefined &&
+      isProcessAlive(published.pid) &&
+      (input.replaced === undefined || !samePublication(published, input.replaced))
+    ) {
+      break;
+    }
+    if ((yield* Clock.currentTimeMillis) >= deadline) {
+      return yield* new CliError.UserError({
+        cause: "service-start",
+        userMessage: `T3.CodeShip did not start within ${SERVER_START_WAIT_MINUTES} minutes. Run \`t3 service status\` and read the log: ${input.logPath}`,
+      });
+    }
+    yield* Effect.sleep(SERVER_START_POLL);
+  }
+  yield* Console.log("✓ T3.CodeShip is running.");
+});
+
 export const reconcileService = Effect.fn("cli.service.reconcile")(function* (options?: {
   readonly allowDowngrade?: boolean;
   readonly start?: boolean;
@@ -128,6 +189,23 @@ export function formatServiceChange(
   }
   return `Service ${result.previouslyInstalled ? "updated" : "installed"} · t3@${packageJson.version}\nLog: ${result.plan.logPath}`;
 }
+
+/** Installs or updates the service when needed and waits for the server that started. */
+const reconcileAndStart = Effect.fn("cli.service.reconcile_and_start")(function* (options: {
+  readonly allowDowngrade: boolean;
+}) {
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+  const replaced = yield* readServerPublication(baseDir);
+  const result = yield* reconcileService(options);
+  if (result.changed) {
+    yield* Console.log(formatServiceChange(result));
+    // A handed-off update runs after this session disconnects.
+    if (result.plan.handedOff !== true) {
+      yield* awaitServiceServer({ baseDir, replaced, logPath: result.plan.logPath });
+    }
+  }
+  return result;
+});
 
 function formatProtection(
   protection: ServiceProtection.ServiceProtectionState | undefined,
@@ -207,14 +285,13 @@ const serviceInstallCommand = Command.make("install", serviceReconcileFlags).pip
     runServiceCommand(
       flags,
       Effect.gen(function* () {
-        const result = yield* reconcileService({ allowDowngrade: flags.allowDowngrade });
+        const result = yield* reconcileAndStart({ allowDowngrade: flags.allowDowngrade });
         if (!result.changed) {
           yield* Console.log(
             `T3.CodeShip service is already installed with t3@${packageJson.version} (${yield* resolveEntryPath}).`,
           );
           return;
         }
-        yield* Console.log(formatServiceChange(result));
         if (!result.previouslyInstalled) {
           yield* Console.log("Run `t3 up` to choose how your other devices reach it.");
         }
@@ -233,14 +310,12 @@ const serviceUpdateCommand = Command.make("update", serviceReconcileFlags).pipe(
         yield* Console.log(
           "`t3 service update` is deprecated: run `t3 update` to move to a newer release, or `t3 service install` to repair the service. Repairing now.",
         );
-        const result = yield* reconcileService({ allowDowngrade: flags.allowDowngrade });
+        const result = yield* reconcileAndStart({ allowDowngrade: flags.allowDowngrade });
         if (!result.changed) {
           yield* Console.log(
             `T3.CodeShip service is already using t3@${packageJson.version} (${yield* resolveEntryPath}).`,
           );
-          return;
         }
-        yield* Console.log(formatServiceChange(result));
       }),
     ),
   ),
@@ -254,8 +329,10 @@ const serviceRestartCommand = Command.make("restart", projectLocationFlags).pipe
     runServiceCommand(
       flags,
       Effect.gen(function* () {
+        const { baseDir } = yield* ServerConfig.ServerConfig;
         const service = yield* BootService.BootService;
         const status = yield* service.status;
+        const replaced = yield* readServerPublication(baseDir);
         const outcome = yield* service.restart;
         const onVersion =
           status.installedVersion === undefined ? "" : ` on t3@${status.installedVersion}`;
@@ -266,6 +343,9 @@ const serviceRestartCommand = Command.make("restart", projectLocationFlags).pipe
               ? `Queued a restart of the T3.CodeShip service${onVersion}. This session runs inside the service and disconnects when it goes down.\nLogs: ${status.logPath}`
               : "T3.CodeShip service is not installed.",
         );
+        if (outcome === "restarted") {
+          yield* awaitServiceServer({ baseDir, replaced, logPath: status.logPath });
+        }
       }),
     ),
   ),

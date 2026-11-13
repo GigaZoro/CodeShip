@@ -13,6 +13,7 @@ import { afterEach, vi } from "vite-plus/test";
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import { serviceCommand } from "./service.ts";
+import { publishServer } from "./service.testkit.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -29,26 +30,31 @@ const newerServiceStatus = { ...status, current: false, installedVersion: "999.0
 function makeTestService(
   serviceStatus: BootService.BootServiceStatus,
   restartOutcome: "restarted" | "queued" = "restarted",
+  startServer: Effect.Effect<void> = Effect.void,
 ) {
   const installOptions: Array<Parameters<BootService.BootService["Service"]["install"]>[0]> = [];
   const restarts: Array<true> = [];
   const service = BootService.BootService.of({
     status: Effect.succeed(serviceStatus),
-    withStopped: (operation) => operation,
+    withStopped: () => Effect.die("unexpected withStopped"),
     restart: Effect.sync(() => {
       restarts.push(true);
       return serviceStatus.installed ? restartOutcome : "skipped";
     }),
     install: (options) =>
-      Effect.sync(() => {
-        installOptions.push(options);
-        return {
-          program: ["/test/t3/runtime/versions/1.0.0/t3", "__service-launcher"],
-          baseDir: "/test/t3",
-          unitPath: serviceStatus.unitPath,
-          logPath: serviceStatus.logPath,
-        };
-      }),
+      startServer.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            installOptions.push(options);
+            return {
+              program: ["/test/t3/runtime/versions/1.0.0/t3", "__service-launcher"],
+              baseDir: "/test/t3",
+              unitPath: serviceStatus.unitPath,
+              logPath: serviceStatus.logPath,
+            };
+          }),
+        ),
+      ),
     uninstall: Effect.succeed(false),
   });
   return { service, installOptions, restarts };
@@ -100,11 +106,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-cli-test-" });
       yield* fs.writeFileString(`${baseDir}/service.env`, input.env);
-      const { service } = makeTestService({
-        ...status,
-        installed: input.installed,
-        current: false,
-      });
+      const { service } = makeTestService(
+        { ...status, installed: input.installed, current: false },
+        "restarted",
+        publishServer(fs, baseDir),
+      );
       vi.spyOn(BootService, "layer").mockReturnValue(
         Layer.succeed(BootService.BootService, service),
       );

@@ -507,10 +507,15 @@ export class BootService extends Context.Service<
      * Runs the operation with this home's service stopped; other homes are left alone.
      * Restores a previously enabled or loaded service even if stopping failed.
      * The operation's failure takes precedence over a restart failure.
+     * `restarted` says whether the service was started again afterwards.
      */
     readonly withStopped: <A, E, R>(
       operation: Effect.Effect<A, E, R>,
-    ) => Effect.Effect<A, E | BootServiceError, R>;
+    ) => Effect.Effect<
+      { readonly result: A; readonly restarted: boolean },
+      E | BootServiceError,
+      R
+    >;
     readonly uninstall: Effect.Effect<boolean, BootServiceError>;
     readonly status: Effect.Effect<BootServiceStatus, BootServiceError>;
   }
@@ -911,17 +916,22 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
 
   const withStopped = Effect.fn("cloud.boot_service.with_stopped")(function* <A, E, R>(
     operation: Effect.Effect<A, E, R>,
-  ): Effect.fn.Return<A, E | BootServiceError, R> {
-    if (detectedManager === undefined) return yield* operation;
+  ): Effect.fn.Return<
+    { readonly result: A; readonly restarted: boolean },
+    E | BootServiceError,
+    R
+  > {
+    const unmanaged = Effect.map(operation, (result) => ({ result, restarted: false }));
+    if (detectedManager === undefined) return yield* unmanaged;
     const manager = detectedManager;
     const unit = yield* fs.readFileString(unitPath).pipe(Effect.option);
-    if (Option.isNone(unit)) return yield* operation;
+    if (Option.isNone(unit)) return yield* unmanaged;
     const installedBaseDir = bootServiceBaseDirOf(unit.value);
     if (
       installedBaseDir === undefined ||
       path.resolve(installedBaseDir) !== path.resolve(input.baseDir)
     ) {
-      return yield* operation;
+      return yield* unmanaged;
     }
     // `is-active` misses crash-looping systemd units; launchd can be loaded without a pid.
     // Always stop; restore only if previously active, enabled, or loaded,
@@ -941,7 +951,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         : succeeded(
             yield* probe("launchctl", ["print", `gui/${uid}/${BOOT_SERVICE_LAUNCHD_LABEL}`]),
           );
-    return yield* Effect.acquireUseRelease(
+    const result = yield* Effect.acquireUseRelease(
       // Require every stop before repair when restoring, so the server releases the database.
       // Otherwise stops are best-effort; launchd rejects bootout of an unloaded job.
       // A failed stop may still stop the service, so restoration runs either way.
@@ -956,6 +966,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         return Exit.isFailure(exit) ? Effect.ignore(start) : start;
       },
     );
+    return { result, restarted: restore };
   });
 
   const uninstall: BootService["Service"]["uninstall"] = Effect.gen(function* () {

@@ -4,12 +4,15 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Terminal from "effect/Terminal";
+import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/cli";
 import { afterEach, vi } from "vite-plus/test";
@@ -17,6 +20,7 @@ import { afterEach, vi } from "vite-plus/test";
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import { upsertServiceEnv } from "./service.ts";
+import { publishServer } from "./service.testkit.ts";
 import { connectEnabled, planRoutes, upCommand } from "./up.ts";
 
 const none = Option.none<boolean>();
@@ -180,6 +184,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up", (it) => 
     },
     {
       label: "the local network opens",
+      prints: "✓ T3.CodeShip is running.",
       installed: true,
       env: "T3CODE_LAN=false\n",
       args: ["--lan"],
@@ -286,12 +291,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up", (it) => 
           BootService.BootService,
           BootService.BootService.of({
             status: Effect.succeed(status),
-            withStopped: (operation) => operation,
+            withStopped: () => Effect.die("unexpected withStopped"),
             restart: Effect.sync(() => restarts++).pipe(
               Effect.andThen(
                 input.restartFails === true
                   ? Effect.fail(new BootService.BootServiceCommandError({ step: "restart" }))
-                  : Effect.succeed("restarted" as const),
+                  : publishServer(fs, baseDir).pipe(Effect.as("restarted" as const)),
               ),
             ),
             install: () =>
@@ -299,15 +304,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up", (it) => 
                 ? Effect.fail(
                     new BootService.BootServicePrerequisiteError({ problem: "linger-disabled" }),
                   )
-                : Effect.sync(() => {
-                    installs++;
-                    return {
-                      program: ["t3"],
-                      baseDir,
-                      unitPath: status.unitPath,
-                      logPath: status.logPath,
-                    };
-                  }),
+                : publishServer(fs, baseDir).pipe(
+                    Effect.andThen(
+                      Effect.sync(() => {
+                        installs++;
+                        return {
+                          program: ["t3"],
+                          baseDir,
+                          unitPath: status.unitPath,
+                          logPath: status.logPath,
+                        };
+                      }),
+                    ),
+                  ),
             uninstall: Effect.succeed(false),
           }),
         ),
@@ -343,6 +352,83 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up", (it) => 
         restarts: input.restarts,
       });
       expect(yield* fs.readFileString(`${baseDir}/service.env`)).toBe(input.envAfter);
+    }),
+  );
+
+  // regression: `t3 pair` right after `t3 up --lan` found no running server
+  it.effect.each([
+    {
+      // The OS can hand a crashed server's pid to the next start before it publishes.
+      label: "a crashed server's record, whose pid is alive again, is not the restarted server",
+      published: undefined,
+      fails: true,
+    },
+    {
+      label: "a restarted server that got the old server's pid is the restarted server",
+      published: "restarted-server",
+      fails: false,
+    },
+  ])("waits for a new server publication, not a new pid: $label", (input) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-up-test-" });
+      yield* fs.writeFileString(`${baseDir}/service.env`, "T3CODE_LAN=false\n");
+      yield* publishServer(fs, baseDir, "replaced-server");
+      const restarted = yield* Deferred.make<void>();
+      vi.spyOn(BootService, "layer").mockReturnValue(
+        Layer.succeed(
+          BootService.BootService,
+          BootService.BootService.of({
+            status: Effect.succeed(SERVICE),
+            withStopped: () => Effect.die("unexpected withStopped"),
+            restart: (input.published === undefined
+              ? Effect.void
+              : publishServer(fs, baseDir, input.published)
+            ).pipe(
+              Effect.andThen(Deferred.succeed(restarted, undefined)),
+              Effect.as("restarted" as const),
+            ),
+            install: () => Effect.die("unexpected install"),
+            uninstall: Effect.succeed(false),
+          }),
+        ),
+      );
+
+      const up = yield* Command.runWith(upCommand, { version: packageJson.version })([
+        "--base-dir",
+        baseDir,
+        "--lan",
+      ]).pipe(
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.result,
+        Effect.flatMap((result) =>
+          Effect.map(TestConsole.logLines, (lines) => ({ result, lines: lines.map(String) })),
+        ),
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+            Layer.fresh(TestConsole.layer),
+          ),
+        ),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(restarted);
+      yield* TestClock.adjust("2 minutes");
+      const { result, lines } = yield* Fiber.join(up);
+
+      if (input.fails) {
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "UserError",
+            userMessage: expect.stringContaining("did not start within 2 minutes"),
+          },
+        });
+        expect(lines.join("\n")).not.toContain("t3 pair");
+      } else {
+        expect(result._tag).toBe("Success");
+        expect(lines).toContain("✓ T3.CodeShip is running.");
+      }
     }),
   );
 });
