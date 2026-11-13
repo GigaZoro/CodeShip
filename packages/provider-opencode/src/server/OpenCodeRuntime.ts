@@ -41,6 +41,7 @@ import { collectStreamAsString } from "@t3tools/provider-core/server/snapshotPro
 import * as NetService from "@t3tools/shared/Net";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
@@ -651,7 +652,10 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     );
 
     const readyExit = yield* Effect.exit(
-      Deferred.await(readyDeferred).pipe(Effect.timeoutOption(timeoutMs)),
+      Deferred.await(readyDeferred).pipe(
+        Effect.asSome,
+        timeoutAwakeOrElse({ duration: timeoutMs, orElse: () => Effect.succeedNone }),
+      ),
     );
 
     if (Exit.isFailure(readyExit) || Option.isNone(readyExit.value)) {

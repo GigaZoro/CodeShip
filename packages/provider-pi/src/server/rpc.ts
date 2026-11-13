@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
   MAX_TOOL_OUTPUT_IMAGES,
@@ -407,7 +408,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
       Effect.tapError(() => Effect.sync(() => pendingRequests.delete(id))),
     );
     return yield* Effect.raceFirst(Deferred.await(deferred), Deferred.await(transportDown)).pipe(
-      Effect.timeoutOrElse({
+      timeoutAwakeOrElse({
         duration: Duration.millis(timeoutMs),
         orElse: () =>
           Effect.fail(

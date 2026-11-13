@@ -25,6 +25,7 @@ import {
 } from "@t3tools/contracts";
 import type { MuseSettings } from "../settings.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -384,10 +385,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               cause,
             ),
         }).pipe(
-          Effect.timeout(options.requestTimeoutMs ?? 30_000),
-          Effect.catchTags({
+          timeoutAwakeOrElse({
+            duration: options.requestTimeoutMs ?? 30_000,
             // The enclosing operation owns the span for this inline handler.
-            TimeoutError: Effect.fnUntraced(function* (cause) {
+            orElse: Effect.fnUntraced(function* () {
+              const cause = new Cause.TimeoutError();
               yield* eventPermit.withPermits(1)(failHost(cause));
               return yield* protocolError(`Muse ${method} timed out; its host was closed`, cause);
             }),

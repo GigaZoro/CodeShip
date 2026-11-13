@@ -30,6 +30,7 @@ import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { AgentScope, AgentScopeThreadId, RAISE_OOM_SCORE_LINE } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { redactProviderOutput } from "@t3tools/provider-core/server/providerOutput";
@@ -1967,19 +1968,18 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
             Fiber.join(idleFiber),
           ).pipe(
             Effect.ensuring(Fiber.interrupt(idleFiber).pipe(Effect.ignore)),
-            Effect.timeoutOption(sessionLoadTimeout),
-            Effect.flatMap((result) =>
-              Effect.fromOption(
-                result,
-                () =>
+            timeoutAwakeOrElse({
+              duration: sessionLoadTimeout,
+              orElse: () =>
+                Effect.fail(
                   new EffectAcpErrors.AcpTransportError({
                     operation: "call-rpc",
                     method: "session/load",
                     detail: "session/load timed out waiting for RPC response or replay idle gap",
                     cause: undefined,
                   }),
-              ),
-            ),
+                ),
+            }),
             Effect.tap((result) =>
               logRequest({
                 method: "session/load",
