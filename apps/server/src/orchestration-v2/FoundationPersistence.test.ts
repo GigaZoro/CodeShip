@@ -2507,7 +2507,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       );
 
       yield* Effect.gen(function* () {
-        yield* EffectWorker.runDaemonWithOptions({ concurrency: 2 }).pipe(Effect.forkScoped);
+        // Provider starts may hold all but one worker, so two of them need three.
+        yield* EffectWorker.runDaemonWithOptions({ concurrency: 3 }).pipe(Effect.forkScoped);
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
         yield* outbox.enqueue([
@@ -2630,34 +2631,130 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
-  it.effect("holds pending titles at the running-title cap without waking idle workers", () =>
+  it.effect("starts a resent run while slow provider starts on other threads are running", () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const cap = { maxRunningTitleGenerations: 1 };
-      const title = (name: string) => ({
-        id: `effect:foundation-title-cap:${name}`,
-        commandId: CommandId.make(`command:foundation-title-cap:${name}`),
-        threadId: ThreadId.make(`thread:foundation-title-cap:${name}`),
-        request: { type: "thread-title.generate" as const, kind: { type: "regenerate" as const } },
-      });
-      yield* outbox.enqueue([title("first"), title("second")]);
-      const first = yield* outbox.claimNext({ workerId: "title-cap-worker", ...cap });
-      assert.strictEqual(Option.getOrUndefined(first)?.id, title("first").id);
-
-      assert.isTrue(
-        Option.isNone(yield* outbox.claimNext({ workerId: "title-cap-worker", ...cap })),
+      const commandId = CommandId.make("command:foundation-start-starvation");
+      const threadIds = ["a", "b", "c", "d", "resent"].map((suffix) =>
+        ThreadId.make(`thread:foundation-start-starvation:${suffix}`),
       );
-      assert.isTrue(
-        Option.isNone(yield* outbox.nextClaimableAt(cap)),
-        "a capped title must not report a past deadline, or idle workers re-poll every 25 ms",
+      const started = yield* Ref.make(0);
+      const allStarted = yield* Deferred.make<void>();
+      const releaseStarts = yield* Deferred.make<void>();
+      const layerWorker = EffectWorker.layerWithOptions({
+        workerId: "start-starvation-worker",
+      }).pipe(
+        Layer.provide(
+          Layer.merge(
+            Layer.succeed(EffectOutbox.EffectOutboxV2, outbox),
+            Layer.succeed(
+              EffectWorker.OrchestrationEffectExecutorV2,
+              EffectWorker.OrchestrationEffectExecutorV2.of({
+                execute: () =>
+                  Ref.updateAndGet(started, (count) => count + 1).pipe(
+                    Effect.flatMap((count) =>
+                      count === threadIds.length
+                        ? Deferred.succeed(allStarted, undefined)
+                        : Effect.void,
+                    ),
+                    Effect.andThen(Deferred.await(releaseStarts)),
+                  ),
+              }),
+            ),
+          ),
+        ),
       );
-      assert.isTrue(Option.isSome(yield* outbox.nextClaimableAt()));
 
-      yield* outbox.succeed({ effectId: title("first").id, workerId: "title-cap-worker" });
-      const second = yield* outbox.claimNext({ workerId: "title-cap-worker", ...cap });
-      assert.strictEqual(Option.getOrUndefined(second)?.id, title("second").id);
-      yield* outbox.succeed({ effectId: title("second").id, workerId: "title-cap-worker" });
+      yield* Effect.gen(function* () {
+        yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        yield* outbox.enqueue(
+          threadIds.map((threadId, index) => ({
+            id: `effect:foundation-start-starvation:${index}`,
+            commandId,
+            threadId,
+            request: {
+              type: "provider-turn.start" as const,
+              runId: RunId.make(`run:foundation-start-starvation:${index}`),
+            },
+          })),
+        );
+        yield* outbox.notifyAvailable(threadIds.length);
+
+        const waited = yield* Deferred.await(allStarted).pipe(
+          Effect.timeoutOption(Duration.seconds(1)),
+          Effect.forkScoped,
+        );
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.isTrue(
+          Option.isSome(yield* Fiber.join(waited)),
+          `only ${yield* Ref.get(started)} of ${threadIds.length} provider starts ran: slow starts held every effect worker`,
+        );
+
+        yield* Deferred.succeed(releaseStarts, undefined);
+        yield* Effect.forEach(threadIds, (_, index) =>
+          outbox.awaitSettled(`effect:foundation-start-starvation:${index}`),
+        );
+      }).pipe(Effect.provide(layerWorker), Effect.scoped);
     }),
+  );
+
+  it.effect(
+    "keeps titles out of the worker slow effects leave free, letting only a provider start take it",
+    () =>
+      Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const cap = { maxRunningSlowEffects: 2 };
+        const title = {
+          type: "thread-title.generate" as const,
+          kind: { type: "regenerate" as const },
+        };
+        const start = { type: "provider-turn.start" as const, runId: RunId.make("run:slow-cap") };
+        const effect = (
+          name: string,
+          request: typeof title | typeof start | { readonly type: "terminal.cleanup" },
+        ) => ({
+          id: `effect:foundation-slow-cap:${name}`,
+          commandId: CommandId.make(`command:foundation-slow-cap:${name}`),
+          threadId: ThreadId.make(`thread:foundation-slow-cap:${name}`),
+          request,
+        });
+        const claim = outbox
+          .claimNext({ workerId: "slow-cap-worker", ...cap })
+          .pipe(Effect.map((claimed) => Option.getOrUndefined(claimed)?.id));
+        const succeed = (name: string) =>
+          outbox.succeed({
+            effectId: `effect:foundation-slow-cap:${name}`,
+            workerId: "slow-cap-worker",
+          });
+        yield* outbox.enqueue([
+          effect("1-title", title),
+          effect("2-start", start),
+          effect("3-start", start),
+          effect("4-title", title),
+          effect("5-start", start),
+        ]);
+        assert.strictEqual(yield* claim, "effect:foundation-slow-cap:1-title");
+        assert.strictEqual(yield* claim, "effect:foundation-slow-cap:2-start");
+        assert.strictEqual(yield* claim, "effect:foundation-slow-cap:3-start");
+
+        assert.isUndefined(yield* claim);
+        assert.isTrue(
+          Option.isNone(yield* outbox.nextClaimableAt(cap)),
+          "a capped effect must not report a past deadline, or idle workers re-poll every 25 ms",
+        );
+        assert.isTrue(Option.isSome(yield* outbox.nextClaimableAt()));
+        yield* outbox.enqueue([effect("6-cleanup", { type: "terminal.cleanup" })]);
+        assert.strictEqual(yield* claim, "effect:foundation-slow-cap:6-cleanup");
+
+        yield* succeed("2-start");
+        assert.strictEqual(yield* claim, "effect:foundation-slow-cap:5-start");
+        yield* succeed("1-title");
+        assert.isUndefined(yield* claim);
+        yield* succeed("3-start");
+        assert.strictEqual(yield* claim, "effect:foundation-slow-cap:4-title");
+        yield* Effect.forEach(["4-title", "5-start", "6-cleanup"], succeed);
+      }),
   );
 
   it.effect("does not reclaim a running effect after its process-local lease expires", () =>

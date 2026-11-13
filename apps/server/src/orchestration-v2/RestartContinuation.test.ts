@@ -1103,6 +1103,37 @@ it.effect("continues a resumed queued run that ran after an earlier continuation
   }),
 );
 
+it.effect("tells a resumed parent the ids of the delegated tasks its cut turn started", () =>
+  Effect.gen(function* () {
+    const texts = yield* continuationTexts({
+      ...cutMidTurn(),
+      subagents: [
+        {
+          id: NodeId.make("node:delegated-task:cut"),
+          runId,
+          origin: "app_owned",
+          childThreadId: ThreadId.make("thread:delegated-task:cut"),
+          title: "Fix the build",
+          prompt: "Fix the failing build.",
+          status: "running",
+        },
+        {
+          id: NodeId.make("node:native"),
+          runId,
+          origin: "provider_native",
+          childThreadId: null,
+          title: "Explore",
+          prompt: "Explore.",
+          status: "running",
+        },
+      ],
+    } as unknown as OrchestrationV2ThreadProjection);
+    assert.deepEqual(texts, [
+      `Note: that turn started these delegated tasks. Use their ids with task_status or task_cancel instead of delegating them again:\n- Fix the build: taskId node:delegated-task:cut, childThreadId thread:delegated-task:cut, running\n\n${CONTINUE_PROMPT}`,
+    ]);
+  }),
+);
+
 it("backs off twice from a continuation the provider never took, then lets it fail", () => {
   const base = makeProjection();
   const failedStart = (id: string, of: RunId) => ({

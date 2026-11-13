@@ -1,9 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import {
   MessageId,
+  NodeId,
   ProviderThreadId,
   RunAttemptId,
   RunId,
+  ThreadId,
   type OrchestrationV2RestartCancelledBackgroundWork as Work,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
@@ -21,6 +23,7 @@ import {
   promptBackgroundWorkNote,
   restartCancelledBackgroundWorkNote,
   restartContinuationNote,
+  restartDelegatedTasksNote,
   mergeRestartCancelledBackgroundWork,
 } from "./RestartBackgroundNote.ts";
 
@@ -281,6 +284,28 @@ it("keeps separate cancelled tasks that share a kind and label", () => {
   assert.lengthOf(mergeRestartCancelledBackgroundWork([legacy], [legacy]), 1);
 });
 
+it("lists the unfinished delegated task a restart cut, however many finished before it", () => {
+  const task = (index: number, status: "completed" | "running") => ({
+    id: NodeId.make(`node:delegated-task:${index}`),
+    childThreadId: ThreadId.make(`thread:delegated-task:${index}`),
+    title: `Task ${index}`,
+    prompt: `Task ${index}`,
+    status,
+  });
+  const finished = Array.from({ length: 10 }, (_, index) => task(index, "completed"));
+  const note = restartDelegatedTasksNote([...finished, task(10, "running")])!.split("\n");
+
+  assert.equal(
+    note[1],
+    "- Task 10: taskId node:delegated-task:10, childThreadId thread:delegated-task:10, running",
+  );
+  assert.equal(
+    note[2],
+    "- Task 9: taskId node:delegated-task:9, childThreadId thread:delegated-task:9, completed",
+  );
+  assert.equal(note.at(-1), "- and 1 more");
+});
+
 it("gives each loss on a run its own notice, listing only the work it adds", () => {
   const now = DateTime.makeUnsafe("2026-11-12T10:00:00.000Z");
   const shell = { kind: "shell" as const, label: "sleep 20", id: "task-1" };
@@ -364,6 +389,7 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
   assert.deepEqual(restartContinuationNote(unstarted, [cut, unstarted], [cutTurn], []), {
     work: lost,
     settled: false,
+    runIds: [unstarted.id, cut.id],
   });
   assert.isTrue(isRestartNoteContinuation(chained, [cut, unstarted, chained], [cutTurn], []));
   for (const status of ["running", "cancelled"] as const) {
@@ -371,6 +397,7 @@ it("counts a prompted mid-turn or chained continuation as delivering the note", 
     assert.deepEqual(restartContinuationNote(unstarted, [cut, unstarted], turns, []), {
       work: lost,
       settled: false,
+      runIds: [unstarted.id, cut.id],
     });
     assert.deepEqual(
       pendingWork({

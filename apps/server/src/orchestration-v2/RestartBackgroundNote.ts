@@ -1,12 +1,14 @@
-import type {
-  OrchestrationV2PendingBackgroundTask,
-  OrchestrationV2ProviderThread,
-  OrchestrationV2ProviderTurn,
-  OrchestrationV2RestartCancelledBackgroundWork,
-  OrchestrationV2Run,
-  OrchestrationV2RunAttempt,
-  OrchestrationV2TurnItem,
-  RunId,
+import {
+  isOrchestrationV2WorkActive,
+  type OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2RestartCancelledBackgroundWork,
+  type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2TurnItem,
+  type RunId,
 } from "@t3tools/contracts";
 import {
   isExecutionTurnItemType,
@@ -626,7 +628,12 @@ export function restartContinuationNote(
   providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>,
   attempts: ReadonlyArray<Attempt>,
   told: ReadonlyMap<RunId, ReadonlySet<string>> = new Map(),
-): { readonly work: ReadonlyArray<Work>; readonly settled: boolean } {
+): {
+  readonly work: ReadonlyArray<Work>;
+  readonly settled: boolean;
+  /** The cut run and the continuations of it that never got their note to the agent. */
+  readonly runIds: ReadonlyArray<RunId>;
+} {
   const completedAttempts = new Set(
     providerTurns.filter((turn) => turn.status === "completed").map((turn) => turn.runAttemptId),
   );
@@ -647,7 +654,39 @@ export function restartContinuationNote(
     current = previous;
     work = mergeRestartCancelledBackgroundWork(untoldWork(current, told), work);
   }
-  return { work, settled: isRestartNoteSource(current, providerTurns) };
+  return { work, settled: isRestartNoteSource(current, providerTurns), runIds: [...visited] };
+}
+
+/**
+ * A restart can cut `delegate_task` after the task exists but before its ids reach the agent, and
+ * the ids are not derivable from anything the agent holds.
+ * Unfinished tasks are listed first, newest first, so the limit never drops the one the cut call started.
+ */
+export function restartDelegatedTasksNote(
+  tasks: ReadonlyArray<
+    Pick<OrchestrationV2Subagent, "id" | "childThreadId" | "title" | "prompt" | "status">
+  >,
+): string | undefined {
+  if (tasks.length === 0) return undefined;
+  const newestFirst = tasks.toReversed();
+  const listed = [
+    ...newestFirst.filter((task) => isOrchestrationV2WorkActive(task.status)),
+    ...newestFirst.filter((task) => !isOrchestrationV2WorkActive(task.status)),
+  ];
+  const omitted = tasks.length - MAX_NOTE_ENTRIES;
+  return [
+    "Note: that turn started these delegated tasks. Use their ids with task_status or task_cancel instead of delegating them again:",
+    ...listed
+      .slice(0, MAX_NOTE_ENTRIES)
+      .map((task) =>
+        [
+          `- ${compactLabel(task.title) ?? compactLabel(task.prompt) ?? "delegated task"}: taskId ${task.id}`,
+          ...(task.childThreadId === null ? [] : [`childThreadId ${task.childThreadId}`]),
+          task.status,
+        ].join(", "),
+      ),
+    ...(omitted > 0 ? [`- and ${omitted} more`] : []),
+  ].join("\n");
 }
 
 export function isRestartNoteContinuation(

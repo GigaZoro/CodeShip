@@ -82,6 +82,8 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly interruptAndAwaitTerminal?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interruptAndAwaitTerminal"];
+  readonly start?: ProviderTurnStartService.ProviderTurnStartServiceV2Shape["start"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
 }) {
@@ -92,12 +94,14 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
         steer: () => Effect.void,
-        interruptAndAwaitTerminal: (request) =>
-          record(
-            request.replacementProviderSessionId === undefined
-              ? "interrupt"
-              : `interrupt:${request.replacementProviderSessionId}`,
-          ),
+        interruptAndAwaitTerminal:
+          input.interruptAndAwaitTerminal ??
+          ((request) =>
+            record(
+              request.replacementProviderSessionId === undefined
+                ? "interrupt"
+                : `interrupt:${request.replacementProviderSessionId}`,
+            )),
       }),
     ),
     Layer.succeed(
@@ -118,19 +122,22 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
-        start: () =>
-          Effect.gen(function* () {
-            yield* record("start");
-            if (
-              input.failFirstStart !== undefined &&
-              (yield* Ref.getAndSet(input.failFirstStart, false))
-            ) {
-              return yield* new ProviderTurnStartService.ProviderTurnStartError({
-                runId,
-                cause: "simulated first start failure",
-              });
-            }
-          }),
+        failUnstartedRun: (request) => record(`fail-unstarted:${request.runId}`),
+        start:
+          input.start ??
+          (() =>
+            Effect.gen(function* () {
+              yield* record("start");
+              if (
+                input.failFirstStart !== undefined &&
+                (yield* Ref.getAndSet(input.failFirstStart, false))
+              ) {
+                return yield* new ProviderTurnStartService.ProviderTurnStartError({
+                  runId,
+                  cause: "simulated first start failure",
+                });
+              }
+            })),
       }),
     ),
     Layer.succeed(
@@ -525,7 +532,45 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
   }),
 );
 
-it.effect("settles a delegated child once its restart continuation fails for good", () =>
+it.effect.each([
+  { name: "a start that dies", request: "provider-turn.start" as const },
+  { name: "a restart whose interrupt fails", request: "provider-turn.restart" as const },
+])("ends the unstarted run only after the last attempt of $name", ({ request }) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({
+      events,
+      start: () => Effect.die("provider app-server exited"),
+      interruptAndAwaitTerminal: () =>
+        Effect.fail(
+          new ProviderTurnControlService.ProviderTurnControlError({
+            threadId,
+            operation: "interrupt",
+            providerTurnId,
+            cause: "Timed out.",
+          }),
+        ),
+    });
+    const restart = restartEffect(now, { type: "detach" });
+    const effect: EffectOutbox.OrchestrationEffectV2 =
+      request === "provider-turn.start"
+        ? { ...restart, request: { type: "provider-turn.start", runId } }
+        : restart;
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      yield* Effect.exit(executor.execute(effect, { willRetry: true }));
+      assert.deepEqual(yield* Ref.get(events), []);
+      yield* Effect.exit(executor.execute(effect, { willRetry: false }));
+    }).pipe(Effect.provide(layer));
+    assert.deepEqual(yield* Ref.get(events), [`fail-unstarted:${runId}`]);
+  }),
+);
+
+it.effect.each([
+  { name: "fails", lost: Effect.fail(new Error("provider instance removed") as never) },
+  { name: "dies", lost: Effect.die("provider instance removed") },
+])("settles a delegated child once its restart continuation $name for good", ({ lost }) =>
   Effect.gen(function* () {
     const timestamp = DateTime.formatIso(yield* DateTime.now);
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -534,7 +579,7 @@ it.effect("settles a delegated child once its restart continuation fails for goo
       events,
       continueAfterRestart: true,
       threads: {
-        getThreadRecords: () => Effect.fail(new Error("provider instance removed") as never),
+        getThreadRecords: () => lost,
         recoverDelegatedTask: (childThreadId) =>
           Ref.update(recovered, (ids) => [...ids, childThreadId]),
       },

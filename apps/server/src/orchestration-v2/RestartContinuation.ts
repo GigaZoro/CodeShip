@@ -38,6 +38,7 @@ import {
   restartContinuationNote,
   restartCutCalls,
   restartCutCallsNote,
+  restartDelegatedTasksNote,
   restartRetryNotices,
   supersededRun,
   toldBackgroundWork,
@@ -459,6 +460,14 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const cutCalls = note.settled
       ? []
       : restartCutCalls(source, sourceRecords.turnItems, note.work);
+    const tasksText =
+      recompact || note.settled
+        ? undefined
+        : restartDelegatedTasksNote(
+            (yield* threads.getThreadRecords(input.threadId, ["subagents"], {
+              subagentRunIds: note.runIds,
+            })).subagents.filter((task) => task.origin === "app_owned"),
+          );
     const text = recompact
       ? IDLE_COMPACTION_TEXT
       : note.settled
@@ -466,6 +475,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         : [
             noteText,
             cutCalls.length === 0 ? undefined : restartCutCallsNote(cutCalls),
+            tasksText,
             CONTINUE_PROMPT,
           ]
             .filter((part) => part !== undefined)

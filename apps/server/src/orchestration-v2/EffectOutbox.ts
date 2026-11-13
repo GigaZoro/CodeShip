@@ -148,6 +148,20 @@ export const PROCESS_BOUND_EFFECT_TYPES = [
   "runtime-request.respond",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
+const PROVIDER_START_EFFECT_TYPES = [
+  "provider-turn.start",
+  "provider-turn.restart",
+] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+
+/**
+ * Effects that can wait minutes on a model or provider process. Each leaves a worker free, but a
+ * provider start may take the one a title generation left, since a turn waits on it.
+ */
+const SLOW_EFFECT_TYPES = [
+  "thread-title.generate",
+  ...PROVIDER_START_EFFECT_TYPES,
+] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+
 export const OrchestrationEffectStatusV2 = Schema.Literals([
   "pending",
   "running",
@@ -246,10 +260,11 @@ export interface EffectOutboxV2Shape {
   readonly claimNext: (input: {
     readonly workerId: string;
     readonly excludeRestartContinuations?: boolean;
-    readonly maxRunningTitleGenerations?: number;
+    /** Running slow effects (title generation, provider starts) allowed; see `SLOW_EFFECT_TYPES`. */
+    readonly maxRunningSlowEffects?: number;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly nextClaimableAt: (input?: {
-    readonly maxRunningTitleGenerations?: number;
+    readonly maxRunningSlowEffects?: number;
   }) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
   readonly succeed: (input: {
     readonly effectId: string;
@@ -339,7 +354,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
-      maxRunningTitleGenerations?: number,
+      maxRunningSlowEffects?: number,
     ) =>
       sql`
         ${
@@ -377,16 +392,28 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             )
         )
         AND ${
-          maxRunningTitleGenerations === undefined
+          maxRunningSlowEffects === undefined
             ? sql`1 = 1`
             : sql`(
-                candidate.effect_type != 'thread-title.generate'
+                candidate.effect_type NOT IN ${sql.in(SLOW_EFFECT_TYPES)}
                 OR (
-                  SELECT COUNT(*)
-                  FROM orchestration_v2_effect_outbox AS running_title
-                  WHERE running_title.status = 'running'
-                    AND running_title.effect_type = 'thread-title.generate'
-                ) < ${maxRunningTitleGenerations}
+                  candidate.effect_type IN ${sql.in(PROVIDER_START_EFFECT_TYPES)}
+                  AND (
+                    SELECT COUNT(*)
+                    FROM orchestration_v2_effect_outbox AS running_start
+                    WHERE running_start.status = 'running'
+                      AND running_start.effect_type IN ${sql.in(PROVIDER_START_EFFECT_TYPES)}
+                  ) < ${maxRunningSlowEffects}
+                )
+                OR (
+                  candidate.effect_type = 'thread-title.generate'
+                  AND (
+                    SELECT COUNT(*)
+                    FROM orchestration_v2_effect_outbox AS running_slow
+                    WHERE running_slow.status = 'running'
+                      AND running_slow.effect_type IN ${sql.in(SLOW_EFFECT_TYPES)}
+                  ) < ${maxRunningSlowEffects}
+                )
               )`
         }
       `;
@@ -572,7 +599,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ),
       // The worker polls for the next effect even when there is no work to claim.
       claimNext: Effect.fnUntraced(
-        function* ({ workerId, excludeRestartContinuations = false, maxRunningTitleGenerations }) {
+        function* ({ workerId, excludeRestartContinuations = false, maxRunningSlowEffects }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           // Idle claims return empty; tracing their full SQL on every poll overwhelms useful traces.
@@ -590,7 +617,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               WHERE ${claimableCandidatePredicate(
                 nowIso,
                 excludeRestartContinuations,
-                maxRunningTitleGenerations,
+                maxRunningSlowEffects,
               )}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
@@ -607,13 +634,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         Effect.mapError((cause) => new EffectOutboxError({ operation: "claim", cause })),
       ),
       nextClaimableAt: Effect.fnUntraced(
-        function* ({
-          maxRunningTitleGenerations,
-        }: { readonly maxRunningTitleGenerations?: number } = {}) {
+        function* ({ maxRunningSlowEffects }: { readonly maxRunningSlowEffects?: number } = {}) {
           const rows = yield* sql<{ readonly available_at: string | null }>`
             SELECT MIN(candidate.available_at) AS available_at
             FROM orchestration_v2_effect_outbox AS candidate
-            WHERE ${claimableCandidatePredicate(undefined, false, maxRunningTitleGenerations)}
+            WHERE ${claimableCandidatePredicate(undefined, false, maxRunningSlowEffects)}
           `.pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
           const availableAt = rows[0]?.available_at;
           if (availableAt === undefined || availableAt === null) return Option.none();

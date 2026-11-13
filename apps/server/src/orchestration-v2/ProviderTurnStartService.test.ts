@@ -36,6 +36,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -51,8 +52,10 @@ import {
   RESTART_RESEND_NOTE,
   type RestartRetryDelivery,
   restartCancelledBackgroundWorkNote,
+  restartDelegatedTasksNote,
   restartRetryNoticeId,
 } from "./RestartBackgroundNote.ts";
+import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -324,6 +327,7 @@ function makeLocalCommandHarness(input: {
   readonly skillFailure?: ProviderSkills.ProviderSkillInvocationError;
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
+  readonly resumeThread?: () => Effect.Effect<never>;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -696,7 +700,9 @@ function makeLocalCommandHarness(input: {
       ],
     };
   }
-  if ("historyReadFailureAfterFallback" in input) {
+  const resumesNativeThread =
+    "historyReadFailureAfterFallback" in input || input.resumeThread !== undefined;
+  if (resumesNativeThread) {
     const nativeThreadRef = {
       driver: providerThread.driver,
       nativeId: "native-resume-thread",
@@ -803,17 +809,20 @@ function makeLocalCommandHarness(input: {
       ),
     ),
   );
+  const freshThread = vi.fn(() => Effect.succeed(providerThread));
   const resumeFallbackSession = {
     driver: providerThread.driver,
-    resumeThread: () =>
-      Effect.fail(
-        new ProviderAdapter.ProviderAdapterEventStreamError({
-          driver: providerThread.driver,
-          providerSessionId,
-          cause: "native thread is gone",
-        }),
-      ),
-    ensureThread: () => Effect.succeed(providerThread),
+    resumeThread:
+      input.resumeThread ??
+      (() =>
+        Effect.fail(
+          new ProviderAdapter.ProviderAdapterEventStreamError({
+            driver: providerThread.driver,
+            providerSessionId,
+            cause: "native thread is gone",
+          }),
+        )),
+    ensureThread: freshThread,
   };
   const providerSession = {
     id: providerSessionId,
@@ -858,7 +867,7 @@ function makeLocalCommandHarness(input: {
           } as never)
         : input.interruptOpen === true
           ? Effect.interrupt
-          : "historyReadFailureAfterFallback" in input
+          : resumesNativeThread
             ? Effect.succeed(resumeFallbackSession as never)
             : "ensureThreadFailure" in input
               ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
@@ -889,7 +898,14 @@ function makeLocalCommandHarness(input: {
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
     input.sideChat !== undefined || input.nativeTurn === true
-      ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
+      ? runInput.session
+          .startTurn({
+            ...runInput,
+            ...(runInput.run.restartContinuationOfRunId === undefined
+              ? {}
+              : { restartContinuationOfRunId: runInput.run.restartContinuationOfRunId }),
+          } as never)
+          .pipe(Effect.orDie)
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
             providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
@@ -1145,6 +1161,7 @@ function makeLocalCommandHarness(input: {
     writeIfRunCurrent,
     startRootRun,
     startTurn,
+    freshThread,
     forkThread,
     interruptTurn,
     tryHandlePromptCommand,
@@ -1453,13 +1470,28 @@ effectIt.effect.each([
   // A wake's text was written before this work was recorded.
   { continues: "lost-work", told: true },
   // A turn that only resumes may send no text at all.
-  { continues: "cut-turn", told: false },
+  { continues: "cut-turn", told: false, resumesNatively: true },
+  // Its agent learns the ids of the delegated tasks its cut turn started only from this text.
+  { continues: "cut-turn", delegatedTasks: true, told: true },
 ] as const)(
   "tells its agent the background work a closing session recorded while this one opened: %j",
   ({ told, ...turn }) =>
     Effect.gen(function* () {
+      const text = !("continues" in turn)
+        ? "Is the build done?"
+        : "delegatedTasks" in turn
+          ? `${restartDelegatedTasksNote([
+              {
+                id: NodeId.make("node:delegated-task:cut"),
+                childThreadId: ThreadId.make("thread:delegated-task:cut"),
+                title: "Fix the build",
+                prompt: "Fix the build",
+                status: "running",
+              },
+            ])}\n\n${CONTINUE_PROMPT}`
+          : CONTINUE_PROMPT;
       const harness = makeLocalCommandHarness({
-        text: "Is the build done?",
+        text,
         nativeTurn: true,
         sessionLive: "sessionLive" in turn && turn.sessionLive,
       });
@@ -1513,11 +1545,16 @@ effectIt.effect.each([
 
       yield* harness.start;
 
-      expect(harness.startTurn.mock.calls.map(([sent]) => sent.message.text)).toEqual([
-        withInlineContext(
-          told ? restartCancelledBackgroundWorkNote(work) : "",
-          "Is the build done?",
-        ),
+      expect(
+        harness.startTurn.mock.calls.map(([sent]) => [
+          sent.message.text,
+          sent.restartContinuationOfRunId,
+        ]),
+      ).toEqual([
+        [
+          withInlineContext(told ? restartCancelledBackgroundWorkNote(work) : "", text),
+          "resumesNatively" in turn ? cut.id : undefined,
+        ],
       ]);
       expect(
         harness.projection().attempts.find((attempt) => attempt.id === harness.attemptId)
@@ -1961,6 +1998,32 @@ effectIt.effect("leaves the run starting when a session-open failure will be ret
     expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
     expect(harness.projection().runs.at(-1)?.status).toBe("starting");
   }),
+);
+
+effectIt.effect(
+  "fails a run whose provider does not resume its conversation in time, without opening a fresh one",
+  () =>
+    Effect.gen(function* () {
+      const resuming = yield* Deferred.make<void>();
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        resumeThread: () =>
+          Deferred.succeed(resuming, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+      const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(resuming);
+
+      yield* TestClock.adjust("5 minutes");
+      yield* Fiber.join(startup);
+
+      expect(harness.freshThread).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(
+        harness
+          .projection()
+          .turnItems.flatMap((item) => (item.type === "error" ? [item.failure.message] : [])),
+      ).toEqual(["The provider did not resume the conversation within 5 minutes."]);
+    }),
 );
 
 effectIt.effect("fails the run without a retry when the provider needs sign-in", () =>

@@ -1,4 +1,4 @@
-import { CommandId } from "@t3tools/contracts";
+import { CommandId, type RunId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -103,6 +103,24 @@ export const layerExecutor: Layer.Layer<
     return OrchestrationEffectExecutorV2.of({
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
         const willRetry = options?.willRetry ?? false;
+        // Earlier attempts hand their failure to a retry. After the last one nothing else
+        // ends a run still starting, and a parent waits on its delegate's run.
+        const failUnstartedRunAfterLastAttempt =
+          (runId: RunId) =>
+          (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
+            willRetry || Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : providerTurnStart
+                  .failUnstartedRun({ threadId: effect.threadId, runId, cause })
+                  .pipe(
+                    Effect.catchCause((settleCause) =>
+                      Effect.logError("orchestration-v2.unstarted-run-settle-failed", {
+                        effectId: effect.id,
+                        runId,
+                        cause: Cause.pretty(settleCause),
+                      }),
+                    ),
+                  );
         switch (effect.request.type) {
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
@@ -110,10 +128,17 @@ export const layerExecutor: Layer.Layer<
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ServerSettings.ServerSettingsService, settings),
               Effect.provideService(RestartResumeRequest, restartResumeRequest),
-              Effect.tapError(() =>
-                willRetry
+              Effect.onError((cause) =>
+                willRetry || Cause.hasInterruptsOnly(cause)
                   ? Effect.void
-                  : threads.recoverDelegatedTask(effect.threadId, sourceRunId),
+                  : threads.recoverDelegatedTask(effect.threadId, sourceRunId).pipe(
+                      Effect.catchCause((recoverCause) =>
+                        Effect.logError("orchestration-v2.delegated-task-recover-failed", {
+                          effectId: effect.id,
+                          cause: Cause.pretty(recoverCause),
+                        }),
+                      ),
+                    ),
               ),
               Effect.mapError(
                 (cause) =>
@@ -149,6 +174,7 @@ export const layerExecutor: Layer.Layer<
             return providerTurnStart
               .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
               .pipe(
+                Effect.onError(failUnstartedRunAfterLastAttempt(effect.request.runId)),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -383,6 +409,7 @@ export const layerExecutor: Layer.Layer<
                     willRetry,
                   }),
                 ),
+                Effect.onError(failUnstartedRunAfterLastAttempt(effect.request.runId)),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -630,11 +657,11 @@ type ClaimFilter = Omit<Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]
 export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: Effect.Effect<void>;
   readonly runOnce: (input?: {
-    readonly maxRunningTitleGenerations?: number;
+    readonly maxRunningSlowEffects?: number;
   }) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runRecoveryOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly nextClaimableAt: (input?: {
-    readonly maxRunningTitleGenerations?: number;
+    readonly maxRunningSlowEffects?: number;
   }) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
   readonly drain: (maxEffects?: number) => Effect.Effect<number, OrchestrationEffectWorkerError>;
 }
@@ -900,7 +927,8 @@ export interface OrchestrationEffectDaemonOptions {
   readonly livenessPollIntervalMs?: number;
 }
 
-const DEFAULT_EFFECT_WORKER_CONCURRENCY = 4;
+// A restart resends every cut run at once, and each start can wait minutes on its provider.
+const DEFAULT_EFFECT_WORKER_CONCURRENCY = 16;
 const DEFAULT_EFFECT_WORKER_LIVENESS_POLL_INTERVAL_MS = 30_000;
 
 export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions = {}) =>
@@ -916,8 +944,8 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       const livenessPollIntervalMs = Number.isFinite(requestedLivenessPollIntervalMs)
         ? Math.max(1, Math.floor(requestedLivenessPollIntervalMs))
         : DEFAULT_EFFECT_WORKER_LIVENESS_POLL_INTERVAL_MS;
-      // Title generation can run for minutes; leave at least one worker free for turn work.
-      const claimLimits = concurrency > 1 ? { maxRunningTitleGenerations: concurrency - 1 } : {};
+      // Title generations and provider starts can run for minutes; each leaves a worker free.
+      const claimLimits = concurrency > 1 ? { maxRunningSlowEffects: concurrency - 1 } : {};
       // Notifications wake promptly; availableAt persists retry timing, and liveness polling recovers missed wakeups.
       const runWorker = Effect.gen(function* () {
         while (true) {

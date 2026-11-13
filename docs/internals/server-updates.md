@@ -267,7 +267,10 @@ cuts calls anyway, the continuation names the run's items the reconcile cancelle
 `completedAt` equals the run's) so the agent checks each before repeating it.
 
 Delegated tasks (`delegate_task` child threads) are reconciled as their own threads,
-never as the parent's background work. The orchestrator settles child results and
+never as the parent's background work. A parent's recovery projection leaves an
+app-owned child's provider thread out, even though the subagent row names it: resetting
+it there would leave the child's own reconcile no active provider thread to resume, so
+the child's cut run would stay cut whenever the parent recovered first. The orchestrator settles child results and
 completion deliveries in a startup pass after reconciliation, because the terminal-run
 listener ignores reconciliation's cancellations. A cancelled child whose restart
 continuation is still pending in the outbox is not a result yet; the continuation's run

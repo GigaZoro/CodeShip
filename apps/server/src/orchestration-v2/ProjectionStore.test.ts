@@ -1247,6 +1247,106 @@ const runlessNativeSubagentNeedsRecovery = Effect.gen(function* () {
   }
 });
 
+// A delegated chat cut mid-turn on the VPS was never resumed: its parent's recovery, run
+// first, set the chat's provider thread idle, and a continuation needs it active.
+const delegatedProviderThreadRecoversInItsOwnChat = Effect.gen(function* () {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const parentId = yield* addRolledBackRecoveryCandidate("delegated-recovery-parent");
+  const childId = yield* addRolledBackRecoveryCandidate("delegated-recovery-child");
+  const nativeChildId = yield* addRolledBackRecoveryCandidate("delegated-recovery-native");
+  const now = yield* DateTime.now;
+  const providerThread = (appThreadId: ThreadId, suffix: string) => ({
+    id: ProviderThreadId.make(`provider-thread:delegated-recovery:${suffix}`),
+    driver,
+    providerInstanceId,
+    providerSessionId: null,
+    appThreadId,
+    ownerNodeId: null,
+    nativeThreadRef: {
+      driver,
+      nativeId: `native:delegated-recovery:${suffix}`,
+      strength: "strong" as const,
+    },
+    nativeConversationHeadRef: null,
+    status: "active" as const,
+    firstRunOrdinal: 1,
+    lastRunOrdinal: 1,
+    handoffIds: [],
+    forkedFrom: null,
+    pendingBackgroundTasks: [
+      {
+        kind: "command" as const,
+        taskId: `task:${suffix}`,
+        description: "CI wait",
+        awaited: true as const,
+      },
+    ],
+    createdAt: now,
+    updatedAt: now,
+  });
+  const delegated = providerThread(childId, "delegated");
+  const native = providerThread(nativeChildId, "native");
+  const task = (provider: typeof delegated, origin: "app_owned" | "provider_native") => {
+    const id = NodeId.make(`node:delegated-recovery:${origin}`);
+    return store.apply({
+      id: EventId.make(`event:delegated-recovery:${origin}`),
+      type: "subagent.updated",
+      threadId: parentId,
+      nodeId: id,
+      driver,
+      providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id,
+        threadId: parentId,
+        runId: null,
+        parentNodeId: NodeId.make("node:delegated-recovery:parent"),
+        origin,
+        createdBy: "agent",
+        driver,
+        providerInstanceId,
+        // A delegated task takes its chat's provider thread when its first run ends.
+        providerThreadId: provider.id,
+        childThreadId: provider.appThreadId,
+        nativeTaskRef: null,
+        prompt: "Do the work",
+        title: origin,
+        model: null,
+        status: "completed",
+        result: "done",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      },
+    });
+  };
+  for (const payload of [delegated, native]) {
+    yield* store.apply({
+      id: EventId.make(`event:delegated-recovery:${payload.id}`),
+      type: "provider-thread.updated",
+      threadId: payload.appThreadId,
+      driver,
+      occurredAt: now,
+      payload,
+    });
+  }
+  yield* task(delegated, "app_owned");
+  const providerThreadIds = (threadId: ThreadId) =>
+    store
+      .getRuntimeRecoveryProjection(threadId)
+      .pipe(Effect.map((state) => state.providerThreads.map((candidate) => candidate.id)));
+
+  assert.include(yield* store.getRecoveryThreadIds("runtime"), childId);
+  assert.notInclude(yield* store.getRecoveryThreadIds("runtime"), parentId);
+  assert.deepEqual(yield* providerThreadIds(childId), [delegated.id]);
+  assert.deepEqual(yield* providerThreadIds(parentId), []);
+
+  // A native subagent ends with its parent's process, so the parent recovers its thread.
+  yield* task(native, "provider_native");
+  assert.include(yield* store.getRecoveryThreadIds("runtime"), parentId);
+  assert.deepEqual(yield* providerThreadIds(parentId), [native.id]);
+});
+
 const subagentRecordsSelectById = Effect.gen(function* () {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const threadId = yield* addRolledBackRecoveryCandidate("subagent-records-by-id");
@@ -1824,6 +1924,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
   it.effect(
     "SQL recovery selects unfinished runless native subagents",
     () => runlessNativeSubagentNeedsRecovery,
+  );
+  it.effect(
+    "leaves a delegated chat's provider thread to that chat's own recovery",
+    () => delegatedProviderThreadRecoversInItsOwnChat,
   );
   it.effect(
     "worktree lookups list active threads, archived on request, and turns underway",

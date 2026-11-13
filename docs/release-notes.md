@@ -1,3 +1,10 @@
+## 2026-11-13 — A chat sent again after a restart starts, or fails with the reason
+
+- After a restart, a chat whose message was sent again could stay in **Starting** for good, most often a delegated task. Every chat the restart cut starts at the same time, and a few agents that were slow to start held every worker, so the rest never reached their agent. The server now runs more starts at once and keeps workers free for other work while agents start.
+- An agent that does not open its session, or load or resume its conversation, within 5 minutes now fails that message with the reason, as does a message whose last start attempt fails. Before, the chat stayed in **Starting**, and a parent waiting on that delegated task waited too.
+- A delegated chat that the restart cut in the middle of its work now continues after the restart. Before, it stayed stopped whenever its parent chat recovered first, and its stopped background work was reported on the parent instead.
+- A resumed agent is now told the delegated tasks its cut turn started, with their task and chat ids, so it checks on them instead of delegating the same work again.
+
 ## 2026-11-13 — An update you start waits for a chat's running tool calls and subagents
 
 - **Update when it finishes** and the other updates you start from the update button, **Update everything** or a server's update now also wait while a chat is running tool calls or subagents, until that chat has none running. Before, a Safe update with no background work installed at once and cut those calls halfway, and the calls queued behind them never ran. A chat that keeps working holds the update only until its first moment between calls, and a chat that is only answering, waiting for your answer, or waiting for another chat does not hold it.

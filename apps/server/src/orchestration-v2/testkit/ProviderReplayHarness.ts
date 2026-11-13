@@ -555,7 +555,7 @@ export function layerWithRegistry<Error>(
     layerCommandOutputHubProvided,
   ).pipe(Layer.provide(ProviderTurnStartServiceTestkit.layer), Layer.provide(NodeServices.layer));
 
-  if (options.runEffectWorker === false) {
+  if (options.runEffectWorker === false && options.recoverOnStartup !== true) {
     return layerReplayRuntime;
   }
   // Build recovery before runtime so it commits before the effect worker claims work.
@@ -585,7 +585,9 @@ export function layerWithRegistry<Error>(
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       yield* orchestrator.recoverDelegatedTasks;
-      yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+      if (options.runEffectWorker !== false) {
+        yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+      }
       return orchestrator;
     }),
   ).pipe(Layer.provideMerge(layerReplayRuntime), Layer.provide(layerStartupRecovery));
