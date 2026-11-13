@@ -265,6 +265,7 @@ it.effect.each([
           defaultModelSelection: { instanceId, model: "astra" },
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
+          installUpdatesAutomatically: true,
           usageLimitRecovery: "switch-and-resume",
           snoozeLimitedThreads: true,
         })
@@ -278,10 +279,12 @@ it.effect.each([
           scheduledTaskModelSelection: selection,
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
+          installUpdatesAutomatically: true,
           usageLimitRecovery: "switch-and-resume",
           snoozeLimitedThreads: true,
         });
         expect(yield* Ref.get(stored)).toMatchObject({
+          installUpdatesAutomatically: true,
           enableProviderUpdateChecks: true,
           autoUpdateProviders: true,
           snoozeLimitedThreads: true,
@@ -296,6 +299,7 @@ it.effect.each([
             delegatedTaskModelSelections: { implementation: delegated },
             scheduledTaskModelSelection: selection,
             autoModeModels: { [driver]: auto },
+            installUpdatesAutomatically: true,
             usageLimitRecovery: "switch-and-resume",
             snoozeLimitedThreads: true,
           },

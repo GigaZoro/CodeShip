@@ -70,7 +70,10 @@ would, but waits by a stricter rule than a user's "Update when it finishes": nob
 anything, so it waits until a restart hold lists no work and no running turn
 (`untilRestartHoldIsEmpty`, shared with the desktop app). A running turn would resume after the
 restart, so a manual update ignores `runningTurns` and waits only for its tool calls (below), but
-an automatic one must not cut a chat mid answer. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
+an automatic one must not cut a chat mid answer. A machine that always has a turn running (scheduled
+runs, autopilot) would then never install, so after `AUTO_UPDATE_IDLE_PATIENCE` (2 hours) the wait
+becomes the user's rule: background work and tool calls only, and the last check before the handoff
+no longer holds off on chats. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
 the hold once more right before the launcher takes over
 ([`autoUpdate.ts`](../../apps/server/src/cloud/autoUpdate.ts)). A busy hold there puts the update
 off to the next check without counting as a failed attempt. A user's update keeps

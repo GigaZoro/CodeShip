@@ -1,3 +1,8 @@
+## 2026-11-13 — Agents can turn on automatic updates, and a busy machine now installs them
+
+- `t3_environment_read` reports **Install updates automatically when idle** (`installUpdatesAutomatically`), and `t3_environment_preferences_update` sets it, on every machine with `allMachines`, under the same policy checks as the Settings toggle.
+- A machine that always has a chat running, such as one with scheduled runs, never became idle, so it never installed a release. After 2 hours of waiting, an automatic update now installs as soon as no background work is listed; running chats resume after the restart.
+
 ## 2026-11-13 — A chat that was starting when the computer slept starts again by itself
 
 - A chat or scheduled run that was starting when the computer went to sleep could fail seconds after it woke, for example with "Claude timed out while registering its MCP tools", and nothing ran it again. Startup deadlines now count only the time the computer is awake: Claude's MCP setup and wake start, the 5 minute limits on opening a session and loading or resuming a conversation, ACP agents such as Grok loading a session, OpenCode's server start, and Pi and Muse Code requests.

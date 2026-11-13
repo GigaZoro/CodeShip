@@ -1,6 +1,10 @@
 import { ServerSelfUpdateError, type ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import { cliReleaseChannelOf, type CliReleaseChannel } from "@t3tools/shared/cliRelease";
-import { isRestartHoldEmpty, untilRestartHoldIsEmpty } from "@t3tools/shared/restartHold";
+import {
+  isRestartHoldEmpty,
+  untilListedRestartHoldWorkEnds,
+  untilRestartHoldIsEmpty,
+} from "@t3tools/shared/restartHold";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -31,6 +35,12 @@ const AUTO_UPDATE_CHECK_INTERVAL = Duration.minutes(30);
 /** A failed attempt for a version waits this long, doubling per further failure up to the cap. */
 export const AUTO_UPDATE_RETRY_BASE = Duration.minutes(15);
 export const AUTO_UPDATE_RETRY_MAX = Duration.hours(6);
+/**
+ * A machine that always has a chat answering (scheduled runs, autopilot) never reaches a hold with
+ * no running turn. After this long the update waits like a user's "Update when it finishes" does:
+ * for background work and tool calls only, since a running turn resumes after the restart.
+ */
+export const AUTO_UPDATE_IDLE_PATIENCE = Duration.hours(2);
 
 export class ServerReleaseLookup extends Context.Service<
   ServerReleaseLookup,
@@ -143,13 +153,25 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     }),
   ).pipe(Stream.runHead, Effect.map(Option.isSome));
 
-  /** Why the update must not go now, read fresh: the setting, the policy and what chats are doing. */
+  const waitForListedWork = untilListedRestartHoldWorkEnds(recovery.watchRestartHold, (work) =>
+    Effect.logInfo("Automatic update waiting for background work to end.", {
+      backgroundWork: work.length,
+    }),
+  ).pipe(Stream.runHead, Effect.map(Option.isSome));
+
+  /**
+   * Why the update must not go now, read fresh: the setting, the policy and what chats are doing.
+   * After the patience ran out (`afterPatience`) chats no longer hold it: the wait already ended
+   * on the listed work, and a busy machine would otherwise always put it off again.
+   */
   const reasonToHoldOff = Effect.fn("cloud.auto_update.reason_to_hold_off")(function* (
     channel: CliReleaseChannel,
+    afterPatience: boolean,
   ) {
     if (!(yield* enabled)) return "the setting was turned off";
     const refusal = managedUpdateRefusal(policy.document, channel);
     if (refusal !== undefined) return refusal;
+    if (afterPatience) return undefined;
     const hold = yield* recovery.restartHold.pipe(Effect.option);
     if (Option.isNone(hold)) return "background work could not be read";
     if (isRestartHoldEmpty(hold.value)) return undefined;
@@ -185,22 +207,36 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       currentVersion: packageJson.version,
       targetVersion: version,
     });
-    const idle = yield* Effect.raceFirst(
-      waitUntilIdle.pipe(
-        Effect.catch((error) =>
-          recordFailure(version, `Could not read background work: ${error.message}`).pipe(
-            Effect.as(false),
+    const waitFor = (wait: typeof waitUntilIdle) =>
+      Effect.raceFirst(
+        wait.pipe(
+          Effect.catch((error) =>
+            recordFailure(version, `Could not read background work: ${error.message}`).pipe(
+              Effect.as(false),
+            ),
           ),
         ),
-      ),
-      turnedOff.pipe(Effect.as(false)),
+        turnedOff.pipe(Effect.as(false)),
+      );
+    const idleOrPatienceRanOut = yield* waitFor(waitUntilIdle).pipe(
+      Effect.timeoutOrElse({
+        duration: AUTO_UPDATE_IDLE_PATIENCE,
+        orElse: () => Effect.succeed("busy" as const),
+      }),
     );
-    if (!idle) return;
+    if (idleOrPatienceRanOut === false) return;
+    const afterPatience = idleOrPatienceRanOut === "busy";
+    if (afterPatience) {
+      yield* Effect.logInfo("Automatic update stops waiting for chats to be idle.", {
+        targetVersion: version,
+      });
+      if (!(yield* waitFor(waitForListedWork))) return;
+    }
     yield* Effect.logInfo("Automatic update starting.", { targetVersion: version });
     // Set when the last check puts the update off, which is not a failed attempt.
     const heldOff = yield* Ref.make<string | undefined>(undefined);
     const beforeHandoff = () =>
-      reasonToHoldOff(channel).pipe(
+      reasonToHoldOff(channel, afterPatience).pipe(
         Effect.flatMap((reason) =>
           reason === undefined
             ? Effect.void

@@ -201,6 +201,39 @@ describe("automatic server update", () => {
     }),
   );
 
+  it.effect("installs a busy machine after the patience, once no background work is listed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
+      const check = yield* Effect.forkChild(harness.auto.check());
+      yield* Deferred.await(harness.holdSeen);
+
+      yield* TestClock.adjust(
+        Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
+      );
+      yield* Fiber.join(check);
+
+      expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
+    }),
+  );
+
+  it.effect("still waits for background work after the patience", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ hold: [work("a")] });
+      const check = yield* Effect.forkChild(harness.auto.check());
+      yield* Deferred.await(harness.holdSeen);
+
+      yield* TestClock.adjust(
+        Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
+      );
+      expect(harness.events).toEqual([]);
+
+      yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
+      yield* Fiber.join(check);
+      expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
+    }),
+  );
+
   it.effect("does nothing with the setting off", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ enabled: false });
