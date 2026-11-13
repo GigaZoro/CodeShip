@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - hashes inputs with node:crypto, sizes the budget with node:os, and resolves test imports with node:path.
+// @effect-diagnostics nodeBuiltinImport:off - hashes inputs with node:crypto, sizes the budget with node:os, holds its slots with node:sqlite, and resolves test imports with node:path.
 // Runs CI's fast checks for this branch's changes: format and lint of the
 // changed files, knip, generated GraphQL operations, typecheck of the affected
 // packages and their dependents, the test files beside the changed files and
@@ -16,13 +16,15 @@
 // Uncommitted and untracked files count. Affected packages come from
 // .github/scripts/ci-changes.cjs, the same mapping CI uses to gate its jobs.
 // The steps run side by side within a budget derived from the machine's cores
-// and available memory, and each prints its output when it finishes. A step
-// running past the timeout is killed with its process group and reported as
-// TIMEOUT. A rerun on exactly the files of the last passing run prints that
-// run's summary.
+// and available memory, which every run in this repository's worktrees shares,
+// and each prints its output when it finishes. A step's timeout counts from
+// when it gets its slot; a step running past it is killed with its process
+// group and reported as TIMEOUT. A rerun on exactly the files of the last
+// passing run prints that run's summary.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,6 +32,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -53,13 +56,101 @@ const TEST_FILE_SECONDS = 120;
 export const defaultConcurrency = (cores: number, availableBytes: number) =>
   Math.max(1, Math.min(Math.floor(cores / 2), Math.floor(availableBytes / (6 * GiB))));
 
+// Another run frees its slots without telling this one, so a run that found none looks again this often.
+const SLOT_POLL_INTERVAL = "1 second";
+
+const SQLITE_BUSY = 5;
+const isSqliteBusy = (cause: unknown) =>
+  cause instanceof Error && "errcode" in cause && cause.errcode === SQLITE_BUSY;
+
+// Every run sharing `directory` draws from this budget. A slot is an open exclusive
+// transaction on its file, which the OS releases when the process exits, killed or not.
+// Open the files only through SQLite: closing any other handle drops this process's lock.
+const sharedBudget = (directory: string, size: number) => {
+  const files = Array.from({ length: size }, (_, index) =>
+    NodePath.join(directory, `slot-${index}.sqlite`),
+  );
+  let holding = 0;
+  let announced = false;
+  // Completed when this run frees slots, so its next step starts without waiting for a poll.
+  let freed = Deferred.makeUnsafe<void>();
+
+  const release = Effect.fn("checkChanged.releaseSlots")(function* (
+    held: ReadonlyArray<NodeSqlite.DatabaseSync>,
+  ) {
+    // Closing rolls back the open transaction, which releases the slot.
+    for (const db of held) db.close();
+    holding -= held.length;
+    const waiting = freed;
+    freed = Deferred.makeUnsafe<void>();
+    yield* Deferred.succeed(waiting, undefined);
+  });
+
+  const lockFree = (max: number) =>
+    Effect.try({
+      try: () => {
+        const held: Array<NodeSqlite.DatabaseSync> = [];
+        try {
+          for (const file of files) {
+            if (held.length === max) break;
+            const db = new NodeSqlite.DatabaseSync(file);
+            try {
+              db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+              held.push(db);
+            } catch (cause) {
+              db.close();
+              if (!isSqliteBusy(cause)) throw cause;
+            }
+          }
+        } catch (cause) {
+          for (const db of held) db.close();
+          throw cause;
+        }
+        holding += held.length;
+        return held;
+      },
+      catch: (cause) =>
+        `check:changed: cannot take a budget slot in ${directory}: ${String(cause)}`,
+    });
+
+  /** Waits for a free slot, then holds as many free ones as it can, up to `max`, until the scope closes. */
+  const take = Effect.fnUntraced(function* (max: number) {
+    for (;;) {
+      const signal = freed;
+      const held = yield* Effect.uninterruptible(
+        lockFree(max).pipe(
+          Effect.tap((held) =>
+            held.length > 0 ? Effect.addFinalizer(() => release(held)) : Effect.void,
+          ),
+        ),
+      );
+      if (held.length > 0) return held.length;
+      if (holding === 0 && !announced) {
+        announced = true;
+        yield* Console.log(
+          "check:changed: other check:changed runs on this machine hold every slot; waiting for one.",
+        );
+      }
+      yield* Effect.timeoutOrElse(Deferred.await(signal), {
+        duration: SLOT_POLL_INTERVAL,
+        orElse: () => Effect.void,
+      });
+    }
+  });
+  return { take };
+};
+
 export type Outcome = "pass" | "FAIL" | "TIMEOUT";
 
 export interface Step<R> {
   readonly name: string;
-  readonly run: Effect.Effect<{ readonly ok: boolean; readonly output: string }, never, R>;
-  // Budget slots the step holds: one per worker it runs in parallel.
-  readonly weight?: number;
+  // Gets the number of budget slots the step holds, which is how many workers it may run.
+  readonly run: (
+    slots: number,
+  ) => Effect.Effect<{ readonly ok: boolean; readonly output: string }, never, R>;
+  // The most workers the step can run in parallel. It starts once one slot is
+  // free and takes as many free ones as it can use, so other runs never wait on it.
+  readonly workers?: number;
   // Vitest runs started together race to rebuild node_modules/.vitest-cache (ENOTEMPTY).
   readonly serial?: boolean;
   // Replaces the run's timeout for a step whose work grows with its input.
@@ -70,20 +161,25 @@ export interface Step<R> {
 // spawned, which kills each one's process group.
 export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
   steps: ReadonlyArray<Step<R>>,
-  options: { readonly concurrency: number; readonly timeoutSeconds: number },
+  options: {
+    readonly concurrency: number;
+    readonly timeoutSeconds: number;
+    // An existing directory holding the machine's budget slots; every run given the same one shares them.
+    readonly slotDirectory: string;
+  },
 ) {
-  const budget = yield* Semaphore.make(options.concurrency);
-  // Steps claim budget one at a time, in order: Semaphore lets a light request
-  // take free slots ahead of a waiting heavier one, which would delay typecheck.
+  const budget = sharedBudget(options.slotDirectory, options.concurrency);
+  // Steps claim budget one at a time, in order, so a step later in the list
+  // never starts ahead of one still waiting for a slot.
   const admission = yield* Semaphore.make(1);
   const serial = yield* Semaphore.make(1);
   return yield* Effect.forEach(
     steps,
     (step) => {
-      const timed = Effect.gen(function* () {
+      const timed = Effect.fnUntraced(function* (slots: number) {
         const timeoutSeconds = step.timeoutSeconds ?? options.timeoutSeconds;
         const started = yield* Clock.currentTimeMillis;
-        const result = yield* Effect.timeoutOption(step.run, `${timeoutSeconds} seconds`);
+        const result = yield* Effect.timeoutOption(step.run(slots), `${timeoutSeconds} seconds`);
         const seconds = ((yield* Clock.currentTimeMillis) - started) / 1000;
         const outcome: Outcome = Option.match(result, {
           onNone: () => "TIMEOUT",
@@ -96,11 +192,10 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         if (output) yield* Console.log(output);
         return { name: step.name, outcome, time };
       });
-      const slots = Math.min(step.weight ?? 1, options.concurrency);
-      const limited = Effect.acquireUseRelease(
-        admission.withPermit(budget.take(slots)),
-        () => timed,
-        () => budget.release(slots),
+      const limited = Effect.scoped(
+        admission
+          .withPermit(budget.take(Math.min(step.workers ?? 1, options.concurrency)))
+          .pipe(Effect.flatMap(timed)),
       );
       return step.serial ? serial.withPermit(limited) : limited;
     },
@@ -604,14 +699,16 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =>
     files.some((file) => file.startsWith(`${dir}/`)),
   );
-  const filters = (names: ReadonlyArray<string>) => names.flatMap((name) => ["--filter", name]);
-  const typecheckWorkers = Math.min(concurrency, affected.length);
-  const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: vp(args) });
+  const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: () => vp(args) });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
+  // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
+  // so they keep one worker busy however many there are.
+  const serverTests = vitestTests.filter((file) => file.startsWith("apps/server/")).length;
+  const testWorkers = vitestTests.length - serverTests + Math.min(serverTests, 1);
 
   const steps: Array<Step<never>> = [
     command("release notes", ["exec", "node", ".github/scripts/release-notes.cjs", "check", base]),
-    ...(runPatchCheck ? [{ name: "unused patches", run: checkPatches }] : []),
+    ...(runPatchCheck ? [{ name: "unused patches", run: () => checkPatches }] : []),
     ...(present.length > 0
       ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]
       : []),
@@ -625,34 +722,26 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ...graphql.map((dir) =>
       command(`graphql (${dir})`, ["run", "--filter", `./${dir}`, "generate", "--check"]),
     ),
-    ...(affected.length > 0
-      ? [
-          {
-            // `tsc --noEmit` writes nothing another package reads, so dependency order
-            // only made dependents wait: --parallel cut a contracts change from 13 s to 9 s.
-            ...command(`typecheck (${affected.length} packages)`, [
-              "run",
-              "--cache",
-              "--parallel",
-              "--concurrency-limit",
-              String(typecheckWorkers),
-              ...filters(affected),
-              "typecheck",
-            ]),
-            weight: typecheckWorkers,
-          },
-        ]
-      : []),
+    // `tsc --noEmit` writes nothing another package reads, so each package checks
+    // on its own and takes a budget slot as one frees, in this run or another.
+    ...affected.map((name) =>
+      command(`typecheck ${name}`, ["run", "--cache", "--filter", name, "typecheck"]),
+    ),
     // From the repo root, the root vite.config.ts hands each file to its package's config.
     ...(vitestTests.length > 0
       ? [
           {
-            ...command(`test (${vitestTests.length} files)`, [
-              "test",
-              "run",
-              "--passWithNoTests",
-              ...vitestTests,
-            ]),
+            name: `test (${vitestTests.length} files)`,
+            run: (slots: number) =>
+              vp([
+                "test",
+                "run",
+                "--passWithNoTests",
+                "--maxWorkers",
+                String(slots),
+                ...vitestTests,
+              ]),
+            workers: testWorkers,
             serial: true,
             timeoutSeconds: Math.max(timeoutSeconds, TEST_FILE_SECONDS * vitestTests.length),
           },
@@ -674,6 +763,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             ...command(`react compiler (${compilerFiles} files)`, [
               "test",
               "run",
+              "--maxWorkers",
+              "1",
               ...compilerApps.map((app) => app.test),
               "-t",
               compilerApps.flatMap((app) => app.pattern).join("|"),
@@ -684,7 +775,17 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       : []),
   ];
 
-  const results = yield* runSteps(steps, { concurrency, timeoutSeconds });
+  // Every worktree of this repository shares its git directory, so their runs share one budget.
+  const gitDirectory = (yield* git(root, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  ]))
+    .toString()
+    .trim();
+  const slotDirectory = path.join(gitDirectory, "t3-check-changed");
+  yield* fs.makeDirectory(slotDirectory, { recursive: true });
+  const results = yield* runSteps(steps, { concurrency, timeoutSeconds, slotDirectory });
 
   const summary = ["check:changed summary"];
   for (const result of results) {
@@ -741,7 +842,7 @@ export const checkChangedCommand = Command.make(
     ),
     concurrency: Flag.Int("concurrency").pipe(
       Flag.withDescription(
-        "Budget of parallel steps and typecheck workers; also CHECK_CHANGED_CONCURRENCY. Defaults to one per two cores and per 6 GiB of available memory.",
+        "Budget of parallel steps and test workers, shared by every run in this repository's worktrees; also CHECK_CHANGED_CONCURRENCY. Defaults to one per two cores and per 6 GiB of available memory.",
       ),
       Flag.optional,
     ),

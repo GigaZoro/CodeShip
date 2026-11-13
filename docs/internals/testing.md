@@ -14,7 +14,7 @@ Rules for writing tests, and for asking for them in review. AGENTS.md carries th
 ## Waiting for work
 
 - The server is event-sourced, and side effects run after the command commits. In tests, drain the effect worker (`OrchestrationEffectWorkerV2.drain`) or await the specific persisted event or `Deferred` that marks the milestone. Never wait on sleeps or polling. A test that needs a timeout to pass is wrong. Concretely:
-  - `it.effect` runs on a `TestClock`; `Effect.sleep` only advances through `TestClock.adjust`. `it.live` is wall-clock and only for subprocess or network fixtures.
+  - `it.effect` runs on a `TestClock`; `Effect.sleep` only advances through `TestClock.adjust`. `it.live` is wall-clock and only for a subprocess, browser, or other process the test waits on. Servers and sockets inside the test process work under `it.effect`; under `it.live`, every timeout in the code under test races the machine's load.
   - No `yieldNow` or `sleep` polling loops. Await the `Deferred`, take from the `Queue`, or drain the worker.
   - No per-test timeout argument or `retry`. The project timeout is the ceiling, and flaky tests are fixed, not retried.
   - No `performance.now()` or `Date.now()` deltas. Assert on events and counts, not elapsed time.

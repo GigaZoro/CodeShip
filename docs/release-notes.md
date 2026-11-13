@@ -1,3 +1,9 @@
+## 2026-11-13 — `check:changed` runs in several worktrees share the machine instead of overloading it
+
+- `vp run check:changed` sized its parallel steps for the whole machine on every run, so several agents checking their worktrees at once ran many times that many typechecks and test workers. The machine ran out of memory and CPU, and tests that pass alone timed out or failed. Runs in every worktree of a repository now draw from one budget: a step starts once a slot is free, and a run that finds every slot taken says so and waits. The test step counts its workers against the budget too, and each package's typecheck is its own step.
+- A step's time limit now counts from when it gets its slot, so time spent waiting for another run never ends it as `TIMEOUT`.
+- The peer link request tests no longer race a three-second link check against the clock, which made "a link back the box does not make still links it" fail on a busy machine.
+
 ## 2026-11-13 — A Claude agent's background wait no longer fails while Claude is busy
 
 - `t3_background_wait` in a Claude chat could fail with "Failed to update the awaited background work" when it marked running work while the chat was handling a burst of Claude messages or a slow one, such as reading a workflow member's transcript. The mark now takes effect at once, and the chat's list of running background work shows it as soon as those messages are handled.

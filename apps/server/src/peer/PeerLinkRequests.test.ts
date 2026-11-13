@@ -21,7 +21,6 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -35,6 +34,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -466,26 +466,6 @@ const errorOf = (result: McpSchema.CallToolResult) => {
   return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
 };
 
-/** Runs `effect` a year from now, when every link made today has expired. */
-const afterLinksExpire = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const clock = yield* Clock.Clock;
-    const ahead = Duration.days(365);
-    const later = () => clock.currentTimeMillisUnsafe() + Duration.toMillis(ahead);
-    const laterNanos = () => clock.currentTimeNanosUnsafe() + Duration.toNanosUnsafe(ahead);
-    return yield* effect.pipe(
-      Effect.provideService(Clock.Clock, {
-        currentTimeMillisUnsafe: later,
-        currentTimeMillis: Effect.sync(later),
-        currentTimeNanosUnsafe: laterNanos,
-        currentTimeNanos: Effect.sync(laterNanos),
-        monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
-        monotonicTimeNanos: clock.monotonicTimeNanos,
-        sleep: (duration) => clock.sleep(duration),
-      }),
-    );
-  });
-
 const withBoth = <A, E, R>(body: (a: Laptop, b: ServedPeer) => Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -495,7 +475,7 @@ const withBoth = <A, E, R>(body: (a: Laptop, b: ServedPeer) => Effect.Effect<A, 
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest));
 
-it.live("the agent asks without waiting, and the user links the box after its turn ended", () =>
+it.effect("the agent asks without waiting, and the user links the box after its turn ended", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -632,7 +612,7 @@ it.live("the agent asks without waiting, and the user links the box after its tu
   ),
 );
 
-it.live("a retry of a pending request returns pending and shows no second card", () =>
+it.effect("a retry of a pending request returns pending and shows no second card", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -647,7 +627,7 @@ it.live("a retry of a pending request returns pending and shows no second card",
   ),
 );
 
-it.live("a new MCP credential reusing a clientRequestId gets a card of its own", () =>
+it.effect("a new MCP credential reusing a clientRequestId gets a card of its own", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -670,7 +650,7 @@ it.live("a new MCP credential reusing a clientRequestId gets a card of its own",
   ),
 );
 
-it.live("a declined request links nothing and tells the agent", () =>
+it.effect("a declined request links nothing and tells the agent", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -692,7 +672,7 @@ it.live("a declined request links nothing and tells the agent", () =>
   ),
 );
 
-it.live("stopping the thread closes its open card, which then takes no answer", () =>
+it.effect("stopping the thread closes its open card, which then takes no answer", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -744,7 +724,7 @@ it.live("stopping the thread closes its open card, which then takes no answer", 
   ),
 );
 
-it.live("a request that read the run before Stop shows no card once Stop lands", () =>
+it.effect("a request that read the run before Stop shows no card once Stop lands", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -765,7 +745,7 @@ it.live("a request that read the run before Stop shows no card once Stop lands",
   ),
 );
 
-it.live("a card shows up only while its run is going, and takes an answer after", () =>
+it.effect("a card shows up only while its run is going, and takes an answer after", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -783,7 +763,7 @@ it.live("a card shows up only while its run is going, and takes an answer after"
   ),
 );
 
-it.live("a steer that restarts the turn leaves its open card answerable", () =>
+it.effect("a steer that restarts the turn leaves its open card answerable", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -810,7 +790,7 @@ it.live("a steer that restarts the turn leaves its open card answerable", () =>
   ),
 );
 
-it.live("a slow machine holds up only its own card's answer", () =>
+it.effect("a slow machine holds up only its own card's answer", () =>
   withBoth((a, b) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -883,7 +863,7 @@ it.live("a slow machine holds up only its own card's answer", () =>
   ),
 );
 
-it.live("archiving the thread closes its open card", () =>
+it.effect("archiving the thread closes its open card", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -900,7 +880,7 @@ it.live("archiving the thread closes its open card", () =>
   ),
 );
 
-it.live("a code the box refuses fails the request with its reason, and links nothing", () =>
+it.effect("a code the box refuses fails the request with its reason, and links nothing", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -932,7 +912,7 @@ it.live("a code the box refuses fails the request with its reason, and links not
   ),
 );
 
-it.live("an agent below full access may not ask, and no card is shown", () =>
+it.effect("an agent below full access may not ask, and no card is shown", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a, "auto");
@@ -943,7 +923,7 @@ it.live("an agent below full access may not ask, and no card is shown", () =>
   ),
 );
 
-it.live("work another environment's link started may not ask, and no card is shown", () =>
+it.effect("work another environment's link started may not ask, and no card is shown", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a, "full-access", {
@@ -958,7 +938,7 @@ it.live("work another environment's link started may not ask, and no card is sho
   ),
 );
 
-it.live(
+it.effect(
   "an agent that names no machine leaves the pick to the user, who links one by its addresses",
   () =>
     withBoth((a, b) =>
@@ -1001,7 +981,7 @@ it.live(
     ),
 );
 
-it.live("naming a machine that is already linked returns the link at once, with no card", () =>
+it.effect("naming a machine that is already linked returns the link at once, with no card", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -1024,7 +1004,7 @@ it.live("naming a machine that is already linked returns the link at once, with 
   ),
 );
 
-it.live("a retry naming a machine linked meanwhile closes the card it left as linked", () =>
+it.effect("a retry naming a machine linked meanwhile closes the card it left as linked", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -1054,33 +1034,32 @@ it.live("a retry naming a machine linked meanwhile closes the card it left as li
   ),
 );
 
-it.live("a link that expired goes through the card, so the user can link it again", () =>
+it.effect("a link that expired goes through the card, so the user can link it again", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
       yield* linkTo(a.links, b, "read-only");
-      const asked = yield* a.call({ environmentId: box.environmentId }).pipe(afterLinksExpire);
+      yield* TestClock.adjust(Duration.days(31));
+      const asked = yield* a.call({ environmentId: box.environmentId });
       expect(asked.structuredContent).toMatchObject({ status: "pending" });
       const card = yield* pendingCard(a);
 
       // Keeping the expired link is no answer: the card fails and says why.
-      yield* a.requests
-        .answer(
-          {
-            threadId,
-            turnItemId: card.id,
-            answer: { type: "use-existing", environmentId: box.environmentId },
-          },
-          OWNER,
-        )
-        .pipe(afterLinksExpire);
+      yield* a.requests.answer(
+        {
+          threadId,
+          turnItemId: card.id,
+          answer: { type: "use-existing", environmentId: box.environmentId },
+        },
+        OWNER,
+      );
       expect(yield* cardOf(a)).toMatchObject({ linkStatus: "failed" });
       expect((yield* outcomeMessages(a)).messages[0]!.text).toContain("expired");
     }),
   ),
 );
 
-it.live("a link made before links were fenced goes through the card, as an expired one", () =>
+it.effect("a link made before links were fenced goes through the card, as an expired one", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -1093,7 +1072,7 @@ it.live("a link made before links were fenced goes through the card, as an expir
   ),
 );
 
-it.live(
+it.effect(
   "a card for a machine named by id keeps it, and the user may keep a link it already has",
   () =>
     withBoth((a, b) =>
@@ -1122,7 +1101,7 @@ it.live(
     ),
 );
 
-it.live(
+it.effect(
   "an answer that asks to link back passes that on, and tells the agent it was linked back",
   () =>
     withBoth((a, b) =>
@@ -1163,7 +1142,7 @@ it.live(
     ),
 );
 
-it.live("a link back the box does not make still links it, and the agent hears that", () =>
+it.effect("a link back the box does not make still links it, and the agent hears that", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -1198,7 +1177,7 @@ it.live("a link back the box does not make still links it, and the agent hears t
   ),
 );
 
-it.live("a refused link tells a client that asked to link back it was not linked at all", () =>
+it.effect("a refused link tells a client that asked to link back it was not linked at all", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);
@@ -1227,7 +1206,7 @@ it.live("a refused link tells a client that asked to link back it was not linked
   ),
 );
 
-it.live("an answer that does not ask to link back returns nothing and says nothing of it", () =>
+it.effect("an answer that does not ask to link back returns nothing and says nothing of it", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {
       yield* seedThread(a);

@@ -9,6 +9,7 @@ import * as Option from "effect/Option";
 import { assert, describe, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -50,46 +51,52 @@ describe("check:changed", () => {
     assert.isTrue(decide(["docs/release-notes.md"], packages, false).outputs.test_web);
   });
 
+  const slotDirectory = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.makeTempDirectoryScoped({ prefix: "check-changed-slots-" });
+  }).pipe(Effect.provide(NodeServices.layer));
+
   it.effect(
-    "keeps weighted steps within the budget, in order, and serial steps one at a time",
+    "takes the free slots a step can use, in order, and runs serial steps one at a time",
     () =>
       Effect.gen(function* () {
         const startedAt: Record<string, number> = {};
+        const slotsGiven: Record<string, number> = {};
         let active = 0;
         let maxActive = 0;
         let serialActive = 0;
         let maxSerial = 0;
         const step = (
           name: string,
-          options: { weight?: number; serial?: boolean } = {},
-        ): Step<never> => {
-          const slots = Math.min(options.weight ?? 1, 3);
-          return {
-            name,
-            ...options,
-            run: Effect.gen(function* () {
+          seconds: number,
+          options: { workers?: number; serial?: boolean } = {},
+        ): Step<never> => ({
+          name,
+          ...options,
+          run: (slots) =>
+            Effect.gen(function* () {
               startedAt[name] = (yield* Clock.currentTimeMillis) / 1000;
+              slotsGiven[name] = slots;
               active += slots;
               maxActive = Math.max(maxActive, active);
               if (options.serial) maxSerial = Math.max(maxSerial, ++serialActive);
-              yield* Effect.sleep("1 second");
+              yield* Effect.sleep(`${seconds} seconds`);
               active -= slots;
               if (options.serial) serialActive--;
               return { ok: true, output: "" };
             }),
-          };
-        };
+        });
         const fiber = yield* runSteps(
           [
-            step("light 1"),
-            // Above the budget, so it holds every slot rather than never starting.
-            step("heavy", { weight: 5 }),
-            step("pair", { weight: 2 }),
-            step("light 2"),
-            step("test 1", { serial: true }),
-            step("test 2", { serial: true }),
+            step("light 1", 1),
+            // Wants more than the budget, so it starts on what is free instead of waiting for all of it.
+            step("heavy", 3, { workers: 5 }),
+            step("pair", 1, { workers: 2 }),
+            step("light 2", 1),
+            step("test 1", 1, { serial: true }),
+            step("test 2", 1, { serial: true }),
           ],
-          { concurrency: 3, timeoutSeconds: 60 },
+          { concurrency: 3, timeoutSeconds: 60, slotDirectory: yield* slotDirectory },
         ).pipe(Effect.forkChild);
         yield* TestClock.adjust("10 seconds");
         const results = yield* Fiber.join(fiber);
@@ -99,17 +106,53 @@ describe("check:changed", () => {
           ["pass", "pass", "pass", "pass", "pass", "pass"],
         );
         assert.strictEqual(maxActive, 3);
-        // Lighter steps queued behind the heavy one never start ahead of it.
+        assert.deepStrictEqual(slotsGiven, {
+          "light 1": 1,
+          heavy: 2,
+          pair: 1,
+          "light 2": 1,
+          "test 1": 1,
+          "test 2": 1,
+        });
+        // A step waiting for a slot is never overtaken by one later in the list.
         assert.deepStrictEqual(startedAt, {
           "light 1": 0,
-          heavy: 1,
-          pair: 2,
+          heavy: 0,
+          pair: 1,
           "light 2": 2,
           "test 1": 3,
           "test 2": 4,
         });
         assert.strictEqual(maxSerial, 1);
       }),
+  );
+
+  it.effect("shares one budget between runs that use the same slot directory", () =>
+    Effect.gen(function* () {
+      let active = 0;
+      let maxActive = 0;
+      const step = (name: string): Step<never> => ({
+        name,
+        run: () =>
+          Effect.gen(function* () {
+            maxActive = Math.max(maxActive, ++active);
+            yield* Effect.sleep("1 second");
+            active--;
+            return { ok: true, output: "" };
+          }),
+      });
+      const options = { concurrency: 2, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+      const first = yield* runSteps([step("a 1"), step("a 2")], options).pipe(Effect.forkChild);
+      const second = yield* runSteps([step("b 1"), step("b 2")], options).pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 seconds");
+      const results = [...(yield* Fiber.join(first)), ...(yield* Fiber.join(second))];
+
+      assert.deepStrictEqual(
+        results.map((result) => result.outcome),
+        ["pass", "pass", "pass", "pass"],
+      );
+      assert.strictEqual(maxActive, 2);
+    }),
   );
 
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
@@ -119,15 +162,14 @@ describe("check:changed", () => {
         [
           {
             name: "hangs",
-            run: Effect.never.pipe(
-              Effect.onInterrupt(() => Effect.sync(() => (interrupted = true))),
-            ),
+            run: () =>
+              Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => (interrupted = true)))),
           },
-          { name: "fails", run: Effect.succeed({ ok: false, output: "error" }) },
-          { name: "passes", run: Effect.succeed({ ok: true, output: "" }) },
-          { name: "allowed longer", run: Effect.never, timeoutSeconds: 20 },
+          { name: "fails", run: () => Effect.succeed({ ok: false, output: "error" }) },
+          { name: "passes", run: () => Effect.succeed({ ok: true, output: "" }) },
+          { name: "allowed longer", run: () => Effect.never, timeoutSeconds: 20 },
         ],
-        { concurrency: 4, timeoutSeconds: 10 },
+        { concurrency: 4, timeoutSeconds: 10, slotDirectory: yield* slotDirectory },
       ).pipe(Effect.forkChild);
       yield* TestClock.adjust("9 seconds");
       assert.isFalse(interrupted);
