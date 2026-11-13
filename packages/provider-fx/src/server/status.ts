@@ -1,5 +1,6 @@
 import { type ServerProviderAuth, type ServerProviderModel } from "@t3tools/contracts";
 import type { FxSettings } from "../settings.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
@@ -27,6 +28,10 @@ import {
   type ServerProviderDraft,
   spawnAndCollect,
 } from "@t3tools/provider-core/server/snapshotProbe";
+import {
+  commandFailureReason,
+  withProviderFailureReason,
+} from "@t3tools/provider-core/server/providerOutput";
 
 const FX_PRESENTATION = {
   displayName: "fx",
@@ -185,7 +190,10 @@ export const checkFxProviderStatus = Effect.fn("checkFxProviderStatus")(function
       version,
       status: "error",
       auth: { status: "unknown" },
-      message: "fx is installed but failed to run.",
+      message: withProviderFailureReason(
+        "fx is installed but failed to run",
+        commandFailureReason(versionOutput, yield* HostProcess.HomeDirectory, environment),
+      ),
     });
   }
 

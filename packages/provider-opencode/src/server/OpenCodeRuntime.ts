@@ -31,6 +31,10 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import {
+  commandFailureReason,
+  withProviderFailureReason,
+} from "@t3tools/provider-core/server/providerOutput";
 import { isWindowsCommandNotFound } from "@t3tools/provider-core/server/snapshotProbe";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
 import { collectStreamAsString } from "@t3tools/provider-core/server/snapshotProbe";
@@ -629,13 +633,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
             new OpenCodeRuntimeError({
               operation: "startOpenCodeServerProcess",
               ...(reason ? { reason } : {}),
-              detail: [
-                `OpenCode server exited before startup completed (code: ${String(exitCode)}).`,
-                stdout.trim() ? `stdout:\n${stdout.trim()}` : null,
-                stderr.trim() ? `stderr:\n${stderr.trim()}` : null,
-              ]
-                .filter(Boolean)
-                .join("\n\n"),
+              detail: withProviderFailureReason(
+                `OpenCode server exited before startup completed (code: ${String(exitCode)})`,
+                commandFailureReason(
+                  { stdout, stderr },
+                  yield* HostProcess.HomeDirectory,
+                  input.environment ?? process.env,
+                ),
+              ),
               cause: { exitCode, stdout, stderr },
             }),
           ).pipe(Effect.ignore);

@@ -668,7 +668,12 @@ it.layer(
           }),
         );
         const fiber = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
-          Effect.fail(new CodexErrors.CodexAppServerProcessExitedError({ code: 1 })),
+          Effect.fail(
+            new CodexErrors.CodexAppServerProcessExitedError({
+              code: 1,
+              stderr: "Error: token sk-abcdefghijklmnop was rejected",
+            }),
+          ),
         ).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.forkChild,
@@ -679,7 +684,10 @@ it.layer(
         assert.strictEqual(status.version, null);
         assert.strictEqual(status.status, "error");
         assert.strictEqual(status.installed, true);
-        assert.match(status.message ?? "", /^Codex app-server provider probe failed: /);
+        assert.strictEqual(
+          status.message,
+          "Codex app-server provider probe failed: Codex App Server process exited with code 1: Error: token [redacted] was rejected",
+        );
         assert.isTrue(yield* Deferred.isDone(released));
       }),
     );

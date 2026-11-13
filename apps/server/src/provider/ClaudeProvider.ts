@@ -16,7 +16,9 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
@@ -38,6 +40,14 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
+import {
+  commandFailureReason,
+  PROVIDER_OUTPUT_MAX_CHARS,
+  providerFailureReason,
+  providerOutputHead,
+  redactProviderOutput,
+  withProviderFailureReason,
+} from "@t3tools/provider-core/server/providerOutput";
 import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
 import {
   ClaudeTermsReviewRequiredError,
@@ -216,6 +226,7 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly cwd: string | undefined;
   readonly managedMcpConfig: boolean;
+  readonly onStderr: (chunk: string) => void;
 }): ClaudeQueryOptions {
   return {
     persistSession: false,
@@ -238,9 +249,43 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
       CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1",
     },
     ...(input.cwd ? { cwd: input.cwd } : {}),
-    stderr: () => {},
+    stderr: input.onStderr,
   };
 }
+
+/**
+ * Claude Code stopped before it initialized. `detail` is what it printed on stderr, or the SDK's
+ * error when it printed nothing, with home paths, secrets and emails redacted.
+ */
+export class ClaudeCapabilitiesProbeFailedError extends Schema.TaggedError<ClaudeCapabilitiesProbeFailedError>()(
+  "ClaudeCapabilitiesProbeFailedError",
+  { detail: Schema.optional(Schema.String), cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return withProviderFailureReason(
+      "Claude Agent CLI failed while checking account status",
+      this.detail === undefined ? undefined : providerFailureReason(this.detail),
+    );
+  }
+}
+
+const claudeProbeFailure = (
+  stderr: string,
+  cause: unknown,
+  homeDirectory: string,
+  environment: NodeJS.ProcessEnv,
+): ClaudeTermsReviewRequiredError | ClaudeCapabilitiesProbeFailedError => {
+  const causeMessage = cause instanceof Error ? cause.message : "";
+  if (isClaudeTermsReviewNotice(stderr) || isClaudeTermsReviewNotice(causeMessage)) {
+    return new ClaudeTermsReviewRequiredError({ cause });
+  }
+  const output = providerOutputHead(stderr.trim() !== "" ? stderr : causeMessage);
+  const detail = redactProviderOutput(output, homeDirectory, environment);
+  return new ClaudeCapabilitiesProbeFailedError({
+    detail: detail === "" ? undefined : detail,
+    cause,
+  });
+};
 
 function nonEmptyProbeString(value: string): string | undefined {
   const candidate = value.trim();
@@ -348,6 +393,9 @@ const probeClaudeCapabilities = (
       claudeEnvironment,
     );
     const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+    const homeDirectory = yield* HostProcess.HomeDirectory;
+    // Claude names why it refused to start only on stderr.
+    let stderr = "";
     return yield* Effect.tryPromise({
       try: async () => {
         const q = claudeQuery({
@@ -361,16 +409,18 @@ const probeClaudeCapabilities = (
             environment: claudeEnvironment,
             cwd,
             managedMcpConfig,
+            onStderr: (chunk) => {
+              // One character past the cap lets providerOutputHead see the output was cut.
+              if (stderr.length <= PROVIDER_OUTPUT_MAX_CHARS) {
+                stderr = `${stderr}${chunk}`.slice(0, PROVIDER_OUTPUT_MAX_CHARS + 1);
+              }
+            },
           }),
         });
         const init = await q.initializationResult();
         return { q, init };
       },
-      // The SDK's exit error ends with the CLI's stderr tail, which names why Claude refused to start.
-      catch: (cause) =>
-        cause instanceof Error && isClaudeTermsReviewNotice(cause.message)
-          ? new ClaudeTermsReviewRequiredError({ cause })
-          : new Cause.UnknownError(cause),
+      catch: (cause) => claudeProbeFailure(stderr, cause, homeDirectory, claudeEnvironment),
     });
   }).pipe(
     Effect.timeout(CAPABILITIES_PROBE_TIMEOUT_MS),
@@ -420,9 +470,8 @@ const probeClaudeCapabilities = (
     Effect.tapError((error) =>
       Effect.logWarning("Claude capability probe failed.", {
         errorTag: error._tag,
-        // Server logs only: the CLI's stderr can hold private paths or settings.
-        ...(Cause.isUnknownError(error) && error.cause instanceof Error
-          ? { reason: error.cause.message }
+        ...(error._tag === "ClaudeCapabilitiesProbeFailedError" && error.detail !== undefined
+          ? { reason: error.detail }
           : {}),
       }),
     ),
@@ -589,10 +638,14 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const version = versionProbe.success.value;
   const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
   if (version.code !== 0) {
+    const reason = commandFailureReason(
+      version,
+      yield* HostProcess.HomeDirectory,
+      resolvedEnvironment,
+    );
     yield* Effect.logWarning("Claude Agent CLI version probe exited with a non-zero status.", {
       exitCode: version.code,
-      stdoutLength: version.stdout.length,
-      stderrLength: version.stderr.length,
+      ...(reason === undefined ? {} : { reason }),
     });
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
@@ -604,7 +657,10 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         version: parsedVersion,
         status: "error",
         auth: { status: "unknown" },
-        message: "Claude Agent CLI is installed but failed to run.",
+        message: withProviderFailureReason(
+          "Claude Agent CLI is installed but failed to run",
+          reason,
+        ),
       },
     });
   }
@@ -629,8 +685,6 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
   if (!capabilities) {
-    // Claude cannot start any session for this account, so it is an error, not an unverified check.
-    const termsReviewRequired = isClaudeTermsReviewRequiredError(probeFailure);
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -642,15 +696,15 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       probe: {
         installed: true,
         version: parsedVersion,
-        status: termsReviewRequired ? "error" : "warning",
+        // Pending terms block every session for this account, so they are an error, not an unverified check.
+        status: isClaudeTermsReviewRequiredError(probeFailure) ? "error" : "warning",
         auth: { status: "unknown" },
-        message: termsReviewRequired
-          ? probeFailure.message
-          : probeFailure
-            ? Cause.isTimeoutError(probeFailure)
+        message:
+          probeFailure === undefined
+            ? "Could not verify Claude authentication status from initialization result."
+            : Cause.isTimeoutError(probeFailure)
               ? `Timed out after ${CAPABILITIES_PROBE_TIMEOUT_MS / 1_000}s while checking Claude account status.`
-              : "Claude Agent CLI failed while checking account status."
-            : "Could not verify Claude authentication status from initialization result.",
+              : probeFailure.message,
       },
     });
   }

@@ -123,6 +123,10 @@
       "types": "./src/server/ProviderHost.ts",
       "import": "./src/server/ProviderHost.ts"
     },
+    "./server/providerOutput": {
+      "types": "./src/server/providerOutput.ts",
+      "import": "./src/server/providerOutput.ts"
+    },
     "./server/ProviderLatestVersions": {
       "types": "./src/server/ProviderLatestVersions.ts",
       "import": "./src/server/ProviderLatestVersions.ts"

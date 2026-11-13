@@ -921,7 +921,9 @@ it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
   it.effect("reports local model inventory failures without treating them as empty", () =>
     Effect.gen(function* () {
       runtimeMock.state.versionStdout = "opencode 1.14.20\n";
-      runtimeMock.state.inventoryError = new Error("opencode models failed");
+      runtimeMock.state.inventoryError = new Error(
+        "opencode models failed: Bearer secret-token-value\n    at listModels (cli.js:1:1)",
+      );
       const snapshot = yield* checkProvider(makeOpenCodeSettings());
 
       NodeAssert.equal(snapshot.status, "error");
@@ -931,7 +933,7 @@ it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
       NodeAssert.equal(snapshot.models.length, 0);
       NodeAssert.equal(
         snapshot.message,
-        "Failed to load OpenCode provider inventory: opencode models failed",
+        "Failed to load OpenCode provider inventory: opencode models failed: Bearer [redacted]",
       );
     }),
   );

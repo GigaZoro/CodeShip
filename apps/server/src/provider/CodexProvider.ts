@@ -45,6 +45,10 @@ import {
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import {
+  providerOutputReason,
+  withProviderFailureReason,
+} from "@t3tools/provider-core/server/providerOutput";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import {
   codexRateLimitsFailureMessage,
@@ -909,7 +913,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         status: "error",
         auth: { status: "unknown" },
         message: installed
-          ? `Codex app-server provider probe failed: ${error.message}.`
+          ? withProviderFailureReason(
+              "Codex app-server provider probe failed",
+              providerOutputReason(
+                error.message,
+                yield* HostProcess.HomeDirectory,
+                resolvedEnvironment,
+              ),
+            )
           : `Could not start Codex CLI (\`${codexSettings.binaryPath}\`). ` +
             (codexSettings.binaryPath === "codex"
               ? "The codex on the server's PATH could not be run. Reinstall it, or set Settings → Providers & models → Codex → Binary path."

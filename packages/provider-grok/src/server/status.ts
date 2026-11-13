@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/http/HttpClient";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
@@ -33,6 +34,10 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
+import {
+  commandFailureReason,
+  withProviderFailureReason,
+} from "@t3tools/provider-core/server/providerOutput";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
@@ -472,10 +477,14 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
   const versionOutput = versionResult.success.value;
   const version = parseGenericCliVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`);
   if (versionOutput.code !== 0) {
+    const reason = commandFailureReason(
+      versionOutput,
+      yield* HostProcess.HomeDirectory,
+      probeEnvironment,
+    );
     yield* Effect.logWarning("Grok CLI version probe exited with a non-zero status.", {
       exitCode: versionOutput.code,
-      stdoutLength: versionOutput.stdout.length,
-      stderrLength: versionOutput.stderr.length,
+      ...(reason === undefined ? {} : { reason }),
     });
     return buildServerProvider({
       presentation: GROK_PRESENTATION,
@@ -487,7 +496,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
         version,
         status: "error",
         auth: { status: "unknown" },
-        message: "Grok CLI is installed but failed to run.",
+        message: withProviderFailureReason("Grok CLI is installed but failed to run", reason),
       },
     });
   }

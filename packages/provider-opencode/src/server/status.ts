@@ -20,6 +20,11 @@ import {
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "@t3tools/provider-core/server/snapshotProbe";
+import {
+  providerOutputReason,
+  withProviderFailureReason,
+} from "@t3tools/provider-core/server/providerOutput";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import type { ProbedOpenCode } from "./versionProbe.ts";
 import type { Agent, ProviderListResponse } from "@opencode-ai/sdk/v2";
@@ -66,6 +71,7 @@ function formatOpenCodeProbeError(input: {
   readonly isExternalServer: boolean;
   readonly phase: "version" | "inventory";
   readonly serverUrl: string;
+  readonly homeDirectory: string;
 }): {
   readonly installed: boolean;
   readonly message: string;
@@ -73,6 +79,8 @@ function formatOpenCodeProbeError(input: {
 } {
   const detail = normalizedErrorMessage(input.cause);
   const lower = detail?.toLowerCase() ?? "";
+  const reason =
+    detail === undefined ? undefined : providerOutputReason(detail, input.homeDirectory);
 
   if (input.isExternalServer) {
     // Bare auth-code digits can be part of the endpoint's port or path.
@@ -106,7 +114,7 @@ function formatOpenCodeProbeError(input: {
 
     return {
       installed: true,
-      message: detail ?? "Failed to connect to the configured OpenCode server.",
+      message: reason ?? "Failed to connect to the configured OpenCode server.",
     };
   }
 
@@ -139,7 +147,7 @@ function formatOpenCodeProbeError(input: {
       : "Failed to execute OpenCode CLI health check";
   return {
     installed: true,
-    message: detail ? `${failureLabel}: ${detail}` : `${failureLabel}.`,
+    message: withProviderFailureReason(failureLabel, reason),
   };
 }
 
@@ -694,6 +702,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   const openCodeRuntime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const serverOwner = yield* OpenCodeServerOwner.OpenCodeServerOwner;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  const homeDirectory = yield* HostProcess.HomeDirectory;
   const customModels = openCodeSettings.customModels;
   const isExternalServer = openCodeSettings.serverUrl.trim().length > 0;
 
@@ -707,6 +716,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
       isExternalServer,
       phase,
       serverUrl: openCodeSettings.serverUrl,
+      homeDirectory,
     });
     return buildServerProvider({
       presentation: OPENCODE_PRESENTATION,

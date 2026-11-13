@@ -197,35 +197,38 @@ describe("buildGrokModelCapabilities", () => {
 });
 
 it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
-  it.effect("reports an installed CLI as unhealthy when --version exits non-zero", () =>
-    Effect.gen(function* () {
-      const secretStderr = "broken grok install: secret-token-value";
-      const snapshot = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-version-" });
-          const grokPath = writeFakeCli({
-            directory: dir,
-            name: "grok",
-            source: [
-              `process.stderr.write(${JSON.stringify(`${secretStderr}\n`)});`,
-              "process.exit(2);",
-              "",
-            ].join("\n"),
-          });
+  it.effect(
+    "names why an installed CLI's --version exited non-zero, with credentials redacted",
+    () =>
+      Effect.gen(function* () {
+        const secretStderr = "broken grok install: Bearer secret-token-value";
+        const snapshot = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-version-" });
+            const grokPath = writeFakeCli({
+              directory: dir,
+              name: "grok",
+              source: [
+                `process.stderr.write(${JSON.stringify(`${secretStderr}\n`)});`,
+                "process.exit(2);",
+                "",
+              ].join("\n"),
+            });
 
-          return yield* checkGrokProviderStatus(
-            decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
-          );
-        }),
-      );
+            return yield* checkGrokProviderStatus(
+              decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
+            );
+          }),
+        );
 
-      expect(snapshot.enabled).toBe(true);
-      expect(snapshot.installed).toBe(true);
-      expect(snapshot.status).toBe("error");
-      expect(snapshot.message).toBe("Grok CLI is installed but failed to run.");
-      expect(snapshot.message).not.toContain(secretStderr);
-    }),
+        expect(snapshot.enabled).toBe(true);
+        expect(snapshot.installed).toBe(true);
+        expect(snapshot.status).toBe("error");
+        expect(snapshot.message).toBe(
+          "Grok CLI is installed but failed to run: broken grok install: Bearer [redacted]",
+        );
+      }),
   );
 
   it.effect.each([

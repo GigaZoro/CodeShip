@@ -1,3 +1,10 @@
+## 2026-11-13 — A provider's status says why its CLI failed
+
+- When Claude's account check fails, **Settings → Providers & models** now shows the first line the CLI printed, such as an invalid settings file. Before, it said only that the CLI failed while checking account status. Pending Consumer Terms still say how to accept them.
+- When Claude, Grok, Pi, Muse Code or fx is installed but `--version` fails, the status now ends with the CLI's own reason too.
+- Codex and OpenCode statuses already showed the CLI's error, but in full. They now show the same single line, and an OpenCode server that exits while starting no longer puts all of its output in the status.
+- The reason is one line of at most 240 characters, with home folder paths, emails, tokens, keys and sign-in links removed. The server log keeps the same redaction.
+
 ## 2026-11-13 — A linked machine on an older version refuses options it does not have
 
 - An agent's call to a linked machine on an older version ran without the options that version does not have yet, such as a new thread setting, and reported success. The call now fails and names those options and the machine's version, so you know to update it. Calls that pass only options it has work as before.

@@ -55,11 +55,11 @@ const fakeCli = (source = 'process.stdout.write("muse 1.0.3-R2198.1\\n");') =>
   });
 
 it.layer(NodeServices.layer)("Muse status", (it) => {
-  it.effect("does not expose CLI stderr or start an SDK host after a failed version check", () =>
+  it.effect("names why the version check failed, without credentials or an SDK host", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const binaryPath = yield* fakeCli(
-          'process.stderr.write("secret-test-value");process.exit(2);',
+          'process.stderr.write("license check failed: Bearer secret-test-value");process.exit(2);',
         );
         const createHost = vi.fn(async () => makeHost(metaCatalog));
         const snapshot = yield* checkMuseProviderStatus(
@@ -70,7 +70,9 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
         );
         expect(snapshot.installed).toBe(true);
         expect(snapshot.status).toBe("error");
-        expect(snapshot.message).not.toContain("secret-test-value");
+        expect(snapshot.message).toBe(
+          "Muse Code CLI is installed but failed to run: license check failed: Bearer [redacted]",
+        );
         expect(createHost).not.toHaveBeenCalled();
       }),
     ),
