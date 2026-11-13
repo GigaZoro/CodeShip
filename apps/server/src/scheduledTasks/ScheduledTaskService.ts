@@ -30,6 +30,7 @@ import {
   ScheduledTaskRunCondition,
   ScheduledTaskRunRecord,
   type ScheduledTaskRunSkipReason,
+  ScheduledTaskRunFailover,
   ScheduledTaskRunUsageLimit,
   type ScheduledTaskRunTrigger,
   type ScheduledTaskDeleteInput,
@@ -293,6 +294,9 @@ const decodeNoWorkSkipJson = Schema.decodeUnknownEffect(
 const decodeRunCheckJson = Schema.decodeUnknownOption(Schema.fromJsonString(ScheduledTaskRunCheck));
 const RunUsageLimitJson = Schema.fromJsonString(ScheduledTaskRunUsageLimit);
 const decodeRunUsageLimitJson = Schema.decodeUnknownOption(RunUsageLimitJson);
+const McpServersJson = Schema.fromJsonString(Schema.Array(Schema.String));
+const decodeMcpServersJson = Schema.decodeUnknownOption(McpServersJson);
+const encodeMcpServersJson = Schema.encodeSync(McpServersJson);
 const encodeRunUsageLimitJson = Schema.encodeSync(RunUsageLimitJson);
 const DelegateProvidersJson = Schema.fromJsonString(ScheduledTaskDelegateProviders);
 const decodeDelegateProvidersJson = Schema.decodeUnknownEffect(DelegateProvidersJson);
@@ -378,6 +382,8 @@ interface RunRecordRow {
   readonly ran_on: string | null;
   readonly failover_from: string | null;
   readonly failover_to: string | null;
+  readonly failover_reason: string | null;
+  readonly failover_mcp_servers_json: string | null;
   readonly check_json: string | null;
   readonly usage_limit_json: string | null;
 }
@@ -1650,19 +1656,22 @@ export const layer = Layer.effect(
       readonly outcome: "running" | "skipped";
       readonly skipReason?: ScheduledTaskRunSkipReason;
       readonly ranOn?: EnvironmentId;
-      readonly failover: { readonly from: string; readonly to: string } | null;
+      readonly failover: ScheduledTaskRunFailover | null;
       readonly check?: ScheduledTaskRunCheck | undefined;
       readonly usageLimit?: ScheduledTaskRunUsageLimit | undefined;
     }) =>
       sql`
         INSERT INTO scheduled_task_runs (
           run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome,
-          skip_reason, ran_on, failover_from, failover_to, check_json, usage_limit_json
+          skip_reason, ran_on, failover_from, failover_to, failover_reason, failover_mcp_servers_json,
+          check_json, usage_limit_json
         )
         SELECT ${record.id}, ${record.taskId}, ${record.trigger}, ${record.scheduledFor},
           ${record.startedAt}, ${record.completedAt}, ${record.outcome},
           ${record.skipReason ?? null}, ${record.ranOn ?? null},
           ${record.failover?.from ?? null}, ${record.failover?.to ?? null},
+          ${record.failover?.reason ?? null},
+          ${record.failover?.mcpServers === undefined ? null : encodeMcpServersJson(record.failover.mcpServers)},
           ${record.check === undefined ? null : JSON.stringify(record.check)},
           ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId})
@@ -1699,7 +1708,7 @@ export const layer = Layer.effect(
         readonly outcome: "succeeded" | "failed";
         readonly threadId: ThreadId | null;
         readonly error: string | null;
-        readonly failover?: { readonly from: string; readonly to: string } | null;
+        readonly failover?: ScheduledTaskRunFailover | null;
       },
     ) =>
       keepRunHistory(
@@ -1710,7 +1719,9 @@ export const layer = Layer.effect(
               thread_id = ${result.threadId},
               error = ${result.error},
               failover_from = ${result.failover?.from ?? null},
-              failover_to = ${result.failover?.to ?? null}
+              failover_to = ${result.failover?.to ?? null},
+              failover_reason = ${result.failover?.reason ?? null},
+              failover_mcp_servers_json = ${result.failover?.mcpServers === undefined ? null : encodeMcpServersJson(result.failover.mcpServers)}
           WHERE run_id = ${id} AND outcome = 'running'
         `,
         taskId,
@@ -1760,15 +1771,19 @@ export const layer = Layer.effect(
       task: ScheduledTask,
     ) {
       const own: ModelSelection = launchModelSelection(yield* readSettings, task);
-      const selection = Option.isNone(accountRouting)
-        ? own
+      const route = Option.isNone(accountRouting)
+        ? { selection: own, failover: null }
         : yield* accountRouting.value.failoverLaunch({ selection: own, projectId: task.projectId });
       return {
-        selection,
+        selection: route.selection,
         failover:
-          selection.instanceId === own.instanceId
+          route.failover === null
             ? null
-            : { from: own.instanceId, to: selection.instanceId },
+            : {
+                from: own.instanceId,
+                to: route.selection.instanceId,
+                ...route.failover,
+              },
       };
     });
 
@@ -4488,7 +4503,8 @@ export const layer = Layer.effect(
     const listRuns: ScheduledTaskService["Service"]["listRuns"] = (input) =>
       sql<RunRecordRow>`
         SELECT run_id, trigger, scheduled_for, started_at, completed_at, outcome, thread_id,
-          error, skip_reason, ran_on, failover_from, failover_to, check_json, usage_limit_json
+          error, skip_reason, ran_on, failover_from, failover_to, failover_reason,
+          failover_mcp_servers_json, check_json, usage_limit_json
         FROM scheduled_task_runs WHERE task_id = ${input.id}
         ORDER BY started_at DESC, run_id DESC
         LIMIT ${RUN_HISTORY_RETENTION + QUIET_SKIP_REASONS.length * QUIET_SKIP_RETENTION}
@@ -4511,7 +4527,17 @@ export const layer = Layer.effect(
                 failover:
                   row.failover_from === null || row.failover_to === null
                     ? null
-                    : { from: row.failover_from, to: row.failover_to },
+                    : {
+                        from: row.failover_from,
+                        to: row.failover_to,
+                        ...(row.failover_reason === null ? {} : { reason: row.failover_reason }),
+                        ...(row.failover_mcp_servers_json === null
+                          ? {}
+                          : Option.match(decodeMcpServersJson(row.failover_mcp_servers_json), {
+                              onNone: () => ({}),
+                              onSome: (mcpServers) => ({ mcpServers }),
+                            })),
+                      },
                 check:
                   row.check_json === null
                     ? null

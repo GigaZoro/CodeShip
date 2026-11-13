@@ -1,15 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import * as TestClock from "effect/testing/TestClock";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
-  ProviderMcpError,
-  type ProviderMcpListResult,
   type ProviderMcpServer,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -175,87 +172,49 @@ describe("selectDetectedManualSteps", () => {
   });
 });
 
-describe("DetectedManualSteps discovery", () => {
-  const claude = ProviderInstanceId.make("claudeAgent");
-
-  const harness = (
-    listRecent: (starts: Ref.Ref<number>) => Effect.Effect<ProviderMcpListResult, ProviderMcpError>,
-  ) =>
-    Effect.gen(function* () {
-      const starts = yield* Ref.make(0);
-      const layer = DetectedManualSteps.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.mock(ProviderRegistry.ProviderRegistry)({
-              getProviders: Effect.succeed([provider("claudeAgent")]),
-            }),
-            Layer.mock(ProviderMcp.ProviderMcp)({
-              listRecent: () =>
-                Ref.update(starts, (count) => count + 1).pipe(Effect.andThen(listRecent(starts))),
-            }),
-            Layer.mock(ServerEnvironment.ServerEnvironment)({
-              getDescriptor: Effect.succeed({ label: "Mac" } as never),
-            }),
-            Layer.mock(AccountRouting.AccountRouting)({ holds: Effect.succeed([]) }),
-          ),
-        ),
-      );
-      return { starts, layer };
-    });
-
-  const mcpStepIds = (service: DetectedManualSteps.DetectedManualSteps["Service"]) =>
-    service.list.pipe(Effect.map((result) => result.steps.map((step) => step.id)));
-
+describe("DetectedManualSteps layer", () => {
   it.effect(
-    "keeps a slow discovery running after a request gives up and joins it on the next poll",
+    "asks only providers that can list for their MCP servers and steps their sign-ins",
     () =>
       Effect.gen(function* () {
-        const { starts, layer } = yield* harness(() =>
-          Effect.sleep("50 seconds").pipe(Effect.as({ servers: [server("threadpage")] })),
-        );
-        yield* Effect.gen(function* () {
-          const service = yield* DetectedManualSteps.DetectedManualSteps;
-          const first = yield* mcpStepIds(service).pipe(Effect.forkChild);
-          yield* TestClock.adjust("26 seconds");
-          assert.deepEqual(yield* Fiber.join(first), []);
-
-          // Past the 20 s answer cache; the discovery from the first request is still running.
-          yield* TestClock.adjust("21 seconds");
-          const second = yield* mcpStepIds(service).pipe(Effect.forkChild);
-          yield* TestClock.adjust("5 seconds");
-          assert.deepEqual(yield* Fiber.join(second), ["mcp-needs-auth:claudeAgent:threadpage"]);
-          assert.equal(yield* Ref.get(starts), 1);
-        }).pipe(Effect.provide(layer));
-      }),
-  );
-
-  it.effect(
-    "does not start a provider that failed to list again until the retry delay has passed",
-    () =>
-      Effect.gen(function* () {
-        const { starts, layer } = yield* harness(() =>
-          Effect.fail(
-            new ProviderMcpError({
-              operation: "list",
-              instanceId: claude,
-              reason: "providerFailed",
-            }),
+        const asked = yield* Ref.make<ReadonlyArray<string>>([]);
+        const layer = DetectedManualSteps.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviders: Effect.succeed([
+                  provider("claudeAgent"),
+                  provider("claudeAgent_work", { auth: { status: "unauthenticated" } }),
+                  provider("codex"),
+                ]),
+              }),
+              Layer.mock(ProviderMcp.ProviderMcp)({
+                discover: (instanceId) =>
+                  Ref.update(asked, (all) => [...all, instanceId]).pipe(
+                    Effect.as(
+                      instanceId === "claudeAgent"
+                        ? Option.some([server("threadpage")])
+                        : Option.none<ReadonlyArray<ProviderMcpServer>>(),
+                    ),
+                  ),
+              }),
+              Layer.mock(ServerEnvironment.ServerEnvironment)({
+                getDescriptor: Effect.succeed({ label: "Mac" } as never),
+              }),
+              Layer.mock(AccountRouting.AccountRouting)({ holds: Effect.succeed([]) }),
+            ),
           ),
         );
-        yield* Effect.gen(function* () {
-          const service = yield* DetectedManualSteps.DetectedManualSteps;
-          yield* mcpStepIds(service);
-          // Past the 20 s answer cache, so each poll below looks at the provider again.
-          yield* TestClock.adjust("1 minute");
-          yield* mcpStepIds(service);
-          yield* TestClock.adjust("1 minute");
-          assert.deepEqual(yield* mcpStepIds(service), []);
-          assert.equal(yield* Ref.get(starts), 1);
-
-          yield* TestClock.adjust("4 minutes");
-          yield* mcpStepIds(service);
-          assert.equal(yield* Ref.get(starts), 2);
-        }).pipe(Effect.provide(layer));
+        const steps = yield* DetectedManualSteps.DetectedManualSteps.pipe(
+          Effect.flatMap((service) => service.list),
+          Effect.map((result) => result.steps.map((step) => step.id)),
+          Effect.provide(layer),
+        );
+        assert.deepEqual(steps, [
+          "mcp-needs-auth:claudeAgent:threadpage",
+          "signed-out:claudeAgent_work:",
+        ]);
+        assert.deepEqual([...(yield* Ref.get(asked))].sort(), ["claudeAgent", "codex"]);
       }),
   );
 });

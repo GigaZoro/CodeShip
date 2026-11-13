@@ -11066,6 +11066,13 @@ const catalog: MessageCatalog = {
   "Started in background": "Запущено у фоні",
   "Started on {to} because {from} was out of usage.":
     "Запущено в {to}, бо в {from} вичерпано ліміт використання.",
+  "Started on {to} because {from} was signed out.":
+    "Запущено в {to}, бо в {from} виконано вихід із системи.",
+  "Started on {to} because {from} needs to sign in to {servers} again.":
+    "Запущено в {to}, бо {from} потрібно знову увійти в {servers}.",
+  "Started on {to} because {from} needs to sign in to an MCP server again.":
+    "Запущено в {to}, бо {from} потрібно знову увійти в MCP-сервер.",
+  "Started on {to} instead of {from}.": "Запущено в {to} замість {from}.",
   "Started this thread; each run starts a new one": "Запустило цей чат; кожен запуск створює новий",
   "Started writing": "Розпочато написання",
   Starting: "Запуск",

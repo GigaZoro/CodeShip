@@ -2,10 +2,12 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as AccountRouting from "./AccountRouting.ts";
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -13,6 +15,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
+  type ProviderMcpServer,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -20,7 +23,12 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 
-import { failoverLimitedLaunch, routeAutoAccount, usageBlock } from "./AccountRouting.ts";
+import {
+  accountsWithRoom,
+  failoverLimitedLaunch,
+  routeAutoAccount,
+  usageBlock,
+} from "./AccountRouting.ts";
 
 const nowMs = Date.parse("2026-11-03T12:00:00.000Z");
 const projectId = ProjectId.make("project:routing");
@@ -65,16 +73,22 @@ const settings = (order: ReadonlyArray<ProviderInstanceId>) => ({
 
 const auto: ModelSelection = { instanceId: third, model: "claude-opus-5-5", autoAccount: true };
 
+const THREADPAGE = "threadpage";
+const signIns = (needing: ReadonlyArray<ProviderInstanceId> = []) =>
+  new Map(needing.map((instanceId) => [instanceId, [THREADPAGE]]));
+
 const route = (input: {
   readonly selection?: ModelSelection;
   readonly currentInstanceId: ProviderInstanceId | null;
   readonly limited?: ReadonlyArray<ProviderInstanceId>;
+  readonly needingSignIn?: ReadonlyArray<ProviderInstanceId>;
   readonly switching?: boolean;
 }) =>
   routeAutoAccount({
     selection: input.selection ?? auto,
     projectId,
     currentInstanceId: input.currentInstanceId,
+    mcpSignInsNeeded: signIns(input.needingSignIn),
     started: input.currentInstanceId !== null,
     // Listed out of settings order, so the saved order decides.
     providers: [provider(third), provider(second), provider(primary)],
@@ -118,6 +132,40 @@ describe("routeAutoAccount", () => {
     },
   );
 
+  it.each([
+    [
+      "a new thread starts on the first account whose sign-ins are in place",
+      null,
+      [primary],
+      second,
+    ],
+    [
+      "a thread leaves an account that must sign in again for one that need not",
+      third,
+      [third],
+      primary,
+    ],
+    [
+      "a thread stays when every account must sign in again",
+      third,
+      [primary, second, third],
+      third,
+    ],
+    ["a thread on an account with its sign-ins in place stays", third, [primary], third],
+  ] as const)("%s", (_, currentInstanceId, needingSignIn, expected) => {
+    assert.deepEqual(route({ currentInstanceId, needingSignIn }), {
+      ...auto,
+      instanceId: expected,
+    });
+  });
+
+  it("stays on an account that must sign in again while account switching is off", () => {
+    assert.deepEqual(
+      route({ currentInstanceId: third, needingSignIn: [third], switching: false }),
+      { ...auto, instanceId: third },
+    );
+  });
+
   it("skips an account whose usage window is used up until it resets", () => {
     const exhausted = (resetsAt: string, id = "5h") =>
       routeAutoAccount({
@@ -134,6 +182,7 @@ describe("routeAutoAccount", () => {
           provider(second),
         ],
         settings: settings([primary, second]),
+        mcpSignInsNeeded: signIns(),
         recordedLimits: new Map(),
         nowMs,
         started: false,
@@ -167,6 +216,7 @@ describe("routeAutoAccount", () => {
         projectId,
         currentInstanceId: input.currentInstanceId,
         started: input.currentInstanceId !== null,
+        mcpSignInsNeeded: signIns(),
         providers: [
           provider(primary, { models }),
           provider(second, { models }),
@@ -231,6 +281,7 @@ describe("failoverLimitedLaunch", () => {
   const launch = (input: {
     readonly selection?: ModelSelection;
     readonly limited: ReadonlyArray<ProviderInstanceId>;
+    readonly needingSignIn?: ReadonlyArray<ProviderInstanceId>;
     readonly switching?: boolean;
     readonly ownWindowFull?: boolean;
     readonly windowId?: string;
@@ -238,6 +289,7 @@ describe("failoverLimitedLaunch", () => {
     failoverLimitedLaunch({
       selection: input.selection ?? pinned,
       projectId,
+      mcpSignInsNeeded: signIns(input.needingSignIn),
       providers: [
         provider(
           third,
@@ -269,7 +321,8 @@ describe("failoverLimitedLaunch", () => {
         input.limited.map((id) => [id, [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }]]),
       ),
       nowMs,
-    }).instanceId;
+    });
+  const launchOn = (input: Parameters<typeof launch>[0]) => launch(input).selection.instanceId;
 
   it.each([
     ["moves off a limited account to the highest with room", [third], primary],
@@ -277,13 +330,35 @@ describe("failoverLimitedLaunch", () => {
     ["stays on its account while it has room", [primary], third],
     ["stays put when every account is limited", [primary, second, third], third],
   ] as const)("%s", (_, limited, expected) => {
-    assert.equal(launch({ limited }), expected);
+    assert.equal(launchOn({ limited }), expected);
+  });
+
+  it.each([
+    ["moves off an account that must sign in again to one that need not", [third], [], primary],
+    [
+      "leaves a limited account for the first with its sign-ins in place",
+      [third],
+      [primary],
+      second,
+    ],
+    ["stays when every account must sign in again", [], [primary, second, third], third],
+  ] as const)("%s", (_, limited, needingSignIn, expected) => {
+    assert.equal(launchOn({ limited, needingSignIn }), expected);
+  });
+
+  it("says why it moved", () => {
+    assert.deepEqual(launch({ limited: [third] }).failover, { reason: "usageLimit" });
+    assert.deepEqual(launch({ limited: [], needingSignIn: [third] }).failover, {
+      reason: "mcpSignIn",
+      mcpServers: [THREADPAGE],
+    });
+    assert.isNull(launch({ limited: [] }).failover);
   });
 
   it("treats a used-up usage window as a limit", () => {
-    assert.equal(launch({ limited: [], ownWindowFull: true }), primary);
+    assert.equal(launchOn({ limited: [], ownWindowFull: true }), primary);
     assert.equal(
-      launch({
+      launchOn({
         limited: [],
         ownWindowFull: true,
         windowId: "seven_day_opus",
@@ -294,8 +369,9 @@ describe("failoverLimitedLaunch", () => {
   });
 
   it("leaves the account alone while account switching is off, and leaves Auto to its routing", () => {
-    assert.equal(launch({ limited: [third], switching: false }), third);
-    assert.equal(launch({ selection: auto, limited: [third] }), third);
+    assert.equal(launchOn({ limited: [third], switching: false }), third);
+    assert.equal(launchOn({ selection: auto, limited: [third] }), third);
+    assert.equal(launchOn({ limited: [], needingSignIn: [third], switching: false }), third);
   });
 });
 
@@ -366,6 +442,7 @@ it.effect.each([
         AccountRouting.layer.pipe(
           Layer.provide(
             Layer.mergeAll(
+              Layer.mock(ProviderMcp.ProviderMcp)({}),
               ServerSettings.layerTest(),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
@@ -457,6 +534,7 @@ it.effect.each([
       AccountRouting.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            Layer.mock(ProviderMcp.ProviderMcp)({}),
             ServerSettings.layerTest(),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getUsageLimitedProviderInstances: () =>
@@ -530,6 +608,7 @@ it.effect.each([
         AccountRouting.layer.pipe(
           Layer.provide(
             Layer.mergeAll(
+              Layer.mock(ProviderMcp.ProviderMcp)({}),
               ServerSettings.layerTest(),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getUsageLimitedProviderInstances: () => Effect.succeed(recordedLimits),
@@ -658,9 +737,10 @@ describe("failoverLimitedLaunch with a signed-out account", () => {
         ...settings([primary, second, third]),
         fallbackModelSelection: input.fallback ?? null,
       },
+      mcpSignInsNeeded: signIns(),
       recordedLimits: new Map(),
       nowMs,
-    });
+    }).selection;
   const signedOut = provider(third, { status: "error", auth: { status: "unauthenticated" } });
 
   it("starts on the first other account of its driver that can run", () => {
@@ -709,9 +789,10 @@ describe("failoverLimitedLaunch with a signed-out account", () => {
           ...settings([primary, second, third]),
           fallbackModelSelection: { instanceId: codex, model: "gpt-5.5" },
         },
+        mcpSignInsNeeded: signIns(),
         recordedLimits: new Map([[third, [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }]]]),
         nowMs,
-      }).instanceId,
+      }).selection.instanceId,
       third,
     );
   });
@@ -785,6 +866,7 @@ describe("releasing a held account", () => {
     AccountRouting.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(ProviderMcp.ProviderMcp)({}),
           Layer.mock(ServerSettings.ServerSettingsService)({
             getSettings: Effect.succeed(settingsWith({ setupMode: "managed" })),
             subscribeChanges: Effect.succeed(Stream.fromQueue(changes)),
@@ -948,6 +1030,7 @@ it.effect("reads a held account's usage at most hourly, and frees it once the us
     const layer = AccountRouting.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(ProviderMcp.ProviderMcp)({}),
           ServerSettings.layerTest({ providerInstances: { [primary]: { driver: claude } } }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getUsageLimitedProviderInstances: () =>
@@ -1010,3 +1093,175 @@ it.effect("reads a held account's usage at most hourly, and frees it once the us
     }).pipe(Effect.provide(layer));
   }),
 );
+
+describe("accountsWithRoom", () => {
+  const room = (
+    needingSignIn: ReadonlyArray<ProviderInstanceId>,
+  ): ReadonlyArray<ProviderInstanceId> =>
+    accountsWithRoom({
+      driver: claude,
+      projectId,
+      model: "claude-opus-5-5",
+      providers: [provider(third), provider(second), provider(primary)],
+      settings: settings([primary, second, third]),
+      recordedLimits: new Map(),
+      mcpSignInsNeeded: signIns(needingSignIn),
+      nowMs,
+    }).map((account) => account.instanceId);
+
+  it.each([
+    ["keeps the saved order when every sign-in is in place", [], [primary, second, third]],
+    [
+      "puts accounts that must sign in again last, in their order",
+      [primary, third],
+      [second, primary, third],
+    ],
+  ] as const)("%s", (_, needingSignIn, expected) => {
+    assert.deepEqual(room(needingSignIn), expected);
+  });
+});
+
+describe("MCP sign-ins in the layer", () => {
+  const needsSignIn: ProviderMcpServer = {
+    name: THREADPAGE,
+    status: "needsAuth",
+    origin: "config",
+    canSignIn: true,
+    canSignOut: false,
+    removable: false,
+  };
+  const makeHarness = (
+    options: {
+      readonly order?: ReadonlyArray<ProviderInstanceId>;
+      /** Nothing is loaded until a discovery lists it, as on a machine no client polls. */
+      readonly cold?: boolean;
+    } = {},
+  ) =>
+    Effect.gen(function* () {
+      const reads = yield* Ref.make<ReadonlyArray<string>>([]);
+      const listed = yield* Ref.make<ReadonlySet<ProviderInstanceId>>(new Set());
+      const read = (kind: string, instanceId: ProviderInstanceId) =>
+        Ref.update(reads, (done) => [...done, `${kind}:${instanceId}`]);
+      const servers = (instanceId: ProviderInstanceId): ReadonlyArray<ProviderMcpServer> =>
+        instanceId === third ? [needsSignIn] : [];
+      const layer = AccountRouting.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ProviderMcp.ProviderMcp)({
+              discover: (instanceId) =>
+                read("discover", instanceId).pipe(
+                  Effect.andThen(Ref.update(listed, (done) => new Set([...done, instanceId]))),
+                  Effect.as(Option.some(servers(instanceId))),
+                ),
+              listLoaded: (instanceId) =>
+                read("loaded", instanceId).pipe(
+                  Effect.andThen(Ref.get(listed)),
+                  Effect.map((done) =>
+                    options.cold === true && !done.has(instanceId)
+                      ? Option.none()
+                      : Option.some(servers(instanceId)),
+                  ),
+                ),
+            }),
+            ServerSettings.layerTest(settings(options.order ?? [primary, second, third])),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed([provider(primary), provider(second), provider(third)]),
+            }),
+          ),
+        ),
+      );
+      return { reads, layer };
+    });
+  const harness = makeHarness();
+
+  it.effect("routes a turn from the loaded lists and never starts a provider to read them", () =>
+    Effect.gen(function* () {
+      const { reads, layer } = yield* harness;
+      const routed = yield* Effect.gen(function* () {
+        const routing = yield* AccountRouting.AccountRouting;
+        return yield* routing.route({
+          selection: auto,
+          projectId,
+          currentInstanceId: third,
+          started: true,
+        });
+      }).pipe(Effect.provide(layer));
+      assert.equal(routed.instanceId, primary);
+      assert.deepEqual(
+        (yield* Ref.get(reads)).filter((read) => !read.startsWith("loaded:")),
+        [],
+      );
+    }),
+  );
+
+  it.effect("lists the servers of a launch's accounts, and says it moved for a sign-in", () =>
+    Effect.gen(function* () {
+      const { reads, layer } = yield* harness;
+      const launched = yield* Effect.gen(function* () {
+        const routing = yield* AccountRouting.AccountRouting;
+        return yield* routing.failoverLaunch({
+          selection: { instanceId: third, model: "claude-opus-5-5" },
+          projectId,
+        });
+      }).pipe(Effect.provide(layer));
+      assert.deepEqual(launched, {
+        selection: { instanceId: primary, model: "claude-opus-5-5" },
+        failover: { reason: "mcpSignIn", mcpServers: [THREADPAGE] },
+      });
+      assert.deepEqual(
+        (yield* Ref.get(reads)).filter((read) => !read.startsWith("discover:")),
+        [],
+      );
+    }),
+  );
+  it.effect(
+    "an Auto launch lists its provider's servers, so its first turn passes a sign-in by",
+    () =>
+      Effect.gen(function* () {
+        // The account that must sign in again is first in the order, and nothing is loaded yet.
+        const { reads, layer } = yield* makeHarness({
+          order: [third, primary, second],
+          cold: true,
+        });
+        const { launched, routed } = yield* Effect.gen(function* () {
+          const routing = yield* AccountRouting.AccountRouting;
+          const launched = yield* routing.failoverLaunch({ selection: auto, projectId });
+          const routed = yield* routing.route({
+            selection: auto,
+            projectId,
+            currentInstanceId: null,
+            started: false,
+          });
+          return { launched, routed };
+        }).pipe(Effect.provide(layer));
+        assert.deepEqual(launched, { selection: auto, failover: null });
+        assert.equal(routed.instanceId, primary);
+        assert.includeMembers([...(yield* Ref.get(reads))], [`discover:${third}`]);
+      }),
+  );
+
+  it.effect("says which servers each account with room must sign in to", () =>
+    Effect.gen(function* () {
+      const { layer } = yield* harness;
+      const accounts = yield* Effect.gen(function* () {
+        const routing = yield* AccountRouting.AccountRouting;
+        return yield* routing.accountsWithRoom({
+          driver: claude,
+          projectId,
+          model: "claude-opus-5-5",
+        });
+      }).pipe(Effect.provide(layer));
+      assert.deepEqual(
+        accounts.map((account) => [account.instanceId, account.mcpSignInsNeeded]),
+        [
+          [primary, []],
+          [second, []],
+          [third, [THREADPAGE]],
+        ],
+      );
+    }),
+  );
+});

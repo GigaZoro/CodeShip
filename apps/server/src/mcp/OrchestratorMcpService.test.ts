@@ -63,6 +63,7 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -1468,7 +1469,9 @@ describe("OrchestratorMcpService provider resolution", () => {
       );
       const dependencies = Layer.mergeAll(
         shared,
-        AccountRouting.layer.pipe(Layer.provide(shared)),
+        AccountRouting.layer.pipe(
+          Layer.provide(Layer.mergeAll(shared, Layer.mock(ProviderMcp.ProviderMcp)({}))),
+        ),
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -1604,6 +1607,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           AccountRouting.layer.pipe(
             Layer.provide(
               Layer.mergeAll(
+                Layer.mock(ProviderMcp.ProviderMcp)({}),
                 ServerSettings.layerTest({
                   providerInstances: Object.fromEntries(
                     providers.map((provider) => [
@@ -2229,7 +2233,9 @@ describe("OrchestratorMcpService provider resolution", () => {
             ),
         }),
         shared,
-        AccountRouting.layer.pipe(Layer.provide(shared)),
+        AccountRouting.layer.pipe(
+          Layer.provide(Layer.mergeAll(shared, Layer.mock(ProviderMcp.ProviderMcp)({}))),
+        ),
         adapterRegistryLayer(accounts.map((account) => account.instanceId)),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
@@ -2380,7 +2386,11 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(AccountRouting.AccountRouting)({
             launchLimit: () => Ref.get(limit),
             accountsWithRoom: () =>
-              Ref.get(limit).pipe(Effect.map((limited) => (limited === null ? [selection] : []))),
+              Ref.get(limit).pipe(
+                Effect.map((limited) =>
+                  limited === null ? [{ ...selection, mcpSignInsNeeded: [] }] : [],
+                ),
+              ),
           }),
           ServerSettings.layerTest(),
         );
@@ -2757,6 +2767,14 @@ describe("OrchestratorMcpService provider resolution", () => {
             selectedInstanceId: codexInstanceId,
             candidateDriver: driver,
           },
+          {
+            name: "inherited-needs-mcp-sign-in",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexAltInstanceId,
+            candidateDriver: driver,
+          },
         ] as const;
 
         for (const testCase of cases) {
@@ -2817,10 +2835,23 @@ describe("OrchestratorMcpService provider resolution", () => {
               accountsWithRoom: () =>
                 Effect.succeed([
                   ...(testCase.peerEnabled
-                    ? [{ instanceId: codexAltInstanceId, model: "codex-alt-model" }]
+                    ? [
+                        {
+                          instanceId: codexAltInstanceId,
+                          model: "codex-alt-model",
+                          mcpSignInsNeeded: [],
+                        },
+                      ]
                     : []),
                   ...(testCase.inheritedEnabled
-                    ? [{ instanceId: codexInstanceId, model: "gpt-5.4" }]
+                    ? [
+                        {
+                          instanceId: codexInstanceId,
+                          model: "gpt-5.4",
+                          mcpSignInsNeeded:
+                            testCase.name === "inherited-needs-mcp-sign-in" ? ["threadpage"] : [],
+                        },
+                      ]
                     : []),
                 ]),
             }),

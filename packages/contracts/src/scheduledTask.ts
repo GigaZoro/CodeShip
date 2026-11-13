@@ -338,6 +338,26 @@ export const ScheduledTaskRunUsageLimit = Schema.Struct({
 });
 export type ScheduledTaskRunUsageLimit = typeof ScheduledTaskRunUsageLimit.Type;
 
+export const ScheduledTaskRunFailoverReason = Schema.Literals([
+  /** The task's account was out of usage. */
+  "usageLimit",
+  /** The task's account was signed out of its provider. */
+  "signedOut",
+  /** The task's account must sign in to an MCP server again and another account need not. */
+  "mcpSignIn",
+]);
+export type ScheduledTaskRunFailoverReason = typeof ScheduledTaskRunFailoverReason.Type;
+
+export const ScheduledTaskRunFailover = Schema.Struct({
+  from: ProviderInstanceId,
+  to: ProviderInstanceId,
+  // Any string, so a reason added later doesn't break a client's whole list.
+  reason: Schema.optional(Schema.Union([ScheduledTaskRunFailoverReason, Schema.String])),
+  /** The MCP servers `from` must sign in to again; set with the `mcpSignIn` reason. */
+  mcpServers: Schema.optional(Schema.Array(Schema.String)),
+});
+export type ScheduledTaskRunFailover = typeof ScheduledTaskRunFailover.Type;
+
 /** One time a task fired, including fires that failed before a thread existed or were skipped. */
 export const ScheduledTaskRunRecord = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -353,8 +373,11 @@ export const ScheduledTaskRunRecord = Schema.Struct({
   skipReason: Schema.NullOr(Schema.Union([ScheduledTaskRunSkipReason, Schema.String])),
   /** The machine that ran a one-machine occurrence this one skipped. */
   ranOn: Schema.NullOr(EnvironmentId),
-  /** Set when the run started on another account because the task's own was out of usage. */
-  failover: Schema.NullOr(Schema.Struct({ from: ProviderInstanceId, to: ProviderInstanceId })),
+  /**
+   * Set when the run started on another account than the task named, with why. `reason` and
+   * `mcpServers` are absent from runs recorded before they existed and from older linked machines.
+   */
+  failover: Schema.NullOr(ScheduledTaskRunFailover),
   /** Null when the task had no run condition, or the run ignored it. Absent from servers without run conditions. */
   check: Schema.optional(Schema.NullOr(ScheduledTaskRunCheck)),
   /** Set on a `usage_limited` skip. Absent from servers without it. */

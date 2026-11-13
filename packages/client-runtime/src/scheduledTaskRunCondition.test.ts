@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { runConditionInput, shownNoWorkSkip } from "./scheduledTaskRunCondition.ts";
+import { ProviderInstanceId } from "@t3tools/contracts";
+
+import { failoverText, runConditionInput, shownNoWorkSkip } from "./scheduledTaskRunCondition.ts";
 
 describe("runConditionInput", () => {
   it.each([
@@ -53,5 +55,48 @@ describe("shownNoWorkSkip", () => {
     },
   ])("$name", ({ lastRunAt, expected }) => {
     expect(shownNoWorkSkip({ lastNoWorkSkip: skip, lastRunAt })).toEqual(expected);
+  });
+});
+
+describe("failoverText", () => {
+  const from = ProviderInstanceId.make("claude_main");
+  const to = ProviderInstanceId.make("claude_spare");
+  const names: Record<string, string> = { claude_main: "Main", claude_spare: "Spare" };
+  const text = (extra: { reason?: string; mcpServers?: ReadonlyArray<string> }) =>
+    failoverText({ from, to, ...extra }, (instanceId) => names[instanceId] ?? instanceId);
+
+  it.each([
+    {
+      name: "a usage limit",
+      extra: { reason: "usageLimit" },
+      expected: "Started on Spare because Main was out of usage.",
+    },
+    {
+      name: "a sign-out",
+      extra: { reason: "signedOut" },
+      expected: "Started on Spare because Main was signed out.",
+    },
+    {
+      name: "an MCP sign-in",
+      extra: { reason: "mcpSignIn", mcpServers: ["threadpage", "linear"] },
+      expected: "Started on Spare because Main needs to sign in to threadpage, linear again.",
+    },
+    {
+      name: "an MCP sign-in with no server names",
+      extra: { reason: "mcpSignIn" },
+      expected: "Started on Spare because Main needs to sign in to an MCP server again.",
+    },
+    {
+      name: "a run recorded without a reason",
+      extra: {},
+      expected: "Started on Spare instead of Main.",
+    },
+    {
+      name: "a reason a newer server added",
+      extra: { reason: "other" },
+      expected: "Started on Spare instead of Main.",
+    },
+  ])("says $name", ({ extra, expected }) => {
+    expect(text(extra)).toBe(expected);
   });
 });

@@ -21,6 +21,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -138,6 +139,7 @@ const settings = {
 
 const failover = (overrides: Partial<Parameters<typeof limitFailoverCommand>[0]> = {}) =>
   limitFailoverCommand({
+    mcpSignInsNeeded: new Map(),
     thread,
     settings,
     providers,
@@ -272,6 +274,7 @@ describe("limitRecoveryTarget", () => {
   };
   const recoveryTarget = (overrides: Partial<Parameters<typeof limitRecoveryTarget>[0]> = {}) =>
     limitRecoveryTarget({
+      mcpSignInsNeeded: new Map(),
       thread: stopped,
       settings: {
         ...DEFAULT_SERVER_SETTINGS,
@@ -448,6 +451,7 @@ describe("limitRecoveryTarget", () => {
             }),
             streamChanges: Stream.never,
           }),
+          Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Effect.succeed([
               provider("claudeAgent", {
@@ -547,6 +551,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
             } as never),
             streamChanges: Stream.never,
           }),
+          Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Effect.succeed([]),
             streamChanges: Stream.fromQueue(providerChanges),
@@ -641,6 +646,7 @@ it.effect.each([
             }),
             streamChanges: Stream.never,
           }),
+          Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Effect.succeed([
               provider("claudeAgent"),
@@ -759,6 +765,7 @@ describe("signedOutFailoverCommand", () => {
   const refusal = [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }];
   const move = (overrides: Partial<Parameters<typeof signedOutFailoverCommand>[0]> = {}) =>
     signedOutFailoverCommand({
+      mcpSignInsNeeded: new Map(),
       thread: candidate,
       settings,
       providers: signedOutProviders,

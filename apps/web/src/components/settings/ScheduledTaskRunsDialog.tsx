@@ -2,6 +2,7 @@ import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  failoverText,
   peerNoWorkText,
   runCheckText,
   usageLimitSkipText,
@@ -132,14 +133,7 @@ function FailoverNote({
     const provider = providers.find((candidate) => candidate.instanceId === instanceId);
     return provider ? resolveProviderInstanceDisplayName(provider) : instanceId;
   };
-  return (
-    <p className="text-muted-foreground">
-      {t("Started on {to} because {from} was out of usage.", {
-        to: accountName(failover.to),
-        from: accountName(failover.from),
-      })}
-    </p>
-  );
+  return <p className="text-muted-foreground">{failoverText(failover, accountName)}</p>;
 }
 
 /**

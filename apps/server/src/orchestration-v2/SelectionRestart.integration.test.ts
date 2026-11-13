@@ -1296,6 +1296,7 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
           candidate === undefined
             ? null
             : limitFailoverCommand({
+                mcpSignInsNeeded: new Map(),
                 thread: candidate,
                 settings: {
                   ...DEFAULT_SERVER_SETTINGS,

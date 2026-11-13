@@ -34,6 +34,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -58,6 +59,20 @@ export interface AccountRoutingContext {
   >;
   readonly nowMs: number;
 }
+
+/**
+ * The MCP servers each account must sign in to again. An account absent from the map is not known
+ * to need any: its servers were not listed, or all of them are signed in.
+ */
+export type McpSignInsNeeded = ReadonlyMap<ProviderInstanceId, ReadonlyArray<string>>;
+
+/** Required wherever an account is chosen, so every builder of a routing context decides. */
+export interface McpSignIns {
+  readonly mcpSignInsNeeded: McpSignInsNeeded;
+}
+
+const pendingSignIns = (input: McpSignIns, instanceId: ProviderInstanceId) =>
+  input.mcpSignInsNeeded.get(instanceId) ?? [];
 
 const canonicalModel = (provider: ServerProvider, slug: string) =>
   resolveSelectableModel(provider.driver, slug, provider.models) ?? slug;
@@ -309,9 +324,13 @@ interface AccountSearch extends AccountRoutingContext {
   readonly model: string;
 }
 
-/** Accounts of `driver` that can run `model` now, highest in the saved account order first. */
+/**
+ * Accounts of `driver` that can run `model` now, highest in the saved account order first. An
+ * account that must sign in to an MCP server again comes after every account that need not, since
+ * its agents would run without that server's tools.
+ */
 export function accountsWithRoom(
-  input: AccountSearch,
+  input: AccountSearch & McpSignIns,
 ): ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }> {
   if (!supportsAccountFailover(input.driver)) return [];
   const eligible = input.providers.flatMap((provider) => {
@@ -319,7 +338,13 @@ export function accountsWithRoom(
     const model = modelWithRoom(provider, input);
     return model === null ? [] : [{ instanceId: provider.instanceId, model }];
   });
-  return orderProviderInstancesForFailover(input.settings.providerInstanceFailoverOrder, eligible);
+  const ordered = orderProviderInstancesForFailover(
+    input.settings.providerInstanceFailoverOrder,
+    eligible,
+  );
+  const signedIn = (account: { readonly instanceId: ProviderInstanceId }) =>
+    pendingSignIns(input, account.instanceId).length === 0;
+  return [...ordered.filter(signedIn), ...ordered.filter((account) => !signedIn(account))];
 }
 
 /**
@@ -343,18 +368,20 @@ export function nextAccountRoomAt(
 
 /**
  * Where an Auto selection runs: its provider's Auto model. With account switching on, a thread
- * keeps its account while it has room, so its session never restarts needlessly; otherwise it
- * takes the highest account in the order with room, else stays put. Auto off runs it as named.
+ * keeps its account while it has room, so its session never restarts needlessly, unless that
+ * account must sign in to an MCP server again and the top account with room need not; otherwise
+ * it takes the highest account in the order with room, else stays put. Auto off runs it as named.
  */
 export function routeAutoAccount(
-  input: AccountRoutingContext & {
-    readonly selection: ModelSelection;
-    readonly projectId: ProjectId;
-    /** The account the thread already runs on; null for a thread with no run yet. */
-    readonly currentInstanceId: ProviderInstanceId | null;
-    /** A thread that already ran keeps its provider. */
-    readonly started: boolean;
-  },
+  input: AccountRoutingContext &
+    McpSignIns & {
+      readonly selection: ModelSelection;
+      readonly projectId: ProjectId;
+      /** The account the thread already runs on; null for a thread with no run yet. */
+      readonly currentInstanceId: ProviderInstanceId | null;
+      /** A thread that already ran keeps its provider. */
+      readonly started: boolean;
+    },
 ): ModelSelection {
   if (input.selection.autoAccount !== true) return input.selection;
   const selection = resolveAutoModelSelection({
@@ -374,7 +401,13 @@ export function routeAutoAccount(
   const pickTarget = () => {
     if (current !== undefined) {
       const model = modelWithRoom(current, { ...input, model: selection.model });
-      if (model !== null) return { instanceId: current.instanceId, model };
+      if (model !== null) {
+        const keep = { instanceId: current.instanceId, model };
+        if (pendingSignIns(input, current.instanceId).length === 0) return keep;
+        // Accounts that need no sign-in come first, so the top one is the move or there is none.
+        const top = accountsWithRoom({ ...input, driver, model: selection.model })[0];
+        return top !== undefined && pendingSignIns(input, top.instanceId).length === 0 ? top : keep;
+      }
     }
     const withRoom = accountsWithRoom({ ...input, driver, model: selection.model })[0];
     if (withRoom !== undefined) return withRoom;
@@ -391,41 +424,64 @@ export function routeAutoAccount(
   return modelPicksEqual(routed, input.selection) ? input.selection : routed;
 }
 
+/** Why a launch started on another account than the one it named. */
+export type LaunchFailover =
+  | { readonly reason: "usageLimit" | "signedOut" }
+  | { readonly reason: "mcpSignIn"; readonly mcpServers: ReadonlyArray<string> };
+
+export interface LaunchRoute {
+  readonly selection: ModelSelection;
+  /** Null when the launch stays on the account it named. */
+  readonly failover: LaunchFailover | null;
+}
+
 /**
- * A new thread whose named account is out of usage or signed out starts on the first other account
- * of its provider with room. A signed-out account with no such account hands the thread to the
- * fallback model when that can run it. Only while account switching is on, like a thread that
- * hits its limit; Auto picks are routed when their message is sent.
+ * A new thread whose named account is out of usage, signed out, or must sign in to an MCP server
+ * again starts on the first other account with room (and, for the sign-in, none to redo). A
+ * signed-out account with no such account falls back to the fallback model. Auto picks are routed
+ * when their message is sent.
  */
 export function failoverLimitedLaunch(
-  input: AccountRoutingContext & {
-    readonly selection: ModelSelection;
-    readonly projectId: ProjectId;
-  },
-): ModelSelection {
+  input: AccountRoutingContext &
+    McpSignIns & {
+      readonly selection: ModelSelection;
+      readonly projectId: ProjectId;
+    },
+): LaunchRoute {
+  const stay: LaunchRoute = { selection: input.selection, failover: null };
   if (!input.settings.failoverLimitedThreads || input.selection.autoAccount === true) {
-    return input.selection;
+    return stay;
   }
   const current = input.providers.find(
     (provider) => provider.instanceId === input.selection.instanceId,
   );
-  if (current === undefined) return input.selection;
+  if (current === undefined) return stay;
   const signedOut = current.enabled && current.auth.status === "unauthenticated";
-  if (
-    !signedOut &&
-    accountLimitEnd(current, input.recordedLimits, input.nowMs, input.selection.model) === null
-  ) {
-    return input.selection;
-  }
-  const target = accountsWithRoom({
+  const limited =
+    accountLimitEnd(current, input.recordedLimits, input.nowMs, input.selection.model) !== null;
+  const mcpServers = pendingSignIns(input, current.instanceId);
+  if (!signedOut && !limited && mcpServers.length === 0) return stay;
+  const others = accountsWithRoom({
     ...input,
     driver: current.driver,
     model: input.selection.model,
-  }).find((account) => account.instanceId !== current.instanceId);
+  }).filter((account) => account.instanceId !== current.instanceId);
+  const target =
+    signedOut || limited
+      ? others[0]
+      : others.find((account) => pendingSignIns(input, account.instanceId).length === 0);
   if (target !== undefined) {
-    return { ...input.selection, instanceId: target.instanceId, model: target.model };
+    return {
+      selection: { ...input.selection, instanceId: target.instanceId, model: target.model },
+      failover: signedOut
+        ? { reason: "signedOut" }
+        : limited
+          ? { reason: "usageLimit" }
+          : { reason: "mcpSignIn", mcpServers },
+    };
   }
-  return signedOut ? (fallbackLaunch(input, current) ?? input.selection) : input.selection;
+  const fallback = signedOut ? fallbackLaunch(input, current) : null;
+  return fallback === null ? stay : { selection: fallback, failover: { reason: "signedOut" } };
 }
 
 /** The fallback model selection, when it is another account that can take the launch now. */
@@ -481,10 +537,18 @@ function launchWait(
     readonly projectId: ProjectId;
   },
 ): UsageWait | null {
+  // MCP sign-ins only choose among accounts that have room, so they never change whether a
+  // launch must wait: this routes without them.
+  const unknownSignIns: McpSignIns = { mcpSignInsNeeded: new Map() };
   const selection =
     input.selection.autoAccount === true
-      ? routeAutoAccount({ ...input, currentInstanceId: null, started: false })
-      : failoverLimitedLaunch(input);
+      ? routeAutoAccount({
+          ...input,
+          ...unknownSignIns,
+          currentInstanceId: null,
+          started: false,
+        })
+      : failoverLimitedLaunch({ ...input, ...unknownSignIns }).selection;
   const own = input.providers.find((provider) => provider.instanceId === selection.instanceId);
   if (own === undefined) return null;
   const switching = input.settings.failoverLimitedThreads && supportsAccountFailover(own.driver);
@@ -575,13 +639,21 @@ export class AccountRouting extends Context.Service<
       readonly currentInstanceId: ProviderInstanceId | null;
       readonly started: boolean;
     }) => Effect.Effect<ModelSelection>;
-    /** Subscription accounts that can run this model, in failover order. */
+    /**
+     * Subscription accounts that can run this model, in failover order, with accounts that must
+     * sign in to an MCP server again last, and the servers each must sign in to. Lists the MCP
+     * servers of the provider's accounts first (bounded wait).
+     */
     readonly accountsWithRoom: (input: {
       readonly driver: ProviderDriverKind;
       readonly projectId: ProjectId;
       readonly model: string;
     }) => Effect.Effect<
-      ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }>
+      ReadonlyArray<{
+        readonly instanceId: ProviderInstanceId;
+        readonly model: string;
+        readonly mcpSignInsNeeded: ReadonlyArray<string>;
+      }>
     >;
     /** Account-wide usage limits, ending at the provider reset or T3 hold end. */
     readonly limits: Effect.Effect<{
@@ -604,11 +676,16 @@ export class AccountRouting extends Context.Service<
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
     }) => Effect.Effect<LaunchLimit | null>;
-    /** The account a new thread starts on when its named one is out of usage. */
+    /**
+     * The account a new thread starts on when its named one is out of usage, signed out, or must
+     * sign in to an MCP server again, and why it moved. Lists the MCP servers of the provider's
+     * accounts first (bounded wait), so a machine no client polls still sees fresh sign-in state;
+     * an Auto pick stays as it is and its first turn routes from those lists.
+     */
     readonly failoverLaunch: (input: {
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
-    }) => Effect.Effect<ModelSelection>;
+    }) => Effect.Effect<LaunchRoute>;
     /**
      * `usageBlock` for a scheduled occurrence. The usage of each account in the way is read again
      * first, at most once an hour per account, and a reading that shows room lifts its recorded
@@ -653,11 +730,64 @@ export function codexSignInChanges(
   });
 }
 const USAGE_PROBE_TIMEOUT = "20 seconds";
+const MCP_LIST_CONCURRENCY = 4;
+
+/**
+ * The MCP sign-ins each account that account switching could pick still needs. `discover` reads a
+ * list no older than MCP_LIST_MAX_AGE and lists again when there is none, waiting a bounded time,
+ * for launches; `loaded` only reads what a list already found, for paths that must not wait or
+ * start a provider. Routing only steers, so an account whose servers cannot be read is left out.
+ */
+export const readMcpSignIns = Effect.fn("AccountRouting.readMcpSignIns")(function* (
+  mcp: ProviderMcp.ProviderMcp["Service"],
+  input: {
+    readonly settings: Pick<ServerSettingsValue, "failoverLimitedThreads">;
+    readonly providers: ReadonlyArray<ServerProvider>;
+    readonly nowMs: number;
+    readonly mode: "discover" | "loaded";
+    /** Only this provider's accounts, when the choice is among them. */
+    readonly driver?: ProviderDriverKind;
+  },
+) {
+  if (!input.settings.failoverLimitedThreads) return new Map<ProviderInstanceId, Array<string>>();
+  const servers = (instanceId: ProviderInstanceId) =>
+    input.mode === "loaded"
+      ? mcp.listLoaded(instanceId, ProviderMcp.MCP_LIST_MAX_AGE)
+      : mcp.discover(instanceId);
+  const accounts = input.providers.filter(
+    (provider) =>
+      supportsAccountFailover(provider.driver) &&
+      (input.driver === undefined || provider.driver === input.driver) &&
+      ProviderMcp.canListMcpServers(provider, input.nowMs),
+  );
+  const found = yield* Effect.forEach(
+    accounts,
+    (provider) =>
+      servers(provider.instanceId).pipe(
+        Effect.map(
+          Option.map(
+            (listed) =>
+              [
+                provider.instanceId,
+                listed.filter(ProviderMcp.needsMcpSignIn).map((server) => server.name),
+              ] as const,
+          ),
+        ),
+      ),
+    { concurrency: MCP_LIST_CONCURRENCY },
+  );
+  return new Map(
+    found.flatMap((entry) =>
+      Option.isSome(entry) && entry.value[1].length > 0 ? [entry.value] : [],
+    ),
+  );
+});
 
 export const layer = Layer.effect(
   AccountRouting,
   Effect.gen(function* () {
     const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+    const mcp = yield* ProviderMcp.ProviderMcp;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const settingsChanges = yield* serverSettings.subscribeChanges;
@@ -797,13 +927,25 @@ export const layer = Layer.effect(
         function* (input) {
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
+          const settings = yield* serverSettings.getSettings;
+          const mcpSignInsNeeded = yield* readMcpSignIns(mcp, {
+            settings,
+            providers,
+            nowMs: DateTime.toEpochMillis(now),
+            mode: "discover",
+            driver: input.driver,
+          });
           return accountsWithRoom({
             ...input,
-            settings: yield* serverSettings.getSettings,
+            settings,
             providers,
             recordedLimits: yield* readLimits(now, providers),
+            mcpSignInsNeeded,
             nowMs: DateTime.toEpochMillis(now),
-          });
+          }).map((account) => ({
+            ...account,
+            mcpSignInsNeeded: pendingSignIns({ mcpSignInsNeeded }, account.instanceId),
+          }));
         },
         (effect) =>
           effect.pipe(
@@ -867,6 +1009,7 @@ export const layer = Layer.effect(
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const limited = yield* readLimits(now, providers);
+          const settings = yield* serverSettings.getSettings;
           // A new thread's first turn routes like this, so Auto is judged where it would start.
           const selection =
             input.selection.autoAccount === true
@@ -875,9 +1018,15 @@ export const layer = Layer.effect(
                   projectId: input.projectId,
                   currentInstanceId: null,
                   started: false,
-                  settings: yield* serverSettings.getSettings,
+                  settings,
                   providers,
                   recordedLimits: limited,
+                  mcpSignInsNeeded: yield* readMcpSignIns(mcp, {
+                    settings,
+                    providers,
+                    nowMs: DateTime.toEpochMillis(now),
+                    mode: "loaded",
+                  }),
                   nowMs: DateTime.toEpochMillis(now),
                 })
               : input.selection;
@@ -897,17 +1046,40 @@ export const layer = Layer.effect(
       ),
       failoverLaunch: Effect.fn("AccountRouting.failoverLaunch")(
         function* (input) {
+          const stay: LaunchRoute = { selection: input.selection, failover: null };
           const settings = yield* serverSettings.getSettings;
-          if (!settings.failoverLimitedThreads || input.selection.autoAccount === true) {
-            return input.selection;
-          }
+          if (!settings.failoverLimitedThreads) return stay;
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
+          const auto = input.selection.autoAccount === true;
+          const named = auto
+            ? resolveAutoModelSelection({
+                selection: input.selection,
+                settings,
+                accounts: providers,
+                started: false,
+              })
+            : input.selection;
+          const driver = providers.find(
+            (provider) => provider.instanceId === named.instanceId,
+          )?.driver;
+          if (driver === undefined) return stay;
+          const mcpSignInsNeeded = yield* readMcpSignIns(mcp, {
+            settings,
+            providers,
+            nowMs: DateTime.toEpochMillis(now),
+            mode: "discover",
+            driver,
+          });
+          // An Auto pick is routed when its message is sent, from the lists loaded by then. Listing
+          // here is what makes them fresh on a machine no client polls.
+          if (auto) return stay;
           return failoverLimitedLaunch({
             ...input,
             settings,
             providers,
             recordedLimits: yield* readLimits(now, providers),
+            mcpSignInsNeeded,
             nowMs: DateTime.toEpochMillis(now),
           });
         },
@@ -916,7 +1088,7 @@ export const layer = Layer.effect(
           effect.pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.account-routing.launch-failed", { cause }).pipe(
-                Effect.as(input.selection),
+                Effect.as({ selection: input.selection, failover: null } satisfies LaunchRoute),
               ),
             ),
           ),
@@ -926,11 +1098,19 @@ export const layer = Layer.effect(
           if (input.selection.autoAccount !== true) return input.selection;
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
+          const settings = yield* serverSettings.getSettings;
+          // A message dispatch must not wait on or start a provider, so only what is loaded counts.
           return routeAutoAccount({
             ...input,
-            settings: yield* serverSettings.getSettings,
+            settings,
             providers,
             recordedLimits: yield* readLimits(now, providers),
+            mcpSignInsNeeded: yield* readMcpSignIns(mcp, {
+              settings,
+              providers,
+              nowMs: DateTime.toEpochMillis(now),
+              mode: "loaded",
+            }),
             nowMs: DateTime.toEpochMillis(now),
           });
         },

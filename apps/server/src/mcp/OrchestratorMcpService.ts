@@ -1724,13 +1724,19 @@ const make = Effect.gen(function* () {
             projectId: input.parent.thread.projectId,
             selection: { instanceId, model: driverModel },
           })) === null;
-        if (!parentCanRun) {
-          const withRoom = yield* accountRouting.value.accountsWithRoom({
-            driver: requestedDriver,
-            projectId: input.parent.thread.projectId,
-            model: driverModel,
-          });
+        const withRoom = yield* accountRouting.value.accountsWithRoom({
+          driver: requestedDriver,
+          projectId: input.parent.thread.projectId,
+          model: driverModel,
+        });
+        // A parent account that must sign in to an MCP server again would start the child without
+        // that server's tools, so it is left for an account with room and no sign-in to redo.
+        const parentSignIns =
+          withRoom.find((candidate) => candidate.instanceId === inherited.instanceId)
+            ?.mcpSignInsNeeded ?? [];
+        if (!parentCanRun || parentSignIns.length > 0) {
           for (const candidate of withRoom) {
+            if (parentCanRun && candidate.mcpSignInsNeeded.length > 0) continue;
             if (!healthyCandidates.some((provider) => provider.instanceId === candidate.instanceId))
               continue;
             if (

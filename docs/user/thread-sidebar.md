@@ -507,8 +507,17 @@ signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit
 its limit starts its new thread on the first other account with usage left, and
-its **Run history** says which account it used. **Usage → Limits** shows which
+its **Run history** says which account it used and why. **Usage → Limits** shows which
 account a limited thread continues on right now.
+
+An account that must sign in to an MCP server again (such as ThreadPage, shown as a
+manual step on the provider) would start the chat without that server's tools. With
+account switching on, Auto, scheduled tasks and agent launches therefore prefer an
+account whose sign-ins are in place: a scheduled task that names such an account
+starts on the first other account with room and none to redo, an Auto chat moves
+the same way, and a delegate whose parent chat runs on such an account starts on
+another one. When every account needs a sign-in, the chat stays where it is. Plugin
+servers and servers that can't be signed in to from CodeShip don't count.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers & models → Models** on web or desktop: pick a primary provider under **Auto mode**, and

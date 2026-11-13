@@ -1,3 +1,4 @@
+import * as ProviderMcp from "../../../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { expect, it } from "@effect/vitest";
 import {
@@ -231,6 +232,7 @@ const clientLaunchHarness = (input: {
             : Option.none(),
         ),
     }),
+    Layer.mock(ProviderMcp.ProviderMcp)({}),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed(
         input.providers ?? [

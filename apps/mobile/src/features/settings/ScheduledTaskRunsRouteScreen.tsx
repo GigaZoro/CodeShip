@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { formatScheduledTaskRunTime } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
+  failoverText,
   peerNoWorkText,
   runCheckText,
   usageLimitSkipText,
@@ -205,10 +206,7 @@ export function ScheduledTaskRunsRouteScreen({
                     ) : null}
                     {run.failover !== null ? (
                       <Text textRole="footnote" className="text-foreground-muted">
-                        {t("Started on {to} because {from} was out of usage.", {
-                          to: accountName(run.failover.to),
-                          from: accountName(run.failover.from),
-                        })}
+                        {failoverText(run.failover, accountName)}
                       </Text>
                     ) : null}
                     {run.error !== null ? (

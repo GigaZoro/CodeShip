@@ -1,3 +1,9 @@
+## 2026-11-13 — Accounts that must sign in to an MCP server again are passed over, and run history says why a run moved
+
+- Scheduled tasks and Auto chats no longer start on an account that must sign in to an MCP server (such as ThreadPage) again while another account with room is signed in. Before, a task naming that account ran for hours without the server's tools and did nothing, once the other account's usage limit ended. Delegates and agent launches prefer accounts whose sign-ins are in place too, even when the parent chat runs on the account that needs one. When every account needs a sign-in, the chat stays where it is. This follows **Switch accounts at usage limits**.
+- **Run history** now says why a run started on another account: the task's account was out of usage, was signed out, or needs to sign in to a named MCP server again, on web, desktop and mobile.
+- See [Switching accounts at usage limits](user/thread-sidebar.md#inspect-agent-work).
+
 ## 2026-11-13 — A one-machine task no longer skips a time because another machine ran the one before late
 
 - A shared task set to **One machine** could skip a time on every machine. When the first machine was off, another machine could take the previous time over late and still be running it when the next time came due. The next machine in the order took that run for the new time's, so it waited for it or skipped, and nobody ran the new time.

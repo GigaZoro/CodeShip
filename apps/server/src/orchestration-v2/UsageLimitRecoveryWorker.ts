@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -17,6 +18,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import {
   type AccountRoutingContext,
   accountsWithRoom,
+  type McpSignIns,
+  readMcpSignIns,
   runLiftsScope,
   nextAccountRoomAt,
   recoveryRoomAt,
@@ -116,9 +119,10 @@ export function limitRecoveryCommand(
   };
 }
 
-type FailoverInput = AccountRoutingContext & {
-  readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
-};
+type FailoverInput = AccountRoutingContext &
+  McpSignIns & {
+    readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
+  };
 
 /**
  * Where a limited thread's next turn runs, and when it has room there: an Auto thread's current
@@ -238,9 +242,10 @@ const MAX_SIGNED_OUT_FAILURE_AGE_MS = 24 * 60 * 60 * 1000;
  * Only while the account still reads signed out: signing in again leaves the thread where it is.
  */
 export function signedOutFailoverCommand(
-  input: AccountRoutingContext & {
-    readonly thread: ProjectionStore.ProjectionSignedOutCandidate;
-  },
+  input: AccountRoutingContext &
+    McpSignIns & {
+      readonly thread: ProjectionStore.ProjectionSignedOutCandidate;
+    },
 ): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
   const { thread } = input;
   if (
@@ -297,6 +302,7 @@ const makeSweep = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const settings = yield* ServerSettings.ServerSettingsService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const mcp = yield* ProviderMcp.ProviderMcp;
   const due = DueHint.make();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
@@ -346,6 +352,13 @@ const makeSweep = Effect.gen(function* () {
               now,
               runLiftsScope(providers),
             ),
+            // A sweep must not start providers, so only the MCP state already loaded counts.
+            mcpSignInsNeeded: yield* readMcpSignIns(mcp, {
+              settings: preferences,
+              providers,
+              nowMs,
+              mode: "loaded",
+            }),
             nowMs,
           };
     const failover = preferences.failoverLimitedThreads ? routing : null;

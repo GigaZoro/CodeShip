@@ -2,7 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   ProviderInstanceId,
-  type ProviderMcpError,
+  ProviderMcpError,
   type ProviderMcpServer,
   type ProviderMcpServerConfig,
   type ProviderMcpSignInState,
@@ -12,6 +12,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -40,6 +41,7 @@ const makeHarness = Effect.gen(function* () {
   const firstListStarted = yield* Deferred.make<void>();
   const releaseFirstList = yield* Deferred.make<void>();
   const holdFirstList = yield* Ref.make(false);
+  const failLists = yield* Ref.make(false);
   const submitted = yield* Ref.make<ReadonlyArray<string>>([]);
   const edited = yield* Ref.make<ReadonlyArray<readonly [string, ProviderMcpServerConfig]>>([]);
   const signedIn = yield* Deferred.make<void, ProviderMcpError>();
@@ -51,6 +53,17 @@ const makeHarness = Effect.gen(function* () {
             hold && reads === 1
               ? Deferred.succeed(firstListStarted, undefined).pipe(
                   Effect.andThen(Deferred.await(releaseFirstList)),
+                )
+              : Effect.void,
+          ),
+        ),
+      ),
+      Effect.tap(() =>
+        Ref.get(failLists).pipe(
+          Effect.flatMap((fail) =>
+            fail
+              ? Effect.fail(
+                  new ProviderMcpError({ operation: "list", instanceId, reason: "providerFailed" }),
                 )
               : Effect.void,
           ),
@@ -124,6 +137,7 @@ const makeHarness = Effect.gen(function* () {
     signedIn,
     layer,
     holdFirstList,
+    failLists,
     firstListStarted,
     releaseFirstList,
   };
@@ -160,35 +174,39 @@ it.effect("ProviderMcp lists config servers first and reads again after a change
   }),
 );
 
-it.effect("ProviderMcp.listRecent reuses an old list until it ages out or a change drops it", () =>
+const minionsNeedsAuth = (listed: Option.Option<ReadonlyArray<ProviderMcpServer>>) =>
+  Option.isSome(listed) &&
+  listed.value.some((entry) => entry.name === "minions" && entry.status === "needsAuth");
+
+it.effect("ProviderMcp.discover reuses an old list until it ages out or a change drops it", () =>
   Effect.gen(function* () {
     const harness = yield* makeHarness;
     yield* Effect.gen(function* () {
       const service = yield* ProviderMcp.ProviderMcp;
       yield* service.list({ instanceId });
-      // Past the cache's 30 s but inside the poller's allowance: no second list.
+      // Past the cache's 30 s but inside MCP_LIST_MAX_AGE: no second list.
       yield* TestClock.adjust("5 minutes");
-      yield* service.listRecent(instanceId, "15 minutes");
+      assert.isTrue(minionsNeedsAuth(yield* service.discover(instanceId)));
       assert.equal(yield* Ref.get(harness.listReads), 1);
 
       yield* TestClock.adjust("11 minutes");
-      yield* service.listRecent(instanceId, "15 minutes");
+      assert.isTrue(minionsNeedsAuth(yield* service.discover(instanceId)));
       assert.equal(yield* Ref.get(harness.listReads), 2);
 
       yield* service.setEnabled({ instanceId, name: "alpha", enabled: false });
-      yield* service.listRecent(instanceId, "15 minutes");
+      yield* service.discover(instanceId);
       assert.equal(yield* Ref.get(harness.listReads), 3);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
 
-it.effect("ProviderMcp.listRecent does not take a list that began before a change as fresh", () =>
+it.effect("ProviderMcp.discover does not take a list that began before a change as fresh", () =>
   Effect.gen(function* () {
     const harness = yield* makeHarness;
     yield* Ref.set(harness.holdFirstList, true);
     yield* Effect.gen(function* () {
       const service = yield* ProviderMcp.ProviderMcp;
-      const early = yield* service.listRecent(instanceId, "15 minutes").pipe(Effect.forkChild);
+      const early = yield* service.discover(instanceId).pipe(Effect.forkChild);
       yield* Deferred.await(harness.firstListStarted);
       // The cache stores the in-flight lookup right after it starts parked on the gate.
       yield* Effect.yieldNow;
@@ -197,11 +215,94 @@ it.effect("ProviderMcp.listRecent does not take a list that began before a chang
       yield* Deferred.succeed(harness.releaseFirstList, undefined);
       yield* Fiber.join(early);
 
-      yield* service.listRecent(instanceId, "15 minutes");
+      yield* service.discover(instanceId);
       assert.equal(yield* Ref.get(harness.listReads), 2);
     }).pipe(Effect.provide(harness.layer));
   }),
 );
+
+it.effect("ProviderMcp.discover keeps a slow list running after its caller gives up", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* Ref.set(harness.holdFirstList, true);
+    yield* Effect.gen(function* () {
+      const service = yield* ProviderMcp.ProviderMcp;
+      const first = yield* service.discover(instanceId).pipe(Effect.forkChild);
+      yield* Deferred.await(harness.firstListStarted);
+      yield* TestClock.adjust("26 seconds");
+      assert.isTrue(Option.isNone(yield* Fiber.join(first)));
+
+      // The next caller joins the list still running instead of starting the provider again.
+      const second = yield* service.discover(instanceId).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(harness.releaseFirstList, undefined);
+      assert.isTrue(minionsNeedsAuth(yield* Fiber.join(second)));
+      assert.equal(yield* Ref.get(harness.listReads), 1);
+      assert.isTrue(minionsNeedsAuth(yield* service.listLoaded(instanceId, "15 minutes")));
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("ProviderMcp.discover does not start a provider that failed again for 5 minutes", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* Ref.set(harness.failLists, true);
+    yield* Effect.gen(function* () {
+      const service = yield* ProviderMcp.ProviderMcp;
+      assert.isTrue(Option.isNone(yield* service.discover(instanceId)));
+      yield* TestClock.adjust("1 minute");
+      assert.isTrue(Option.isNone(yield* service.discover(instanceId)));
+      yield* TestClock.adjust("3 minutes");
+      assert.isTrue(Option.isNone(yield* service.discover(instanceId)));
+      assert.equal(yield* Ref.get(harness.listReads), 1);
+
+      yield* Ref.set(harness.failLists, false);
+      yield* TestClock.adjust("1 minute");
+      assert.isTrue(minionsNeedsAuth(yield* service.discover(instanceId)));
+      assert.equal(yield* Ref.get(harness.listReads), 2);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("ProviderMcp.listLoaded returns only a loaded list inside its age and never lists", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness;
+    yield* Effect.gen(function* () {
+      const service = yield* ProviderMcp.ProviderMcp;
+      assert.isTrue(Option.isNone(yield* service.listLoaded(instanceId, "15 minutes")));
+      assert.equal(yield* Ref.get(harness.listReads), 0);
+
+      yield* service.list({ instanceId });
+      yield* TestClock.adjust("5 minutes");
+      const loaded = yield* service.listLoaded(instanceId, "15 minutes");
+      assert.isTrue(
+        Option.isSome(loaded) &&
+          loaded.value.some((entry) => entry.name === "minions" && entry.status === "needsAuth"),
+      );
+
+      yield* TestClock.adjust("11 minutes");
+      assert.isTrue(Option.isNone(yield* service.listLoaded(instanceId, "15 minutes")));
+
+      yield* service.list({ instanceId, refresh: true });
+      yield* service.setEnabled({ instanceId, name: "alpha", enabled: false });
+      assert.isTrue(Option.isNone(yield* service.listLoaded(instanceId, "15 minutes")));
+      assert.equal(yield* Ref.get(harness.listReads), 2);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it("needsMcpSignIn counts a signable needs-auth server unless a plugin brought it", () => {
+  const needing = server({
+    name: "minions",
+    origin: "config",
+    status: "needsAuth",
+    canSignIn: true,
+  });
+  assert.isTrue(ProviderMcp.needsMcpSignIn(needing));
+  assert.isFalse(ProviderMcp.needsMcpSignIn({ ...needing, origin: "plugin" }));
+  assert.isFalse(ProviderMcp.needsMcpSignIn({ ...needing, canSignIn: false }));
+  assert.isFalse(ProviderMcp.needsMcpSignIn({ ...needing, status: "connected" }));
+});
 
 it.effect("ProviderMcp hands a pasted callback only to the open sign-in it belongs to", () =>
   Effect.gen(function* () {

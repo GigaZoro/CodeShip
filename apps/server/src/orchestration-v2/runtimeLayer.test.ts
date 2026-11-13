@@ -63,6 +63,7 @@ import * as ManagedEndpointRuntime from "../cloud/ManagedEndpointRuntime.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -9376,6 +9377,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         }),
       );
       const failover = limitFailoverCommand({
+        mcpSignInsNeeded: new Map(),
         thread: candidate,
         settings: {
           ...DEFAULT_SERVER_SETTINGS,
@@ -10491,6 +10493,7 @@ const layerProductionBrowserAccessTest = RuntimeLayer.layerProduction.pipe(
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+      Layer.mock(ProviderMcp.ProviderMcp)({}),
       Layer.mock(ProviderRegistry.ProviderRegistry)({}),
       // A full service, not Layer.mock, so the store has no directory instead of a stub.
       Layer.succeed(

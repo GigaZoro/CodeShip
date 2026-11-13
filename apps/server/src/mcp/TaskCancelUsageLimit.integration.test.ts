@@ -36,6 +36,7 @@ import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderRepl
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -184,6 +185,7 @@ it.effect.each([
           Layer.provide(
             Layer.mergeAll(
               layerAdapters,
+              Layer.mock(ProviderMcp.ProviderMcp)({}),
               Layer.mock(ProviderRegistry.ProviderRegistry)({
                 getProviders: Effect.succeed([]),
                 streamChanges: Stream.never,

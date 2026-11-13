@@ -6,6 +6,7 @@ import {
   type ScheduledTaskNoWorkSkip,
   type ScheduledTaskRunCheck,
   type ScheduledTaskRunConditionInput,
+  type ScheduledTaskRunFailover,
   type ScheduledTaskRunUsageLimit,
 } from "@t3tools/contracts";
 import { t } from "@t3tools/shared/i18n";
@@ -89,6 +90,36 @@ export function usageLimitSkipText(
     provider: providerDriverDisplayName(usageLimit.driver),
     time: formatTime(usageLimit.until),
   });
+}
+
+/** Run history's line for a run that started on another account than its task named, and why. */
+export function failoverText(
+  failover: ScheduledTaskRunFailover,
+  accountName: (instanceId: string) => string,
+): string {
+  const to = accountName(failover.to);
+  const from = accountName(failover.from);
+  switch (failover.reason) {
+    case "usageLimit":
+      return t("Started on {to} because {from} was out of usage.", { to, from });
+    case "signedOut":
+      return t("Started on {to} because {from} was signed out.", { to, from });
+    case "mcpSignIn": {
+      const servers = failover.mcpServers?.join(", ") ?? "";
+      return servers === ""
+        ? t("Started on {to} because {from} needs to sign in to an MCP server again.", {
+            to,
+            from,
+          })
+        : t("Started on {to} because {from} needs to sign in to {servers} again.", {
+            to,
+            from,
+            servers,
+          });
+    }
+    default:
+      return t("Started on {to} instead of {from}.", { to, from });
+  }
 }
 
 /** What the task editor says under the check's fields. */

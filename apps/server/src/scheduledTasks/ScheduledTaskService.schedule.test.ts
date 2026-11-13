@@ -523,41 +523,53 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("starts a new thread on another account when the task's account is out of usage", () =>
-  Effect.gen(function* () {
-    yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
-    const launchedOn = yield* Ref.make<ReadonlyArray<string>>([]);
-    const spare = ProviderInstanceId.make("claude_spare");
-    const layer = runHistoryLayer(
-      (input) =>
-        Ref.update(launchedOn, (ids) => [...ids, input.modelSelection.instanceId]).pipe(
-          Effect.as({ threadId: ThreadId.make("thread-spare"), resumed: false } as never),
-        ),
-      Layer.succeed(AccountRouting.AccountRouting, {
-        accountsWithRoom: () => Effect.succeed([]),
-        scheduledRunBlock: () => Effect.succeed(null),
-        route: (input) => Effect.succeed(input.selection),
-        failoverLaunch: (input) => Effect.succeed({ ...input.selection, instanceId: spare }),
-        limits: Effect.succeed({
-          accounts: new Map(),
-          estimated: new Set<never>(),
-          models: new Map(),
+it.effect.each([
+  { why: "out of usage", failover: { reason: "usageLimit" } },
+  {
+    why: "must sign in to an MCP server again",
+    failover: { reason: "mcpSignIn", mcpServers: ["threadpage"] },
+  },
+] as const)(
+  "starts a new thread on another account when the task's account is $why",
+  ({ failover }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
+      const launchedOn = yield* Ref.make<ReadonlyArray<string>>([]);
+      const spare = ProviderInstanceId.make("claude_spare");
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launchedOn, (ids) => [...ids, input.modelSelection.instanceId]).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-spare"), resumed: false } as never),
+          ),
+        Layer.succeed(AccountRouting.AccountRouting, {
+          accountsWithRoom: () => Effect.succeed([]),
+          scheduledRunBlock: () => Effect.succeed(null),
+          route: (input) => Effect.succeed(input.selection),
+          failoverLaunch: (input) =>
+            Effect.succeed({
+              selection: { ...input.selection, instanceId: spare },
+              failover,
+            }),
+          limits: Effect.succeed({
+            accounts: new Map(),
+            estimated: new Set<never>(),
+            models: new Map(),
+          }),
+          retryAccount: () => Effect.void,
+          holds: Effect.succeed([]),
+          launchLimit: () => Effect.succeed(null),
         }),
-        retryAccount: () => Effect.void,
-        holds: Effect.succeed([]),
-        launchLimit: () => Effect.succeed(null),
-      }),
-    );
-    yield* Effect.gen(function* () {
-      const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const { task } = yield* service.upsert(yield* historyTask("Limited"));
-      yield* service.runNow({ id: task.id });
-      expect(yield* Ref.get(launchedOn)).toEqual([spare]);
-      expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
-        { outcome: "succeeded", failover: { from: "claude_primary", to: spare } },
-      ]);
-    }).pipe(Effect.provide(layer));
-  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(yield* historyTask("Limited"));
+        yield* service.runNow({ id: task.id });
+        expect(yield* Ref.get(launchedOn)).toEqual([spare]);
+        expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
+          { outcome: "succeeded", failover: { from: "claude_primary", to: spare, ...failover } },
+        ]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect(
@@ -584,7 +596,7 @@ it.effect(
         Layer.mock(AccountRouting.AccountRouting)({
           scheduledRunBlock: (input) =>
             Ref.update(asked, (inputs) => [...inputs, input]).pipe(Effect.andThen(Ref.get(block))),
-          failoverLaunch: (input) => Effect.succeed(input.selection),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
         }),
       );
       yield* Effect.gen(function* () {

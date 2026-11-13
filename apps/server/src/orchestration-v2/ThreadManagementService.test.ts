@@ -253,7 +253,7 @@ it.effect(
           retryAccount: () => Effect.void,
           holds: Effect.succeed([]),
           launchLimit: () => Effect.succeed(null),
-          failoverLaunch: (input) => Effect.succeed(input.selection),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
         }),
       },
     )(dispatched);
@@ -319,7 +319,7 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
         retryAccount: () => Effect.void,
         holds: Effect.succeed([]),
         launchLimit: () => Effect.succeed(null),
-        failoverLaunch: (input) => Effect.succeed(input.selection),
+        failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
       }),
     },
   )(dispatched);
