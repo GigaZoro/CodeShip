@@ -394,7 +394,9 @@ machine** option as the dialog, and the agent is told whether the link back was 
 An agent can also hand a task to a linked machine with `delegate_task`: it runs
 there as an ordinary thread, in the project with the same repository (or the
 one `target.projectId` names), and this thread wakes with its result when it
-ends, as for any delegated task. It keeps following the task across restarts.
+ends, as for any delegated task. Once the result is here, a thread there that
+completed with no question or queued message settles; a new message there makes
+it active again. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 

@@ -5,6 +5,7 @@ import {
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpTaskCancelResult,
+  type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
@@ -478,8 +479,9 @@ const make = Effect.gen(function* () {
 
   /**
    * The last reply `runId` gave on the task's thread there, which is its
-   * result, read whole however long it is. A failed run prefers its error
-   * from the activity view over an earlier reply, without taking another run's.
+   * result, read whole however long it is, and the thread as the last read
+   * found it. A failed run prefers its error from the activity view over an
+   * earlier reply, without taking another run's.
    */
   const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     scope: ThreadScope,
@@ -493,6 +495,7 @@ const make = Effect.gen(function* () {
     let afterPosition: number | undefined;
     let remainingItems = 0;
     let tailProbed = false;
+    let thread: OrchestratorMcpThreadDetail;
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -503,6 +506,7 @@ const make = Effect.gen(function* () {
         ...(failed && remainingItems > 100 ? { maxCharsPerItem: 1 } : {}),
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
+      thread = read.thread;
       reply =
         read.items.findLast(
           (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
@@ -529,6 +533,7 @@ const make = Effect.gen(function* () {
           );
           if (!tail.hasMore && tailReply !== undefined) {
             reply = tailReply;
+            thread = tail.thread;
             break;
           }
         }
@@ -537,7 +542,7 @@ const make = Effect.gen(function* () {
       remainingItems = read.thread.itemCount - afterPosition - 1;
     }
     reply = error ?? reply;
-    if (reply === undefined) return undefined;
+    if (reply === undefined) return { text: undefined, thread };
     let text = reply.text ?? "";
     let textOffset = reply.textTruncated ? (reply.nextTextOffset ?? null) : null;
     while (textOffset !== null) {
@@ -547,12 +552,37 @@ const make = Effect.gen(function* () {
         textOffset,
         maxCharsPerItem: 50_000,
       });
+      thread = rest.thread;
       const part = rest.items[0];
       if (part === undefined) break;
       text += part.text ?? "";
       textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
     }
-    return text;
+    return { text, thread };
+  });
+
+  /**
+   * Settles a task's thread there once the task here holds the result its run gave, so a
+   * finished helper leaves that machine's active list. A cancel or Stop that landed first owns
+   * the thread there instead. A message there later unsettles it, as for any settled chat.
+   */
+  const settleThere = Effect.fn("RemoteDelegation.settleThere")(function* (
+    scope: ThreadScope,
+    remote: OrchestrationV2RemoteTaskChild,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+  ) {
+    const { task } = yield* readTask(parentThreadId, taskId);
+    if (task?.status !== "completed" || task.remoteChild?.stoppedThere !== true) return;
+    yield* forwarding.settleThread(scope, remote.environmentId, remote.threadId).pipe(
+      // Auto-settlement there still ends it; no retry would change a refusal.
+      Effect.catch((error) =>
+        Effect.logWarning("A linked environment kept a finished delegated task's thread active", {
+          taskId,
+          reason: error.message,
+        }),
+      ),
+    );
   });
 
   /**
@@ -684,7 +714,7 @@ const make = Effect.gen(function* () {
     // A task recorded without its run waits on the thread's latest; a
     // thread there with none has nothing left to wait for.
     if (waited.runId === null) {
-      const reply = yield* lastReply(scope, remote, null);
+      const { text: reply } = yield* lastReply(scope, remote, null);
       yield* complete(
         parentThreadId,
         taskId,
@@ -699,7 +729,7 @@ const make = Effect.gen(function* () {
       runId: remote.runId ?? waited.runId,
       status: waited.status,
     };
-    const result = yield* lastReply(
+    const { text: result, thread: there } = yield* lastReply(
       scope,
       remote,
       resultRun.runId,
@@ -713,6 +743,9 @@ const make = Effect.gen(function* () {
       result ?? noReply,
       "ran-out",
     );
+    if (resultRun.status === "completed" && restsOn(there, resultRun.runId)) {
+      yield* settleThere(scope, remote, parentThreadId, taskId);
+    }
     return yield* settled(parentThreadId, taskId);
   });
 
@@ -871,6 +904,17 @@ const isTerminal = (status: string) =>
   status === "cancelled" ||
   status === "interrupted" ||
   status === "rolled_back";
+
+/**
+ * Whether a task's thread there still rests on the run that gave its result: no later run,
+ * queued message or unanswered question, which settling would hide or cancel.
+ */
+const restsOn = (thread: OrchestratorMcpThreadDetail, runId: RunId | null) =>
+  thread.latestRunId === runId &&
+  thread.activeRunId === null &&
+  thread.pendingRequestCount === 0 &&
+  !thread.settled &&
+  !thread.archived;
 
 const terminalStatus = (status: string): "completed" | "failed" | "cancelled" | "interrupted" =>
   status === "completed" || status === "failed" || status === "interrupted" ? status : "cancelled";

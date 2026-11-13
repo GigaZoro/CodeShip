@@ -50,6 +50,7 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -147,6 +148,12 @@ interface BoxThread {
   readonly sent: Ref.Ref<ReadonlyArray<string>>;
   /** Runs as the launch there is answered, before the laptop hears back. */
   readonly afterLaunch: Ref.Ref<Effect.Effect<void>>;
+  /** The threads settled there, in order. */
+  readonly settles: Ref.Ref<ReadonlyArray<ThreadId>>;
+  /** The thread there waits on a question its run asked. */
+  readonly question: Ref.Ref<boolean>;
+  /** A run after the task's own on the thread there, with this status. */
+  readonly laterRun: Ref.Ref<OrchestrationV2Run["status"] | null>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -186,6 +193,9 @@ const makeBoxThread = Effect.gen(function* () {
     releaseStop: yield* Deferred.make<void>(),
     sent: yield* Ref.make<ReadonlyArray<string>>([]),
     afterLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
+    settles: yield* Ref.make<ReadonlyArray<ThreadId>>([]),
+    question: yield* Ref.make(false),
+    laterRun: yield* Ref.make<OrchestrationV2Run["status"] | null>(null),
   } satisfies BoxThread;
 });
 
@@ -279,9 +289,31 @@ const boxToolkitLayer = (thread: BoxThread) => {
       const shell = yield* shellOf(threadId);
       const status = yield* Ref.get(thread.status);
       const runless = yield* Ref.get(thread.runless);
+      const laterRun = yield* Ref.get(thread.laterRun);
+      const question = yield* Ref.get(thread.question);
       return shell === null
         ? (null as never)
-        : { ...idleThreadProjection(shell), runs: runless ? [] : [runOf(status)] };
+        : {
+            ...idleThreadProjection(shell),
+            runs: runless
+              ? []
+              : [
+                  runOf(status),
+                  ...(laterRun === null
+                    ? []
+                    : [{ ...runOf(laterRun), id: boxLaterRunId, ordinal: 2 }]),
+                ],
+            runtimeRequests: question
+              ? [
+                  {
+                    id: "request:box-question",
+                    runId,
+                    kind: "user_input",
+                    status: "pending",
+                  } as never,
+                ]
+              : [],
+          };
     });
   // One record per command id, as its receipt replays a repeat.
   const recordStop = (commandId: string, kind: "interrupt" | "thread.stop" | "delegated-tasks") =>
@@ -463,6 +495,12 @@ const boxToolkitLayer = (thread: BoxThread) => {
           )
         : Effect.die(`The box does not expect ${command.type}`),
     stopDelegatedTasks: (input) => recordStop(input.commandId, "delegated-tasks"),
+    organizeThread: (input) =>
+      input.action === "settle"
+        ? Ref.update(thread.settles, (seen) => [...seen, input.threadId]).pipe(
+            Effect.as({ sequence: 0 }),
+          )
+        : Effect.die(`The box does not expect ${input.action}`),
     sendToThread: (input) =>
       Ref.update(thread.sent, (seen) => [...seen, input.text]).pipe(
         Effect.as({
@@ -514,9 +552,10 @@ const boxToolkitLayer = (thread: BoxThread) => {
         ),
       ),
   });
-  return Layer.merge(
+  return Layer.mergeAll(
     McpHttpServer.layerOrchestratorToolkit,
     McpHttpServer.layerProjectRegistration,
+    McpHttpServer.layerThreadToolkit,
   ).pipe(
     Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     Layer.provide(NodeCrypto.layer),
@@ -529,6 +568,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
         Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
         Layer.mock(PeerLinkBack.PeerLinkBack)({}),
         Layer.mock(SharedSettings.SharedSettings)({}),
+        Layer.mock(ThreadSearch.ThreadSearch)({}),
       ),
     ),
     Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
@@ -2063,6 +2103,49 @@ it.effect("stopping the parent stops follow-up work on a task there that has its
       expect(yield* Ref.get(thread.interrupted)).toBe(2);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([
+  { case: "its run completed", status: "completed", settled: true },
+  { case: "its run failed", status: "failed", settled: false },
+  { case: "a question waits there", status: "completed", question: true, settled: false },
+  { case: "a message is queued there", status: "completed", laterRun: "queued", settled: false },
+  { case: "a later run ended there", status: "completed", laterRun: "completed", settled: false },
+] as const)(
+  "settles the task's thread there once the parent has its result, only when $case",
+  ({ status, question = false, laterRun = null, settled }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* a.remote.start();
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        yield* Ref.set(thread.reply, "All green.");
+        yield* Ref.set(thread.question, question);
+        yield* Ref.set(thread.laterRun, laterRun);
+        yield* Ref.set(thread.status, status);
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status });
+
+        // A Stop is followed only after the follow that recorded the result ends, so once
+        // its stop is recorded, that follow has settled the thread there or left it active.
+        yield* a.threads.stopDelegatedTasks({
+          threadId: parentThreadId,
+          commandId: CommandId.make("command:stop:laptop-parent-after-settle"),
+        });
+        yield* stoppedThere(a, delegated.taskId);
+        expect(yield* Ref.get(thread.settles)).toEqual(
+          settled ? [delegated.remoteChild.threadId] : [],
+        );
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a delayed Stop acknowledgement leaves a newer Stop owed", () =>

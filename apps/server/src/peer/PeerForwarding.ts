@@ -9,6 +9,7 @@ import {
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
   PEER_LINK_AGENTS_ONLY_NOTE,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -22,6 +23,7 @@ import type * as Tool from "effect/ai/Tool";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { readCaller, unavailable } from "../mcp/threadAccess.ts";
+import { ThreadToolkit } from "../mcp/toolkits/thread/tools.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
@@ -74,6 +76,12 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       input: OrchestratorMcpThreadWaitInput,
     ) => Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>;
+    /** `t3_thread_organize` there, settling `threadId`. */
+    readonly settleThread: (
+      scope: Scope,
+      environmentId: EnvironmentId,
+      threadId: ThreadId,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     /** The environments this one links to, as an agent sees them. */
     readonly links: (
       scope: Scope,
@@ -212,8 +220,24 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const organizeTool = ThreadToolkit.tools.t3_thread_organize;
+  const settleThread: PeerForwarding["Service"]["settleThread"] = (
+    scope,
+    environmentId,
+    threadId,
+  ) =>
+    forward(
+      scope,
+      organizeTool.name,
+      organizeTool.parametersSchema,
+      organizeTool.successSchema,
+      environmentId,
+      { threadId, action: "settle" },
+    ).pipe(Effect.asVoid);
+
   // While the beta is off, agents start nothing over links. Tasks already running there keep
-  // following through readThread, waitForThread and interruptThread, so they still finish.
+  // following through readThread, waitForThread, interruptThread and settleThread, so they
+  // still finish.
   const requireEnabled = links.enabled.pipe(
     Effect.flatMap((enabled) => (enabled ? Effect.void : Effect.fail(linkedEnvironmentsOff))),
   );
@@ -270,6 +294,7 @@ const make = Effect.gen(function* () {
     readThread,
     interruptThread,
     waitForThread,
+    settleThread,
     links: listLinks,
   });
 });

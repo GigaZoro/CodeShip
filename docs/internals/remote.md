@@ -145,6 +145,11 @@ that thread and completes the task with `delegated_task.remote.complete`. That
 internal command reuses the parent half of a local finalize, so the parent
 wakes the same way. Open remote tasks are followed again at startup, which is
 also what keeps restart recovery from treating them as abandoned provider work.
+The child there is a top-level thread, so nobody there owns its end state: once
+the task holds a completed result, the follower settles it through the same link
+(the fence allows the threads a link started). It skips a child with a later run,
+a queued message or a pending request, since settling would hide or cancel them,
+and a refused settle is left to auto-settlement there.
 
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:
