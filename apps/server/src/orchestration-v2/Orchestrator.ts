@@ -8,7 +8,9 @@ import {
   isContinuableFailure,
   latestExecutedRun,
   latestRootProviderFailure,
+  limitRecoveryDeclined,
   runRanAfter,
+  snoozeHoldsStop,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
@@ -128,6 +130,7 @@ import {
   isRestartContinuationSource,
   isSettledRun,
   promptNeverDelivered,
+  restartHeldBySnooze,
   restartRetryDelivery,
   restartRetryNoticeId,
   restartRetryNotices,
@@ -307,6 +310,15 @@ export class OrchestratorThreadAboveModeLimitError extends Schema.TaggedError<Or
   }
 }
 
+export class OrchestratorContinuationSnoozedError extends Schema.TaggedError<OrchestratorContinuationSnoozedError>()(
+  "OrchestratorContinuationSnoozedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} is snoozed, so it continues after it wakes.`;
+  }
+}
+
 const isOrchestratorDispatchError = Schema.is(OrchestratorDispatchError);
 
 export function isStaleDispatchError(error: unknown): boolean {
@@ -381,6 +393,7 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorSubagentThreadReadOnlyError,
   OrchestratorThreadAboveModeLimitError,
   OrchestratorRuntimeModeAboveCeilingError,
+  OrchestratorContinuationSnoozedError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -554,6 +567,56 @@ export function threadHasUnfinishedWork(records: {
   );
 }
 
+/** The thread after a usage-limit recovery choice; `bySettings` marks the automatic arm's. */
+function withLimitRecovery(
+  thread: OrchestrationV2AppThread,
+  update: OrchestrationV2LimitRecoveryUpdate | null,
+  commandId: CommandId,
+  now: DateTime.Utc,
+  bySettings: boolean,
+): OrchestrationV2AppThread {
+  const previous =
+    update !== null &&
+    thread.limitRecovery?.runId === update.runId &&
+    thread.limitRecovery.resetAt === update.resetAt
+      ? thread.limitRecovery
+      : null;
+  const autoResumeUnset =
+    update?.autoResume === undefined && (previous === null || previous.autoResumeUnset === true);
+  const snooze = update?.snooze ?? previous?.snooze ?? false;
+  // A snooze the person picks is theirs; one they leave alone keeps where it came from.
+  const snoozeBySettings =
+    snooze && (update?.snooze === undefined ? previous?.snoozeBySettings === true : bySettings);
+  const limitRecovery =
+    update === null
+      ? null
+      : {
+          runId: update.runId,
+          resetAt: update.resetAt,
+          autoResume: update.autoResume ?? previous?.autoResume ?? false,
+          ...(autoResumeUnset ? { autoResumeUnset } : {}),
+          snooze,
+          ...(snoozeBySettings ? { snoozeBySettings } : {}),
+          requestId: commandId,
+        };
+  return {
+    ...thread,
+    limitRecovery,
+    ...(limitRecovery?.snooze === true &&
+    Date.parse(limitRecovery.resetAt) > DateTime.toEpochMillis(now)
+      ? {
+          snoozedUntil: DateTime.makeUnsafe(limitRecovery.resetAt),
+          // Recovery updates acknowledge the same stopped run; their timestamps must not trigger fresh failure wakes.
+          snoozedAt: now,
+        }
+      : thread.limitRecovery?.snooze &&
+          thread.snoozedUntil != null &&
+          DateTime.toEpochMillis(thread.snoozedUntil) === Date.parse(thread.limitRecovery.resetAt)
+        ? { snoozedUntil: null, snoozedAt: null, lastSnoozeWakeAt: now }
+        : {}),
+  };
+}
+
 function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
   switch (command.type) {
     case "thread.create":
@@ -581,6 +644,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.visit":
     case "thread.mark-unread":
     case "thread.metadata.update":
+    case "thread.limit-recovery.arm":
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":
     case "thread.pull-request-link.sync":
@@ -3183,6 +3247,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.active.reorder"
           | "thread.mark-unread"
           | "thread.metadata.update"
+          | "thread.limit-recovery.arm"
           | "thread.pull-request.link"
           | "thread.pull-request.unlink"
           | "thread.pull-request-link.sync"
@@ -3524,7 +3589,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : null;
 
     const now = yield* DateTime.now;
-    if (command.type === "thread.metadata.update" && command.limitRecovery != null) {
+    if (
+      (command.type === "thread.metadata.update" || command.type === "thread.limit-recovery.arm") &&
+      command.limitRecovery != null
+    ) {
       const projection = yield* loadProjectionForCommand(
         command,
         ["runs", "runtimeRequests", "turnItems"],
@@ -3654,13 +3722,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         case "thread.snooze": {
           // Re-snoozing acknowledges the latest wake even at the same time; commandId deduplicates retries.
-          return {
-            ...thread,
-            snoozedUntil,
-            limitRecovery: thread.limitRecovery ? { ...thread.limitRecovery, snooze: false } : null,
-            snoozedAt: now,
-            updatedAt: now,
-          };
+          const snoozed = { ...thread, snoozedUntil, snoozedAt: now, updatedAt: now };
+          if (!thread.limitRecovery) return { ...snoozed, limitRecovery: null };
+          // The person's snooze replaces a limit stop's hide.
+          const { snoozeBySettings: _replacedHide, ...recovery } = thread.limitRecovery;
+          return { ...snoozed, limitRecovery: { ...recovery, snooze: false } };
         }
         case "thread.unsnooze": {
           const alreadyAwake = thread.snoozedUntil == null;
@@ -3762,43 +3828,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : {}),
           };
         }
-        case "thread.metadata.update": {
-          const previousRecovery =
-            thread.limitRecovery?.runId === command.limitRecovery?.runId &&
-            thread.limitRecovery?.resetAt === command.limitRecovery?.resetAt
-              ? thread.limitRecovery
-              : null;
-          const limitRecovery =
-            command.limitRecovery === undefined
-              ? thread.limitRecovery
-              : command.limitRecovery === null
-                ? null
-                : {
-                    ...command.limitRecovery,
-                    autoResume:
-                      command.limitRecovery.autoResume ?? previousRecovery?.autoResume ?? false,
-                    snooze: command.limitRecovery.snooze ?? previousRecovery?.snooze ?? false,
-                    requestId: command.commandId,
-                  };
+        case "thread.limit-recovery.arm":
           return {
-            ...thread,
+            ...withLimitRecovery(thread, command.limitRecovery, command.commandId, now, true),
+            updatedAt: now,
+          };
+        case "thread.metadata.update": {
+          return {
+            ...(command.limitRecovery === undefined
+              ? thread
+              : withLimitRecovery(thread, command.limitRecovery, command.commandId, now, false)),
             ...(command.title === undefined ? {} : { title: command.title }),
-            ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
-            ...(command.limitRecovery !== undefined &&
-            limitRecovery?.snooze === true &&
-            Date.parse(limitRecovery.resetAt) > DateTime.toEpochMillis(now)
-              ? {
-                  snoozedUntil: DateTime.makeUnsafe(limitRecovery.resetAt),
-                  // Recovery updates acknowledge the same stopped run; their timestamps must not trigger fresh failure wakes.
-                  snoozedAt: now,
-                }
-              : command.limitRecovery !== undefined &&
-                  thread.limitRecovery?.snooze &&
-                  thread.snoozedUntil != null &&
-                  DateTime.toEpochMillis(thread.snoozedUntil) ===
-                    Date.parse(thread.limitRecovery.resetAt)
-                ? { snoozedUntil: null, snoozedAt: null, lastSnoozeWakeAt: now }
-                : {}),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
             ...(command.finalReview === undefined ? {} : { finalReview: command.finalReview }),
@@ -4130,6 +4170,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
         case "thread.metadata.update":
+        case "thread.limit-recovery.arm":
         case "thread.title.regeneration.complete":
           return "thread.metadata-updated" as const;
         case "thread.pull-request.link":
@@ -5781,6 +5822,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
     }
+    if (command.automaticContinuationOfRunId !== undefined) {
+      const sourceRunId = command.automaticContinuationOfRunId;
+      // A Stop or a declined auto-resume can commit after a worker chose to continue the run.
+      if (
+        limitRecoveryDeclined(projection.thread.limitRecovery, sourceRunId) ||
+        (yield* stopReachedRun(command, command.threadId, sourceRunId))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The thread was stopped, or its automatic continuation was turned off.",
+        });
+      }
+      // So can the person's snooze, which holds the stop until it wakes. Resuming after a lost
+      // connection never waited for a snooze.
+      const source = projection.runs.find((run) => run.id === sourceRunId) ?? null;
+      if (
+        latestRootProviderFailure(source, projection.turnItems)?.class !== "transport_error" &&
+        snoozeHoldsStop(projection.thread, sourceRunId, DateTime.toEpochMillis(yield* DateTime.now))
+      ) {
+        return yield* new OrchestratorContinuationSnoozedError({
+          commandId: command.commandId,
+          threadId: command.threadId,
+        });
+      }
+    }
     if (command.usageLimitContinuationOfRunId !== undefined) {
       const run = usageLimitBlockedRun(projection.runs, projection.turnItems, null);
       const failure = latestRootProviderFailure(run, projection.turnItems);
@@ -5839,6 +5906,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.deletedAt !== null ||
         projection.thread.providerInstanceId !== source.providerInstanceId ||
         supersededRun(source, projection.runs) ||
+        // A Stop or a snooze can commit after the restart chose to continue the run.
+        restartHeldBySnooze(projection.thread, yield* DateTime.now) ||
         (yield* stopReachedRun(command, command.threadId, source.id))
       ) {
         // Preserve the current row so stale automatic deliveries receive an
@@ -10405,7 +10474,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) =>
@@ -10922,6 +10991,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     ) {
+      // A snooze can commit after the restart chose to send the run again; the person's own send still revives it.
+      if (
+        command.automatic === true &&
+        restartHeldBySnooze(projection.thread, yield* DateTime.now)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The thread was snoozed.",
+        });
+      }
       const declined = yield* reviveRestartCutRun(command, projection, run, events, effects);
       if (declined !== undefined) {
         return yield* new OrchestratorDispatchError({
@@ -11569,12 +11649,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         };
       }
     }
-    if (recovery && (recovery !== thread.limitRecovery || recovery.autoResume)) {
+    // A Stop declines auto-resume even when an automatic arm already left it off.
+    if (
+      recovery &&
+      (recovery !== thread.limitRecovery || !limitRecoveryDeclined(recovery, recovery.runId))
+    ) {
       thread = {
         ...thread,
         limitRecovery: {
-          ...recovery,
+          runId: recovery.runId,
+          resetAt: recovery.resetAt,
           autoResume: false,
+          ...(recovery.snooze === undefined ? {} : { snooze: recovery.snooze }),
           requestId: input.command.commandId,
         },
         updatedAt: input.now,
@@ -13920,6 +14006,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.artifact.hide":
       case "thread.mark-unread":
       case "thread.metadata.update":
+      case "thread.limit-recovery.arm":
       case "thread.pull-request.link":
       case "thread.pull-request.unlink":
       case "thread.pull-request-link.sync":
@@ -14008,6 +14095,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           if (skipped !== null) {
             cancelUnsettledEffects = skipped.cancelUnsettledEffects;
             break;
+          }
+          // A Stop can commit after the network worker chose to retry the setup.
+          if (yield* stopReachedRun(command, command.threadId, command.runId)) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "The thread was stopped.",
+            });
           }
         }
         yield* dispatchPreparedRunRetry(command, events, effects);
@@ -14328,10 +14423,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-          // Refusals depend on modes the user can change; a recorded rejection would block the retry.
+          // Refusals depend on modes or a snooze the user can change; a recorded rejection would
+          // block the retry.
           if (
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
-            cause._tag === "OrchestratorRuntimeModeAboveCeilingError"
+            cause._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
+            cause._tag === "OrchestratorContinuationSnoozedError"
           ) {
             return yield* cause;
           }
@@ -14846,7 +14943,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             thread.limitRecovery.resetAt === input.limitRecovery.resetAt
           )
             return;
-          const command = { type: "thread.metadata.update", ...input } as const;
+          // A snooze the user set stays theirs: hiding the stop until its reset must not replace it.
+          const userSnoozed = snoozeHoldsStop(
+            thread,
+            thread.limitRecovery?.runId ?? input.limitRecovery.runId,
+            DateTime.toEpochMillis(yield* DateTime.now),
+          );
+          const command = {
+            type: "thread.limit-recovery.arm",
+            ...input,
+            ...(userSnoozed ? { limitRecovery: { ...input.limitRecovery, snooze: false } } : {}),
+          } as const;
           // A Stop that reached the run before its limit failure landed had nothing to disarm.
           const stopped = yield* stopReachedRun(command, input.threadId, input.limitRecovery.runId);
           yield* dispatchWithReceiptEffect(

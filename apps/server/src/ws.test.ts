@@ -108,6 +108,7 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as HtmlRenderLibrary from "./htmlRender/HtmlRenderLibrary.ts";
 import * as AccountRouting from "./orchestration-v2/AccountRouting.ts";
+import * as ResetCreditRedemption from "./orchestration-v2/ResetCreditRedemption.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
 import * as ManualStepChats from "./threadPage/ManualStepChats.ts";
@@ -681,6 +682,7 @@ it.effect.each(["pending", "cached"] as const)(
         }),
         Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
         Layer.mock(AccountRouting.AccountRouting)({}),
+        Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
         Layer.mock(ThreadPageManualSteps.ThreadPageManualSteps)({}),
         Layer.mock(DetectedManualSteps.DetectedManualSteps)({}),
         Layer.mock(ManualStepReviews.ManualStepReviews)({}),
@@ -882,6 +884,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
         refreshWorkspaceSnapshot: () => Effect.succeed([provider]),
       }),
       Layer.mock(AccountRouting.AccountRouting)({}),
+      Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
       Layer.mock(UsageLimitSources.UsageLimitSources)({
         current: Effect.succeed([]),
         streamChanges: Stream.make([]),

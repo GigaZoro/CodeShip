@@ -122,6 +122,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
   /** Hide account switching when absent; older servers drop its settings. */
   usageLimitAccountFailover: Schema.optionalKey(Schema.Boolean),
+  /** Honors `autoUseResetCredits`; hide its switch where absent. */
+  usageLimitAutoResetCredits: Schema.optionalKey(Schema.Boolean),
   /** Honors `autoModeProvider`, `autoModeModels` and `ModelSelection.autoAccount`; hide Auto where absent. */
   autoMode: Schema.optionalKey(Schema.Boolean),
   /** Stores `newThreadsUseLastModel`; hide its switch where absent. */

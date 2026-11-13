@@ -1452,6 +1452,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
+   * Accounts that redeem a banked reset credit when a thread stops on their usage limit and no
+   * other account takes it, then continue the thread. Kept outside the account's own config, whose
+   * every change rebuilds the provider and stops its running chats.
+   */
+  autoUseResetCredits: Schema.Array(ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /**
    * Auto mode's provider: an Auto pick (`ModelSelection.autoAccount`) starts there; null turns
    * Auto off. Auto moves between accounts only while `failoverLimitedThreads` is on.
    */
@@ -1913,6 +1921,7 @@ export const ServerSettingsPatch = Schema.Struct({
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   failoverLimitedThreads: Schema.optionalKey(Schema.Boolean),
   providerInstanceFailoverOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
+  autoUseResetCredits: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
   autoModeProvider: Schema.optionalKey(Schema.NullOr(ProviderDriverKind)),
   /** Per provider; null clears it back to the provider's default model. */
   autoModeModels: Schema.optionalKey(

@@ -4,7 +4,13 @@ import {
   type ModelSelection,
   type OrchestrationV2Command,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ServerCommand,
+  type ProviderInstanceId,
+  type RunId,
+  type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
+import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
+import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,22 +27,36 @@ import {
   type McpSignIns,
   readMcpSignIns,
   runLiftsScope,
+  modelWithRoom,
   nextAccountRoomAt,
   recoveryRoomAt,
   routeAutoAccount,
+  usableModel,
 } from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ResetCreditRedemption from "./ResetCreditRedemption.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 // A cooldown this short is cheaper to wait out than to move the thread to another account for good.
 const MIN_FAILOVER_WAIT_MS = 5 * 60_000;
+// A reset this close is cheaper to wait out than to spend a banked reset credit on.
+const MIN_RESET_CREDIT_WAIT_MS = 30 * 60_000;
+// After a redemption, whatever its outcome, the account is left alone this long, so a refused
+// claim is not repeated every tick and a limit a reset does not lift cannot spend credit after credit.
+const RESET_CREDIT_RETRY_MS = 15 * 60_000;
 
 const MAX_OVERDUE_ARM_MS = 24 * 60 * 60 * 1000;
 
 // No event announces a lift (Try again, or a run that got an answer), so a resume waiting on one
 // checks again this often.
 const LIFT_RECHECK_MS = 60_000;
+
+type ArmCommand = Extract<
+  OrchestrationV2ServerCommand,
+  { readonly type: "thread.limit-recovery.arm" }
+>;
+type DispatchCommand = Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
 
 /** Where the thread's next turn runs, and when it has room there (see `recoveryRoomAt`). */
 export interface LimitRecoveryTarget {
@@ -50,7 +70,7 @@ export function limitRecoveryCommand(
   nowMs: number,
   snooze = false,
   target: LimitRecoveryTarget | null = null,
-): OrchestrationV2Command | null {
+): ArmCommand | DispatchCommand | null {
   if (
     thread.status !== "failed" ||
     thread.lastErrorClass !== "usage_limit" ||
@@ -74,13 +94,14 @@ export function limitRecoveryCommand(
     if (nowMs - resetMs > MAX_OVERDUE_ARM_MS) return null;
     if (!autoResume && (!snooze || resetMs <= nowMs)) return null;
     return {
-      type: "thread.metadata.update",
+      type: "thread.limit-recovery.arm",
       commandId: CommandId.make(`limit-arm:${identity}`),
       threadId: thread.id,
       limitRecovery: {
         runId: thread.latestRunId,
         resetAt: thread.usageLimitResetAt,
-        autoResume,
+        // Settings never turn auto-resume off on the person's behalf; leaving it out keeps it unset.
+        ...(autoResume ? { autoResume } : {}),
         snooze: snooze && resetMs > nowMs,
       },
     };
@@ -121,6 +142,7 @@ export function limitRecoveryCommand(
 
 type FailoverInput = AccountRoutingContext &
   McpSignIns & {
+    readonly settings: Pick<ServerSettingsValue, "autoUseResetCredits">;
     readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
   };
 
@@ -155,26 +177,80 @@ export function limitRecoveryTarget({
   return roomAtMs === null ? null : { selection, roomAtMs };
 }
 
-/** The search for another account of its driver that a limited thread could move to, or null when it stays. */
-function failoverSearch({ thread, ...input }: FailoverInput) {
-  const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
+/**
+ * The run of a thread a usage limit stopped, or its provider holds until the reset, while the
+ * thread still waits on the account that ran it; null when nothing may continue it automatically.
+ */
+function waitingRunId(
+  thread: ProjectionStore.ProjectionLimitRecoveryCandidate,
+  nowMs: number,
+): RunId | null {
   if (
     (thread.status !== "failed" &&
       (thread.status !== "running" || thread.heldAttemptId === undefined)) ||
     thread.lastErrorClass !== "usage_limit" ||
-    !thread.latestRunId ||
-    // Limited accounts are skipped only until their reported reset, so a stop without one
-    // could bounce between two limited accounts. A passed reset is auto-resume's job.
-    !(resetMs > input.nowMs + MIN_FAILOVER_WAIT_MS) ||
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
     thread.pendingRuntimeRequest !== null ||
-    // Cancelling auto-resume keeps the thread until the user continues it.
-    (thread.limitRecovery?.runId === thread.latestRunId && !thread.limitRecovery.autoResume) ||
+    // A Stop or turning auto-resume off keeps the thread until the person continues it.
+    thread.latestRunId === null ||
+    thread.latestRunStopRequested === true ||
+    limitRecoveryDeclined(thread.limitRecovery, thread.latestRunId) ||
     thread.latestRunProviderInstanceId !== thread.providerInstanceId ||
-    (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > input.nowMs)
+    snoozeHoldsStop(thread, thread.latestRunId, nowMs)
   )
     return null;
+  return thread.latestRunId;
+}
+
+/** Continues a limited thread's run, restarting it when its provider holds it, optionally on another account. */
+function continueLimitedRun(
+  kind: "limit-failover" | "limit-reset-resume",
+  thread: ProjectionStore.ProjectionLimitRecoveryCandidate,
+  runId: RunId,
+  target?: { readonly instanceId: ProviderInstanceId; readonly model: string },
+): DispatchCommand {
+  const heldAttemptId = thread.status === "running" ? thread.heldAttemptId : undefined;
+  // A held run keeps its id across restarts, so its attempt tells each hold apart. The target is
+  // part of the id so a refused switch does not block trying another account.
+  const identity = [thread.id, runId, heldAttemptId, target?.instanceId]
+    .filter((part) => part !== undefined)
+    .join(":");
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(`${kind}:${identity}`),
+    messageId: MessageId.make(`${kind}:${identity}`),
+    threadId: thread.id,
+    automaticContinuationOfRunId: runId,
+    // A stopped run reuses the manual resume guard: it must still be the thread's latest.
+    ...(heldAttemptId === undefined ? { manualContinuationOfRunId: runId } : {}),
+    ...(target === undefined
+      ? {}
+      : {
+          modelSelection: {
+            ...thread.modelSelection,
+            instanceId: target.instanceId,
+            model: target.model,
+          },
+        }),
+    text: "Continue where you left off.",
+    attachments: [],
+    dispatchMode:
+      heldAttemptId === undefined
+        ? { type: "start_immediately" }
+        : { type: "restart_active", targetRunId: runId },
+    createdBy: "user",
+    creationSource: "server",
+  };
+}
+
+/** The search for another account of its driver that a limited thread could move to, or null when it stays. */
+function failoverSearch({ thread, ...input }: FailoverInput) {
+  const runId = waitingRunId(thread, input.nowMs);
+  const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
+  // Limited accounts are skipped only until their reported reset, so a stop without one
+  // could bounce between two limited accounts. A passed reset is auto-resume's job.
+  if (runId === null || !(resetMs > input.nowMs + MIN_FAILOVER_WAIT_MS)) return null;
   const current = input.providers.find(
     (provider) => provider.instanceId === thread.providerInstanceId,
   );
@@ -186,7 +262,7 @@ function failoverSearch({ thread, ...input }: FailoverInput) {
         projectId: thread.projectId,
         model: thread.modelSelection.model,
         exceptInstanceId: current.instanceId,
-        runId: thread.latestRunId,
+        runId,
       };
 }
 
@@ -194,43 +270,70 @@ function failoverSearch({ thread, ...input }: FailoverInput) {
  * Moves a thread stopped by a usage limit, or held by its provider until the reset, to the first
  * account of its driver with room left.
  */
-export function limitFailoverCommand(
-  input: FailoverInput,
-): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
-  const { thread } = input;
+export function limitFailoverCommand(input: FailoverInput): DispatchCommand | null {
   const search = failoverSearch(input);
   if (search === null) return null;
-  const heldAttemptId = thread.status === "running" ? thread.heldAttemptId : undefined;
   const target = accountsWithRoom(search).find(
     (account) => account.instanceId !== search.exceptInstanceId,
   );
-  if (target === undefined) return null;
-  // The target is part of the id so a refused switch does not block trying another account.
-  // A held run keeps its id across restarts, so its attempt tells each hold apart.
-  const hold = heldAttemptId === undefined ? "" : `${heldAttemptId}:`;
-  const identity = `${thread.id}:${search.runId}:${hold}${target.instanceId}`;
-  return {
-    type: "message.dispatch",
-    commandId: CommandId.make(`limit-failover:${identity}`),
-    messageId: MessageId.make(`limit-failover:${identity}`),
-    threadId: thread.id,
-    automaticContinuationOfRunId: search.runId,
-    // A stopped run reuses the manual resume guard: it must still be the thread's latest.
-    ...(heldAttemptId === undefined ? { manualContinuationOfRunId: search.runId } : {}),
-    modelSelection: {
-      ...thread.modelSelection,
-      instanceId: target.instanceId,
-      model: target.model,
-    },
-    text: "Continue where you left off.",
-    attachments: [],
-    dispatchMode:
-      heldAttemptId === undefined
-        ? { type: "start_immediately" }
-        : { type: "restart_active", targetRunId: search.runId },
-    createdBy: "user",
-    creationSource: "server",
-  };
+  return target === undefined
+    ? null
+    : continueLimitedRun("limit-failover", input.thread, search.runId, target);
+}
+
+/** The waiting thread's own account and run, when that account uses banked reset credits automatically. */
+function resetCreditAccount({ thread, ...input }: FailoverInput) {
+  const runId = waitingRunId(thread, input.nowMs);
+  if (runId === null || !input.settings.autoUseResetCredits.includes(thread.providerInstanceId))
+    return null;
+  const provider = input.providers.find(
+    (candidate) => candidate.instanceId === thread.providerInstanceId,
+  );
+  return provider === undefined ? null : { provider, runId };
+}
+
+/**
+ * Continues a limited thread on its own account once that account has room again before the
+ * reset, as after a redeemed reset credit, when the account uses reset credits automatically.
+ */
+export function resetCreditResumeCommand(input: FailoverInput): DispatchCommand | null {
+  const { thread } = input;
+  const account = resetCreditAccount(input);
+  if (
+    account === null ||
+    modelWithRoom(account.provider, {
+      ...input,
+      projectId: thread.projectId,
+      model: thread.modelSelection.model,
+    }) === null
+  )
+    return null;
+  return continueLimitedRun("limit-reset-resume", thread, account.runId);
+}
+
+/**
+ * The account to redeem a banked reset credit on so a limited thread can continue there, or null
+ * when the thread waits. Only while the account's own limits read used up for the thread's model:
+ * that is what a reset clears, unlike a refusal such as ChatGPT's app cap.
+ */
+export function resetCreditRedemptionAccount(input: FailoverInput): ProviderInstanceId | null {
+  const { thread } = input;
+  const account = resetCreditAccount(input);
+  if (account === null) return null;
+  const { provider } = account;
+  // Only usage may keep the thread off the account; a credit cannot help one it cannot run on.
+  const model = usableModel(provider, {
+    ...input,
+    projectId: thread.projectId,
+    model: thread.modelSelection.model,
+  });
+  const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
+  return model !== null &&
+    (provider.usageLimits?.resetCredits?.availableCount ?? 0) > 0 &&
+    resetMs > input.nowMs + MIN_RESET_CREDIT_WAIT_MS &&
+    exhaustedUsageWindow(provider, input.nowMs, model) !== undefined
+    ? provider.instanceId
+    : null;
 }
 
 // A stop older than this is left to the person, as a lost connection's is.
@@ -246,13 +349,13 @@ export function signedOutFailoverCommand(
     McpSignIns & {
       readonly thread: ProjectionStore.ProjectionSignedOutCandidate;
     },
-): Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> | null {
+): DispatchCommand | null {
   const { thread } = input;
   if (
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
     thread.latestRunProviderInstanceId !== thread.providerInstanceId ||
-    (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > input.nowMs)
+    snoozeHoldsStop(thread, thread.latestRunId, input.nowMs)
   )
     return null;
   const current = input.providers.find(
@@ -303,19 +406,25 @@ const makeSweep = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const mcp = yield* ProviderMcp.ProviderMcp;
+  const resetCredits = yield* ResetCreditRedemption.ResetCreditRedemption;
   const due = DueHint.make();
+  // When each account last had a reset credit redeemed for it, so retries wait RESET_CREDIT_RETRY_MS.
+  const redemptionTries = new Map<ProviderInstanceId, number>();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
       affectsLimitRecovery(event) ? due.invalidate : Effect.void,
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
-  // An account signing in, regaining room, or being enabled can take a waiting thread.
+  // An account signing in, regaining room, being enabled or banking a reset credit can take a
+  // waiting thread.
   yield* forkParked(
     Stream.runForEach(providerRegistry.streamChanges, () =>
       settings.getSettings.pipe(
         Effect.flatMap((current) =>
-          current.failoverLimitedThreads || current.autoResumeLimitedThreads
+          current.failoverLimitedThreads ||
+          current.autoResumeLimitedThreads ||
+          current.autoUseResetCredits.length > 0
             ? due.invalidate
             : Effect.void,
         ),
@@ -328,13 +437,15 @@ const makeSweep = Effect.gen(function* () {
     if (yield* due.isIdle(nowMs)) return;
     const readVersion = yield* due.version;
     const preferences = yield* settings.getSettings;
+    const switching = preferences.failoverLimitedThreads;
+    const resetting = preferences.autoUseResetCredits.length > 0;
     const candidates = yield* projections.getLimitRecoveryCandidates({
       now,
       autoResume: preferences.autoResumeLimitedThreads,
       snooze: preferences.snoozeLimitedThreads,
-      failover: preferences.failoverLimitedThreads,
+      waiting: switching || resetting,
     });
-    const signedOut = preferences.failoverLimitedThreads
+    const signedOut = switching
       ? yield* projections.getSignedOutFailoverCandidates({
           now,
           maxAgeMs: MAX_SIGNED_OUT_FAILURE_AGE_MS,
@@ -361,16 +472,15 @@ const makeSweep = Effect.gen(function* () {
             }),
             nowMs,
           };
-    const failover = preferences.failoverLimitedThreads ? routing : null;
-    const dispatchSwitch = (
-      command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
-      failureMessage: string,
-    ) =>
+    const failover = switching ? routing : null;
+    const dispatchContinuation = (command: DispatchCommand, failureMessage: string) =>
       threads.dispatch(command).pipe(
-        Effect.as("switched" as const),
-        // This exact switch was refused on an earlier tick; warning again every tick adds nothing.
+        Effect.as("dispatched" as const),
+        // This exact command was refused on an earlier tick; warning again every tick adds nothing.
+        // A snooze the person set meanwhile holds it until the thread wakes.
         Effect.catchTags({
           OrchestratorCommandPreviouslyRejectedError: () => Effect.succeed("refused" as const),
+          OrchestratorContinuationSnoozedError: () => Effect.succeed("refused" as const),
         }),
         Effect.catchCause((cause) =>
           Effect.logWarning(failureMessage, { threadId: command.threadId, cause }).pipe(
@@ -383,24 +493,30 @@ const makeSweep = Effect.gen(function* () {
     for (const thread of signedOut) {
       const command = failover === null ? null : signedOutFailoverCommand({ ...failover, thread });
       if (command === null) continue;
-      const outcome = yield* dispatchSwitch(
+      const outcome = yield* dispatchContinuation(
         command,
         "orchestration-v2.signed-out-failover.dispatch-failed",
       );
       if (outcome !== "refused") acted = true;
     }
+    // One credit per sweep: it can give room that other threads move to, so the next sweep reads
+    // the accounts again before spending another.
+    let redeemOn: ProviderInstanceId | null = null;
+    let retryRedemptionAt = Infinity;
     for (const thread of candidates) {
-      const failoverCommand =
-        failover === null ? null : limitFailoverCommand({ ...failover, thread });
-      if (failoverCommand !== null) {
-        const outcome = yield* dispatchSwitch(
-          failoverCommand,
-          "orchestration-v2.limit-failover.dispatch-failed",
+      // Another account with room comes first: it costs no banked credit.
+      const continuation =
+        (failover === null ? null : limitFailoverCommand({ ...failover, thread })) ??
+        (routing === null ? null : resetCreditResumeCommand({ ...routing, thread }));
+      if (continuation !== null) {
+        const outcome = yield* dispatchContinuation(
+          continuation,
+          "orchestration-v2.limit-continuation.dispatch-failed",
         );
-        // A refused switch stays refused, so only a switch or a failed attempt re-checks next tick.
+        // A refused command stays refused, so only a dispatch or a failed attempt re-checks next tick.
         if (outcome !== "refused") acted = true;
-        if (outcome === "switched") continue;
-        // A refused or failed switch falls through, so the stop still arms its reset-time resume.
+        if (outcome === "dispatched") continue;
+        // A refused or failed one falls through, so the stop still arms its reset-time resume.
       }
       const target = routing === null ? null : limitRecoveryTarget({ ...routing, thread });
       const recover = (room: LimitRecoveryTarget | null) =>
@@ -412,6 +528,21 @@ const makeSweep = Effect.gen(function* () {
           room,
         );
       const command = recover(target);
+      // A resume that has room now, on another model or account, costs no banked credit either.
+      const redemption =
+        routing === null || command?.type === "message.dispatch"
+          ? null
+          : resetCreditRedemptionAccount({ ...routing, thread });
+      if (redemption !== null) {
+        const triedAt = redemptionTries.get(redemption);
+        if (triedAt === undefined || nowMs >= triedAt + RESET_CREDIT_RETRY_MS) {
+          // Arming now could hide the thread until the reset or record it as not resuming, which
+          // would keep the reset from continuing it. A redemption that does not reset arms it next tick.
+          redeemOn ??= redemption;
+          continue;
+        }
+        retryRedemptionAt = Math.min(retryRedemptionAt, triedAt + RESET_CREDIT_RETRY_MS);
+      }
       if (command === null) {
         // A resume that waits only for room on its target checks again when that room comes.
         if (
@@ -427,15 +558,9 @@ const makeSweep = Effect.gen(function* () {
       }
       acted = true;
       yield* Effect.gen(function* () {
-        if (command.type === "thread.metadata.update" && command.limitRecovery != null) {
-          yield* orchestrator.autoArmLimitRecovery({
-            commandId: command.commandId,
-            threadId: command.threadId,
-            limitRecovery: command.limitRecovery,
-          });
-        } else {
-          yield* threads.dispatch(command);
-        }
+        if (command.type === "thread.limit-recovery.arm")
+          yield* orchestrator.autoArmLimitRecovery(command);
+        else yield* threads.dispatch(command);
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("orchestration-v2.limit-recovery.dispatch-failed", {
@@ -445,9 +570,48 @@ const makeSweep = Effect.gen(function* () {
         ),
       );
     }
+    // The person may stop or snooze a thread, or turn off its auto-resume or the account's setting,
+    // while this sweep dispatched. A credit is spent only for a thread that still waits for one right
+    // before it is redeemed; such a change also invalidates the due hint, so the next tick re-reads.
+    const stillWanted = Effect.fn("UsageLimitRecoveryWorker.stillWanted")(function* (
+      instanceId: ProviderInstanceId,
+    ) {
+      if (routing === null) return false;
+      const current = yield* settings.getSettings;
+      const waiting = yield* projections.getLimitRecoveryCandidates({
+        now,
+        autoResume: current.autoResumeLimitedThreads,
+        snooze: current.snoozeLimitedThreads,
+        waiting: true,
+      });
+      return waiting.some(
+        (thread) =>
+          resetCreditRedemptionAccount({ ...routing, settings: current, thread }) === instanceId,
+      );
+    });
+    if (redeemOn !== null && (yield* stillWanted(redeemOn))) {
+      const instanceId = redeemOn;
+      redemptionTries.set(instanceId, nowMs);
+      // A reset lifts the account's holds, so the next tick continues its threads there.
+      acted = true;
+      yield* resetCredits.redeem(instanceId).pipe(
+        Effect.tap(({ outcome, warning }) =>
+          Effect.logInfo("orchestration-v2.reset-credit.outcome", {
+            instanceId,
+            outcome,
+            warning,
+          }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("orchestration-v2.reset-credit.redeem-failed", { instanceId, cause }),
+        ),
+      );
+    }
     // A sweep that acted, or failed to, re-checks on the next tick.
     if (acted) return;
-    const wakeAt = yield* projections.getLimitRecoveryWakeAt(now);
+    const wakeAt = yield* projections.getLimitRecoveryWakeAt(now, {
+      waiting: switching || resetting,
+    });
     // A waiting thread can move to another account the moment that account's limit ends.
     const accountRoomAt =
       failover === null
@@ -461,7 +625,7 @@ const makeSweep = Effect.gen(function* () {
           );
     yield* due.record(
       readVersion,
-      Math.min(wakeAt ?? Infinity, accountRoomAt, targetRoomAt),
+      Math.min(wakeAt ?? Infinity, accountRoomAt, targetRoomAt, retryRedemptionAt),
       nowMs,
     );
   });

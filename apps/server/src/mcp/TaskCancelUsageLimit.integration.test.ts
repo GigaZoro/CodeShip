@@ -45,6 +45,7 @@ import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as ResetCreditRedemption from "../orchestration-v2/ResetCreditRedemption.ts";
 
 const driver = ProviderDriverKind.make("claudeAgent");
 const instanceId = ProviderInstanceId.make("claudeAgent");
@@ -170,6 +171,7 @@ it.effect.each([
               }),
               ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
               ServerSettings.layerTest({ autoResumeLimitedThreads: true }),
+              Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
             ),
           ),
         );

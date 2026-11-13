@@ -1,6 +1,7 @@
 import {
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  type OrchestrationV2LimitRecovery,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
@@ -54,6 +55,44 @@ export function isContinuableFailure(failure: OrchestrationV2ProviderFailure | n
   return (
     (failure?.class === "usage_limit" || failure?.class === "transport_error") &&
     !isUndeliveredFailure(failure)
+  );
+}
+
+/**
+ * Whether a Stop or the person's choice turned off auto-resume for this run's usage-limit stop,
+ * which keeps the thread until they continue it. An arm that left it off by default declines nothing.
+ */
+export function limitRecoveryDeclined(
+  recovery: OrchestrationV2LimitRecovery | null | undefined,
+  runId: string,
+): boolean {
+  return recovery?.runId === runId && !recovery.autoResume && recovery.autoResumeUnset !== true;
+}
+
+/**
+ * Whether the person's snooze keeps this run's stop waiting, so nothing moves it to another
+ * account or spends a reset credit on it until it wakes. Hiding limit stops until their reset
+ * is a setting, not such a choice: continuing the thread sooner wakes it.
+ */
+export function snoozeHoldsStop(
+  thread: {
+    readonly snoozedUntil?: DateTime.Utc | null | undefined;
+    readonly limitRecovery?: OrchestrationV2LimitRecovery | null | undefined;
+  },
+  runId: string,
+  nowMs: number,
+): boolean {
+  if (thread.snoozedUntil == null) return false;
+  const until = DateTime.toEpochMillis(thread.snoozedUntil);
+  const recovery = thread.limitRecovery;
+  return (
+    until > nowMs &&
+    !(
+      recovery?.runId === runId &&
+      recovery.snoozeBySettings === true &&
+      recovery.snooze === true &&
+      until === Date.parse(recovery.resetAt)
+    )
   );
 }
 

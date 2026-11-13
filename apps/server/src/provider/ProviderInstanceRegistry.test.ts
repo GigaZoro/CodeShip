@@ -675,7 +675,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         result: "reset",
         usageFailsAfterClaim: false,
       });
-      expect(outcome).toMatchObject({ _tag: "Success", success: "reset" });
+      expect(outcome).toMatchObject({ _tag: "Success", success: { outcome: "reset" } });
       expect(after.usageLimits?.windows[0]?.usedPercent).toBe(0);
     }),
   );
@@ -688,7 +688,29 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
           result: "already_used",
           usageFailsAfterClaim: true,
         });
-        expect(outcome).toMatchObject({ _tag: "Success", success: "alreadyRedeemed" });
+        expect(outcome).toMatchObject({
+          _tag: "Success",
+          success: { outcome: "alreadyRedeemed" },
+        });
+      }),
+  );
+
+  it.live.skipIf(windowsHost)(
+    "a Claude reset whose re-probe fails still succeeds, saying it was not confirmed",
+    () =>
+      Effect.gen(function* () {
+        const { outcome } = yield* redeemClaudeReset({
+          result: "reset",
+          usageFailsAfterClaim: true,
+        });
+        expect(outcome).toMatchObject({
+          _tag: "Success",
+          success: {
+            outcome: "reset",
+            warning:
+              "The reset was applied, but Claude could not confirm the new limits. Refresh to check.",
+          },
+        });
       }),
   );
 

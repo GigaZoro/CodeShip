@@ -120,6 +120,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as AccountRouting from "./orchestration-v2/AccountRouting.ts";
+import * as ResetCreditRedemption from "./orchestration-v2/ResetCreditRedemption.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
@@ -1377,6 +1378,7 @@ export const layerWsRpc = (
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const accountRouting = yield* AccountRouting.AccountRouting;
+      const resetCreditRedemption = yield* ResetCreditRedemption.ResetCreditRedemption;
       const manualSteps = yield* ThreadPageManualSteps.ThreadPageManualSteps;
       const detectedManualSteps = yield* DetectedManualSteps.DetectedManualSteps;
       const manualStepReviews = yield* ManualStepReviews.ManualStepReviews;
@@ -2543,33 +2545,7 @@ export const layerWsRpc = (
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
             if ("sourceId" in input) return yield* usageLimitSources.consumeResetCredit(input);
-            const instance = yield* providerInstances.getInstance(input.instanceId);
-            if (instance === undefined || !instance.enabled) {
-              return yield* new ProviderSetupError({
-                instanceId: input.instanceId,
-                operation: "consume-reset-credit",
-                detail: instance ? "This provider is disabled." : "Provider instance not found.",
-              });
-            }
-            if (instance.consumeResetCredit === undefined) {
-              return yield* new ProviderSetupError({
-                instanceId: input.instanceId,
-                operation: "consume-reset-credit",
-                detail: "This provider does not bank reset credits.",
-              });
-            }
-            const outcome = yield* instance.consumeResetCredit().pipe(
-              Effect.mapError(
-                (error) =>
-                  new ProviderSetupError({
-                    instanceId: input.instanceId,
-                    operation: "consume-reset-credit",
-                    detail: error.detail,
-                    cause: error,
-                  }),
-              ),
-            );
-            return { outcome };
+            return yield* resetCreditRedemption.redeem(input.instanceId);
           }),
         [WS_METHODS.providerRetryUsageLimit]: (input) =>
           accountRouting.retryAccount(input.instanceId).pipe(

@@ -13587,6 +13587,7 @@ const catalog: MessageCatalog = {
   "Use regular sign-in instead": "Натомість використовувати звичайний вхід",
   "Use remote version of {ref}": "Використати віддалену версію {ref}",
   "Use reset": "Скинути",
+  "Use reset credits automatically": "Використовувати кредити скидання автоматично",
   "Use skills available to the selected provider.":
     "Використовувати навички, доступні вибраному провайдеру.",
   "Use skills from all enabled providers on the same environment.":
@@ -13941,6 +13942,8 @@ const catalog: MessageCatalog = {
   "What's changed": "Що змінилося",
   When: "Коли",
   "When a thread hits a usage limit": "Коли чат досягає ліміту використання",
+  "When a thread stops on this account's usage limit and no other account continues it, redeem a banked reset credit and continue the thread. A limit that resets within 30 minutes is waited out.":
+    "Коли чат зупиняється на ліміті використання цього облікового запису і жоден інший обліковий запис його не продовжує, використати накопичений кредит скидання та продовжити чат. Якщо ліміт скинеться менш ніж за 30 хвилин, чат дочекається скидання.",
   "When an agent hands work to a child task without naming a model, the task runs on the model set for its role. Unset roles use the thread's own model.":
     "Коли агент передає роботу дочірньому завданню без указання моделі, завдання виконується на моделі, заданій для його ролі. Для незаданих ролей використовується модель самого чату.",
   "When expression": "Вираз умови",

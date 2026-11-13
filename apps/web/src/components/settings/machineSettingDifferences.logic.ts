@@ -128,6 +128,7 @@ const SHARED_SETTING_PRESENTATION: Record<
   continueThreadsAfterServerUpdate: { id: "continue-threads-after-server-update" },
   backgroundActivity: { id: "background-activity" },
   providerInstanceFailoverOrder: "accounts",
+  autoUseResetCredits: "accounts",
   deviceSettingsProfile: "devices",
 };
 

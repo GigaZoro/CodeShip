@@ -224,6 +224,7 @@ import * as RunFinalizationService from "./orchestration-v2/RunFinalizationServi
 import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as AccountRouting from "./orchestration-v2/AccountRouting.ts";
+import * as ResetCreditRedemption from "./orchestration-v2/ResetCreditRedemption.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import { acceptsPrivateNetworkConnection, localUrlHostForAddress } from "./startupAccess.ts";
@@ -772,6 +773,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       EnvironmentTheme.layer,
       UsageLimitSources.layer,
       layerAccountRouting,
+      ResetCreditRedemption.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
       ThreadPageManualSteps.layer,
       ThreadPageCheckAccess.layer,
       DetectedManualSteps.layer.pipe(Layer.provide(layerAccountRouting)),

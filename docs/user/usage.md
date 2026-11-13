@@ -140,7 +140,22 @@ pool it hands back. The hatched
 part of a segment is what that reset restores. Tap a segment or account row for the account's plan,
 where it is signed in, and its reset time. On web, you can hover too. Codex and Claude accounts
 with banked reset credits get a row under the window cards with the count, when the next one
-expires, and **Use reset**; the account details offer it too.
+expires, and **Use reset**; the account details offer it too. A reset applies to the whole account
+at once: new threads and account switching can use it right away. When the provider takes the
+credit but its new limits cannot be read back yet, **Use reset** says so; refresh to see them.
+
+To redeem resets without asking, turn on **Use reset credits automatically** for the account in
+**Settings → Providers & models**; the switch appears for accounts that bank reset credits. When a
+thread stops on that account's limit, or Claude holds its turn until the reset, and no other
+account continues it, one credit is redeemed and the thread continues on the same account. Threads
+waiting on that account at the time all continue on the one credit. A limit that resets within 30
+minutes is waited out, and no credit is spent while the account's own limits still show room,
+such as when ChatGPT's app limit stopped it, or while the account is turned off for the thread's
+project. A thread you stopped or snoozed, or one whose auto-resume you cancelled, is left alone;
+one hidden by **Hide limited threads until the limit resets** continues and shows again, even when
+limited threads do not resume at the reset. After a redemption,
+that machine leaves the account alone for 15 minutes, and a thread still waiting then follows your
+usage-limit recovery choice.
 Claude resets are not available when the server runs on macOS, where Claude keeps its login in the
 Keychain. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.

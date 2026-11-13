@@ -76,6 +76,7 @@ import {
   EmptyTitle,
 } from "../ui/empty";
 import { ScrollArea } from "../ui/scroll-area";
+import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
@@ -435,6 +436,10 @@ export function EnvironmentProviderSettings({
     serverEnvironment.configValueAtom(environmentId),
     (config) => config?.environment.capabilities.autoMode === true,
   );
+  const serverSupportsAutoResetCredits = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.environment.capabilities.usageLimitAutoResetCredits === true,
+  );
   // Hide overrides on older servers that silently ignore providerInstances patches.
   const supportsProjectProviderOverrides = useAtomValue(
     serverEnvironment.configValueAtom(environmentId),
@@ -783,6 +788,13 @@ export function EnvironmentProviderSettings({
     },
   );
 
+  const setAutoUseResetCredits = useStableCallback(
+    (instanceId: ProviderInstanceId, on: boolean) => {
+      const others = settings.autoUseResetCredits.filter((candidate) => candidate !== instanceId);
+      updateSettings({ autoUseResetCredits: on ? [...others, instanceId] : others });
+    },
+  );
+
   const stableUpdateModelPreferences = useStableCallback(updateModelPreferences);
   const stableToggleModelFavorite = useStableCallback(toggleModelFavorite);
   const actions: ProviderInstanceRowActions = {
@@ -793,6 +805,7 @@ export function EnvironmentProviderSettings({
     deleteInstance,
     resetDefaultInstance,
     writeProjectOverride,
+    setAutoUseResetCredits,
     updateModelPreferences: stableUpdateModelPreferences,
     toggleModelFavorite: stableToggleModelFavorite,
     selectInstance: setSelectedInstanceId,
@@ -838,6 +851,11 @@ export function EnvironmentProviderSettings({
             : false
         }
         modelPreferences={settings.providerModelPreferences?.[row.instanceId]}
+        autoUseResetCredits={
+          serverSupportsAutoResetCredits
+            ? settings.autoUseResetCredits.includes(row.instanceId)
+            : undefined
+        }
         favorites={favorites}
         actions={actions}
       />
@@ -1056,6 +1074,7 @@ interface ProviderInstanceRowActions {
     instanceId: ProviderInstanceId,
     next: boolean | undefined,
   ) => void;
+  readonly setAutoUseResetCredits: (instanceId: ProviderInstanceId, on: boolean) => void;
   readonly updateModelPreferences: ReturnType<typeof useUpdateEnvironmentModelPreferences>;
   readonly toggleModelFavorite: ReturnType<typeof useToggleEnvironmentModelFavorite>;
   readonly selectInstance: (instanceId: ProviderInstanceId) => void;
@@ -1145,6 +1164,7 @@ function ProviderInstanceRow({
   projectOverrideValue,
   projectOverrideEffectiveEnabled,
   modelPreferences,
+  autoUseResetCredits,
   favorites,
   actions,
 }: {
@@ -1167,6 +1187,8 @@ function ProviderInstanceRow({
   readonly modelPreferences:
     | { readonly hiddenModels: ReadonlyArray<string>; readonly modelOrder: ReadonlyArray<string> }
     | undefined;
+  /** Whether this account redeems reset credits by itself; undefined where the server cannot. */
+  readonly autoUseResetCredits: boolean | undefined;
   readonly favorites: UnifiedSettings["favorites"];
   readonly actions: ProviderInstanceRowActions;
 }) {
@@ -1336,6 +1358,31 @@ function ProviderInstanceRow({
       }
       canWriteSettings={canWriteSettings}
       setup={setup}
+      usageLimits={
+        mode === "editor" &&
+        autoUseResetCredits !== undefined &&
+        // Only accounts that bank reset credits, and one left switched on so it can be turned off.
+        (liveProvider?.usageLimits?.resetCredits !== undefined || autoUseResetCredits) ? (
+          <SettingsSection title={t("Usage limits")}>
+            <SettingsRow
+              title={t("Use reset credits automatically")}
+              description={t(
+                "When a thread stops on this account's usage limit and no other account continues it, redeem a banked reset credit and continue the thread. A limit that resets within 30 minutes is waited out.",
+              )}
+              control={
+                <Switch
+                  checked={autoUseResetCredits}
+                  disabled={readOnly || !canWriteSettings}
+                  onCheckedChange={(checked) =>
+                    actions.setAutoUseResetCredits(instanceId, Boolean(checked))
+                  }
+                  aria-label={t("Use reset credits automatically")}
+                />
+              }
+            />
+          </SettingsSection>
+        ) : undefined
+      }
       onUpdate={(next) => actions.updateInstance(instanceId, instance, next)}
       onDelete={
         mode === "editor" && !isDefault

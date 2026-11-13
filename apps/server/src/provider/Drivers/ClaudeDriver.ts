@@ -638,25 +638,23 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
             cause,
           }),
       ),
-      Effect.tap((outcome) =>
+      // The credit is spent either way, so an unconfirmed reset still succeeds.
+      Effect.flatMap((outcome) =>
         Effect.gen(function* () {
           const before = (yield* snapshot.getSnapshot).usageLimits?.checkedAt;
           yield* Cache.invalidateAll(capabilitiesProbeCache);
           const refreshed = yield* snapshot.refresh;
           const after = refreshed.usageLimits?.checkedAt;
-          if (
-            outcome === "reset" &&
+          return outcome === "reset" &&
             (after === undefined ||
               after === before ||
               refreshed.usageLimits?.unavailable?.reason === "probeFailed")
-          ) {
-            return yield* new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail:
-                "The reset was applied, but Claude could not confirm the new limits. Refresh to check.",
-            });
-          }
+            ? {
+                outcome,
+                warning:
+                  "The reset was applied, but Claude could not confirm the new limits. Refresh to check.",
+              }
+            : { outcome };
         }),
       ),
     );

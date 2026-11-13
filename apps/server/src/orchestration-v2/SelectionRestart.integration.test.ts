@@ -1281,7 +1281,7 @@ it.live("moves a turn its provider holds for a usage limit to an account with ro
 
         const candidates = (failover: boolean) =>
           projections
-            .getLimitRecoveryCandidates({ now, autoResume: true, snooze: true, failover })
+            .getLimitRecoveryCandidates({ now, autoResume: true, snooze: true, waiting: failover })
             .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
         // Without account switching, the held turn waits for its reset as before.
         assert.isUndefined(yield* candidates(false));

@@ -1,3 +1,13 @@
+## 2026-11-13 — An account can use its banked reset credits automatically
+
+- Codex and Claude accounts that bank reset credits have a new switch in **Settings → Providers & models**: **Use reset credits automatically**. When a thread stops on that account's usage limit, or Claude holds its turn until the reset, and no other account or model continues it, the server redeems one credit and continues the thread on the same account. Every thread waiting on the account continues on that one credit. A limit that resets within 30 minutes is waited out, nothing is spent while the account's own limits still show room (such as ChatGPT's app limit) or while the account is off for the thread's project, and threads you stopped, snoozed or whose auto-resume you cancelled are left alone. The setting follows the account to your other machines.
+- **Use reset** now frees the account at once for new threads and account switching. Before, a thread stopped by the limit kept the account marked as limited until its old reset time, so new chats were still steered away from it.
+- When a reset is redeemed but the new limits cannot be read back yet, **Use reset** now reports the reset with a note to refresh. Before, it reported a failure for a credit that had been spent.
+- A limited thread hidden by **Hide limited threads until the limit resets** now also moves to another account that gets usage back, and shows again when it continues, including when limited threads do not resume at the reset. Before, hiding it kept it on the limited account until the reset.
+- Hiding a limited thread no longer replaces a snooze you set on it yourself. Before, the hide moved your snooze to the limit's reset, and continuing the thread early woke it.
+- **Stop** now keeps a thread stopped while it waits to resume after a lost connection or to set up its worktree again. Before, the automatic retry still continued it. The same goes for an automatic continuation the server was about to send at the moment you pressed **Stop**, including one after a usage limit.
+- Snoozing a thread right as T3.CodeShip restarts now keeps it snoozed. Before, the turn the restart cut could still continue, or start again, a moment after you snoozed it.
+
 ## 2026-11-13 — Updates arrive soon after GitHub has Mac build machines again
 
 - When GitHub ran short of Mac build machines, a new version was retried twice and then waited for a scheduled retry that GitHub can delay by hours, so installed apps went hours without an update after machines were free again. A release whose only failure is a build that never got a machine is now retried as soon as GitHub gives up on it, for up to 6 hours.

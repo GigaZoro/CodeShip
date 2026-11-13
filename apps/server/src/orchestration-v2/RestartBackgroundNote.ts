@@ -1,5 +1,6 @@
 import {
   isOrchestrationV2WorkActive,
+  type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
@@ -528,6 +529,14 @@ export function supersededRun(
       !cancelledBeforeStart(other) &&
       runRanAfter(other, run),
   );
+}
+
+/** A snoozed thread stays as the restart left it; the person picks it up once it wakes. */
+export function restartHeldBySnooze(
+  thread: Pick<OrchestrationV2AppThread, "snoozedUntil">,
+  now: DateTime.Utc,
+): boolean {
+  return thread.snoozedUntil != null && DateTime.isGreaterThan(thread.snoozedUntil, now);
 }
 
 /** The provider never accepted this continuation's prompt, so starting it again repeats nothing. */

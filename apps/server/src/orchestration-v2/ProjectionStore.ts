@@ -213,6 +213,8 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   readonly latestRunProviderInstanceId?: ProviderInstanceId | null;
   /** The model the limited run used; an Auto thread may run another one next. */
   readonly latestRunModel?: string | null;
+  /** The person stopped the limited run; its limit can land after the Stop, before anything records it. */
+  readonly latestRunStopRequested?: boolean | undefined;
   /**
    * Set when the provider holds the running attempt until the usage limit resets, instead of
    * stopping it. The thread then reads as running.
@@ -576,12 +578,16 @@ export interface ProjectionStoreV2Shape {
     } | null,
     ProjectionStoreV2Error
   >;
-  /** With `failover`, also running turns the provider holds until a reset still ahead. */
+  /**
+   * With `waiting`, also stops still waiting for a reset ahead, whatever their recovery choice, and
+   * running turns the provider holds until one: account switching and reset credits can continue
+   * them before it. The caller skips the ones the person stopped or cancelled.
+   */
   readonly getLimitRecoveryCandidates: (options: {
     readonly now: DateTime.Utc;
     readonly autoResume: boolean;
     readonly snooze: boolean;
-    readonly failover?: boolean;
+    readonly waiting?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
   /**
    * Threads whose latest run failed on a rejected login before doing any work, within `maxAgeMs`,
@@ -612,9 +618,13 @@ export interface ProjectionStoreV2Shape {
     instanceId: ProviderInstanceId,
     now: DateTime.Utc,
   ) => Effect.Effect<void, ProjectionStoreV2Error>;
-  /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
+  /**
+   * Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a
+   * candidate. `waiting` counts every snooze end, since a stop may then move to another account.
+   */
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
+    options?: { readonly waiting?: boolean },
   ) => Effect.Effect<number | null, ProjectionStoreV2Error>;
   /**
    * Threads whose latest run failed with a transport error after `since`, with nothing queued,
@@ -4046,6 +4056,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const getLimitRecoveryCandidates = Effect.fn("ProjectionStore.getLimitRecoveryCandidates")(
       function* (options: Parameters<ProjectionStoreV2Shape["getLimitRecoveryCandidates"]>[0]) {
+        const stopRequestedColumn = sql`EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_turn_items stop
+          WHERE stop.thread_id = t.thread_id AND stop.run_id = r.run_id
+            AND stop.type = 'run_interrupt_request'
+        ) AS stop_requested`;
         const rows = yield* sql<{
           readonly payload_json: string;
           readonly run_id: string;
@@ -4054,10 +4069,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly last_error: string | null;
           readonly provider_instance_id: string | null;
           readonly run_model: string | null;
+          readonly stop_requested: number;
         }>`
           SELECT t.payload_json, r.run_id, r.completed_at, r.provider_instance_id,
             json_extract(r.payload_json, '$.modelSelection.model') AS run_model,
             item.payload_json AS failure_payload_json,
+            ${stopRequestedColumn},
             (
               SELECT json_extract(session.payload_json, '$.lastError')
               -- Keep bindings outermost: one provider instance can hold every session.
@@ -4114,7 +4131,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND (
                   json_extract(t.payload_json, '$.snoozedUntil') IS NULL
                   OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${DateTime.formatIso(options.now)})
+                  -- A hidden stop can still continue on an account that regains usage.
+                  OR ${booleanInt(options.waiting === true)}
                 )
+              )
+              -- Auto-resume left off by default or turned off: the caller tells which from
+              -- autoResumeUnset and the stop flag.
+              OR (
+                json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
+                AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
+                AND json_extract(t.payload_json, '$.limitRecovery.autoResume') = 0
+                AND ${booleanInt(options.waiting === true)}
+                AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
               )
               OR (
                 (
@@ -4124,7 +4152,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND (
                   ${booleanInt(options.autoResume)}
                   OR (
-                    (${booleanInt(options.snooze)} OR ${booleanInt(options.failover === true)})
+                    (${booleanInt(options.snooze)} OR ${booleanInt(options.waiting === true)})
                     AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)})
                   )
                 )
@@ -4139,7 +4167,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         const candidates: Array<ProjectionLimitRecoveryCandidate> = [];
         const threadFields = (
           thread: OrchestrationV2AppThread,
-          row: { readonly run_id: string; readonly provider_instance_id: string | null },
+          row: {
+            readonly run_id: string;
+            readonly provider_instance_id: string | null;
+            readonly stop_requested: number;
+          },
         ) => ({
           id: thread.id,
           projectId: thread.projectId,
@@ -4150,6 +4182,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : ProviderInstanceId.make(row.provider_instance_id),
           latestRunId: RunId.make(row.run_id),
+          latestRunStopRequested: row.stop_requested === 1,
           updatedAt: thread.updatedAt,
           archivedAt: thread.archivedAt,
           settledOverride: thread.settledOverride,
@@ -4175,18 +4208,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               row.completed_at === null ? null : DateTime.makeUnsafe(row.completed_at),
           });
         }
-        if (options.failover !== true) return candidates;
-        // Only account switching acts on a held turn; the provider resumes it at the reset itself.
+        if (options.waiting !== true) return candidates;
+        // Only account switching and reset credits act on a held turn; the provider resumes it at the
+        // reset itself.
         const heldRows = yield* sql<{
           readonly payload_json: string;
           readonly run_id: string;
           readonly attempt_id: string;
           readonly provider_instance_id: string | null;
           readonly held_payload_json: string;
+          readonly stop_requested: number;
         }>`
           SELECT t.payload_json, r.run_id, r.provider_instance_id,
             json_extract(r.payload_json, '$.activeAttemptId') AS attempt_id,
-            held.payload_json AS held_payload_json
+            held.payload_json AS held_payload_json,
+            ${stopRequestedColumn}
           FROM orchestration_v2_projection_turn_items held
           INNER JOIN orchestration_v2_projection_runs r ON r.run_id = held.run_id
           INNER JOIN orchestration_v2_projection_threads t ON t.thread_id = held.thread_id
@@ -4510,23 +4546,28 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     );
 
     const getLimitRecoveryWakeAt = Effect.fn("ProjectionStore.getLimitRecoveryWakeAt")(
-      function* (now: DateTime.Utc) {
+      function* (now: DateTime.Utc, options?: { readonly waiting?: boolean }) {
         const nowIso = DateTime.formatIso(now);
+        const waiting = options?.waiting === true ? 1 : 0;
         const rows = yield* sql<{
           readonly reset_ms: number | null;
           readonly snooze_ms: number | null;
         }>`
           SELECT
-            MIN(CASE WHEN julianday(reset_at) > julianday(${nowIso})
+            MIN(CASE WHEN auto_resume = 1 AND julianday(reset_at) > julianday(${nowIso})
               THEN (julianday(reset_at) - 2440587.5) * 86400000 END) AS reset_ms,
             MIN(CASE WHEN julianday(snoozed_until) > julianday(${nowIso})
               THEN (julianday(snoozed_until) - 2440587.5) * 86400000 END) AS snooze_ms
           FROM (
             SELECT json_extract(payload_json, '$.limitRecovery.resetAt') AS reset_at,
+              json_extract(payload_json, '$.limitRecovery.autoResume') AS auto_resume,
               json_extract(payload_json, '$.snoozedUntil') AS snoozed_until
             FROM orchestration_v2_projection_threads
             WHERE deleted_at IS NULL
-              AND json_extract(payload_json, '$.limitRecovery.autoResume') = 1
+              AND (
+                json_extract(payload_json, '$.limitRecovery.autoResume') = 1
+                OR (${waiting} = 1 AND json_extract(payload_json, '$.snoozedUntil') IS NOT NULL)
+              )
           )
         `;
         const wakes = [rows[0]?.reset_ms, rows[0]?.snooze_ms].filter(
@@ -4592,6 +4633,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runtime_requests request
               WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+            )
+            -- A Stop that reached the failed run leaves it to the person.
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_turn_items stop
+              WHERE stop.thread_id = t.thread_id AND stop.run_id = r.run_id
+                AND stop.type = 'run_interrupt_request'
             )
             -- A queued message starts on its own once the failed run ends.
             AND NOT EXISTS (

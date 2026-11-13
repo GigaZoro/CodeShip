@@ -957,26 +957,28 @@ it.effect("a run Stop reached cannot delegate or start a watch, even after it en
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("thread.stop keeps a restart continuation of the stopped run from starting", () =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const sql = yield* SqlClient.SqlClient;
-    const threadId = ThreadId.make("thread:stop-restart");
-    yield* createWatchingThread(threadId, 8);
-    yield* send(threadId, "work", "start_immediately");
-    const now = yield* DateTime.now;
-    const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
-    yield* projections.apply({
-      id: EventId.make("event:stop-restart:cancelled"),
-      type: "run.updated",
-      threadId,
-      runId: run.id,
-      occurredAt: now,
-      payload: { ...run, status: "cancelled", startedAt: null, completedAt: now },
-    });
-    const at = DateTime.formatIso(now);
-    yield* sql`
+it.effect.each(["thread.stop", "thread.snooze", "thread.settle"] as const)(
+  "%s after the restart's check keeps its continuation from starting",
+  (hold) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make(`thread:stop-restart:${hold}`);
+      yield* createWatchingThread(threadId, 8);
+      yield* send(threadId, "work", "start_immediately");
+      const now = yield* DateTime.now;
+      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      yield* projections.apply({
+        id: EventId.make("event:stop-restart:cancelled"),
+        type: "run.updated",
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+        payload: { ...run, status: "cancelled", startedAt: null, completedAt: now },
+      });
+      const at = DateTime.formatIso(now);
+      yield* sql`
       INSERT INTO orchestration_v2_effect_outbox (
         effect_id, command_id, thread_id, effect_type, payload_json, status,
         attempt_count, available_at, created_at, updated_at
@@ -988,25 +990,31 @@ it.effect("thread.stop keeps a restart continuation of the stopped run from star
       )
     `;
 
-    yield* orchestrator.dispatch({
-      type: "thread.stop",
-      commandId: CommandId.make("stop-restart"),
-      threadId,
-    });
-    yield* orchestrator.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make("restart-continuation"),
-      threadId,
-      messageId: MessageId.make("message:restart-continuation"),
-      text: "Continue.",
-      attachments: [],
-      dispatchMode: { type: "start_immediately" },
-      createdBy: "agent",
-      creationSource: "server",
-      restartContinuationOfRunId: run.id,
-    });
-    assert.deepEqual(yield* threadState(threadId), { runs: ["cancelled"], watched: [] });
-  }).pipe(Effect.provide(layerTest)),
+      const commandId = CommandId.make(`${hold}-restart`);
+      yield* orchestrator.dispatch(
+        hold === "thread.snooze"
+          ? {
+              type: hold,
+              commandId,
+              threadId,
+              snoozedUntil: DateTime.formatIso(DateTime.add(now, { hours: 1 })),
+            }
+          : { type: hold, commandId, threadId },
+      );
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`restart-continuation:${hold}`),
+        threadId,
+        messageId: MessageId.make(`message:restart-continuation:${hold}`),
+        text: "Continue.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "agent",
+        creationSource: "server",
+        restartContinuationOfRunId: run.id,
+      });
+      assert.deepEqual((yield* threadState(threadId)).runs, ["cancelled"]);
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect.each(["thread.stop", "run.interrupt"] as const)(

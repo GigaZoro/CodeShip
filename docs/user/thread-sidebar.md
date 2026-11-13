@@ -477,7 +477,8 @@ Choose **Snooze until reset** to hide the thread until its allowance returns.
 Snooze and auto-resume are independent: snooze alone wakes the thread without
 sending a message; enabling both wakes and continues it. **Wake now** cancels
 the snooze. Turn on **Hide limited threads until the limit resets** in
-**Settings → Threads** to hide limit stops by default. Choose their recovery action
+**Settings → Threads** to hide limit stops by default; a thread you snoozed yourself keeps
+your snooze. Choose their recovery action
 separately under **When a thread hits a usage limit**: **Do nothing** keeps the
 agent stopped; **Resume when the limit resets** also continues it. Providers without
 a reset time offer manual retry and the normal snooze choices.
@@ -501,14 +502,18 @@ another model, or a newer usage check, does not. Agent launches (`t3_thread_laun
 in the app is not refused. Used-up usage windows still block until the last of them
 resets. A used-up window that reports no reset blocks for at most the same hold, counted
 from when CodeShip first saw it used up. If none is free, the thread waits as above, and moves to the first
-account that gets usage back unless you snooze it or cancel its auto-resume. It moves when that account's last
+account that gets usage back unless you stop it, snooze it or cancel its auto-resume; a thread
+hidden by **Hide limited threads until the limit resets** moves too, with or without
+**Resume when the limit resets**, and shows again. It moves when that account's last
 limit ends, whether a reset or a hold, with no usage check needed. Each provider is one account: a provider
 signed in to an account another provider already uses is unavailable until you
 sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit
 its limit starts its new thread on the first other account with usage left, and
 its **Run history** says which account it used and why. **Usage → Limits** shows which
-account a limited thread continues on right now.
+account a limited thread continues on right now. When no other account has room, an
+account set to **Use reset credits automatically** redeems a banked reset and continues the
+thread; see [Track subscription limits](usage.md#track-subscription-limits).
 
 An account that must sign in to an MCP server again (such as ThreadPage, shown as a
 manual step on the provider) would start the chat without that server's tools. With

@@ -54,6 +54,7 @@ export const MACHINE_SHARED_SETTING_KEYS = [
   "continueThreadsAfterServerUpdate",
   "backgroundActivity",
   "providerInstanceFailoverOrder",
+  "autoUseResetCredits",
   "deviceSettingsProfile",
 ] as const satisfies ReadonlyArray<keyof ServerSettings & keyof ServerSettingsPatch>;
 

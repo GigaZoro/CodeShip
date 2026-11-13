@@ -27,12 +27,15 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ResetCreditRedemption from "./ResetCreditRedemption.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import {
   limitFailoverCommand,
   limitRecoveryCommand,
   limitRecoveryTarget,
+  resetCreditRedemptionAccount,
+  resetCreditResumeCommand,
   signedOutFailoverCommand,
 } from "./UsageLimitRecoveryWorker.ts";
 
@@ -87,6 +90,38 @@ const thread: ProjectionStore.ProjectionLimitRecoveryCandidate = {
   limitRecovery: null,
   snoozedUntil: null,
 };
+
+// "Hide limited threads until the limit resets" snoozed this stop until its reset.
+const hiddenUntilReset: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+  ...thread,
+  limitRecovery: { runId, resetAt, autoResume: true, snooze: true, snoozeBySettings: true },
+  snoozedUntil: DateTime.makeUnsafe(Date.parse(resetAt)),
+};
+// The same snooze picked by the person holds the thread until it wakes.
+const snoozedUntilResetByPerson = {
+  limitRecovery: { runId, resetAt, autoResume: true, snooze: true },
+  snoozedUntil: DateTime.makeUnsafe(Date.parse(resetAt)),
+};
+
+// With auto-resume off in settings, the arm that hid the stop left auto-resume unset.
+const hiddenWithoutAutoResume: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+  ...hiddenUntilReset,
+  limitRecovery: {
+    runId,
+    resetAt,
+    autoResume: false,
+    autoResumeUnset: true,
+    snooze: true,
+    snoozeBySettings: true,
+  },
+};
+// Waking a hidden stop early keeps auto-resume as the arm left it.
+const wokenWithoutAutoResume: ProjectionStore.ProjectionLimitRecoveryCandidate = {
+  ...thread,
+  limitRecovery: { runId, resetAt, autoResume: false, autoResumeUnset: true, snooze: false },
+};
+// A Stop that landed after the arm, before anything recorded it on the thread.
+const stoppedAfterArm = { ...hiddenWithoutAutoResume, latestRunStopRequested: true };
 
 const heldAttemptId = RunAttemptId.make("attempt:held");
 // Claude holds this turn open until the reset instead of stopping it.
@@ -179,6 +214,13 @@ describe("limitFailoverCommand", () => {
         ?.modelSelection?.instanceId,
       ProviderInstanceId.make("claude_first"),
     );
+    // So does one hidden until its reset, with or without auto-resume; continuing it wakes it.
+    for (const hidden of [hiddenUntilReset, hiddenWithoutAutoResume, wokenWithoutAutoResume]) {
+      assert.equal(
+        failover({ thread: hidden })?.modelSelection?.instanceId,
+        ProviderInstanceId.make("claude_first"),
+      );
+    }
     // Unlisted accounts follow the saved order.
     assert.deepEqual(
       failover({
@@ -193,6 +235,7 @@ describe("limitFailoverCommand", () => {
       "auto-resume was cancelled for the stop",
       { limitRecovery: { runId, resetAt, autoResume: false } },
     ],
+    ["the thread was stopped after the arm", stoppedAfterArm],
     ["the limit has reset", { usageLimitResetAt: "2026-10-29T11:00:00.000Z" }],
     [
       "the thread moved to another account",
@@ -200,6 +243,7 @@ describe("limitFailoverCommand", () => {
     ],
     ["the limit resets within minutes", { usageLimitResetAt: "2026-10-29T12:04:00.000Z" }],
     ["the thread is snoozed", { snoozedUntil: DateTime.makeUnsafe(Date.parse(resetAt)) }],
+    ["the person snoozed it until the reset", snoozedUntilResetByPerson],
     [
       "a held turn resets within minutes",
       { ...heldThread, usageLimitResetAt: "2026-10-29T12:04:00.000Z" },
@@ -419,6 +463,8 @@ describe("limitRecoveryTarget", () => {
     >;
     readonly dispatched: Queue.Queue<OrchestrationV2ServerCommand>;
     readonly sweeps?: Queue.Queue<number>;
+    /** The account uses its banked reset credit automatically, and Fable reads used up. */
+    readonly redeemed?: Queue.Queue<ProviderInstanceId>;
   }) =>
     UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
@@ -448,6 +494,7 @@ describe("limitRecoveryTarget", () => {
               autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
               autoResumeLimitedThreads: true,
               failoverLimitedThreads: false,
+              autoUseResetCredits: input.redeemed === undefined ? [] : [claudeAgent],
             }),
             streamChanges: Stream.never,
           }),
@@ -459,9 +506,33 @@ describe("limitRecoveryTarget", () => {
                   model("claude-fable-5-2", "Claude Fable 5.2"),
                   model("claude-opus-5-5", "Claude Opus 5.5"),
                 ],
+                ...(input.redeemed === undefined
+                  ? {}
+                  : {
+                      usageLimits: {
+                        checkedAt: "2026-10-29T11:59:00.000Z",
+                        windows: [
+                          {
+                            id: "seven_day_fable",
+                            kind: "weekly" as const,
+                            label: "Fable",
+                            usedPercent: 100,
+                            resetsAt: resetAt,
+                          },
+                        ],
+                        resetCredits: { availableCount: 1 },
+                      },
+                    }),
               }),
             ]),
             streamChanges: Stream.never,
+          }),
+          Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({
+            redeem: (instanceId) =>
+              (input.redeemed === undefined
+                ? Effect.void
+                : Queue.offer(input.redeemed, instanceId)
+              ).pipe(Effect.as({ outcome: "reset" as const })),
           }),
         ),
       ),
@@ -481,6 +552,29 @@ describe("limitRecoveryTarget", () => {
         assert(command.type === "message.dispatch");
         assert.equal(command.usageLimitContinuationOfRunId, runId);
         assert.equal(command.modelSelection?.model, "claude-opus-5-5");
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("a sweep spends no reset credit on a thread that can resume early", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+      const redeemed = yield* Queue.unbounded<ProviderInstanceId>();
+      const layer = sweepLayer({
+        candidate: stopped,
+        limits: () => new Map([[claudeAgent, [fableHold]]]),
+        dispatched,
+        redeemed,
+      });
+      yield* Effect.gen(function* () {
+        const first = yield* Effect.raceFirst(
+          Queue.take(dispatched),
+          Queue.take(redeemed).pipe(Effect.as(null)),
+        );
+        assert(first?.type === "message.dispatch");
+        assert.equal(first.modelSelection?.model, "claude-opus-5-5");
+        assert.equal(yield* Queue.size(redeemed), 0);
       }).pipe(Effect.provide(layer));
     }),
   );
@@ -548,6 +642,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
               autoResumeLimitedThreads: true,
               snoozeLimitedThreads: false,
               failoverLimitedThreads: true,
+              autoUseResetCredits: [],
             } as never),
             streamChanges: Stream.never,
           }),
@@ -556,6 +651,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
             getProviders: Effect.succeed([]),
             streamChanges: Stream.fromQueue(providerChanges),
           }),
+          Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
         ),
       ),
     );
@@ -684,6 +780,7 @@ it.effect.each([
             ]),
             streamChanges: Stream.never,
           }),
+          Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
         ),
       ),
     );
@@ -694,6 +791,321 @@ it.effect.each([
     }).pipe(Effect.provide(layer));
   }),
 );
+
+describe("reset credits", () => {
+  const own = ProviderInstanceId.make("claudeAgent");
+  const other = ProviderInstanceId.make("claude_second");
+  const limits = (usedPercent: number, availableCount = 2) => ({
+    usageLimits: {
+      checkedAt: "2026-10-29T11:59:00.000Z",
+      windows: [
+        { id: "weekly", kind: "weekly" as const, label: "Weekly", usedPercent, resetsAt: resetAt },
+      ],
+      resetCredits: { availableCount },
+    },
+  });
+  const outOfUsage = provider("claudeAgent", limits(100));
+  const freed = provider("claudeAgent", limits(0, 1));
+  const refused = new Map([[own, [{ resetAt, refusedAt: "2026-10-29T11:00:00Z" }]]]);
+  const input = (overrides: Partial<Parameters<typeof resetCreditRedemptionAccount>[0]> = {}) => ({
+    thread,
+    settings: { ...settings, autoUseResetCredits: [own] },
+    providers: [outOfUsage],
+    recordedLimits: refused,
+    mcpSignInsNeeded: new Map(),
+    nowMs: now,
+    ...overrides,
+  });
+
+  it("redeems on the stopped, held or hidden thread's own account while its limits read used up", () => {
+    assert.equal(resetCreditRedemptionAccount(input()), own);
+    assert.equal(resetCreditRedemptionAccount(input({ thread: heldThread })), own);
+    assert.equal(resetCreditRedemptionAccount(input({ thread: hiddenUntilReset })), own);
+    assert.equal(resetCreditRedemptionAccount(input({ thread: hiddenWithoutAutoResume })), own);
+    assert.equal(resetCreditRedemptionAccount(input({ thread: wokenWithoutAutoResume })), own);
+  });
+
+  it.each([
+    ["the account does not use resets automatically", { settings }],
+    ["no credit is banked", { providers: [provider("claudeAgent", limits(100, 0))] }],
+    [
+      "the limit resets within half an hour",
+      { thread: { ...thread, usageLimitResetAt: "2026-10-29T12:20:00.000Z" } },
+    ],
+    // ChatGPT's app cap stops an account whose windows have room, and a reset does not lift it.
+    ["the account's own limits have room", { providers: [provider("claudeAgent", limits(40))] }],
+    [
+      "auto-resume was cancelled for the stop",
+      { thread: { ...thread, limitRecovery: { runId, resetAt, autoResume: false } } },
+    ],
+    ["the thread was stopped after the arm", { thread: stoppedAfterArm }],
+    [
+      "the thread moved to another account",
+      {
+        thread: { ...thread, latestRunProviderInstanceId: ProviderInstanceId.make("claude_first") },
+      },
+    ],
+    [
+      "the account is off for the thread's project",
+      {
+        settings: {
+          ...settings,
+          autoUseResetCredits: [own],
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [own]: { enabled: false } } },
+          },
+        },
+      },
+    ],
+    [
+      "the thread is snoozed",
+      { thread: { ...thread, snoozedUntil: DateTime.makeUnsafe(Date.parse(resetAt)) } },
+    ],
+    [
+      "the person snoozed it until the reset",
+      { thread: { ...thread, ...snoozedUntilResetByPerson } },
+    ],
+  ] as const)("waits when %s", (_, overrides) => {
+    assert.isNull(resetCreditRedemptionAccount(input(overrides)));
+  });
+
+  it("continues the thread on its own account once a reset gave it room", () => {
+    assert.deepEqual(
+      resetCreditResumeCommand(input({ providers: [freed], recordedLimits: new Map() })),
+      {
+        type: "message.dispatch",
+        commandId: CommandId.make("limit-reset-resume:thread:failover:run:failover"),
+        messageId: MessageId.make("limit-reset-resume:thread:failover:run:failover"),
+        threadId: thread.id,
+        manualContinuationOfRunId: runId,
+        automaticContinuationOfRunId: runId,
+        text: "Continue where you left off.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "server",
+      },
+    );
+    assert.deepEqual(
+      resetCreditResumeCommand(
+        input({ thread: heldThread, providers: [freed], recordedLimits: new Map() }),
+      )?.dispatchMode,
+      { type: "restart_active", targetRunId: runId },
+    );
+    // Hiding the stop with auto-resume off does not keep the thread from the room the credit bought.
+    assert.equal(
+      resetCreditResumeCommand(
+        input({ thread: hiddenWithoutAutoResume, providers: [freed], recordedLimits: new Map() }),
+      )?.manualContinuationOfRunId,
+      runId,
+    );
+  });
+
+  it.each([
+    ["the account is still out", {}],
+    ["its refusal still holds it", { providers: [freed] }],
+    // The reset-time resume continues it instead.
+    [
+      "the account does not use resets automatically",
+      { settings, providers: [freed], recordedLimits: new Map() },
+    ],
+  ] as const)("does not continue the thread early when %s", (_, overrides) => {
+    assert.isNull(resetCreditResumeCommand(input(overrides)));
+  });
+
+  const sweepLayer = (options: {
+    readonly failover: boolean;
+    /** Resume at the reset and hide limited threads until then. */
+    readonly hide?: boolean;
+    /** The person stops both threads after the sweep's first read. */
+    readonly stopDuringSweep?: boolean;
+    /** The second thread waits on another used-up account, and the first credit gives this account room. */
+    readonly secondOnOtherAccount?: boolean;
+    readonly signals: {
+      readonly started: Queue.Queue<void>;
+      readonly idle: Queue.Queue<void>;
+      readonly redeemed: Queue.Queue<ProviderInstanceId>;
+      readonly dispatched: Queue.Queue<string>;
+      /** When each arm happened, in ms after `now`. */
+      readonly armed: Queue.Queue<number>;
+    };
+  }) => {
+    let reads = 0;
+    let ownRedeemed = false;
+    const twoAccounts = options.secondOnOtherAccount === true;
+    const waiting = () => {
+      const stopped = options.stopDuringSweep === true && reads++ > 0;
+      const first = stopped ? { ...thread, latestRunStopRequested: true } : thread;
+      const next = { ...first, id: ThreadId.make("thread:second") };
+      return [
+        first,
+        twoAccounts
+          ? { ...next, providerInstanceId: other, latestRunProviderInstanceId: other }
+          : next,
+      ];
+    };
+    return UsageLimitRecoveryWorker.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Scheduler.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getSignedOutFailoverCandidates: () => Effect.succeed([]),
+            getLimitRecoveryCandidates: () =>
+              Queue.offer(options.signals.started, undefined).pipe(Effect.as(waiting())),
+            getUsageLimitedProviderInstances: () =>
+              Effect.sync(() => (twoAccounts && ownRedeemed ? new Map() : refused)),
+            // Read only by a sweep that did nothing.
+            getLimitRecoveryWakeAt: () =>
+              Queue.offer(options.signals.idle, undefined).pipe(Effect.as(null)),
+          }),
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            dispatch: (command) =>
+              Queue.offer(options.signals.dispatched, command.commandId).pipe(
+                Effect.as({ sequence: 1, storedEvents: [] }),
+              ),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            streamDomainEvents: Stream.never,
+            autoArmLimitRecovery: () =>
+              Clock.currentTimeMillis.pipe(
+                Effect.flatMap((ms) => Queue.offer(options.signals.armed, ms - now)),
+              ),
+          }),
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed({
+              ...settings,
+              failoverLimitedThreads: options.failover,
+              autoResumeLimitedThreads: options.hide === true,
+              snoozeLimitedThreads: options.hide === true,
+              autoUseResetCredits: [own, other],
+            }),
+            streamChanges: Stream.never,
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.sync(() =>
+              twoAccounts
+                ? [ownRedeemed ? freed : outOfUsage, provider(other, limits(100))]
+                : [outOfUsage, provider(other, limits(100)), provider("claude_first")],
+            ),
+            streamChanges: Stream.never,
+          }),
+          Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
+          Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({
+            redeem: (instanceId) =>
+              Effect.sync(() => {
+                if (instanceId === own) ownRedeemed = true;
+              }).pipe(
+                Effect.andThen(Queue.offer(options.signals.redeemed, instanceId)),
+                Effect.as({ outcome: "reset" as const }),
+              ),
+          }),
+        ),
+      ),
+    );
+  };
+
+  const makeSignals = Effect.gen(function* () {
+    return {
+      started: yield* Queue.unbounded<void>(),
+      idle: yield* Queue.unbounded<void>(),
+      redeemed: yield* Queue.unbounded<ProviderInstanceId>(),
+      dispatched: yield* Queue.unbounded<string>(),
+      armed: yield* Queue.unbounded<number>(),
+    };
+  });
+
+  it.effect("redeems once per account, then waits before trying it again", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const signals = yield* makeSignals;
+      yield* Effect.gen(function* () {
+        assert.equal(yield* Queue.take(signals.redeemed), own);
+        // The account's limits still read used up, so the next sweep leaves it alone.
+        yield* TestClock.adjust("5 seconds");
+        yield* Queue.take(signals.idle);
+        // Two threads wait on the account; one credit is enough for both.
+        assert.equal(yield* Queue.size(signals.redeemed), 0);
+        assert.equal(yield* Queue.size(signals.dispatched), 0);
+        yield* TestClock.adjust("15 minutes");
+        assert.equal(yield* Queue.take(signals.redeemed), own);
+      }).pipe(Effect.provide(sweepLayer({ failover: false, signals })));
+    }),
+  );
+
+  it.effect("spends no credit on threads stopped while the sweep ran", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const signals = yield* makeSignals;
+      yield* Effect.gen(function* () {
+        // A sweep that spent nothing ends by reading its next wake time.
+        const first = yield* Effect.raceFirst(
+          Queue.take(signals.idle).pipe(Effect.as("idle")),
+          Queue.take(signals.redeemed).pipe(Effect.as("redeemed")),
+        );
+        assert.equal(first, "idle");
+      }).pipe(Effect.provide(sweepLayer({ failover: false, stopDuringSweep: true, signals })));
+    }),
+  );
+
+  it.effect("spends one credit per sweep, so other threads move to the room it bought first", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const signals = yield* makeSignals;
+      yield* Effect.gen(function* () {
+        assert.equal(yield* Queue.take(signals.redeemed), own);
+        yield* TestClock.adjust("5 seconds");
+        assert.deepEqual(
+          [yield* Queue.take(signals.dispatched), yield* Queue.take(signals.dispatched)],
+          [
+            "limit-reset-resume:thread:failover:run:failover",
+            "limit-failover:thread:second:run:failover:claudeAgent",
+          ],
+        );
+        // The second account keeps its credit: its thread moved to the room the first one bought.
+        assert.equal(yield* Queue.size(signals.redeemed), 0);
+      }).pipe(Effect.provide(sweepLayer({ failover: true, secondOnOtherAccount: true, signals })));
+    }),
+  );
+
+  it.effect("redeems before hiding a fresh stop, and hides it when the account stays out", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const signals = yield* makeSignals;
+      yield* Effect.gen(function* () {
+        assert.equal(yield* Queue.take(signals.redeemed), own);
+        yield* TestClock.adjust("5 seconds");
+        // The first sweep armed nothing; with the account still out, the next one hides both
+        // threads until the reset.
+        assert.deepEqual(
+          [yield* Queue.take(signals.armed), yield* Queue.take(signals.armed)],
+          [5_000, 5_000],
+        );
+      }).pipe(Effect.provide(sweepLayer({ failover: false, hide: true, signals })));
+    }),
+  );
+
+  it.effect("moves the thread to another account with room before spending a credit", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(now);
+      const signals = yield* makeSignals;
+      yield* Effect.gen(function* () {
+        assert.equal(
+          yield* Queue.take(signals.dispatched),
+          "limit-failover:thread:failover:run:failover:claude_first",
+        );
+        assert.equal(
+          yield* Queue.take(signals.dispatched),
+          "limit-failover:thread:second:run:failover:claude_first",
+        );
+        // The next sweep starts only after this one finished.
+        yield* TestClock.adjust("5 seconds");
+        yield* Queue.take(signals.started);
+        yield* Queue.take(signals.started);
+        assert.equal(yield* Queue.size(signals.redeemed), 0);
+      }).pipe(Effect.provide(sweepLayer({ failover: true, signals })));
+    }),
+  );
+});
 
 const HOUR_MS = 60 * 60 * 1000;
 const nowMs = Date.parse("2026-10-19T12:00:00.000Z");
@@ -728,13 +1140,13 @@ describe("limitRecoveryCommand arming", () => {
   it("still arms a failure whose reset only just passed", () => {
     const thread = failedThread(6 * HOUR_MS, HOUR_MS);
     const arm = limitRecoveryCommand(thread, true, nowMs);
-    assert.equal(arm?.type, "thread.metadata.update");
+    assert.equal(arm?.type, "thread.limit-recovery.arm");
   });
 
   it("arms a reset that is exactly 24 hours overdue", () => {
     const thread = failedThread(30 * HOUR_MS, 24 * HOUR_MS);
     const arm = limitRecoveryCommand(thread, true, nowMs);
-    assert.equal(arm?.type, "thread.metadata.update");
+    assert.equal(arm?.type, "thread.limit-recovery.arm");
   });
 
   it("does not arm a reset that is 24 hours and 1ms overdue", () => {

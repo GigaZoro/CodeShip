@@ -33,6 +33,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as AccountRouting from "./AccountRouting.ts";
+import * as ResetCreditRedemption from "./ResetCreditRedemption.ts";
 import * as FinalReview from "./FinalReview.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
@@ -441,6 +442,8 @@ export const layerProduction = Layer.mergeAll(
   Layer.provide(layerProjectService),
   // ThreadManagementService reads it optionally; without it auto-account turns keep their account.
   Layer.provide(AccountRouting.layer.pipe(Layer.provide(ProjectionStore.layer))),
+  // The usage-limit recovery worker redeems reset credits for accounts set to use them.
+  Layer.provide(ResetCreditRedemption.layer.pipe(Layer.provide(ProjectionStore.layer))),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
 );

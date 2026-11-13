@@ -39,6 +39,7 @@ import {
   restartCutCalls,
   restartCutCallsNote,
   restartDelegatedTasksNote,
+  restartHeldBySnooze,
   restartRetryNotices,
   supersededRun,
   toldBackgroundWork,
@@ -122,7 +123,7 @@ function restartContinuationBlocked(
     thread.archivedAt !== null ||
     thread.deletedAt !== null ||
     thread.settledOverride === "settled" ||
-    (thread.snoozedUntil != null && DateTime.isGreaterThan(thread.snoozedUntil, now))
+    restartHeldBySnooze(thread, now)
   )
     return true;
   const turn = latestProviderTurnForAttempt(projection.providerTurns, source.activeAttemptId);

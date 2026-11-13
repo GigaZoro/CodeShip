@@ -47,22 +47,23 @@ export function makeCodexConsumeResetCredit<E, C>(input: {
         ),
         // The windows just changed; re-probe so the snapshot says so. A failed probe republishes
         // the pre-redemption limits rather than marking them failed, so "confirmed" means
-        // `checkedAt` moved past what was published before the redemption started.
-        Effect.tap((outcome) =>
+        // `checkedAt` moved past what was published before the redemption started. The credit is
+        // spent either way, so an unconfirmed reset still succeeds.
+        Effect.flatMap((outcome) =>
           Effect.gen(function* () {
             const before = (yield* input.snapshot.getSnapshot).usageLimits?.checkedAt;
             const refreshed = yield* input.snapshot.refresh;
             const after = refreshed.usageLimits?.checkedAt;
-            if (
-              outcome === "reset" &&
+            return outcome === "reset" &&
               (after === undefined ||
                 after === before ||
                 refreshed.usageLimits?.unavailable?.reason === "probeFailed")
-            ) {
-              return yield* failure(
-                "The reset was applied, but Codex could not confirm the new limits. Refresh to check.",
-              );
-            }
+              ? {
+                  outcome,
+                  warning:
+                    "The reset was applied, but Codex could not confirm the new limits. Refresh to check.",
+                }
+              : { outcome };
           }),
         ),
       );

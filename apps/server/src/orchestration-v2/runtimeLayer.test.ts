@@ -6965,7 +6965,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
-  it.effect.each(["stopped", "skipped", "server", "removed", "send-now"] as const)(
+  it.effect.each(["stopped", "skipped", "server", "removed", "send-now", "snoozed"] as const)(
     "brings back a message a restart kept from the agent only while it is still owed: %s",
     (scenario) =>
       Effect.gen(function* () {
@@ -7077,6 +7077,33 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             threadId,
             runId: (yield* runFor("second")).id,
           });
+        } else if (scenario === "snoozed") {
+          // The person clears the queue, which a snooze needs, after the restart chose to send its
+          // message again, then snoozes the thread.
+          for (const key of ["first", "second"]) {
+            yield* orchestrator.dispatch({
+              type: "queued-run.cancel",
+              commandId: CommandId.make(`${threadId}:remove:${key}`),
+              threadId,
+              runId: (yield* runFor(key)).id,
+            });
+          }
+          yield* orchestrator.dispatch({
+            type: "thread.snooze",
+            commandId: CommandId.make(`${threadId}:snooze`),
+            threadId,
+            snoozedUntil: DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 1 })),
+          });
+          const refused = yield* orchestrator
+            .dispatch({
+              type: "prepared-run.retry",
+              automatic: true,
+              commandId: CommandId.make(`command:restart-retry:${work.id}:1`),
+              threadId,
+              runId: work.id,
+            })
+            .pipe(Effect.flip);
+          assert.equal(refused._tag, "OrchestratorDispatchError");
         } else {
           yield* send(
             "later",
@@ -9505,7 +9532,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           },
         ],
       });
-      const sweep = { now: stoppedAt, autoResume: false, snooze: false, failover: true };
+      const sweep = { now: stoppedAt, autoResume: false, snooze: false, waiting: true };
       const candidate = (yield* projections.getLimitRecoveryCandidates(sweep)).find(
         (row) => row.id === threadId,
       )!;
@@ -9916,6 +9943,10 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "stop-before-arm",
     "stop-before-arm-mismatched-recovery",
     "early-resume",
+    "stop-before-limit",
+    "user-snooze-before-arm",
+    "hidden-continue",
+    "person-snooze-until-reset",
   ] as const)("guards a scheduled usage-limit continuation against %s", (scenario) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -10017,6 +10048,34 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
               },
             },
           },
+          ...(scenario === "stop-before-limit"
+            ? [
+                {
+                  id: EventId.make(`recovery:interrupt:${scenario}`),
+                  type: "turn-item.updated" as const,
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    id: TurnItemId.make(`recovery:interrupt:${scenario}`),
+                    type: "run_interrupt_request" as const,
+                    threadId,
+                    runId: run.id,
+                    nodeId: run.rootNodeId,
+                    providerThreadId: null,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: 1,
+                    status: "completed" as const,
+                    title: "Stop",
+                    message: "Stopping",
+                    startedAt: now,
+                    completedAt: now,
+                    updatedAt: now,
+                  },
+                },
+              ]
+            : []),
         ],
       });
       if (scenario === "queued-resume") {
@@ -10062,15 +10121,67 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.isNull(current.thread.snoozedUntil);
         return;
       }
-      const snooze = scenario === "wake" || scenario === "cancel-resume-keep-snooze";
+      const userSnoozedUntil = DateTime.add(now, { hours: 2 });
+      const hideRequested =
+        scenario === "wake" ||
+        scenario === "cancel-resume-keep-snooze" ||
+        scenario === "user-snooze-before-arm" ||
+        scenario === "hidden-continue";
+      // Hiding the stop until its reset leaves a snooze the user set alone.
+      const snooze = hideRequested && scenario !== "user-snooze-before-arm";
       const autoResume = scenario !== "wake";
-      const arm = limitRecoveryCommand(shell, autoResume, DateTime.toEpochMillis(now), snooze);
-      assert(arm?.type === "thread.metadata.update" && arm.limitRecovery != null);
+      const arm = limitRecoveryCommand(
+        shell,
+        autoResume,
+        DateTime.toEpochMillis(now),
+        hideRequested,
+      );
+      assert(arm?.type === "thread.limit-recovery.arm" && arm.limitRecovery != null);
       const automaticArm = {
         commandId: arm.commandId,
         threadId,
         limitRecovery: arm.limitRecovery,
       };
+      // What account switching and reset credits send once another account or a credit has room.
+      const continueAutomatically = (attempt: string) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`recovery:automatic:${attempt}:${scenario}`),
+          messageId: MessageId.make(`recovery:automatic:${attempt}:${scenario}`),
+          threadId,
+          automaticContinuationOfRunId: run.id,
+          manualContinuationOfRunId: run.id,
+          text: "Continue where you left off.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "server",
+        });
+      if (scenario === "stop-before-limit") {
+        // Nothing recorded the Stop on the thread yet; the run's own Stop marker refuses it.
+        assert.equal(
+          (yield* continueAutomatically("before-arm").pipe(Effect.exit))._tag,
+          "Failure",
+        );
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 1);
+        yield* orchestrator.autoArmLimitRecovery(automaticArm);
+        assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).thread.limitRecovery, {
+          runId: run.id,
+          resetAt,
+          autoResume: false,
+          snooze: false,
+          requestId: arm.commandId,
+        });
+        return;
+      }
+      if (scenario === "user-snooze-before-arm") {
+        yield* orchestrator.dispatch({
+          type: "thread.snooze",
+          commandId: CommandId.make(`recovery:user-snooze:${scenario}`),
+          threadId,
+          snoozedUntil: DateTime.formatIso(userSnoozedUntil),
+        });
+      }
       const stopBeforeArm =
         scenario === "stop-before-arm" || scenario === "stop-before-arm-mismatched-recovery";
       if (stopBeforeArm) {
@@ -10122,8 +10233,14 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           requestId: CommandId.make(`recovery:stop:${scenario}`),
         });
       }
+      // After a Stop, only the person's choice arms the stop again.
       const armCommand = stopBeforeArm
-        ? { ...arm, commandId: CommandId.make(`recovery:explicit-rearm:${scenario}`) }
+        ? {
+            type: "thread.metadata.update" as const,
+            commandId: CommandId.make(`recovery:explicit-rearm:${scenario}`),
+            threadId,
+            limitRecovery: arm.limitRecovery,
+          }
         : arm;
       if (stopBeforeArm) yield* orchestrator.dispatch(armCommand);
       else yield* orchestrator.autoArmLimitRecovery(automaticArm);
@@ -10134,11 +10251,50 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         runId: run.id,
         resetAt,
         autoResume,
+        // Settings left auto-resume off; nobody chose it.
+        ...(autoResume ? {} : { autoResumeUnset: true }),
         snooze,
+        // Only the settings' hide, which another account or a reset credit may still end sooner.
+        ...(snooze ? { snoozeBySettings: true } : {}),
         requestId: armCommand.commandId,
       });
       if (snooze)
         assert.equal(DateTime.toEpochMillis(armedShell.snoozedUntil!), Date.parse(resetAt));
+      if (scenario === "user-snooze-before-arm")
+        assert.equal(
+          DateTime.toEpochMillis(armedShell.snoozedUntil!),
+          DateTime.toEpochMillis(userSnoozedUntil),
+        );
+      if (scenario === "hidden-continue") {
+        // The settings' hide lets another account or a reset credit continue it before the reset.
+        yield* continueAutomatically("hidden");
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
+        return;
+      }
+      if (scenario === "person-snooze-until-reset") {
+        yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`recovery:person-snooze:${scenario}`),
+          threadId,
+          limitRecovery: { runId: run.id, resetAt, snooze: true },
+        });
+        const snoozed = (yield* orchestrator.getThreadProjection(threadId)).thread;
+        assert.isTrue(snoozed.limitRecovery!.snooze);
+        assert.isUndefined(snoozed.limitRecovery!.snoozeBySettings);
+        const refused = yield* continueAutomatically("snoozed").pipe(Effect.flip);
+        assert.equal(refused._tag, "OrchestratorContinuationSnoozedError");
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 1);
+        yield* orchestrator.dispatch({
+          type: "thread.unsnooze",
+          commandId: CommandId.make(`recovery:person-wake:${scenario}`),
+          threadId,
+          reason: "user",
+        });
+        // The refusal was not recorded, so the same continuation goes through once it wakes.
+        yield* continueAutomatically("snoozed");
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 2);
+        return;
+      }
       if (scenario === "cancel-resume-keep-snooze") {
         yield* TestClock.adjust("10 seconds");
         yield* orchestrator.dispatch({
@@ -10161,6 +10317,8 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
           DateTime.toEpochMillis(armedShell.updatedAt),
         );
         assert.isFalse(armedShell.limitRecovery!.autoResume);
+        // Choosing the snooze makes it the person's, so it holds the thread until it wakes.
+        assert.isUndefined(armedShell.limitRecovery!.snoozeBySettings);
       }
       if (scenario === "independent-patches") {
         yield* TestClock.adjust("10 seconds");
@@ -10228,13 +10386,35 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.snoozedUntil);
       }
       if (scenario === "wake") {
+        // Clients wake a hidden stop by turning its snooze off, which chooses nothing about auto-resume.
         yield* orchestrator.dispatch({
           type: "thread.metadata.update",
           commandId: CommandId.make(`recovery:wake:${scenario}`),
           threadId,
-          limitRecovery: { runId: run.id, resetAt, autoResume: false, snooze: false },
+          limitRecovery: { runId: run.id, resetAt, snooze: false },
         });
-        assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.snoozedUntil);
+        let woken = (yield* orchestrator.getThreadProjection(threadId)).thread;
+        assert.isNull(woken.snoozedUntil);
+        assert.isTrue(woken.limitRecovery!.autoResumeUnset);
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make(`recovery:stop-after-wake:${scenario}`),
+          threadId,
+        });
+        woken = (yield* orchestrator.getThreadProjection(threadId)).thread;
+        // The Stop is recorded even though the arm had already left auto-resume off.
+        assert.deepEqual(woken.limitRecovery, {
+          runId: run.id,
+          resetAt,
+          autoResume: false,
+          snooze: false,
+          requestId: CommandId.make(`recovery:stop-after-wake:${scenario}`),
+        });
+        assert.equal(
+          (yield* continueAutomatically("after-stop").pipe(Effect.exit))._tag,
+          "Failure",
+        );
+        assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 1);
       }
       assert.isNull(limitRecoveryCommand(armedShell, true, DateTime.toEpochMillis(now)));
       yield* orchestrator.dispatch({
@@ -10305,7 +10485,13 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         true,
         DateTime.toEpochMillis(yield* DateTime.now),
       );
-      if (autoResume && scenario !== "cancel-resume-keep-snooze") assert.isNotNull(resume);
+      // The user's snooze holds the resume until it ends.
+      if (
+        autoResume &&
+        scenario !== "cancel-resume-keep-snooze" &&
+        scenario !== "user-snooze-before-arm"
+      )
+        assert.isNotNull(resume);
       else assert.isNull(resume);
       if (scenario === "snooze-race") {
         const wakeAt = DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 1 }));

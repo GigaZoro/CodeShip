@@ -154,6 +154,7 @@ const isMachineOnlySettingKey = (key: string) =>
  */
 const ACCOUNT_SHARED_SETTING_KEYS: ReadonlySet<MachineSharedSettingKey> = new Set([
   "providerInstanceFailoverOrder",
+  "autoUseResetCredits",
 ]);
 
 /**

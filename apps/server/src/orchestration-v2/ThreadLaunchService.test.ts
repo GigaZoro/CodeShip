@@ -1273,6 +1273,66 @@ it.effect("rejects a preparation retry after the project disables its provider",
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("leaves a stopped failed preparation to the person", () => {
+  let fetchAttempts = 0;
+  const harness = makeHarness({
+    fetchWorktreeBaseCommit: () =>
+      fetchAttempts++ === 0
+        ? Effect.fail(
+            new GitCommandError({
+              operation: "GitVcsDriver.fetchRemote",
+              command: "git",
+              cwd: project.workspaceRoot,
+              detail: "Git could not reach the remote.",
+              exitCode: 128,
+            }),
+          )
+        : Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:launch:stopped-preparation-retry",
+        thread: "thread:launch:stopped-preparation-retry",
+        message: "Start from origin",
+        workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
+      }),
+    );
+    yield* preparationSettled(launched.threadId);
+    yield* threads.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("command:launch:stopped-preparation-retry:stop"),
+      threadId: launched.threadId,
+    });
+    const runId = launched.projection.runs[0]!.id;
+
+    const automatic = yield* launches
+      .retryPreparation({
+        commandId: CommandId.make("command:launch:stopped-preparation-retry:automatic"),
+        threadId: launched.threadId,
+        runId,
+        automatic: true,
+      })
+      .pipe(Effect.exit);
+    assert.equal(automatic._tag, "Failure");
+    assert.equal((yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status, "failed");
+    assert.equal(fetchAttempts, 1);
+
+    // Retry from the thread is the person's own choice, so the Stop does not block it.
+    yield* launches.retryPreparation({
+      commandId: CommandId.make("command:launch:stopped-preparation-retry:manual"),
+      threadId: launched.threadId,
+      runId,
+    });
+    assert.equal(
+      (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+      "preparing",
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("does not release a prepared run after the project disables its provider", () => {
   return Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();

@@ -400,7 +400,17 @@ export const OrchestrationV2LimitRecovery = Schema.Struct({
   runId: RunId,
   resetAt: IsoDateTime,
   autoResume: Schema.Boolean,
+  /**
+   * Set while nobody has chosen `autoResume`: the automatic arm left it off by default. A choice
+   * or a Stop clears it, and only then does `autoResume: false` keep the thread from continuing early.
+   */
+  autoResumeUnset: Schema.optional(Schema.Boolean),
   snooze: Schema.optional(Schema.Boolean),
+  /**
+   * Set while `snooze` is "Hide limited threads until the limit resets", not the person's snooze:
+   * it only hides the stop, so another account or a reset credit may still continue the thread.
+   */
+  snoozeBySettings: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2LimitRecovery = typeof OrchestrationV2LimitRecovery.Type;
 
@@ -3534,6 +3544,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     projectId: ProjectId,
+  }),
+  /** Records a usage-limit stop's recovery as the settings choose it; a snooze it sets is `snoozeBySettings`. */
+  Schema.Struct({
+    type: Schema.Literal("thread.limit-recovery.arm"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    limitRecovery: OrchestrationV2LimitRecoveryUpdate,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),

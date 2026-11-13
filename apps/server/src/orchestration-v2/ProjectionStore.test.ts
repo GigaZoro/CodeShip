@@ -5076,6 +5076,31 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         "transport_error",
         ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
       );
+      const stopped = yield* stop("network-stopped", "transport_error");
+      yield* store.apply({
+        id: EventId.make("event:network-stopped:stop"),
+        type: "turn-item.updated",
+        threadId: stopped.threadId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make("network-stopped:stop"),
+          threadId: stopped.threadId,
+          runId: stopped.run.id,
+          nodeId: stopped.run.rootNodeId,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 3,
+          status: "completed",
+          title: "Interrupt requested",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "run_interrupt_request",
+          message: "Stopped by the user.",
+        },
+      });
       const listed = (since: DateTime.Utc) =>
         store
           .getNetworkRecoveryCandidates({ now, since })
@@ -5322,6 +5347,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             lastErrorClass: sqlShell.lastErrorClass,
             usageLimitResetAt: sqlShell.usageLimitResetAt,
             latestRunId: sqlShell.latestRunId,
+            latestRunStopRequested: false,
             latestRunCompletedAt: sqlShell.latestRunCompletedAt,
             updatedAt: sqlShell.updatedAt,
             archivedAt: sqlShell.archivedAt,
@@ -5653,15 +5679,37 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       );
       const reset = DateTime.makeUnsafe(limitItem.failure.resetAt);
       assert.isDefined(
-        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, failover: true })).find(
+        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(
           (row) => row.id === threadId,
         ),
       );
+      // A Stop can reach the run before anything records it on the thread.
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:stop"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...limitItem,
+          id: TurnItemId.make("item:limit-shell:stop"),
+          ordinal: limitItem.ordinal + 1,
+          status: "completed",
+          title: "Interrupt requested",
+          type: "run_interrupt_request",
+          message: "Stopped by the user.",
+        },
+      });
+      assert.isTrue(
+        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(
+          (row) => row.id === threadId,
+        )?.latestRunStopRequested,
+      );
+      yield* sql`DELETE FROM orchestration_v2_projection_turn_items WHERE turn_item_id = 'item:limit-shell:stop'`;
       assert.isUndefined(
         (yield* store.getLimitRecoveryCandidates({
           ...recoveryOptions,
           now: reset,
-          failover: true,
+          waiting: true,
         })).find((row) => row.id === threadId),
       );
       assert.deepEqual(
@@ -5859,7 +5907,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         ),
       );
       assert.isDefined(
-        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, failover: true })).find(
+        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(
           (row) => row.id === threadId,
         ),
       );
@@ -5895,6 +5943,18 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         SET payload_json = json_set(payload_json, '$.snoozedUntil', NULL, '$.limitRecovery.autoResume', json('false'))
         WHERE thread_id = ${threadId}`;
       assert.isNull(yield* store.getLimitRecoveryWakeAt(now));
+      // Waking may still move it to another account or spend a reset credit on it.
+      yield* sql`UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.snoozedUntil', ${DateTime.formatIso(reset)})
+        WHERE thread_id = ${threadId}`;
+      assert.isNull(yield* store.getLimitRecoveryWakeAt(now));
+      assert.strictEqual(
+        yield* store.getLimitRecoveryWakeAt(now, { waiting: true }),
+        DateTime.toEpochMillis(reset),
+      );
+      yield* sql`UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.snoozedUntil', NULL)
+        WHERE thread_id = ${threadId}`;
       assert.isUndefined(
         (yield* store.getLimitRecoveryCandidates({
           ...recoveryOptions,
@@ -5902,10 +5962,19 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           autoResume: true,
         })).find((row) => row.id === threadId),
       );
-      assert.isUndefined(
-        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, failover: true })).find(
+      // Waiting, an armed stop is listed whatever its auto-resume: only its request tells a
+      // cancel from an arm that left auto-resume off.
+      assert.isDefined(
+        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, waiting: true })).find(
           (row) => row.id === threadId,
         ),
+      );
+      assert.isUndefined(
+        (yield* store.getLimitRecoveryCandidates({
+          ...recoveryOptions,
+          now: reset,
+          waiting: true,
+        })).find((row) => row.id === threadId),
       );
       yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${originalRow!.payload_json} WHERE thread_id = ${threadId}`;
       const session = {

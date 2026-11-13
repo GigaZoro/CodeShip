@@ -1,6 +1,6 @@
 // Context tags are runtime singletons; drivers need multiple instances.
 import type {
-  ProviderConsumeResetCreditOutcome,
+  ProviderConsumeResetCreditResult,
   AcpRegistryListSessionsResult,
   AcpRegistryListProvidersResult,
   AcpRegistryOperationError,
@@ -62,8 +62,9 @@ export interface ProviderInstance {
   ) => Effect.Effect<ProviderWorkspaceSnapshot, ProviderDriverError>;
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
   readonly invalidateCaches?: Effect.Effect<void>;
+  /** A redeemed reset whose new limits could not be read back succeeds with a `warning`. */
   readonly consumeResetCredit?: () => Effect.Effect<
-    ProviderConsumeResetCreditOutcome,
+    ProviderConsumeResetCreditResult,
     ProviderDriverError
   >;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
