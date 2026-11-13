@@ -17,6 +17,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
+  OrchestrationV2Command,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
@@ -227,11 +228,16 @@ it.effect("an answered question reports already answered instead of not found", 
   );
 });
 
-it.effect("t3_queue shows a held queue and releases it with the composer's queue.resume", () => {
+it.effect("t3_queue shows a held queue and sends every queue command the composer can", () => {
   const heldThreadId = ThreadId.make("held-queue-thread");
   const shell = McpToolAccessTestkit.liveThreadShell(heldThreadId, { activeRunId: null });
   const heldRunId = RunId.make("held-run");
   const dispatched: Array<OrchestrationV2ServerCommand> = [];
+  const queueCommandTypes = new Set(
+    OrchestrationV2Command.members
+      .map((member) => member.fields.type.literal)
+      .filter((type) => /^queued?[.-]/.test(type)),
+  );
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const queue = (args: Record<string, unknown>) =>
@@ -245,11 +251,27 @@ it.effect("t3_queue shows a held queue and releases it with the composer's queue
       items: [{ queuedRunId: heldRunId }],
       held: true,
     });
-    const resumed = yield* queue({ action: "resume" });
-    expect(resumed.isError).toBe(false);
-    expect(dispatched).toEqual([
+    for (const args of [
+      { action: "resume" },
+      { action: "resume", queuedRunId: heldRunId },
+      { action: "edit", queuedRunId: heldRunId, text: "Edited" },
+      { action: "reorder", queuedRunId: heldRunId, beforeRunId: null },
+      { action: "promote_to_steer", queuedRunId: heldRunId, targetRunId: RunId.make("active") },
+      { action: "cancel", queuedRunId: heldRunId },
+    ]) {
+      expect((yield* queue(args)).isError).toBe(false);
+    }
+    expect(dispatched.slice(0, 2)).toEqual([
       { type: "queue.resume", threadId: heldThreadId, commandId: expect.any(String) },
+      {
+        type: "queued-run.start",
+        threadId: heldThreadId,
+        runId: heldRunId,
+        commandId: expect.any(String),
+      },
     ]);
+    // A queue command added to the contract fails here until agents can send it too.
+    expect(new Set(dispatched.map((command) => command.type))).toEqual(queueCommandTypes);
   }).pipe(
     Effect.provide(
       layerThreadToolkit.pipe(

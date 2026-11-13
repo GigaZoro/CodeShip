@@ -295,7 +295,11 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     writesThread((input) =>
       Effect.gen(function* () {
         if (input.action === "resume") {
-          return yield* dispatch(input.threadId, (common) => ({ ...common, type: "queue.resume" }));
+          return yield* dispatch(input.threadId, (common) =>
+            input.queuedRunId === undefined
+              ? { ...common, type: "queue.resume" }
+              : { ...common, type: "queued-run.start", runId: input.queuedRunId },
+          );
         }
         const runId = yield* required(input.queuedRunId, "queuedRunId");
         switch (input.action) {

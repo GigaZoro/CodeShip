@@ -1,3 +1,7 @@
+## 2026-11-13 — Agents can send a held queued message first
+
+- **Send now** on a queued message in a stopped chat starts the queue from that message. Agents could only start a held queue in order. `t3_queue` `resume` now takes an optional `queuedRunId` and starts the queue from that message, the way **Send now** does.
+
 ## 2026-11-13 — Agents can resume a held queue
 
 - After a failed or stopped turn, T3.CodeShip holds the chat's queued messages until you press **Resume**. Agents had no way to do the same, so a helper such as Chat Doctor had to send the chat a new message to get it going. The `t3_queue` tool now has a `resume` action that releases the held queue the way **Resume** does, and its `list` says whether the queue is held.
