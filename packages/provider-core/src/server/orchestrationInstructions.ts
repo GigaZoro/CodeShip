@@ -177,11 +177,11 @@ export function autoCoordinatorInstructions(input: {
   const primary = `${ownPrimary?.name ?? input.primary.model}${(input.primary.options ?? []).map(({ id, value }) => `, ${id} ${value}`).join("")}`;
   const review =
     input.otherPrimary === undefined
-      ? ""
-      : ` Prefer the provider that did not write the code; use both for big or risky changes. Other reviewer: \`delegate_task\` role "review", target \`${JSON.stringify({ ...input.otherPrimary, options: Object.fromEntries((input.otherPrimary.options ?? []).map(({ id, value }) => [id, value])) })}\`.`;
-  return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise give each piece to the cheapest capable model below. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
+      ? " The other provider's Settings primary is unavailable. Report the independent review as incomplete; do not substitute an implementation model."
+      : ` Also obtain an independent review from the other provider's Settings primary: \`delegate_task\` role "review", target \`${JSON.stringify({ ...input.otherPrimary, options: Object.fromEntries((input.otherPrimary.options ?? []).map(({ id, value }) => [id, value])) })}\`. Preserve its model and options; if it cannot run, report the independent review as incomplete.`;
+  return `Auto: coordinate as ${input.models.find((model) => model.slug === input.model)?.name ?? input.model}. Do tiny requests yourself; otherwise choose the best model for each task from either Claude or Codex. Use the cheapest capable model for straightforward work. Keep judgment, subtle bugs and review. Brief workers with goal, files, constraints and checks.
 ${sections.join("\n")}
-- Review on your Settings primary, ${primary}, yourself${ownPrimary && nativeModel(ownPrimary) ? ` or a fresh native subagent (\`${nativeModel(ownPrimary)}\`)` : ""}.${review}
+- After implementation, review the diff yourself on your Settings primary, ${primary}.${review}
 - Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;
 }
 

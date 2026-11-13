@@ -160,32 +160,52 @@ describe("autoCoordinatorInstructions", () => {
     expect(brief).not.toContain("extra-5");
     expect(brief).toContain("More accounts and models: call `orchestrator_capabilities`");
   });
-  it.each([false, true])(
-    "reviews on the configured primary models (other available: %s)",
-    (otherAvailable) => {
+  it.each([
+    { driver: "claudeAgent", otherAvailable: false },
+    { driver: "claudeAgent", otherAvailable: true },
+    { driver: "codex", otherAvailable: false },
+    { driver: "codex", otherAvailable: true },
+  ])(
+    "reviews on both configured primaries with $driver coordinating (other available: $otherAvailable)",
+    ({ driver, otherAvailable }) => {
+      const claude = driver === "claudeAgent";
+      const primary = claude
+        ? { model: "custom-opus", options: [{ id: "effort", value: "xhigh" }] }
+        : { model: "custom-astra", options: [{ id: "reasoningEffort", value: "ultra" }] };
       const otherPrimary = {
-        providerInstanceId: "codex_review",
+        providerInstanceId: claude ? "codex_review" : "claude_review",
         model: "custom-review-model",
-        options: [{ id: "reasoningEffort", value: "ultra" }],
+        options: claude
+          ? [{ id: "reasoningEffort", value: "max" }]
+          : [{ id: "effort", value: "xhigh" }],
       };
       const brief = autoCoordinatorInstructions({
         ...input,
-        models: [
-          ...input.models,
-          { slug: input.primary.model, name: "Custom Opus", aliases: ["opus"] },
-        ],
+        driver: ProviderDriverKind.make(driver),
+        model: primary.model,
+        primary,
+        models: [{ slug: primary.model, name: "Custom Primary", aliases: claude ? ["opus"] : [] }],
         ...(otherAvailable ? { otherPrimary } : {}),
       });
-      expect(brief).toContain("Custom Opus, effort max");
-      expect(brief).not.toContain(JSON.stringify(input.primary));
-      expect(brief).toContain("fresh native subagent (`opus`)");
+      expect(brief).toContain("review the diff yourself on your Settings primary, Custom Primary");
+      expect(brief).toContain(claude ? "effort xhigh" : "reasoningEffort ultra");
+      expect(brief).not.toContain("fresh native subagent");
+      expect(brief).toContain("choose the best model for each task from either Claude or Codex");
       if (otherAvailable) {
+        const target = brief?.match(/role "review", target `([^`]+)`/)?.[1];
+        expect(target).toBeDefined();
+        expect(JSON.parse(target!)).toEqual({
+          ...otherPrimary,
+          options: Object.fromEntries(otherPrimary.options.map(({ id, value }) => [id, value])),
+        });
         expect(brief).toContain(
-          'role "review", target `{"providerInstanceId":"codex_review","model":"custom-review-model","options":{"reasoningEffort":"ultra"}}`',
+          "Also obtain an independent review from the other provider's Settings primary",
         );
-        expect(brief).toContain("Prefer the provider that did not write the code");
-        expect(brief).toContain("both for big or risky changes");
-      } else expect(brief).not.toContain("delegate_task");
+        expect(brief).not.toContain("both for big or risky changes");
+      } else {
+        expect(brief).not.toContain("delegate_task");
+        expect(brief).toContain("Report the independent review as incomplete");
+      }
     },
   );
 });

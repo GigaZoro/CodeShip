@@ -541,15 +541,15 @@ a coordinator model moves Auto threads to it on their next message. Picking a mo
 in the picker turns Auto off for that thread.
 
 On Claude and Codex, the coordinator does small requests itself. For larger requests,
-it sees usable models from both providers and chooses the cheapest model that can
-do each piece well. It uses subscription accounts enabled for the project, skipping
+it sees usable models from both providers and chooses the best model for each task,
+using cheaper capable models for straightforward work. It uses subscription accounts enabled for the project, skipping
 accounts at their usage limit, including exhausted usage windows even before a turn
 fails. A limit on one model family excludes only that family. Each model uses the first
 account in failover order that can run it; native subagents use the coordinator's
 own account. The short model list points the agent to the full catalog when needed.
-Reviews use each provider's Auto model and effort from Settings, preferring the
-provider that did not write the code, and both for big or risky changes. If the
-other provider's Auto model cannot run, the coordinator reviews on its own primary model.
+After implementation, the coordinator reviews the diff itself and requests an independent
+review from the other provider. Both use their provider's Auto model and effort from Settings.
+If the other provider's Auto model cannot run, the coordinator reports that review as incomplete.
 When the other provider cannot run, it delegates routine work to cheaper models of
 its own provider.
 

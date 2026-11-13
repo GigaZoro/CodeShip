@@ -1,3 +1,7 @@
+## 2026-11-14 — Auto reviews with both providers' configured primary models
+
+- Auto's coordinator reviews implementation itself and requests an independent review from the other provider, using each provider's Auto model and effort from Settings. It reports an unavailable independent review as incomplete. Implementation can use whichever Claude or Codex model best suits the task.
+
 ## 2026-11-13 — Finished delegated chats on another machine settle by themselves
 
 - When an agent handed a task to a linked machine with `delegate_task`, the chat it started there stayed in that machine's active list after the result came back, until it auto-settled days later. Once the result reaches the chat that delegated it, that chat now settles if it completed with no question or queued message waiting. A failed, stopped or waiting one stays active, and a new message there makes it active again.
