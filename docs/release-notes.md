@@ -1,3 +1,7 @@
+## 2026-11-13 — /ship settles a chat whose work is already on main
+
+- When the work a chat was asked to ship was already on main, `/ship` left the chat unsettled, because the skill settled only after its own push. It now treats "nothing to land" as landed: it cleans up the branch and worktree and settles the chat.
+
 ## 2026-11-13 — The Mac app is built on macOS 26
 
 - Releases now build the Mac app on GitHub's macOS 26 machines, the macOS version upstream T3 Code builds its releases on. GitHub's macOS 15 machines gave this repository none for hours, so no update had been published since this morning.

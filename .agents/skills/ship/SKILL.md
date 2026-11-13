@@ -14,6 +14,7 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 - Default branch: `git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `main`.
 - The first `git worktree list` entry is the main checkout. Note whether you are in a separate worktree.
 - Already on the default branch: do steps 2-5, push it, report, and skip cleanup.
+- Nothing to land: the tree is clean and, after `git fetch origin`, `git merge-base --is-ancestor HEAD origin/<default>` holds. The work is already on the default branch, so skip to step 7, then report and settle.
 
 ## 2. Stage deliberately
 
@@ -60,4 +61,4 @@ Give the commit SHA and title, the checks you ran and their results, and what th
 
 ## 9. Settle the thread
 
-Only when step 6 confirmed the commit landed: if the T3.CodeShip `t3_thread_organize` tool is available, call it with `action: "settle"` and no `threadId`. It settles this thread when the turn ends. Skip this step when you stopped early (checks failed, push rejected, or you are waiting on the developer).
+Only when the work is on the default branch, because step 6 confirmed the commit landed or step 1 found nothing to land: if the T3.CodeShip `t3_thread_organize` tool is available, call it with `action: "settle"` and no `threadId`. It settles this thread when the turn ends. Skip this step when you stopped early (checks failed, push rejected, or you are waiting on the developer).
