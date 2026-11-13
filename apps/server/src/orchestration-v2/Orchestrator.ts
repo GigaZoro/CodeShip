@@ -841,6 +841,33 @@ type RevivingCommand = Extract<
   }
 >;
 
+type RerunProjection = Pick<
+  OrchestrationV2ThreadProjection,
+  "thread" | "runs" | "attempts" | "nodes" | "providerThreads" | "providerTurns" | "turnItems"
+>;
+
+/** No provider turn took `run`'s message, and the run can still start again where it was. */
+function canRerunUndelivered(projection: RerunProjection, run: OrchestrationV2Run): boolean {
+  const providerThread = providerThreadForRun(projection, run);
+  return (
+    // Not when the thread moved to another provider, or the run belongs to a subagent's thread.
+    projection.thread.providerInstanceId === run.providerInstanceId &&
+    providerThread !== undefined &&
+    providerThread.appThreadId === projection.thread.id &&
+    providerThread.ownerNodeId === null &&
+    promptNeverDelivered(run, projection.providerTurns) &&
+    projection.thread.archivedAt === null &&
+    projection.thread.deletedAt === null
+  );
+}
+
+/** Another run is active or ran after `run`, so running `run` again now would reorder the work. */
+function threadMovedOnFrom(run: OrchestrationV2Run, runs: ReadonlyArray<OrchestrationV2Run>) {
+  return (
+    runs.some((other) => other.id !== run.id && isActiveRun(other)) || supersededRun(run, runs)
+  );
+}
+
 /** Lifting a hold, or a person placing one, ends a restart's claim on it. */
 function withQueueHold(run: OrchestrationV2Run, queueHeld: boolean): OrchestrationV2Run {
   const { queueHeldByRestart: _byRestart, ...rest } = run;
@@ -10697,12 +10724,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // The provider never saw the message, so the run itself starts again: same message, model and
   // workspace (prepared again if that never finished), and the person's timeline gains no copy of
   // their message. Returns why it cannot, changing nothing then.
+  // The run starts over: its attempt and root node go back to pending, then it prepares or starts.
+  const rerunFromStart = Effect.fn("Orchestrator.rerunFromStart")(function* (
+    command: RevivingCommand,
+    rerun: {
+      readonly run: OrchestrationV2Run;
+      readonly attempt: OrchestrationV2RunAttempt;
+      readonly rootNode: OrchestrationV2ExecutionNode;
+      readonly status: "preparing" | "starting";
+      readonly at: DateTime.Utc;
+    },
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const { run, attempt, rootNode, status } = rerun;
+    const emitEvent = emit(events, command);
+    const scope = {
+      threadId: command.threadId,
+      runId: run.id,
+      nodeId: rootNode.id,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: rerun.at,
+    };
+    yield* emitEvent({
+      ...scope,
+      type: "run-attempt.updated",
+      payload: { ...attempt, status: "pending", startedAt: null, completedAt: null },
+    });
+    yield* emitEvent({
+      ...scope,
+      type: "node.updated",
+      payload: { ...rootNode, status: "pending", startedAt: null, completedAt: null },
+    });
+    yield* emitEvent({
+      ...scope,
+      type: "run.updated",
+      payload: { ...run, status, queuePosition: null, startedAt: null, completedAt: null },
+    });
+    const request =
+      status === "preparing"
+        ? ({ type: "workspace.prepare", runId: run.id } as const)
+        : ({ type: "provider-turn.start", runId: run.id } as const);
+    yield* Ref.update(effects, (existing) => [
+      ...existing,
+      {
+        id: `effect:${command.commandId}:${request.type}:${run.id}`,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        request,
+      } satisfies PendingOrchestrationEffectV2,
+    ]);
+  });
+
   const reviveRestartCutRun = Effect.fn("Orchestrator.reviveRestartCutRun")(function* (
     command: RevivingCommand,
-    projection: Pick<
-      OrchestrationV2ThreadProjection,
-      "thread" | "runs" | "attempts" | "nodes" | "providerThreads" | "providerTurns" | "turnItems"
-    >,
+    projection: RerunProjection,
     run: OrchestrationV2Run,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
@@ -10710,9 +10786,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
     const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
     const runItems = projection.turnItems.filter((item) => item.runId === run.id);
-    const providerThread = projection.providerThreads.find(
-      (candidate) => candidate.id === run.providerThreadId,
-    );
     const preparationItem = runItems.find(
       (
         candidate,
@@ -10744,22 +10817,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (item) =>
           item.type === "run_interrupt_request" || item.id === scheduledRecoverySkipItemId(run.id),
       ) ||
-      // The thread moved to another provider, or the run belongs to a subagent's thread.
-      projection.thread.providerInstanceId !== run.providerInstanceId ||
-      providerThread === undefined ||
-      providerThread.appThreadId !== projection.thread.id ||
-      providerThread.ownerNodeId !== null ||
-      !promptNeverDelivered(run, projection.providerTurns) ||
-      (!prepare && rootNode.checkpointScopeId === null) ||
-      projection.thread.archivedAt !== null ||
-      projection.thread.deletedAt !== null
+      !canRerunUndelivered(projection, run) ||
+      (!prepare && rootNode.checkpointScopeId === null)
     ) {
       return `Run ${run.id} was not cut by a restart before its agent received it.`;
     }
-    if (
-      projection.runs.some((other) => other.id !== run.id && isActiveRun(other)) ||
-      supersededRun(run, projection.runs)
-    ) {
+    if (threadMovedOnFrom(run, projection.runs)) {
       return "The thread moved on after the restart.";
     }
     const now = yield* DateTime.now;
@@ -10810,39 +10873,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       });
     }
-    yield* emitEvent({
-      ...scope,
-      type: "run-attempt.updated",
-      payload: { ...attempt, status: "pending", startedAt: null, completedAt: null },
-    });
-    yield* emitEvent({
-      ...scope,
-      type: "node.updated",
-      payload: { ...rootNode, status: "pending", startedAt: null, completedAt: null },
-    });
-    yield* emitEvent({
-      ...scope,
-      type: "run.updated",
-      payload: {
-        ...run,
-        status: prepare ? "preparing" : "starting",
-        queuePosition: null,
-        startedAt: null,
-        completedAt: null,
-      },
-    });
-    const request = prepare
-      ? ({ type: "workspace.prepare", runId: run.id } as const)
-      : ({ type: "provider-turn.start", runId: run.id } as const);
-    yield* Ref.update(effects, (existing) => [
-      ...existing,
-      {
-        id: `effect:${command.commandId}:${request.type}:${run.id}`,
-        commandId: command.commandId,
-        threadId: command.threadId,
-        request,
-      } satisfies PendingOrchestrationEffectV2,
-    ]);
+    yield* rerunFromStart(
+      command,
+      { run, attempt, rootNode, status: prepare ? "preparing" : "starting", at: now },
+      events,
+      effects,
+    );
     return undefined;
   });
 
@@ -10881,7 +10917,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchRestartCutRunRetry = Effect.fn("Orchestrator.dispatchRestartCutRunRetry")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
-      projection: Parameters<typeof reviveRestartCutRun>[1],
+      projection: RerunProjection,
       run: OrchestrationV2Run,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
@@ -10925,7 +10961,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchUndeliveredRunRetry = Effect.fn("Orchestrator.dispatchUndeliveredRunRetry")(
     function* (
       command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
-      projection: Parameters<typeof reviveRestartCutRun>[1],
+      projection: RerunProjection,
       run: OrchestrationV2Run,
       failureItem: Extract<OrchestrationV2TurnItem, { readonly type: "error" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -10933,9 +10969,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
       const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
-      const providerThread = projection.providerThreads.find(
-        (candidate) => candidate.id === run.providerThreadId,
-      );
       const decline = (cause: string) =>
         new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -10946,67 +10979,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         attempt === undefined ||
         rootNode === undefined ||
         rootNode.checkpointScopeId === null ||
-        // The thread moved to another provider, or the run belongs to a subagent's thread.
-        projection.thread.providerInstanceId !== run.providerInstanceId ||
-        providerThread === undefined ||
-        providerThread.appThreadId !== projection.thread.id ||
-        providerThread.ownerNodeId !== null ||
-        !promptNeverDelivered(run, projection.providerTurns) ||
-        projection.thread.archivedAt !== null ||
-        projection.thread.deletedAt !== null
+        !canRerunUndelivered(projection, run)
       ) {
         return yield* decline(`Run ${run.id} has no undelivered message to retry.`);
       }
-      if (
-        projection.runs.some((other) => other.id !== run.id && isActiveRun(other)) ||
-        supersededRun(run, projection.runs)
-      ) {
+      if (threadMovedOnFrom(run, projection.runs)) {
         return yield* decline("The thread moved on after the failure.");
       }
       const now = yield* DateTime.now;
-      const emitEvent = emit(events, command);
-      const scope = {
+      yield* emit(
+        events,
+        command,
+      )({
         threadId: command.threadId,
         runId: run.id,
         nodeId: rootNode.id,
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
-      };
-      yield* emitEvent({
-        ...scope,
         type: "turn-item.updated",
         payload: { ...failureItem, status: "cancelled", updatedAt: now },
       });
-      yield* emitEvent({
-        ...scope,
-        type: "run-attempt.updated",
-        payload: { ...attempt, status: "pending", startedAt: null, completedAt: null },
-      });
-      yield* emitEvent({
-        ...scope,
-        type: "node.updated",
-        payload: { ...rootNode, status: "pending", startedAt: null, completedAt: null },
-      });
-      yield* emitEvent({
-        ...scope,
-        type: "run.updated",
-        payload: {
-          ...run,
-          status: "starting",
-          queuePosition: null,
-          startedAt: null,
-          completedAt: null,
-        },
-      });
-      yield* Ref.update(effects, (existing) => [
-        ...existing,
-        {
-          id: `effect:${command.commandId}:provider-turn.start:${run.id}`,
-          commandId: command.commandId,
-          threadId: command.threadId,
-          request: { type: "provider-turn.start", runId: run.id },
-        } satisfies PendingOrchestrationEffectV2,
-      ]);
+      yield* rerunFromStart(
+        command,
+        { run, attempt, rootNode, status: "starting", at: now },
+        events,
+        effects,
+      );
       yield* releaseFailureHolds(command, projection.runs, now, events);
     },
   );
