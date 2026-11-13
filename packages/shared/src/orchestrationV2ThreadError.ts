@@ -40,7 +40,9 @@ export function latestRootProviderFailure(
 }
 
 /** The run failed before its agent received the message, so the run goes again instead. */
-export function isUndeliveredFailure(failure: OrchestrationV2ProviderFailure | null): boolean {
+export function isUndeliveredFailure(
+  failure: Pick<OrchestrationV2ProviderFailure, "code"> | null,
+): boolean {
   return (
     failure?.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE ||
     failure?.code === ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE

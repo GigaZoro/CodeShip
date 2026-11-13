@@ -1,5 +1,6 @@
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
@@ -7404,6 +7405,155 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
                 restartRetryNoticeId(work.id, index + 1, "unconfirmed"),
               )
             : [],
+        );
+      }),
+  );
+
+  it.effect.each([
+    { delivered: false, status: "starting", item: "cancelled" },
+    { delivered: true, status: "failed", item: "failed" },
+  ] as const)(
+    "starts again a run whose provider failed to start before it took the message: %j",
+    ({ delivered, status, item }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make(`undelivered-start-${delivered}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Slept through the start",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}:message`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message`),
+          text: "Check the backlog",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+        });
+        const started = yield* orchestrator.getThreadProjection(threadId);
+        const run = started.runs[0]!;
+        const attempt = started.attempts.find((row) => row.id === run.activeAttemptId)!;
+        const rootNode = started.nodes.find((row) => row.id === run.rootNodeId)!;
+        const now = yield* DateTime.now;
+        const failureId = TurnItemId.make(`${threadId}:start-failed`);
+        yield* eventSink.write({
+          events: [
+            ...(delivered
+              ? [
+                  {
+                    id: EventId.make(`${threadId}:turn`),
+                    type: "provider-turn.updated" as const,
+                    threadId,
+                    runId: run.id,
+                    occurredAt: now,
+                    payload: {
+                      id: ProviderTurnId.make(`${threadId}:turn`),
+                      providerThreadId: started.providerThreads[0]!.id,
+                      nodeId: rootNode.id,
+                      runAttemptId: run.activeAttemptId,
+                      nativeTurnRef: null,
+                      ordinal: 1,
+                      status: "failed" as const,
+                      startedAt: now,
+                      completedAt: now,
+                    },
+                  },
+                ]
+              : []),
+            {
+              id: EventId.make(`${threadId}:failure`),
+              type: "turn-item.updated",
+              threadId,
+              runId: run.id,
+              nodeId: rootNode.id,
+              occurredAt: now,
+              payload: {
+                id: failureId,
+                type: "error",
+                threadId,
+                runId: run.id,
+                nodeId: rootNode.id,
+                providerThreadId: run.providerThreadId,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 1,
+                status: "failed",
+                title: "Provider start failed",
+                failure: {
+                  class: "transport_error",
+                  message:
+                    "Claude timed out while registering its MCP tools after the computer slept.",
+                  code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+                  retryable: true,
+                },
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make(`${threadId}:attempt-failed`),
+              type: "run-attempt.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...attempt, status: "failed", completedAt: now },
+            },
+            {
+              id: EventId.make(`${threadId}:node-failed`),
+              type: "node.updated",
+              threadId,
+              runId: run.id,
+              nodeId: rootNode.id,
+              occurredAt: now,
+              payload: { ...rootNode, status: "failed", completedAt: now },
+            },
+            {
+              id: EventId.make(`${threadId}:run-failed`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "failed", completedAt: now },
+            },
+          ],
+        });
+        const commandId = CommandId.make(`${threadId}:retry`);
+        const retried = yield* orchestrator
+          .dispatch({
+            type: "prepared-run.retry",
+            automatic: true,
+            commandId,
+            threadId,
+            runId: run.id,
+          })
+          .pipe(Effect.match({ onSuccess: () => "retried", onFailure: (error) => error._tag }));
+        assert.equal(retried, delivered ? "OrchestratorDispatchError" : "retried");
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          [after.runs[0]?.status, after.turnItems.find((row) => row.id === failureId)?.status],
+          [status, item],
+        );
+        assert.deepEqual(
+          (yield* outbox.listByCommandId(commandId)).map((effect) => effect.request.type),
+          delivered ? [] : ["provider-turn.start"],
         );
       }),
   );

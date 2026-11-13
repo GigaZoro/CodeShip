@@ -20,6 +20,7 @@ import {
   legacyThreadPullRequestKey,
 } from "../sourceControl/threadPullRequests.ts";
 import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type ChatAttachment,
   CommandId,
@@ -10896,6 +10897,120 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  // Messages held when this run failed follow it again. A hold from a later run (a stop, say) is
+  // not this failure's to release.
+  const releaseFailureHolds = Effect.fn("Orchestrator.releaseFailureHolds")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
+    runs: ReadonlyArray<OrchestrationV2Run>,
+    now: DateTime.Utc,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    if (latestExecutedRun(runs)?.id !== command.runId) return;
+    const emitEvent = emit(events, command);
+    for (const run of runs) {
+      if (run.status !== "queued" || run.queueHeld !== true) continue;
+      yield* emitEvent({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: withQueueHold(run, false),
+      });
+    }
+  });
+
+  // The provider failed to start before it took the message, for a reason waiting fixes (a sleep,
+  // a lost connection), so the same run starts again with the same message.
+  const dispatchUndeliveredRunRetry = Effect.fn("Orchestrator.dispatchUndeliveredRunRetry")(
+    function* (
+      command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
+      projection: Parameters<typeof reviveRestartCutRun>[1],
+      run: OrchestrationV2Run,
+      failureItem: Extract<OrchestrationV2TurnItem, { readonly type: "error" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+      const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+      const providerThread = projection.providerThreads.find(
+        (candidate) => candidate.id === run.providerThreadId,
+      );
+      const decline = (cause: string) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      if (
+        attempt === undefined ||
+        rootNode === undefined ||
+        rootNode.checkpointScopeId === null ||
+        // The thread moved to another provider, or the run belongs to a subagent's thread.
+        projection.thread.providerInstanceId !== run.providerInstanceId ||
+        providerThread === undefined ||
+        providerThread.appThreadId !== projection.thread.id ||
+        providerThread.ownerNodeId !== null ||
+        !promptNeverDelivered(run, projection.providerTurns) ||
+        projection.thread.archivedAt !== null ||
+        projection.thread.deletedAt !== null
+      ) {
+        return yield* decline(`Run ${run.id} has no undelivered message to retry.`);
+      }
+      if (
+        projection.runs.some((other) => other.id !== run.id && isActiveRun(other)) ||
+        supersededRun(run, projection.runs)
+      ) {
+        return yield* decline("The thread moved on after the failure.");
+      }
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const scope = {
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: rootNode.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+      };
+      yield* emitEvent({
+        ...scope,
+        type: "turn-item.updated",
+        payload: { ...failureItem, status: "cancelled", updatedAt: now },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "run-attempt.updated",
+        payload: { ...attempt, status: "pending", startedAt: null, completedAt: null },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "node.updated",
+        payload: { ...rootNode, status: "pending", startedAt: null, completedAt: null },
+      });
+      yield* emitEvent({
+        ...scope,
+        type: "run.updated",
+        payload: {
+          ...run,
+          status: "starting",
+          queuePosition: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:provider-turn.start:${run.id}`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: { type: "provider-turn.start", runId: run.id },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+      yield* releaseFailureHolds(command, projection.runs, now, events);
+    },
+  );
+
   const dispatchPreparedRunRetry = Effect.fn("Orchestrator.dispatchPreparedRunRetry")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.retry" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -10909,9 +11024,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         turnItemRunId: command.runId,
       },
     );
-    const cut = projection.runs.find((candidate) => candidate.id === command.runId);
-    if (cut?.status === "cancelled") {
-      return yield* dispatchRestartCutRunRetry(command, projection, cut, events, effects);
+    const target = projection.runs.find((candidate) => candidate.id === command.runId);
+    if (target?.status === "cancelled") {
+      return yield* dispatchRestartCutRunRetry(command, projection, target, events, effects);
+    }
+    const undeliveredItem = projection.turnItems.find(
+      (candidate): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "error" }> =>
+        candidate.type === "error" &&
+        candidate.status === "failed" &&
+        candidate.nodeId === target?.rootNodeId &&
+        candidate.failure.code === ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+    );
+    if (target?.status === "failed" && undeliveredItem !== undefined) {
+      return yield* dispatchUndeliveredRunRetry(
+        command,
+        projection,
+        target,
+        undeliveredItem,
+        events,
+        effects,
+      );
     }
     const state = preparedRunState(command, projection);
     const failureItem = projection.turnItems.find(
@@ -10980,20 +11112,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       type: "run.updated",
       payload: { ...state.run, status: "preparing", completedAt: null },
     });
-    // Messages held when this preparation failed follow the run again. A hold
-    // from a later run (a stop, say) is not this failure's to release.
-    const failureOwnsQueue = latestExecutedRun(projection.runs)?.id === state.run.id;
-    for (const run of projection.runs) {
-      if (!failureOwnsQueue || run.status !== "queued" || run.queueHeld !== true) continue;
-      yield* emitEvent({
-        type: "run.updated",
-        threadId: command.threadId,
-        runId: run.id,
-        providerInstanceId: run.providerInstanceId,
-        occurredAt: now,
-        payload: withQueueHold(run, false),
-      });
-    }
+    yield* releaseFailureHolds(command, projection.runs, now, events);
   });
 
   const settleBackgroundWork = Effect.fn("Orchestrator.settleBackgroundWork")(function* (input: {

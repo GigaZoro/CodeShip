@@ -8,6 +8,7 @@ import {
   CheckpointScopeId,
   MessageId,
   type ModelSelection,
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2RunStatus,
@@ -5070,16 +5071,22 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         "transport_error",
         ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
       );
+      const start = yield* stop(
+        "network-start",
+        "transport_error",
+        ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+      );
       const listed = (since: DateTime.Utc) =>
         store
           .getNetworkRecoveryCandidates({ now, since })
           .pipe(
-            Effect.map((rows) => rows.map((row) => [row.threadId, row.run.id, row.setupFailed])),
+            Effect.map((rows) => rows.map((row) => [row.threadId, row.run.id, row.undelivered])),
           );
       const dayAgo = DateTime.add(now, { hours: -24 });
       assert.deepEqual(yield* listed(dayAgo), [
         [offline.threadId, offline.run.id, false],
         [setup.threadId, setup.run.id, true],
+        [start.threadId, start.run.id, true],
       ]);
       assert.deepEqual(yield* listed(DateTime.add(now, { minutes: 1 })), []);
       // A queued message starts on its own once the failed run ends.
@@ -5104,7 +5111,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           completedAt: null,
         },
       });
-      assert.deepEqual(yield* listed(dayAgo), [[setup.threadId, setup.run.id, true]]);
+      assert.deepEqual(yield* listed(dayAgo), [
+        [setup.threadId, setup.run.id, true],
+        [start.threadId, start.run.id, true],
+      ]);
     }),
   );
 

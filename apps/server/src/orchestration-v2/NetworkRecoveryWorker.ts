@@ -65,7 +65,7 @@ export class NetworkProbe extends Context.Reference<Effect.Effect<boolean>>(
   { defaultValue: () => canReachProviders },
 ) {}
 
-// Counted in probes, not wall time: timers stop while a Mac sleeps.
+// Counted in probes, not wall time: a wait that spans a sleep still gets this many probes awake.
 const MAX_OFFLINE_RECHECKS = 10;
 
 /**
@@ -137,28 +137,28 @@ export interface NetworkRecoveryPlan {
 
 /**
  * The resume for a thread a lost connection stopped, and when it is due; null to leave it.
- * `setupRetries` counts the setup retries this server already made for the run.
+ * `runRetries` counts the retries of the run this server already made.
  */
 export function networkRecoveryPlan(
   candidate: ProjectionStore.ProjectionNetworkRecoveryCandidate,
   nowMs: number,
-  setupRetries = 0,
+  runRetries = 0,
 ): NetworkRecoveryPlan | null {
   const { run } = candidate;
   if (run.status !== "failed" || run.completedAt === null) return null;
   const failedAtMs = DateTime.toEpochMillis(run.completedAt);
   if (nowMs - failedAtMs > MAX_NETWORK_FAILURE_AGE_MS) return null;
-  if (candidate.setupFailed) {
-    // The agent never saw the message, so run the setup and the message again. A retry
+  if (candidate.undelivered) {
+    // The agent never saw the message, so run the same run again. A retry
     // reuses the run, so the run cannot carry the count the way a resume's message does.
-    const delayMs = RESUME_DELAYS_MS[setupRetries];
+    const delayMs = RESUME_DELAYS_MS[runRetries];
     if (delayMs === undefined) return null;
     return {
       dueAtMs: failedAtMs + delayMs,
       command: {
         type: "prepared-run.retry",
         automatic: true,
-        commandId: CommandId.make(`network-retry-setup:${setupRetries + 1}:${run.id}`),
+        commandId: CommandId.make(`network-retry-run:${runRetries + 1}:${run.id}`),
         threadId: candidate.threadId,
         runId: run.id,
       },
@@ -206,8 +206,8 @@ const makeSweep = Effect.gen(function* () {
   const due = DueHint.make();
   // Resumes the orchestrator refused: the thread moved on, so it stays refused.
   const refused = new Set<string>();
-  // Setup retries per run since this server started; a restart allows a fresh few.
-  const setupRetries = new Map<OrchestrationV2Run["id"], number>();
+  // Retries per run since this server started; a restart allows a fresh few.
+  const runRetries = new Map<OrchestrationV2Run["id"], number>();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
       affectsNetworkRecovery(event) ? due.invalidate : Effect.void,
@@ -229,7 +229,7 @@ const makeSweep = Effect.gen(function* () {
     }))
       .flatMap(
         (candidate) =>
-          networkRecoveryPlan(candidate, nowMs, setupRetries.get(candidate.run.id) ?? 0) ?? [],
+          networkRecoveryPlan(candidate, nowMs, runRetries.get(candidate.run.id) ?? 0) ?? [],
       )
       .filter((plan) => !refused.has(plan.command.commandId));
     const ready = plans.filter((plan) => plan.dueAtMs <= nowMs);
@@ -248,7 +248,7 @@ const makeSweep = Effect.gen(function* () {
                   .pipe(
                     Effect.tap(() =>
                       Effect.sync(() =>
-                        setupRetries.set(command.runId, (setupRetries.get(command.runId) ?? 0) + 1),
+                        runRetries.set(command.runId, (runRetries.get(command.runId) ?? 0) + 1),
                       ),
                     ),
                   )

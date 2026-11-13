@@ -59,7 +59,7 @@ const failedRun = (input: {
 };
 
 const plan = (run: OrchestrationV2Run) =>
-  networkRecoveryPlan({ threadId, run, setupFailed: false }, nowMs);
+  networkRecoveryPlan({ threadId, run, undelivered: false }, nowMs);
 
 describe("networkRecoveryPlan", () => {
   it("resumes a first network failure as soon as the network is back", () => {
@@ -137,16 +137,16 @@ describe("networkRecoveryPlan", () => {
   });
 });
 
-describe("networkRecoveryPlan for a failed workspace setup", () => {
+describe("networkRecoveryPlan for a run whose agent never received the message", () => {
   const setupRun = failedRun({ id: "run:s", userMessageId: "m:user", ranMs: 0, failedAgoMs: 0 });
 
   it.each([
     { retries: 0, delay: 0 },
     { retries: 1, delay: 60_000 },
     { retries: 2, delay: 300_000 },
-  ])("retries the setup after $retries earlier retries in $delay ms", ({ retries, delay }) => {
+  ])("retries the run after $retries earlier retries in $delay ms", ({ retries, delay }) => {
     const retry = networkRecoveryPlan(
-      { threadId, run: setupRun, setupFailed: true },
+      { threadId, run: setupRun, undelivered: true },
       nowMs,
       retries,
     );
@@ -155,15 +155,15 @@ describe("networkRecoveryPlan for a failed workspace setup", () => {
       command: {
         type: "prepared-run.retry",
         automatic: true,
-        commandId: CommandId.make(`network-retry-setup:${retries + 1}:run:s`),
+        commandId: CommandId.make(`network-retry-run:${retries + 1}:run:s`),
         threadId,
         runId: setupRun.id,
       },
     });
   });
 
-  it("leaves the setup failed after three retries", () => {
-    assert.isNull(networkRecoveryPlan({ threadId, run: setupRun, setupFailed: true }, nowMs, 3));
+  it("leaves the run failed after three retries", () => {
+    assert.isNull(networkRecoveryPlan({ threadId, run: setupRun, undelivered: true }, nowMs, 3));
   });
 });
 
@@ -202,7 +202,7 @@ it.effect("waits offline, then resumes once the network answers", () =>
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getNetworkRecoveryCandidates: () =>
               Queue.size(dispatched).pipe(
-                Effect.map((count) => (count === 0 ? [{ threadId, run, setupFailed: false }] : [])),
+                Effect.map((count) => (count === 0 ? [{ threadId, run, undelivered: false }] : [])),
               ),
           }),
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -230,14 +230,14 @@ it.effect("waits offline, then resumes once the network answers", () =>
   }),
 );
 
-it.effect("retries a failed setup again a minute after it fails again", () =>
+it.effect("retries an undelivered run again a minute after it fails again", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(nowMs);
     const retried = yield* Queue.unbounded<string>();
-    // The setup keeps failing: every read finds the run failed when the test began.
+    // The start keeps failing: every read finds the run failed when the test began.
     const candidate = {
       threadId,
-      setupFailed: true,
+      undelivered: true,
       run: failedRun({ id: "run:s", userMessageId: "m:user", ranMs: 0, failedAgoMs: 0 }),
     };
     const layer = NetworkRecoveryWorker.layer.pipe(
@@ -262,11 +262,11 @@ it.effect("retries a failed setup again a minute after it fails again", () =>
       ),
     );
     yield* Effect.gen(function* () {
-      assert.equal(yield* Queue.take(retried), "network-retry-setup:1:run:s");
+      assert.equal(yield* Queue.take(retried), "network-retry-run:1:run:s");
       yield* TestClock.adjust("59 seconds");
       assert.equal(yield* Queue.size(retried), 0);
       yield* TestClock.adjust("1 second");
-      assert.equal(yield* Queue.take(retried), "network-retry-setup:2:run:s");
+      assert.equal(yield* Queue.take(retried), "network-retry-run:2:run:s");
     }).pipe(Effect.provide(layer));
   }),
 );

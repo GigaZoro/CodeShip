@@ -135,6 +135,7 @@ const withStartStepTimeout =
     );
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
+const isProviderStartStepTimeoutError = Schema.is(ProviderStartStepTimeoutError);
 const isProviderAdapterOpenSessionError = Schema.is(
   ProviderAdapter.ProviderAdapterOpenSessionError,
 );
@@ -352,7 +353,7 @@ export const layer: Layer.Layer<
         // The agent never saw the message, so a start that a sleep or a lost connection
         // stopped can go again once the network answers.
         const waitingFixes =
-          (failed.error instanceof ProviderStartStepTimeoutError && failed.error.slept) ||
+          (isProviderStartStepTimeoutError(failed.error) && failed.error.slept) ||
           providerErrorClass(message) === "transport_error";
         yield* settleUnstartedRun(context, {
           signal: failed.signal,

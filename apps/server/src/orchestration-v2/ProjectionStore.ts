@@ -1,7 +1,4 @@
-import {
-  ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-  pendingGuestMessageCount,
-} from "@t3tools/contracts";
+import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { projectTurnItemForWire } from "./WireProjection.ts";
@@ -14,6 +11,7 @@ import type {
   OrchestrationV2ThreadHistoryPage,
 } from "@t3tools/contracts";
 import {
+  isUndeliveredFailure,
   latestRootProviderFailure,
   latestUnheldRun,
   threadErrorSummary,
@@ -226,8 +224,8 @@ export type ProjectionLimitRecoveryCandidate = Pick<
 export interface ProjectionNetworkRecoveryCandidate {
   readonly threadId: ThreadId;
   readonly run: OrchestrationV2Run;
-  /** The workspace setup failed before the agent saw the message, so it is retried, not continued. */
-  readonly setupFailed: boolean;
+  /** The run failed before its agent received the message, so it is retried, not continued. */
+  readonly undelivered: boolean;
 }
 
 export type ProjectionThreadPullRequests = Pick<
@@ -4608,7 +4606,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           candidates.push({
             threadId: ThreadId.make(row.thread_id),
             run: yield* decodeRunPayload(row.run_payload_json),
-            setupFailed: row.failure_code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+            undelivered: isUndeliveredFailure({ code: row.failure_code }),
           });
         }
         return candidates;

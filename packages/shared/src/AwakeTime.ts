@@ -40,10 +40,8 @@ export const timeoutAwakeOrElse =
   }) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A | A2, E | E2, R | R2> =>
     Effect.raceFirst(
-      Effect.map(self, (value) => ({ timedOut: false as const, value })),
-      Effect.map(sleepAwake(options.duration), (wait) => ({ timedOut: true as const, wait })),
-    ).pipe(
-      Effect.flatMap((result) =>
-        result.timedOut ? options.orElse(result.wait) : Effect.succeed(result.value),
+      Effect.map(self, (value): Effect.Effect<A | A2, E2, R2> => Effect.succeed(value)),
+      Effect.map(sleepAwake(options.duration), (wait): Effect.Effect<A | A2, E2, R2> =>
+        options.orElse(wait),
       ),
-    );
+    ).pipe(Effect.flatten);
