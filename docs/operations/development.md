@@ -3,7 +3,11 @@
 ## First checkout
 
 Install `vp` using the [root README](../../README.md#install-vp). It provides the Node version
-pinned in `package.json` (Node 26), so no separate Node install is needed. From the repository root:
+pinned in `package.json` (Node 26), so no separate Node install is needed. The server's
+`devEngines.runtime` must match that pin: Vite+ uses the nearest package declaration,
+while its `engines.node` remains the published support range. `check:changed` and CI
+check each workspace's development Node. CI also tests persistence and migrations
+on the newest Node in the published range. From the repository root:
 
 ```sh
 vp i

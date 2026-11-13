@@ -45,6 +45,7 @@ import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 
 const GiB = 1024 ** 3;
@@ -428,6 +429,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const root = yield* path.fromFileUrl(new URL("..", import.meta.url));
   const inRoot = (file: string) => path.join(root, file);
+  // Runtime selection can change without a source edit, so check before accepting cached results.
+  yield* Console.log(yield* Effect.try(() => checkNodeRuntime()));
 
   // macOS counts its file cache as used, so available memory there would
   // starve a large Mac. Elsewhere availableMemory() honors a cgroup limit.

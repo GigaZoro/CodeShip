@@ -1,3 +1,8 @@
+## 2026-11-13 — Development and CI use the same Node version
+
+- Commands run inside the server package now use the repository's pinned Node version, keeping local database tests on the same SQLite version as CI. The supported Node versions for installed `t3` users are unchanged.
+- Development checks catch packages that select a different Node version. CI also runs persistence and migration tests on the newest supported Node to catch SQLite changes before release.
+
 ## 2026-11-13 — Accounts that must sign in to an MCP server again are passed over, and run history says why a run moved
 
 - Scheduled tasks and Auto chats no longer start on an account that must sign in to an MCP server (such as ThreadPage) again while another account with room is signed in. Before, a task naming that account ran for hours without the server's tools and did nothing, once the other account's usage limit ended. Delegates and agent launches prefer accounts whose sign-ins are in place too, even when the parent chat runs on the account that needs one. When every account needs a sign-in, the chat stays where it is. This follows **Switch accounts at usage limits**.

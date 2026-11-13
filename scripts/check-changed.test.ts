@@ -398,6 +398,7 @@ function launcherFixture() {
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
     ".github/scripts/ci-changes.cjs",
+    ".github/scripts/check-node-runtime.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
   }
@@ -405,7 +406,11 @@ function launcherFixture() {
   write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
   write(
     "package.json",
-    JSON.stringify({ type: "module", scripts: { "knip:check": "knip --include files" } }),
+    JSON.stringify({
+      type: "module",
+      engines: { node: process.versions.node },
+      scripts: { "knip:check": "knip --include files" },
+    }),
   );
   write("packages/example/package.json", JSON.stringify({ name: "example" }));
   const source = "packages/example/space & (draft) %PATH% ! 研究.ts";
@@ -515,6 +520,20 @@ it("fails a run whose files changed while its checks ran", () => {
   expect(result.status, result.stdout + result.stderr).toBe(1);
   expect(result.stdout).toContain("pass  lint");
   expect(result.stdout).toContain("files changed while the checks ran");
+});
+
+it("rejects a package support range without a development pin", () => {
+  using project = launcherFixture();
+  project.write(
+    "packages/example/package.json",
+    JSON.stringify({ name: "example", engines: { node: `>=${process.versions.node}` } }),
+  );
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout + result.stderr).toContain(
+    `packages/example: set devEngines.runtime to node ${process.versions.node}`,
+  );
+  expect(project.calls()).toEqual([]);
 });
 
 it("passes uncached when a check rewrites a generated file", () => {

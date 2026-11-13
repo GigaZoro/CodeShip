@@ -95,6 +95,13 @@
     "graphql": "16.14.1",
     "vite-plus": "catalog:"
   },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "26.12.1",
+      "onFail": "ignore"
+    }
+  },
   "engines": {
     "node": "^22.16 || ^23.11 || >=24.10"
   }
