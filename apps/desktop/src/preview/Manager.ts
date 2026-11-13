@@ -378,7 +378,8 @@ interface FrameCaptureSession {
   readonly recordingInputOptions?: RecordingInputOptions;
   readonly scope: Scope.Closeable | null;
   readonly consumers: ReadonlySet<FrameCaptureConsumer>;
-  readonly unthrottledWebContentsIds: ReadonlySet<number>;
+  /** Each guest's `keepRendering` release, by webContents id. */
+  readonly renderingHolds: ReadonlyMap<number, () => void>;
   readonly lastPictureInPictureFingerprint: string | null;
 }
 
@@ -662,28 +663,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (Option.isNone(mainWindow)) return;
     yield* setWindowBackgroundThrottling(mainWindow.value, enabled);
   });
-  const setFrameCaptureWebContentsBackgroundThrottling = Effect.fnUntraced(function* (
-    wc: Electron.WebContents,
-    enabled: boolean,
-  ) {
-    if (wc.isDestroyed()) return;
-    yield* attempt(
-      {
-        operation: "frameCapture.setBackgroundThrottling",
-        webContentsId: wc.id,
-      },
-      () => wc.setBackgroundThrottling(enabled),
+  /** The agent may drive the same guest, so its throttling is a hold shared with the host. */
+  const keepFrameCaptureWebContentsRendering = (wc: Electron.WebContents) =>
+    attempt({ operation: "frameCapture.keepRendering", webContentsId: wc.id }, () =>
+      browserHost.keepRendering(wc),
     );
-  });
-  const restoreFrameCaptureWebContentsBackgroundThrottling = Effect.fnUntraced(function* (
-    webContentsIds: ReadonlySet<number>,
+  const releaseFrameCaptureRendering = Effect.fnUntraced(function* (
+    holds: ReadonlyMap<number, () => void>,
   ) {
     yield* Effect.forEach(
-      webContentsIds,
-      (webContentsId) => {
-        const wc = webContents.fromId(webContentsId);
-        if (!wc || wc.isDestroyed()) return Effect.void;
-        return setFrameCaptureWebContentsBackgroundThrottling(wc, true).pipe(
+      holds,
+      ([webContentsId, release]) =>
+        attempt({ operation: "frameCapture.releaseRendering", webContentsId }, release).pipe(
           Effect.retry({ times: 2 }),
           Effect.catch((error) =>
             Effect.logWarning("Failed to restore preview webview frame capture throttling.", {
@@ -691,8 +682,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               error,
             }),
           ),
-        );
-      },
+        ),
       { concurrency: "unbounded", discard: true },
     );
   });
@@ -702,38 +692,28 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     yield* SynchronizedRef.modifyEffect(frameCaptureSessionsRef, (sessions) => {
       const current = sessions.get(tabId);
-      if (!current || current.unthrottledWebContentsIds.has(wc.id)) {
+      if (!current || current.renderingHolds.has(wc.id)) {
         return Effect.succeed([undefined, sessions] as const);
       }
-      return setFrameCaptureWebContentsBackgroundThrottling(wc, false).pipe(
-        Effect.tap(() =>
-          Effect.gen(function* () {
-            if (!current.consumers.has("recording")) return;
-            const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-            yield* attempt({ operation: "recording.cursor", tabId, webContentsId: wc.id }, () =>
-              wc.send(
-                RECORDING_CURSOR_CHANNEL,
-                true,
-                current.recordingInputOptions,
-                tab?.controller,
-              ),
-            );
+      return Effect.gen(function* () {
+        const release = yield* keepFrameCaptureWebContentsRendering(wc);
+        if (current.consumers.has("recording")) {
+          const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+          yield* attempt({ operation: "recording.cursor", tabId, webContentsId: wc.id }, () =>
+            wc.send(RECORDING_CURSOR_CHANNEL, true, current.recordingInputOptions, tab?.controller),
+          ).pipe(Effect.onError(() => releaseFrameCaptureRendering(new Map([[wc.id, release]]))));
+        }
+        return [
+          undefined,
+          replaceMap(sessions, (copy) => {
+            copy.set(tabId, {
+              ...current,
+              renderingHolds: new Map([...current.renderingHolds, [wc.id, release]]),
+            });
           }),
-        ),
-        Effect.map(
-          () =>
-            [
-              undefined,
-              replaceMap(sessions, (copy) => {
-                copy.set(tabId, {
-                  ...current,
-                  unthrottledWebContentsIds: new Set([...current.unthrottledWebContentsIds, wc.id]),
-                });
-              }),
-            ] as const,
-        ),
-      );
-    });
+        ] as const;
+      });
+    }).pipe(Effect.uninterruptible);
   });
   const stopFrameCapture = Effect.fn("PreviewManager.stopFrameCapture")(function* (
     tabId: string,
@@ -746,7 +726,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           return [undefined, sessions] as const;
         }
         if (consumer === "recording") {
-          yield* Effect.forEach(current.unthrottledWebContentsIds, (id) =>
+          yield* Effect.forEach(current.renderingHolds.keys(), (id) =>
             attempt({ operation: "recording.cursor", tabId, webContentsId: id }, () => {
               const contents = webContents.fromId(id);
               if (contents && !contents.isDestroyed())
@@ -775,9 +755,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         const remainingSessions = replaceMap(sessions, (copy) => {
           copy.delete(tabId);
         });
-        yield* restoreFrameCaptureWebContentsBackgroundThrottling(
-          current.unthrottledWebContentsIds,
-        );
+        yield* releaseFrameCaptureRendering(current.renderingHolds);
         if (remainingSessions.size === 0) {
           yield* setFrameCaptureBackgroundThrottling(true).pipe(
             Effect.retry({ times: 2 }),
@@ -2598,9 +2576,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             if (current.consumers.has(consumer)) {
               return [false, sessions] as const;
             }
-            if (!current.unthrottledWebContentsIds.has(wc.id)) {
-              yield* setFrameCaptureWebContentsBackgroundThrottling(wc, false);
-            }
+            const renderingHolds = current.renderingHolds.has(wc.id)
+              ? current.renderingHolds
+              : new Map([
+                  ...current.renderingHolds,
+                  [wc.id, yield* keepFrameCaptureWebContentsRendering(wc)],
+                ]);
             let scope = current.scope;
             if (consumer === "picture-in-picture" && scope === null) {
               scope = yield* Scope.fork(parentScope, "sequential");
@@ -2613,7 +2594,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   ...current,
                   scope,
                   consumers: new Set([...current.consumers, consumer]),
-                  unthrottledWebContentsIds: new Set([...current.unthrottledWebContentsIds, wc.id]),
+                  renderingHolds,
                 });
               }),
             ] as const;
@@ -2621,7 +2602,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           if (sessions.size === 0) {
             yield* setFrameCaptureBackgroundThrottling(false);
           }
-          yield* setFrameCaptureWebContentsBackgroundThrottling(wc, false).pipe(
+          const release = yield* keepFrameCaptureWebContentsRendering(wc).pipe(
             Effect.onError(() =>
               sessions.size === 0
                 ? setFrameCaptureBackgroundThrottling(true).pipe(Effect.ignore)
@@ -2639,7 +2620,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               copy.set(tabId, {
                 scope,
                 consumers: new Set([consumer]),
-                unthrottledWebContentsIds: new Set([wc.id]),
+                renderingHolds: new Map([[wc.id, release]]),
                 lastPictureInPictureFingerprint: null,
               });
             }),

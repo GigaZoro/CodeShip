@@ -53,7 +53,9 @@ interface AttachedTab {
   downloadDirectory: string | null;
   pendingDownloadGuid: string | null;
   agentInputAt: number;
-  focusEmulated: boolean;
+  driven: boolean;
+  /** Ends this tab's `keepRendering` hold, taken while it is driven. */
+  releaseRendering: (() => void) | null;
   focusChange: Promise<void> | null;
   focusUses: number;
   /** Each pending command, by the extra session waiting on it; the main connection's have none. */
@@ -100,6 +102,8 @@ export class DesktopBrowserHost extends Context.Service<
       readonly key: DesktopBrowserTabKey;
       readonly active: boolean;
     }>;
+    /** Keeps a guest drawing frames while hidden, until the returned release runs. */
+    readonly keepRendering: (webContents: Electron.WebContents) => () => void;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -119,6 +123,8 @@ export const make = Effect.gen(function* () {
   const tabs = new Map<string, AttachedTab>();
   /** Threads whose agent turn runs, by the server's account. */
   const agentTurns = new Set<string>();
+  /** `keepRendering` holds, by webContents id. */
+  const renderingHolds = new Map<number, number>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
 
   const nextScreenshot = (tab: AttachedTab) => {
@@ -165,19 +171,58 @@ export const make = Effect.gen(function* () {
       else {
         // The one ahead may be abandoned mid-capture; it needs frames to finish and free its turn.
         tab.waitingScreenshots.push(waiting);
-        setFocusEmulation(tab, true);
+        setDriven(tab, true);
         syncPainting(tab);
       }
     });
 
   /**
-   * Chromium counts a focus-emulated guest as captured, so a guest the panel hides would
-   * never throttle. Without it, a hidden guest paints no frames and focus() fires no focus
-   * events, so the guest is emulated focused while the server drives it or streams it.
+   * One count per guest, so the host and a recording each keep it rendering until both let go.
+   * Throws when Electron refuses the change; a failed release keeps its hold, so it can retry.
    */
-  const setFocusEmulation = (tab: AttachedTab, enabled: boolean) => {
-    if (tab.focusEmulated === enabled) return;
-    tab.focusEmulated = enabled;
+  const keepRendering = (webContents: Electron.WebContents) => {
+    if (webContents.isDestroyed()) return () => {};
+    const id = webContents.id;
+    const holds = renderingHolds.get(id) ?? 0;
+    if (holds === 0) webContents.setBackgroundThrottling(false);
+    renderingHolds.set(id, holds + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      const remaining = (renderingHolds.get(id) ?? 1) - 1;
+      if (remaining === 0 && !webContents.isDestroyed()) {
+        webContents.setBackgroundThrottling(true);
+      }
+      held = false;
+      if (remaining === 0) renderingHolds.delete(id);
+      else renderingHolds.set(id, remaining);
+    };
+  };
+
+  const syncRendering = (tab: AttachedTab) => {
+    const active = tab.driven && tabs.get(keyOf(tab.key)) === tab;
+    if (active === (tab.releaseRendering !== null)) return;
+    try {
+      if (tab.releaseRendering === null) {
+        tab.releaseRendering = keepRendering(tab.debuggee.webContents);
+      } else {
+        tab.releaseRendering();
+        tab.releaseRendering = null;
+      }
+    } catch (cause) {
+      runFork(Effect.logWarning("Preview guest background throttling did not change.", { cause }));
+    }
+  };
+
+  /**
+   * Chromium draws no frames for a guest the panel parks offscreen, hidden, or in a hidden
+   * window, so its rAF never runs and focus() fires no focus events. A guest the server drives
+   * or streams is therefore emulated focused and kept rendering until it goes idle.
+   */
+  const setDriven = (tab: AttachedTab, enabled: boolean) => {
+    if (tab.driven === enabled) return;
+    tab.driven = enabled;
+    syncRendering(tab);
     // A guest that refuses it, or a debugger already gone, behaves as unfocused.
     const change: Promise<void> = tab.debuggee.debugger
       .sendCommand("Emulation.setFocusEmulationEnabled", { enabled })
@@ -212,7 +257,7 @@ export const make = Effect.gen(function* () {
         // The agent pauses to think between steps; its tab stays focused until the turn ends.
         if (tab.agentUsed && agentTurns.has(tab.key.threadId)) return;
         tab.agentUsed = false;
-        if (tabs.get(keyOf(tab.key)) === tab) setFocusEmulation(tab, false);
+        if (tabs.get(keyOf(tab.key)) === tab) setDriven(tab, false);
       }),
     );
   };
@@ -243,7 +288,7 @@ export const make = Effect.gen(function* () {
     const pending = {};
     tab.focusPending.set(pending, { owner, paints: method === "Page.captureScreenshot" });
     tab.focusUses += 1;
-    setFocusEmulation(tab, true);
+    setDriven(tab, true);
     releaseFocusWhenIdle(tab);
     syncPainting(tab);
     return work().finally(() => {
@@ -385,7 +430,7 @@ export const make = Effect.gen(function* () {
         if (tab.screencasts.size > 0) {
           void debuggee.sendCommand("Page.stopScreencast").catch(() => {});
         }
-        setFocusEmulation(tab, false);
+        setDriven(tab, false);
         detach(tab.key);
       },
     );
@@ -412,6 +457,7 @@ export const make = Effect.gen(function* () {
     tab.relay = null;
     tab.debuggee.debugger.off("message", tab.onMessage);
     tab.debuggee.webContents.off("did-navigate", tab.onNewDocument);
+    syncRendering(tab);
     syncPainting(tab);
     emit({ type: "detached", ...key });
   };
@@ -429,7 +475,8 @@ export const make = Effect.gen(function* () {
       downloadDirectory: null,
       pendingDownloadGuid: null,
       agentInputAt: Number.NEGATIVE_INFINITY,
-      focusEmulated: false,
+      driven: false,
+      releaseRendering: null,
       focusChange: null,
       focusUses: 0,
       focusPending: new Map(),
@@ -516,6 +563,7 @@ export const make = Effect.gen(function* () {
     detach,
     placeDownload,
     humanStartedDownload,
+    keepRendering,
   });
 });
 

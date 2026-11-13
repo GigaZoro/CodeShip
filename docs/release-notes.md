@@ -1,3 +1,7 @@
+## 2026-11-13 — Browser tabs agents use keep drawing in chats nobody has open
+
+- On Windows and Linux, a browser tab an agent drove in a chat you were not looking at, such as one a scheduled task started, drew no frames. Pages that wait for the next frame never got one: ChatGPT's message box never appeared, and the agent's clicks and typing waited until they timed out. The desktop app now keeps such a tab drawing while the agent uses it and through the rest of its turn, also while the window is minimized or hidden, and lets it rest again once the agent is done.
+
 ## 2026-11-13 — Agents can send a held queued message first
 
 - **Send now** on a queued message in a stopped chat starts the queue from that message. Agents could only start a held queue in order. `t3_queue` `resume` now takes an optional `queuedRunId` and starts the queue from that message, the way **Send now** does.

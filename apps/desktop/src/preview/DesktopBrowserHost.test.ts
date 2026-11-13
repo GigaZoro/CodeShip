@@ -31,6 +31,7 @@ const command = (
     }),
   );
 
+let nextWebContentsId = 1;
 const makeDebuggee = (
   options: {
     readonly deferFocus?: boolean;
@@ -43,6 +44,7 @@ const makeDebuggee = (
   const sent: Array<unknown> = [];
   const sendWaiters: Array<() => void> = [];
   const focusEmulation: Array<boolean> = [];
+  const backgroundThrottling: Array<boolean> = [];
   const debuggee = Object.assign(emitter, {
     sendCommand: (
       method: string,
@@ -70,6 +72,11 @@ const makeDebuggee = (
       }),
   });
   const webContents = Object.assign(new NodeEvents.EventEmitter(), {
+    id: nextWebContentsId++,
+    isDestroyed: () => false,
+    setBackgroundThrottling: (allowed: boolean) => {
+      backgroundThrottling.push(allowed);
+    },
     getURL: () => "http://localhost/",
     getTitle: () => "Page",
     getUserAgent: () => "Electron",
@@ -84,6 +91,8 @@ const makeDebuggee = (
     /** Ids of the commands the debugger received, in order. */
     sent,
     focusEmulation,
+    /** Each `setBackgroundThrottling` call; false keeps a hidden guest drawing frames. */
+    backgroundThrottling,
     nextSend: () => new Promise<void>((resolve) => sendWaiters.push(resolve)),
     release: () => pending.splice(0).forEach((resolve) => resolve()),
     releaseFirst: () => pending.shift()?.(),
@@ -236,7 +245,7 @@ describe("DesktopBrowserHost", () => {
     }),
   );
 
-  it.effect("emulates focus while the server drives a guest, then lets a hidden one throttle", () =>
+  it.effect("keeps a guest the server drives focused and rendering, then lets it throttle", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
@@ -245,6 +254,7 @@ describe("DesktopBrowserHost", () => {
       yield* command(host, 1, "DOM.enable");
       yield* settle;
       expect(debuggee.focusEmulation).toEqual([true]);
+      expect(debuggee.backgroundThrottling).toEqual([false]);
       expect(debuggee.sent).toEqual([1]);
       debuggee.release();
       yield* settle;
@@ -259,10 +269,12 @@ describe("DesktopBrowserHost", () => {
 
       yield* TestClock.adjust("10 seconds");
       expect(debuggee.focusEmulation).toEqual([true, false]);
+      expect(debuggee.backgroundThrottling).toEqual([false, true]);
 
       yield* command(host, 3, "Page.captureScreenshot");
       yield* settle;
       expect(debuggee.focusEmulation).toEqual([true, false, true]);
+      expect(debuggee.backgroundThrottling).toEqual([false, true, false]);
       expect(debuggee.sent).toEqual([1, 2, 3]);
     }),
   );
@@ -391,7 +403,7 @@ describe("DesktopBrowserHost", () => {
     }),
   );
 
-  it.effect("keeps a guest the agent used focused through its turn's pauses", () =>
+  it.effect("keeps a guest the agent used focused and rendering through its turn's pauses", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
       const debuggee = makeDebuggee();
@@ -402,18 +414,54 @@ describe("DesktopBrowserHost", () => {
       yield* turn(true);
       yield* TestClock.adjust("1 minute");
       expect(debuggee.focusEmulation).toEqual([]);
+      expect(debuggee.backgroundThrottling).toEqual([]);
 
       yield* command(host, 1, "Input.dispatchKeyEvent");
       yield* settle;
       debuggee.release();
       yield* settle;
-      // The model thinks between steps; a focus-sensitive menu must not blur meanwhile.
+      // The model thinks between steps; a focus-sensitive menu must not blur meanwhile, and a
+      // page waiting on requestAnimationFrame, in a thread nobody views, must still get frames.
       yield* TestClock.adjust("1 minute");
       expect(debuggee.focusEmulation).toEqual([true]);
+      expect(debuggee.backgroundThrottling).toEqual([false]);
 
       yield* turn(false);
       yield* TestClock.adjust("1 minute");
       expect(debuggee.focusEmulation).toEqual([true, false]);
+      expect(debuggee.backgroundThrottling).toEqual([false, true]);
+    }),
+  );
+
+  it.effect("keeps a guest rendering until the agent and a recording both let go", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+
+      const releaseRecording = host.keepRendering(debuggee.tab.webContents);
+      yield* command(host, 1, "Input.dispatchKeyEvent");
+      yield* settle;
+      debuggee.release();
+      yield* settle;
+      expect(debuggee.backgroundThrottling).toEqual([false]);
+
+      yield* TestClock.adjust("1 minute");
+      expect(debuggee.focusEmulation).toEqual([true, false]);
+      expect(debuggee.backgroundThrottling).toEqual([false]);
+
+      yield* command(host, 2, "Input.dispatchKeyEvent");
+      yield* settle;
+      releaseRecording();
+      releaseRecording();
+      expect(debuggee.backgroundThrottling).toEqual([false]);
+
+      // A guest the server no longer reaches has no one driving it, though its turn runs.
+      yield* host.handleCommandLine(
+        encodeJson({ type: "turn", threadId: key.threadId, active: true }),
+      );
+      host.detach(key);
+      expect(debuggee.backgroundThrottling).toEqual([false, true]);
     }),
   );
 
