@@ -107,6 +107,7 @@ import {
   latestMissedFixedTimeRun,
   nextAlignedIntervalRunAt,
   nextScheduledRunAt,
+  occurrenceSlot,
 } from "./Schedule.ts";
 import {
   redactHeaders,
@@ -325,6 +326,9 @@ interface ScheduledTaskRow {
   readonly last_run_at: string | null;
   readonly last_run_status: string;
   readonly last_run_error: string | null;
+  /** Null when the last run predates the app recording it, so its occurrence is unknown. */
+  readonly last_run_trigger: string | null;
+  readonly last_run_scheduled_for: string | null;
   readonly run_count: number;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
@@ -384,6 +388,11 @@ interface ScheduledFire {
   readonly catchUp: boolean;
   /** What the task's run condition answered for this occurrence. */
   readonly check?: ScheduledTaskRunCheck;
+}
+
+interface RunCheckInProgress {
+  readonly startedAt: string;
+  readonly scheduledFor: string | null;
 }
 
 interface MachineOrderRow extends SharedRevisionRow {
@@ -533,17 +542,6 @@ function iso(value: DateTime.DateTime): string {
 }
 
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
-
-// A fixed time comes due at each machine's own local hour, so its claims name the wall-clock time
-// with no offset, which every copy reads in its own zone (`Date.parse`): one slot, one claim.
-function occurrenceSlot(schedule: ScheduledTask["schedule"], due: DateTime.DateTime): string {
-  if (schedule.type !== "fixed_time") return iso(due);
-  const { year, month, day, hour, minute } = DateTime.toParts(
-    DateTime.setZone(due, DateTime.zoneMakeLocal()),
-  );
-  const two = (value: number) => String(value).padStart(2, "0");
-  return `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}`;
-}
 
 interface OneMachineWatch {
   /** The machine that holds the occurrence. */
@@ -757,6 +755,7 @@ const decodeRow = Effect.fnUntraced(
                 ? null
                 : yield* decodeNoWorkSkipJson(row.no_work_skip_json),
           }),
+      ...(row.last_run_trigger === null ? {} : { lastRunScheduledFor: row.last_run_scheduled_for }),
       ...(row.prompt_file_path === undefined
         ? {}
         : {
@@ -882,16 +881,20 @@ export const layer = Layer.effect(
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
     const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
-    // Tasks whose run condition is running for the occurrence due now, and when it started.
-    const runChecks = yield* Ref.make<ReadonlyMap<ScheduledTaskId, string>>(new Map());
+    // Tasks whose run condition is running, when it started and the occurrence it is for.
+    const runChecks = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RunCheckInProgress>>(new Map());
     // Scheduled runs that read their prompt file in the background, claimed before they start.
     const backgroundRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
     const withRunCheck =
-      (checks: ReadonlyMap<ScheduledTaskId, string>) =>
-      (task: ScheduledTask): ScheduledTask => ({
-        ...task,
-        runCheckStartedAt: checks.get(task.id) ?? null,
-      });
+      (checks: ReadonlyMap<ScheduledTaskId, RunCheckInProgress>) =>
+      (task: ScheduledTask): ScheduledTask => {
+        const check = checks.get(task.id);
+        return {
+          ...task,
+          runCheckStartedAt: check?.startedAt ?? null,
+          runCheckScheduledFor: check?.scheduledFor ?? null,
+        };
+      };
     const serviceScope = yield* Effect.scope;
     // A restart forgets these, which only costs a one-machine task one more wait for its turn.
     const oneMachineDeferrals = yield* Ref.make<
@@ -1100,6 +1103,8 @@ export const layer = Layer.effect(
         last_run_at,
         last_run_status,
         last_run_error,
+        last_run_trigger,
+        last_run_scheduled_for,
         run_count,
         webhook_token,
         webhook_secret,
@@ -1200,6 +1205,8 @@ export const layer = Layer.effect(
         last_run_at,
         last_run_status,
         last_run_error,
+        last_run_trigger,
+        last_run_scheduled_for,
         run_count,
         webhook_token,
         webhook_secret,
@@ -1551,22 +1558,32 @@ export const layer = Layer.effect(
           ),
         );
 
-    const markRunning = (id: ScheduledTaskId, startedAtIso: string, webhookDeliveryId?: string) =>
+    const markRunning = (input: {
+      readonly id: ScheduledTaskId;
+      readonly startedAtIso: string;
+      readonly trigger: ScheduledTaskRunTrigger;
+      readonly scheduledFor: string | null;
+      readonly webhookDeliveryId: string | null;
+    }) =>
       sql<{ task_id: string }>`
         UPDATE scheduled_tasks
-        SET updated_at = ${startedAtIso},
-            last_run_at = ${startedAtIso},
-            last_run_webhook_delivery_id = ${webhookDeliveryId ?? null},
+        SET updated_at = ${input.startedAtIso},
+            last_run_at = ${input.startedAtIso},
+            last_run_trigger = ${input.trigger},
+            last_run_scheduled_for = ${input.scheduledFor},
+            last_run_webhook_delivery_id = ${input.webhookDeliveryId},
             last_run_status = 'running',
             last_run_error = NULL
-        WHERE task_id = ${id}
+        WHERE task_id = ${input.id}
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
-          taskError("Could not mark schedule task as running.", { taskId: id, cause }),
+          taskError("Could not mark schedule task as running.", { taskId: input.id, cause }),
         ),
         Effect.flatMap((rows) =>
-          rows.length > 0 ? Effect.void : taskError("Schedule task not found.", { taskId: id }),
+          rows.length > 0
+            ? Effect.void
+            : taskError("Schedule task not found.", { taskId: input.id }),
         ),
       );
 
@@ -1916,12 +1933,21 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
-        if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
+        const scheduledFor =
+          trigger === "scheduled" ? (fire?.scheduledFor ?? active.nextRunAt) : null;
+        const started = {
+          id: active.id,
+          startedAtIso,
+          trigger: recordTrigger,
+          scheduledFor,
+          webhookDeliveryId: webhook?.deliveryId ?? null,
+        };
+        if (webhook === undefined) yield* markRunning(started);
         else
           yield* sql
             .withTransaction(
               Effect.gen(function* () {
-                yield* markRunning(active.id, startedAtIso, webhook.deliveryId);
+                yield* markRunning(started);
                 // Recovery must distinguish this delivery from other windows waiting on the same task.
                 yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
               }),
@@ -1936,7 +1962,7 @@ export const layer = Layer.effect(
           id: runRecordId,
           taskId: active.id,
           trigger: recordTrigger,
-          scheduledFor: trigger === "scheduled" ? (fire?.scheduledFor ?? active.nextRunAt) : null,
+          scheduledFor,
           startedAt: startedAtIso,
           completedAt: null,
           outcome: "running",
@@ -2455,7 +2481,13 @@ export const layer = Layer.effect(
       const claimed = yield* Ref.modify(runChecks, (checks) =>
         checks.has(task.id)
           ? ([false, checks] as const)
-          : ([true, new Map(checks).set(task.id, iso(checkStartedAt))] as const),
+          : ([
+              true,
+              new Map(checks).set(task.id, {
+                startedAt: iso(checkStartedAt),
+                scheduledFor: fire.scheduledFor ?? task.nextRunAt,
+              }),
+            ] as const),
       );
       if (!claimed) return;
       yield* checkThenRun(task, fire, condition, checkStartedAt).pipe(
@@ -2883,6 +2915,8 @@ export const layer = Layer.effect(
         // In the local zone of `now`, so a fixed time's next run keeps its local hour.
         const occurrenceDue = DateTime.subtract(now, { milliseconds: nowMs - occurrenceDueMs });
         const occurrence = iso(occurrenceDue);
+        // How claims and peers name it.
+        const slot = occurrenceSlot(task.schedule, occurrenceDue);
         const following = nextRunAt(shared, occurrenceDue);
         // Watching a run ends when the next occurrence is due, which is judged on its own.
         const watchUntilMs =
@@ -2975,12 +3009,7 @@ export const layer = Layer.effect(
           const fire = { scheduledFor: occurrence, catchUp: catchingUp };
           // A machine that could not start it claims nothing, so the next machine may run it.
           if (yield* skippedForUsage(task, fire)) return;
-          const claim = yield* claimOneMachineOccurrence(
-            task.id,
-            occurrenceSlot(task.schedule, occurrenceDue),
-            plan,
-            replaces,
-          );
+          const claim = yield* claimOneMachineOccurrence(task.id, slot, plan, replaces);
           yield* logUnchecked(claim.unchecked);
           if (claim.holder !== null && claim.holder !== hereEnvironmentId) {
             // A machine already judged ended needs no second wait for the machines before this one.
@@ -3014,6 +3043,7 @@ export const layer = Layer.effect(
             taskId: task.id,
             peers: plan.order.filter((id) => id !== hereEnvironmentId),
             since,
+            occurrence: slot,
           });
           yield* logUnchecked(answer.unchecked);
           const decision = { at: iso(now), ranOn: answer.ranOn, unchecked: answer.unchecked };
@@ -3026,6 +3056,7 @@ export const layer = Layer.effect(
           taskId: task.id,
           peers: [watched.environmentId],
           since,
+          occurrence: slot,
         });
         yield* logUnchecked(answer.unchecked);
         const decision = {

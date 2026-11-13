@@ -71,10 +71,12 @@ export class SharedTaskPeerCheck extends Context.Service<
         readonly expiresAt: string;
       }>;
     }>;
-    /** `since`: the earliest start of a run that counts as this occurrence's. */
     readonly check: (input: {
       readonly taskId: ScheduledTaskId;
       readonly peers: ReadonlyArray<EnvironmentId>;
+      /** The occurrence, named as claims name it. */
+      readonly occurrence: string;
+      /** The earliest start that counts as this occurrence's, for a peer that names none. */
       readonly since: string;
     }) => Effect.Effect<PeerCheckResult>;
     /**
@@ -134,6 +136,13 @@ const make = Effect.gen(function* () {
       if (input.peers.length === 0) {
         return { ranOn: null, working: false, noWork: null, unchecked: [] };
       }
+      // A late run of the occurrence before starts inside this one's window, so only the occurrence
+      // a peer names tells them apart; a later one settles a stale asker too. Null: run now or by
+      // a webhook, which is no occurrence's. Absent: an older peer, judged by when it started.
+      const counts = (occurrence: string | null | undefined, startedAt: string) =>
+        occurrence === undefined
+          ? Date.parse(startedAt) >= Date.parse(input.since)
+          : occurrence !== null && Date.parse(occurrence) >= Date.parse(input.occurrence);
       const askOne = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
         const problem = yield* linkProblem(environmentId);
         if (problem !== null) {
@@ -170,17 +179,22 @@ const make = Effect.gen(function* () {
                 has,
                 noWork,
               });
-              if (task.checkingSince !== undefined) return answered("working");
+              if (
+                task.checkingSince !== undefined &&
+                counts(task.checkingFor, task.checkingSince)
+              ) {
+                return answered("working");
+              }
               if (
                 task.lastSkipped !== undefined &&
-                Date.parse(task.lastSkipped.at) >= Date.parse(input.since)
+                counts(task.lastSkipped.occurrence, task.lastSkipped.at)
               ) {
                 return answered("completed", { reason: task.lastSkipped.reason });
               }
               // A run someone stopped on purpose is settled, so it counts as finished.
               return answered(
                 task.lastRun === null ||
-                  Date.parse(task.lastRun.at) < Date.parse(input.since) ||
+                  !counts(task.lastRun.occurrence, task.lastRun.at) ||
                   (task.lastRun.outcome === "failed" && task.lastRun.stopped !== true)
                   ? null
                   : task.lastRun.outcome === "working"

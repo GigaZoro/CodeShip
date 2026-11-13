@@ -793,6 +793,15 @@ export const OrchestratorMcpSaveScheduledTaskInput = Schema.Struct({
 export type OrchestratorMcpSaveScheduledTaskInput =
   typeof OrchestratorMcpSaveScheduledTaskInput.Type;
 
+/**
+ * When an occurrence of a scheduled task was due. Peers match runs to occurrences by it, so a late
+ * run of one is never taken for the next. A fixed-time task's has no offset: each machine reads it
+ * in its own zone, where that fixed time comes due.
+ */
+export const OrchestratorMcpScheduledOccurrence = IsoDateTime.annotate({
+  description: "When the occurrence was due. fixed_time: local time, no offset.",
+});
+
 export const OrchestratorMcpScheduledTask = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   followsDefaultModel: Schema.optional(Schema.Boolean),
@@ -836,10 +845,15 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   runCondition: Schema.optional(ScheduledTaskRunCondition),
   checkingSince: Schema.optional(IsoDateTime).annotate({
-    description:
-      "Its run condition is running now, for the occurrence that is due, and started at this time.",
+    description: "Its run condition is running now, for occurrence `checkingFor`, since this time.",
   }),
-  lastSkipped: Schema.optional(ScheduledTaskNoWorkSkip).annotate({
+  checkingFor: Schema.optional(OrchestratorMcpScheduledOccurrence),
+  lastSkipped: Schema.optional(
+    Schema.Struct({
+      ...ScheduledTaskNoWorkSkip.fields,
+      occurrence: Schema.optional(Schema.NullOr(OrchestratorMcpScheduledOccurrence)),
+    }),
+  ).annotate({
     description: "The last occurrence its run condition skipped for no work, and why.",
   }),
   catchUpMissedRun: Schema.optional(Schema.Boolean).annotate({
@@ -852,11 +866,12 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
         at: IsoDateTime,
         outcome: Schema.Literals(["working", "completed", "failed"]),
         stopped: Schema.optional(Schema.Literal(true)),
+        occurrence: Schema.optional(Schema.NullOr(OrchestratorMcpScheduledOccurrence)),
       }),
     ),
   ).annotate({
     description:
-      "The last run here. working: its thread is still going. stopped: a user or agent stopped it on purpose.",
+      "The last run here. working: its thread is still going. stopped: a user or agent stopped it on purpose. occurrence: null when run now or by a webhook.",
   }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
@@ -906,11 +921,7 @@ export type OrchestratorMcpSharedScheduledTasksResult =
  */
 export const OrchestratorMcpClaimScheduledTaskOccurrenceInput = Schema.Struct({
   scheduledTaskId: ScheduledTaskId,
-  /**
-   * When the occurrence was due. A fixed-time task's has no offset: each machine reads it in its
-   * own zone, where that fixed time comes due.
-   */
-  occurrence: IsoDateTime,
+  occurrence: OrchestratorMcpScheduledOccurrence,
   holder: EnvironmentId,
   replaces: Schema.NullOr(EnvironmentId),
 });

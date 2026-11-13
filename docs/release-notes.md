@@ -1,3 +1,9 @@
+## 2026-11-13 — A one-machine task no longer skips a time because another machine ran the one before late
+
+- A shared task set to **One machine** could skip a time on every machine. When the first machine was off, another machine could take the previous time over late and still be running it when the next time came due. The next machine in the order took that run for the new time's, so it waited for it or skipped, and nobody ran the new time.
+- Machines now say which time each run, no-work skip and run-condition check is for, so another machine counts only a run of the same or a later time. **Run now** and webhook runs count for no time. A machine on an older version still counts by when its run started.
+- A run names its time from the moment it starts, even when its run history could not be saved.
+
 ## 2026-11-13 — `t3 up` waits for the restarted server, so `t3 pair` works right after it
 
 - `t3 up --lan` restarted the background service and told you to run `t3 pair` before the server was listening, so `t3 pair` run at once failed with "No running T3.CodeShip server found". `t3 up` now waits until the restarted server serves, and so do `t3 service install`, `t3 service restart`, `t3 update --yes` and `t3 doctor --fix`. Before, only turning on T3 Connect waited.

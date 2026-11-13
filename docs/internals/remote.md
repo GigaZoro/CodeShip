@@ -244,8 +244,16 @@ own copy.
 
 Every machine waits its rank times a grace period, asks the machines in the
 order (`list_scheduled_tasks`, which also finds a run started without a claim,
-such as one on an older version), then claims. A machine that finds the
-occurrence held or running watches that machine, asking again each grace
+such as one on an older version), then claims. A peer's last run, no-work skip
+and running check each name the occurrence they serve, in the claims' form, and
+count only for that occurrence or a later one: a machine that took the previous
+occurrence over late starts its run inside this one's window, so start time
+cannot tell them apart. A run started by hand or by a webhook serves no
+occurrence. Only a peer that names none, on an older version, is judged by
+start time, from half an interval before the occurrence (at most 12 hours, and
+12 hours for a fixed-time or one-time task). A
+machine that finds the occurrence held or running watches that machine, asking
+again each grace
 period until the run ends or the next occurrence is due (12 hours for a
 one-time task), and takes over once the holder's copy agrees. Silence is not an ended run: a busy or restarting machine
 misses calls, so a holder that dies mid-run or before it starts costs that

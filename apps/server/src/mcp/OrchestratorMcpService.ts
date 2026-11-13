@@ -129,6 +129,7 @@ import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { occurrenceSlot } from "../scheduledTasks/Schedule.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -347,6 +348,11 @@ function promptPreview(prompt: string): string {
   return flat.length > PROMPT_PREVIEW_CHARS ? `${flat.slice(0, PROMPT_PREVIEW_CHARS - 1)}…` : flat;
 }
 
+/** The occurrence a scheduled time names, as peers match it against their own. */
+function occurrenceOf(task: ScheduledTask, scheduledFor: string): string {
+  return occurrenceSlot(task.schedule, DateTime.makeUnsafe(scheduledFor));
+}
+
 function scheduledTaskSummary(
   task: ScheduledTask,
   mayRun: boolean,
@@ -398,7 +404,20 @@ function scheduledTaskSummary(
       : { definedOn: task.shared.revision.environmentId, definedAt: task.shared.revision.at }),
     ...(task.runCondition == null ? {} : { runCondition: task.runCondition }),
     ...(task.runCheckStartedAt == null ? {} : { checkingSince: task.runCheckStartedAt }),
-    ...(task.lastNoWorkSkip == null ? {} : { lastSkipped: task.lastNoWorkSkip }),
+    ...(task.runCheckScheduledFor == null
+      ? {}
+      : { checkingFor: occurrenceOf(task, task.runCheckScheduledFor) }),
+    ...(task.lastNoWorkSkip == null
+      ? {}
+      : {
+          lastSkipped: {
+            ...task.lastNoWorkSkip,
+            occurrence:
+              task.lastNoWorkSkip.scheduledFor === null
+                ? null
+                : occurrenceOf(task, task.lastNoWorkSkip.scheduledFor),
+          },
+        }),
     ...(task.schedule.type === "fixed_time" && task.catchUpMissedRun !== undefined
       ? { catchUpMissedRun: task.catchUpMissedRun }
       : {}),
@@ -2272,9 +2291,15 @@ const make = Effect.gen(function* () {
   // A run that dispatched is still going while its thread's latest run is, and failed if that run did.
   const lastRunOf = Effect.fn("OrchestratorMcpService.lastRunOf")(function* (task: ScheduledTask) {
     if (task.lastRunAt === null || task.lastRunStatus === "never") return null;
-    const at = task.lastRunAt;
-    if (task.lastRunStatus === "running") return { at, outcome: "working" as const };
-    if (task.lastRunStatus === "failed") return { at, outcome: "failed" as const };
+    const scheduledFor = task.lastRunScheduledFor;
+    const run = {
+      at: task.lastRunAt,
+      ...(scheduledFor === undefined
+        ? {}
+        : { occurrence: scheduledFor === null ? null : occurrenceOf(task, scheduledFor) }),
+    };
+    if (task.lastRunStatus === "running") return { ...run, outcome: "working" as const };
+    if (task.lastRunStatus === "failed") return { ...run, outcome: "failed" as const };
     const threadId = task.lastRunThreadId;
     const records =
       threadId == null
@@ -2283,14 +2308,14 @@ const make = Effect.gen(function* () {
             .getThreadRecords(threadId, ["runs"])
             .pipe(Effect.orElseSucceed(() => undefined));
     const latest = records === undefined ? undefined : ThreadManagementService.latestRun(records);
-    if (latest === undefined) return { at, outcome: "completed" as const };
+    if (latest === undefined) return { ...run, outcome: "completed" as const };
     if (!ThreadManagementService.isTerminalRunStatus(latest.status)) {
-      return { at, outcome: "working" as const };
+      return { ...run, outcome: "working" as const };
     }
-    if (latest.status === "completed") return { at, outcome: "completed" as const };
+    if (latest.status === "completed") return { ...run, outcome: "completed" as const };
     // A run a server restart cut off goes on once its continuation starts, so it is still going.
     if (yield* threadManagement.restartContinuationPending(latest)) {
-      return { at, outcome: "working" as const };
+      return { ...run, outcome: "working" as const };
     }
     // A Stop from the user or an agent leaves an interrupt request; other machines leave it stopped.
     const stopped = yield* threadManagement
@@ -2302,7 +2327,7 @@ const make = Effect.gen(function* () {
         Effect.map(({ turnItems }) => turnItems.length > 0),
         Effect.orElseSucceed(() => false),
       );
-    return { at, outcome: "failed" as const, ...(stopped ? { stopped: true as const } : {}) };
+    return { ...run, outcome: "failed" as const, ...(stopped ? { stopped: true as const } : {}) };
   });
 
   /**

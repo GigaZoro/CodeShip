@@ -3348,6 +3348,14 @@ describe("OrchestratorMcpService provider resolution", () => {
   describe("the base branch of an unbound scheduled task", () => {
     const projectId = ProjectId.make("project:scheduled-base");
     const workspaceRoot = "/repo/scheduled-base";
+    /** An instant as the wall-clock time here, with no offset, as a fixed time names occurrences. */
+    const localTime = (instant: string) => {
+      const at = DateTime.toParts(
+        DateTime.makeZonedUnsafe(instant, { timeZone: DateTime.zoneMakeLocal() }),
+      );
+      const two = (value: number) => String(value).padStart(2, "0");
+      return `${at.year}-${two(at.month)}-${two(at.day)}T${two(at.hour)}:${two(at.minute)}`;
+    };
     const existing: ScheduledTask = {
       id: ScheduledTaskId.make("scheduled-task:base"),
       title: "Nightly",
@@ -3766,14 +3774,51 @@ describe("OrchestratorMcpService provider resolution", () => {
         outcome: "completed",
       },
       {
+        name: "started for its 01:00 occurrence, thread completed",
+        task: {
+          lastRunAt: "2026-10-05T01:00:00.000Z",
+          lastRunStatus: "succeeded",
+          lastRunScheduledFor: "2026-10-05T01:00:00.000Z",
+        },
+        runStatus: "completed",
+        outcome: "completed",
+        occurrence: "2026-10-05T01:00:00.000Z",
+      },
+      {
+        // Each machine reads a fixed time's occurrence in its own zone, so it carries no offset.
+        name: "started for its fixed time, thread completed",
+        task: {
+          schedule: { type: "fixed_time", timeOfDay: "09:00" },
+          lastRunAt: "2026-10-05T01:00:00.000Z",
+          lastRunStatus: "succeeded",
+          lastRunScheduledFor: "2026-10-05T01:00:00.000Z",
+        },
+        runStatus: "completed",
+        outcome: "completed",
+        occurrence: localTime("2026-10-05T01:00:00.000Z"),
+      },
+      {
+        name: "started now by hand, thread completed",
+        task: {
+          lastRunAt: "2026-10-05T01:00:00.000Z",
+          lastRunStatus: "succeeded",
+          lastRunScheduledFor: null,
+        },
+        runStatus: "completed",
+        outcome: "completed",
+        occurrence: null,
+      },
+      {
         name: "completed, then its run condition is checking the next one",
         task: {
           lastRunAt: "2026-10-05T01:00:00.000Z",
           lastRunStatus: "succeeded",
           runCheckStartedAt: "2026-10-06T01:00:00.000Z",
+          runCheckScheduledFor: "2026-10-06T01:00:00.000Z",
         },
         runStatus: "completed",
         checkingSince: "2026-10-06T01:00:00.000Z",
+        checkingFor: "2026-10-06T01:00:00.000Z",
         outcome: "completed",
       },
       {
@@ -3810,7 +3855,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       },
     ])(
       "reports the last run as $outcome when it was $name",
-      ({ task, runStatus, outcome, checkingSince, ...row }) =>
+      ({ task, runStatus, outcome, checkingSince, checkingFor, ...row }) =>
         Effect.gen(function* () {
           const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
           const listed: ScheduledTask = {
@@ -3846,12 +3891,16 @@ describe("OrchestratorMcpService provider resolution", () => {
                   at: "2026-10-05T01:00:00.000Z",
                   outcome,
                   ...("stopRequested" in row ? { stopped: true } : {}),
+                  ...("occurrence" in row ? { occurrence: row.occurrence } : {}),
                 },
           );
           assert.equal(tasks[0]?.checkingSince, checkingSince);
+          assert.equal(tasks[0]?.checkingFor, checkingFor);
           assert.deepEqual(
             tasks[0]?.lastSkipped,
-            "lastNoWorkSkip" in task ? task.lastNoWorkSkip : undefined,
+            "lastNoWorkSkip" in task
+              ? { ...task.lastNoWorkSkip, occurrence: task.lastNoWorkSkip.scheduledFor }
+              : undefined,
           );
         }),
     );
@@ -3984,7 +4033,13 @@ describe("OrchestratorMcpService provider resolution", () => {
               task.definedAt,
             ]),
             [
-              [runCondition, lastNoWorkSkip, [vps, here], here, "2026-11-10T00:00:00.000Z"],
+              [
+                runCondition,
+                { ...lastNoWorkSkip, occurrence: lastNoWorkSkip.scheduledFor },
+                [vps, here],
+                here,
+                "2026-11-10T00:00:00.000Z",
+              ],
               [undefined, undefined, undefined, here, "2026-11-10T00:00:00.000Z"],
               [undefined, undefined, [], here, "2026-11-10T00:00:00.000Z"],
             ],

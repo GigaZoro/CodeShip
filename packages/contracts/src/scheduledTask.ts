@@ -570,6 +570,8 @@ export const ScheduledTask = Schema.Struct({
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** The thread the last successful run used: the bound thread, or the one it started. */
   lastRunThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  /** The scheduled time the last run was for; null for one run now or by a webhook. Absent when an older app ran it. */
+  lastRunScheduledFor: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Runs the scheduled tasks default model, already resolved into `modelSelection`. */
   followsDefaultModel: Schema.optional(Schema.Boolean),
   /** Why the task cannot run regardless of `enabled`, such as a managed policy refusing webhooks. */
@@ -590,6 +592,8 @@ export const ScheduledTask = Schema.Struct({
   lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
   /** When the run condition of the occurrence due now started; null while none is running. */
   runCheckStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** The scheduled time that run condition is for; null while none is running. */
+  runCheckScheduledFor: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** Each run reads its prompt from this file. Null: `prompt` is the text. Absent from servers without prompt files. */
   promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFile)),
   /** Null when ungrouped. Absent from servers without groups. */

@@ -637,12 +637,19 @@ it.effect(
         const listed = (yield* service.list()).tasks;
         expect(byId(listed, task.id)).toMatchObject({ runCount: 0, lastRunAt: null });
 
+        // Peers read the occurrence from the task row, which history writes may not have reached.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TRIGGER no_run_history BEFORE INSERT ON scheduled_task_runs
+          BEGIN SELECT RAISE(ABORT, 'history unavailable'); END`;
         yield* Ref.set(block, null);
         const ran = yield* settled((tasks) => byId(tasks, task.id)?.lastRunStatus === "succeeded");
         yield* TestClock.adjust("65 seconds");
         yield* Fiber.join(ran);
         expect(yield* Ref.get(launched)).toContain("Autopilot");
-        expect(byId((yield* service.list()).tasks, task.id)?.runCount).toBe(1);
+        expect(byId((yield* service.list()).tasks, task.id)).toMatchObject({
+          runCount: 1,
+          lastRunScheduledFor: "2026-11-10T12:02:00.000Z",
+        });
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

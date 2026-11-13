@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
+  OrchestratorMcpFailure,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -23,6 +24,8 @@ import * as TestClock from "effect/testing/TestClock";
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -594,7 +597,9 @@ const runScenario = <A, E>(
     readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
     readonly sql: SqlClient.SqlClient;
     readonly launches: Queue.Queue<unknown>;
-    readonly peerCalls: Ref.Ref<ReadonlyArray<{ peers: ReadonlyArray<string>; since: string }>>;
+    readonly peerCalls: Ref.Ref<
+      ReadonlyArray<{ peers: ReadonlyArray<string>; occurrence: string; since: string }>
+    >;
     readonly peerCopies: Ref.Ref<PeerCopies>;
     readonly failed: Ref.Ref<ReadonlySet<string>>;
     /** The occurrence each claim sent to peers named. */
@@ -611,7 +616,7 @@ const runScenario = <A, E>(
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<unknown>();
     const peerCalls = yield* Ref.make<
-      ReadonlyArray<{ peers: ReadonlyArray<string>; since: string }>
+      ReadonlyArray<{ peers: ReadonlyArray<string>; occurrence: string; since: string }>
     >([]);
     const peerCopies = yield* Ref.make<PeerCopies>(new Map());
     const failed = yield* Ref.make<ReadonlySet<string>>(new Set());
@@ -623,7 +628,7 @@ const runScenario = <A, E>(
       check: (input) =>
         Ref.updateAndGet(peerCalls, (calls) => [
           ...calls,
-          { peers: input.peers, since: input.since },
+          { peers: input.peers, occurrence: input.occurrence, since: input.since },
         ]).pipe(
           Effect.map((calls) =>
             "ranOn" in peers ? peers : peers[Math.min(calls.length, peers.length) - 1]!,
@@ -725,7 +730,7 @@ it.effect("a later machine waits its turn, then skips an occurrence an earlier m
       yield* scenario.tick(DUE + 5 * MINUTE_MS + 1_000);
       yield* scenario.settled;
       expect(yield* Ref.get(scenario.peerCalls)).toEqual([
-        { peers: [OTHER], since: iso(DUE - 30 * MINUTE_MS) },
+        { peers: [OTHER], occurrence: iso(DUE), since: iso(DUE - 30 * MINUTE_MS) },
       ]);
       expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + HOUR_MS));
       expect(yield* Queue.size(scenario.launches)).toBe(0);
@@ -814,7 +819,7 @@ it.effect(
         yield* scenario.tick(DUE + 1_000);
         yield* Queue.take(scenario.launches);
         expect(yield* Ref.get(scenario.peerCalls)).toEqual([
-          { peers: [OTHER], since: iso(DUE - 30 * MINUTE_MS) },
+          { peers: [OTHER], occurrence: iso(DUE), since: iso(DUE - 30 * MINUTE_MS) },
         ]);
         expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(HERE_ENVIRONMENT_ID);
       }),
@@ -825,6 +830,9 @@ const dueLocal = DateTime.toParts(
   DateTime.makeZonedUnsafe(DUE, { timeZone: DateTime.zoneMakeLocal() }),
 );
 const two = (value: number) => String(value).padStart(2, "0");
+/** How a fixed time names its occurrence: the local wall-clock time, with no offset. */
+const localSlot = (parts: ReturnType<typeof DateTime.toParts>) =>
+  `${parts.year}-${two(parts.month)}-${two(parts.day)}T${two(parts.hour)}:${two(parts.minute)}`;
 
 // Each machine reaches a fixed time at its own local hour, so a claim names the hour, not the instant.
 it.effect(
@@ -837,8 +845,11 @@ it.effect(
         Effect.gen(function* () {
           yield* scenario.tick(DUE + 1_000);
           yield* Queue.take(scenario.launches);
-          const slot = `${dueLocal.year}-${two(dueLocal.month)}-${two(dueLocal.day)}T${two(dueLocal.hour)}:${two(dueLocal.minute)}`;
+          const slot = localSlot(dueLocal);
           expect(yield* Ref.get(scenario.peerClaims)).toEqual([slot]);
+          expect((yield* Ref.get(scenario.peerCalls)).map((call) => call.occurrence)).toEqual([
+            slot,
+          ]);
           expect(
             yield* scenario.service.claimOccurrence({
               taskId: "scheduled-task:shared" as ScheduledTaskId,
@@ -900,7 +911,11 @@ it.effect(
           yield* scenario.settled;
           // It asks about the missed time, not the hour it came back at.
           expect(yield* Ref.get(scenario.peerCalls)).toEqual([
-            { peers: [OTHER], since: iso(MISSED - 12 * HOUR_MS) },
+            {
+              peers: [OTHER],
+              occurrence: localSlot(missedLocal),
+              since: iso(MISSED - 12 * HOUR_MS),
+            },
           ]);
           expect(yield* Queue.size(scenario.launches)).toBe(0);
           expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(MISSED + 24 * HOUR_MS));
@@ -1013,6 +1028,91 @@ it.effect(
         });
       }),
     ),
+);
+
+// With the first machine off, the third took the occurrence before over late and is still running
+// it when this one comes due: its run started inside this occurrence's window, but is not this one's.
+it.effect("a late takeover of the occurrence before does not count as this occurrence's run", () =>
+  Effect.gen(function* () {
+    const launches = yield* Queue.unbounded<unknown>();
+    const off = Effect.fail(
+      new OrchestratorMcpFailure({ code: "orchestration_error", message: "It is off." }),
+    );
+    const peerCheck = SharedTaskPeerCheck.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(PeerLinks.PeerLinks)({
+            enabled: Effect.succeed(true),
+            listStored: Effect.succeed([]),
+            get: (environmentId) =>
+              Effect.succeedSome({
+                environmentId,
+                expiresAt: DateTime.makeUnsafe("2100-01-01T00:00:00Z"),
+              } as never),
+          }),
+          Layer.mock(PeerMcpClient.PeerMcpClient)({
+            call: ({ environmentId }) =>
+              environmentId === OTHER
+                ? off
+                : (Effect.succeed({
+                    tasks: [
+                      {
+                        scheduledTaskId: "scheduled-task:shared",
+                        lastRun: {
+                          at: iso(DUE - 10 * MINUTE_MS),
+                          outcome: "working",
+                          occurrence: iso(DUE - HOUR_MS),
+                        },
+                      },
+                    ],
+                  }) as never),
+            callIfAvailable: ({ environmentId, arguments: args }) =>
+              environmentId === OTHER
+                ? off
+                : (Effect.succeedSome({ holder: (args as { holder: string }).holder }) as never),
+          }),
+        ),
+      ),
+    );
+    yield* withService(
+      (service, sql) =>
+        Effect.gen(function* () {
+          yield* service.upsert(
+            upsertInput({
+              shared: oneMachineShared([OTHER, HERE_ENVIRONMENT_ID, MIDDLE]),
+              schedule: { type: "interval", everyMs: HOUR_MS },
+            }),
+          );
+          const changes = yield* Queue.unbounded<void>();
+          yield* Effect.forkScoped(
+            service.subscribeList().pipe(
+              Stream.drop(1),
+              Stream.runForEach(() => Queue.offer(changes, undefined)),
+            ),
+          );
+          const scenario = {
+            sql,
+            tick: (atMs: number) =>
+              TestClock.setTime(atMs).pipe(Effect.andThen(TestClock.adjust("6 seconds"))),
+            settled: Queue.take(changes),
+          };
+          yield* fireWhenDue(scenario);
+          yield* scenario.tick(Date.parse((yield* nextRunAtOf(sql))!) + 1_000);
+          yield* Queue.take(launches);
+          const decision = (yield* taskOf(service))?.lastOneMachineDecision;
+          expect(decision).toMatchObject({
+            ranOn: null,
+            unchecked: [{ environmentId: OTHER, reason: "It is off." }],
+          });
+        }).pipe(Effect.scoped),
+      [repoProject, plainProject],
+      {
+        peerCheck,
+        launch: (input) =>
+          Queue.offer(launches, input).pipe(Effect.as({ threadId: "thread-1" } as never)),
+      },
+    );
+  }),
 );
 
 // A claim held by a machine that skips its run would keep every other machine from taking it.
@@ -1404,7 +1504,7 @@ it.effect("a machine that lost its wait to a restart still asks about the occurr
       yield* scenario.settled;
       yield* fireWhenDue(scenario);
       expect(yield* Ref.get(scenario.peerCalls)).toEqual([
-        { peers: [OTHER], since: iso(DUE - 30 * MINUTE_MS) },
+        { peers: [OTHER], occurrence: iso(DUE), since: iso(DUE - 30 * MINUTE_MS) },
       ]);
       expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + HOUR_MS));
     }),

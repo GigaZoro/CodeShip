@@ -14,6 +14,8 @@ import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
 const TASK = ScheduledTaskId.make("scheduled-task:shared");
 const PEER = EnvironmentId.make("environment-peer");
 const HERE = EnvironmentId.make("environment-here");
+// The occurrence due at 12:00 of a half-hourly task; a run that names none counts from SINCE.
+const OCCURRENCE = "2026-09-09T12:00:00.000Z";
 const SINCE = "2026-09-09T11:30:00.000Z";
 
 type PeerAnswer = (call: {
@@ -52,10 +54,15 @@ const peerCheckLayer = (
     ),
   );
 
-const check = (input: PeerSetup & { readonly answer: PeerAnswer }) =>
+const check = (input: PeerSetup & { readonly answer: PeerAnswer; readonly occurrence?: string }) =>
   Effect.gen(function* () {
     const service = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
-    return yield* service.check({ taskId: TASK, peers: input.peers ?? [PEER], since: SINCE });
+    return yield* service.check({
+      taskId: TASK,
+      peers: input.peers ?? [PEER],
+      occurrence: input.occurrence ?? OCCURRENCE,
+      since: SINCE,
+    });
   }).pipe(Effect.provide(peerCheckLayer(input, { call: input.answer as never })));
 
 const claim = (
@@ -83,6 +90,7 @@ const peerTask =
 
 const EARLIER_RUN = { at: "2026-09-09T10:00:00.000Z", outcome: "completed" };
 
+// Older versions name no occurrence, so their runs, skips and checks count by when they started.
 it.effect.each([
   {
     name: "working in the window",
@@ -144,16 +152,124 @@ it.effect.each([
     ranOn: PEER,
     working: true,
   },
+  {
+    name: "checking since before the window",
+    lastRun: EARLIER_RUN,
+    fields: { checkingSince: "2026-09-09T11:29:59.999Z" },
+    ranOn: null,
+    working: false,
+  },
   { name: "never run", lastRun: null, ranOn: null, working: false },
-])("a peer's last run $name", ({ lastRun, fields, ranOn, working, noWork }) =>
+])(
+  "a peer that names no occurrence: its last run $name",
+  ({ lastRun, fields, ranOn, working, noWork }) =>
+    check({ answer: peerTask(lastRun, fields) }).pipe(
+      Effect.map((result) => {
+        expect(result.ranOn).toBe(ranOn);
+        expect(result.working).toBe(working);
+        expect(result.noWork).toEqual(noWork ?? null);
+        expect(result.unchecked).toEqual([]);
+      }),
+    ),
+);
+
+// A machine that took over the 11:00 occurrence late starts its run inside 12:00's window.
+const PREVIOUS = "2026-09-09T11:00:00.000Z";
+const LATE = "2026-09-09T11:50:00.000Z";
+
+it.effect.each([
+  {
+    name: "a late run of the occurrence before",
+    lastRun: { at: LATE, outcome: "completed", occurrence: PREVIOUS },
+    ranOn: null,
+    working: false,
+  },
+  {
+    name: "a late run of the occurrence before, still going",
+    lastRun: { at: LATE, outcome: "working", occurrence: PREVIOUS },
+    ranOn: null,
+    working: false,
+  },
+  {
+    name: "a run started now, by hand",
+    lastRun: { at: LATE, outcome: "completed", occurrence: null },
+    ranOn: null,
+    working: false,
+  },
+  {
+    name: "a no-work skip of the occurrence before",
+    lastRun: EARLIER_RUN,
+    fields: {
+      lastSkipped: { at: LATE, scheduledFor: PREVIOUS, reason: null, occurrence: PREVIOUS },
+    },
+    ranOn: null,
+    working: false,
+  },
+  {
+    name: "a check for the occurrence before",
+    lastRun: EARLIER_RUN,
+    fields: { checkingSince: LATE, checkingFor: PREVIOUS },
+    ranOn: null,
+    working: false,
+  },
+  {
+    name: "a run of this occurrence",
+    lastRun: { at: OCCURRENCE, outcome: "working", occurrence: OCCURRENCE },
+    ranOn: PEER,
+    working: true,
+  },
+  {
+    // A stale asker judges the occurrence it slept through; the peer is past it.
+    name: "a run of a later occurrence",
+    lastRun: {
+      at: "2026-09-09T13:00:00.000Z",
+      outcome: "completed",
+      occurrence: "2026-09-09T13:00:00.000Z",
+    },
+    ranOn: PEER,
+    working: false,
+  },
+  {
+    name: "a no-work skip of this occurrence",
+    lastRun: EARLIER_RUN,
+    fields: {
+      lastSkipped: {
+        at: OCCURRENCE,
+        scheduledFor: OCCURRENCE,
+        reason: null,
+        occurrence: OCCURRENCE,
+      },
+    },
+    ranOn: PEER,
+    working: false,
+    noWork: { reason: null },
+  },
+  {
+    name: "a check for this occurrence",
+    lastRun: EARLIER_RUN,
+    fields: { checkingSince: OCCURRENCE, checkingFor: OCCURRENCE },
+    ranOn: PEER,
+    working: true,
+  },
+])("a peer that names occurrences: $name", ({ lastRun, fields, ranOn, working, noWork }) =>
   check({ answer: peerTask(lastRun, fields) }).pipe(
     Effect.map((result) => {
       expect(result.ranOn).toBe(ranOn);
       expect(result.working).toBe(working);
       expect(result.noWork).toEqual(noWork ?? null);
-      expect(result.unchecked).toEqual([]);
     }),
   ),
+);
+
+// Each machine reads a fixed time's offset-free occurrence in its own zone.
+it.effect.each([
+  { name: "counts a run of the same local time", occurrence: "2026-09-09T09:00", ranOn: PEER },
+  { name: "skips a run of the day before", occurrence: "2026-09-08T09:00", ranOn: null },
+])("a fixed-time peer check $name", ({ occurrence, ranOn }) =>
+  check({
+    occurrence: "2026-09-09T09:00",
+    answer: peerTask({ at: SINCE, outcome: "completed", occurrence }),
+  }).pipe(Effect.map((result) => expect(result.ranOn).toBe(ranOn))),
 );
 
 it.effect.each([

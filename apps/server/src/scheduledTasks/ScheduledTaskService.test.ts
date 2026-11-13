@@ -616,6 +616,7 @@ it.effect("a placement and the last run's thread survive edits and leave with th
       assert.equal(edited?.pinnedAt, pinned?.pinnedAt);
       assert.equal(edited?.pinOrderKey, "m");
       assert.equal(edited?.lastRunThreadId, runThreadId);
+      assert.strictEqual(edited?.lastRunScheduledFor, null);
 
       yield* service.setPlacement({ ids: [task.id], placement: "none" });
       const hiddenTask = yield* listed();
