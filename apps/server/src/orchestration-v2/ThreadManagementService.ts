@@ -544,6 +544,22 @@ export function latestRun(
   return projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0];
 }
 
+/**
+ * A chat works while any of its runs is unfinished, or a run a server restart cut waits for its
+ * continuation. A later run that ended, such as a queued one someone cancelled, does not hide it.
+ */
+export function threadStillWorking(
+  threadManagement: Pick<ThreadManagementServiceShape, "restartContinuationPending">,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+): Effect.Effect<boolean> {
+  if (runs.some((run) => !isTerminalRunStatus(run.status))) return Effect.succeed(true);
+  const continued = new Set(runs.flatMap((run) => run.restartContinuationOfRunId ?? []));
+  return Effect.forEach(
+    runs.filter((run) => run.status !== "completed" && !continued.has(run.id)),
+    threadManagement.restartContinuationPending,
+  ).pipe(Effect.map((pending) => pending.includes(true)));
+}
+
 function latestRestartContinuation(
   runs: ReadonlyArray<OrchestrationV2Run>,
   run: OrchestrationV2Run,

@@ -596,8 +596,8 @@ export interface ScheduledTaskRunOnMachine {
 }
 
 /**
- * Every machine's runs of one shared task, newest first. A skip because another machine ran the
- * occurrence is left out when that machine's own record of it is listed.
+ * Every machine's runs of one shared task, newest first. A skip that names the machine that
+ * settled the occurrence is left out when that machine's own record of it is listed.
  */
 export function mergeScheduledTaskRuns(
   lists: ReadonlyArray<{
@@ -607,11 +607,17 @@ export function mergeScheduledTaskRuns(
 ): ReadonlyArray<ScheduledTaskRunOnMachine> {
   const occurrenceKey = (environmentId: EnvironmentId, scheduledFor: string) =>
     `${environmentId}|${Date.parse(scheduledFor)}`;
-  // A machine that ran the occurrence, or whose check found no work for it, settled it.
-  const ran = new Set(
+  // A machine that ran the occurrence, whose check found no work for it, or whose own last chat was
+  // still working settled it. A record naming another machine never stands in for one, so two
+  // machines that each skipped for the other's chat both stay listed.
+  const settled = new Set(
     lists.flatMap(({ environmentId, runs }) =>
       runs.flatMap((run) =>
-        (run.outcome !== "skipped" || run.skipReason === "no_work") && run.scheduledFor !== null
+        (run.outcome !== "skipped" ||
+          run.skipReason === "no_work" ||
+          run.skipReason === "last_run_working") &&
+        run.ranOn === null &&
+        run.scheduledFor !== null
           ? [occurrenceKey(environmentId, run.scheduledFor)]
           : [],
       ),
@@ -620,10 +626,9 @@ export function mergeScheduledTaskRuns(
   return lists
     .flatMap(({ environmentId, runs }) =>
       runs.flatMap((run) =>
-        run.skipReason === "ran_elsewhere" &&
         run.ranOn !== null &&
         run.scheduledFor !== null &&
-        ran.has(occurrenceKey(run.ranOn, run.scheduledFor))
+        settled.has(occurrenceKey(run.ranOn, run.scheduledFor))
           ? []
           : [{ environmentId, run }],
       ),

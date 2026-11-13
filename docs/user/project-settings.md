@@ -322,6 +322,19 @@ count and last run do not change. A **Once** task moves to that time instead.
 - **Run now** and webhook runs always start.
 - Agents set it with `schedule_task` (`delegateProviders`).
 
+## Skip runs while the last chat is still working
+
+A task that starts a new chat for each run does not start another while the
+chat its last run started is still working, including one a restart cut that
+has not continued yet. **Run history** lists the time as skipped, and the task's
+run count and last run do not change; the next time after that chat finishes
+runs as usual.
+
+- A task that posts into one thread queues behind that thread's turn instead.
+- A shared task set to **One machine** skips the time while that chat works on
+  any of its machines.
+- **Once** tasks, **Run now** and webhook runs always start.
+
 ## Shared scheduled tasks
 
 A task's **Runs** choice keeps a copy of it on each of your machines:

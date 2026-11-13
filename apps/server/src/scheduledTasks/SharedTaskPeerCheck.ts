@@ -29,6 +29,8 @@ export interface PeerCheckResult {
   readonly working: boolean;
   /** `ranOn` skipped it because its run condition found no work, and why. */
   readonly noWork: { readonly reason: string | null } | null;
+  /** A machine whose chat from an earlier run of the task, or one started by hand, is still working. */
+  readonly lastRunWorkingOn: EnvironmentId | null;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -55,6 +57,7 @@ interface PeerAnswer {
   readonly reason: string | null;
   readonly has: "working" | "completed" | null;
   readonly noWork: PeerCheckResult["noWork"];
+  readonly lastRunWorking: boolean;
 }
 
 /** Asks linked machines whether they already ran an occurrence of a one-machine task. */
@@ -134,7 +137,7 @@ const make = Effect.gen(function* () {
   const check: SharedTaskPeerCheck["Service"]["check"] = Effect.fn("SharedTaskPeerCheck.check")(
     function* (input) {
       if (input.peers.length === 0) {
-        return { ranOn: null, working: false, noWork: null, unchecked: [] };
+        return { ranOn: null, working: false, noWork: null, lastRunWorkingOn: null, unchecked: [] };
       }
       // A late run of the occurrence before starts inside this one's window, so only the occurrence
       // a peer names tells them apart; a later one settles a stale asker too. Null: run now or by
@@ -146,7 +149,13 @@ const make = Effect.gen(function* () {
       const askOne = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
         const problem = yield* linkProblem(environmentId);
         if (problem !== null) {
-          return { environmentId, reason: problem, has: null, noWork: null } satisfies PeerAnswer;
+          return {
+            environmentId,
+            reason: problem,
+            has: null,
+            noWork: null,
+            lastRunWorking: false,
+          } satisfies PeerAnswer;
         }
         return yield* client
           .call({
@@ -164,6 +173,7 @@ const make = Effect.gen(function* () {
                 reason,
                 has: null,
                 noWork: null,
+                lastRunWorking: false,
               });
               if (Option.isNone(answer)) return unchecked("It did not answer in time.");
               const task = answer.value.tasks.find(
@@ -173,11 +183,16 @@ const make = Effect.gen(function* () {
               if (task.lastRun === undefined) {
                 return unchecked("It runs an older version of T3.CodeShip.");
               }
+              const lastRunWorking =
+                task.lastRun !== null &&
+                task.lastRun.outcome === "working" &&
+                !counts(task.lastRun.occurrence, task.lastRun.at);
               const answered = (has: PeerAnswer["has"], noWork: PeerAnswer["noWork"] = null) => ({
                 environmentId,
                 reason: null,
                 has,
                 noWork,
+                lastRunWorking,
               });
               if (
                 task.checkingSince !== undefined &&
@@ -208,6 +223,7 @@ const make = Effect.gen(function* () {
                 reason: error.message,
                 has: null,
                 noWork: null,
+                lastRunWorking: false,
               }),
             ),
           );
@@ -220,6 +236,7 @@ const make = Effect.gen(function* () {
         ranOn: holder?.environmentId ?? null,
         working: holder?.has === "working",
         noWork: holder?.noWork ?? null,
+        lastRunWorkingOn: answers.find((answer) => answer.lastRunWorking)?.environmentId ?? null,
         unchecked: answers.flatMap((answer) =>
           answer.reason === null
             ? []

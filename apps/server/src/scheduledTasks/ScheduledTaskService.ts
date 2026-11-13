@@ -157,6 +157,7 @@ const RUN_HISTORY_RETENTION = 50;
 const QUIET_SKIP_REASONS = [
   "no_work",
   "usage_limited",
+  "last_run_working",
 ] as const satisfies ReadonlyArray<ScheduledTaskRunSkipReason>;
 const QUIET_SKIP_RETENTION = 10;
 // Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over 90 days.
@@ -1620,7 +1621,7 @@ export const layer = Layer.effect(
       );
 
     // Guarded like markCompleted, so a run cannot stamp a task recreated under its id.
-    // Sidebar bookkeeping only: failing it must not fail a run that already dispatched.
+    // Bookkeeping: failing it must not fail a run that already dispatched.
     const recordRunThread = (id: ScheduledTaskId, threadId: ThreadId, startedAtIso: string) =>
       sql`
         INSERT INTO scheduled_task_sidebar (task_id, last_run_thread_id)
@@ -2265,7 +2266,49 @@ export const layer = Layer.effect(
     `;
 
     // Nothing ran, so the run columns stay. Other machines learn of the skip from its record,
-    // so the schedule moves on only together with it.
+    // so the schedule moves on only together with it, and only while `unmoved` still holds.
+    const recordQuietSkip = Effect.fnUntraced(function* (
+      task: ScheduledTask,
+      fire: ScheduledFire,
+      unmoved: ReturnType<typeof occurrenceUnmoved>,
+      skip: {
+        readonly reason: (typeof QUIET_SKIP_REASONS)[number];
+        readonly next: string | null;
+        readonly now: DateTime.DateTime;
+        /** When judging the occurrence began, if before `now`. */
+        readonly startedAt?: DateTime.DateTime;
+        readonly ranOn?: EnvironmentId;
+        readonly check?: ScheduledTaskRunCheck;
+        readonly usageLimit?: ScheduledTaskRunUsageLimit;
+      },
+    ) {
+      const { reason, next, now, startedAt = now, ...details } = skip;
+      const scheduledFor = fire.scheduledFor ?? task.nextRunAt;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const moved = yield* sql`
+            UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
+            WHERE ${unmoved}
+            RETURNING task_id
+          `;
+          if (moved.length === 0) return false;
+          yield* writeRunRecord({
+            id: `${task.id}:${scheduledFor}:${reason}`,
+            taskId: task.id,
+            trigger: fire.catchUp ? "catch_up" : "scheduled",
+            scheduledFor,
+            startedAt: iso(startedAt),
+            completedAt: iso(now),
+            outcome: "skipped",
+            skipReason: reason,
+            failover: null,
+            ...details,
+          });
+          return true;
+        }),
+      );
+    });
+
     const recordNoWorkSkip = Effect.fn("ScheduledTaskService.recordNoWorkSkip")(function* (
       task: ScheduledTask,
       fire: ScheduledFire,
@@ -2276,41 +2319,21 @@ export const layer = Layer.effect(
       const current = yield* findTask(task.id);
       if (current === null) return false;
       const now = yield* localNow;
-      const next = nextRunAt(current, current.schedule.type === "once" ? checkStartedAt : now);
-      const scheduledFor = fire.scheduledFor ?? task.nextRunAt;
-      const skipped = yield* sql
-        .withTransaction(
-          Effect.gen(function* () {
-            const moved = yield* sql`
-              UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
-              WHERE ${occurrenceAsChecked(task, condition)}
-              RETURNING task_id
-            `;
-            if (moved.length === 0) return false;
-            yield* writeRunRecord({
-              id: `${task.id}:${scheduledFor}:no_work`,
-              taskId: task.id,
-              trigger: fire.catchUp ? "catch_up" : "scheduled",
-              scheduledFor,
-              startedAt: iso(checkStartedAt),
-              completedAt: iso(now),
-              outcome: "skipped",
-              skipReason: "no_work",
-              failover: null,
-              check,
-            });
-            return true;
-          }),
-        )
-        .pipe(
-          Effect.mapError((cause) =>
-            taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
-          ),
-        );
+      const skipped = yield* recordQuietSkip(task, fire, occurrenceAsChecked(task, condition), {
+        reason: "no_work",
+        next: nextRunAt(current, current.schedule.type === "once" ? checkStartedAt : now),
+        now,
+        startedAt: checkStartedAt,
+        check,
+      }).pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
+        ),
+      );
       if (skipped) {
         yield* Effect.logInfo("Skipping a schedule task run its check found no work for", {
           taskId: task.id,
-          scheduledFor,
+          scheduledFor: fire.scheduledFor ?? task.nextRunAt,
         });
       }
       return skipped;
@@ -2338,37 +2361,18 @@ export const layer = Layer.effect(
         });
         if (block === null) return false;
         const now = yield* localNow;
-        const next = current.schedule.type === "once" ? block.until : nextRunAt(current, now);
-        const scheduledFor = fire.scheduledFor ?? task.nextRunAt;
-        const skipped = yield* sql.withTransaction(
-          Effect.gen(function* () {
-            const moved = yield* sql`
-              UPDATE scheduled_tasks SET next_run_at = ${next}, updated_at = ${iso(now)}
-              WHERE ${occurrenceUnmoved(task)}
-              RETURNING task_id
-            `;
-            if (moved.length === 0) return false;
-            yield* writeRunRecord({
-              id: `${task.id}:${scheduledFor}:usage_limited`,
-              taskId: task.id,
-              trigger: fire.catchUp ? "catch_up" : "scheduled",
-              scheduledFor,
-              startedAt: iso(now),
-              completedAt: iso(now),
-              outcome: "skipped",
-              skipReason: "usage_limited",
-              failover: null,
-              usageLimit: { driver: block.driver, until: block.until },
-            });
-            return true;
-          }),
-        );
+        const skipped = yield* recordQuietSkip(task, fire, occurrenceUnmoved(task), {
+          reason: "usage_limited",
+          next: current.schedule.type === "once" ? block.until : nextRunAt(current, now),
+          now,
+          usageLimit: { driver: block.driver, until: block.until },
+        });
         if (skipped) {
           yield* Effect.logInfo(
             "Skipping a schedule task run: every account it can use is out of usage",
             {
               taskId: task.id,
-              scheduledFor,
+              scheduledFor: fire.scheduledFor ?? task.nextRunAt,
               driver: block.driver,
               until: block.until,
             },
@@ -2382,6 +2386,59 @@ export const layer = Layer.effect(
         effect.pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("Could not check the accounts a schedule task run needs", {
+              taskId: task.id,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        ),
+    );
+
+    /** The chat the task's last run started here, while that chat is still working. */
+    const workingLastRunThread = Effect.fnUntraced(function* (task: ScheduledTask) {
+      const [sidebar] = yield* sql<{ readonly last_run_thread_id: string | null }>`
+        SELECT last_run_thread_id FROM scheduled_task_sidebar WHERE task_id = ${task.id}
+      `.pipe(NodeSqliteClient.readOnly);
+      const threadId = sidebar?.last_run_thread_id ?? null;
+      if (threadId === null) return null;
+      const { runs } = yield* threadManagement.getThreadRecords(ThreadId.make(threadId), ["runs"]);
+      return (yield* ThreadManagementService.threadStillWorking(threadManagement, runs))
+        ? threadId
+        : null;
+    });
+
+    /**
+     * Skips an occurrence while the chat the task's last run started, here or on `workingOn`, still
+     * works. A thread-bound task queues behind its thread instead, and a one-time task keeps its
+     * only occurrence. A failed check never holds a run back.
+     */
+    const skippedWhileLastRunWorks = Effect.fn("ScheduledTaskService.skippedWhileLastRunWorks")(
+      function* (task: ScheduledTask, fire: ScheduledFire, workingOn: EnvironmentId | null) {
+        if (task.threadId !== null || task.schedule.type === "once") return false;
+        const threadId = workingOn === null ? yield* workingLastRunThread(task) : null;
+        if (workingOn === null && threadId === null) return false;
+        const now = yield* localNow;
+        const skipped = yield* recordQuietSkip(task, fire, occurrenceUnmoved(task), {
+          reason: "last_run_working",
+          next: nextRunAt(task, now),
+          now,
+          ...(workingOn === null ? {} : { ranOn: workingOn }),
+        });
+        if (skipped) {
+          yield* Effect.logInfo("Skipping a schedule task run: its last run's chat is working", {
+            taskId: task.id,
+            scheduledFor: fire.scheduledFor ?? task.nextRunAt,
+            threadId,
+            workingOn,
+          });
+          yield* notifyChanged;
+        }
+        // A moved occurrence is someone else's now; the next poll judges it afresh.
+        return true;
+      },
+      (effect, task) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not check whether a schedule task's last run is working", {
               taskId: task.id,
               cause,
             }).pipe(Effect.as(false)),
@@ -3020,8 +3077,14 @@ export const layer = Layer.effect(
         const watch = (holder: OneMachineWatch, decision: ScheduledTaskOneMachineDecision) =>
           deferTo(Math.min(nowMs + graceMs, watchUntilMs), holder, decision);
         // Claims the occurrence, taking it from `replaces`, and runs it only when this machine may.
-        const takeOccurrence = Effect.fnUntraced(function* (replaces: EnvironmentId | null) {
+        const takeOccurrence = Effect.fnUntraced(function* (
+          replaces: EnvironmentId | null,
+          lastRunWorkingOn: EnvironmentId | null,
+        ) {
           const fire = { scheduledFor: occurrence, catchUp: catchingUp };
+          // Every machine holds back while a chat of the task's last run works on any of them.
+          // With its sharing, so the skip lands on the slot every copy runs.
+          if (yield* skippedWhileLastRunWorks(shared, fire, lastRunWorkingOn)) return;
           // A machine that could not start it claims nothing, so the next machine may run it.
           if (yield* skippedForUsage(task, fire)) return;
           const claim = yield* claimOneMachineOccurrence(task.id, slot, plan, replaces);
@@ -3062,7 +3125,7 @@ export const layer = Layer.effect(
           });
           yield* logUnchecked(answer.unchecked);
           const decision = { at: iso(now), ranOn: answer.ranOn, unchecked: answer.unchecked };
-          if (answer.ranOn === null) return yield* takeOccurrence(null);
+          if (answer.ranOn === null) return yield* takeOccurrence(null, answer.lastRunWorkingOn);
           return answer.working
             ? yield* watch({ environmentId: answer.ranOn, ended: false }, decision)
             : yield* skipOccurrence(answer.ranOn, next, decision, answer.noWork);
@@ -3102,7 +3165,7 @@ export const layer = Layer.effect(
             );
           }
         }
-        return yield* takeOccurrence(watched.environmentId);
+        return yield* takeOccurrence(watched.environmentId, answer.lastRunWorkingOn);
       },
     );
 
@@ -3118,6 +3181,7 @@ export const layer = Layer.effect(
       const sharing = runOn?.run_on === "one" ? (yield* findTask(task.id))?.shared : null;
       if (sharing != null) return yield* settleOneMachineOccurrence(task, sharing, now, catchUp);
       const fire = { scheduledFor: task.nextRunAt, catchUp };
+      if (yield* skippedWhileLastRunWorks(task, fire, null)) return;
       if (yield* skippedForUsage(task, fire)) return;
       return yield* startScheduledRun(task, fire);
     });

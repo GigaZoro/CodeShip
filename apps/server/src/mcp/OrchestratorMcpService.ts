@@ -2294,7 +2294,7 @@ const make = Effect.gen(function* () {
     runtimeModeRank(modes.runtimeMode) <= runtimeModeRank(limits.runtimeMode) &&
     interactionModeRank(modes.interactionMode) <= interactionModeRank(limits.interactionMode);
 
-  // A run that dispatched is still going while its thread's latest run is, and failed if that run did.
+  // A run that dispatched is still going while its chat works, and failed if the chat's last started run did.
   const lastRunOf = Effect.fn("OrchestratorMcpService.lastRunOf")(function* (task: ScheduledTask) {
     if (task.lastRunAt === null || task.lastRunStatus === "never") return null;
     const scheduledFor = task.lastRunScheduledFor;
@@ -2313,16 +2313,15 @@ const make = Effect.gen(function* () {
         : yield* threadManagement
             .getThreadRecords(threadId, ["runs"])
             .pipe(Effect.orElseSucceed(() => undefined));
-    const latest = records === undefined ? undefined : ThreadManagementService.latestRun(records);
+    const runs = records?.runs ?? [];
+    const started = runs.filter((candidate) => candidate.startedAt !== null);
+    // A queued run cancelled before it started says nothing about how the work ended.
+    const latest = ThreadManagementService.latestRun({ runs: started.length > 0 ? started : runs });
     if (latest === undefined) return { ...run, outcome: "completed" as const };
-    if (!ThreadManagementService.isTerminalRunStatus(latest.status)) {
+    if (yield* ThreadManagementService.threadStillWorking(threadManagement, runs)) {
       return { ...run, outcome: "working" as const };
     }
     if (latest.status === "completed") return { ...run, outcome: "completed" as const };
-    // A run a server restart cut off goes on once its continuation starts, so it is still going.
-    if (yield* threadManagement.restartContinuationPending(latest)) {
-      return { ...run, outcome: "working" as const };
-    }
     // A Stop from the user or an agent leaves an interrupt request; other machines leave it stopped.
     const stopped = yield* threadManagement
       .getThreadRecords(latest.threadId, ["turnItems"], {

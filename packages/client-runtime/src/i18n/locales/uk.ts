@@ -11670,6 +11670,10 @@ const catalog: MessageCatalog = {
   "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.":
     "Чат повернеться до стану перед цією відповіддю, і ваше повідомлення буде надіслано знову. Файли можуть залишитися такими, як зараз, або повернутися до стану перед цією відповіддю. Повернення також скасує зміни, які ви внесли в них самі відтоді.",
   "The chat isn't ready to accept input right now.": "Чат зараз не готовий приймати введення.",
+  "The chat its last run started on {machine} was still working.":
+    "Чат, розпочатий його попереднім запуском на {machine}, ще працював.",
+  "The chat its last run started was still working.":
+    "Чат, розпочатий його попереднім запуском, ще працював.",
   "The check command could not be read, so the chat started anyway.":
     "Команду перевірки не вдалося прочитати, тому чат усе одно запущено.",
   "The check could not start, so the chat started anyway.":

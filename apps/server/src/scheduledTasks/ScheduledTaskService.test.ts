@@ -6,6 +6,7 @@ import { assert, it, vi } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
+  type OrchestrationV2RunStatus,
   ProjectId,
   ProviderInstanceId,
   ScheduledTaskError,
@@ -938,6 +939,11 @@ const conditionTask = (
 
 type CheckCall = Parameters<RunConditionCheck.RunConditionCheck["Service"]["run"]>[0];
 type LaunchInput = Parameters<ThreadLaunchService.ThreadLaunchService["Service"]["launch"]>[0];
+interface ChatRuns {
+  /** Oldest first. */
+  readonly statuses: ReadonlyArray<OrchestrationV2RunStatus>;
+  readonly continuationPending: boolean;
+}
 
 const withRunConditions = <A, E>(
   answer: (call: CheckCall) => Effect.Effect<ScheduledTaskRunCheck>,
@@ -947,6 +953,8 @@ const withRunConditions = <A, E>(
     readonly poll: Effect.Effect<void>;
     readonly launches: Queue.Queue<LaunchInput>;
     readonly checks: Ref.Ref<ReadonlyArray<CheckCall>>;
+    /** The runs of every launched chat; they have finished unless a test says otherwise. */
+    readonly chatRuns: Ref.Ref<ChatRuns>;
     /**
      * Watches the list from now on; the effect it returns waits until the checked task matches.
      * Changes coalesce, so tests wait for a state, not a number of changes.
@@ -960,6 +968,10 @@ const withRunConditions = <A, E>(
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<LaunchInput>();
     const checks = yield* Ref.make<ReadonlyArray<CheckCall>>([]);
+    const chatRuns = yield* Ref.make<ChatRuns>({
+      statuses: ["completed"],
+      continuationPending: false,
+    });
     const workers = new Map<string, Effect.Effect<void>>();
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
@@ -972,7 +984,23 @@ const withRunConditions = <A, E>(
                 Effect.as({ threadId: ThreadId.make("thread:launched"), resumed: false } as never),
               ),
           }),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () =>
+              Ref.get(chatRuns).pipe(
+                Effect.map(
+                  ({ statuses }) =>
+                    ({
+                      runs: statuses.map((status, index) => ({
+                        id: `run:chat:${index}`,
+                        ordinal: index + 1,
+                        status,
+                      })),
+                    }) as never,
+                ),
+              ),
+            restartContinuationPending: () =>
+              Ref.get(chatRuns).pipe(Effect.map((run) => run.continuationPending)),
+          }),
           layerSharedTaskDependencies(
             [
               {
@@ -1022,6 +1050,7 @@ const withRunConditions = <A, E>(
         poll: Effect.suspend(() => workers.get("scheduled-tasks")!),
         launches,
         checks,
+        chatRuns,
         whenTask,
       });
     }).pipe(Effect.scoped, Effect.provide(layer));
@@ -1168,6 +1197,69 @@ it.effect("run now starts the chat without running the check", () =>
         assert.isNull((yield* runsOf(service))[0]?.check);
       }),
   ),
+);
+
+it.effect.each([
+  { name: "is still working", statuses: ["running"], continuationPending: false, skips: true },
+  {
+    name: "is still working behind a queued run someone cancelled",
+    statuses: ["running", "cancelled"],
+    continuationPending: false,
+    skips: true,
+  },
+  {
+    name: "was cut by a restart that has yet to continue it",
+    statuses: ["interrupted"],
+    continuationPending: true,
+    skips: true,
+  },
+  {
+    name: "was interrupted",
+    statuses: ["interrupted"],
+    continuationPending: false,
+    skips: false,
+  },
+  {
+    name: "has finished",
+    statuses: ["completed", "cancelled"],
+    continuationPending: false,
+    skips: false,
+  },
+] as const)(
+  "the next occurrence of a task whose last chat $name is skipped: $skips",
+  ({ statuses, continuationPending, skips }) =>
+    withRunConditions(
+      () => Effect.succeed(FOUND_WORK),
+      ({ service, poll, launches, chatRuns, whenTask }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(conditionTask({ runCondition: null }));
+          yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+          const recorded = yield* whenTask((t) => t.lastRunThreadId === "thread:launched");
+          yield* poll;
+          yield* Queue.take(launches);
+          yield* recorded;
+
+          yield* Ref.set(chatRuns, { statuses, continuationPending });
+          const due = (yield* service.list()).tasks[0]!.nextRunAt!;
+          yield* TestClock.setTime(Date.parse(due) + 1_000);
+          const moved = yield* whenTask((t) => t.nextRunAt !== due);
+          yield* poll;
+          yield* moved;
+
+          if (!skips) {
+            yield* Queue.take(launches);
+            return;
+          }
+          assert.equal(yield* Queue.size(launches), 0);
+          const [run] = yield* runsOf(service);
+          assert.deepInclude(run, {
+            outcome: "skipped",
+            skipReason: "last_run_working",
+            scheduledFor: due,
+            threadId: null,
+          });
+        }),
+    ),
 );
 
 it.effect("saving keeps, clears and sets a run condition, and refuses one it can't run", () =>

@@ -462,14 +462,27 @@ describe("mergeScheduledTaskRuns", () => {
     ...fields,
   });
 
-  it("orders every machine's runs newest first and drops skips another machine's run covers", () => {
+  it("orders every machine's runs newest first and drops a skip only when the machine it names settled the occurrence itself", () => {
     const nine = "2026-11-07T09:00:00.000Z";
     const ten = "2026-11-07T10:00:00.000Z";
     const eleven = "2026-11-07T11:00:00.000Z";
+    const noon = "2026-11-07T12:00:00.000Z";
+    const one = "2026-11-07T13:00:00.000Z";
     const merged = mergeScheduledTaskRuns([
       {
         environmentId: A,
         runs: [
+          run("a-13", "13:00", {
+            scheduledFor: one,
+            outcome: "skipped",
+            skipReason: "last_run_working",
+            ranOn: B,
+          }),
+          run("a-12", "12:00", {
+            scheduledFor: noon,
+            outcome: "skipped",
+            skipReason: "last_run_working",
+          }),
           run("a-11", "11:00", { scheduledFor: eleven, outcome: "skipped", skipReason: "no_work" }),
           run("a-10", "10:00", { scheduledFor: ten }),
           run("a-manual", "08:30"),
@@ -478,6 +491,18 @@ describe("mergeScheduledTaskRuns", () => {
       {
         environmentId: B,
         runs: [
+          run("b-13", "13:01", {
+            scheduledFor: one,
+            outcome: "skipped",
+            skipReason: "last_run_working",
+            ranOn: A,
+          }),
+          run("b-12", "12:00", {
+            scheduledFor: noon,
+            outcome: "skipped",
+            skipReason: "last_run_working",
+            ranOn: A,
+          }),
           run("b-11", "11:05", {
             scheduledFor: eleven,
             outcome: "skipped",
@@ -506,6 +531,9 @@ describe("mergeScheduledTaskRuns", () => {
     ]);
 
     expect(merged.map(({ environmentId, run }) => `${environmentId}:${run.id}`)).toEqual([
+      "env-b:b-13",
+      "env-a:a-13",
+      "env-a:a-12",
       "env-a:a-11",
       "env-a:a-10",
       "env-b:b-missed",

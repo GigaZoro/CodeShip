@@ -561,6 +561,7 @@ const FINISHED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: OTHER as never,
   working: false,
   noWork: null,
+  lastRunWorkingOn: null,
   unchecked: [],
 };
 const NO_WORK_THERE: SharedTaskPeerCheck.PeerCheckResult = {
@@ -573,12 +574,14 @@ const NO_RUN_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
   working: false,
   noWork: null,
+  lastRunWorkingOn: null,
   unchecked: [],
 };
 const SILENT_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
   working: false,
   noWork: null,
+  lastRunWorkingOn: null,
   unchecked: [{ environmentId: OTHER as never, reason: "It did not answer in time." }],
 };
 
@@ -955,6 +958,7 @@ const unreachable = (...environmentIds: string[]): SharedTaskPeerCheck.PeerCheck
   ranOn: null,
   working: false,
   noWork: null,
+  lastRunWorkingOn: null,
   unchecked: environmentIds.map((environmentId) => ({
     environmentId: environmentId as never,
     reason: "It did not answer in time.",
@@ -1060,7 +1064,8 @@ it.effect("a late takeover of the occurrence before does not count as this occur
                         scheduledTaskId: "scheduled-task:shared",
                         lastRun: {
                           at: iso(DUE - 10 * MINUTE_MS),
-                          outcome: "working",
+                          // Still working, it would hold this occurrence back instead.
+                          outcome: "completed",
                           occurrence: iso(DUE - HOUR_MS),
                         },
                       },
@@ -1144,6 +1149,37 @@ it.effect(
             }),
         }),
       ),
+    ),
+);
+
+it.effect(
+  "a machine skips an occurrence while the chat of the task's last run works on another machine",
+  () =>
+    runScenario(
+      [OTHER, HERE_ENVIRONMENT_ID],
+      { ...NO_RUN_THERE, lastRunWorkingOn: OTHER as never },
+      (scenario) =>
+        Effect.gen(function* () {
+          // The machine ahead skipped it for its own working chat; this one asks after its grace.
+          yield* scenario.tick(DUE + 1_000);
+          yield* scenario.settled;
+          yield* scenario.tick(DUE + 5 * MINUTE_MS + 1_000);
+          yield* scenario.settled;
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          expect(yield* Ref.get(scenario.peerClaims)).toEqual([]);
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + HOUR_MS));
+          const { runs } = yield* scenario.service.listRuns({
+            id: "scheduled-task:shared" as ScheduledTaskId,
+          });
+          expect(runs).toEqual([
+            expect.objectContaining({
+              outcome: "skipped",
+              skipReason: "last_run_working",
+              scheduledFor: iso(DUE),
+              ranOn: OTHER,
+            }),
+          ]);
+        }),
     ),
 );
 

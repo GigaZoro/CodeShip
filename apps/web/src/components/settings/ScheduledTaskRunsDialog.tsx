@@ -115,6 +115,12 @@ function skipReasonText(
       );
     case "usage_limited":
       return usageLimitSkipText(run.usageLimit, formatTime);
+    case "last_run_working":
+      return run.ranOn === null
+        ? t("The chat its last run started was still working.")
+        : t("The chat its last run started on {machine} was still working.", {
+            machine: machineLabel(run.ranOn),
+          });
     default:
       return run.skipReason;
   }

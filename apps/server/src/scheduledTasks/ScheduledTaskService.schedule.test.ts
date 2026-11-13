@@ -493,14 +493,14 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
       expect(runs[1]?.error).toContain("Claude is out of usage until Friday.");
 
       // Each task keeps its latest 50 runs, and older ones from the last 90 days; the list shows
-      // the newest 70, room for 50 runs and both quiet skip buckets.
+      // the newest 80, room for 50 runs and the three quiet skip buckets.
       const sql = yield* SqlClient.SqlClient;
       const insertRun = (runId: string, startedAt: string) =>
         sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome)
           VALUES (${runId}, ${task.id}, 'scheduled', ${startedAt}, 'succeeded')`;
       yield* insertRun("expired", "2026-08-01T00:00:00.000Z");
       yield* insertRun("in-window", "2026-08-13T00:00:00.000Z");
-      for (let index = 0; index < 70; index += 1) {
+      for (let index = 0; index < 80; index += 1) {
         yield* insertRun(
           `recent-${index}`,
           DateTime.formatIso(
@@ -511,14 +511,14 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
       yield* TestClock.adjust("1 minute");
       yield* service.runNow({ id: task.id });
       const kept = (yield* service.listRuns({ id: task.id })).runs;
-      expect(kept).toHaveLength(70);
+      expect(kept).toHaveLength(80);
       expect(kept[0]?.threadId).toBe("thread-second");
       const stored = yield* sql<{ run_id: string }>`
         SELECT run_id FROM scheduled_task_runs WHERE run_id IN ('expired', 'in-window')`;
       expect(stored).toEqual([{ run_id: "in-window" }]);
       const counted = yield* sql<{ count: number }>`
         SELECT COUNT(*) AS count FROM scheduled_task_runs WHERE task_id = ${task.id}`;
-      expect(counted).toEqual([{ count: 74 }]);
+      expect(counted).toEqual([{ count: 84 }]);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

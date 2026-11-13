@@ -268,6 +268,8 @@ export const ScheduledTaskRunSkipReason = Schema.Literals([
   "unconfirmed",
   /** Every account the task could start on, or every account of a delegate provider, was out of usage. */
   "usage_limited",
+  /** The chat its last run started was still working. */
+  "last_run_working",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
 
@@ -371,7 +373,10 @@ export const ScheduledTaskRunRecord = Schema.Struct({
   threadId: Schema.NullOr(ThreadId),
   error: Schema.NullOr(Schema.String),
   skipReason: Schema.NullOr(Schema.Union([ScheduledTaskRunSkipReason, Schema.String])),
-  /** The machine that ran a one-machine occurrence this one skipped. */
+  /**
+   * The machine that settled a one-machine occurrence this one skipped: it ran it, or its chat
+   * from the task's last run was still working.
+   */
   ranOn: Schema.NullOr(EnvironmentId),
   /**
    * Set when the run started on another account than the task named, with why. `reason` and

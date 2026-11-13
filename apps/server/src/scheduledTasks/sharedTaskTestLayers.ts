@@ -24,7 +24,14 @@ export interface TestSharedProject {
 const layerNoPeersRan = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
   linkedEnvironmentIds: Effect.succeed([]),
   linkStatus: Effect.succeed({ enabled: false, links: [] }),
-  check: () => Effect.succeed({ ranOn: null, working: false, noWork: null, unchecked: [] }),
+  check: () =>
+    Effect.succeed({
+      ranOn: null,
+      working: false,
+      noWork: null,
+      lastRunWorkingOn: null,
+      unchecked: [],
+    }),
   claim: () => Effect.succeed({ answered: [], unchecked: [] }),
 });
 

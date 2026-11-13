@@ -1,3 +1,9 @@
+## 2026-11-13 — A scheduled task no longer starts a second chat while its last one is still working
+
+- A task that starts a new chat for each run, such as **Machine inbox**, started the next one on schedule even when the chat from its last run was still working, so two chats did the same work side by side. A scheduled time is now skipped while that chat is still working, including one a restart cut that has not continued yet. **Run history** says so ("The chat its last run started was still working."), and the next time after that chat finishes runs as usual.
+- A shared task set to **One machine** also skips the time while its last chat works on another of its machines, and **Run history** names that machine. A queued message someone cancelled in that chat no longer makes another machine run the time again.
+- **Once** tasks, **Run now**, webhook runs and tasks that post into one thread are unchanged.
+
 ## 2026-11-13 — /ship settles a chat whose work is already on main
 
 - When the work a chat was asked to ship was already on main, `/ship` left the chat unsettled, because the skill settled only after its own push. It now treats "nothing to land" as landed: it cleans up the branch and worktree and settles the chat.

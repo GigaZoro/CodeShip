@@ -3799,6 +3799,20 @@ describe("OrchestratorMcpService provider resolution", () => {
         outcome: "working",
       },
       {
+        name: "started, thread still going behind a queued run someone cancelled",
+        task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
+        runStatus: "running",
+        cancelledQueuedRun: true,
+        outcome: "working",
+      },
+      {
+        name: "started, thread completed before a queued run someone cancelled",
+        task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
+        runStatus: "completed",
+        cancelledQueuedRun: true,
+        outcome: "completed",
+      },
+      {
         name: "started, thread gone",
         task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
         runStatus: undefined,
@@ -3906,7 +3920,24 @@ describe("OrchestratorMcpService provider resolution", () => {
                             "stopRequested" in row ? [{ type: "run_interrupt_request" }] : [],
                         } as never)
                       : Effect.succeed({
-                          runs: [{ ordinal: 1, status: runStatus, threadId: "thread:last-run" }],
+                          runs: [
+                            {
+                              ordinal: 1,
+                              status: runStatus,
+                              threadId: "thread:last-run",
+                              startedAt: "2026-10-05T01:00:00.000Z",
+                            },
+                            ...("cancelledQueuedRun" in row
+                              ? [
+                                  {
+                                    ordinal: 2,
+                                    status: "cancelled",
+                                    threadId: "thread:last-run",
+                                    startedAt: null,
+                                  },
+                                ]
+                              : []),
+                          ],
                         } as never),
                 restartContinuationPending: () =>
                   Effect.succeed("continues" in row && row.continues === true),

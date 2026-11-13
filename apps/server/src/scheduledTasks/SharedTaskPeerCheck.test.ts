@@ -159,15 +159,23 @@ it.effect.each([
     ranOn: null,
     working: false,
   },
+  {
+    name: "still working, started before the window",
+    lastRun: { at: "2026-09-09T11:29:59.999Z", outcome: "working" },
+    ranOn: null,
+    working: false,
+    lastRunWorkingOn: PEER,
+  },
   { name: "never run", lastRun: null, ranOn: null, working: false },
 ])(
   "a peer that names no occurrence: its last run $name",
-  ({ lastRun, fields, ranOn, working, noWork }) =>
+  ({ lastRun, fields, ranOn, working, noWork, lastRunWorkingOn }) =>
     check({ answer: peerTask(lastRun, fields) }).pipe(
       Effect.map((result) => {
         expect(result.ranOn).toBe(ranOn);
         expect(result.working).toBe(working);
         expect(result.noWork).toEqual(noWork ?? null);
+        expect(result.lastRunWorkingOn).toBe(lastRunWorkingOn ?? null);
         expect(result.unchecked).toEqual([]);
       }),
     ),
@@ -189,12 +197,20 @@ it.effect.each([
     lastRun: { at: LATE, outcome: "working", occurrence: PREVIOUS },
     ranOn: null,
     working: false,
+    lastRunWorkingOn: PEER,
   },
   {
     name: "a run started now, by hand",
     lastRun: { at: LATE, outcome: "completed", occurrence: null },
     ranOn: null,
     working: false,
+  },
+  {
+    name: "a run started by hand, still going",
+    lastRun: { at: LATE, outcome: "working", occurrence: null },
+    ranOn: null,
+    working: false,
+    lastRunWorkingOn: PEER,
   },
   {
     name: "a no-work skip of the occurrence before",
@@ -251,14 +267,17 @@ it.effect.each([
     ranOn: PEER,
     working: true,
   },
-])("a peer that names occurrences: $name", ({ lastRun, fields, ranOn, working, noWork }) =>
-  check({ answer: peerTask(lastRun, fields) }).pipe(
-    Effect.map((result) => {
-      expect(result.ranOn).toBe(ranOn);
-      expect(result.working).toBe(working);
-      expect(result.noWork).toEqual(noWork ?? null);
-    }),
-  ),
+])(
+  "a peer that names occurrences: $name",
+  ({ lastRun, fields, ranOn, working, noWork, lastRunWorkingOn }) =>
+    check({ answer: peerTask(lastRun, fields) }).pipe(
+      Effect.map((result) => {
+        expect(result.ranOn).toBe(ranOn);
+        expect(result.working).toBe(working);
+        expect(result.noWork).toEqual(noWork ?? null);
+        expect(result.lastRunWorkingOn).toBe(lastRunWorkingOn ?? null);
+      }),
+    ),
 );
 
 // Each machine reads a fixed time's offset-free occurrence in its own zone.
