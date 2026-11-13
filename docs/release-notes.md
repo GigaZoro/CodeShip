@@ -1,3 +1,7 @@
+## 2026-11-14 — A provider turned off for a project no longer keeps working on its own background work
+
+- A notice from the agent's own background work, such as Claude's background task finishing, is a turn the agent has already started by itself. When its provider was turned off for the project, that notice was refused or waited with your queued messages, and the agent went on acting on it with no turn in the chat, so every T3.CodeShip tool refused it. T3.CodeShip now cancels the notice and closes that provider's session, so no turn runs on a provider the project turned off. A notice from a provider that is still on runs even when a message queued ahead of it waits on a provider turned off. Your own queued messages still wait for you to press **Resume**.
+
 ## 2026-11-14 — Scheduled tasks remember who last changed them
 
 - A scheduled task said when and on which machine it last changed, but not who changed it, so a task switched off by surprise left no trace of whether a person or an agent did it. Each change now records whether it came from the app or from an agent, and for an agent the chat or scheduled run that made it, or the name of the outside client. `list_scheduled_tasks` returns this as `changedBy`, and a shared task's copies carry it to your other machines. Tasks last changed before this update show no author.

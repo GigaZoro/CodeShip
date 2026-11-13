@@ -34,7 +34,9 @@ With a project selected, a provider's switch in **Settings → Providers & model
 that project only, in either direction: a provider off on the machine can be used in one project,
 and one on everywhere can be kept out of another. That project's model pickers follow the switch,
 and no new turn there can start on a provider it turned off, including queued messages and
-follow-ups from delegated tasks. A turn already running when the switch flips finishes. A delegated
+follow-ups from delegated tasks. A turn already running when the switch flips finishes. When the
+agent's own background work later wakes it there, such as a background task finishing, its session
+is closed instead of left working with no turn. A delegated
 task's result still lands in its parent thread, which sees it on its next turn. Reset returns the project to the
 machine's setting. Every other provider setting stays per machine.
 

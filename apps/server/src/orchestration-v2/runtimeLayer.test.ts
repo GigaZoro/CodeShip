@@ -7888,6 +7888,359 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("stops a provider wake whose provider is turned off for the project", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const threadId = ThreadId.make("provider-off-wake");
+      const projectId = ProjectId.make(`${threadId}:project`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId,
+        title: "Wake on a provider turned off",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const send = (index: number, text: string, wake = false) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: wake ? "agent" : "user",
+          creationSource: wake ? "provider" : "web",
+          ...(wake
+            ? {
+                notification: {
+                  source: { kind: "monitor" as const },
+                  outcome: "updated" as const,
+                  summary: "Background command completed",
+                },
+              }
+            : {}),
+          commandId: CommandId.make(`${threadId}:message:${index}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${index}`),
+          text,
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      yield* send(0, "Active");
+      yield* send(1, "Queued by the user");
+      yield* send(2, "Background command completed.", true);
+      const queuedProjection = yield* orchestrator.getThreadProjection(threadId);
+      const [active, queued, wake] = queuedProjection.runs as [
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+      ];
+      const providerThread = queuedProjection.providerThreads.find(
+        (thread) => thread.id === wake.providerThreadId,
+      );
+      assert.isDefined(providerThread);
+      const providerSessionId = ProviderSessionId.make(`${threadId}:session`);
+      const detached = yield* eventSink
+        .stream({ threadId, afterSequence: yield* orchestrator.getThreadEventSequence(threadId) })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "provider-session.detached" &&
+              stored.event.payload.providerSessionId === providerSessionId,
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      yield* Effect.acquireRelease(
+        settings.updateSettings({
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [modelSelection.instanceId]: { enabled: false } } },
+          },
+        }),
+        () =>
+          settings
+            .updateSettings({ projectSettingsOverrides: { [projectId]: null } })
+            .pipe(Effect.orDie),
+      );
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:session`),
+            type: "provider-session.attached",
+            threadId,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              id: providerSessionId,
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              status: "ready",
+              cwd: process.cwd(),
+              model: modelSelection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+          },
+          {
+            id: EventId.make(`${threadId}:provider-thread`),
+            type: "provider-thread.updated",
+            threadId,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: { ...providerThread, providerSessionId },
+          },
+          {
+            id: EventId.make(`${threadId}:completed`),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            providerInstanceId: active.providerInstanceId,
+            occurredAt: now,
+            payload: { ...active, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      assert.isTrue(Option.isSome(yield* Fiber.join(detached)));
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        after.runs.map((run) => [run.id, run.status, run.queueHeld ?? false]),
+        [
+          [active.id, "completed", false],
+          [queued.id, "queued", true],
+          [wake.id, "cancelled", false],
+        ],
+      );
+      assert.notInclude(
+        after.providerSessions.map((session) => session.id),
+        providerSessionId,
+      );
+    }),
+  );
+
+  it.effect("starts a provider wake when the message ahead of it is on a provider turned off", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const threadId = ThreadId.make("provider-off-head-wake");
+      const projectId = ProjectId.make(`${threadId}:project`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId,
+        title: "Wake behind a provider turned off",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      const send = (index: number, text: string, selection: ModelSelection, wake = false) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: wake ? "agent" : "user",
+          creationSource: wake ? "provider" : "web",
+          ...(wake
+            ? {
+                notification: {
+                  source: { kind: "monitor" as const },
+                  outcome: "updated" as const,
+                  summary: "Background command completed",
+                },
+              }
+            : {}),
+          commandId: CommandId.make(`${threadId}:message:${index}`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message:${index}`),
+          text,
+          attachments: [],
+          modelSelection: selection,
+          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+        });
+      yield* send(0, "Active", modelSelection);
+      yield* send(1, "Queued by the user", { instanceId: alternateInstanceId, model: "gpt-5.5" });
+      yield* send(2, "Background command completed.", modelSelection, true);
+      const [active, queued, wake] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+        OrchestrationV2Run,
+      ];
+      const started = yield* eventSink
+        .stream({ threadId, afterSequence: yield* orchestrator.getThreadEventSequence(threadId) })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === wake.id &&
+              (stored.event.payload.status !== "queued" || stored.event.payload.queueHeld === true),
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      yield* Effect.acquireRelease(
+        settings.updateSettings({
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [alternateInstanceId]: { enabled: false } } },
+          },
+        }),
+        () =>
+          settings
+            .updateSettings({ projectSettingsOverrides: { [projectId]: null } })
+            .pipe(Effect.orDie),
+      );
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:completed`),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            providerInstanceId: active.providerInstanceId,
+            occurredAt: now,
+            payload: { ...active, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      assert.isTrue(Option.isSome(yield* Fiber.join(started)));
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        after.runs.map((run) => [run.id, run.status, run.queueHeld ?? false]),
+        [
+          [active.id, "completed", false],
+          [queued.id, "queued", true],
+          [wake.id, "starting", false],
+        ],
+      );
+    }),
+  );
+
+  it.effect.each([
+    ["when its provider thread is idle on it", true, false, true],
+    ["not while a turn runs on its provider thread", false, false, false],
+    ["not after its provider thread moved to another session", true, true, false],
+  ] as const)("detach-idle stops a session %s", ([name, runEnded, rebound, detaches]) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make(`detach-idle:${name}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:create`),
+        threadId,
+        projectId: ProjectId.make(`${threadId}:project`),
+        title: "Detach an idle session",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:message`),
+        threadId,
+        messageId: MessageId.make(`${threadId}:message`),
+        text: "Work",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      const [run] = projection.runs as [OrchestrationV2Run];
+      const providerThread = projection.providerThreads.find(
+        (thread) => thread.id === run.providerThreadId,
+      );
+      assert.isDefined(providerThread);
+      const providerSessionId = ProviderSessionId.make(`${threadId}:session`);
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:session`),
+            type: "provider-session.attached",
+            threadId,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              id: providerSessionId,
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              status: "ready",
+              cwd: process.cwd(),
+              model: modelSelection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+          },
+          {
+            id: EventId.make(`${threadId}:provider-thread`),
+            type: "provider-thread.updated",
+            threadId,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              ...providerThread,
+              providerSessionId: rebound
+                ? ProviderSessionId.make(`${threadId}:newer-session`)
+                : providerSessionId,
+            },
+          },
+          ...(runEnded
+            ? [
+                {
+                  id: EventId.make(`${threadId}:completed`),
+                  type: "run.updated" as const,
+                  threadId,
+                  runId: run.id,
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: now,
+                  payload: {
+                    ...run,
+                    status: "completed" as const,
+                    startedAt: now,
+                    completedAt: now,
+                  },
+                },
+              ]
+            : []),
+        ],
+      });
+      yield* orchestrator.dispatch({
+        type: "provider-session.detach-idle",
+        commandId: CommandId.make(`${threadId}:detach`),
+        threadId,
+        providerThreadId: providerThread.id,
+        providerSessionId,
+        reason: "Provider turned off for this project.",
+      });
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.strictEqual(
+        after.providerSessions.some((session) => session.id === providerSessionId),
+        !detaches,
+      );
+    }),
+  );
+
   it.effect("edits and removes queued runs", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

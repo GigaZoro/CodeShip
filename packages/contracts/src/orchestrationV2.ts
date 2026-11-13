@@ -3724,6 +3724,15 @@ const OrchestrationV2InternalCommand = Schema.Union([
     requestId: RuntimeRequestId,
     questions: Schema.Array(OrchestrationV2UserInputQuestion).check(Schema.isMinLength(1)),
   }),
+  /** Detaches a session only while its provider thread is still on it and runs no turn. */
+  Schema.Struct({
+    type: Schema.Literal("provider-session.detach-idle"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    providerThreadId: ProviderThreadId,
+    providerSessionId: ProviderSessionId,
+    reason: Schema.String,
+  }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 

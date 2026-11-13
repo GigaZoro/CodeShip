@@ -141,6 +141,7 @@ import {
 import {
   isBufferedProviderNotification,
   isUndeliveredMailboxSteer,
+  PROVIDER_TURNED_OFF_FOR_PROJECT,
 } from "./NotificationMailbox.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import {
@@ -667,6 +668,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.interaction-mode.set":
     case "thread.model-selection.set":
     case "provider-session.detach":
+    case "provider-session.detach-idle":
     case "message.dispatch":
     case "notification.delivery.accept":
     case "prepared-run.release":
@@ -946,6 +948,59 @@ function threadMovedOnFrom(run: OrchestrationV2Run, runs: ReadonlyArray<Orchestr
 function withQueueHold(run: OrchestrationV2Run, queueHeld: boolean): OrchestrationV2Run {
   const { queueHeldByRestart: _byRestart, ...rest } = run;
   return { ...rest, queueHeld };
+}
+
+function cancelledQueuedRunEvents(
+  projection: Pick<OrchestrationV2ThreadProjection, "nodes" | "attempts">,
+  threadId: ThreadId,
+  run: OrchestrationV2Run,
+  now: DateTime.Utc,
+): ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> {
+  const rootNode =
+    run.rootNodeId === null
+      ? undefined
+      : projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+  const attempt =
+    run.activeAttemptId === null
+      ? undefined
+      : projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+  return [
+    {
+      type: "run.updated" as const,
+      threadId,
+      runId: run.id,
+      ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: { ...run, status: "cancelled" as const, queuePosition: null, completedAt: now },
+    },
+    ...(attempt === undefined || rootNode === undefined
+      ? []
+      : [
+          {
+            type: "run-attempt.updated" as const,
+            threadId,
+            runId: run.id,
+            nodeId: rootNode.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...attempt, status: "cancelled" as const, completedAt: now },
+          },
+        ]),
+    ...(rootNode === undefined
+      ? []
+      : [
+          {
+            type: "node.updated" as const,
+            threadId,
+            runId: run.id,
+            nodeId: rootNode.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...rootNode, status: "cancelled" as const, completedAt: now },
+          },
+        ]),
+  ];
 }
 
 function nextQueuedRun(
@@ -1788,15 +1843,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return { ...run, modelSelection, providerInstanceId: modelSelection.instanceId };
       };
       const nextRun = withQueuedModel(storedQueuedRun);
-      // A limited provider would fail and consume every waiting message.
+      // A limited provider would fail and consume every waiting message. Wakes wait too: their
+      // turns meet the same limit, and a run after the limited one would end its recovery.
       if (usageLimitHoldsQueue(projection, nextRun.providerInstanceId)) {
         return;
       }
-      // Waits without a hold: lowering the thread's mode starts the queue again.
+      // Waits without a hold: lowering the thread's mode starts the queue again. No wake waits
+      // here: this server refuses runs and mode switches above its ceiling, so no session exists.
       if (isRuntimeModeAbove(projection.thread.runtimeMode, runtimeModeCeiling?.maxRuntimeMode)) {
         return;
       }
-      // Failed worktree creation would run queued work in the project checkout; wait for the user.
+      // Failed worktree creation would run queued work in the project checkout; wait for the
+      // user. No wake waits here: no provider started, and leaving a worktree stops sessions.
       const failedRun = latestExecutedRun(projection.runs);
       const failureClass =
         failedRun?.id === options?.failedRunId
@@ -1807,49 +1865,109 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         failedRun?.workspacePreparation?.type === "worktree" &&
         projection.thread.worktreePath === null;
       const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
-      const projectOverride =
-        settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
-          nextRun.providerInstanceId
-        ]?.enabled;
-      const machineInstance = Object.hasOwn(settings.providerInstances, nextRun.providerInstanceId)
-        ? settings.providerInstances[nextRun.providerInstanceId]
-        : undefined;
-      const instanceDisabledForProject =
-        projectOverride !== undefined
+      const instanceDisabledForProject = (instanceId: ProviderInstanceId) => {
+        const projectOverride =
+          settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
+            instanceId
+          ]?.enabled;
+        const machineInstance = Object.hasOwn(settings.providerInstances, instanceId)
+          ? settings.providerInstances[instanceId]
+          : undefined;
+        return projectOverride !== undefined
           ? !projectOverride
           : machineInstance !== undefined && !resolveProviderInstanceEnabled(machineInstance);
+      };
       const providerFailed =
         failureClass !== undefined &&
         failureClass !== "validation_error" &&
         failedRun?.providerInstanceId === nextRun.providerInstanceId;
-      const queueUnusable = worktreeMissing || instanceDisabledForProject;
-      // A buffered wake is a turn the provider already started by itself. Held, that turn has
-      // no run: its tool calls are refused and the provider is offered no further wakes.
-      const wake =
-        providerFailed && !queueUnusable
-          ? queuedRunsInDeliveryOrder(projection)
-              .filter((run) => {
-                const message = projection.messages.find(
-                  (candidate) => candidate.id === run.userMessageId,
-                );
-                return message !== undefined && isBufferedProviderNotification(message);
-              })
-              .map(withQueuedModel)
-              .find((run) => run.providerInstanceId === nextRun.providerInstanceId)
-          : undefined;
-      if (queueUnusable || providerFailed) {
+      const queueHeld =
+        worktreeMissing || providerFailed || instanceDisabledForProject(nextRun.providerInstanceId);
+      // A buffered wake is a turn the provider already started; held, it works with no run and
+      // its tool calls are refused. So a hold judges each wake by its own provider: it starts the
+      // first one that can run, and wakes on a provider turned off for the project end with the
+      // sessions that started them.
+      const wakes = queueHeld
+        ? queuedRunsInDeliveryOrder(projection)
+            .filter((run) => {
+              const message = projection.messages.find(
+                (candidate) => candidate.id === run.userMessageId,
+              );
+              return message !== undefined && isBufferedProviderNotification(message);
+            })
+            .map(withQueuedModel)
+        : [];
+      const stoppedWakes = wakes.filter((run) =>
+        instanceDisabledForProject(run.providerInstanceId),
+      );
+      const wake = worktreeMissing
+        ? undefined
+        : wakes.find(
+            (run) =>
+              !stoppedWakes.includes(run) &&
+              !usageLimitHoldsQueue(projection, run.providerInstanceId),
+          );
+      if (queueHeld) {
         const now = yield* DateTime.now;
+        const stoppedSessionIds = new Set(
+          stoppedWakes.map(
+            (run) =>
+              projection.providerThreads.find((thread) => thread.id === run.providerThreadId)
+                ?.providerSessionId,
+          ),
+        );
+        const stoppedSessions = projection.providerSessions.filter(
+          (session) =>
+            session.status !== "stopped" &&
+            session.status !== "error" &&
+            stoppedSessionIds.has(session.id),
+        );
+        const stopCommandId = CommandId.make(
+          `command:system:stop-disabled-wakes:${stoppedWakes[0]?.id ?? threadId}`,
+        );
         yield* writeSystemEvents(
-          projection.runs
-            .filter((run) => run.status === "queued" && run.id !== wake?.id)
-            .map((run) => ({
-              type: "run.updated" as const,
+          [
+            ...projection.runs
+              .filter(
+                (run) =>
+                  run.status === "queued" &&
+                  run.id !== wake?.id &&
+                  !stoppedWakes.some((stopped) => stopped.id === run.id),
+              )
+              .map((run) => ({
+                type: "run.updated" as const,
+                threadId,
+                runId: run.id,
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: withQueueHold(run, true),
+              })),
+            ...stoppedWakes.flatMap((run) =>
+              cancelledQueuedRunEvents(projection, threadId, run, now),
+            ),
+            ...stoppedSessions.map((session) => ({
+              type: "provider-session.detached" as const,
               threadId,
-              runId: run.id,
-              providerInstanceId: run.providerInstanceId,
+              driver: session.driver,
+              providerInstanceId: session.providerInstanceId,
               occurredAt: now,
-              payload: withQueueHold(run, true),
+              payload: {
+                providerSessionId: session.id,
+                detachedAt: now,
+                reason: PROVIDER_TURNED_OFF_FOR_PROJECT,
+              },
             })),
+          ],
+          stoppedSessions.map((session) => ({
+            id: `effect:${stopCommandId}:provider-session.detach:${session.id}`,
+            commandId: stopCommandId,
+            threadId,
+            request: {
+              type: "provider-session.detach" as const,
+              providerSessionId: session.id,
+              detail: PROVIDER_TURNED_OFF_FOR_PROJECT,
+            },
+          })),
         );
         if (wake === undefined) return;
       }
@@ -2522,7 +2640,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   // A run that failed after a restart leaves its queue for the person to review, like any failure,
-  // unless a retry of it is already scheduled.
+  // unless a retry of it is already scheduled. No wake is held here: recovery cancels queued
+  // wakes, whose turns ended with the old server.
   const adoptRestartHolds = Effect.fn("Orchestrator.adoptRestartHolds")(function* (
     threadId: ThreadId,
     failedRun: OrchestrationV2Run,
@@ -4424,12 +4543,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchProviderSessionDetach = Effect.fn("orchestrationV2.dispatch.providerSessionDetach")(
     function* (
-      command: Extract<OrchestrationV2Command, { readonly type: "provider-session.detach" }>,
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "provider-session.detach" | "provider-session.detach-idle" }
+      >,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     ) {
       const projection = yield* projectionStore
-        .getThreadRecords(command.threadId, ["providerSessions"])
+        .getThreadRecords(command.threadId, ["providerSessions", "providerThreads", "runs"])
         .pipe(
           Effect.mapError(
             (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
@@ -4439,11 +4561,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.id === command.providerSessionId,
       );
       if (session === undefined) {
+        if (command.type === "provider-session.detach-idle") return;
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
           cause: `Provider session ${command.providerSessionId} does not belong to thread ${command.threadId}.`,
         });
+      }
+      if (
+        command.type === "provider-session.detach-idle" &&
+        (session.status === "stopped" ||
+          session.status === "error" ||
+          projection.providerThreads.find((thread) => thread.id === command.providerThreadId)
+            ?.providerSessionId !== session.id ||
+          projection.runs.some(
+            (run) => run.providerThreadId === command.providerThreadId && isActiveRun(run),
+          ))
+      ) {
+        return;
       }
       const now = yield* DateTime.now;
       yield* emit(
@@ -6479,7 +6614,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
       );
       // Buffered wakes need a T3 run for output the CLI already started producing.
-      // Stop still holds wakes that arrive before the active run settles.
+      // Stop still holds wakes that arrive before the active run settles: its runtime restart
+      // ends the turn they came from.
       const wakeSkipsHold =
         !worktreeSetupUnresolved &&
         activeRun !== undefined &&
@@ -10320,61 +10456,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       return;
     }
-    const queuedRootNode =
-      queuedRun.rootNodeId === null
-        ? undefined
-        : projection.nodes.find((candidate) => candidate.id === queuedRun.rootNodeId);
-    const queuedAttempt =
-      queuedRun.activeAttemptId === null
-        ? undefined
-        : projection.attempts.find((candidate) => candidate.id === queuedRun.activeAttemptId);
-
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
-    yield* emitEvent({
-      type: "run.updated",
-      threadId: command.threadId,
-      runId: queuedRun.id,
-      ...(queuedRun.rootNodeId === null ? {} : { nodeId: queuedRun.rootNodeId }),
-      providerInstanceId: queuedRun.providerInstanceId,
-      occurredAt: now,
-      payload: {
-        ...queuedRun,
-        status: "cancelled",
-        queuePosition: null,
-        completedAt: now,
-      },
-    });
-    if (queuedAttempt !== undefined && queuedRootNode !== undefined) {
-      yield* emitEvent({
-        type: "run-attempt.updated",
-        threadId: command.threadId,
-        runId: queuedRun.id,
-        nodeId: queuedRootNode.id,
-        providerInstanceId: queuedRun.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...queuedAttempt,
-          status: "cancelled",
-          completedAt: now,
-        },
-      });
-    }
-    if (queuedRootNode !== undefined) {
-      yield* emitEvent({
-        type: "node.updated",
-        threadId: command.threadId,
-        runId: queuedRun.id,
-        nodeId: queuedRootNode.id,
-        providerInstanceId: queuedRun.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...queuedRootNode,
-          status: "cancelled",
-          completedAt: now,
-        },
-      });
-    }
+    yield* Effect.forEach(
+      cancelledQueuedRunEvents(projection, command.threadId, queuedRun, now),
+      (event) => emitEvent(event),
+      { discard: true },
+    );
     const guest = queuedMessage?.context?.guest;
     if (guest !== undefined) {
       const thread = guestShareAfterCancelledSend(projection.thread, guest, now);
@@ -11731,7 +11819,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         continue;
       }
-      // Stop makes a restart's hold the user's, so a later run cannot release it.
+      // Stop makes a restart's hold the user's, so a later run cannot release it. Wakes were
+      // cancelled above: Stop's runtime restart ends the turns they came from.
       if (run.queueHeld === true && run.queueHeldByRestart !== true) continue;
       yield* emitEvent({
         type: "run.updated",
@@ -14050,6 +14139,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* dispatchGuestShare(command, events, effects);
         break;
       case "provider-session.detach":
+      case "provider-session.detach-idle":
         yield* dispatchProviderSessionDetach(command, events, effects);
         break;
       case "thread.project.adopt-folder":
@@ -14433,6 +14523,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||
+          command.type === "provider-session.detach-idle" ||
           (command.type === "thread.delete" && command.onlyIfUnused === true),
         (_planned) =>
           new OrchestratorDispatchError({

@@ -4,6 +4,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
   RunId,
   ThreadId,
@@ -372,6 +373,60 @@ describe("ProviderContinuationService", () => {
         );
       });
     },
+  );
+
+  const wakeSessionId = ProviderSessionId.make("session-provider-continuation-wake");
+  it.effect.each([
+    ["the session that started it", wakeSessionId],
+    ["nothing when the adapter names no session", undefined],
+  ] as const)("refusing a buffered wake on a disabled instance detaches %s", ([, startedBy]) =>
+    Effect.gen(function* () {
+      const commands = yield* Queue.unbounded<{
+        readonly type: string;
+        readonly messageId?: MessageId;
+        readonly providerThreadId?: ProviderThreadId;
+        readonly providerSessionId?: ProviderSessionId;
+      }>();
+      const sentinelMessageId = MessageId.make("message-provider-continuation-sentinel");
+      const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () => Effect.succeed(projection),
+        dispatch: (command) =>
+          command.type === "message.dispatch" && command.messageId !== sentinelMessageId
+            ? Effect.fail(
+                new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                  projectId: ProjectId.make("project-provider-continuation-disabled"),
+                  instanceId: ProviderInstanceId.make("instance-provider-continuation-disabled"),
+                }) as never,
+              )
+            : Queue.offer(commands, command).pipe(Effect.as({} as never)),
+      });
+      const layerWorker = ProviderContinuationService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer({
+          ...request(),
+          ...(startedBy === undefined ? {} : { providerSessionId: startedBy }),
+        });
+        // Requests are handled in order, so the sentinel arrives after the refusal settles.
+        yield* requests.offer({ ...request(), messageId: sentinelMessageId });
+        const first = yield* Queue.take(commands);
+        assert.deepEqual(
+          first.type === "message.dispatch"
+            ? [first.type, first.messageId]
+            : [first.type, first.providerThreadId, first.providerSessionId],
+          startedBy === undefined
+            ? ["message.dispatch", sentinelMessageId]
+            : ["provider-session.detach-idle", providerThreadId, wakeSessionId],
+        );
+      }).pipe(
+        Effect.provide(Layer.merge(ProviderContinuationRequests.layer, layerWorker)),
+        Effect.scoped,
+      );
+    }),
   );
 
   it.effect(

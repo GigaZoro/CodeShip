@@ -8499,6 +8499,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* continuationRequests.offer({
             threadId: route.threadId,
             providerThreadId: route.providerThreadId,
+            providerSessionId: input.providerSessionId,
             driver: CLAUDE_PROVIDER,
             detail,
             ...(notification === null ? {} : { notification }),

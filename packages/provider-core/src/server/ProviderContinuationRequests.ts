@@ -2,6 +2,7 @@ import {
   type OrchestrationV2Notification,
   MessageId,
   ProviderDriverKind,
+  ProviderSessionId,
   ProviderThreadId,
   RunId,
   ThreadId,
@@ -15,6 +16,8 @@ import * as Queue from "effect/Queue";
 export interface ProviderContinuationRequest {
   readonly threadId: ThreadId;
   readonly providerThreadId: ProviderThreadId;
+  /** The session whose CLI started a buffered wake; a refused wake ends only that session. */
+  readonly providerSessionId?: ProviderSessionId;
   readonly driver: ProviderDriverKind;
   readonly detail: string | null;
   readonly notification?: OrchestrationV2Notification;

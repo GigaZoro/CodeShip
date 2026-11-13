@@ -16,6 +16,8 @@ export function isBufferedProviderNotification(
   );
 }
 
+export const PROVIDER_TURNED_OFF_FOR_PROJECT = "Provider turned off for this project.";
+
 /** Acceptance and receipts cannot commit atomically; reuse message ids for at-least-once delivery. */
 export function isUndeliveredMailboxSteer(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs" | "providerTurns">,

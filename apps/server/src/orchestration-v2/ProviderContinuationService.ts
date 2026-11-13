@@ -6,7 +6,10 @@ import * as Ref from "effect/Ref";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
-import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
+import {
+  isUndeliveredMailboxSteer,
+  PROVIDER_TURNED_OFF_FOR_PROJECT,
+} from "./NotificationMailbox.ts";
 
 const CONTINUATION_MESSAGE_TEXT = "Background task completed.";
 
@@ -204,6 +207,19 @@ export const layer = Layer.effectDiscard(
           // Only buffered wakes use creationSource "provider"; Claude would drain an empty buffer instead of prompting message_text.
           creationSource: request.delivery === "message_text" ? "server" : "provider",
         });
+        // Refused, a buffered wake's turn would keep working with no run; it ends with the session
+        // that started it, unless that session has since moved on or taken a run.
+        const stopRefusedWake =
+          request.providerSessionId === undefined
+            ? Effect.void
+            : threads.dispatch({
+                type: "provider-session.detach-idle",
+                commandId: CommandId.make(`provider-continuation:detach:${messageId}`),
+                threadId: request.threadId,
+                providerThreadId: request.providerThreadId,
+                providerSessionId: request.providerSessionId,
+                reason: PROVIDER_TURNED_OFF_FOR_PROJECT,
+              });
         // Catch after dispatchIfCurrent so adapters see raw failures first; clearIfCurrent is idempotent and covers others.
         const logInstanceDisabled = (
           error: ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
@@ -217,6 +233,7 @@ export const layer = Layer.effectDiscard(
             Effect.andThen(
               request.clearIfCurrent !== undefined ? request.clearIfCurrent() : Effect.void,
             ),
+            Effect.andThen(stopRefusedWake),
           );
         if (request.dispatchIfCurrent === undefined) {
           yield* dispatch.pipe(
