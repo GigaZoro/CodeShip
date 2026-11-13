@@ -1,3 +1,7 @@
+## 2026-11-13 — The Mac app is built on macOS 26
+
+- Releases now build the Mac app on GitHub's macOS 26 machines, the macOS version upstream T3 Code builds its releases on. GitHub's macOS 15 machines gave this repository none for hours, so no update had been published since this morning.
+
 ## 2026-11-13 — Manual steps are reviewed by a machine that is connected
 
 - While one of your machines was reconnecting, it could stay the one that reviews **Manual steps**, so every step showed "Could not reach the machine that reads ThreadPage." even though your other machines read ThreadPage fine. Reviews and the chats that carry out your decisions now go to a machine that is connected, and a review that loses its machine says "Could not reach the machine that reviews steps."

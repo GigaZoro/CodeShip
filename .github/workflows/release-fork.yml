@@ -248,7 +248,8 @@ jobs:
       clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.preflight.outputs.relay_url }}
       label: macOS arm64
-      runner: macos-15
+      # The macOS version upstream's release.yml builds on.
+      runner: macos-26
       platform: mac
       target: dmg
       arch: arm64
