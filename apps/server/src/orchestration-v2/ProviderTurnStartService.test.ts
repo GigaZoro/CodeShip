@@ -12,6 +12,7 @@ import {
   GitCommandError,
   MessageId,
   NodeId,
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -26,6 +27,7 @@ import {
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -66,6 +68,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import { sleepingTestClock } from "./testkit/DeterministicRuntime.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -1950,11 +1953,18 @@ effectIt.effect.each(["unavailable", "tooLarge"] as const)(
     }),
 );
 
-effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
+effectIt.effect.each([
+  { message: "DESCRIPTION is not valid ACP JSON", class: "provider_error", code: null },
+  {
+    message: "getaddrinfo ENOTFOUND api.anthropic.com",
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+])("terminalizes a starting run when its provider session cannot open: $message", (row) =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "Continue",
-      openFailure: new Error("DESCRIPTION is not valid ACP JSON"),
+      openFailure: new Error(row.message),
     });
 
     yield* harness.start;
@@ -1976,10 +1986,7 @@ effectIt.effect("terminalizes a starting run when its provider session cannot op
       {
         type: "error",
         status: "failed",
-        failure: {
-          class: "provider_error",
-          message: "DESCRIPTION is not valid ACP JSON",
-        },
+        failure: { class: row.class, code: row.code, message: row.message },
       },
     ]);
   }),
@@ -2024,6 +2031,44 @@ effectIt.effect(
           .turnItems.flatMap((item) => (item.type === "error" ? [item.failure.message] : [])),
       ).toEqual(["The provider did not resume the conversation within 5 minutes."]);
     }),
+);
+
+effectIt.effect("gives a provider start step its full awake time when the computer sleeps", () =>
+  Effect.gen(function* () {
+    const resuming = yield* Deferred.make<void>();
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      resumeThread: () => Deferred.succeed(resuming, undefined).pipe(Effect.andThen(Effect.never)),
+    });
+    const mac = yield* sleepingTestClock;
+    const startup = yield* harness.start.pipe(
+      Effect.provideService(Clock.Clock, mac.clock),
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Deferred.await(resuming);
+
+    yield* TestClock.adjust("1 minute");
+    mac.sleep("8 hours");
+    yield* TestClock.adjust("4 minutes");
+    // The 5 seconds the sleep interrupted do not count.
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    yield* TestClock.adjust("5 seconds");
+    yield* Fiber.join(startup);
+
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(
+      harness
+        .projection()
+        .turnItems.flatMap((item) => (item.type === "error" ? [item.failure] : [])),
+    ).toMatchObject([
+      {
+        class: "transport_error",
+        code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+        message:
+          "The provider did not resume the conversation within 5 minutes after the computer slept.",
+      },
+    ]);
+  }),
 );
 
 effectIt.effect("fails the run without a retry when the provider needs sign-in", () =>

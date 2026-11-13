@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   TurnItemId,
   NodeId,
@@ -234,6 +235,21 @@ describe("thread execution presentation", () => {
       ],
     };
     expect(deriveResumableRunId(setupOffline, deriveThreadRuntime(setupOffline))).toBeNull();
+    // The agent never saw the message, so the run goes again instead of being continued.
+    const startOffline = {
+      ...setupOffline,
+      turnItems: [
+        {
+          ...item,
+          failure: {
+            ...item.failure,
+            class: "transport_error" as const,
+            code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+          },
+        },
+      ],
+    };
+    expect(deriveResumableRunId(startOffline, deriveThreadRuntime(startOffline))).toBeNull();
   });
 
   it("keeps live activity attached to an executing run when a newer run is queued", () => {

@@ -723,6 +723,8 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
   typeof OrchestrationV2ThreadLaunchWorkspaceStrategy.Type;
 
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
+/** The agent failed to start before it received the message, so the run can go again. */
+export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
 
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,

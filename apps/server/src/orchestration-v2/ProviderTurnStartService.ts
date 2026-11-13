@@ -4,6 +4,7 @@ import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
+import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import {
   CommandId,
   latestProviderTurnForAttempt,
@@ -64,6 +65,8 @@ import {
   ContextHandoffBackgroundWorkError,
   knownProviderFailureMessage,
   makeProviderFailure,
+  promptNotSentFailure,
+  providerErrorClass,
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
@@ -113,10 +116,11 @@ const PROVIDER_START_STEP_TIMEOUT_MINUTES = 5;
 
 class ProviderStartStepTimeoutError extends Schema.TaggedError<ProviderStartStepTimeoutError>()(
   "ProviderStartStepTimeoutError",
-  { step: Schema.String },
+  { step: Schema.String, slept: Schema.Boolean },
 ) {
   override get message(): string {
-    return `The provider did not ${this.step} within ${PROVIDER_START_STEP_TIMEOUT_MINUTES} minutes.`;
+    const after = this.slept ? " after the computer slept" : "";
+    return `The provider did not ${this.step} within ${PROVIDER_START_STEP_TIMEOUT_MINUTES} minutes${after}.`;
   }
 }
 
@@ -124,9 +128,9 @@ const withStartStepTimeout =
   (step: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
-      Effect.timeoutOrElse({
+      timeoutAwakeOrElse({
         duration: Duration.minutes(PROVIDER_START_STEP_TIMEOUT_MINUTES),
-        orElse: () => Effect.fail(new ProviderStartStepTimeoutError({ step })),
+        orElse: ({ slept }) => Effect.fail(new ProviderStartStepTimeoutError({ step, slept })),
       }),
     );
 
@@ -337,6 +341,19 @@ export const layer: Layer.Layer<
         },
       ) {
         const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
+        const message =
+          failed.message ??
+          knownProviderFailureMessage(failed.error) ??
+          (nestedCause instanceof Error
+            ? nestedCause.message
+            : typeof nestedCause === "string"
+              ? nestedCause
+              : failed.error.message);
+        // The agent never saw the message, so a start that a sleep or a lost connection
+        // stopped can go again once the network answers.
+        const waitingFixes =
+          (failed.error instanceof ProviderStartStepTimeoutError && failed.error.slept) ||
+          providerErrorClass(message) === "transport_error";
         yield* settleUnstartedRun(context, {
           signal: failed.signal,
           status: "failed",
@@ -346,18 +363,9 @@ export const layer: Layer.Layer<
           item: {
             type: "error",
             title: failed.title,
-            failure: makeProviderFailure({
-              cause: failed.error,
-              message:
-                failed.message ??
-                knownProviderFailureMessage(failed.error) ??
-                (nestedCause instanceof Error
-                  ? nestedCause.message
-                  : typeof nestedCause === "string"
-                    ? nestedCause
-                    : failed.error.message),
-              class: "provider_error",
-            }),
+            failure: waitingFixes
+              ? promptNotSentFailure(message, failed.error)
+              : makeProviderFailure({ cause: failed.error, message, class: "provider_error" }),
           },
         });
       },

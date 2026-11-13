@@ -36,6 +36,7 @@ import {
   MessageId,
   type ModelSelection,
   NodeId,
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   type OrchestrationV2AppThread,
   type OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
@@ -5904,6 +5905,36 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
+  );
+
+  it.effect.each([
+    { slept: true, class: "transport_error", code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE },
+    { slept: false, class: "unknown", code: null },
+  ])("lets an MCP registration timeout go again only after a sleep: $slept", (row) =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({
+        startupError: new ClaudeAdapterV2.ClaudeMcpRegistrationTimeoutError({ slept: row.slept }),
+      });
+      const failure = makeProviderFailure({
+        cause: yield* Effect.flip(
+          harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-mcp-timeout"),
+              text: "Implement.",
+              attachments: [],
+            }),
+          ),
+        ),
+      });
+      assert.deepEqual([failure.class, failure.code], [row.class, row.code]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
   );
 
   it.effect("keeps a later future-window event-supplied Claude reset over the embedded reset", () =>

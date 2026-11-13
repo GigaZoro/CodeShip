@@ -163,6 +163,10 @@
       "types": "./src/String.ts",
       "import": "./src/String.ts"
     },
+    "./AwakeTime": {
+      "types": "./src/AwakeTime.ts",
+      "import": "./src/AwakeTime.ts"
+    },
     "./projectScripts": {
       "types": "./src/projectScripts.ts",
       "import": "./src/projectScripts.ts"

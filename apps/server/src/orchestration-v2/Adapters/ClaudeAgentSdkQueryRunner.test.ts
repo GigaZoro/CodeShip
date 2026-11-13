@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
@@ -27,6 +28,7 @@ import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEven
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import * as PortScanner from "../../preview/PortScanner.ts";
+import { sleepingTestClock } from "../testkit/DeterministicRuntime.ts";
 import {
   ClaudeAgentSdkQueryRunner,
   type ClaudeAgentSdkQueryOpenInput,
@@ -382,6 +384,46 @@ it.effect("does not reuse a fresh session ID after MCP registration times out", 
       assert.equal(result._tag, "Failure");
       assert.equal(querySpy.mock.calls.length, 1);
       assert.equal(disposed.mock.calls.length, 1);
+    }).pipe(Effect.provide(realQueryRunner)),
+  ),
+);
+
+it.effect("does not count the time the computer sleeps against MCP registration", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registrationStarted = Promise.withResolvers<void>();
+      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
+        () =>
+          ({
+            setMcpServers: () => {
+              registrationStarted.resolve();
+              return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
+            },
+            [Symbol.asyncDispose]: async () => {},
+          }) as unknown as ClaudeSdk.Query,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+      const mac = yield* sleepingTestClock;
+      const runner = yield* ClaudeAgentSdkQueryRunner;
+      const { resume, ...options } = resumedMcpQueryInput.options;
+      const opening = yield* runner
+        .open({ ...resumedMcpQueryInput, options: { ...options, sessionId: resume } })
+        .pipe(Effect.result, Effect.provideService(Clock.Clock, mac.clock), Effect.forkChild);
+      yield* Effect.promise(() => registrationStarted.promise);
+      yield* TestClock.adjust("10 seconds");
+      mac.sleep("15 minutes");
+      yield* TestClock.adjust("80 seconds");
+      // 85 awake seconds: the 5 seconds the sleep interrupted do not count.
+      assert.isUndefined(opening.pollUnsafe());
+      yield* TestClock.adjust("5 seconds");
+      const result = yield* Fiber.join(opening);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") return;
+      assert.equal(
+        makeProviderFailure({ cause: result.failure }).message,
+        "Claude timed out while registering its MCP tools after the computer slept. Retry the turn if it does not start again by itself.",
+      );
     }).pipe(Effect.provide(realQueryRunner)),
   ),
 );

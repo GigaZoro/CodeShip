@@ -3,17 +3,17 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
+import { isUndeliveredFailure } from "@t3tools/shared/orchestrationV2ThreadError";
 
 import type { ThreadStructureTurnItem } from "./models.ts";
 
 const WORKSPACE_PREPARATION_INPUT = "Preparing workspace";
 
-export function turnItemIsWorkspacePreparation(item: OrchestrationV2TurnItem): boolean {
+/** Workspace setup and the failure of a run that went again, which timelines leave out. */
+export function turnItemIsRunStartDetail(item: OrchestrationV2TurnItem): boolean {
   return (
     (item.type === "command_execution" && item.input === WORKSPACE_PREPARATION_INPUT) ||
-    (item.type === "error" &&
-      item.status === "cancelled" &&
-      item.failure.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE)
+    (item.type === "error" && item.status === "cancelled" && isUndeliveredFailure(item.failure))
   );
 }
 

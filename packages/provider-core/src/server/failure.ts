@@ -1,4 +1,7 @@
-import { OrchestrationV2ProviderFailure as ProviderFailureSchema } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  OrchestrationV2ProviderFailure as ProviderFailureSchema,
+} from "@t3tools/contracts";
 import type {
   NodeId,
   OrchestrationV2ProviderFailure,
@@ -296,6 +299,20 @@ export function makeProviderFailure(input: {
       ? { resetAt: DateTime.formatIso(DateTime.makeUnsafe(input.resetAt)) }
       : {}),
   };
+}
+
+/** The agent did not start before it received the message, for a reason that waiting fixes. */
+export function promptNotSentFailure(
+  message: string,
+  cause?: unknown,
+): OrchestrationV2ProviderFailure {
+  return makeProviderFailure({
+    cause,
+    message,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+    retryable: true,
+  });
 }
 
 export function makeProviderFailureTurnItem(input: {

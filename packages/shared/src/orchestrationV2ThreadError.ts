@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2Run,
@@ -38,14 +39,19 @@ export function latestRootProviderFailure(
   return latest?.failure ?? null;
 }
 
-/**
- * Whether a failed run's turn can be continued: it hit a usage limit or lost its connection.
- * A failed workspace setup is retried instead, since the agent never saw the message.
- */
+/** The run failed before its agent received the message, so the run goes again instead. */
+export function isUndeliveredFailure(failure: OrchestrationV2ProviderFailure | null): boolean {
+  return (
+    failure?.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE ||
+    failure?.code === ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE
+  );
+}
+
+/** Whether a failed run's turn can be continued: it hit a usage limit or lost its connection. */
 export function isContinuableFailure(failure: OrchestrationV2ProviderFailure | null): boolean {
   return (
     (failure?.class === "usage_limit" || failure?.class === "transport_error") &&
-    failure.code !== ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE
+    !isUndeliveredFailure(failure)
   );
 }
 

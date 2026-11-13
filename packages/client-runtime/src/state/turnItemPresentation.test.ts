@@ -1,4 +1,5 @@
 import {
+  ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   RunId,
   ThreadId,
@@ -10,7 +11,7 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  turnItemIsWorkspacePreparation,
+  turnItemIsRunStartDetail,
   workspacePreparationRetryRunIds,
 } from "./turnItemPresentation.ts";
 
@@ -70,11 +71,16 @@ function run(
   };
 }
 
-describe("turnItemIsWorkspacePreparation", () => {
-  it("hides a preparation failure only once a retry cancelled it", () => {
-    expect(turnItemIsWorkspacePreparation(preparationFailure("failed"))).toBe(false);
-    expect(turnItemIsWorkspacePreparation(preparationFailure("cancelled"))).toBe(true);
-    expect(turnItemIsWorkspacePreparation(preparationFailure("cancelled", null))).toBe(false);
+describe("turnItemIsRunStartDetail", () => {
+  it("hides a failure before delivery only once a retry cancelled it", () => {
+    expect(turnItemIsRunStartDetail(preparationFailure("failed"))).toBe(false);
+    expect(turnItemIsRunStartDetail(preparationFailure("cancelled"))).toBe(true);
+    expect(
+      turnItemIsRunStartDetail(
+        preparationFailure("cancelled", ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE),
+      ),
+    ).toBe(true);
+    expect(turnItemIsRunStartDetail(preparationFailure("cancelled", null))).toBe(false);
   });
 });
 

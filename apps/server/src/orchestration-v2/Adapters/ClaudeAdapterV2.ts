@@ -69,6 +69,7 @@ import * as NodeUtil from "node:util";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { CLAUDE_MODEL_FAMILIES, claudeUsageWindowScope } from "@t3tools/shared/usageLimits";
@@ -207,6 +208,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
   makeProviderFailure,
   makeProviderRetryTurnItem,
+  promptNotSentFailure,
   AUTHENTICATION_FAILED_FAILURE_CODE,
 } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
@@ -575,12 +577,15 @@ export class ClaudeAgentSdkQueryRunnerError extends Schema.TaggedError<ClaudeAge
   }
 }
 
-class ClaudeMcpRegistrationTimeoutError extends Schema.TaggedError<ClaudeMcpRegistrationTimeoutError>()(
+export class ClaudeMcpRegistrationTimeoutError extends Schema.TaggedError<ClaudeMcpRegistrationTimeoutError>()(
   "ClaudeMcpRegistrationTimeoutError",
-  {},
+  // The computer slept during the wait, which can drop the connections the tools need.
+  { slept: Schema.Boolean },
 ) {
   override get message(): string {
-    return "Claude timed out while registering its MCP tools. Retry the turn; if it keeps failing, check Claude and the server logs.";
+    return this.slept
+      ? "Claude timed out while registering its MCP tools after the computer slept. Retry the turn if it does not start again by itself."
+      : "Claude timed out while registering its MCP tools. Retry the turn; if it keeps failing, check Claude and the server logs.";
   }
 }
 
@@ -1113,17 +1118,18 @@ export const layerQueryRunner: Layer.Layer<
                       ).pipe(
                         Effect.map((result) => Object.keys(result.errors)),
                         Effect.orElseSucceed(() => Object.keys(mcpServers)),
-                        Effect.timeoutOrElse({
+                        timeoutAwakeOrElse({
                           duration: CLAUDE_MCP_REGISTRATION_TIMEOUT,
-                          orElse: () =>
+                          orElse: ({ slept }) =>
                             Effect.logWarning("orchestration-v2.claude-mcp-registration-timeout", {
                               threadId: input.threadId,
                               providerSessionId: input.providerSessionId,
+                              slept,
                             }).pipe(
                               Effect.andThen(
                                 Effect.fail(
                                   queryRunnerError(
-                                    new ClaudeMcpRegistrationTimeoutError(),
+                                    new ClaudeMcpRegistrationTimeoutError({ slept }),
                                     "setMcpServers",
                                   ),
                                 ),
@@ -10930,7 +10936,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
-                  const failure = claudeStartupUsageFailure(cause, yield* DateTime.now);
+                  const failure =
+                    claudeStartupUsageFailure(cause, yield* DateTime.now) ??
+                    (isClaudeMcpRegistrationTimeoutError(cause.cause) && cause.cause.slept
+                      ? promptNotSentFailure(cause.cause.message)
+                      : undefined);
                   return yield* failure === undefined
                     ? cause
                     : new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -11368,7 +11378,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   const completedAt = yield* DateTime.now;
                   yield* finalizeActiveTurn({ context, status: "completed", completedAt });
                 } else if (!context.nativeWakeStarted) {
-                  yield* Effect.sleep(CLAUDE_WAKE_TURN_START_DEADLINE).pipe(
+                  yield* sleepAwake(CLAUDE_WAKE_TURN_START_DEADLINE).pipe(
                     Effect.andThen(
                       withSdkMessageLock(
                         { holder: "wake-start-deadline", nativeThreadId },
