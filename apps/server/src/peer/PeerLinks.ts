@@ -57,6 +57,8 @@ export interface ResolvedPeerLink {
   /** The first address that answered as this peer. */
   readonly url: string;
   readonly token: string;
+  /** The T3.CodeShip version that address reported, read on every resolve. */
+  readonly serverVersion: string;
 }
 
 export const LINKED_ENVIRONMENTS_OFF =
@@ -615,11 +617,13 @@ const make = Effect.gen(function* () {
       // The token goes only to an address that proves it is this peer, so a
       // reused LAN address or a moved hostname never receives it.
       let fenced = true;
+      let serverVersion = "";
       const url = yield* Effect.findFirst(link.urls, (candidate) =>
         describe(candidate).pipe(
           Effect.map((found) => {
             if (Option.isNone(found) || found.value.environmentId !== environmentId) return false;
             fenced = linkLimitsHold(found.value);
+            serverVersion = found.value.serverVersion;
             return true;
           }),
         ),
@@ -638,7 +642,12 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3.CodeShip version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
-      return { link, url: url.value, token: new TextDecoder().decode(stored.value) };
+      return {
+        link,
+        url: url.value,
+        token: new TextDecoder().decode(stored.value),
+        serverVersion,
+      };
     },
   );
 

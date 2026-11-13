@@ -364,6 +364,9 @@ machine** option as the dialog, and the agent is told whether the link back was 
 - Agents can run commands in a terminal there only through a full-access link,
   and only where that machine lets agents run commands. See
   [terminals on another machine](./terminal.md#terminals-on-another-machine).
+- When an agent passes an option that the other machine's version does not have yet, the call
+  fails and names the option and that version, instead of running without it. Update
+  T3.CodeShip there to use it.
 - A link is for agents only: it does not add the machine to this app's machine
   list (bottom-left of the sidebar). A linked machine that is missing there is
   marked in **Linked environments**; choose **Add to this app** (one click for a

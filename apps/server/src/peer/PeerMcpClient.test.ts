@@ -130,6 +130,70 @@ it.effect("tells a peer without a tool, such as an older version, from a failed 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("refuses arguments the peer's version does not take, listing its tools once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // As an older version has it: no `providerAccounts`, and a workspace without `startFromOrigin`.
+      const older = Toolkit.make(
+        Tool.make("configure", {
+          description: "Returns the arguments it decoded.",
+          parameters: Schema.Struct({
+            snooze: Schema.optionalKey(Schema.Boolean),
+            workspace: Schema.optionalKey(Schema.Struct({ type: Schema.String })),
+          }),
+          success: Result,
+          dependencies: [McpInvocationContext.McpInvocationContext],
+        }),
+      );
+      const handlers = McpToolAccess.toLayer(older, {
+        configure: McpToolAccess.reads((input) => Effect.succeed({ modes: JSON.stringify(input) })),
+      });
+      const box = descriptorOf("environment-box", "Box");
+      const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(older, handlers));
+      const context = yield* Layer.build(
+        layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+      );
+      const links = Context.get(context, PeerLinks.PeerLinks);
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      yield* linkTo(links, b);
+      const configure = (
+        args: Record<string, unknown>,
+        ignorableArguments: ReadonlyArray<string> = [],
+      ) =>
+        client.call({
+          environmentId: box.environmentId,
+          tool: "configure",
+          arguments: args,
+          ignorableArguments,
+          limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+          success: Result,
+        });
+      expect(yield* configure({ snooze: true, workspace: { type: "root" } })).toEqual({
+        modes: '{"snooze":true,"workspace":{"type":"root"}}',
+      });
+      // Its tools are listed once: a later call is the one tool request.
+      const before = (yield* Ref.get(b.bearers)).length;
+      yield* configure({ snooze: false });
+      expect((yield* Ref.get(b.bearers)).length - before).toBe(1);
+      const refused = yield* Effect.flip(
+        configure({
+          snooze: true,
+          providerAccounts: { claude: { autoCompactWindow: "200000" } },
+          workspace: { type: "worktree", startFromOrigin: false },
+        }),
+      );
+      expect(refused).toMatchObject({
+        code: "invalid_request",
+        message:
+          "Box runs T3.CodeShip 0.0.0-test, whose configure does not take providerAccounts, workspace.startFromOrigin. Update T3.CodeShip on Box to use them, or leave them out.",
+      });
+      expect(yield* configure({ snooze: true, includePrompt: true }, ["includePrompt"])).toEqual({
+        modes: '{"snooze":true}',
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("refuses an answer larger than the call takes", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -171,87 +235,158 @@ it.effect("refuses an answer larger than the call takes", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("renews a missing peer session once and reuses its replacement", () =>
-  Effect.gen(function* () {
-    const sessionHeaders: Array<string | undefined> = [];
-    const statuses = [200, 202, 404, 200, 202, 200, 200];
-    const http = HttpClient.make((request) =>
-      Effect.sync(() => {
-        const index = sessionHeaders.length;
-        sessionHeaders.push(request.headers["mcp-session-id"]);
-        const status = statuses[index];
-        if (status === undefined) throw new Error("Unexpected retry");
-        return HttpClientResponse.fromWeb(
+/**
+ * A peer whose `probe` takes `properties`. It keeps sessions in memory, as the real one does, so
+ * `restart` forgets them.
+ */
+const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record<string, unknown>) {
+  let schema: unknown = { type: "object", properties };
+  let live = new Set<string>();
+  let started = 0;
+  let heldList:
+    | { readonly received: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
+    | undefined;
+  const requests: Array<string> = [];
+  const ran: Array<unknown> = [];
+  const http = HttpClient.make((request) =>
+    Effect.gen(function* () {
+      const body = JSON.parse(
+        request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "{}",
+      ) as { readonly method: string; readonly params?: { readonly arguments?: unknown } };
+      const sessionId = request.headers["mcp-session-id"];
+      requests.push(`${body.method} ${sessionId ?? "-"}`);
+      const answer = (status: number, json?: unknown, headers: Record<string, string> = {}) =>
+        HttpClientResponse.fromWeb(
           request,
-          new Response(
-            index >= 5
-              ? JSON.stringify({
-                  result: {
-                    content: [{ type: "text", text: '{"modes":"approval-required/plan"}' }],
-                  },
-                })
-              : "",
-            {
-              status,
-              headers:
-                index === 0
-                  ? { "mcp-session-id": "old" }
-                  : index === 3
-                    ? { "mcp-session-id": "renewed" }
-                    : {},
-            },
-          ),
+          new Response(json === undefined ? "" : JSON.stringify(json), { status, headers }),
         );
-      }),
-    );
-    const box = descriptorOf("environment-box", "Box");
-    const context = yield* Layer.build(
-      PeerMcpClient.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            Layer.succeed(HttpClient.HttpClient, http),
-            Layer.mock(PeerLinks.PeerLinks)({
-              resolve: () =>
-                Effect.succeed({
-                  link: {
-                    environmentId: box.environmentId,
-                    label: box.label,
-                    urls: ["https://peer.example"],
-                    access: "auto",
-                    linkedAt: DateTime.makeUnsafe(0),
-                    expiresAt: DateTime.makeUnsafe(1),
-                    lastReachedAt: null,
-                    lastError: null,
-                  },
-                  url: "https://peer.example",
-                  token: "fixture",
-                }),
-              recordOutcome: () => Effect.void,
-            }),
-          ),
+      if (body.method === "initialize") {
+        started += 1;
+        live.add(`session-${started}`);
+        return answer(200, undefined, { "mcp-session-id": `session-${started}` });
+      }
+      if (sessionId === undefined || !live.has(sessionId)) return answer(404);
+      if (body.method === "notifications/initialized") return answer(202);
+      if (body.method === "tools/list") {
+        const tools = [{ name: "probe", inputSchema: schema }];
+        const held = heldList;
+        heldList = undefined;
+        if (held !== undefined) {
+          yield* Deferred.succeed(held.received, undefined);
+          yield* Deferred.await(held.release);
+        }
+        return answer(200, { result: { tools } });
+      }
+      ran.push(body.params?.arguments);
+      return answer(200, { result: { content: [{ type: "text", text: '{"modes":"ran"}' }] } });
+    }),
+  );
+  const box = descriptorOf("environment-box", "Box");
+  const context = yield* Layer.build(
+    PeerMcpClient.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(HttpClient.HttpClient, http),
+          Layer.mock(PeerLinks.PeerLinks)({
+            resolve: () =>
+              Effect.succeed({
+                link: {
+                  environmentId: box.environmentId,
+                  label: box.label,
+                  urls: ["https://peer.example"],
+                  access: "auto",
+                  linkedAt: DateTime.makeUnsafe(0),
+                  expiresAt: DateTime.makeUnsafe(1),
+                  lastReachedAt: null,
+                  lastError: null,
+                },
+                url: "https://peer.example",
+                token: "fixture",
+                serverVersion: "0.0.0-test",
+              }),
+            recordOutcome: () => Effect.void,
+          }),
         ),
       ),
-    );
-    const client = Context.get(context, PeerMcpClient.PeerMcpClient);
-    for (let call = 0; call < 2; call++) {
-      expect(
-        yield* client.call({
-          environmentId: box.environmentId,
-          tool: "probe",
-          arguments: {},
-          limits: { runtimeMode: "approval-required", interactionMode: "plan" },
-          success: Result,
-        }),
-      ).toEqual({ modes: "approval-required/plan" });
-    }
-    expect(sessionHeaders).toEqual([
-      undefined,
-      "old",
-      "old",
-      undefined,
-      "renewed",
-      "renewed",
-      "renewed",
+    ),
+  );
+  const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+  return {
+    requests,
+    ran,
+    call: (args: Record<string, unknown>) =>
+      client.call({
+        environmentId: box.environmentId,
+        tool: "probe",
+        arguments: args,
+        limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+        success: Result,
+      }),
+    restart: (next: Record<string, unknown>) => {
+      schema = { type: "object", properties: next };
+      live = new Set();
+    },
+    /** Holds the next tools/list answer, as listed when it arrived, until `release`. */
+    holdNextList: Effect.gen(function* () {
+      const held = {
+        received: yield* Deferred.make<void>(),
+        release: yield* Deferred.make<void>(),
+      };
+      heldList = held;
+      return held;
+    }),
+  };
+});
+
+it.effect("renews a session the peer lost once, checks the call again in it, and reuses it", () =>
+  Effect.gen(function* () {
+    const peer = yield* fakePeerClient({ newSetting: { type: "boolean" } });
+    expect(yield* peer.call({ newSetting: true })).toEqual({ modes: "ran" });
+    expect(yield* peer.call({})).toEqual({ modes: "ran" });
+    peer.restart({});
+    expect(yield* Effect.flip(peer.call({ newSetting: true }))).toMatchObject({
+      code: "invalid_request",
+      message:
+        "Box runs T3.CodeShip 0.0.0-test, whose probe does not take newSetting. Update T3.CodeShip on Box to use it, or leave it out.",
+    });
+    expect(yield* peer.call({})).toEqual({ modes: "ran" });
+    expect(peer.ran).toEqual([{ newSetting: true }, {}, {}]);
+    expect(peer.requests).toEqual([
+      "initialize -",
+      "notifications/initialized session-1",
+      "tools/list session-1",
+      "tools/call session-1",
+      "tools/call session-1",
+      "tools/call session-1",
+      "initialize -",
+      "notifications/initialized session-2",
+      "tools/list session-2",
+      "tools/call session-2",
+    ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("refuses only on a list from the session still in use", () =>
+  Effect.gen(function* () {
+    const peer = yield* fakePeerClient({});
+    const held = yield* peer.holdNextList;
+    const first = yield* peer.call({ newSetting: true }).pipe(Effect.forkChild);
+    yield* Deferred.await(held.received);
+    peer.restart({ newSetting: { type: "boolean" } });
+    expect(yield* peer.call({ newSetting: true })).toEqual({ modes: "ran" });
+    yield* Deferred.succeed(held.release, undefined);
+    expect(yield* Fiber.join(first)).toEqual({ modes: "ran" });
+    expect(peer.ran).toEqual([{ newSetting: true }, { newSetting: true }]);
+    expect(peer.requests).toEqual([
+      "initialize -",
+      "notifications/initialized session-1",
+      "tools/list session-1",
+      "tools/list session-1",
+      "initialize -",
+      "notifications/initialized session-2",
+      "tools/list session-2",
+      "tools/call session-2",
+      "tools/call session-2",
     ]);
   }).pipe(Effect.scoped),
 );

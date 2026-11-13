@@ -1,3 +1,7 @@
+## 2026-11-13 — A linked machine on an older version refuses options it does not have
+
+- An agent's call to a linked machine on an older version ran without the options that version does not have yet, such as a new thread setting, and reported success. The call now fails and names those options and the machine's version, so you know to update it. Calls that pass only options it has work as before.
+
 ## 2026-11-13 — Codex no longer shows as not installed after T3.CodeShip updates it
 
 - When T3.CodeShip updated Codex or another provider CLI, a status check that ran while the installer had the CLI moved aside could leave the provider marked **not installed**. Agents and scheduled tasks then could not use it: `orchestrator_capabilities` reported it unusable and delegated tasks to it failed. The check after the update reused that result for 30 seconds. An update now drops it, so its own check finds the new CLI.

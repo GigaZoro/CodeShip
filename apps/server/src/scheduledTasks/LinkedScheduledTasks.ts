@@ -79,6 +79,8 @@ const make = Effect.gen(function* () {
         environmentId,
         tool: "list_scheduled_tasks",
         arguments: { includePrompt: true },
+        // A version without it returns full prompts anyway.
+        ignorableArguments: ["includePrompt"],
         limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
         success: OrchestratorMcpListScheduledTasksResult,
       })

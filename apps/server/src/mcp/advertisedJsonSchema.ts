@@ -121,3 +121,68 @@ const compact = (schema: Json, optional: boolean): Json => {
  */
 export const advertisedJsonSchema = (tool: Tool.Any) =>
   compact(Tool.getJsonSchema(tool), false) as ReturnType<typeof Tool.getJsonSchema>;
+
+/** The shapes a value may take: each `anyOf` or `oneOf` branch, `true` as a shape that takes anything. */
+const alternatives = (schema: Json): ReadonlyArray<JsonObject> => {
+  if (schema === true) return [{}];
+  if (!Predicate.isObject(schema)) return [];
+  const branches = Array.isArray(schema.anyOf)
+    ? schema.anyOf
+    : Array.isArray(schema.oneOf)
+      ? schema.oneOf
+      : undefined;
+  return branches === undefined || "properties" in schema
+    ? [schema]
+    : branches.flatMap(alternatives);
+};
+
+const takes = (shape: JsonObject, type: string) =>
+  shape.type === undefined ||
+  shape.type === type ||
+  (Array.isArray(shape.type) && shape.type.includes(type));
+
+const OPEN_KEYWORDS = ["patternProperties", "propertyNames", "allOf", "anyOf", "oneOf", "$ref"];
+
+/**
+ * A struct's properties, the only keys it keeps; none for a shape that may keep others. A struct
+ * advertises `additionalProperties: true` or nothing and drops other keys; a record or a struct
+ * with a rest keeps them.
+ */
+const closedProperties = (shape: JsonObject): JsonObject | undefined => {
+  if (OPEN_KEYWORDS.some((keyword) => keyword in shape)) return undefined;
+  if (shape.additionalProperties === false && shape.properties === undefined) return {};
+  return Predicate.isObject(shape.properties) &&
+    (shape.additionalProperties === undefined || typeof shape.additionalProperties === "boolean")
+    ? shape.properties
+    : undefined;
+};
+
+/**
+ * The paths in `value` that `schema`, an advertised input schema, has no property for, such as
+ * `providerAccounts` or `workspaceStrategy.startFromOrigin`. A server drops them while decoding.
+ * Nothing is reported under a shape that may keep other keys or that this cannot read.
+ */
+export const unknownArguments = (schema: Json, value: unknown, path = ""): Array<string> => {
+  if (Array.isArray(value)) {
+    const items = alternatives(schema)
+      .filter((shape) => takes(shape, "array"))
+      .map((shape) => shape.items);
+    if (!items.every(Predicate.isObject)) return [];
+    return value.flatMap((item, index) =>
+      unknownArguments({ anyOf: items }, item, `${path}[${index}]`),
+    );
+  }
+  if (!Predicate.isObject(value)) return [];
+  const shapes = alternatives(schema)
+    .filter((shape) => takes(shape, "object"))
+    .map(closedProperties);
+  if (shapes.length === 0 || shapes.includes(undefined)) return [];
+  return Object.entries(value).flatMap(([key, item]) => {
+    if (item === undefined) return [];
+    const at = path === "" ? key : `${path}.${key}`;
+    const properties = shapes.flatMap((kept) =>
+      kept !== undefined && Object.hasOwn(kept, key) ? [kept[key]] : [],
+    );
+    return properties.length === 0 ? [at] : unknownArguments({ anyOf: properties }, item, at);
+  });
+};

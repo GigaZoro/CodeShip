@@ -94,6 +94,17 @@ Unlinking on the linking side only forgets the token.
   `T3-Mode-Limit`, which the receiving `/mcp` only ever narrows the client's
   approved access with. A plan-mode agent therefore cannot start full-access
   work through a full-access link.
+- **A call refuses arguments the peer's version does not take**, because the
+  receiving `/mcp` decodes parameters with unknown keys ignored and would run
+  the call without them. [`PeerMcpClient`](../../apps/server/src/peer/PeerMcpClient.ts)
+  checks the arguments against the input schemas the peer's `tools/list`
+  advertises, listed once per session and version and again before a refusal.
+  A session renewed after a 404 belongs to a peer that may run other code, so
+  the call is checked again in it before it is sent, and a list answered in a
+  session replaced meanwhile is neither cached nor grounds for a refusal.
+  `unknownArguments` walks only closed structs, so a new field is caught only
+  under a struct; records, `allOf` and untyped values are not checked. An
+  argument an older version satisfies anyway goes in `ignorableArguments`.
 - **The token goes only to an address that proves it is the linked
   environment**: its descriptor must report the linked environment id. A LAN
   address that now belongs to another machine never receives it.
