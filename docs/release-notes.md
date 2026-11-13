@@ -1,3 +1,8 @@
+## 2026-11-13 — A chat that was starting when the computer slept starts again by itself
+
+- A chat or scheduled run that was starting when the computer went to sleep could fail seconds after it woke, for example with "Claude timed out while registering its MCP tools", and nothing ran it again. Startup deadlines now count only the time the computer is awake: Claude's MCP setup and wake start, the 5 minute limits on opening a session and loading or resuming a conversation, ACP agents such as Grok loading a session, OpenCode's server start, and Pi and Muse Code requests.
+- When a start still fails before the agent got the message, because the computer slept or the connection dropped, the same message now runs again by itself once the network answers, on the delays a chat stopped by a lost connection resumes on. The agent sees it once, not as a "continue" note.
+
 ## 2026-11-13 — Development and CI use the same Node version
 
 - Commands run inside the server package now use the repository's pinned Node version, keeping local database tests on the same SQLite version as CI. The supported Node versions for installed `t3` users are unchanged.
