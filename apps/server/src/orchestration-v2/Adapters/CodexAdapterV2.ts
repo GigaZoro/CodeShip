@@ -2333,18 +2333,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             );
           });
 
-        // Streaming updates repeatedly await this context, including retries before registration.
-        const awaitActiveTurn = Effect.fnUntraced(function* (
-          nativeTurnId: string,
-          attemptsRemaining = 1_000,
-        ): Effect.fn.Return<ActiveCodexTurnContext | undefined> {
-          const context = (yield* Ref.get(activeTurns)).get(nativeTurnId);
-          if (context !== undefined || attemptsRemaining <= 0) {
-            return context;
-          }
-          yield* Effect.yieldNow;
-          return yield* awaitActiveTurn(nativeTurnId, attemptsRemaining - 1);
-        });
+        // Never wait for a turn to appear: handlers run on the reader that every chat on this
+        // app-server shares, and turn/started registers a turn before any message about it.
+        const findActiveTurn = (nativeTurnId: string) =>
+          Ref.get(activeTurns).pipe(Effect.map((turns) => turns.get(nativeTurnId)));
 
         const resolveItemEventContext =
           /* Provider events include streaming deltas; avoid a span for each update. */
@@ -2353,7 +2345,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (settled !== undefined) {
               return { context: settled, settled: true } as const;
             }
-            const context = yield* awaitActiveTurn(nativeTurnId);
+            const context = yield* findActiveTurn(nativeTurnId);
             return context === undefined ? undefined : ({ context, settled: false } as const);
           });
 
@@ -3567,7 +3559,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             Effect.fnUntraced(function* (update) {
               const part = reasoningParts.get(update.itemId);
               if (part === undefined) return;
-              const context = yield* awaitActiveTurn(update.turnId);
+              const context = yield* findActiveTurn(update.turnId);
               if (context === undefined) return;
               const artifacts = yield* buildAgentMessageArtifacts(
                 context,
@@ -3616,7 +3608,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           stream: "summary" | "content",
           index: number,
         ) {
-          const context = yield* awaitActiveTurn(payload.turnId);
+          const context = yield* findActiveTurn(payload.turnId);
           if (context === undefined || payload.delta.length === 0) return;
           yield* completeProviderRetry(context, yield* DateTime.now);
           const itemId = reasoningPartKey(payload.turnId, payload.itemId, stream, index);
@@ -3651,7 +3643,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           emit:
             /* Provider events include streaming deltas; avoid a span for each update. */
             Effect.fnUntraced(function* (update) {
-              const context = yield* awaitActiveTurn(update.turnId);
+              const context = yield* findActiveTurn(update.turnId);
               if (context === undefined) {
                 return;
               }
@@ -4577,7 +4569,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("item/plan/delta", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
             }
@@ -4592,7 +4584,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("turn/plan/updated", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
             }
@@ -4666,7 +4658,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               payload.turnId,
               payload.tokenUsage,
             );
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
             }
@@ -4836,7 +4828,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("error", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
             }
@@ -4962,7 +4954,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("item/started", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
             }
@@ -5424,7 +5416,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
                 `No active Codex turn context for approval turn ${payload.turnId}.`,
@@ -5495,7 +5487,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
                 `No active Codex turn context for file change approval turn ${payload.turnId}.`,
@@ -5567,7 +5559,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("item/permissions/requestApproval", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
                 `No active Codex turn context for permissions approval turn ${payload.turnId}.`,
@@ -5640,7 +5632,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const context =
               payload.turnId === undefined || payload.turnId === null
                 ? undefined
-                : yield* awaitActiveTurn(payload.turnId);
+                : yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               yield* Effect.logWarning(
                 "Declined an MCP elicitation without an active Codex turn context.",
@@ -5844,7 +5836,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
           Effect.gen(function* () {
-            const context = yield* awaitActiveTurn(payload.turnId);
+            const context = yield* findActiveTurn(payload.turnId);
             if (context === undefined) {
               return yield* toProtocolError(
                 `No active Codex turn context for user input request turn ${payload.turnId}.`,

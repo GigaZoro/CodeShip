@@ -52,6 +52,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Scheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Sink from "effect/Sink";
@@ -2118,6 +2119,148 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  const untrackedThreadId = "untracked-turn-thread";
+  const untrackedTurnId = "untracked-turn-before-resume";
+  const untrackedUsage = {
+    totalTokens: 15,
+    inputTokens: 10,
+    cachedInputTokens: 2,
+    outputTokens: 5,
+    reasoningOutputTokens: 1,
+  };
+  const untrackedCommand = {
+    type: "commandExecution",
+    id: "untracked-command",
+    command: "pwd",
+    cwd: "/workspace",
+    processId: "42",
+    source: "unifiedExecStartup",
+    commandActions: [{ type: "unknown", command: "pwd" }],
+  };
+  const untrackedTurnNotifications: ReadonlyArray<{
+    readonly method: string;
+    readonly params: Record<string, unknown>;
+  }> = [
+    {
+      method: "thread/tokenUsage/updated",
+      params: {
+        tokenUsage: { total: untrackedUsage, last: untrackedUsage, modelContextWindow: 200_000 },
+      },
+    },
+    {
+      method: "item/started",
+      params: {
+        startedAtMs: 1782622445000,
+        item: {
+          ...untrackedCommand,
+          status: "inProgress",
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        },
+      },
+    },
+    {
+      method: "item/completed",
+      params: {
+        completedAtMs: 1782622445010,
+        item: {
+          ...untrackedCommand,
+          status: "completed",
+          aggregatedOutput: "/workspace\n",
+          exitCode: 0,
+          durationMs: 10,
+        },
+      },
+    },
+    {
+      method: "item/reasoning/textDelta",
+      params: { itemId: "untracked-thought", contentIndex: 0, delta: "Raw trace" },
+    },
+    { method: "item/plan/delta", params: { itemId: "untracked-plan", delta: "Check" } },
+    { method: "turn/plan/updated", params: { plan: [{ step: "Check", status: "pending" }] } },
+    {
+      method: "error",
+      params: { willRetry: false, error: { message: "The response stream disconnected." } },
+    },
+  ];
+
+  // Every chat on an app-server shares its reader, so a handler that waits stalls them all.
+  it.effect.each(untrackedTurnNotifications)(
+    "reads on past $method about a turn it does not track without waiting",
+    ({ method, params }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeTurnId = "untracked-turn-current";
+          const transcript = makeCodexReplayTranscript({
+            scenario: `untracked-turn-${method}`,
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId: untrackedThreadId,
+                nativeTurnId,
+                prompt: "Continue.",
+              }),
+              {
+                type: "emit_inbound",
+                label: `${method} for the turn before a resume`,
+                frame: {
+                  method,
+                  params: { threadId: untrackedThreadId, turnId: untrackedTurnId, ...params },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "complete",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: untrackedThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          });
+          let handled: ReadonlyArray<string> = [];
+          const handlerFinishedBeforeProbe = yield* Deferred.make<boolean>();
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            (handledMethod) =>
+              handledMethod === method
+                ? Effect.asVoid(
+                    Effect.forkChild(
+                      Effect.suspend(() =>
+                        Deferred.succeed(handlerFinishedBeforeProbe, handled.includes(method)),
+                      ),
+                    ),
+                  )
+                : Effect.void,
+          );
+          handled = harness.handledNotifications;
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`untracked-turn-${method}-attempt`),
+              text: "Continue.",
+            }),
+          );
+          assert.isTrue(yield* Deferred.await(handlerFinishedBeforeProbe));
+        }).pipe(
+          // Without automatic yields, only a handler that waits lets the forked probe run first.
+          Effect.provideService(Scheduler.PreventSchedulerYield, true),
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect("stops asking for commands the user allowed for the session", () =>

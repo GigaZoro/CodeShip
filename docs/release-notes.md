@@ -1,3 +1,8 @@
+## 2026-11-13 — Codex chats no longer stall for minutes after a restart
+
+- After T3.CodeShip restarted, every Codex chat on a machine could stop for one to three minutes at a time: resumed chats waited to start and running chats showed nothing new. When Codex sent an update about a turn from before the restart, such as its token use, T3.CodeShip waited for that turn to begin before it read Codex's next message, and all Codex chats on a machine share that reader. An update about a turn T3.CodeShip is not running is now set aside at once.
+- The server log now warns, naming the message, when handling one Codex message holds up the others for a second or longer.
+
 ## 2026-11-13 — A provider's status says why its CLI failed
 
 - When Claude's account check fails, **Settings → Providers & models** now shows the first line the CLI printed, such as an invalid settings file. Before, it said only that the CLI failed while checking account status. Pending Consumer Terms still say how to accept them.

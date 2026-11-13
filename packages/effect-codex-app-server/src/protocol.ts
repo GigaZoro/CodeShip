@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FiberMap from "effect/FiberMap";
@@ -20,6 +21,8 @@ const MAX_BUFFERED_RAW_MESSAGES = 32;
 // Bound JSONL lines before joining and parsing; the LF delimiter is excluded.
 const MAX_INCOMING_MESSAGE_BYTES = 128 * 1024 * 1024;
 const EXIT_STATUS_GRACE = "250 millis";
+// One reader serves every thread on an app-server, so a handler that holds it stalls them all.
+const SLOW_NOTIFICATION_HANDLER = Duration.seconds(1);
 
 export interface CodexAppServerProtocolLogEvent {
   readonly direction: "incoming" | "outgoing";
@@ -364,10 +367,26 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
         ? FiberMap.remove(requestHandlers, notification.params.requestId)
         : Effect.void;
 
+    const runNotificationHandler = (notification: CodexAppServerIncomingNotification) =>
+      options.onNotification
+        ? Effect.timed(options.onNotification(notification)).pipe(
+            Effect.flatMap(([elapsed]) =>
+              Duration.isGreaterThanOrEqualTo(elapsed, SLOW_NOTIFICATION_HANDLER)
+                ? Effect.logWarning("A Codex App Server notification handler held the reader").pipe(
+                    Effect.annotateLogs({
+                      method: notification.method,
+                      elapsedMs: Duration.toMillis(elapsed),
+                    }),
+                  )
+                : Effect.void,
+            ),
+          )
+        : Effect.void;
+
     const handleNotification = (notification: CodexAppServerIncomingNotification) =>
       releaseResolvedRequest(notification).pipe(
         Effect.andThen(Queue.offer(incomingNotifications, notification)),
-        Effect.andThen(options.onNotification ? options.onNotification(notification) : Effect.void),
+        Effect.andThen(runNotificationHandler(notification)),
         Effect.asVoid,
       );
 

@@ -1,8 +1,10 @@
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
@@ -461,6 +463,42 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
         id: 7,
         result: { decision: "accept" },
       });
+    }),
+  );
+
+  it.effect("warns when a notification handler holds the reader for a second", () =>
+    Effect.gen(function* () {
+      const warnings = yield* Queue.unbounded<Record<string, unknown>>();
+      const logger = Logger.make(({ logLevel, fiber }) => {
+        if (logLevel === "Warn") {
+          Queue.offerUnsafe(warnings, { ...fiber.getRef(References.CurrentLogAnnotations) });
+        }
+      });
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const handlerStarted = yield* Queue.unbounded<string>();
+      yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        onNotification: ({ method }) =>
+          Queue.offer(handlerStarted, method).pipe(
+            Effect.andThen(Effect.sleep(method === "item/slow" ? "1 second" : "999 millis")),
+          ),
+      }).pipe(Effect.provide(Logger.layer([logger])));
+
+      yield* Queue.offer(
+        input,
+        encoder.encode(
+          `${[
+            encodeUnknownJsonString({ method: "item/fast", params: {} }),
+            encodeUnknownJsonString({ method: "item/slow", params: {} }),
+          ].join("\n")}\n`,
+        ),
+      );
+
+      assert.equal(yield* Queue.take(handlerStarted), "item/fast");
+      yield* TestClock.adjust("999 millis");
+      assert.equal(yield* Queue.take(handlerStarted), "item/slow");
+      yield* TestClock.adjust("1 second");
+      assert.deepEqual(yield* Queue.take(warnings), { method: "item/slow", elapsedMs: 1000 });
     }),
   );
 
