@@ -2,9 +2,10 @@ import { it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
-import { sleepAwake, timeoutAwakeOrElse } from "./AwakeTime.ts";
+import { sleepAwake, timeoutAwakeOrElse, watchSleep } from "./AwakeTime.ts";
 
 // A macOS clock that sleeps from `sleepAt` for `sleepMs`: timers due while it sleeps fire on wake.
 const sleepingMacClock = (sleepAt: number, sleepMs: number): Clock.Clock => {
@@ -70,5 +71,29 @@ describe("AwakeTime", () => {
       Effect.map((result) => expect(result).toBe("done")),
       Effect.provideService(Clock.Clock, sleepingMacClock(sleepAt, sleepMs)),
     ),
+  );
+
+  it.effect("a sleep watch counts a sleep only when the machine slept", () =>
+    Effect.gen(function* () {
+      // The TestClock fires timers; the wall clock also jumps ahead over a sleep.
+      const testClock = yield* Clock.Clock;
+      let sleptMs = 0;
+      const millis = () => testClock.currentTimeMillisUnsafe() + sleptMs;
+      const mac: Clock.Clock = {
+        ...testClock,
+        currentTimeMillisUnsafe: millis,
+        currentTimeMillis: Effect.sync(millis),
+      };
+      const slept = yield* watchSleep.pipe(Effect.provideService(Clock.Clock, mac));
+      const check = slept.pipe(Effect.provideService(Clock.Clock, mac));
+
+      yield* TestClock.adjust("10 minutes");
+      const awake = yield* check;
+      sleptMs = 8 * 60 * 60_000;
+      const justWoke = yield* check;
+      yield* TestClock.adjust("1 minute");
+
+      expect([awake, justWoke, yield* check]).toEqual([false, true, true]);
+    }).pipe(Effect.scoped),
   );
 });

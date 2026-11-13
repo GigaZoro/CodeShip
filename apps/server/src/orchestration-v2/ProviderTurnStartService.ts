@@ -4,7 +4,7 @@ import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
-import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
+import { timeoutAwakeOrElse, watchSleep } from "@t3tools/shared/AwakeTime";
 import {
   CommandId,
   latestProviderTurnForAttempt,
@@ -339,6 +339,7 @@ export const layer: Layer.Layer<
           readonly title: string;
           readonly error: Error;
           readonly message?: string;
+          readonly slept?: boolean;
         },
       ) {
         const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
@@ -351,8 +352,10 @@ export const layer: Layer.Layer<
               ? nestedCause
               : failed.error.message);
         // The agent never saw the message, so a start that a sleep or a lost connection
-        // stopped can go again once the network answers.
+        // stopped can go again once the network answers. Any failure across a sleep counts:
+        // a provider's own wall-clock deadlines expire on wake too.
         const waitingFixes =
+          failed.slept === true ||
           (isProviderStartStepTimeoutError(failed.error) && failed.error.slept) ||
           providerErrorClass(message) === "transport_error";
         yield* settleUnstartedRun(context, {
@@ -577,6 +580,7 @@ export const layer: Layer.Layer<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly willRetry?: boolean;
+      readonly sleptDuringStart: Effect.Effect<boolean>;
     }) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
@@ -663,7 +667,9 @@ export const layer: Layer.Layer<
       const settleRunBeforeStart = (settled: Parameters<typeof settleUnstartedRun>[1]) =>
         settleUnstartedRun(unstarted, settled);
       const settleStartFailure = (failed: Parameters<typeof settleUnstartedRunFailure>[1]) =>
-        settleUnstartedRunFailure(unstarted, failed);
+        Effect.flatMap(input.sleptDuringStart, (slept) =>
+          settleUnstartedRunFailure(unstarted, { ...failed, slept }),
+        );
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
           message.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;
@@ -1955,9 +1961,14 @@ export const layer: Layer.Layer<
           // Storage cleanup removes worktrees under the same lease. Only startup
           // holds it; the provider turn runs after it is released.
           const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
-          const providerTurn = yield* thread.worktreePath === null
-            ? start(input)
-            : withWorkspaceLease(path.resolve(thread.worktreePath), start(input));
+          const providerTurn = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const starting = start({ ...input, sleptDuringStart: yield* watchSleep });
+              return yield* thread.worktreePath === null
+                ? starting
+                : withWorkspaceLease(path.resolve(thread.worktreePath), starting);
+            }),
+          );
           if (providerTurn !== undefined) yield* providerTurn;
         },
         (effect, input) =>

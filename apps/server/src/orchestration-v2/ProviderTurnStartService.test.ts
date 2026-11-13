@@ -333,6 +333,7 @@ function makeLocalCommandHarness(input: {
   readonly resumeThread?: () => Effect.Effect<never>;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
+  readonly beforeOpenFailure?: () => void;
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
   readonly previousTurn?: {
@@ -877,6 +878,7 @@ function makeLocalCommandHarness(input: {
               : "openFailure" in input
                 ? Effect.sync(() => {
                     if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                    input.beforeOpenFailure?.();
                   }).pipe(
                     Effect.andThen(
                       Effect.fail(
@@ -1954,20 +1956,35 @@ effectIt.effect.each(["unavailable", "tooLarge"] as const)(
 );
 
 effectIt.effect.each([
-  { message: "DESCRIPTION is not valid ACP JSON", class: "provider_error", code: null },
+  {
+    message: "DESCRIPTION is not valid ACP JSON",
+    slept: false,
+    class: "provider_error",
+    code: null,
+  },
   {
     message: "getaddrinfo ENOTFOUND api.anthropic.com",
+    slept: false,
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+  },
+  // A provider's own wall-clock deadline that expired while the computer slept.
+  {
+    message: "MCP server initialization timed out",
+    slept: true,
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
 ])("terminalizes a starting run when its provider session cannot open: $message", (row) =>
   Effect.gen(function* () {
+    const mac = yield* sleepingTestClock;
     const harness = makeLocalCommandHarness({
       text: "Continue",
       openFailure: new Error(row.message),
+      ...(row.slept ? { beforeOpenFailure: () => mac.sleep("8 hours") } : {}),
     });
 
-    yield* harness.start;
+    yield* harness.start.pipe(Effect.provideService(Clock.Clock, mac.clock));
 
     expect(harness.open).toHaveBeenCalledOnce();
     expect(harness.startRootRun).not.toHaveBeenCalled();
