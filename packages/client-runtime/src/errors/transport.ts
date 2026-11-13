@@ -1,6 +1,5 @@
+import { escapeRegExp } from "@t3tools/shared/String";
 import { NETWORK_BLOCKING_HINT, UNRESPONSIVE_HOST_HINT } from "./network.ts";
-
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const TRANSPORT_ERROR_PATTERNS = [
   /\bSocketCloseError\b/i,

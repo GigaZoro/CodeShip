@@ -1,4 +1,5 @@
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
+import { escapeRegExp } from "@t3tools/shared/String";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   collectComposerContextReferences,
@@ -46,10 +47,6 @@ function stripTrailingReviewComments(prompt: string): string {
     cut = match.index;
   }
   return cut === prompt.length ? prompt : prompt.slice(0, cut).trimEnd();
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stripInlineTerminalLabels(prompt: string, headers: ReadonlyArray<string>): string {

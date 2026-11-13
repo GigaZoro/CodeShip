@@ -1,4 +1,5 @@
 import type { DesktopDiscoveredSshHost } from "@t3tools/contracts";
+import { escapeRegExp } from "@t3tools/shared/String";
 
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -84,13 +85,9 @@ function hasSshPattern(value: string): boolean {
   return value.includes("*") || value.includes("?") || value.startsWith("!");
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
 function globToRegExp(pattern: string): RegExp {
   return new RegExp(
-    `^${escapeRegex(pattern).replace(/\\\*/gu, ".*").replace(/\\\?/gu, ".")}$`,
+    `^${escapeRegExp(pattern).replace(/\\\*/gu, ".*").replace(/\\\?/gu, ".")}$`,
     "u",
   );
 }
