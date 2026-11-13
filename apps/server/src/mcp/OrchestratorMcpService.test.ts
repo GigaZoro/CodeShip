@@ -3857,6 +3857,13 @@ describe("OrchestratorMcpService provider resolution", () => {
         outcome: "working",
       },
       {
+        name: "started, thread quiet for longer than its provider's turns go",
+        task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
+        runStatus: "running",
+        quietHours: 6,
+        outcome: "failed",
+      },
+      {
         name: "started, thread still going behind a queued run someone cancelled",
         task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
         runStatus: "running",
@@ -3984,31 +3991,48 @@ describe("OrchestratorMcpService provider resolution", () => {
                           turnItems:
                             "stopRequested" in row ? [{ type: "run_interrupt_request" }] : [],
                         } as never)
-                      : Effect.succeed({
-                          runs: [
-                            {
-                              ordinal: 1,
-                              status: runStatus,
-                              threadId: "thread:last-run",
-                              startedAt: "2026-10-05T01:00:00.000Z",
-                            },
-                            ...("cancelledQueuedRun" in row
-                              ? [
+                      : DateTime.now.pipe(
+                          Effect.map(
+                            (now) =>
+                              ({
+                                thread: {
+                                  id: "thread:last-run",
+                                  updatedAt: DateTime.subtract(now, {
+                                    hours: "quietHours" in row ? row.quietHours : 0,
+                                  }),
+                                },
+                                runs: [
                                   {
-                                    ordinal: 2,
-                                    status: "cancelled",
+                                    ordinal: 1,
+                                    status: runStatus,
                                     threadId: "thread:last-run",
-                                    startedAt: null,
+                                    startedAt: "2026-10-05T01:00:00.000Z",
                                   },
-                                ]
-                              : []),
-                          ],
-                          subagents:
-                            "delegating" in row
-                              ? [{ status: "running", completionDelivery: null }]
-                              : [],
-                          providerThreads: [],
-                        } as never),
+                                  ...("cancelledQueuedRun" in row
+                                    ? [
+                                        {
+                                          ordinal: 2,
+                                          status: "cancelled",
+                                          threadId: "thread:last-run",
+                                          startedAt: null,
+                                        },
+                                      ]
+                                    : []),
+                                ],
+                                subagents:
+                                  "delegating" in row
+                                    ? [
+                                        {
+                                          status: "running",
+                                          completionDelivery: null,
+                                          childThreadId: null,
+                                        },
+                                      ]
+                                    : [],
+                                providerThreads: [],
+                              }) as never,
+                          ),
+                        ),
                 restartContinuationPending: () =>
                   Effect.succeed("continues" in row && row.continues === true),
               }),

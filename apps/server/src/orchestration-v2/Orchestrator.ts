@@ -67,6 +67,7 @@ import {
   orchestrationV2WorktreePending,
   ProviderInstanceId,
   ProviderInteractionMode,
+  ProviderRequestKind,
   isRuntimeModeAbove,
   resolveProviderInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
@@ -127,6 +128,7 @@ import { notificationTurnItem } from "@t3tools/provider-core/server/notification
 import {
   backgroundWorkStoppedNoticeId,
   continuationFailedBeforePrompt,
+  continuationSource,
   continuationStartRetryDelayMs,
   isRestartContinuationSource,
   isSettledRun,
@@ -216,6 +218,11 @@ import * as ServerSettings from "../serverSettings.ts";
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
 );
+const isProviderApprovalKind = Schema.is(ProviderRequestKind);
+
+/** Model-facing: the provider passes it to the agent as the reason its step was refused. */
+export const UNATTENDED_DECLINE_FEEDBACK =
+  "Declined automatically: a scheduled task started this run, so nobody is watching it to approve this step. The step did not run. Do not try to get around the check another way. Finish the rest of the task without it, and say in your final report what still needs a person and why.";
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -685,6 +692,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "queued-run.edit":
     case "runtime-request.respond":
     case "runtime-request.delivery.fail":
+    case "runtime-request.decline-unattended":
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
     case "checkpoint.rollback.fail":
@@ -5775,26 +5783,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
         return { cancelUnsettledEffects: undefined };
       }
-      let source: OrchestrationV2Run = candidate;
-      const visited = new Set<RunId>();
-      while (!visited.has(source.id)) {
-        visited.add(source.id);
-        const previousId: RunId | undefined =
-          source.automaticContinuationOfRunId ?? source.restartContinuationOfRunId;
-        const sourceMessage = projection.messages.find((item) => item.id === source.userMessageId);
-        // Older recovery runs predate the link; only server continuations inherit earlier work.
-        const previous: OrchestrationV2Run | undefined =
-          previousId !== undefined
-            ? projection.runs.find((run) => run.id === previousId)
-            : sourceMessage?.creationSource === "server" &&
-                sourceMessage.scheduledTaskId === undefined
-              ? projection.runs.findLast(
-                  (run) => run.ordinal < source.ordinal && run.status !== "queued",
-                )
-              : undefined;
-        if (previous === undefined) break;
-        source = previous;
-      }
+      const source = continuationSource(candidate, projection);
       const message = projection.messages.find((item) => item.id === source.userMessageId);
       if (message?.scheduledTaskId === undefined) return null;
       const task = yield* projectionStore
@@ -9674,6 +9663,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command: Extract<OrchestrationV2Command, { readonly type: "runtime-request.respond" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+      // The server's own replies show as T3.CodeShip's, not the person's.
+      feedbackAuthor: "user" | "agent" = "user",
     ) {
       const context = yield* projectionStore
         .getRuntimeResponseContext(command.threadId, command.requestId)
@@ -9841,7 +9832,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             text: command.feedback,
             attachments: [],
             streaming: false,
-            createdBy: "user",
+            createdBy: feedbackAuthor,
             creationSource: "server",
             createdAt: now,
             updatedAt: now,
@@ -9880,7 +9871,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             inputIntent: "steer",
             text: command.feedback,
             attachments: [],
-            createdBy: "user",
+            createdBy: feedbackAuthor,
             creationSource: "server",
           },
         });
@@ -10024,6 +10015,89 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]);
     },
   );
+
+  // Full access still lets a provider ask about its own protected checks. Nobody watches a
+  // scheduled run to answer, and the wait would hold the run and the task's next occurrences.
+  /**
+   * Whether a scheduled task started the run, itself or through the delegated tasks above it. A
+   * run a person started in a client is theirs, whatever started the work before it.
+   */
+  const startedBySchedule = Effect.fnUntraced(function* (
+    projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "messages">,
+    run: OrchestrationV2Run,
+  ) {
+    let current = projection;
+    let currentRun = run;
+    while (true) {
+      const source = continuationSource(currentRun, current);
+      const origin = current.messages.find((message) => message.id === source.userMessageId);
+      if (origin?.scheduledTaskId !== undefined) return true;
+      if (origin?.creationSource === "web" || origin?.creationSource === "mobile") return false;
+      const { lineage, forkedFrom } = current.thread;
+      if (lineage.relationshipToParent !== "subagent" || lineage.parentThreadId === null) {
+        return false;
+      }
+      // A chat that took follow-ups has a task per run; its first run's task is the one it forked from.
+      const taskId =
+        source.delegatedTaskId ?? (forkedFrom?.type === "node" ? forkedFrom.nodeId : undefined);
+      if (taskId === undefined) return false;
+      const parent = yield* projectionStore.getThreadRecords(
+        lineage.parentThreadId,
+        ["runs", "messages", "subagents"],
+        { subagentIds: [taskId] },
+      );
+      const parentRunId = parent.subagents.find((task) => task.id === taskId)?.runId;
+      const parentRun = parent.runs.find((candidate) => candidate.id === parentRunId);
+      if (parentRun === undefined) return false;
+      current = parent;
+      currentRun = parentRun;
+    }
+  });
+
+  const dispatchRuntimeRequestDeclineUnattended = Effect.fn(
+    "Orchestrator.dispatchRuntimeRequestDeclineUnattended",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "runtime-request.decline-unattended" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const { request, node } = yield* projectionStore
+      .getRuntimeResponseContext(command.threadId, command.requestId)
+      .pipe(mapDispatchError(command));
+    if (
+      request?.status !== "pending" ||
+      request.responseCapability.type !== "live" ||
+      !isProviderApprovalKind(request.kind) ||
+      node?.runId == null
+    ) {
+      return;
+    }
+    const runId = node.runId;
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs", "messages"])
+      .pipe(mapDispatchError(command));
+    const run = projection.runs.find((candidate) => candidate.id === runId);
+    if (projection.thread.runtimeMode !== "full-access" || run === undefined) return;
+    if (!(yield* startedBySchedule(projection, run).pipe(mapDispatchError(command)))) return;
+    yield* dispatchRuntimeRequestRespond(
+      {
+        type: "runtime-request.respond",
+        commandId: command.commandId,
+        threadId: command.threadId,
+        requestId: command.requestId,
+        decision: "decline",
+        ...(request.responseCapability.supportsFeedback === true
+          ? { feedback: UNATTENDED_DECLINE_FEEDBACK }
+          : {}),
+      },
+      events,
+      effects,
+      "agent",
+    );
+  });
 
   /**
    * Respond resolves the request before delivery, and a failed delivery cannot
@@ -14376,6 +14450,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "runtime-request.delivery.fail":
         yield* dispatchRuntimeRequestDeliveryFail(command, events);
         break;
+      case "runtime-request.decline-unattended":
+        yield* dispatchRuntimeRequestDeclineUnattended(command, events, effects);
+        break;
       case "thread.background-work.settle":
         yield* dispatchBackgroundWorkSettle(command, events, effects);
         break;
@@ -14519,6 +14596,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           planned.events.length > 0 ||
           command.type === "thread.background-work.settle" ||
           command.type === "thread.interrupt.unresponsive" ||
+          // Someone may have answered, or the run is attended.
+          command.type === "runtime-request.decline-unattended" ||
           command.type === "thread.stop" ||
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.

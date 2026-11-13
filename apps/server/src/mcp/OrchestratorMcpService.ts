@@ -2339,7 +2339,21 @@ const make = Effect.gen(function* () {
       records !== undefined &&
       (yield* ThreadManagementService.threadStillWorking(threadManagement, records))
     ) {
-      return { ...run, outcome: "working" as const };
+      // A stalled chat holds no other machine back; the one it runs on stops it.
+      const stalled = yield* ThreadManagementService.stalledWork(
+        threadManagement,
+        records,
+        yield* DateTime.now,
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not check whether a scheduled task's last run stalled", {
+            taskId: task.id,
+            threadId,
+            cause,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+      if (stalled === undefined) return { ...run, outcome: "working" as const };
     }
     if (latest.status === "completed") return { ...run, outcome: "completed" as const };
     // A Stop from the user or an agent leaves an interrupt request; other machines leave it stopped.

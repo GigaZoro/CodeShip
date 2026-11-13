@@ -334,9 +334,23 @@ while a task its chat delegated to another agent still runs. **Run history**
 lists the time as skipped, and the task's run count and last run do not change;
 the next time after a run finishes starts as usual.
 
+- A chat in which nothing has happened for 2 hours on Claude, or 5 hours on
+  other providers, including one waiting for an answer, has stalled and no
+  longer counts as working. Work in a delegated task it waits on, or in the
+  tasks those wait on, counts as something happening, and a chat waiting on a
+  task that runs on another machine never counts as stalled. The next time
+  stops the chat and its delegated tasks, and **Run history** marks that chat's
+  run as failed with the reason.
+- In a task with Full access, when the provider still asks to approve a step
+  (such as Claude editing its own settings), in the chat or in a delegated task
+  with Full access it started, the step is declined, because
+  nobody is watching to approve it. The agent finishes the rest and says what
+  still needs you. A step in work you started yourself, such as a message you
+  sent into one of those chats, still waits for you.
 - A task that posts into one thread queues behind that thread's turn instead.
 - A shared task set to **One machine** counts its working runs on all of its
-  machines.
+  machines. A stalled chat counts on none of them: the machine it runs on stops
+  it at the next time, even while it waits its turn.
 - **Once** tasks, **Run now** and webhook runs always start.
 - Agents set it with `schedule_task` (`maxLiveRuns`), and `list_scheduled_tasks`
   shows how many runs are working.

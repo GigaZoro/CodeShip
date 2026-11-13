@@ -1005,11 +1005,23 @@ interface ChatRuns {
   /** Oldest first. */
   readonly statuses: ReadonlyArray<OrchestrationV2RunStatus>;
   readonly continuationPending: boolean;
-  /** A task the chat delegated still runs. */
-  readonly delegating?: boolean;
   /** "dropped": a projection rebuild removed the deleted chat. */
   readonly deleted?: "kept" | "dropped";
+  /** How long nothing has happened in the chat, on which provider. */
+  readonly quiet?: { readonly driver: string; readonly hours: number };
+  /**
+   * The delegated task the chat waits on, then the one that task's chat waits on, and so on, with
+   * how long nothing has happened in each one's chat. A remote task has no chat here.
+   */
+  readonly delegated?: ReadonlyArray<{
+    readonly driver: string;
+    readonly hours: number;
+    readonly remote?: true;
+  }>;
 }
+type ThreadCommand = Parameters<
+  ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+>[0];
 
 const withRunConditions = <A, E>(
   answer: (call: CheckCall) => Effect.Effect<ScheduledTaskRunCheck>,
@@ -1023,6 +1035,7 @@ const withRunConditions = <A, E>(
     readonly chatRuns: Ref.Ref<ChatRuns>;
     /** Runs of single chats, by thread id, in place of `chatRuns`. */
     readonly threadRuns: Ref.Ref<Readonly<Record<string, ChatRuns>>>;
+    readonly threadCommands: Ref.Ref<ReadonlyArray<ThreadCommand>>;
     /**
      * Watches the list from now on; the effect it returns waits until the checked task matches.
      * Changes coalesce, so tests wait for a state, not a number of changes.
@@ -1043,6 +1056,7 @@ const withRunConditions = <A, E>(
     const threadRuns = yield* Ref.make<Readonly<Record<string, ChatRuns>>>({});
     const runsOfThread = (threadId: string) =>
       Effect.zipWith(Ref.get(threadRuns), Ref.get(chatRuns), (own, all) => own[threadId] ?? all);
+    const threadCommands = yield* Ref.make<ReadonlyArray<ThreadCommand>>([]);
     // The first chat keeps the plain id the older tests expect; later ones are numbered.
     let launched = 0;
     const workers = new Map<string, Effect.Effect<void>>();
@@ -1064,37 +1078,66 @@ const withRunConditions = <A, E>(
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: (threadId) =>
-              runsOfThread(threadId).pipe(
-                Effect.filterOrFail(
-                  ({ deleted }) => deleted !== "dropped",
-                  () =>
-                    new Orchestrator.OrchestratorProjectionError({
-                      threadId,
-                      cause: new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }),
-                    }),
-                ),
-                Effect.map(
-                  ({ statuses, delegating, deleted }) =>
-                    ({
-                      thread: {
-                        deletedAt: deleted === "kept" ? "2026-01-01T00:00:00.000Z" : null,
-                      },
-                      runs: statuses.map((status, index) => ({
-                        id: `run:chat:${index}`,
-                        threadId,
-                        ordinal: index + 1,
-                        status,
-                      })),
-                      subagents:
-                        delegating === true
-                          ? [{ status: "running", completionDelivery: null }]
-                          : [],
-                      providerThreads: [],
-                    }) as never,
-                ),
-              ),
+              Effect.gen(function* () {
+                // A delegated task's chat is "<chat>/task/<depth>".
+                const [chatId = threadId, depth] = threadId.split("/task/");
+                const { statuses, deleted, quiet, delegated = [] } = yield* runsOfThread(chatId);
+                if (deleted === "dropped") {
+                  return yield* new Orchestrator.OrchestratorProjectionError({
+                    threadId,
+                    cause: new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }),
+                  });
+                }
+                const now = yield* DateTime.now;
+                const tasksAt = (index: number) => {
+                  const task = delegated[index];
+                  if (task === undefined) return [];
+                  const remote = task.remote === true;
+                  return [
+                    {
+                      status: "running",
+                      completionDelivery: null,
+                      driver: task.driver,
+                      childThreadId: remote ? null : `${chatId}/task/${index}`,
+                      ...(remote ? { remoteChild: { environmentId: "environment:other" } } : {}),
+                    },
+                  ];
+                };
+                if (depth !== undefined) {
+                  const index = Number(depth);
+                  return {
+                    thread: {
+                      id: threadId,
+                      updatedAt: DateTime.subtract(now, { hours: delegated[index]!.hours }),
+                    },
+                    subagents: tasksAt(index + 1),
+                  } as never;
+                }
+                return {
+                  thread: {
+                    id: threadId,
+                    deletedAt: deleted === "kept" ? "2026-01-01T00:00:00.000Z" : null,
+                    updatedAt: DateTime.subtract(now, { hours: quiet?.hours ?? 0 }),
+                  },
+                  runs: statuses.map((status, index) => ({
+                    id: `run:chat:${index}`,
+                    threadId,
+                    ordinal: index + 1,
+                    status,
+                    providerThreadId: "provider-thread:chat",
+                  })),
+                  providerThreads: [
+                    { id: "provider-thread:chat", driver: quiet?.driver ?? "codex" },
+                  ],
+                  subagents: tasksAt(0),
+                } as never;
+              }),
             restartContinuationPending: (run) =>
               runsOfThread(run.threadId).pipe(Effect.map((chat) => chat.continuationPending)),
+            dispatch: (command) =>
+              Ref.update(threadCommands, (all) => [...all, command]).pipe(
+                Effect.as({ sequence: 1 } as never),
+              ),
           }),
           layerSharedTaskDependencies(
             [
@@ -1147,6 +1190,7 @@ const withRunConditions = <A, E>(
         checks,
         chatRuns,
         threadRuns,
+        threadCommands,
         whenTask,
       });
     }).pipe(Effect.scoped, Effect.provide(layer));
@@ -1330,7 +1374,7 @@ it.effect.each([
     name: "delegated a task that still runs",
     statuses: ["completed"],
     continuationPending: false,
-    delegating: true,
+    delegated: [{ driver: "codex", hours: 0 }],
     skips: true,
   },
   {
@@ -1359,13 +1403,81 @@ it.effect.each([
     continuationPending: false,
     skips: false,
   },
-] as const)(
+  {
+    name: "has been quiet for 4 hours on Codex",
+    statuses: ["running"],
+    continuationPending: false,
+    quiet: { driver: "codex", hours: 4 },
+    skips: true,
+  },
+  {
+    name: "has been quiet for 5 hours on Codex, so it is stopped, and",
+    statuses: ["running"],
+    continuationPending: false,
+    quiet: { driver: "codex", hours: 5 },
+    skips: false,
+    stopped: true,
+  },
+  {
+    name: "has been quiet for 2 hours on Claude, so it is stopped, and",
+    statuses: ["running"],
+    continuationPending: false,
+    quiet: { driver: "claudeAgent", hours: 2 },
+    skips: false,
+    stopped: true,
+  },
+  {
+    name: "holds only a queued message, quiet for 6 hours, so it is left as it is, and",
+    statuses: ["interrupted", "queued"],
+    continuationPending: false,
+    quiet: { driver: "claudeAgent", hours: 6 },
+    skips: false,
+  },
+  {
+    name: "waits on a delegated Codex task that worked 4 hours ago",
+    statuses: ["waiting"],
+    continuationPending: false,
+    quiet: { driver: "claudeAgent", hours: 6 },
+    delegated: [{ driver: "codex", hours: 4 }],
+    skips: true,
+  },
+  {
+    name: "waits on a delegated Codex task quiet for 5 hours, so it is stopped, and",
+    statuses: ["waiting"],
+    continuationPending: false,
+    quiet: { driver: "claudeAgent", hours: 6 },
+    delegated: [{ driver: "codex", hours: 5 }],
+    skips: false,
+    stopped: true,
+  },
+  {
+    name: "waits on a delegated Claude task whose own Codex task worked 1 hour ago",
+    statuses: ["waiting"],
+    continuationPending: false,
+    quiet: { driver: "claudeAgent", hours: 6 },
+    delegated: [
+      { driver: "claudeAgent", hours: 6 },
+      { driver: "codex", hours: 1 },
+    ],
+    skips: true,
+  },
+  {
+    name: "waits on a delegated task on another machine",
+    statuses: ["waiting"],
+    continuationPending: false,
+    quiet: { driver: "claudeAgent", hours: 6 },
+    delegated: [{ driver: "codex", hours: 6, remote: true }],
+    skips: true,
+  },
+] satisfies ReadonlyArray<
+  ChatRuns & { readonly name: string; readonly skips: boolean; readonly stopped?: true }
+>)(
   "the next occurrence of a task whose last chat $name is skipped: $skips",
-  ({ skips, ...runs }) => {
+  ({ skips, stopped = false, ...runs }) => {
     const logged: Array<unknown> = [];
     return withRunConditions(
       () => Effect.succeed(FOUND_WORK),
-      ({ service, poll, launches, chatRuns, whenTask }) =>
+      ({ service, poll, launches, chatRuns, threadCommands, whenTask }) =>
         Effect.gen(function* () {
           const { task } = yield* service.upsert(
             conditionTask({ runCondition: null }),
@@ -1391,6 +1503,26 @@ it.effect.each([
           );
           if (!skips) {
             yield* Queue.take(launches);
+            const hours = Math.min(
+              runs.quiet?.hours ?? Infinity,
+              ...(runs.delegated ?? []).map((task) => task.hours),
+            );
+            const reason = `Stopped: nothing happened in this chat for ${hours} hours, so it no longer holds back the runs of this scheduled task.`;
+            const stops = (yield* Ref.get(threadCommands)).flatMap((command) =>
+              command.type === "thread.stop"
+                ? [{ threadId: command.threadId, reason: command.reason }]
+                : [],
+            );
+            assert.deepEqual(
+              stops,
+              stopped ? [{ threadId: ThreadId.make("thread:launched"), reason }] : [],
+            );
+            if (stopped) {
+              const first = (yield* runsOf(service)).find(
+                (run) => run.scheduledFor === task.nextRunAt,
+              );
+              assert.deepInclude(first, { outcome: "failed", error: reason });
+            }
             return;
           }
           assert.equal(yield* Queue.size(launches), 0);

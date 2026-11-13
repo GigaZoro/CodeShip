@@ -26,6 +26,7 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
   type OrchestrationV2Run,
+  isOrchestrationV2WorkActive,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
@@ -566,6 +567,74 @@ export function threadStillWorking(
     threadManagement.restartContinuationPending,
   ).pipe(Effect.map((pending) => pending.includes(true)));
 }
+
+const HOUR_MS = 60 * 60 * 1000;
+// Above the longest quiet stretch real turns of each provider had while still working: Claude's
+// subagents and MCP waits went 81 minutes without an event, Codex's provider retries 244.
+const STALLED_TURN_QUIET_MS: Readonly<Record<string, number>> = {
+  claudeAgent: 2 * HOUR_MS,
+  codex: 5 * HOUR_MS,
+};
+const DEFAULT_STALLED_TURN_QUIET_MS = 5 * HOUR_MS;
+const stalledTurnQuietMs = (driver: string | undefined) =>
+  (driver === undefined ? undefined : STALLED_TURN_QUIET_MS[driver]) ??
+  DEFAULT_STALLED_TURN_QUIET_MS;
+
+const openTasks = (projection: Pick<OrchestrationV2ThreadProjection, "subagents">) =>
+  projection.subagents.filter((task) => isOrchestrationV2WorkActive(task.status));
+
+/**
+ * For a chat that still works: whether nothing has happened in it, nor anywhere in the delegated
+ * work it waits on, for longer than their providers' turns ever go quiet, so it will not finish by
+ * itself. A pending approval or question counts as nothing happening. Work on another machine
+ * leaves no trace here while it runs, so a chat waiting on it is never judged stalled.
+ */
+export const stalledWork = Effect.fnUntraced(function* (
+  threadManagement: Pick<ThreadManagementServiceShape, "getThreadRecords">,
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "thread" | "runs" | "providerThreads" | "subagents"
+  >,
+  now: DateTime.DateTime,
+) {
+  const run = projection.runs.find((candidate) =>
+    ["preparing", "starting", "running", "waiting"].includes(candidate.status),
+  );
+  const providerThreadId = run?.providerThreadId ?? projection.thread.activeProviderThreadId;
+  let limitMs = stalledTurnQuietMs(
+    projection.providerThreads.find((providerThread) => providerThread.id === providerThreadId)
+      ?.driver,
+  );
+  let lastActivity = projection.thread.updatedAt;
+  const seen = new Set<ThreadId>([projection.thread.id]);
+  let open = openTasks(projection);
+  // Stop has something to end: a turn, the chat's tasks or its background work.
+  const stoppable =
+    run !== undefined ||
+    open.length > 0 ||
+    projection.providerThreads.some((providerThread) =>
+      backgroundWorkHoldsCompletion(providerThread.pendingBackgroundTasks ?? []),
+    );
+  while (open.length > 0) {
+    const children: Array<ThreadId> = [];
+    for (const task of open) {
+      if (task.remoteChild !== undefined) return undefined;
+      limitMs = Math.max(limitMs, stalledTurnQuietMs(task.driver));
+      if (task.childThreadId !== null && !seen.has(task.childThreadId)) {
+        seen.add(task.childThreadId);
+        children.push(task.childThreadId);
+      }
+    }
+    open = [];
+    for (const childThreadId of children) {
+      const child = yield* threadManagement.getThreadRecords(childThreadId, ["subagents"]);
+      lastActivity = DateTime.max(lastActivity, child.thread.updatedAt);
+      open.push(...openTasks(child));
+    }
+  }
+  const quietMs = DateTime.toEpochMillis(now) - DateTime.toEpochMillis(lastActivity);
+  return quietMs >= limitMs ? { quietMs, since: lastActivity, stoppable } : undefined;
+});
 
 function latestRestartContinuation(
   runs: ReadonlyArray<OrchestrationV2Run>,

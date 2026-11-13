@@ -1,3 +1,9 @@
+## 2026-11-14 — A scheduled chat no longer waits for hours on an approval nobody sees
+
+- In a scheduled task with Full access, Claude still asks before touching files it protects even under bypass, such as its own settings. Nobody was watching to approve, so the chat waited for hours and the task skipped every time after it. Such a step, in the chat or in a delegated task with Full access it started, is now declined, with a reply from T3.CodeShip telling the agent to finish the rest and say what still needs you. A step in work you started yourself, such as a message you sent into one of those chats, still waits for you.
+- A run's chat in which nothing has happened for 2 hours on Claude, or 5 hours on other providers, now counts as stalled, also when it waits on delegated tasks that have all gone that quiet, and no longer counts toward the task's live-run limit. The next scheduled time stops it and its delegated tasks with the reason, and **Run history** marks that chat's run as failed with the same reason. The limits sit above the longest quiet stretch real turns of each provider had while still working. A chat waiting on a task that runs on another machine is never treated as stalled.
+- For a shared task set to **One machine**, a stalled chat no longer holds the other machines back: they no longer count it, and the machine it runs on stops it at the next time, even while it waits its turn.
+
 ## 2026-11-14 — `check:changed` checks against the dependencies the branch locks
 
 - For contributors: after a rebase or pull onto a commit that added a dependency, `vp run check:changed` ran every step against the older install and failed late, on a module it could not find. It now installs `pnpm-lock.yaml` with `--frozen-lockfile` before any check, as CI does. When nothing changed this takes about a second, and a `package.json` the lockfile does not match fails at once.

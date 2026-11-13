@@ -167,6 +167,9 @@ const QUIET_SKIP_RETENTION = 10;
 // The newest run chats a live-run count reads: room for a full limit plus as many Run now runs.
 // An older chat that works again does not hold runs back.
 const LIVE_RUN_CHECK_LIMIT = 2 * MAX_SCHEDULED_TASK_MAX_LIVE_RUNS;
+type StalledWork = NonNullable<
+  Effect.Success<ReturnType<typeof ThreadManagementService.stalledWork>>
+>;
 // Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over 90 days.
 const RUN_HISTORY_WINDOW_MS = 90 * 24 * 60 * MINUTE_MS;
 const runHistoryCutoff = (startedAt: string) =>
@@ -2476,9 +2479,9 @@ export const layer = Layer.effect(
     );
 
     /**
-     * The chats of the task's newest runs here that still work, delegated tasks included. Every
-     * count reads them again, since an ended chat can resume; one that could not be read does not
-     * count.
+     * The chats of the task's newest runs here that still work, delegated tasks included, and
+     * whether each stalled. Every count reads them again, since an ended chat can resume; one that
+     * could not be read does not count.
      */
     const liveRunThreads = Effect.fn("ScheduledTaskService.liveRunThreads")(function* (
       taskId: ScheduledTaskId,
@@ -2490,30 +2493,93 @@ export const layer = Layer.effect(
         ORDER BY MAX(started_at) DESC
         LIMIT ${LIVE_RUN_CHECK_LIMIT}
       `.pipe(NodeSqliteClient.readOnly);
-      const working = yield* Effect.forEach(
+      const now = yield* localNow;
+      const checkThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+        const records = yield* threadManagement.getThreadRecords(threadId, [
+          "runs",
+          "subagents",
+          "providerThreads",
+        ]);
+        if (records.thread.deletedAt !== null) return [];
+        if (!(yield* ThreadManagementService.threadStillWorking(threadManagement, records))) {
+          return [];
+        }
+        const stalled = yield* ThreadManagementService.stalledWork(
+          threadManagement,
+          records,
+          now,
+        ).pipe(
+          // Unknown counts as working, so a failed check never starts a run beside it.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not check whether a scheduled task run stalled", {
+              taskId,
+              threadId,
+              cause,
+            }).pipe(Effect.as(undefined)),
+          ),
+        );
+        return [{ threadId, stalled }];
+      });
+      const live = yield* Effect.forEach(
         rows,
         ({ thread_id: threadId }) =>
-          threadManagement
-            .getThreadRecords(ThreadId.make(threadId), ["runs", "subagents", "providerThreads"])
-            .pipe(
-              Effect.flatMap((records) =>
-                records.thread.deletedAt !== null
-                  ? Effect.succeed(false)
-                  : ThreadManagementService.threadStillWorking(threadManagement, records),
-              ),
-              // A rebuild drops a deleted chat's projection.
-              Effect.catchIf(Orchestrator.isThreadNotFound, () => Effect.succeed(false)),
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Could not check whether a scheduled task run is working", {
-                  taskId,
-                  threadId,
-                  cause,
-                }).pipe(Effect.as(false)),
-              ),
+          checkThread(ThreadId.make(threadId)).pipe(
+            // A rebuild drops a deleted chat's projection.
+            Effect.catchIf(Orchestrator.isThreadNotFound, () => Effect.succeed([])),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not check whether a scheduled task run is working", {
+                taskId,
+                threadId,
+                cause,
+              }).pipe(Effect.as([])),
             ),
+          ),
         { concurrency: 4 },
       );
-      return rows.flatMap(({ thread_id: threadId }, index) => (working[index] ? [threadId] : []));
+      return live.flat();
+    });
+
+    // Nobody may be watching the chat, and waiting for it would hold back every later run.
+    const stopStalledRun = Effect.fnUntraced(function* (
+      taskId: ScheduledTaskId,
+      threadId: ThreadId,
+      stalled: StalledWork,
+    ) {
+      const hours = Math.floor(stalled.quietMs / (60 * MINUTE_MS));
+      const reason = `Stopped: nothing happened in this chat for ${hours} hours, so it no longer holds back the runs of this scheduled task.`;
+      yield* threadManagement.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make(
+          `server:scheduled-stall-stop:${taskId}:${threadId}:${DateTime.toEpochMillis(stalled.since)}`,
+        ),
+        threadId,
+        reason,
+      });
+      yield* keepRunHistory(
+        sql`
+          UPDATE scheduled_task_runs SET outcome = 'failed', error = ${reason}
+          WHERE task_id = ${taskId} AND thread_id = ${threadId} AND outcome = 'succeeded'
+        `,
+        taskId,
+      );
+      yield* Effect.logWarning("Stopped a scheduled task run's chat that made no progress", {
+        taskId,
+        threadId,
+        quietMs: stalled.quietMs,
+      });
+      yield* notifyChanged;
+    });
+
+    /**
+     * The chats of the task's runs here that still work. A stalled one no longer counts and is
+     * stopped; one with nothing left to stop, such as a held queue, is left as it is.
+     */
+    const workingRunsHere = Effect.fnUntraced(function* (taskId: ScheduledTaskId) {
+      const live = yield* liveRunThreads(taskId);
+      for (const { threadId, stalled } of live) {
+        if (stalled?.stoppable === true) yield* stopStalledRun(taskId, threadId, stalled);
+      }
+      return live.flatMap(({ threadId, stalled }) => (stalled === undefined ? [threadId] : []));
     });
 
     const liveRunLimitOf = Effect.fnUntraced(function* (taskId: ScheduledTaskId) {
@@ -2527,10 +2593,26 @@ export const layer = Layer.effect(
     const limitsLiveRuns = (task: Pick<ScheduledTask, "threadId" | "schedule">) =>
       task.threadId === null && task.schedule.type !== "once" && task.schedule.type !== "webhook";
 
+    /** A machine that waits its turn may never take the occurrence, so it stops its stalled runs now. */
+    const stopStalledRunsHere = Effect.fn("ScheduledTaskService.stopStalledRunsHere")(
+      function* (task: ScheduledTask) {
+        if (limitsLiveRuns(task)) yield* workingRunsHere(task.id);
+      },
+      (effect, task) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not check whether a scheduled task's runs stalled", {
+              taskId: task.id,
+              cause,
+            }),
+          ),
+        ),
+    );
+
     /**
      * Skips an occurrence while as many of the task's runs as its limit allows still work: those
-     * here, and for a one-machine task those `elsewhere` reports. A failed check never holds a run
-     * back.
+     * here, and for a one-machine task those `elsewhere` reports. A stalled run here is stopped and
+     * does not count. A failed check never holds a run back.
      */
     const skippedAtLiveRunLimit = Effect.fn("ScheduledTaskService.skippedAtLiveRunLimit")(
       function* (
@@ -2541,7 +2623,7 @@ export const layer = Layer.effect(
         if (!limitsLiveRuns(task)) return false;
         // Due rows come without side tables, so the limit is read here.
         const limit = yield* liveRunLimitOf(task.id);
-        const here = yield* liveRunThreads(task.id);
+        const here = yield* workingRunsHere(task.id);
         const onPeers = elsewhere.reduce((sum, peer) => sum + peer.liveRuns, 0);
         if (here.length + onPeers < limit) return false;
         // Names a machine only when this one's own runs leave room.
@@ -2580,7 +2662,8 @@ export const layer = Layer.effect(
     const liveRuns: ScheduledTaskService["Service"]["liveRuns"] = (task) =>
       limitsLiveRuns(task)
         ? liveRunThreads(task.id).pipe(
-            Effect.map((threads) => threads.length),
+            // Read only: the machine the chat runs on stops it at its next occurrence.
+            Effect.map((threads) => threads.filter(({ stalled }) => stalled === undefined).length),
             Effect.mapError((cause) =>
               taskError("Could not count the task's live runs.", { taskId: task.id, cause }),
             ),
@@ -3133,6 +3216,7 @@ export const layer = Layer.effect(
           yield* notifyChanged;
         });
         if (!resumed && plan.rank > 0) {
+          yield* stopStalledRunsHere(task);
           // Machines ahead may be catching up too, so a catch-up waits its turn from now.
           return yield* deferTo((catchUp ? nowMs : dueMs) + plan.rank * graceMs, null, null);
         }

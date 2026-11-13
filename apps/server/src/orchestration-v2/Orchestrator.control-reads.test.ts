@@ -15,6 +15,7 @@ import {
   RunAttemptId,
   RunId,
   RuntimeRequestId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -33,6 +34,7 @@ import {
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts";
+import * as UnattendedApprovalReactor from "./UnattendedApprovalReactor.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -1374,6 +1376,235 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       childThreadId: task.childThreadId!,
     });
   }).pipe(Effect.provide(DelegatedTaskQuestionReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("declines an approval only in a full-access run a scheduled task started", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const reactor = yield* UnattendedApprovalReactor.UnattendedApprovalReactor;
+    const now = yield* DateTime.now;
+    const askApproval = Effect.fnUntraced(function* (
+      name: string,
+      runtimeMode: "full-access" | "approval-required",
+      scheduled: boolean,
+      /** A follow-up runs in the task's chat after the task finished; the parent's run sends it. */
+      asks: "here" | "in task" | "in person's follow-up" | "in scheduled run's follow-up" = "here",
+    ) {
+      const threadId = ThreadId.make(`thread:unattended-${name}`);
+      const sessionId = ProviderSessionId.make(`session:unattended-${name}`);
+      const attachSession = (target: ThreadId) =>
+        projections.apply({
+          id: EventId.make(`session:${target}`),
+          type: "provider-session.attached",
+          threadId: target,
+          occurredAt: now,
+          payload: {
+            id: sessionId,
+            driver: adapter.driver,
+            providerInstanceId: instanceId,
+            status: "ready",
+            cwd: "/repo",
+            model: modelSelection.model,
+            capabilities: CodexProviderCapabilitiesV2,
+            createdAt: now,
+            updatedAt: now,
+            lastError: null,
+          },
+        });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create-unattended-${name}`),
+        threadId,
+        projectId: ProjectId.make("project:unattended"),
+        title: name,
+        modelSelection,
+        runtimeMode,
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* attachSession(threadId);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`start-unattended-${name}`),
+        threadId,
+        messageId: MessageId.make(`message:unattended-${name}`),
+        text: "Tidy the hooks",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+        ...(scheduled ? { scheduledTaskId: ScheduledTaskId.make("scheduled:inbox") } : {}),
+      });
+      let asking = threadId;
+      const parentRun = (yield* projections.getThreadRecords(threadId, ["runs"])).runs[0]!;
+      let run = parentRun;
+      if (asks !== "here") {
+        yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make(`delegate-unattended-${name}`),
+          parentThreadId: threadId,
+          parentRunId: run.id,
+          parentNodeId: run.rootNodeId!,
+          task: "Tidy the hooks",
+          completionWake: "settled_only",
+          modelSelection,
+          runtimeMode,
+          interactionMode: "default",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const task = (yield* projections.getThreadProjection(threadId)).subagents[0]!;
+        asking = task.childThreadId!;
+        yield* attachSession(asking);
+        run = (yield* projections.getThreadRecords(asking, ["runs"])).runs[0]!;
+        if (asks !== "in task") {
+          const scheduledFollowup = asks === "in scheduled run's follow-up";
+          yield* eventSink.write({
+            commandId: CommandId.make(`command:unattended-settle-${name}`),
+            events: [
+              {
+                id: EventId.make(`event:unattended-child-completed-${name}`),
+                type: "run.updated",
+                threadId: asking,
+                occurredAt: now,
+                payload: { ...run, status: "completed", completedAt: now },
+              },
+              {
+                id: EventId.make(`event:unattended-task-completed-${name}`),
+                type: "subagent.updated",
+                threadId,
+                occurredAt: now,
+                payload: { ...task, status: "completed", result: "Tidied.", completedAt: now },
+              },
+              ...(scheduledFollowup
+                ? [
+                    {
+                      id: EventId.make(`event:unattended-parent-completed-${name}`),
+                      type: "run.updated" as const,
+                      threadId,
+                      occurredAt: now,
+                      payload: { ...parentRun, status: "completed" as const, completedAt: now },
+                    },
+                  ]
+                : []),
+            ],
+          });
+          if (scheduledFollowup) {
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`schedule-unattended-${name}`),
+              threadId,
+              messageId: MessageId.make(`message:unattended-${name}-scheduled`),
+              text: "Tidy the hooks again",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "server",
+              scheduledTaskId: ScheduledTaskId.make("scheduled:inbox"),
+            });
+          }
+          const followupId = MessageId.make(`message:unattended-${name}-followup`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`followup-unattended-${name}`),
+            threadId: asking,
+            messageId: followupId,
+            text: "Tidy them once more",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            ...(scheduledFollowup
+              ? { createdBy: "agent", creationSource: "mcp", senderThreadId: threadId }
+              : { createdBy: "user", creationSource: "web" }),
+          });
+          run = (yield* projections.getThreadRecords(asking, ["runs"])).runs.find(
+            (candidate) => candidate.userMessageId === followupId,
+          )!;
+        }
+      }
+      const event = {
+        id: EventId.make(`event:unattended-${name}`),
+        type: "runtime-request.updated",
+        threadId: asking,
+        runId: run.id,
+        occurredAt: now,
+        payload: {
+          id: RuntimeRequestId.make(`request:unattended-${name}`),
+          nodeId: run.rootNodeId!,
+          providerTurnId: null,
+          nativeRequestRef: null,
+          kind: "file-change",
+          status: "pending",
+          responseCapability: {
+            type: "live",
+            providerSessionId: sessionId,
+            supportsFeedback: true,
+          },
+          createdAt: now,
+          resolvedAt: null,
+        },
+      } satisfies OrchestrationV2DomainEvent;
+      yield* eventSink.write({ events: [event] });
+      yield* reactor.handle(event);
+      return { threadId: asking, requestId: event.payload.id };
+    });
+
+    const unattended = yield* askApproval("scheduled", "full-access", true);
+    const unattendedTask = yield* askApproval("scheduled-task", "full-access", true, "in task");
+    const unattendedFollowup = yield* askApproval(
+      "scheduled-followup",
+      "full-access",
+      false,
+      "in scheduled run's follow-up",
+    );
+    const attended = yield* askApproval("user", "full-access", false);
+    const attendedTask = yield* askApproval("user-task", "full-access", false, "in task");
+    const attendedFollowup = yield* askApproval(
+      "user-followup",
+      "full-access",
+      true,
+      "in person's follow-up",
+    );
+    const approving = yield* askApproval("approving", "approval-required", true);
+
+    const request = (target: { threadId: ThreadId; requestId: RuntimeRequestId }) =>
+      projections.getRuntimeRequest(target.threadId, target.requestId);
+    for (const declined of [unattended, unattendedTask, unattendedFollowup]) {
+      assert.deepInclude(yield* request(declined), {
+        status: "resolved",
+        decision: "decline",
+        feedback: Orchestrator.UNATTENDED_DECLINE_FEEDBACK,
+      });
+    }
+    for (const pending of [attended, attendedTask, attendedFollowup, approving]) {
+      assert.equal((yield* request(pending))?.status, "pending");
+    }
+    const reply = (yield* projections.getThreadProjection(unattended.threadId)).messages.find(
+      (message) => message.id === `approval-feedback:${unattended.requestId}`,
+    );
+    assert.deepInclude(reply, { createdBy: "agent", creationSource: "server" });
+    assert.deepEqual(
+      (yield* outbox.listByCommandId(
+        CommandId.make(
+          `server:unattended-approval-decline:${unattended.threadId}:${unattended.requestId}`,
+        ),
+      )).map((effect) => effect.request),
+      [
+        {
+          type: "runtime-request.respond",
+          providerSessionId: ProviderSessionId.make("session:unattended-scheduled"),
+          requestId: unattended.requestId,
+          decision: "decline",
+          feedback: Orchestrator.UNATTENDED_DECLINE_FEEDBACK,
+        },
+      ],
+    );
+  }).pipe(Effect.provide(UnattendedApprovalReactor.layer.pipe(Layer.provideMerge(layerTest)))),
 );
 
 it.effect.each([false, true])("rejects thread.create for an existing id (deleted: %s)", (deleted) =>

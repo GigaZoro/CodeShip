@@ -1,6 +1,7 @@
 import {
   isOrchestrationV2WorkActive,
   type OrchestrationV2AppThread,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
@@ -515,6 +516,35 @@ export function promptNeverDelivered(
   providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId">>,
 ): boolean {
   return !providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId);
+}
+
+/** The run whose message started the work `run` continues, through any server continuations. */
+export function continuationSource(
+  run: OrchestrationV2Run,
+  projection: {
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
+    readonly messages: ReadonlyArray<OrchestrationV2ConversationMessage>;
+  },
+): OrchestrationV2Run {
+  let source = run;
+  const visited = new Set<RunId>();
+  while (!visited.has(source.id)) {
+    visited.add(source.id);
+    const previousId = source.automaticContinuationOfRunId ?? source.restartContinuationOfRunId;
+    const sourceMessage = projection.messages.find((item) => item.id === source.userMessageId);
+    // Older recovery runs predate the link; only server continuations inherit earlier work.
+    const previous =
+      previousId !== undefined
+        ? projection.runs.find((candidate) => candidate.id === previousId)
+        : sourceMessage?.creationSource === "server" && sourceMessage.scheduledTaskId === undefined
+          ? projection.runs.findLast(
+              (candidate) => candidate.ordinal < source.ordinal && candidate.status !== "queued",
+            )
+          : undefined;
+    if (previous === undefined) break;
+    source = previous;
+  }
+  return source;
 }
 
 /** A later run took the thread past `run`, so resuming `run` now would reorder the work. */

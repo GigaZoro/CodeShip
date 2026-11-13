@@ -122,6 +122,7 @@ const withService = <A, E>(
     readonly runConditionCheck?: Layer.Layer<RunConditionCheck.RunConditionCheck>;
     /** Registers no work, so moving the clock days ahead does not tick the poll every 5 seconds. */
     readonly idleScheduler?: boolean;
+    readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -145,7 +146,9 @@ const withService = <A, E>(
             isScratchProject: (projectId) => Effect.succeed(projectId === SCRATCH),
             ensureScratchProject: Effect.succeed({ projectId: SCRATCH }),
           }),
-          Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)(
+            extras.threadManagement ?? {},
+          ),
           Layer.mock(SecretRequests.SecretRequests)({}),
         ),
       ),
@@ -677,6 +680,7 @@ const runScenario = <A, E>(
   /** Gives the task a run condition, counting the checks run here. */
   checks?: Ref.Ref<number>,
   checkAnswer: ScheduledTaskRunCheck = { outcome: "run", failure: null, exitCode: 0, detail: null },
+  threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>,
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<unknown>();
@@ -773,6 +777,7 @@ const runScenario = <A, E>(
                 run: () => Ref.update(checks, (n) => n + 1).pipe(Effect.as(checkAnswer)),
               }),
             }),
+        ...(threadManagement === undefined ? {} : { threadManagement }),
       },
     );
   });
@@ -1214,6 +1219,52 @@ it.effect(
         }),
       ),
     ),
+);
+
+it.effect("a machine waiting its turn stops its own last-run chat once it stalled", () =>
+  Effect.gen(function* () {
+    const stops = yield* Ref.make<ReadonlyArray<unknown>>([]);
+    const threadManagement = {
+      getThreadRecords: () =>
+        Effect.succeed({
+          thread: {
+            id: "thread-1",
+            deletedAt: null,
+            updatedAt: DateTime.makeUnsafe(NOW - HOUR_MS),
+          },
+          runs: [{ id: "run-1", ordinal: 1, status: "running", providerThreadId: "provider-1" }],
+          providerThreads: [{ id: "provider-1", driver: "claudeAgent" }],
+          subagents: [],
+        } as never),
+      dispatch: (command: { readonly type: string; readonly threadId?: unknown }) =>
+        Ref.update(stops, (all) => [...all, command]).pipe(Effect.as({ sequence: 1 } as never)),
+    } as Partial<ThreadManagementService.ThreadManagementService["Service"]>;
+    yield* runScenario(
+      [OTHER, HERE_ENVIRONMENT_ID],
+      NO_RUN_THERE,
+      (scenario) =>
+        Effect.gen(function* () {
+          const id = "scheduled-task:shared" as ScheduledTaskId;
+          yield* scenario.service.runNow({ id });
+          yield* Queue.take(scenario.launches);
+          // Quiet for two hours on Claude when it first looks, so it stops the chat as it waits.
+          yield* scenario.tick(DUE + 1_000);
+          yield* scenario.settled;
+          expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + 5 * MINUTE_MS));
+          const reason =
+            "Stopped: nothing happened in this chat for 2 hours, so it no longer holds back the runs of this scheduled task.";
+          expect(yield* Ref.get(stops)).toEqual([
+            expect.objectContaining({ type: "thread.stop", threadId: "thread-1", reason }),
+          ]);
+          const { runs } = yield* scenario.service.listRuns({ id });
+          expect(runs).toEqual([expect.objectContaining({ outcome: "failed", error: reason })]);
+        }),
+      undefined,
+      undefined,
+      undefined,
+      threadManagement,
+    );
+  }),
 );
 
 it.effect(
