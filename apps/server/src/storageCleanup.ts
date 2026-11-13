@@ -980,11 +980,12 @@ const make = Effect.gen(function* () {
               // a conventional name may be a feature branch.
               if (branch === null) {
                 branch = yield* git
-                  .execute({
+                  .executeRemote({
                     operation: "StorageCleanup.resolveDefaultBranch",
                     cwd: repositoryCwd,
                     args: ["ls-remote", "--symref", "--", remote, "HEAD"],
                     timeoutMs: 20_000,
+                    fallbackErrorDetail: "Git could not read the remote's default branch.",
                   })
                   .pipe(
                     Effect.map(

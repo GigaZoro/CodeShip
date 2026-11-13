@@ -83,6 +83,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as NetworkRecoveryWorker from "../orchestration-v2/NetworkRecoveryWorker.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
@@ -126,6 +127,10 @@ import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerificatio
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
+const isLostPromptFileRead = (
+  error: PromptFileReader.PromptFileReadError | ScheduledTaskError,
+): error is PromptFileReader.PromptFileReadError =>
+  error._tag === "PromptFileReadError" && error.lostConnection;
 const PROMPT_TOO_LONG = "The filled-in prompt is too long.";
 const MINUTE_MS = 60_000;
 // An occurrence of a one-machine task counts as run if a machine started it within this
@@ -1755,7 +1760,12 @@ export const layer = Layer.effect(
       path: string,
     ) {
       const unreadable = (detail: string) =>
-        new PromptFileReader.PromptFileReadError({ path, ref: null, detail });
+        new PromptFileReader.PromptFileReadError({
+          path,
+          ref: null,
+          detail,
+          lostConnection: false,
+        });
       const project = yield* projects
         .getById(projectId)
         .pipe(
@@ -1804,6 +1814,41 @@ export const layer = Layer.effect(
         );
       return read;
     });
+
+    // A scheduled run can start on a wake, before the network is back. It runs in the background
+    // and holds the task's reservation, so its wait holds up no other task and cannot run it twice.
+    const readScheduledPromptFile = (task: ScheduledTask, path: string) =>
+      NetworkRecoveryWorker.retryAfterLostConnection(
+        Effect.gen(function* () {
+          const current = yield* findTask(task.id);
+          if (current === null || !current.enabled || current.createdAt !== task.createdAt) {
+            return yield* taskError(
+              "The task was paused or deleted while its run waited for the network.",
+              { taskId: task.id },
+            );
+          }
+          return yield* readRunPromptFile(task, path).pipe(
+            Effect.tapError((error) =>
+              isLostPromptFileRead(error)
+                ? Effect.logWarning("Scheduled task prompt file read lost its connection", {
+                    taskId: task.id,
+                    detail: error.detail,
+                  })
+                : Effect.void,
+            ),
+          );
+        }),
+        {
+          isLostConnection: isLostPromptFileRead,
+          giveUp: (error, why) =>
+            new PromptFileReader.PromptFileReadError({
+              path: error.path,
+              ref: error.ref,
+              detail: `${error.detail} ${why}`,
+              lostConnection: true,
+            }),
+        },
+      );
 
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
@@ -1917,9 +1962,10 @@ export const layer = Layer.effect(
             : active.promptFile == null
               ? Result.succeed(active.prompt)
               : yield* Effect.result(
-                  readRunPromptFile(active, active.promptFile.path).pipe(
-                    Effect.map((read) => read.text),
-                  ),
+                  (trigger === "scheduled"
+                    ? readScheduledPromptFile(active, active.promptFile.path)
+                    : readRunPromptFile(active, active.promptFile.path)
+                  ).pipe(Effect.map((read) => read.text)),
                 );
 
         // A bound thread can move to another project (No project to a project) while

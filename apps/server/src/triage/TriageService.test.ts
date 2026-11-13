@@ -58,23 +58,25 @@ const makeTriage = (
   Effect.gen(function* () {
     const git = yield* GitVcsDriver.GitVcsDriver;
     const commands: string[] = [];
+    const run = (input: { readonly args: ReadonlyArray<string> }) => {
+      const command = input.args[0] ?? "";
+      commands.push(command);
+      return answer(command).pipe(
+        Effect.map((stdout) => ({
+          exitCode: ChildProcessSpawner.ExitCode(0),
+          stdout,
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        })),
+      );
+    };
     const triage = yield* Layer.build(TriageService.layer).pipe(
       Effect.map(Context.get(TriageService.TriageService)),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
-        execute: (input) => {
-          const command = input.args[0] ?? "";
-          commands.push(command);
-          return answer(command).pipe(
-            Effect.map((stdout) => ({
-              exitCode: ChildProcessSpawner.ExitCode(0),
-              stdout,
-              stderr: "",
-              stdoutTruncated: false,
-              stderrTruncated: false,
-            })),
-          );
-        },
+        execute: run,
+        executeRemote: run,
       }),
     );
     return { triage, commands };

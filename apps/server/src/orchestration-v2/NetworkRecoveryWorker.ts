@@ -9,6 +9,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { canOpenTcp } from "../cloud/ConnectReachability.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
@@ -63,6 +64,55 @@ export class NetworkProbe extends Context.Reference<Effect.Effect<boolean>>(
   "t3/orchestration-v2/NetworkProbe",
   { defaultValue: () => canReachProviders },
 ) {}
+
+// Counted in probes, not wall time: timers stop while a Mac sleeps.
+const MAX_OFFLINE_RECHECKS = 10;
+
+/**
+ * Runs `effect`, and runs it again while it fails for a lost connection: on the delays a stopped
+ * thread resumes on, each once the network answers. A wait for the network gives up after
+ * MAX_OFFLINE_RECHECKS probes. `giveUp` adds `why` it stopped to the last such failure.
+ */
+export const retryAfterLostConnection = Effect.fn("NetworkRecoveryWorker.retryAfterLostConnection")(
+  function* <A, E, R, Lost extends E>(
+    effect: Effect.Effect<A, E, R>,
+    options: {
+      readonly isLostConnection: (error: E) => error is Lost;
+      readonly giveUp: (error: Lost, why: string) => E;
+    },
+  ): Effect.fn.Return<A, E, R> {
+    const isOnline = yield* NetworkProbe;
+    let result = yield* Effect.result(effect);
+    for (const delayMs of RESUME_DELAYS_MS) {
+      if (Result.isSuccess(result) || !options.isLostConnection(result.failure)) {
+        return yield* Effect.fromResult(result);
+      }
+      const lost = result.failure;
+      yield* Effect.sleep(delayMs);
+      let online = yield* isOnline;
+      for (let recheck = 0; !online && recheck < MAX_OFFLINE_RECHECKS; recheck++) {
+        yield* Effect.sleep(OFFLINE_RECHECK_MS);
+        online = yield* isOnline;
+      }
+      if (!online) {
+        const waitedMinutes = (MAX_OFFLINE_RECHECKS * OFFLINE_RECHECK_MS) / 60_000;
+        return yield* Effect.fail(
+          options.giveUp(lost, `The network was not back after ${waitedMinutes} minutes.`),
+        );
+      }
+      result = yield* Effect.result(effect);
+    }
+    if (Result.isFailure(result) && options.isLostConnection(result.failure)) {
+      return yield* Effect.fail(
+        options.giveUp(
+          result.failure,
+          `It failed this way ${RESUME_DELAYS_MS.length + 1} times, though the network was back.`,
+        ),
+      );
+    }
+    return yield* Effect.fromResult(result);
+  },
+);
 
 /** Which resume of an unbroken chain this one is, 1-based. */
 function networkResumeAttempt(

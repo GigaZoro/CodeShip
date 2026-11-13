@@ -33,7 +33,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { PATCH_RENDER_PREFIX_ARGS } from "../vcs/GitVcsDriverCore.ts";
+import { PATCH_RENDER_PREFIX_ARGS, remoteFailureText } from "../vcs/GitVcsDriverCore.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 import { pullRequestSyncKey } from "./pullRequestSyncKey.ts";
 import { reviewGuideInputFromPullRequest } from "./pullRequestReviewGuideInput.ts";
@@ -188,12 +188,25 @@ const make = Effect.gen(function* () {
       });
     }
     const fetch = (args: ReadonlyArray<string>) =>
-      git.execute({
-        operation: "PullRequestReviewGuideService.fetch",
-        cwd: workspaceRoot,
-        args: ["fetch", "--quiet", "--no-tags", "--", remote, ...args],
-        timeoutMs: 5 * 60_000,
-      });
+      git
+        .executeRemote({
+          operation: "PullRequestReviewGuideService.fetch",
+          cwd: workspaceRoot,
+          args: ["fetch", "--quiet", "--no-tags", "--", remote, ...args],
+          timeoutMs: 5 * 60_000,
+          fallbackErrorDetail: "Git could not fetch from the remote.",
+        })
+        .pipe(
+          // The cause and Git's own lines are what the user needs to act on a failed fetch.
+          Effect.mapError(
+            (error) =>
+              new PullRequestOperationError({
+                operation: "generateReviewGuide",
+                detail: remoteFailureText(error),
+                cause: error,
+              }),
+          ),
+        );
     // Reject invalid branch names and refspec operators before fetching host-provided names.
     yield* git
       .execute({

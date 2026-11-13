@@ -349,6 +349,7 @@ export const make = Effect.gen(function* () {
     // Git misreads @ in a pathless URL's query as userinfo and echoes its suffix as the host.
     const normalizedCloneUrl = cloneUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]+)\?/i, "$1/?");
     yield* git
+      // oxlint-disable-next-line t3code/no-remote-git-through-execute -- streams clone progress and keeps its own stderr tail, which executeRemote does not offer
       .execute({
         operation: "SourceControlRepositoryService.cloneRepository",
         cwd: path.dirname(destinationPath),

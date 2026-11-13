@@ -63,6 +63,15 @@ export interface ExecuteGitInput {
   readonly writesSharedConfig?: boolean;
 }
 
+export interface ExecuteRemoteGitInput {
+  readonly operation: string;
+  readonly cwd: string;
+  readonly args: ReadonlyArray<string>;
+  readonly timeoutMs?: number;
+  /** The failure's detail when Git's output names no known cause. */
+  readonly fallbackErrorDetail: string;
+}
+
 export interface ExecuteGitResult {
   readonly exitCode: ChildProcessSpawner.ExitCode;
   readonly stdout: string;
@@ -310,6 +319,14 @@ export class GitVcsDriver extends Context.Service<
   GitVcsDriver,
   {
     readonly execute: (input: ExecuteGitInput) => Effect.Effect<ExecuteGitResult, GitCommandError>;
+    /**
+     * Runs a command that talks to a remote, such as fetch or ls-remote, without prompting. Its
+     * failure names the cause Git gave and where the command spent its time, and
+     * `isLostConnection` tells whether the network was the cause.
+     */
+    readonly executeRemote: (
+      input: ExecuteRemoteGitInput,
+    ) => Effect.Effect<ExecuteGitResult, GitCommandError>;
     readonly status: (input: VcsStatusInput) => Effect.Effect<VcsStatusResult, GitCommandError>;
     readonly statusDetails: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
     readonly statusDetailsLocal: (

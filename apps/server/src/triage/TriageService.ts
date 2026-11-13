@@ -18,14 +18,6 @@ import { triageSourceCacheDir, writeTriageSession } from "./triageSession.ts";
 
 const T3CODE_REPOSITORY_URL = "https://github.com/pingdotgg/t3code";
 
-// No tty: a credential prompt would hang until the timeout, so git must fail
-// instead. An empty GIT_ASKPASS also skips core.askPass and SSH_ASKPASS helpers.
-const GIT_ENV = {
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_ASKPASS: "",
-  LC_ALL: "C",
-} satisfies NodeJS.ProcessEnv;
-
 /** Starts in-app triage sessions: the same files `t3 triage` writes, plus a source clone. */
 export class TriageService extends Context.Service<
   TriageService,
@@ -77,7 +69,7 @@ const make = Effect.gen(function* () {
   const serverVersion = packageJson.version;
 
   const runGit = (operation: string, cwd: string, args: ReadonlyArray<string>, timeoutMs: number) =>
-    git.execute({ operation: `TriageService.${operation}`, cwd, args, timeoutMs, env: GIT_ENV });
+    git.execute({ operation: `TriageService.${operation}`, cwd, args, timeoutMs });
 
   // Clones outlive the request that started them: a fresh clone takes tens of
   // seconds, and the user is writing their description meanwhile.
@@ -99,12 +91,13 @@ const make = Effect.gen(function* () {
         ["remote", "add", "origin", T3CODE_REPOSITORY_URL],
         10_000,
       );
-      yield* runGit(
-        "fetchSource",
-        staging,
-        ["fetch", "--depth", "1", "--filter=blob:none", "origin", commit],
-        600_000,
-      );
+      yield* git.executeRemote({
+        operation: "TriageService.fetchSource",
+        cwd: staging,
+        args: ["fetch", "--depth", "1", "--filter=blob:none", "origin", commit],
+        timeoutMs: 600_000,
+        fallbackErrorDetail: "Git could not fetch the T3 Code source.",
+      });
       yield* runGit("checkoutSource", staging, ["checkout", "--quiet", "FETCH_HEAD"], 600_000);
       yield* fs.rename(staging, directory).pipe(
         // A concurrent session cloned the same commit first; keep theirs.
@@ -126,13 +119,14 @@ const make = Effect.gen(function* () {
   const resolveSource = Effect.fn("TriageService.resolveSource")(function* () {
     if (releaseSource !== undefined) return releaseSource;
     const tag = `refs/tags/v${serverVersion}`;
-    const listed = yield* runGit(
-      "resolveSourceRef",
-      sourceDir,
-      ["ls-remote", T3CODE_REPOSITORY_URL, tag, `${tag}^{}`, "refs/heads/main"],
+    const listed = yield* git.executeRemote({
+      operation: "TriageService.resolveSourceRef",
+      cwd: sourceDir,
+      args: ["ls-remote", T3CODE_REPOSITORY_URL, tag, `${tag}^{}`, "refs/heads/main"],
       // Triage still starts without source; a dead network should not stall it.
-      5_000,
-    );
+      timeoutMs: 5_000,
+      fallbackErrorDetail: "Git could not list the T3 Code source refs.",
+    });
     const source = pickSourceRef(listed.stdout, serverVersion);
     if (source?.ref !== "main") releaseSource = source;
     return source;

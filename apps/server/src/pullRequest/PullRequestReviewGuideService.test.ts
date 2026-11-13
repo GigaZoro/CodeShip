@@ -289,17 +289,19 @@ const startSingleBranchRun = (input: {
     const onBranchFetch = input.onBranchFetch;
     const observedDriver = {
       ...driver,
-      execute: (call: GitVcsDriver.ExecuteGitInput) =>
+      executeRemote: (call: GitVcsDriver.ExecuteRemoteGitInput) =>
         Effect.gen(function* () {
           const ref = call.args.at(-1);
-          if (call.args[0] !== "fetch" || ref === undefined) return yield* driver.execute(call);
+          if (call.args[0] !== "fetch" || ref === undefined)
+            return yield* driver.executeRemote(call);
           fetchedRefs.push(ref);
-          if (input.refuseCommitFetch && ref === repositories.headSha) {
+          if (input.refuseCommitFetch && ref === reportedHead) {
             return yield* new GitCommandError({
               operation: call.operation,
               command: "git",
               cwd: call.cwd,
               detail: "The test remote refuses fetches by commit.",
+              diagnostics: "fatal: remote error: upload-pack: not our ref",
               exitCode: 128,
             });
           }
@@ -308,7 +310,7 @@ const startSingleBranchRun = (input: {
               Effect.provideService(GitVcsDriver.GitVcsDriver, driver),
             );
           }
-          return yield* driver.execute(call);
+          return yield* driver.executeRemote(call);
         }),
     };
     const readCheckout = (cwd: string, args: ReadonlyArray<string>) =>
@@ -386,38 +388,46 @@ it.layer(layerBase, { excludeTestServices: true })("PullRequestReviewGuideServic
       name: "a head no source has",
       reportedHead: () => "e".repeat(40),
       shadow: "none",
-      expected: ["local objects:", "the commit:", "branch feature:", "refs/pull/7/head:"],
+      refuseCommitFetch: true,
+      expected: [
+        "local objects:",
+        "the commit: The test remote refuses fetches by commit. fatal: remote error: upload-pack: not our ref",
+        "branch feature:",
+        "refs/pull/7/head:",
+      ],
     },
-  ])("refuses to write a guide for $name", ({ reportedHead, shadow, expected }) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const run = yield* startSingleBranchRun({
-          repositoryName: "refused-head",
-          reportedHead,
-          refuseCommitFetch: false,
-          prepare: (repositories, workspace) =>
-            git(workspace, ["fetch", "--quiet", "origin", "feature"]).pipe(
-              Effect.andThen(
-                shadow === "none"
-                  ? Effect.void
-                  : git(workspace, [shadow, repositories.headSha.slice(0, 12), "HEAD"]),
+  ])(
+    "refuses to write a guide for $name",
+    ({ reportedHead, shadow, expected, refuseCommitFetch }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const run = yield* startSingleBranchRun({
+            repositoryName: "refused-head",
+            reportedHead,
+            refuseCommitFetch: refuseCommitFetch === true,
+            prepare: (repositories, workspace) =>
+              git(workspace, ["fetch", "--quiet", "origin", "feature"]).pipe(
+                Effect.andThen(
+                  shadow === "none"
+                    ? Effect.void
+                    : git(workspace, [shadow, repositories.headSha.slice(0, 12), "HEAD"]),
+                ),
+                Effect.asVoid,
               ),
-              Effect.asVoid,
-            ),
-        });
-        const result = yield* run.settled;
-        assert.isFalse(yield* Deferred.isDone(run.stored), "a guide was written");
-        assert.strictEqual(result.run?._tag, "Failed");
-        const detail = result.run?._tag === "Failed" ? result.run.detail : "";
-        for (const part of expected) assert.include(detail, part);
-        // Only the host's own head ref is tried.
-        assert.notInclude(detail, "refs/merge-requests/");
-        assert.deepStrictEqual(run.observed, []);
-        assert.isFalse(run.fetchedRefs.some((ref) => ref.startsWith("-")));
-        const fs = yield* FileSystem.FileSystem;
-        assert.isFalse(yield* fs.exists(`${run.repositories.root}/injected`));
-      }),
-    ),
+          });
+          const result = yield* run.settled;
+          assert.isFalse(yield* Deferred.isDone(run.stored), "a guide was written");
+          assert.strictEqual(result.run?._tag, "Failed");
+          const detail = result.run?._tag === "Failed" ? result.run.detail : "";
+          for (const part of expected) assert.include(detail, part);
+          // Only the host's own head ref is tried.
+          assert.notInclude(detail, "refs/merge-requests/");
+          assert.deepStrictEqual(run.observed, []);
+          assert.isFalse(run.fetchedRefs.some((ref) => ref.startsWith("-")));
+          const fs = yield* FileSystem.FileSystem;
+          assert.isFalse(yield* fs.exists(`${run.repositories.root}/injected`));
+        }),
+      ),
   );
 
   it.effect("measures only the PR change using the renamed verified remote's fetch URL", () =>

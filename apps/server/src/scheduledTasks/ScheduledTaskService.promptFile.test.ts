@@ -11,12 +11,14 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as NetworkRecoveryWorker from "../orchestration-v2/NetworkRecoveryWorker.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -99,18 +101,30 @@ const waitAt = (hold: Hold | undefined) =>
 
 /**
  * The tip of the default branch: what a push changes. `null` is a file that is not there, and a
- * hold keeps a read from answering until it is released.
+ * hold keeps a read from answering until it is released. `lostConnection` fails reads as Git
+ * does while the network is down.
  */
 type Remote = Ref.Ref<{
   readonly text: string | null;
   readonly commit: string;
   readonly hold?: Hold;
+  readonly lostConnection?: boolean;
 }>;
+
+const LOST_DETAIL =
+  "could not fetch it: Git got no answer in time. Phases: credential helper git-credential-osxkeychain get still running after 60.0 s; transfer 0.0 s.";
+
+/** What the network probe answers, and each answer it gave, so a test can move the clock after it. */
+interface Network {
+  readonly online: Ref.Ref<boolean>;
+  readonly probed: Queue.Queue<boolean>;
+}
 
 interface Harness {
   readonly service: ScheduledTaskService.ScheduledTaskService["Service"];
   readonly remote: Remote;
   readonly launched: Ref.Ref<ReadonlyArray<string>>;
+  readonly network: Network;
   /** Holds a save of a worktree task after it has loaded the stored task. */
   readonly saveHold: Ref.Ref<Hold | undefined>;
   /** One pass of the scheduler over the due tasks. */
@@ -130,13 +144,25 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
       commit: "c1",
     });
     const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+    const network: Network = {
+      online: yield* Ref.make(true),
+      probed: yield* Queue.unbounded<boolean>(),
+    };
     const saveHold = yield* Ref.make<Hold | undefined>(undefined);
     const workers = new Map<string, Effect.Effect<void>>();
     const reader = Layer.mock(PromptFileReader.PromptFileReader)({
       read: ({ cwd, path }) =>
         Effect.gen(function* () {
-          const { text, commit, hold } = yield* Ref.get(remote);
+          const { text, commit, hold, lostConnection = false } = yield* Ref.get(remote);
           yield* waitAt(hold);
+          if (lostConnection) {
+            return yield* new PromptFileReader.PromptFileReadError({
+              path,
+              ref: "origin/main",
+              detail: LOST_DETAIL,
+              lostConnection,
+            });
+          }
           if (cwd === project.workspaceRoot && path === PATH && text !== null) {
             return { text, ref: "origin/main", commit };
           }
@@ -144,6 +170,7 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
             path,
             ref: "origin/main",
             detail: "it does not exist there.",
+            lostConnection: false,
           });
         }),
     });
@@ -160,6 +187,12 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
           }),
           ServerSettings.layerTest(),
           ManagedPolicy.layerTest(),
+          Layer.succeed(
+            NetworkRecoveryWorker.NetworkProbe,
+            Ref.get(network.online).pipe(
+              Effect.tap((online) => Queue.offer(network.probed, online)),
+            ),
+          ),
           layerSharedTaskDependencies([project], undefined, undefined, reader),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: (input) =>
@@ -184,6 +217,7 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
         service,
         remote,
         launched,
+        network,
         saveHold,
         poll: Effect.suspend(() => workers.get("scheduled-tasks")!),
         whenTask: (id, matches) =>
@@ -439,6 +473,96 @@ it.effect("a scheduled run fetches its file in the background, so other due task
       yield* Deferred.succeed(hold.release, undefined);
       yield* fileRan;
       expect(yield* Ref.get(launched)).toEqual(["Run the plain check.", "Pushed before the run."]);
+    }),
+  ),
+);
+
+it.effect(
+  "a scheduled read that lost its connection runs once the network is back, and only once",
+  () =>
+    withService(({ service, remote, launched, network, poll, whenTask }) =>
+      Effect.gen(function* () {
+        const task = (yield* service.upsert(upsertInput({ enabled: true }))).task;
+        yield* Ref.set(remote, {
+          text: "Pushed before the wake.",
+          commit: "c2",
+          lostConnection: true,
+        });
+        yield* Ref.set(network.online, false);
+        yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+        const fileRan = yield* whenTask(
+          task.id,
+          (current) => current.lastRunStatus === "succeeded",
+        );
+
+        yield* poll;
+        expect(yield* Queue.take(network.probed)).toBe(false);
+        // Fires while the run waits start nothing more.
+        yield* poll;
+        const manual = yield* service.runNow({ id: task.id }).pipe(Effect.flip);
+        expect(manual).toMatchObject({ cause: { message: "Schedule task is already running." } });
+
+        yield* Ref.set(remote, { text: "Pushed before the wake.", commit: "c2" });
+        yield* Ref.set(network.online, true);
+        yield* TestClock.adjust("30 seconds");
+        yield* fileRan;
+
+        expect(yield* Ref.get(launched)).toEqual(["Pushed before the wake."]);
+        expect((yield* service.listRuns({ id: task.id })).runs).toHaveLength(1);
+      }),
+    ),
+);
+
+it.effect("a scheduled read gives up when the network is not back, and says so", () =>
+  withService(({ service, remote, launched, network, poll, whenTask }) =>
+    Effect.gen(function* () {
+      const task = (yield* service.upsert(upsertInput({ enabled: true }))).task;
+      yield* Ref.set(remote, { text: "Never read.", commit: "c2", lostConnection: true });
+      yield* Ref.set(network.online, false);
+      yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+      const failed = yield* whenTask(task.id, (current) => current.lastRunStatus === "failed");
+
+      yield* poll;
+      yield* Queue.take(network.probed);
+      for (let recheck = 0; recheck < 10; recheck++) {
+        yield* TestClock.adjust("30 seconds");
+        yield* Queue.take(network.probed);
+      }
+      yield* failed;
+
+      expect(yield* Ref.get(launched)).toEqual([]);
+      expect((yield* taskOf(service, task.id))?.lastRunError).toBe(
+        `Could not read the prompt file ${PATH} from origin/main: ${LOST_DETAIL} The network was not back after 5 minutes.`,
+      );
+    }),
+  ),
+);
+
+it.effect("a task paused while its run waits for the network does not run", () =>
+  withService(({ service, remote, launched, network, poll, whenTask }) =>
+    Effect.gen(function* () {
+      const task = (yield* service.upsert(upsertInput({ enabled: true }))).task;
+      yield* Ref.set(remote, {
+        text: "Pushed before the pause.",
+        commit: "c2",
+        lostConnection: true,
+      });
+      yield* Ref.set(network.online, false);
+      yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+      const failed = yield* whenTask(task.id, (current) => current.lastRunStatus === "failed");
+
+      yield* poll;
+      yield* Queue.take(network.probed);
+      yield* service.setEnabled({ id: task.id, enabled: false });
+      yield* Ref.set(remote, { text: "Pushed before the pause.", commit: "c2" });
+      yield* Ref.set(network.online, true);
+      yield* TestClock.adjust("30 seconds");
+      yield* failed;
+
+      expect(yield* Ref.get(launched)).toEqual([]);
+      expect((yield* taskOf(service, task.id))?.lastRunError).toBe(
+        "The task was paused or deleted while its run waited for the network.",
+      );
     }),
   ),
 );

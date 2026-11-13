@@ -1174,8 +1174,7 @@ it.effect.each([
 ] as const)(
   "shows the fetch diagnosis when preparing a worktree from origin fails at $name",
   ({ detail, failureClass }) => {
-    const diagnostics =
-      "Fetch phases: credential helper git-credential-test get 1.2 s; transfer 0.4 s.";
+    const diagnostics = "Phases: credential helper git-credential-test get 1.2 s; transfer 0.4 s.";
     const harness = makeHarness({
       fetchWorktreeBaseCommit: () =>
         Effect.fail(

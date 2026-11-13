@@ -6,7 +6,11 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { NON_INTERACTIVE_GIT_ENV } from "../vcs/GitVcsDriverCore.ts";
+import {
+  isLostConnection,
+  NON_INTERACTIVE_GIT_ENV,
+  remoteFailureText,
+} from "../vcs/GitVcsDriverCore.ts";
 
 const NETWORK_TIMEOUT_MS = 60_000;
 // UTF-8 holds a character in at most four bytes, so a longer file cannot fit the character limit.
@@ -21,6 +25,8 @@ export class PromptFileReadError extends Schema.TaggedError<PromptFileReadError>
     /** The branch it was read from, such as `origin/main`; null when that could not be found. */
     ref: Schema.NullOr(Schema.String),
     detail: Schema.String,
+    /** Git could not reach the remote or got no answer, so the read can work once the network is back. */
+    lostConnection: Schema.Boolean,
   },
 ) {
   override get message(): string {
@@ -65,31 +71,35 @@ const make = Effect.gen(function* () {
     cwd,
     path,
   }) {
-    const fail = (ref: string | null, detail: string) =>
-      new PromptFileReadError({ path, ref, detail });
-    const run = (
-      ref: string | null,
-      input: Omit<GitVcsDriver.ExecuteGitInput, "cwd" | "env">,
-      context?: string,
-    ) =>
+    const fail = (ref: string | null, detail: string, lostConnection = false) =>
+      new PromptFileReadError({ path, ref, detail, lostConnection });
+    const run = (ref: string | null, input: Omit<GitVcsDriver.ExecuteGitInput, "cwd" | "env">) =>
       git
         .execute({ ...input, cwd, env: NON_INTERACTIVE_GIT_ENV })
+        .pipe(Effect.mapError((error) => fail(ref, gitDetail(error))));
+    // The phase that hung, or the line Git failed with, goes into the detail.
+    const runRemote = (ref: string | null, operation: string, args: string[], context: string) =>
+      git
+        .executeRemote({
+          operation,
+          cwd,
+          args,
+          timeoutMs: NETWORK_TIMEOUT_MS,
+          fallbackErrorDetail: "Git exited with an error.",
+        })
         .pipe(
           Effect.mapError((error) =>
-            fail(ref, context === undefined ? gitDetail(error) : `${context}: ${gitDetail(error)}`),
+            fail(ref, `${context}: ${remoteFailureText(error)}`, isLostConnection(error)),
           ),
         );
 
     const remote = yield* git
       .resolvePrimaryRemoteName(cwd)
       .pipe(Effect.mapError((error) => fail(null, gitDetail(error))));
-    const head = yield* run(
+    const head = yield* runRemote(
       null,
-      {
-        operation: "PromptFileReader.defaultBranch",
-        args: ["ls-remote", "--symref", "--", remote, "HEAD"],
-        timeoutMs: NETWORK_TIMEOUT_MS,
-      },
+      "PromptFileReader.defaultBranch",
+      ["ls-remote", "--symref", "--", remote, "HEAD"],
       `could not ask ${remote} for its default branch`,
     );
     const branch = DEFAULT_BRANCH_LINE.exec(head.stdout)?.[1];
@@ -99,24 +109,21 @@ const make = Effect.gen(function* () {
     // A ref of this read's own, so it never races the user's or the status poll's fetches.
     const ownRef = `refs/t3/prompt-files/${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`;
     yield* Effect.acquireRelease(
-      run(
+      runRemote(
         ref,
-        {
-          operation: "PromptFileReader.fetch",
-          // An empty `--refmap` stops Git from also updating `<remote>/<branch>`.
-          // `--no-auto-gc`: see GitVcsDriverCore's status fetch for why a poll never starts gc.
-          args: [
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--no-auto-gc",
-            "--refmap=",
-            "--",
-            remote,
-            `+refs/heads/${branch}:${ownRef}`,
-          ],
-          timeoutMs: NETWORK_TIMEOUT_MS,
-        },
+        "PromptFileReader.fetch",
+        // An empty `--refmap` stops Git from also updating `<remote>/<branch>`.
+        // `--no-auto-gc`: see GitVcsDriverCore's status fetch for why a poll never starts gc.
+        [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-auto-gc",
+          "--refmap=",
+          "--",
+          remote,
+          `+refs/heads/${branch}:${ownRef}`,
+        ],
         "could not fetch it",
       ),
       () =>

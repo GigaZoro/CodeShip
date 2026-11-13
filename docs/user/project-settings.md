@@ -284,10 +284,14 @@ from a file** and give the file's path from the repository's root, such as
   reaches the next run on every machine; edits that are not pushed are not used.
 - Saving reads the file once, so a wrong path is refused right away. The editor
   shows the text the last read found and the commit it came from.
-- A run that cannot read the file, because it is missing or empty or the remote
-  can't be reached, fails, and **Run history** names the file and the branch.
-  It never runs text an earlier read found. For **One machine**, the next
-  machine in the order tries.
+- A run that cannot read the file, because it is missing or empty, fails, and
+  **Run history** names the file and the branch. It never runs text an earlier
+  read found. For **One machine**, the next machine in the order tries.
+- When the remote can't be reached, as right after the machine wakes, a
+  scheduled run waits for the network and reads again, on the delays stopped
+  chats resume on. It fails when the network is not back after 5 minutes, or
+  the read still fails once it is, and **Run history** says which, with the
+  step Git was stuck on. **Run now** does not wait.
 - Anyone who can push to that branch decides what the task does, with the
   task's permissions.
 - A shared task carries the path, and each machine reads the file through its

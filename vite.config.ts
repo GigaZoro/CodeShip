@@ -290,6 +290,7 @@ export default defineConfig({
       // Test files only (the rule checks the filename).
       "t3code/no-polling-loop-in-tests": "error",
       "t3code/no-raw-mcp-registration": "error",
+      "t3code/no-remote-git-through-execute": "error",
       "t3code/no-real-time-wait-in-tests": "error",
       "t3code/no-test-in-loop": "error",
       "t3code/no-test-timeout-or-unreasoned-skip": "error",

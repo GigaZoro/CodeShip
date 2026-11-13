@@ -140,6 +140,27 @@ it.effect.each([
 
     const error = yield* reader.read({ cwd: project, path }).pipe(Effect.flip);
     assert.equal(error.message, message);
+    assert.isFalse(error.lostConnection);
+  }).pipe(Effect.scoped, Effect.provide(layerTest)),
+);
+
+it.effect("marks a remote it cannot reach as a lost connection, with what Git said", () =>
+  Effect.gen(function* () {
+    const reader = yield* PromptFileReader.PromptFileReader;
+    const { project } = yield* setup;
+    // Nothing listens on port 1, as when the network is down.
+    yield* git(project, ["remote", "set-url", "origin", "https://127.0.0.1:1/repo.git"]);
+
+    const error = yield* reader
+      .read({ cwd: project, path: "automations/daily.md" })
+      .pipe(Effect.flip);
+    assert.isTrue(error.lostConnection);
+    assert.include(
+      error.message,
+      "from the remote's default branch: could not ask origin for its default branch: Git could not reach the remote.",
+    );
+    assert.include(error.message, "Phases: no credential helper ran; transfer ");
+    assert.include(error.message, "Git said: fatal: unable to access");
   }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
 

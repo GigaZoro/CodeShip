@@ -1,3 +1,8 @@
+## 2026-11-13 — A scheduled task waits for the network before it gives up on its prompt file
+
+- A scheduled task whose prompt comes from a file in the repository failed when it ran right after the machine woke, because Git could not reach the remote yet. It now waits for the network and reads the file again, on the same delays a chat stopped by a lost connection resumes on. It fails only when the network is not back after 5 minutes, or the read still fails once it is, and **Run history** says which. A missing, empty, binary or too long file still fails at once. The task still runs once: **Run now** reports it as running while it waits, and a task paused or deleted meanwhile does not run.
+- When Git cannot fetch for a prompt file or a pull request's review guide, the error now names the cause, the step that hung and what Git said.
+
 ## 2026-11-13 — Codex chats no longer stall for minutes after a restart
 
 - After T3.CodeShip restarted, every Codex chat on a machine could stop for one to three minutes at a time: resumed chats waited to start and running chats showed nothing new. When Codex sent an update about a turn from before the restart, such as its token use, T3.CodeShip waited for that turn to begin before it read Codex's next message, and all Codex chats on a machine share that reader. An update about a turn T3.CodeShip is not running is now set aside at once.
