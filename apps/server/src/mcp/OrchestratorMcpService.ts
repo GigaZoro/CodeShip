@@ -78,6 +78,7 @@ import {
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
+  isProviderAvailable,
   resolveProjectProviderInstanceEnabled,
   scheduledTaskSharedProjectKey,
 } from "@t3tools/contracts";
@@ -106,6 +107,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
@@ -164,6 +166,14 @@ const DEFAULT_THREAD_LIST_LIMIT = 50;
 const DEFAULT_THREAD_READ_LIMIT = 50;
 const DEFAULT_THREAD_RUN_LIMIT = 10;
 const DEFAULT_THREAD_ITEM_MAX_CHARS = 20_000;
+// Bounds re-checks when agents ask repeatedly; PATH lookups stay cached this long anyway.
+const UNUSABLE_PROVIDER_RECHECK_AFTER_MS = 30_000;
+
+/** An enabled instance its last check found unusable; a new check may find it installed or signed in. */
+const isRecheckable = (provider: ServerProvider) =>
+  provider.enabled &&
+  isProviderAvailable(provider) &&
+  providerConstraints(provider, true).length > 0;
 
 interface ResolvedTarget {
   readonly modelSelection: ModelSelection;
@@ -1505,7 +1515,6 @@ const make = Effect.gen(function* () {
   const loadOrchestrationCapableInstanceIds = () =>
     providerAdapters.list().pipe(Effect.map((instanceIds) => new Set(instanceIds)));
 
-  /** Background agents miss foreground-only health probes; re-probe once before refusing. */
   const assertTargetEnabledForProject = (
     parent: Pick<OrchestrationV2ThreadProjection, "thread">,
     commandId: CommandId,
@@ -1519,24 +1528,71 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(threadManagementFailure));
 
+  const recheckLocks = new Map<ProviderInstanceId, Semaphore.Semaphore>();
+  const checkedAtOf = (providers: ReadonlyArray<ServerProvider>, instanceId: ProviderInstanceId) =>
+    providers.find((provider) => provider.instanceId === instanceId)?.checkedAt;
+
+  /** Concurrent callers share one check: an instance checked since `seen` was read is not checked again. */
+  const recheckInstances = (
+    instanceIds: ReadonlyArray<ProviderInstanceId>,
+    seen: ReadonlyArray<ServerProvider>,
+  ) =>
+    Effect.forEach(
+      instanceIds,
+      (instanceId) => {
+        const lock = recheckLocks.get(instanceId) ?? Semaphore.makeUnsafe(1);
+        recheckLocks.set(instanceId, lock);
+        return lock.withPermits(1)(
+          loadProviders.pipe(
+            Effect.flatMap((current) =>
+              checkedAtOf(current, instanceId) === checkedAtOf(seen, instanceId)
+                ? providerRegistry.refreshInstance(instanceId)
+                : Effect.void,
+            ),
+          ),
+        );
+      },
+      { concurrency: "unbounded", discard: true },
+    ).pipe(Effect.andThen(loadProviders));
+
   const resolveTargetRechecking = (input: Parameters<typeof resolveTarget>[0]) => {
-    const instanceId =
-      input.target?.providerInstanceId ??
-      (input.target?.driverKind === undefined
-        ? input.parent.thread.modelSelection.instanceId
-        : undefined);
-    const resolved = resolveTarget(input);
-    if (instanceId === undefined) return resolved;
-    return resolved.pipe(
+    const requestedDriver =
+      input.target?.providerInstanceId === undefined ? input.target?.driverKind : undefined;
+    const instanceIds =
+      requestedDriver === undefined
+        ? [input.target?.providerInstanceId ?? input.parent.thread.modelSelection.instanceId]
+        : input.providers
+            .filter((provider) => provider.driver === requestedDriver && isRecheckable(provider))
+            .map((provider) => provider.instanceId);
+    return resolveTarget(input).pipe(
       Effect.catchIf(
-        (error) => error.code === "provider_unavailable",
+        (error) => error.code === "provider_unavailable" && instanceIds.length > 0,
         () =>
-          providerRegistry
-            .refreshInstance(instanceId)
-            .pipe(Effect.flatMap((providers) => resolveTarget({ ...input, providers }))),
+          recheckInstances(instanceIds, input.providers).pipe(
+            Effect.flatMap((providers) => resolveTarget({ ...input, providers })),
+          ),
       ),
     );
   };
+
+  /** Re-checks providers last seen unusable, so a since-installed or signed-in one is reported usable. */
+  const loadProvidersRechecked = Effect.fn("OrchestratorMcpService.loadProvidersRechecked")(
+    function* () {
+      const providers = yield* loadProviders;
+      const nowMs = yield* Clock.currentTimeMillis;
+      const stale = providers.filter(
+        (provider) =>
+          isRecheckable(provider) &&
+          nowMs - Date.parse(provider.checkedAt) >= UNUSABLE_PROVIDER_RECHECK_AFTER_MS,
+      );
+      return stale.length === 0
+        ? providers
+        : yield* recheckInstances(
+            stale.map((provider) => provider.instanceId),
+            providers,
+          );
+    },
+  );
 
   const readSettings = serverSettings.getSettings.pipe(
     Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
@@ -2959,7 +3015,7 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope);
-      const providers = yield* loadProviders;
+      const providers = yield* loadProvidersRechecked();
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
       const availability = Option.isNone(accountRouting)

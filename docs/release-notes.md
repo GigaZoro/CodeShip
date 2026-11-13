@@ -1,3 +1,9 @@
+## 2026-11-13 — Codex no longer shows as not installed after T3.CodeShip updates it
+
+- When T3.CodeShip updated Codex or another provider CLI, a status check that ran while the installer had the CLI moved aside could leave the provider marked **not installed**. Agents and scheduled tasks then could not use it: `orchestrator_capabilities` reported it unusable and delegated tasks to it failed. The check after the update reused that result for 30 seconds. An update now drops it, so its own check finds the new CLI.
+- A provider marked not installed, failing or signed out is now checked again when no window is open. The first check comes after the usual provider status interval, and later checks come less often, at most an hour apart, until it works. Before, a server with no window open never checked it again. OpenCode marked not installed is now checked again too, so an OpenCode CLI you install later is found without a manual refresh. A rejected OpenCode server password is still not retried in the background.
+- Agents get a fresh answer. `orchestrator_capabilities` checks such a provider again before it reports the provider unusable. `delegate_task` with only `driverKind` checks that driver's accounts again before it refuses. Agents that ask at the same time share one check.
+
 ## 2026-11-13 — `check:changed` runs in several worktrees share the machine instead of overloading it
 
 - `vp run check:changed` sized its parallel steps for the whole machine on every run, so several agents checking their worktrees at once ran many times that many typechecks and test workers. The machine ran out of memory and CPU, and tests that pass alone timed out or failed. Runs in every worktree of a repository now draw from one budget: a step starts once a slot is free, and a run that finds every slot taken says so and waits. The test step counts its workers against the budget too, and each package's typecheck is its own step.

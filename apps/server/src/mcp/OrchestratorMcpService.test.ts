@@ -1938,6 +1938,75 @@ describe("OrchestratorMcpService provider resolution", () => {
     );
   });
 
+  it.effect.each([
+    {
+      name: "outside the re-check window",
+      checkedAt: "2026-11-13T00:00:00.000Z",
+      checkedMeanwhile: false,
+      expected: { usable: true, refreshes: 1 },
+    },
+    {
+      name: "inside the re-check window",
+      checkedAt: "2026-11-13T00:00:50.000Z",
+      checkedMeanwhile: false,
+      expected: { usable: false, refreshes: 0 },
+    },
+    {
+      name: "once when a concurrent caller checked it first",
+      checkedAt: "2026-11-13T00:00:00.000Z",
+      checkedMeanwhile: true,
+      expected: { usable: true, refreshes: 0 },
+    },
+  ])("capabilities re-check a provider last seen not installed $name", (row) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-13T00:01:00.000Z"));
+      let installed = false;
+      let reads = 0;
+      let refreshes = 0;
+      const snapshot = (): ServerProvider => ({
+        ...providerSnapshot({
+          instanceId: codexInstanceId,
+          driver: ProviderDriverKind.make("codex"),
+          model: "gpt-5.4",
+        }),
+        ...(installed ? {} : { installed: false, status: "error" as const }),
+        checkedAt: installed ? "2026-11-13T00:01:00.000Z" : row.checkedAt,
+      });
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed(parentProjection([])),
+        }),
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.sync(() => {
+            reads += 1;
+            // Another caller's check finishes between this caller's first read and its own check.
+            if (row.checkedMeanwhile && reads > 1) installed = true;
+            return [snapshot()];
+          }),
+          refreshInstance: () =>
+            Effect.sync(() => {
+              refreshes += 1;
+              installed = true;
+              return [snapshot()];
+            }),
+        }),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+
+      const result = yield* Effect.flatMap(
+        OrchestratorMcpService.OrchestratorMcpService,
+        (service) => service.capabilities(scope),
+      ).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      assert.deepEqual({ usable: result.providers[0]!.canRunChildTask, refreshes }, row.expected);
+    }),
+  );
+
   it.effect("rejects delegation to a provider without a registered adapter", () =>
     Effect.gen(function* () {
       const forkOnlyInstanceId = ProviderInstanceId.make("forkOnly");
@@ -2680,11 +2749,38 @@ describe("OrchestratorMcpService provider resolution", () => {
             selectedInstanceId: codexAltInstanceId,
             candidateDriver: driver,
           },
+          {
+            name: "driver-only-rechecks-not-installed",
+            inheritedEnabled: true,
+            peerEnabled: false,
+            explicit: false,
+            selectedInstanceId: codexInstanceId,
+            candidateDriver: driver,
+          },
         ] as const;
 
         for (const testCase of cases) {
           const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
           let delegated = false;
+          // The last check ran while an update had the CLI moved aside.
+          let installed = testCase.name !== "driver-only-rechecks-not-installed";
+          const snapshots = (): ReadonlyArray<ServerProvider> => [
+            {
+              ...providerSnapshot({
+                instanceId: codexInstanceId,
+                driver,
+                model: "gpt-5.4",
+                enabled: testCase.inheritedEnabled,
+              }),
+              ...(installed ? {} : { installed: false, status: "error" as const }),
+            },
+            providerSnapshot({
+              instanceId: codexAltInstanceId,
+              driver: testCase.candidateDriver,
+              model: "codex-alt-model",
+              enabled: testCase.peerEnabled,
+            }),
+          ];
           const layerDependencies = Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -2729,20 +2825,14 @@ describe("OrchestratorMcpService provider resolution", () => {
                 ]),
             }),
             ServerSettings.layerTest(),
-            providerRegistryLayer([
-              providerSnapshot({
-                instanceId: codexInstanceId,
-                driver,
-                model: "gpt-5.4",
-                enabled: testCase.inheritedEnabled,
-              }),
-              providerSnapshot({
-                instanceId: codexAltInstanceId,
-                driver: testCase.candidateDriver,
-                model: "codex-alt-model",
-                enabled: testCase.peerEnabled,
-              }),
-            ]),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.sync(snapshots),
+              refreshInstance: () =>
+                Effect.sync(() => {
+                  installed = true;
+                  return snapshots();
+                }),
+            }),
             adapterRegistryLayer(
               testCase.name === "explicit-disabled-without-adapter"
                 ? [codexAltInstanceId]
@@ -2878,6 +2968,8 @@ describe("OrchestratorMcpService provider resolution", () => {
                 baseRef: "main",
                 startFromOrigin: true,
               });
+            } else if (testCase.selectedInstanceId === codexInstanceId) {
+              assert.deepEqual(request.modelSelection, parentModelSelection, testCase.name);
             } else {
               assert.equal(request.modelSelection.model, "codex-alt-model", testCase.name);
             }

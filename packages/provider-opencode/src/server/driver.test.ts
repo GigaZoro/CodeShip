@@ -266,6 +266,46 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.effect("finds a CLI installed after a check found it missing, without a manual refresh", () =>
+    Effect.gen(function* () {
+      let installed = false;
+      const runtime = {
+        ...openCode2Runtime,
+        runOpenCodeCommand: (input: { readonly binaryPath: string }) =>
+          installed
+            ? Effect.succeed({ stdout: "opencode v2.0.18\n", stderr: "", code: 0 })
+            : Effect.fail(
+                new OpenCodeRuntime.OpenCodeRuntimeError({
+                  operation: "runOpenCodeCommand",
+                  detail: `spawn ${input.binaryPath} ENOENT`,
+                }),
+              ),
+      } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
+      const instance = yield* create({}, noHttp).pipe(
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+      );
+      const missing = yield* instance.snapshot.streamChanges.pipe(
+        Stream.filter((snapshot) => !snapshot.installed && snapshot.status === "error"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("5 seconds");
+      yield* Fiber.join(missing);
+
+      installed = true;
+      const found = yield* instance.snapshot.streamChanges.pipe(
+        Stream.filter((snapshot) => snapshot.installed),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("5 minutes");
+      const [snapshot] = Array.from(yield* Fiber.join(found));
+      assert.strictEqual(snapshot?.version, "2.0.18");
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.effect.each(
     [
       { name: "recovers" },

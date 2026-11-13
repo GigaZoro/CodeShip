@@ -19,8 +19,15 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import {
+  CommandResolutionCache,
+  resolveCommandPath,
+  SpawnExecutableResolution,
+} from "@t3tools/shared/shell";
 
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -310,6 +317,53 @@ describe("providerMaintenanceRunner", () => {
       ),
     );
   });
+
+  it.effect("verifies a binary the update installed after a lookup cached it as missing", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const binDir = yield* fs.makeTempDirectoryScoped();
+      const isOnPath = resolveCommandPath("native-agent", { env: { PATH: binDir } }).pipe(
+        Effect.map((resolved) => resolved !== null),
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+      );
+      const { registry, providersRef } = yield* makeRegistry(baseNativeCliProvider);
+      // A status check ran while the installer had the old binary removed.
+      assert.isFalse(yield* isOnPath);
+      const updater = yield* makeTestRunner({
+        ...registry,
+        refreshAfterUpdate: () =>
+          isOnPath.pipe(
+            Effect.flatMap((installed) =>
+              Ref.updateAndGet(providersRef, (providers) =>
+                providers.map((provider) => ({ ...provider, installed })),
+              ),
+            ),
+          ),
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner(() => ({
+            exitCode: fs
+              .writeFileString(path.join(binDir, "native-agent"), "#!/bin/sh\n", { mode: 0o755 })
+              .pipe(Effect.orDie, Effect.as(ChildProcessSpawner.ExitCode(0))),
+          })),
+        ),
+      );
+
+      const result = yield* updater.updateProvider(NATIVE_CLI_DRIVER);
+      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          layerNonWindowsPlatform,
+          layerLatestVersionHttpClient("1.0.0"),
+        ),
+      ),
+      Effect.provideService(CommandResolutionCache, new Map()),
+    ),
+  );
 
   it.effect.each([
     { name: "current", probe: {}, skip: true },

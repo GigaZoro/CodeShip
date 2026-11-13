@@ -4,6 +4,7 @@ import {
   ServerSettingsError,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -23,6 +24,12 @@ interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
 }
+
+const UNATTENDED_RECHECK_MAX_DELAY_MS = 60 * 60 * 1000;
+const NO_UNATTENDED_RECHECK = { attempts: 0, dueAtMs: 0 };
+
+const isUnusable = (snapshot: ServerProvider) =>
+  !snapshot.installed || snapshot.status === "error" || snapshot.auth.status === "unauthenticated";
 
 function withUsageLimits(
   snapshot: ServerProvider,
@@ -283,23 +290,46 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     yield* PubSub.publish(changesPubSub, next);
   });
 
-  const shouldRefreshOnInterval = Effect.gen(function* () {
-    const state = yield* Ref.get(snapshotStateRef);
-    // A disabled instance has nothing to probe; a periodic check would only
-    // republish a snapshot that differs in checkedAt.
-    if (
-      !state.snapshot.enabled ||
-      (!needsUsageRecovery(state.snapshot) && !needsProviderRefresh(state.snapshot))
-    ) {
-      return false;
-    }
-    const instanceId = state.snapshot.instanceId;
-    const [genericDemand, instanceDemand] = yield* Effect.all([
-      host.shouldRunBackgroundWork({ type: "provider-status" }),
-      host.shouldRunBackgroundWork({ type: "provider-status", instanceId }),
-    ]);
-    return genericDemand || instanceDemand;
-  });
+  const unattendedRecheckRef = yield* Ref.make(NO_UNATTENDED_RECHECK);
+
+  const shouldRefreshOnInterval = Effect.fn("ManagedServerProvider.shouldRefreshOnInterval")(
+    function* (refreshIntervalMs: number) {
+      const { snapshot } = yield* Ref.get(snapshotStateRef);
+      const unusable = isUnusable(snapshot);
+      // Before the eligibility check: a driver may skip healthy snapshots on the interval.
+      if (!unusable) yield* Ref.set(unattendedRecheckRef, NO_UNATTENDED_RECHECK);
+      // A disabled instance has nothing to probe; a periodic check would only
+      // republish a snapshot that differs in checkedAt.
+      if (!snapshot.enabled || (!needsUsageRecovery(snapshot) && !needsProviderRefresh(snapshot))) {
+        return false;
+      }
+      const instanceId = snapshot.instanceId;
+      const [genericDemand, instanceDemand] = yield* Effect.all([
+        host.shouldRunBackgroundWork({ type: "provider-status" }),
+        host.shouldRunBackgroundWork({ type: "provider-status", instanceId }),
+      ]);
+      if (genericDemand || instanceDemand) {
+        yield* Ref.set(unattendedRecheckRef, NO_UNATTENDED_RECHECK);
+        return true;
+      }
+      if (!unusable) return false;
+      // Agents and scheduled tasks rely on this snapshot when no client is open,
+      // so an unusable one is still re-checked, backing off while it stays unusable.
+      const nowMs = yield* Clock.currentTimeMillis;
+      const backoff = yield* Ref.get(unattendedRecheckRef);
+      if (nowMs < backoff.dueAtMs) return false;
+      yield* Ref.set(unattendedRecheckRef, {
+        attempts: backoff.attempts + 1,
+        dueAtMs:
+          nowMs +
+          Math.min(
+            refreshIntervalMs * 2 ** (backoff.attempts + 1),
+            UNATTENDED_RECHECK_MAX_DELAY_MS,
+          ),
+      });
+      return true;
+    },
+  );
 
   const getRefreshInterval =
     input.refreshInterval !== undefined
@@ -335,19 +365,18 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   yield* Effect.forever(
     getRefreshInterval.pipe(
-      Effect.flatMap((refreshInterval) =>
+      Effect.flatMap((refreshInterval) => {
+        const refreshIntervalMs = Duration.toMillis(Duration.fromInputUnsafe(refreshInterval));
         // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - races the interval against a settings-change signal, not a timeout
-        Effect.raceFirst(
-          Effect.sleep(
-            Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) <= 0
-              ? "60 seconds"
-              : refreshInterval,
-          ).pipe(Effect.as(true)),
+        return Effect.raceFirst(
+          Effect.sleep(refreshIntervalMs <= 0 ? "60 seconds" : refreshInterval).pipe(
+            Effect.as(true),
+          ),
           Queue.take(refreshIntervalChanges).pipe(Effect.as(false)),
         ).pipe(
           Effect.flatMap((intervalElapsed) =>
-            intervalElapsed && Duration.toMillis(Duration.fromInputUnsafe(refreshInterval)) > 0
-              ? shouldRefreshOnInterval.pipe(
+            intervalElapsed && refreshIntervalMs > 0
+              ? shouldRefreshOnInterval(refreshIntervalMs).pipe(
                   Effect.flatMap((shouldRefresh) =>
                     shouldRefresh
                       ? refreshSemaphore.withPermits(1)(refreshOnInterval())
@@ -356,8 +385,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
                 )
               : Effect.void,
           ),
-        ),
-      ),
+        );
+      }),
       Effect.ignoreCause({ log: true }),
     ),
   ).pipe(Effect.forkScoped);

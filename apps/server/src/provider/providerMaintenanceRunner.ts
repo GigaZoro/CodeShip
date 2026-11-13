@@ -7,7 +7,7 @@ import {
   type ServerProviderUpdatedPayload,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { invalidateCommandResolutions, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -305,6 +305,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
   const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
+  // An installer swaps the binary out; a "not installed" cached meanwhile must not outlive it.
   const runMaintenanceCommand = (
     update: ProviderMaintenanceCommandAction,
     onProgress: (line: string) => Effect.Effect<void>,
@@ -315,7 +316,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       args: update.args,
       onProgress,
       ...(update.env ? { env: update.env } : {}),
-    });
+    }).pipe(Effect.ensuring(invalidateCommandResolutions()));
   const commandCoordinator = yield* makeProviderMaintenanceCommandCoordinator({
     makeAlreadyRunningError: () =>
       new ServerProviderUpdateError({

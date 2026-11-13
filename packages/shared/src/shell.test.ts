@@ -20,6 +20,7 @@ import {
   CommandAvailability,
   CommandResolutionCache,
   type CommandAvailabilityChecker,
+  invalidateCommandResolutions,
   isCommandAvailable,
   listLoginShellCandidates,
   mergePathEntries,
@@ -525,6 +526,44 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
         }),
       );
       expect(probed).toEqual([path.join(first, "cursor.CMD"), path.join(second, "late.EXE")]);
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(CommandResolutionCache, new Map()),
+    ),
+  );
+
+  it.effect.each([
+    { name: "a cached miss", invalidateDuringScan: false },
+    { name: "a scan the invalidation overtook", invalidateDuringScan: true },
+  ])("finds a command installed after $name once lookups are invalidated", (scenario) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fs.makeTempDirectoryScoped();
+      const executable = path.join(cwd, "codex.CMD");
+      const env = { PATH: cwd, PATHEXT: ".CMD" };
+      let installing = scenario.invalidateDuringScan;
+
+      expect(
+        yield* resolveCommandPath("codex", { env }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            stat: (file) =>
+              Effect.gen(function* () {
+                if (installing && file === executable) {
+                  installing = false;
+                  // The install finishes while this scan still sees the old PATH.
+                  yield* invalidateCommandResolutions();
+                }
+                return yield* fs.stat(file);
+              }),
+          }),
+        ),
+      ).toBeNull();
+      yield* fs.writeFileString(executable, "@echo off\n");
+      if (!scenario.invalidateDuringScan) yield* invalidateCommandResolutions();
+
+      expect(yield* resolveCommandPath("codex", { env })).toBe(executable);
     }).pipe(
       Effect.provideService(HostProcess.Platform, "win32"),
       Effect.provideService(CommandResolutionCache, new Map()),

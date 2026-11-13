@@ -507,6 +507,20 @@ export const CommandResolutionCache = Context.Reference<Map<string, CommandResol
   },
 );
 
+const commandResolutionGenerations = new WeakMap<
+  Map<string, CommandResolutionCacheEntry>,
+  number
+>();
+
+/** Forget cached lookups after the server itself installs or updates a command. */
+export const invalidateCommandResolutions = Effect.fn("shell.invalidateCommandResolutions")(
+  function* () {
+    const cache = yield* CommandResolutionCache;
+    cache.clear();
+    commandResolutionGenerations.set(cache, (commandResolutionGenerations.get(cache) ?? 0) + 1);
+  },
+);
+
 interface PathDirectoryListing {
   readonly modified: number | null | undefined;
   readonly names: ReadonlySet<string> | undefined;
@@ -634,6 +648,14 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
   if (cached !== undefined && cached.expiresAtNanos > nowNanos) {
     return cached.resolvedPath;
   }
+  // A scan that an invalidation overtook may have seen a half-finished install.
+  const scanGeneration = commandResolutionGenerations.get(cache);
+  const remember = (resolvedPath: string | null) => {
+    if (commandResolutionGenerations.get(cache) === scanGeneration) {
+      cacheCommandResolution(cache, cacheKey, resolvedPath, nowNanos);
+    }
+    return resolvedPath;
+  };
 
   // Keep case variants: Windows can make PATH directories case-sensitive.
   const pathEntries: string[] = [];
@@ -657,13 +679,11 @@ const resolveCommandPathForPlatform = Effect.fn("shell.resolveCommandPathForPlat
       if (listing?.names && !listing.names.has(candidate.toLowerCase())) continue;
       const candidatePath = path.join(pathEntry, candidate);
       if (yield* isExecutableFile(candidatePath, platform, windowsPathExtensions)) {
-        cacheCommandResolution(cache, cacheKey, candidatePath, nowNanos);
-        return candidatePath;
+        return remember(candidatePath);
       }
     }
   }
-  cacheCommandResolution(cache, cacheKey, null, nowNanos);
-  return null;
+  return remember(null);
 });
 
 export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function* (

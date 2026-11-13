@@ -8,11 +8,13 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -98,7 +100,7 @@ const refreshedSnapshotSecond: ServerProvider = {
 };
 
 function layerProviderHost(input: {
-  readonly runBackgroundWork: boolean;
+  readonly runBackgroundWork: boolean | Effect.Effect<boolean>;
   readonly settings?: Pick<ProviderHost.ProviderHost["Service"], "settings">["settings"];
 }) {
   return Layer.succeed(
@@ -117,7 +119,10 @@ function layerProviderHost(input: {
         changes: Stream.empty,
         subscribe: Effect.succeed(Stream.empty),
       },
-      shouldRunBackgroundWork: () => Effect.succeed(input.runBackgroundWork),
+      shouldRunBackgroundWork: () =>
+        typeof input.runBackgroundWork === "boolean"
+          ? Effect.succeed(input.runBackgroundWork)
+          : input.runBackgroundWork,
       resolveAttachmentPath: () => null,
       credentials: () => Effect.die("unused"),
     }),
@@ -326,6 +331,65 @@ describe("makeManagedServerProvider", () => {
         Layer.mergeAll(layerProviderHost({ runBackgroundWork: false }), TestClock.layer()),
       ),
     ),
+  );
+
+  it.effect("re-checks an unusable snapshot without provider-status demand, backing off", () =>
+    Effect.gen(function* () {
+      const demandChecks = yield* Queue.unbounded<void>();
+      const healthyTicks = yield* Queue.unbounded<void>();
+      const checkTimes = yield* Queue.unbounded<number>();
+      const missingSnapshot = { ...refreshedSnapshot, installed: false, status: "error" as const };
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const provider = yield* makeManagedServerProvider<TestSettings>({
+            resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+            getSettings: Effect.succeed({ enabled: true }),
+            streamSettings: Stream.empty,
+            haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+            // Like OpenCode, skips healthy snapshots before asking for demand.
+            refreshOnInterval: (snapshot) => {
+              if (snapshot.status === "ready") Queue.offerUnsafe(healthyTicks, undefined);
+              return snapshot.status !== "ready";
+            },
+            initialSnapshot: () => Effect.succeed(initialSnapshot),
+            // Missing, then installed from 7s, then missing again from 10s.
+            checkProvider: Clock.currentTimeMillis.pipe(
+              Effect.tap((nowMs) => Queue.offer(checkTimes, nowMs)),
+              Effect.map((nowMs) =>
+                nowMs >= 7_000 && nowMs < 10_000 ? refreshedSnapshot : missingSnapshot,
+              ),
+            ),
+            refreshInterval: "1 second",
+          });
+
+          for (let second = 1; second <= 16; second++) {
+            yield* TestClock.adjust("1 second");
+            if (second >= 8 && second <= 10) {
+              yield* Queue.take(healthyTicks);
+            } else {
+              // Each tick asks for generic and per-instance demand before deciding.
+              yield* Queue.take(demandChecks);
+              yield* Queue.take(demandChecks);
+            }
+            if (second === 10) yield* provider.refresh;
+          }
+          // The recovery at 7s restarts the backoff for the failure at 10s.
+          assert.deepStrictEqual(
+            Array.from(yield* Queue.takeAll(checkTimes)),
+            [0, 1_000, 3_000, 7_000, 10_000, 11_000, 13_000],
+          );
+        }),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerProviderHost({
+              runBackgroundWork: Queue.offer(demandChecks, undefined).pipe(Effect.as(false)),
+            }),
+            TestClock.layer(),
+          ),
+        ),
+      );
+    }),
   );
 
   it.effect("stops periodic recovery checks once the snapshot is ready", () =>
