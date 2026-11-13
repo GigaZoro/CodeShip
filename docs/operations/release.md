@@ -84,11 +84,13 @@ t3 service install
 ```
 
 Builds use the public T3 Connect identifiers in `.env.example`. Releases also fail for reasons
-outside the build: GitHub-hosted macOS arm64 runners sometimes never pick up a job, and GitHub
-outages make downloads such as Electron's time out for hours. `release-fork-retry.yml` reruns a
-failed release's failed jobs twice right away, then every half hour (up to 24 attempts) while its
-commit is still the head of `main`, and starts a release when the head of `main` has no run at
-all. Past 24 attempts it fails the scheduled run; rerun the release by hand or push a fix.
+outside the build: GitHub runs short of hosted macOS arm64 runners for hours, so the macOS job is
+cancelled after about 15 minutes without a runner, and GitHub outages make downloads such as
+Electron's time out for hours. `release-fork-retry.yml` reruns a failed release's failed jobs while
+its commit is still the head of `main`: right away while the only failures are jobs that never got
+a runner, otherwise twice right away and then from its half-hourly schedule, which GitHub often
+delays by hours. It also starts a release when the head of `main` has no run at all. Past 24
+attempts it fails the scheduled run; rerun the release by hand or push a fix.
 
 - **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
   Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their

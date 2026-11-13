@@ -1,10 +1,13 @@
 name: Release (fork) retry
 
-# Fork releases fail for reasons outside the build: GitHub-hosted macOS arm64
-# runners sometimes never pick up a job, and GitHub outages make release
+# Fork releases fail for reasons outside the build: GitHub runs short of hosted
+# macOS arm64 runners for hours at a time, and GitHub outages make release
 # downloads such as Electron's time out for hours. Rerun the failed jobs, keeping
-# the run's bundle, finished platform builds, and reserved version: twice right
-# away, then every half hour until main is released. A run whose commit is no
+# the run's bundle, finished platform builds, and reserved version. A run whose
+# only failures are jobs GitHub never gave a runner reruns as soon as it ends,
+# up to MAX_ATTEMPTS: each attempt waits out GitHub's queue (about 15 minutes)
+# and uses no build time. Other failures rerun twice right away, then from the
+# schedule, which GitHub delays by hours under load. A run whose commit is no
 # longer main is left alone: main's own run releases it, and publishing the
 # older build afterwards would mark it latest.
 
@@ -19,13 +22,15 @@ permissions:
   actions: write
   contents: read
 
+env:
+  MAX_ATTEMPTS: 24
+
 jobs:
   retry:
     name: Retry failed release
     if: >-
       github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.run_attempt < 3
+      github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -33,13 +38,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IMMEDIATE_ATTEMPTS: 3
         run: |
           set -euo pipefail
           head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)"
           if [[ "$head" != "$RUN_SHA" ]]; then
             echo "$DEFAULT_BRANCH moved to $head, whose own run releases it."
+            exit 0
+          fi
+          never_started="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")]
+              | length > 0 and all((.runner_id // 0) == 0 and (.steps | length) == 0)')"
+          limit="$IMMEDIATE_ATTEMPTS"
+          if [[ "$never_started" == true ]]; then
+            limit="$MAX_ATTEMPTS"
+            echo "Attempt $RUN_ATTEMPT failed only because GitHub gave no runner to its failed jobs."
+          fi
+          if (( RUN_ATTEMPT >= limit )); then
+            echo "Attempt $RUN_ATTEMPT reached the limit of $limit immediate reruns."
             exit 0
           fi
           gh run rerun "$RUN_ID" --failed --repo "$GITHUB_REPOSITORY"
@@ -55,7 +74,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Scheduled runs check out the default branch.
           DEFAULT_BRANCH: ${{ github.ref_name }}
-          MAX_ATTEMPTS: 24
         run: |
           set -euo pipefail
           head="$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)"

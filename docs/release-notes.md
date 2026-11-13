@@ -1,3 +1,7 @@
+## 2026-11-13 — Updates arrive soon after GitHub has Mac build machines again
+
+- When GitHub ran short of Mac build machines, a new version was retried twice and then waited for a scheduled retry that GitHub can delay by hours, so installed apps went hours without an update after machines were free again. A release whose only failure is a build that never got a machine is now retried as soon as GitHub gives up on it, for up to 6 hours.
+
 ## 2026-11-13 — Agents can turn on automatic updates, and a busy machine now installs them
 
 - `t3_environment_read` reports **Install updates automatically when idle** (`installUpdatesAutomatically`), and `t3_environment_preferences_update` sets it, on every machine with `allMachines`, under the same policy checks as the Settings toggle.
