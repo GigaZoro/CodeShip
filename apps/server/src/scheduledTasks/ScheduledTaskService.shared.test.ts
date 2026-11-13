@@ -312,42 +312,50 @@ it.effect("applying an older or equal revision changes nothing", () =>
   ),
 );
 
-it.effect(
-  "a copy at the same revision fills in the run condition an older app's copy left out",
-  () =>
-    withService((service) =>
-      Effect.gen(function* () {
-        const condition = { command: "node ~/check.mjs", timeoutSeconds: 30 };
-        yield* service.applyShared(
-          copy("2026-09-10T00:00:00.000Z", {
-            runCondition: condition,
-            delegateProviders: ["codex"],
-          }),
-        );
-        // An app without run conditions saves the next revision: this machine keeps its own.
-        const at = "2026-09-11T00:00:00.000Z";
-        expect(yield* service.applyShared(copy(at, { title: "From an older app" }))).toEqual({
-          outcome: "applied",
-        });
-        const kept = yield* taskOf(service);
-        expect([kept?.runCondition, kept?.delegateProviders]).toEqual([condition, ["codex"]]);
-        // The fuller copy of that revision, from the link pull, completes it.
-        const full = copy(at, {
-          title: "From an older app",
-          runCondition: null,
-          delegateProviders: [],
-        });
-        expect(yield* service.applyShared(full)).toEqual({ outcome: "applied" });
-        const completed = yield* taskOf(service);
-        expect([completed?.runCondition, completed?.delegateProviders]).toEqual([null, []]);
-        expect(yield* service.applyShared(full)).toEqual({ outcome: "stale" });
-        expect(
-          yield* service.applyShared(copy("2026-09-10T12:00:00.000Z", { runCondition: condition })),
-        ).toEqual({ outcome: "stale" });
-        const task = yield* taskOf(service);
-        expect([task?.runCondition, task?.shared?.revision.at]).toEqual([null, at]);
-      }),
-    ),
+it.effect("a copy at the same revision fills in the settings an older app's copy left out", () =>
+  withService((service) =>
+    Effect.gen(function* () {
+      const condition = { command: "node ~/check.mjs", timeoutSeconds: 30 };
+      yield* service.applyShared(
+        copy("2026-09-10T00:00:00.000Z", {
+          runCondition: condition,
+          delegateProviders: ["codex"],
+          maxLiveRuns: 3,
+        }),
+      );
+      // An app without run conditions saves the next revision: this machine keeps its own.
+      const at = "2026-09-11T00:00:00.000Z";
+      expect(yield* service.applyShared(copy(at, { title: "From an older app" }))).toEqual({
+        outcome: "applied",
+      });
+      const kept = yield* taskOf(service);
+      expect([kept?.runCondition, kept?.delegateProviders, kept?.maxLiveRuns]).toEqual([
+        condition,
+        ["codex"],
+        3,
+      ]);
+      // The fuller copy of that revision, from the link pull, completes it.
+      const full = copy(at, {
+        title: "From an older app",
+        runCondition: null,
+        delegateProviders: [],
+        maxLiveRuns: 1,
+      });
+      expect(yield* service.applyShared(full)).toEqual({ outcome: "applied" });
+      const completed = yield* taskOf(service);
+      expect([
+        completed?.runCondition,
+        completed?.delegateProviders,
+        completed?.maxLiveRuns,
+      ]).toEqual([null, [], 1]);
+      expect(yield* service.applyShared(full)).toEqual({ outcome: "stale" });
+      expect(
+        yield* service.applyShared(copy("2026-09-10T12:00:00.000Z", { runCondition: condition })),
+      ).toEqual({ outcome: "stale" });
+      const task = yield* taskOf(service);
+      expect([task?.runCondition, task?.shared?.revision.at]).toEqual([null, at]);
+    }),
+  ),
 );
 
 it.effect("a machine in the exclusion list drops its copy without leaving a deletion", () =>
@@ -561,7 +569,7 @@ const FINISHED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: OTHER as never,
   working: false,
   noWork: null,
-  lastRunWorkingOn: null,
+  liveRunsElsewhere: [],
   unchecked: [],
 };
 const NO_WORK_THERE: SharedTaskPeerCheck.PeerCheckResult = {
@@ -574,14 +582,14 @@ const NO_RUN_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
   working: false,
   noWork: null,
-  lastRunWorkingOn: null,
+  liveRunsElsewhere: [],
   unchecked: [],
 };
 const SILENT_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
   working: false,
   noWork: null,
-  lastRunWorkingOn: null,
+  liveRunsElsewhere: [],
   unchecked: [{ environmentId: OTHER as never, reason: "It did not answer in time." }],
 };
 
@@ -958,7 +966,7 @@ const unreachable = (...environmentIds: string[]): SharedTaskPeerCheck.PeerCheck
   ranOn: null,
   working: false,
   noWork: null,
-  lastRunWorkingOn: null,
+  liveRunsElsewhere: [],
   unchecked: environmentIds.map((environmentId) => ({
     environmentId: environmentId as never,
     reason: "It did not answer in time.",
@@ -1153,14 +1161,14 @@ it.effect(
 );
 
 it.effect(
-  "a machine skips an occurrence while the chat of the task's last run works on another machine",
+  "a machine skips an occurrence while the task's live-run limit is reached on another machine",
   () =>
     runScenario(
       [OTHER, HERE_ENVIRONMENT_ID],
-      { ...NO_RUN_THERE, lastRunWorkingOn: OTHER as never },
+      { ...NO_RUN_THERE, liveRunsElsewhere: [{ environmentId: OTHER as never, liveRuns: 1 }] },
       (scenario) =>
         Effect.gen(function* () {
-          // The machine ahead skipped it for its own working chat; this one asks after its grace.
+          // The machine ahead skipped it for its own live run; this one asks after its grace.
           yield* scenario.tick(DUE + 1_000);
           yield* scenario.settled;
           yield* scenario.tick(DUE + 5 * MINUTE_MS + 1_000);
@@ -1174,7 +1182,7 @@ it.effect(
           expect(runs).toEqual([
             expect.objectContaining({
               outcome: "skipped",
-              skipReason: "last_run_working",
+              skipReason: "live_run_limit",
               scheduledFor: iso(DUE),
               ranOn: OTHER,
             }),

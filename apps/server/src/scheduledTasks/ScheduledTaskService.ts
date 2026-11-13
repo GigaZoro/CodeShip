@@ -20,6 +20,8 @@ import {
   ThreadId,
   ScheduledTaskWebhookDeliveryId,
   DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
+  DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
+  MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
   defaultCatchUpMissedRun,
   type ModelSelection,
   type ScheduledTaskListRunsInput,
@@ -85,6 +87,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as NetworkRecoveryWorker from "../orchestration-v2/NetworkRecoveryWorker.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as SharedTaskPeerCheck from "./SharedTaskPeerCheck.ts";
@@ -157,9 +160,12 @@ const RUN_HISTORY_RETENTION = 50;
 const QUIET_SKIP_REASONS = [
   "no_work",
   "usage_limited",
-  "last_run_working",
+  "live_run_limit",
 ] as const satisfies ReadonlyArray<ScheduledTaskRunSkipReason>;
 const QUIET_SKIP_RETENTION = 10;
+// The newest run chats a live-run count reads: room for a full limit plus as many Run now runs.
+// An older chat that works again does not hold runs back.
+const LIVE_RUN_CHECK_LIMIT = 2 * MAX_SCHEDULED_TASK_MAX_LIVE_RUNS;
 // Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over 90 days.
 const RUN_HISTORY_WINDOW_MS = 90 * 24 * 60 * MINUTE_MS;
 const runHistoryCutoff = (startedAt: string) =>
@@ -368,6 +374,8 @@ interface ScheduledTaskRow {
   readonly paused_with_group?: number | null;
   /** From scheduled_task_delegate_providers: null when the task needs none. */
   readonly delegate_providers_json?: string | null;
+  /** From scheduled_task_live_run_limit: null for the default. */
+  readonly max_live_runs?: number | null;
 }
 
 interface RunRecordRow {
@@ -513,6 +521,11 @@ export class ScheduledTaskService extends Context.Service<
       ScheduledTaskRunNowResult & { readonly threadId: ThreadId | null },
       ScheduledTaskError
     >;
+    /**
+     * How many of the task's runs here still work, delegated tasks included. Null for a task its
+     * live-run limit does not apply to: one bound to a thread, run once or by a webhook.
+     */
+    readonly liveRuns: (task: ScheduledTask) => Effect.Effect<number | null, ScheduledTaskError>;
     /** The task's recent runs, newest first, including fires that failed or were skipped. */
     readonly listRuns: (
       input: ScheduledTaskListRunsInput,
@@ -791,6 +804,9 @@ const decodeRow = Effect.fnUntraced(
                 ? []
                 : yield* decodeDelegateProvidersJson(row.delegate_providers_json),
           }),
+      ...(row.max_live_runs === undefined
+        ? {}
+        : { maxLiveRuns: row.max_live_runs ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS }),
     });
   },
   (effect, row, _origin?) =>
@@ -1046,10 +1062,21 @@ export const layer = Layer.effect(
         providers_json TEXT NOT NULL
       )
     `;
+    // A row holds a live-run limit other than the default.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_live_run_limit (
+        task_id TEXT PRIMARY KEY,
+        max_live_runs INTEGER NOT NULL
+      )
+    `;
     const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
     if (!runColumns.some((column) => column.name === "usage_limit_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
     }
+    yield* sql`
+      UPDATE scheduled_task_runs SET skip_reason = 'live_run_limit'
+      WHERE skip_reason = 'last_run_working'
+    `;
     // Outlives the task so a stale copy on another machine is removed, not restored.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_shared_deletions (
@@ -1166,7 +1193,9 @@ export const layer = Layer.effect(
         (SELECT paused_with_group FROM scheduled_task_group g
           WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group,
         (SELECT providers_json FROM scheduled_task_delegate_providers dp
-          WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json
+          WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json,
+        (SELECT max_live_runs FROM scheduled_task_live_run_limit lr
+          WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -1268,7 +1297,9 @@ export const layer = Layer.effect(
         (SELECT paused_with_group FROM scheduled_task_group g
           WHERE g.task_id = scheduled_tasks.task_id) AS paused_with_group,
         (SELECT providers_json FROM scheduled_task_delegate_providers dp
-          WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json
+          WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json,
+        (SELECT max_live_runs FROM scheduled_task_live_run_limit lr
+          WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -1545,6 +1576,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_delegate_providers WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_live_run_limit WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
       );
@@ -2393,42 +2425,91 @@ export const layer = Layer.effect(
         ),
     );
 
-    /** The chat the task's last run started here, while that chat is still working. */
-    const workingLastRunThread = Effect.fnUntraced(function* (task: ScheduledTask) {
-      const [sidebar] = yield* sql<{ readonly last_run_thread_id: string | null }>`
-        SELECT last_run_thread_id FROM scheduled_task_sidebar WHERE task_id = ${task.id}
+    /**
+     * The chats of the task's newest runs here that still work, delegated tasks included. Every
+     * count reads them again, since an ended chat can resume; one that could not be read does not
+     * count.
+     */
+    const liveRunThreads = Effect.fn("ScheduledTaskService.liveRunThreads")(function* (
+      taskId: ScheduledTaskId,
+    ) {
+      const rows = yield* sql<{ readonly thread_id: string }>`
+        SELECT thread_id FROM scheduled_task_runs
+        WHERE task_id = ${taskId} AND thread_id IS NOT NULL
+        GROUP BY thread_id
+        ORDER BY MAX(started_at) DESC
+        LIMIT ${LIVE_RUN_CHECK_LIMIT}
       `.pipe(NodeSqliteClient.readOnly);
-      const threadId = sidebar?.last_run_thread_id ?? null;
-      if (threadId === null) return null;
-      const { runs } = yield* threadManagement.getThreadRecords(ThreadId.make(threadId), ["runs"]);
-      return (yield* ThreadManagementService.threadStillWorking(threadManagement, runs))
-        ? threadId
-        : null;
+      const working = yield* Effect.forEach(
+        rows,
+        ({ thread_id: threadId }) =>
+          threadManagement
+            .getThreadRecords(ThreadId.make(threadId), ["runs", "subagents", "providerThreads"])
+            .pipe(
+              Effect.flatMap((records) =>
+                records.thread.deletedAt !== null
+                  ? Effect.succeed(false)
+                  : ThreadManagementService.threadStillWorking(threadManagement, records),
+              ),
+              // A rebuild drops a deleted chat's projection.
+              Effect.catchIf(Orchestrator.isThreadNotFound, () => Effect.succeed(false)),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Could not check whether a scheduled task run is working", {
+                  taskId,
+                  threadId,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            ),
+        { concurrency: 4 },
+      );
+      return rows.flatMap(({ thread_id: threadId }, index) => (working[index] ? [threadId] : []));
     });
 
+    const liveRunLimitOf = Effect.fnUntraced(function* (taskId: ScheduledTaskId) {
+      const [stored] = yield* sql<{ readonly max_live_runs: number }>`
+        SELECT max_live_runs FROM scheduled_task_live_run_limit WHERE task_id = ${taskId}
+      `.pipe(NodeSqliteClient.readOnly);
+      return stored?.max_live_runs ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS;
+    });
+
+    /** Thread-bound tasks queue behind their thread, and a one-time task keeps its only occurrence. */
+    const limitsLiveRuns = (task: Pick<ScheduledTask, "threadId" | "schedule">) =>
+      task.threadId === null && task.schedule.type !== "once" && task.schedule.type !== "webhook";
+
     /**
-     * Skips an occurrence while the chat the task's last run started, here or on `workingOn`, still
-     * works. A thread-bound task queues behind its thread instead, and a one-time task keeps its
-     * only occurrence. A failed check never holds a run back.
+     * Skips an occurrence while as many of the task's runs as its limit allows still work: those
+     * here, and for a one-machine task those `elsewhere` reports. A failed check never holds a run
+     * back.
      */
-    const skippedWhileLastRunWorks = Effect.fn("ScheduledTaskService.skippedWhileLastRunWorks")(
-      function* (task: ScheduledTask, fire: ScheduledFire, workingOn: EnvironmentId | null) {
-        if (task.threadId !== null || task.schedule.type === "once") return false;
-        const threadId = workingOn === null ? yield* workingLastRunThread(task) : null;
-        if (workingOn === null && threadId === null) return false;
+    const skippedAtLiveRunLimit = Effect.fn("ScheduledTaskService.skippedAtLiveRunLimit")(
+      function* (
+        task: ScheduledTask,
+        fire: ScheduledFire,
+        elsewhere: SharedTaskPeerCheck.PeerCheckResult["liveRunsElsewhere"],
+      ) {
+        if (!limitsLiveRuns(task)) return false;
+        // Due rows come without side tables, so the limit is read here.
+        const limit = yield* liveRunLimitOf(task.id);
+        const here = yield* liveRunThreads(task.id);
+        const onPeers = elsewhere.reduce((sum, peer) => sum + peer.liveRuns, 0);
+        if (here.length + onPeers < limit) return false;
+        // Names a machine only when this one's own runs leave room.
+        const ranOn = here.length >= limit ? undefined : elsewhere[0]?.environmentId;
         const now = yield* localNow;
         const skipped = yield* recordQuietSkip(task, fire, occurrenceUnmoved(task), {
-          reason: "last_run_working",
+          reason: "live_run_limit",
           next: nextRunAt(task, now),
           now,
-          ...(workingOn === null ? {} : { ranOn: workingOn }),
+          ...(ranOn === undefined ? {} : { ranOn }),
         });
         if (skipped) {
-          yield* Effect.logInfo("Skipping a schedule task run: its last run's chat is working", {
+          yield* Effect.logInfo("Skipping a schedule task run: its live-run limit is reached", {
             taskId: task.id,
             scheduledFor: fire.scheduledFor ?? task.nextRunAt,
-            threadId,
-            workingOn,
+            limit,
+            liveThreadIds: here,
+            elsewhere,
           });
           yield* notifyChanged;
         }
@@ -2438,13 +2519,23 @@ export const layer = Layer.effect(
       (effect, task) =>
         effect.pipe(
           Effect.catchCause((cause) =>
-            Effect.logWarning("Could not check whether a schedule task's last run is working", {
+            Effect.logWarning("Could not check a schedule task's live-run limit", {
               taskId: task.id,
               cause,
             }).pipe(Effect.as(false)),
           ),
         ),
     );
+
+    const liveRuns: ScheduledTaskService["Service"]["liveRuns"] = (task) =>
+      limitsLiveRuns(task)
+        ? liveRunThreads(task.id).pipe(
+            Effect.map((threads) => threads.length),
+            Effect.mapError((cause) =>
+              taskError("Could not count the task's live runs.", { taskId: task.id, cause }),
+            ),
+          )
+        : Effect.succeed(null);
 
     /** "ran" when the answer started a chat, which tells lists itself. */
     const checkThenRun = Effect.fn("ScheduledTaskService.checkThenRun")(function* (
@@ -2668,6 +2759,17 @@ export const layer = Layer.effect(
               INSERT INTO scheduled_task_delegate_providers (task_id, providers_json)
               VALUES (${id}, ${encodeDelegateProvidersJson(drivers)})
               ON CONFLICT (task_id) DO UPDATE SET providers_json = excluded.providers_json
+            `;
+
+    const writeMaxLiveRuns = (id: ScheduledTaskId, limit: number | undefined) =>
+      limit === undefined
+        ? Effect.void
+        : limit === DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS
+          ? sql`DELETE FROM scheduled_task_live_run_limit WHERE task_id = ${id}`
+          : sql`
+              INSERT INTO scheduled_task_live_run_limit (task_id, max_live_runs)
+              VALUES (${id}, ${limit})
+              ON CONFLICT (task_id) DO UPDATE SET max_live_runs = excluded.max_live_runs
             `;
 
     /** "keep" keeps the last read while the path stays the same; null drops it. */
@@ -3079,12 +3181,12 @@ export const layer = Layer.effect(
         // Claims the occurrence, taking it from `replaces`, and runs it only when this machine may.
         const takeOccurrence = Effect.fnUntraced(function* (
           replaces: EnvironmentId | null,
-          lastRunWorkingOn: EnvironmentId | null,
+          liveRunsElsewhere: SharedTaskPeerCheck.PeerCheckResult["liveRunsElsewhere"],
         ) {
           const fire = { scheduledFor: occurrence, catchUp: catchingUp };
-          // Every machine holds back while a chat of the task's last run works on any of them.
+          // The limit counts the task's runs that still work on every machine.
           // With its sharing, so the skip lands on the slot every copy runs.
-          if (yield* skippedWhileLastRunWorks(shared, fire, lastRunWorkingOn)) return;
+          if (yield* skippedAtLiveRunLimit(shared, fire, liveRunsElsewhere)) return;
           // A machine that could not start it claims nothing, so the next machine may run it.
           if (yield* skippedForUsage(task, fire)) return;
           const claim = yield* claimOneMachineOccurrence(task.id, slot, plan, replaces);
@@ -3125,7 +3227,7 @@ export const layer = Layer.effect(
           });
           yield* logUnchecked(answer.unchecked);
           const decision = { at: iso(now), ranOn: answer.ranOn, unchecked: answer.unchecked };
-          if (answer.ranOn === null) return yield* takeOccurrence(null, answer.lastRunWorkingOn);
+          if (answer.ranOn === null) return yield* takeOccurrence(null, answer.liveRunsElsewhere);
           return answer.working
             ? yield* watch({ environmentId: answer.ranOn, ended: false }, decision)
             : yield* skipOccurrence(answer.ranOn, next, decision, answer.noWork);
@@ -3165,7 +3267,7 @@ export const layer = Layer.effect(
             );
           }
         }
-        return yield* takeOccurrence(watched.environmentId, answer.lastRunWorkingOn);
+        return yield* takeOccurrence(watched.environmentId, answer.liveRunsElsewhere);
       },
     );
 
@@ -3181,7 +3283,7 @@ export const layer = Layer.effect(
       const sharing = runOn?.run_on === "one" ? (yield* findTask(task.id))?.shared : null;
       if (sharing != null) return yield* settleOneMachineOccurrence(task, sharing, now, catchUp);
       const fire = { scheduledFor: task.nextRunAt, catchUp };
-      if (yield* skippedWhileLastRunWorks(task, fire, null)) return;
+      if (yield* skippedAtLiveRunLimit(task, fire, [])) return;
       if (yield* skippedForUsage(task, fire)) return;
       return yield* startScheduledRun(task, fire);
     });
@@ -3440,6 +3542,7 @@ export const layer = Layer.effect(
                   ...(task.delegateProviders === undefined
                     ? {}
                     : { delegateProviders: task.delegateProviders }),
+                  ...(task.maxLiveRuns === undefined ? {} : { maxLiveRuns: task.maxLiveRuns }),
                   runtimeMode: task.runtimeMode,
                   interactionMode: task.interactionMode,
                   createdBy: task.createdBy,
@@ -3865,6 +3968,7 @@ export const layer = Layer.effect(
             // Omitted keeps the stored choice, or for a new task its schedule's default.
             yield* writeCatchUp(id, input.catchUpMissedRun);
             yield* writeDelegateProviders(id, input.delegateProviders);
+            yield* writeMaxLiveRuns(id, input.maxLiveRuns);
             yield* writeRunCondition(id, runCondition);
             yield* writePromptFile(
               id,
@@ -3979,6 +4083,9 @@ export const layer = Layer.effect(
               SELECT path FROM scheduled_task_prompt_files WHERE task_id = ${taskId}`;
             const [delegates] = yield* sql<{ readonly providers_json: string }>`
               SELECT providers_json FROM scheduled_task_delegate_providers WHERE task_id = ${taskId}`;
+            const liveRunLimitDiffers =
+              task.maxLiveRuns !== undefined &&
+              task.maxLiveRuns !== (yield* liveRunLimitOf(taskId));
             const delegatesDiffer =
               task.delegateProviders !== undefined &&
               (task.delegateProviders.length === 0
@@ -3999,13 +4106,20 @@ export const layer = Layer.effect(
                 (catchUp === undefined
                   ? defaultCatchUpMissedRun(task.schedule)
                   : catchUp.enabled === 1);
-            if (!conditionDiffers && !catchUpDiffers && !promptFileDiffers && !delegatesDiffer) {
+            if (
+              !conditionDiffers &&
+              !catchUpDiffers &&
+              !promptFileDiffers &&
+              !delegatesDiffer &&
+              !liveRunLimitDiffers
+            ) {
               return { outcome: "stale" as const };
             }
             if (conditionDiffers) yield* writeRunCondition(taskId, task.runCondition);
             if (catchUpDiffers) yield* writeCatchUp(taskId, task.catchUpMissedRun);
             if (promptFileDiffers) yield* writePromptFile(taskId, task.promptFile ?? null, null);
             if (delegatesDiffer) yield* writeDelegateProviders(taskId, task.delegateProviders);
+            if (liveRunLimitDiffers) yield* writeMaxLiveRuns(taskId, task.maxLiveRuns);
             return { outcome: "applied" as const };
           }),
         );
@@ -4153,6 +4267,7 @@ export const layer = Layer.effect(
             ? writeGroup(id, undefined, task.enabled ? false : "keep")
             : writeGroup(id, task.group, task.pausedWithGroup === true && !task.enabled);
           yield* writeDelegateProviders(id, task.delegateProviders);
+          yield* writeMaxLiveRuns(id, task.maxLiveRuns);
           yield* writeSharing(id, task.shared);
         }),
         "applied",
@@ -4466,6 +4581,10 @@ export const layer = Layer.effect(
           `;
             yield* sql`
             DELETE FROM scheduled_task_delegate_providers
+            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
+          `;
+            yield* sql`
+            DELETE FROM scheduled_task_live_run_limit
             WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
           `;
             yield* sql`
@@ -5500,6 +5619,7 @@ export const layer = Layer.effect(
       deleteForThread,
       moveThreadTasks,
       runNow,
+      liveRuns,
       listRuns,
       rotateWebhookToken,
       listWebhookDeliveries,

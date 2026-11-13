@@ -1859,6 +1859,8 @@ const catalog: MessageCatalog = {
   "A queued message cannot be left empty.": "Повідомлення в черзі не може бути порожнім.",
   "A queued message was not sent": "Повідомлення з черги не надіслано",
   "A risk to judge": "Ризик, який варто оцінити",
+  "A scheduled time is skipped while this many of the task's runs are still working, including tasks they delegated.":
+    "Запуск за розкладом пропускається, поки стільки запусків цього завдання ще працюють, разом із делегованими ними завданнями.",
   "A secret provider with this name exists.": "Провайдер секретів із такою назвою вже існує.",
   "a selected environment": "вибране середовище",
   "A t3.json exists in this checkout but fails to parse, so every action and icon it declares is ignored. Check the JSON syntax and icon values.":
@@ -5347,6 +5349,7 @@ const catalog: MessageCatalog = {
   "Enter a valid secret reference.": "Введіть дійсне посилання на секрет.",
   "Enter a value for {name}, or remove its line.":
     "Введіть значення для {name} або приберіть цей рядок.",
+  "Enter a whole number from 1 to {max}.": "Введіть ціле число від 1 до {max}.",
   "Enter a workspace path": "Введіть шлях до робочого простору",
   "Enter an HTTP or HTTPS endpoint, or leave empty to disable export.":
     "Введіть кінцеву точку HTTP або HTTPS або залиште порожнім, щоб вимкнути експорт.",
@@ -6498,6 +6501,7 @@ const catalog: MessageCatalog = {
   "Invalid interval": "Недійсний інтервал",
   "Invalid keybinding.": "Недійсне скорочення клавіш.",
   "Invalid keybindings configuration": "Недійсна конфігурація комбінацій клавіш",
+  "Invalid live-run limit": "Недійсний ліміт активних запусків",
   "Invalid MCP sign-in request.": "Недійсний запит на вхід MCP.",
   "Invalid pairing token. Check the token and try again.":
     "Недійсний токен сполучення. Перевірте токен і спробуйте ще раз.",
@@ -6574,6 +6578,10 @@ const catalog: MessageCatalog = {
   "its database has changes {version} does not support yet; stay on {from} until {channel} has them":
     "його база даних має зміни, які {version} ще не підтримує; залишайтеся на {from}, доки вони не з’являться в {channel}",
   "Its light palette was added.": "Додано її світлу палітру.",
+  "Its live-run limit was reached: earlier runs were still working.":
+    "Досягнуто ліміту активних запусків: попередні запуски ще працювали.",
+  "Its live-run limit was reached: runs on {machine} were still working.":
+    "Досягнуто ліміту активних запусків: запуски на {machine} ще працювали.",
   "its machine": "його комп’ютер",
   "Its own folder and thread. Nothing you have open moves.":
     "Власна тека й чат. Те, що у вас відкрито, не зміниться.",
@@ -6881,6 +6889,7 @@ const catalog: MessageCatalog = {
     "Поточні показники процесів надходять із нативного монітора ресурсів настільного застосунку. Вони недоступні для цього середовища. Наявні дані трасування й далі відображаються.",
   "Live process tree": "Живе дерево процесів",
   "Live Processes": "Живі процеси",
+  "Live runs": "Активні запуски",
   "Live Update Settings": "Налаштування живих оновлень",
   "Load balancing": "Балансування навантаження",
   "Load diff": "Завантажити зміни",
@@ -11678,10 +11687,6 @@ const catalog: MessageCatalog = {
   "The chat goes back to before this response, and your message is sent again. Your files can stay as they are now, or go back to how they were before this response. Going back also undoes any changes you made to them yourself since then.":
     "Чат повернеться до стану перед цією відповіддю, і ваше повідомлення буде надіслано знову. Файли можуть залишитися такими, як зараз, або повернутися до стану перед цією відповіддю. Повернення також скасує зміни, які ви внесли в них самі відтоді.",
   "The chat isn't ready to accept input right now.": "Чат зараз не готовий приймати введення.",
-  "The chat its last run started on {machine} was still working.":
-    "Чат, розпочатий його попереднім запуском на {machine}, ще працював.",
-  "The chat its last run started was still working.":
-    "Чат, розпочатий його попереднім запуском, ще працював.",
   "The check command could not be read, so the chat started anyway.":
     "Команду перевірки не вдалося прочитати, тому чат усе одно запущено.",
   "The check could not start, so the chat started anyway.":

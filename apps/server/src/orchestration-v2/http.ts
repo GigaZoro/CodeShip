@@ -5,7 +5,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -29,6 +28,7 @@ import {
   THREAD_HISTORY_PAGE_POLICY,
   OLDER_THREAD_USER_TURN_LIMIT,
 } from "./threadHistoryPaging.ts";
+import * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { loadSubscriberShellSnapshot } from "./ShellStream.ts";
@@ -38,14 +38,6 @@ import { projectThreadProjectionForWire } from "./WireProjection.ts";
 const isThreadTranscriptTooLargeError = Schema.is(
   ThreadManagementService.ThreadTranscriptTooLargeError,
 );
-
-function isThreadNotFound(error: unknown): boolean {
-  return (
-    Predicate.hasProperty(error, "cause") &&
-    Predicate.hasProperty(error.cause, "_tag") &&
-    error.cause._tag === "ProjectionStoreThreadNotFoundError"
-  );
-}
 
 export const layer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -110,7 +102,7 @@ export const layer = HttpApiBuilder.group(
         })),
         Effect.catch(
           Effect.fnUntraced(function* (error) {
-            if (isThreadNotFound(error)) {
+            if (Orchestrator.isThreadNotFound(error)) {
               return yield* failEnvironmentNotFound("thread_not_found");
             }
             return yield* failEnvironmentInternal(failureReason, error);
@@ -148,7 +140,7 @@ export const layer = HttpApiBuilder.group(
             })),
             Effect.catch(
               Effect.fnUntraced(function* (error) {
-                if (isThreadNotFound(error)) {
+                if (Orchestrator.isThreadNotFound(error)) {
                   return yield* failEnvironmentNotFound("thread_not_found");
                 }
                 return yield* failEnvironmentInternal("orchestration_thread_history_failed", error);
@@ -203,7 +195,7 @@ export const layer = HttpApiBuilder.group(
                 if (isThreadTranscriptTooLargeError(error)) {
                   return yield* failEnvironmentInvalidRequest("thread_transcript_too_large");
                 }
-                if (isThreadNotFound(error)) {
+                if (Orchestrator.isThreadNotFound(error)) {
                   return yield* failEnvironmentNotFound("thread_not_found");
                 }
                 return yield* failEnvironmentInternal(
@@ -274,7 +266,7 @@ export const layer = HttpApiBuilder.group(
               traceLocalHandlerWork,
               Effect.catch(
                 Effect.fnUntraced(function* (cause) {
-                  if (isThreadNotFound(cause))
+                  if (Orchestrator.isThreadNotFound(cause))
                     return yield* failEnvironmentNotFound("thread_not_found");
                   return yield* failEnvironmentInternal(
                     "orchestration_thread_history_failed",

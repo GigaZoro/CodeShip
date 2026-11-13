@@ -28,6 +28,10 @@ import {
   scheduledTaskPlacementOptions,
 } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
+  liveRunLimitHelpText,
+  liveRunLimitInput,
+  liveRunLimitInvalidText,
+  offersLiveRunLimit,
   runConditionHelpText,
   runConditionInput,
   runConditionInvalidText,
@@ -1164,6 +1168,11 @@ function TaskForm({
       ...draft.delegateProviders,
     ]),
   ];
+  const offersLiveRuns = offersLiveRunLimit({
+    supported: config?.environment.capabilities.scheduledTaskMaxLiveRuns === true,
+    startsNewChat: sharing || !draft.task?.threadId,
+    repeats: draft.schedule.mode === "fixed_time" || draft.schedule.mode === "interval",
+  });
   const promptSource = effectivePromptSource({ supportsPromptFiles, draft });
   const promptFileLost = promptFileLostOnTarget({
     supportsPromptFiles,
@@ -1273,6 +1282,11 @@ function TaskForm({
       );
       return;
     }
+    const maxLiveRuns = offersLiveRuns ? liveRunLimitInput(draft.maxLiveRuns) : undefined;
+    if (offersLiveRuns && maxLiveRuns === undefined) {
+      Dialog.alert(t("Invalid live-run limit"), liveRunLimitInvalidText());
+      return;
+    }
     const runCondition = offersRunCondition ? runConditionInput(draft.runCondition) : null;
     if (runCondition === undefined) {
       Dialog.alert(t("Invalid check"), runConditionInvalidText());
@@ -1297,6 +1311,7 @@ function TaskForm({
       schedule,
       ...(offersRunCondition ? { runCondition } : {}),
       ...(offersDelegateProviders ? { delegateProviders: draft.delegateProviders } : {}),
+      ...(maxLiveRuns === undefined ? {} : { maxLiveRuns }),
       enabled: draft.enabled,
       threadId: sharing ? null : (draft.task?.threadId ?? null),
       workspaceStrategy:
@@ -2054,6 +2069,17 @@ function TaskForm({
                 }
               />
             ))}
+          </SettingsSection>
+        ) : null}
+        {offersLiveRuns ? (
+          <SettingsSection title={t("Live runs")} footer={liveRunLimitHelpText()}>
+            <FormField
+              label={t("Live runs")}
+              value={draft.maxLiveRuns}
+              keyboardType="number-pad"
+              disabled={saving || environmentUnavailable}
+              onChange={(maxLiveRuns) => setDraft({ ...draft, maxLiveRuns })}
+            />
           </SettingsSection>
         ) : null}
       </View>

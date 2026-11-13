@@ -25,6 +25,7 @@ import {
   type PromptFileDraft,
 } from "@t3tools/client-runtime/scheduled-task-prompt-file";
 import {
+  liveRunLimitDraft,
   runConditionDraft,
   type RunConditionDraft,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
@@ -221,6 +222,7 @@ export type ScheduledTaskDraft = PromptFileDraft & {
   readonly schedule: ScheduleDraft;
   readonly runCondition: RunConditionDraft;
   readonly delegateProviders: ReadonlyArray<ProviderDriverKind>;
+  readonly maxLiveRuns: string;
   readonly workspace: Workspace;
   readonly baseRef: string;
   readonly checkoutPath: string;
@@ -260,6 +262,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.runCondition.command.trim(),
     draft.runCondition.command.trim() === "" ? null : draft.runCondition.timeoutSeconds.trim(),
     draft.delegateProviders,
+    draft.maxLiveRuns.trim(),
     draft.workspace,
     draft.baseRef,
     draft.checkoutPath,
@@ -309,6 +312,7 @@ export function createDraft(
     schedule: DEFAULT_SCHEDULE,
     runCondition: runConditionDraft(null),
     delegateProviders: [],
+    maxLiveRuns: liveRunLimitDraft(null),
     workspace: "worktree",
     baseRef: "main",
     checkoutPath: "",
@@ -349,6 +353,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     schedule: scheduleDraftForTask(task),
     runCondition: runConditionDraft(task),
     delegateProviders: task.delegateProviders ?? [],
+    maxLiveRuns: liveRunLimitDraft(task),
     workspace: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     checkoutPath:

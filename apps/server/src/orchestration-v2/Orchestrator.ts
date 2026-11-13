@@ -95,6 +95,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -261,6 +262,15 @@ export class OrchestratorProjectionError extends Schema.TaggedError<Orchestrator
 }
 
 const isOrchestratorProjectionError = Schema.is(OrchestratorProjectionError);
+
+/** The thread has no projection: it never existed, or a rebuild dropped it after deletion. */
+export function isThreadNotFound(error: unknown): boolean {
+  return (
+    Predicate.hasProperty(error, "cause") &&
+    Predicate.hasProperty(error.cause, "_tag") &&
+    error.cause._tag === "ProjectionStoreThreadNotFoundError"
+  );
+}
 
 export class OrchestratorDomainEventStreamError extends Schema.TaggedError<OrchestratorDomainEventStreamError>()(
   "OrchestratorDomainEventStreamError",

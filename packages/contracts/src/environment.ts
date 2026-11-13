@@ -153,6 +153,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTaskGroups: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `delegateProviders` and skips its runs while one is out of usage; hide that choice where absent. */
   scheduledTaskDelegateProviders: Schema.optionalKey(Schema.Boolean),
+  /** Stores a task's `maxLiveRuns` and skips its runs while that many still work; hide that choice where absent. */
+  scheduledTaskMaxLiveRuns: Schema.optionalKey(Schema.Boolean),
   /** Serves `scheduledTasks.subscribeLinked`: the last task list of each machine it links to. */
   linkedScheduledTasks: Schema.optionalKey(Schema.Boolean),
   /** Honors `delegatedTaskModelSelections`; hide that setting where it is absent. */

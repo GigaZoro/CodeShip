@@ -132,9 +132,19 @@ describe("planSharedScheduledTaskSync", () => {
 
   it.each([
     {
-      name: "a source that lists them sends its run condition, catch-up choice and delegate providers, cleared ones too",
-      fields: { runCondition: null, catchUpMissedRun: false, delegateProviders: [] },
-      expected: { runCondition: null, catchUpMissedRun: false, delegateProviders: [] },
+      name: "a source that lists them sends its run condition, catch-up choice, delegate providers and live-run limit, cleared ones too",
+      fields: {
+        runCondition: null,
+        catchUpMissedRun: false,
+        delegateProviders: [],
+        maxLiveRuns: 1,
+      },
+      expected: {
+        runCondition: null,
+        catchUpMissedRun: false,
+        delegateProviders: [],
+        maxLiveRuns: 1,
+      },
     },
     {
       name: "a source on an older version sends neither, so the receiver keeps its own",
@@ -153,6 +163,7 @@ describe("planSharedScheduledTaskSync", () => {
       ...("delegateProviders" in (copy ?? {})
         ? { delegateProviders: copy?.delegateProviders }
         : {}),
+      ...("maxLiveRuns" in (copy ?? {}) ? { maxLiveRuns: copy?.maxLiveRuns } : {}),
     }).toEqual(expected);
   });
 });
@@ -475,13 +486,13 @@ describe("mergeScheduledTaskRuns", () => {
           run("a-13", "13:00", {
             scheduledFor: one,
             outcome: "skipped",
-            skipReason: "last_run_working",
+            skipReason: "live_run_limit",
             ranOn: B,
           }),
           run("a-12", "12:00", {
             scheduledFor: noon,
             outcome: "skipped",
-            skipReason: "last_run_working",
+            skipReason: "live_run_limit",
           }),
           run("a-11", "11:00", { scheduledFor: eleven, outcome: "skipped", skipReason: "no_work" }),
           run("a-10", "10:00", { scheduledFor: ten }),
@@ -494,13 +505,13 @@ describe("mergeScheduledTaskRuns", () => {
           run("b-13", "13:01", {
             scheduledFor: one,
             outcome: "skipped",
-            skipReason: "last_run_working",
+            skipReason: "live_run_limit",
             ranOn: A,
           }),
           run("b-12", "12:00", {
             scheduledFor: noon,
             outcome: "skipped",
-            skipReason: "last_run_working",
+            skipReason: "live_run_limit",
             ranOn: A,
           }),
           run("b-11", "11:05", {

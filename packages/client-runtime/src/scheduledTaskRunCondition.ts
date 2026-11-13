@@ -1,7 +1,9 @@
 import {
   DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
+  DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
   MAX_RUN_CONDITION_COMMAND_LENGTH,
   MAX_RUN_CONDITION_TIMEOUT_SECONDS,
+  MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
   type ScheduledTask,
   type ScheduledTaskNoWorkSkip,
   type ScheduledTaskRunCheck,
@@ -30,13 +32,52 @@ export function runConditionDraft(
   };
 }
 
-/** Blank means the default; undefined means the input is not a valid timeout, which blocks saving. */
+/** Blank means `fallback`; undefined means the input is not a whole number from 1 to `max`, which blocks saving. */
+function wholeNumberInput(value: string, fallback: number, max: number): number | undefined {
+  if (value.trim() === "") return fallback;
+  const number = Number(value.trim());
+  return Number.isInteger(number) && number >= 1 && number <= max ? number : undefined;
+}
+
 function parseRunConditionTimeout(value: string): number | undefined {
-  if (value.trim() === "") return DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS;
-  const seconds = Number(value.trim());
-  return Number.isInteger(seconds) && seconds >= 1 && seconds <= MAX_RUN_CONDITION_TIMEOUT_SECONDS
-    ? seconds
-    : undefined;
+  return wholeNumberInput(
+    value,
+    DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
+    MAX_RUN_CONDITION_TIMEOUT_SECONDS,
+  );
+}
+
+/** A task form's text for the task's live-run limit. */
+export function liveRunLimitDraft(task: Pick<ScheduledTask, "maxLiveRuns"> | null): string {
+  return String(task?.maxLiveRuns ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS);
+}
+
+/** What a save sends for the limit; undefined means the text is not a valid limit, which blocks saving. */
+export function liveRunLimitInput(value: string): number | undefined {
+  return wholeNumberInput(
+    value,
+    DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
+    MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
+  );
+}
+
+/** The live-run limit applies to tasks that start a new chat on a repeating schedule. */
+export function offersLiveRunLimit(input: {
+  readonly supported: boolean;
+  readonly startsNewChat: boolean;
+  readonly repeats: boolean;
+}): boolean {
+  return input.supported && input.startsNewChat && input.repeats;
+}
+
+export function liveRunLimitHelpText(): string {
+  return t(
+    "A scheduled time is skipped while this many of the task's runs are still working, including tasks they delegated.",
+  );
+}
+
+export function liveRunLimitInvalidText(): string {
+  return t("Enter a whole number from 1 to {max}.", { max: MAX_SCHEDULED_TASK_MAX_LIVE_RUNS });
 }
 
 /** What a save sends: null clears the condition; undefined means the draft is invalid, which blocks saving. */

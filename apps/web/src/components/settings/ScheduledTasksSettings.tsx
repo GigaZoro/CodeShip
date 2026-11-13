@@ -40,7 +40,10 @@ import type {
   ScheduledTaskWebhookDeliverySummary,
   ThreadId,
 } from "@t3tools/contracts";
-import { MAX_RUN_CONDITION_TIMEOUT_SECONDS } from "@t3tools/contracts";
+import {
+  MAX_RUN_CONDITION_TIMEOUT_SECONDS,
+  MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
+} from "@t3tools/contracts";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -50,6 +53,11 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
+  liveRunLimitDraft,
+  liveRunLimitHelpText,
+  liveRunLimitInput,
+  liveRunLimitInvalidText,
+  offersLiveRunLimit,
   runConditionDraft,
   runConditionHelpText,
   runConditionInput,
@@ -298,6 +306,7 @@ const EMPTY_DRAFT: DraftState = {
   catchUpMissedRun: null,
   runCondition: runConditionDraft(null),
   delegateProviders: [],
+  maxLiveRuns: liveRunLimitDraft(null),
   shared: false,
   sharedExcludedEnvironmentIds: [],
   sharedRunOn: "every",
@@ -2771,6 +2780,12 @@ function ScheduledTaskEditorForm({
   const delegateProviderChoices = [
     ...new Set([...providers.map((provider) => provider.driver), ...draft.delegateProviders]),
   ];
+  const offersLiveRuns = offersLiveRunLimit({
+    supported:
+      environment?.serverConfig?.environment.capabilities.scheduledTaskMaxLiveRuns === true,
+    startsNewChat: sharing || !draft.threadId,
+    repeats: draft.scheduleMode === "fixed" || draft.scheduleMode === "interval",
+  });
   const promptSource = effectivePromptSource({ supportsPromptFiles, draft });
   const promptFileLost = promptFileLostOnTarget({
     supportsPromptFiles,
@@ -2962,6 +2977,12 @@ function ScheduledTaskEditorForm({
       );
       return;
     }
+    const maxLiveRuns = offersLiveRuns ? liveRunLimitInput(draft.maxLiveRuns) : undefined;
+    if (offersLiveRuns && maxLiveRuns === undefined) {
+      reportFailure(t("Invalid live-run limit"), liveRunLimitInvalidText());
+      document.getElementById("scheduled-task-live-runs")?.focus();
+      return;
+    }
     const runCondition = offersRunCondition ? runConditionInput(draft.runCondition) : undefined;
     if (offersRunCondition && runCondition === undefined) {
       reportFailure(t("Invalid check"), runConditionInvalidText());
@@ -2990,6 +3011,7 @@ function ScheduledTaskEditorForm({
         : {}),
       ...(runCondition === undefined ? {} : { runCondition }),
       ...(offersDelegateProviders ? { delegateProviders: draft.delegateProviders } : {}),
+      ...(maxLiveRuns === undefined ? {} : { maxLiveRuns }),
       // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
@@ -4052,6 +4074,34 @@ function ScheduledTaskEditorForm({
                 {t(
                   "Providers this task delegates work to. A scheduled run is skipped while every account of one is out of usage.",
                 )}
+              </p>
+            </div>
+          ) : null}
+
+          {offersLiveRuns ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="scheduled-task-live-runs">{t("Live runs")}</Label>
+                <Input
+                  type="number"
+                  id="scheduled-task-live-runs"
+                  nativeInput
+                  min={1}
+                  max={MAX_SCHEDULED_TASK_MAX_LIVE_RUNS}
+                  className="w-24"
+                  aria-describedby="scheduled-task-live-runs-description"
+                  disabled={saving || !connected}
+                  value={draft.maxLiveRuns}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, maxLiveRuns: event.target.value }))
+                  }
+                />
+              </div>
+              <p
+                id="scheduled-task-live-runs-description"
+                className="text-xs text-muted-foreground"
+              >
+                {liveRunLimitHelpText()}
               </p>
             </div>
           ) : null}

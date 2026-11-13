@@ -224,6 +224,31 @@ export function subagentResultForRun(
   };
 }
 
+/** A thread still owes work to a task it delegated, or to its own background work. */
+export function delegatedWorkPending(projection: {
+  readonly subagents: ReadonlyArray<
+    Pick<OrchestrationV2ThreadProjection["subagents"][number], "status" | "completionDelivery">
+  >;
+  readonly providerThreads: ReadonlyArray<
+    Pick<OrchestrationV2ThreadProjection["providerThreads"][number], "pendingBackgroundTasks">
+  >;
+}): boolean {
+  return (
+    projection.subagents.some(
+      (task) =>
+        isOrchestrationV2WorkActive(task.status) ||
+        // Publishing a child's result precedes scheduling its parent's wake.
+        // The parent still owes that follow-up even between those transactions.
+        (task.status !== "idle" &&
+          (task.completionDelivery?.state === "pending" ||
+            task.completionDelivery?.state === "claimed")),
+    ) ||
+    projection.providerThreads.some((thread) =>
+      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
+    )
+  );
+}
+
 export function delegatedTaskProgress(projection: {
   readonly runs: OrchestrationV2ThreadProjection["runs"];
   readonly messages: ReadonlyArray<
@@ -249,19 +274,7 @@ export function delegatedTaskProgress(projection: {
   const active = workRuns.some(
     (run) => !terminal(run.status) && !(run.status === "queued" && run.queueHeld === true),
   );
-  const children =
-    projection.subagents.some(
-      (task) =>
-        isOrchestrationV2WorkActive(task.status) ||
-        // Publishing a child's result precedes scheduling its parent's wake.
-        // The parent still owes that follow-up even between those transactions.
-        (task.status !== "idle" &&
-          (task.completionDelivery?.state === "pending" ||
-            task.completionDelivery?.state === "claimed")),
-    ) ||
-    projection.providerThreads.some((thread) =>
-      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
-    );
+  const children = delegatedWorkPending(projection);
   const resultRun = workRuns
     .filter((run) => terminal(run.status) && (run.startedAt !== null || run.ordinal === 1))
     .toSorted((a, b) => (runRanAfter(a, b) ? -1 : runRanAfter(b, a) ? 1 : 0))[0];

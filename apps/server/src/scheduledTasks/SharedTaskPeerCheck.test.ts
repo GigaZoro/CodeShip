@@ -164,18 +164,20 @@ it.effect.each([
     lastRun: { at: "2026-09-09T11:29:59.999Z", outcome: "working" },
     ranOn: null,
     working: false,
-    lastRunWorkingOn: PEER,
+    liveRuns: 1,
   },
   { name: "never run", lastRun: null, ranOn: null, working: false },
 ])(
   "a peer that names no occurrence: its last run $name",
-  ({ lastRun, fields, ranOn, working, noWork, lastRunWorkingOn }) =>
+  ({ lastRun, fields, ranOn, working, noWork, liveRuns }) =>
     check({ answer: peerTask(lastRun, fields) }).pipe(
       Effect.map((result) => {
         expect(result.ranOn).toBe(ranOn);
         expect(result.working).toBe(working);
         expect(result.noWork).toEqual(noWork ?? null);
-        expect(result.lastRunWorkingOn).toBe(lastRunWorkingOn ?? null);
+        expect(result.liveRunsElsewhere).toEqual(
+          liveRuns === undefined ? [] : [{ environmentId: PEER, liveRuns }],
+        );
         expect(result.unchecked).toEqual([]);
       }),
     ),
@@ -197,7 +199,23 @@ it.effect.each([
     lastRun: { at: LATE, outcome: "working", occurrence: PREVIOUS },
     ranOn: null,
     working: false,
-    lastRunWorkingOn: PEER,
+    liveRuns: 1,
+  },
+  {
+    name: "a count of two live runs while its last run has ended",
+    lastRun: { at: LATE, outcome: "completed", occurrence: PREVIOUS },
+    fields: { liveRuns: 2 },
+    ranOn: null,
+    working: false,
+    liveRuns: 2,
+  },
+  {
+    // The count also sees delegated work ending, which the last run's outcome lags behind.
+    name: "a count of no live runs while its last run reads working",
+    lastRun: { at: LATE, outcome: "working", occurrence: PREVIOUS },
+    fields: { liveRuns: 0 },
+    ranOn: null,
+    working: false,
   },
   {
     name: "a run started now, by hand",
@@ -210,7 +228,7 @@ it.effect.each([
     lastRun: { at: LATE, outcome: "working", occurrence: null },
     ranOn: null,
     working: false,
-    lastRunWorkingOn: PEER,
+    liveRuns: 1,
   },
   {
     name: "a no-work skip of the occurrence before",
@@ -269,13 +287,15 @@ it.effect.each([
   },
 ])(
   "a peer that names occurrences: $name",
-  ({ lastRun, fields, ranOn, working, noWork, lastRunWorkingOn }) =>
+  ({ lastRun, fields, ranOn, working, noWork, liveRuns }) =>
     check({ answer: peerTask(lastRun, fields) }).pipe(
       Effect.map((result) => {
         expect(result.ranOn).toBe(ranOn);
         expect(result.working).toBe(working);
         expect(result.noWork).toEqual(noWork ?? null);
-        expect(result.lastRunWorkingOn).toBe(lastRunWorkingOn ?? null);
+        expect(result.liveRunsElsewhere).toEqual(
+          liveRuns === undefined ? [] : [{ environmentId: PEER, liveRuns }],
+        );
       }),
     ),
 );

@@ -3099,6 +3099,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+              liveRuns: () => Effect.succeed(null),
               list: () => Effect.succeed({ tasks }),
               upsert: () =>
                 Ref.update(upserted, (count) => count + 1).pipe(Effect.as({ task: tasks[0]! })),
@@ -3170,6 +3171,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    liveRuns: () => Effect.succeed(null),
                     list: () => Effect.succeed({ tasks: [task({})] }),
                   }),
                 ),
@@ -3285,6 +3287,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    liveRuns: () => Effect.succeed(null),
                     list: () => Effect.map(Ref.get(saved), (tasks) => ({ tasks })),
                     upsert: (input) =>
                       Effect.gen(function* () {
@@ -3356,6 +3359,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(SecretRequests.SecretRequests)({}),
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                    liveRuns: () => Effect.succeed(null),
                     list: () => Effect.succeed({ tasks: [bound] }),
                     upsert: () =>
                       Ref.update(upserted, (count) => count + 1).pipe(Effect.as({ task: bound })),
@@ -3460,6 +3464,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(SecretRequests.SecretRequests)({}),
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+              liveRuns: () => Effect.succeed(null),
               list: () => Effect.succeed({ tasks: listed }),
               upsert: (input) =>
                 Ref.update(saved, (strategies) => [...strategies, input.workspaceStrategy]).pipe(
@@ -3819,6 +3824,13 @@ describe("OrchestratorMcpService provider resolution", () => {
         outcome: "completed",
       },
       {
+        name: "started, thread's turn over while a task it delegated runs",
+        task: { lastRunAt: "2026-10-05T01:00:00.000Z", lastRunStatus: "succeeded" },
+        runStatus: "completed",
+        delegating: true,
+        outcome: "working",
+      },
+      {
         name: "started for its 01:00 occurrence, thread completed",
         task: {
           lastRunAt: "2026-10-05T01:00:00.000Z",
@@ -3938,6 +3950,11 @@ describe("OrchestratorMcpService provider resolution", () => {
                                 ]
                               : []),
                           ],
+                          subagents:
+                            "delegating" in row
+                              ? [{ status: "running", completionDelivery: null }]
+                              : [],
+                          providerThreads: [],
                         } as never),
                 restartContinuationPending: () =>
                   Effect.succeed("continues" in row && row.continues === true),
@@ -3965,6 +3982,33 @@ describe("OrchestratorMcpService provider resolution", () => {
               : undefined,
           );
         }),
+    );
+
+    it.effect("lists a new-thread task's live runs against its limit, and none for others", () =>
+      Effect.gen(function* () {
+        const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+        // The service counts no live runs for a task its limit does not apply to.
+        const unlimited = { ...existing, id: ScheduledTaskId.make("task:unlimited") };
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              saved,
+              [{ ...existing, maxLiveRuns: 2 }, unlimited],
+              {},
+              { liveRuns: (task) => Effect.succeed(task.id === unlimited.id ? null : 1) },
+            ),
+          ),
+        );
+        const { tasks } = yield* mcp.listScheduledTasks(client, { projectId });
+        assert.deepEqual(
+          tasks.map((task) => [task.maxLiveRuns, task.liveRuns]),
+          [
+            [2, 1],
+            [undefined, undefined],
+          ],
+        );
+      }),
     );
 
     it.effect(

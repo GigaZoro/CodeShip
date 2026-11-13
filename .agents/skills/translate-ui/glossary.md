@@ -83,6 +83,7 @@ message passes only when every word in it is listed here.
 | reaction                                  | реакція                                       |
 | redirect URL                              | URL перенаправлення                           |
 | run (n)                                   | запуск                                        |
+| live runs / live-run limit                | активні запуски / ліміт активних запусків     |
 | loading…                                  | завантаження…                                 |
 | retry                                     | повторити                                     |
 | copied                                    | скопійовано                                   |

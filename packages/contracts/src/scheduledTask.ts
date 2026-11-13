@@ -268,8 +268,8 @@ export const ScheduledTaskRunSkipReason = Schema.Literals([
   "unconfirmed",
   /** Every account the task could start on, or every account of a delegate provider, was out of usage. */
   "usage_limited",
-  /** The chat its last run started was still working. */
-  "last_run_working",
+  /** As many of its runs as its live-run limit allows were still working, delegated tasks included. */
+  "live_run_limit",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
 
@@ -567,6 +567,16 @@ export const ScheduledTaskDelegateProviders = Schema.Array(ProviderDriverKind).c
   Schema.isMaxLength(8),
 );
 
+export const DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS = 1;
+export const MAX_SCHEDULED_TASK_MAX_LIVE_RUNS = 10;
+/**
+ * How many runs of a recurring task that starts a new chat may work at once. A run works while its
+ * chat runs or waits, or while a task it delegated still runs.
+ */
+export const ScheduledTaskMaxLiveRuns = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: MAX_SCHEDULED_TASK_MAX_LIVE_RUNS }),
+);
+
 export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
@@ -630,6 +640,8 @@ export const ScheduledTask = Schema.Struct({
   pausedWithGroup: Schema.optional(Schema.Boolean),
   /** Empty when the task needs none. Absent from servers without delegate providers. */
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
+  /** Absent from servers without a live-run limit. */
+  maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -731,6 +743,10 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
     description:
       "Provider drivers the task delegates to, such as codex. A scheduled occurrence is skipped while every account of one is out of usage. Omitted keeps the stored list.",
   }),
+  maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns).annotate({
+    description:
+      "How many runs of a recurring task that starts a new chat may work at once, delegated tasks included. A scheduled occurrence is skipped while that many still work. Omitted keeps the stored limit, or for a new task 1.",
+  }),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
@@ -774,6 +790,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   promptFile: Schema.optional(Schema.NullOr(ScheduledTaskPromptFilePath)),
   /** Absent from machines without delegate providers; the receiving machine keeps its own. */
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
+  /** Absent from machines without a live-run limit; the receiving machine keeps its own. */
+  maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,

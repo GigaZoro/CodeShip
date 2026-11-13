@@ -41,7 +41,10 @@ import {
   ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
-import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
+import {
+  delegatedTaskProgress,
+  delegatedWorkPending,
+} from "@t3tools/provider-core/server/subagentProjection";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -545,14 +548,18 @@ export function latestRun(
 }
 
 /**
- * A chat works while any of its runs is unfinished, or a run a server restart cut waits for its
- * continuation. A later run that ended, such as a queued one someone cancelled, does not hide it.
+ * A chat works while any of its runs is unfinished, a task it delegated or its own background work
+ * still runs, or a run a server restart cut waits for its continuation. A later run that ended,
+ * such as a queued one someone cancelled, does not hide it.
  */
 export function threadStillWorking(
   threadManagement: Pick<ThreadManagementServiceShape, "restartContinuationPending">,
-  runs: ReadonlyArray<OrchestrationV2Run>,
+  records: Pick<OrchestrationV2ThreadProjection, "runs" | "subagents" | "providerThreads">,
 ): Effect.Effect<boolean> {
-  if (runs.some((run) => !isTerminalRunStatus(run.status))) return Effect.succeed(true);
+  const { runs } = records;
+  if (runs.some((run) => !isTerminalRunStatus(run.status)) || delegatedWorkPending(records)) {
+    return Effect.succeed(true);
+  }
   const continued = new Set(runs.flatMap((run) => run.restartContinuationOfRunId ?? []));
   return Effect.forEach(
     runs.filter((run) => run.status !== "completed" && !continued.has(run.id)),

@@ -29,8 +29,11 @@ export interface PeerCheckResult {
   readonly working: boolean;
   /** `ranOn` skipped it because its run condition found no work, and why. */
   readonly noWork: { readonly reason: string | null } | null;
-  /** A machine whose chat from an earlier run of the task, or one started by hand, is still working. */
-  readonly lastRunWorkingOn: EnvironmentId | null;
+  /** Machines where runs of the task, scheduled or started by hand, still work, and how many. */
+  readonly liveRunsElsewhere: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly liveRuns: number;
+  }>;
   /** Machines that could not be asked, and why. */
   readonly unchecked: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -57,7 +60,7 @@ interface PeerAnswer {
   readonly reason: string | null;
   readonly has: "working" | "completed" | null;
   readonly noWork: PeerCheckResult["noWork"];
-  readonly lastRunWorking: boolean;
+  readonly liveRuns: number;
 }
 
 /** Asks linked machines whether they already ran an occurrence of a one-machine task. */
@@ -137,7 +140,7 @@ const make = Effect.gen(function* () {
   const check: SharedTaskPeerCheck["Service"]["check"] = Effect.fn("SharedTaskPeerCheck.check")(
     function* (input) {
       if (input.peers.length === 0) {
-        return { ranOn: null, working: false, noWork: null, lastRunWorkingOn: null, unchecked: [] };
+        return { ranOn: null, working: false, noWork: null, liveRunsElsewhere: [], unchecked: [] };
       }
       // A late run of the occurrence before starts inside this one's window, so only the occurrence
       // a peer names tells them apart; a later one settles a stale asker too. Null: run now or by
@@ -154,14 +157,15 @@ const make = Effect.gen(function* () {
             reason: problem,
             has: null,
             noWork: null,
-            lastRunWorking: false,
+            liveRuns: 0,
           } satisfies PeerAnswer;
         }
         return yield* client
           .call({
             environmentId,
             tool: "list_scheduled_tasks",
-            arguments: {},
+            // One task keeps the peer's live-run counts to that task's chats.
+            arguments: { scheduledTaskId: input.taskId },
             limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
             success: OrchestratorMcpListScheduledTasksResult,
           })
@@ -173,7 +177,7 @@ const make = Effect.gen(function* () {
                 reason,
                 has: null,
                 noWork: null,
-                lastRunWorking: false,
+                liveRuns: 0,
               });
               if (Option.isNone(answer)) return unchecked("It did not answer in time.");
               const task = answer.value.tasks.find(
@@ -183,16 +187,20 @@ const make = Effect.gen(function* () {
               if (task.lastRun === undefined) {
                 return unchecked("It runs an older version of T3.CodeShip.");
               }
-              const lastRunWorking =
-                task.lastRun !== null &&
+              // A peer without live-run counts reports only whether its last run's chat works.
+              const liveRuns =
+                task.liveRuns ??
+                (task.lastRun !== null &&
                 task.lastRun.outcome === "working" &&
-                !counts(task.lastRun.occurrence, task.lastRun.at);
+                !counts(task.lastRun.occurrence, task.lastRun.at)
+                  ? 1
+                  : 0);
               const answered = (has: PeerAnswer["has"], noWork: PeerAnswer["noWork"] = null) => ({
                 environmentId,
                 reason: null,
                 has,
                 noWork,
-                lastRunWorking,
+                liveRuns,
               });
               if (
                 task.checkingSince !== undefined &&
@@ -223,7 +231,7 @@ const make = Effect.gen(function* () {
                 reason: error.message,
                 has: null,
                 noWork: null,
-                lastRunWorking: false,
+                liveRuns: 0,
               }),
             ),
           );
@@ -236,7 +244,9 @@ const make = Effect.gen(function* () {
         ranOn: holder?.environmentId ?? null,
         working: holder?.has === "working",
         noWork: holder?.noWork ?? null,
-        lastRunWorkingOn: answers.find((answer) => answer.lastRunWorking)?.environmentId ?? null,
+        liveRunsElsewhere: answers.flatMap(({ environmentId, liveRuns }) =>
+          liveRuns > 0 ? [{ environmentId, liveRuns }] : [],
+        ),
         unchecked: answers.flatMap((answer) =>
           answer.reason === null
             ? []

@@ -28,6 +28,7 @@ import {
   ScheduledTaskPromptFile,
   ScheduledTaskPromptFilePath,
   ScheduledTaskDelegateProviders,
+  ScheduledTaskMaxLiveRuns,
   ScheduledTaskRunCondition,
   ScheduledTaskRunConditionInput,
   ScheduledTaskRunStatus,
@@ -735,6 +736,11 @@ const OrchestratorMcpDelegateProviders = ScheduledTaskDelegateProviders.annotate
     'Drivers it hands work to with delegate_task, e.g. ["codex"]. A scheduled run is skipped while all accounts of one are out of usage.',
 });
 
+const OrchestratorMcpMaxLiveRuns = ScheduledTaskMaxLiveRuns.annotate({
+  description:
+    "New-thread repeating task: its runs that may work at once, delegated tasks included; a scheduled run is skipped at the limit. Default 1; omit to keep.",
+});
+
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ...scheduledTaskModelFields,
   environmentId: OrchestratorMcpEnvironmentTarget,
@@ -779,6 +785,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
       'Group label the user\'s task list sorts it under, e.g. "Machine care". Reuse an existing label (list_scheduled_tasks). Null clears; omit to keep.',
   }),
   delegateProviders: Schema.optional(OrchestratorMcpDelegateProviders),
+  maxLiveRuns: Schema.optional(OrchestratorMcpMaxLiveRuns),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -860,6 +867,11 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
     description: "fixed_time only: a run missed while the app was off runs once when it is back.",
   }),
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
+  maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
+  liveRuns: Schema.optional(NonNegativeInt).annotate({
+    description:
+      "New-thread repeating task: its runs here that still work, delegated tasks included.",
+  }),
   lastRun: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -965,6 +977,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   catchUpMissedRun: Schema.optional(Schema.Boolean),
   group: OrchestratorMcpScheduleTaskInput.fields.group,
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
+  maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

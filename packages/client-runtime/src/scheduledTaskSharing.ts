@@ -101,6 +101,7 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     ...(task.catchUpMissedRun === undefined ? {} : { catchUpMissedRun: task.catchUpMissedRun }),
     ...(task.runCondition === undefined ? {} : { runCondition: task.runCondition }),
     ...(task.delegateProviders === undefined ? {} : { delegateProviders: task.delegateProviders }),
+    ...(task.maxLiveRuns === undefined ? {} : { maxLiveRuns: task.maxLiveRuns }),
     runtimeMode: task.runtimeMode,
     interactionMode: task.interactionMode,
     createdBy: task.createdBy,
@@ -607,15 +608,15 @@ export function mergeScheduledTaskRuns(
 ): ReadonlyArray<ScheduledTaskRunOnMachine> {
   const occurrenceKey = (environmentId: EnvironmentId, scheduledFor: string) =>
     `${environmentId}|${Date.parse(scheduledFor)}`;
-  // A machine that ran the occurrence, whose check found no work for it, or whose own last chat was
-  // still working settled it. A record naming another machine never stands in for one, so two
-  // machines that each skipped for the other's chat both stay listed.
+  // A machine that ran the occurrence, whose check found no work for it, or whose own runs filled
+  // its live-run limit settled it. A record naming another machine never stands in for one, so two
+  // machines that each skipped for the other's runs both stay listed.
   const settled = new Set(
     lists.flatMap(({ environmentId, runs }) =>
       runs.flatMap((run) =>
         (run.outcome !== "skipped" ||
           run.skipReason === "no_work" ||
-          run.skipReason === "last_run_working") &&
+          run.skipReason === "live_run_limit") &&
         run.ranOn === null &&
         run.scheduledFor !== null
           ? [occurrenceKey(environmentId, run.scheduledFor)]

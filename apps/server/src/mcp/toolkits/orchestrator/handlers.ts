@@ -102,52 +102,14 @@ const handlers = {
       // A scheduled run starts long after its caller, with nothing to carry the link.
       { refused: "schedule tasks in this environment" },
     ),
-    McpToolAccess.writes(
-      ({
-        scheduledTaskId,
-        prompt,
-        promptFile,
-        title,
-        schedule,
-        enabled,
-        bindToCurrentThread,
-        shared,
-        oneMachine,
-        excludedMachines,
-        machineOrder,
-        placement,
-        group,
-        modelSelection,
-        followsDefaultModel,
-        runCondition,
-        catchUpMissedRun,
-        delegateProviders,
-      }) =>
-        Effect.gen(function* () {
-          if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
-          const scope = yield* McpInvocationContext.McpInvocationContext;
-          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          return yield* service.updateScheduledTask(scope, {
-            scheduledTaskId,
-            prompt,
-            promptFile,
-            title,
-            schedule,
-            enabled,
-            bindToCurrentThread,
-            shared,
-            oneMachine,
-            excludedMachines,
-            machineOrder,
-            placement,
-            group,
-            modelSelection,
-            followsDefaultModel,
-            runCondition,
-            catchUpMissedRun,
-            delegateProviders,
-          });
-        }),
+    McpToolAccess.writes(({ scheduledTaskId, ...fields }) =>
+      Effect.gen(function* () {
+        if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        // Every field the tool takes reaches the update; a hand-kept list dropped new settings.
+        return yield* service.updateScheduledTask(scope, { ...fields, scheduledTaskId });
+      }),
     ),
   ),
   list_scheduled_tasks: McpToolAccess.reads((input) =>

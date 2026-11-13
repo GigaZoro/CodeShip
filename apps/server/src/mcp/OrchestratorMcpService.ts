@@ -5,6 +5,7 @@ import { providerConstraints } from "../provider/providerConstraints.ts";
 import {
   CommandId,
   type RunId,
+  DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
   MessageId,
   type ModelSelection,
   type EnvironmentId,
@@ -357,6 +358,8 @@ function scheduledTaskSummary(
   task: ScheduledTask,
   mayRun: boolean,
   lastRun: OrchestratorMcpScheduledTask["lastRun"],
+  /** Null for a task its live-run limit does not apply to, or when they could not be counted. */
+  liveRuns: number | null,
   machineOrders: ReadonlyArray<ScheduledTaskProjectMachineOrder>,
   includePrompt: boolean,
 ): OrchestratorMcpScheduledTask {
@@ -424,6 +427,9 @@ function scheduledTaskSummary(
     ...(task.delegateProviders === undefined || task.delegateProviders.length === 0
       ? {}
       : { delegateProviders: task.delegateProviders }),
+    ...(liveRuns === null
+      ? {}
+      : { maxLiveRuns: task.maxLiveRuns ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS, liveRuns }),
     lastRun,
   };
 }
@@ -2311,14 +2317,17 @@ const make = Effect.gen(function* () {
       threadId == null
         ? undefined
         : yield* threadManagement
-            .getThreadRecords(threadId, ["runs"])
+            .getThreadRecords(threadId, ["runs", "subagents", "providerThreads"])
             .pipe(Effect.orElseSucceed(() => undefined));
     const runs = records?.runs ?? [];
     const started = runs.filter((candidate) => candidate.startedAt !== null);
     // A queued run cancelled before it started says nothing about how the work ended.
     const latest = ThreadManagementService.latestRun({ runs: started.length > 0 ? started : runs });
     if (latest === undefined) return { ...run, outcome: "completed" as const };
-    if (yield* ThreadManagementService.threadStillWorking(threadManagement, runs)) {
+    if (
+      records !== undefined &&
+      (yield* ThreadManagementService.threadStillWorking(threadManagement, records))
+    ) {
       return { ...run, outcome: "working" as const };
     }
     if (latest.status === "completed") return { ...run, outcome: "completed" as const };
@@ -2377,6 +2386,14 @@ const make = Effect.gen(function* () {
           Option.isSome(modes) &&
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
         yield* lastRunOf(task),
+        yield* scheduledTasks.liveRuns(task).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Could not count a scheduled task's live runs", {
+              taskId: task.id,
+              error,
+            }).pipe(Effect.as(null)),
+          ),
+        ),
         machineOrders,
         caller.includePrompt === true,
       );
@@ -2618,6 +2635,7 @@ const make = Effect.gen(function* () {
         ...(input.delegateProviders === undefined
           ? {}
           : { delegateProviders: input.delegateProviders }),
+        ...(input.maxLiveRuns === undefined ? {} : { maxLiveRuns: input.maxLiveRuns }),
         // A replay saves over the task it created: what it does not mention stays.
         ...(input.shared === true ? { shared: sharedChoice(input, replayed?.shared) } : {}),
         ...(input.runCondition === undefined ? {} : { runCondition: input.runCondition }),
@@ -2836,6 +2854,7 @@ const make = Effect.gen(function* () {
           ...(input.delegateProviders === undefined
             ? {}
             : { delegateProviders: input.delegateProviders }),
+          ...(input.maxLiveRuns === undefined ? {} : { maxLiveRuns: input.maxLiveRuns }),
           // Omitted keeps the stored choice.
           ...(input.shared === false
             ? { shared: null }

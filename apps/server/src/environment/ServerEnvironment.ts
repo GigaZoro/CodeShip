@@ -263,6 +263,7 @@ export const make = Effect.gen(function* () {
       scheduledTaskPromptFiles: true,
       scheduledTaskGroups: true,
       scheduledTaskDelegateProviders: true,
+      scheduledTaskMaxLiveRuns: true,
       linkedScheduledTasks: true,
       delegatedTaskModels: true,
       finalReview: true,

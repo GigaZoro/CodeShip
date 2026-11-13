@@ -1,3 +1,10 @@
+## 2026-11-13 — Scheduled tasks have a live-run limit
+
+- A task that starts a new chat for each run could still pile up runs: a chat reads as finished between turns while the tasks it delegated to other agents still work, so the next scheduled time started another one. A task now has a **Live runs** limit, 1 unless you raise it in its editor (up to 10), and a scheduled time is skipped while that many of its runs are working. A run counts as working while its chat runs or waits, or while a task its chat delegated still runs. **Run history** says so ("Its live-run limit was reached: earlier runs were still working.").
+- A shared task set to **One machine** counts its working runs on all of its machines, and **Run history** names the machine whose runs filled the limit.
+- Agents set the limit with `schedule_task` (`maxLiveRuns`), and `list_scheduled_tasks` shows each task's limit and how many of its runs are working.
+- Existing tasks keep the limit of 1. **Once** tasks, **Run now**, webhook runs and tasks that post into one thread are unchanged.
+
 ## 2026-11-13 — Browser tabs agents use keep drawing in chats nobody has open
 
 - On Windows and Linux, a browser tab an agent drove in a chat you were not looking at, such as one a scheduled task started, drew no frames. Pages that wait for the next frame never got one: ChatGPT's message box never appeared, and the agent's clicks and typing waited until they timed out. The desktop app now keeps such a tab drawing while the agent uses it and through the rest of its turn, also while the window is minimized or hidden, and lets it rest again once the agent is done.

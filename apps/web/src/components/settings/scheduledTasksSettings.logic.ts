@@ -27,6 +27,7 @@ import {
   type PromptFileDraft,
 } from "@t3tools/client-runtime/scheduled-task-prompt-file";
 import {
+  liveRunLimitDraft,
   runConditionDraft,
   type RunConditionDraft,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
@@ -130,6 +131,7 @@ export interface DraftState extends PromptFileDraft {
   /** An empty command means the task has no run condition. */
   readonly runCondition: RunConditionDraft;
   readonly delegateProviders: ReadonlyArray<ProviderDriverKind>;
+  readonly maxLiveRuns: string;
   /** Kept on every machine and synced. Exclusions of machines not connected right now stay stored. */
   readonly shared: boolean;
   readonly sharedExcludedEnvironmentIds: ReadonlyArray<EnvironmentId>;
@@ -347,6 +349,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     catchUpMissedRun: task.catchUpMissedRun ?? null,
     runCondition: runConditionDraft(task),
     delegateProviders: task.delegateProviders ?? [],
+    maxLiveRuns: liveRunLimitDraft(task),
     shared: task.shared != null,
     sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
     sharedRunOn: task.shared?.runOn ?? "every",

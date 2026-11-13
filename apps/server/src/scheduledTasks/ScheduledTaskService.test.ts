@@ -34,6 +34,8 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -174,12 +176,16 @@ it.effect("loads only due tasks and skips corrupt due rows without decoding sett
 );
 
 it.effect(
-  "releases interrupted runs on startup and still executes due tasks, skipping corrupt rows",
+  "releases interrupted runs and renames old live-run skips on startup, and still executes due tasks, skipping corrupt rows",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-09-09T12:00:00.000Z";
       const hugeInterval = '{"type":"interval","everyMs":9000000000000000}';
+      yield* sql`
+        INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome, skip_reason)
+        VALUES ('run:old-skip', 'due-healthy', 'scheduled', ${now}, 'skipped', 'last_run_working')
+      `;
       for (const row of [
         { id: "stuck-valid", next: now, status: "running" },
         { id: "stuck-corrupt", next: now, status: "running", scheduleJson: "broken" },
@@ -273,6 +279,10 @@ it.effect(
       assert.isNull(byId.get("due-huge")?.next_run_at);
       assert.equal(byId.get("due-bad-date")?.last_run_status, "never");
       assert.equal(byId.get("due-bad-date")?.run_count, 0);
+      const oldSkips = yield* sql<{ readonly skip_reason: string }>`
+        SELECT skip_reason FROM scheduled_task_runs WHERE run_id = 'run:old-skip'
+      `;
+      assert.deepEqual(oldSkips, [{ skip_reason: "live_run_limit" }]);
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -943,6 +953,10 @@ interface ChatRuns {
   /** Oldest first. */
   readonly statuses: ReadonlyArray<OrchestrationV2RunStatus>;
   readonly continuationPending: boolean;
+  /** A task the chat delegated still runs. */
+  readonly delegating?: boolean;
+  /** "dropped": a projection rebuild removed the deleted chat. */
+  readonly deleted?: "kept" | "dropped";
 }
 
 const withRunConditions = <A, E>(
@@ -955,6 +969,8 @@ const withRunConditions = <A, E>(
     readonly checks: Ref.Ref<ReadonlyArray<CheckCall>>;
     /** The runs of every launched chat; they have finished unless a test says otherwise. */
     readonly chatRuns: Ref.Ref<ChatRuns>;
+    /** Runs of single chats, by thread id, in place of `chatRuns`. */
+    readonly threadRuns: Ref.Ref<Readonly<Record<string, ChatRuns>>>;
     /**
      * Watches the list from now on; the effect it returns waits until the checked task matches.
      * Changes coalesce, so tests wait for a state, not a number of changes.
@@ -972,6 +988,11 @@ const withRunConditions = <A, E>(
       statuses: ["completed"],
       continuationPending: false,
     });
+    const threadRuns = yield* Ref.make<Readonly<Record<string, ChatRuns>>>({});
+    const runsOfThread = (threadId: string) =>
+      Effect.zipWith(Ref.get(threadRuns), Ref.get(chatRuns), (own, all) => own[threadId] ?? all);
+    // The first chat keeps the plain id the older tests expect; later ones are numbered.
+    let launched = 0;
     const workers = new Map<string, Effect.Effect<void>>();
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
@@ -981,25 +1002,47 @@ const withRunConditions = <A, E>(
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: (input) =>
               Queue.offer(launches, input).pipe(
-                Effect.as({ threadId: ThreadId.make("thread:launched"), resumed: false } as never),
+                Effect.as({
+                  threadId: ThreadId.make(
+                    ++launched === 1 ? "thread:launched" : `thread:launched:${launched}`,
+                  ),
+                  resumed: false,
+                } as never),
               ),
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
-            getThreadRecords: () =>
-              Ref.get(chatRuns).pipe(
+            getThreadRecords: (threadId) =>
+              runsOfThread(threadId).pipe(
+                Effect.filterOrFail(
+                  ({ deleted }) => deleted !== "dropped",
+                  () =>
+                    new Orchestrator.OrchestratorProjectionError({
+                      threadId,
+                      cause: new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId }),
+                    }),
+                ),
                 Effect.map(
-                  ({ statuses }) =>
+                  ({ statuses, delegating, deleted }) =>
                     ({
+                      thread: {
+                        deletedAt: deleted === "kept" ? "2026-01-01T00:00:00.000Z" : null,
+                      },
                       runs: statuses.map((status, index) => ({
                         id: `run:chat:${index}`,
+                        threadId,
                         ordinal: index + 1,
                         status,
                       })),
+                      subagents:
+                        delegating === true
+                          ? [{ status: "running", completionDelivery: null }]
+                          : [],
+                      providerThreads: [],
                     }) as never,
                 ),
               ),
-            restartContinuationPending: () =>
-              Ref.get(chatRuns).pipe(Effect.map((run) => run.continuationPending)),
+            restartContinuationPending: (run) =>
+              runsOfThread(run.threadId).pipe(Effect.map((chat) => chat.continuationPending)),
           }),
           layerSharedTaskDependencies(
             [
@@ -1051,6 +1094,7 @@ const withRunConditions = <A, E>(
         launches,
         checks,
         chatRuns,
+        threadRuns,
         whenTask,
       });
     }).pipe(Effect.scoped, Effect.provide(layer));
@@ -1214,6 +1258,27 @@ it.effect.each([
     skips: true,
   },
   {
+    name: "delegated a task that still runs",
+    statuses: ["completed"],
+    continuationPending: false,
+    delegating: true,
+    skips: true,
+  },
+  {
+    name: "was deleted while working",
+    statuses: ["running"],
+    continuationPending: false,
+    deleted: "kept",
+    skips: false,
+  },
+  {
+    name: "was dropped by a projection rebuild",
+    statuses: ["running"],
+    continuationPending: false,
+    deleted: "dropped",
+    skips: false,
+  },
+  {
     name: "was interrupted",
     statuses: ["interrupted"],
     continuationPending: false,
@@ -1227,8 +1292,9 @@ it.effect.each([
   },
 ] as const)(
   "the next occurrence of a task whose last chat $name is skipped: $skips",
-  ({ statuses, continuationPending, skips }) =>
-    withRunConditions(
+  ({ skips, ...runs }) => {
+    const logged: Array<unknown> = [];
+    return withRunConditions(
       () => Effect.succeed(FOUND_WORK),
       ({ service, poll, launches, chatRuns, whenTask }) =>
         Effect.gen(function* () {
@@ -1239,13 +1305,18 @@ it.effect.each([
           yield* Queue.take(launches);
           yield* recorded;
 
-          yield* Ref.set(chatRuns, { statuses, continuationPending });
+          yield* Ref.set(chatRuns, runs);
           const due = (yield* service.list()).tasks[0]!.nextRunAt!;
           yield* TestClock.setTime(Date.parse(due) + 1_000);
           const moved = yield* whenTask((t) => t.nextRunAt !== due);
           yield* poll;
           yield* moved;
 
+          // A chat that is gone is ended, not a failed check.
+          assert.notInclude(
+            logged.map((message) => (message as ReadonlyArray<unknown>)[0]),
+            "Could not check whether a scheduled task run is working",
+          );
           if (!skips) {
             yield* Queue.take(launches);
             return;
@@ -1254,12 +1325,91 @@ it.effect.each([
           const [run] = yield* runsOf(service);
           assert.deepInclude(run, {
             outcome: "skipped",
-            skipReason: "last_run_working",
+            skipReason: "live_run_limit",
             scheduledFor: due,
             threadId: null,
           });
         }),
+    ).pipe(
+      Effect.provide(
+        Logger.layer([
+          Logger.make(({ message }) => {
+            logged.push(message);
+          }),
+        ]),
+      ),
+    );
+  },
+);
+
+it.effect(
+  "a task whose live-run limit is 2 starts a second chat, skips a third and counts an ended chat that resumes",
+  () =>
+    withRunConditions(
+      () => Effect.succeed(FOUND_WORK),
+      ({ service, poll, launches, chatRuns, threadRuns, whenTask }) =>
+        Effect.gen(function* () {
+          yield* Ref.set(chatRuns, { statuses: ["running"], continuationPending: false });
+          yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 2 }));
+          const fireNext = Effect.gen(function* () {
+            const due = (yield* service.list()).tasks[0]!.nextRunAt!;
+            yield* TestClock.setTime(Date.parse(due) + 1_000);
+            const moved = yield* whenTask((t) => t.nextRunAt !== due);
+            yield* poll;
+            yield* moved;
+            return due;
+          });
+
+          yield* fireNext;
+          yield* fireNext;
+          assert.lengthOf(yield* Queue.takeAll(launches), 2);
+          const skippedAt = yield* fireNext;
+          assert.equal(yield* Queue.size(launches), 0);
+          assert.deepInclude((yield* runsOf(service))[0], {
+            outcome: "skipped",
+            skipReason: "live_run_limit",
+            scheduledFor: skippedAt,
+          });
+
+          const ended = { statuses: ["completed"], continuationPending: false } as const;
+          yield* Ref.set(threadRuns, { "thread:launched": ended });
+          yield* fireNext;
+          assert.lengthOf(yield* Queue.takeAll(launches), 1);
+
+          // A follow-up or a resume after a restart makes the first chat work again.
+          yield* Ref.set(threadRuns, { "thread:launched:3": ended });
+          const resumedAt = yield* fireNext;
+          assert.equal(yield* Queue.size(launches), 0);
+          assert.deepInclude((yield* runsOf(service))[0], {
+            outcome: "skipped",
+            skipReason: "live_run_limit",
+            scheduledFor: resumedAt,
+          });
+        }),
     ),
+);
+
+it.effect("saving keeps a live-run limit it does not name, and deleting the task drops it", () =>
+  withRunConditions(
+    () => Effect.succeed(FOUND_WORK),
+    ({ service, sql }) =>
+      Effect.gen(function* () {
+        const limitOf = service.list().pipe(Effect.map(({ tasks }) => tasks[0]?.maxLiveRuns));
+        const stored = sql`SELECT max_live_runs FROM scheduled_task_live_run_limit`;
+        yield* service.upsert(conditionTask({ runCondition: null }));
+        assert.equal(yield* limitOf, 1);
+        yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 3 }));
+        yield* service.upsert(conditionTask({ runCondition: null, title: "Renamed" }));
+        assert.equal(yield* limitOf, 3);
+        yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 1 }));
+        assert.equal(yield* limitOf, 1);
+        assert.lengthOf(yield* stored, 0);
+
+        yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 2 }));
+        yield* service.delete({ id: ScheduledTaskId.make("task:checked") });
+        assert.lengthOf(yield* stored, 0);
+      }),
+  ),
 );
 
 it.effect("saving keeps, clears and sets a run condition, and refuses one it can't run", () =>

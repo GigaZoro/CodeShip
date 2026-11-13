@@ -322,18 +322,22 @@ count and last run do not change. A **Once** task moves to that time instead.
 - **Run now** and webhook runs always start.
 - Agents set it with `schedule_task` (`delegateProviders`).
 
-## Skip runs while the last chat is still working
+## Limit how many runs work at once
 
-A task that starts a new chat for each run does not start another while the
-chat its last run started is still working, including one a restart cut that
-has not continued yet. **Run history** lists the time as skipped, and the task's
-run count and last run do not change; the next time after that chat finishes
-runs as usual.
+A task that starts a new chat for each run skips a scheduled time while as many
+of its runs as its **Live runs** limit allows are still working. The limit is 1
+unless you raise it in the task's editor (up to 10). A run is working while its
+chat runs or waits, including one a restart cut that has not continued yet, and
+while a task its chat delegated to another agent still runs. **Run history**
+lists the time as skipped, and the task's run count and last run do not change;
+the next time after a run finishes starts as usual.
 
 - A task that posts into one thread queues behind that thread's turn instead.
-- A shared task set to **One machine** skips the time while that chat works on
-  any of its machines.
+- A shared task set to **One machine** counts its working runs on all of its
+  machines.
 - **Once** tasks, **Run now** and webhook runs always start.
+- Agents set it with `schedule_task` (`maxLiveRuns`), and `list_scheduled_tasks`
+  shows how many runs are working.
 
 ## Shared scheduled tasks
 

@@ -880,8 +880,9 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
     const allowed = yield* call("schedule_task", {
       scheduledTaskId: "task-auto",
       enabled: false,
+      maxLiveRuns: 3,
     });
-    expect(allowed.isError).toBe(false);
+    expect(allowed.structuredContent).toMatchObject({ enabled: false, maxLiveRuns: 3 });
     const incomplete = yield* call("schedule_task", { prompt: "Run nightly" });
     expect(declaredFailure(incomplete)).toMatchObject({ code: "invalid_request" });
   }).pipe(
@@ -895,6 +896,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
         Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
         Layer.provide(
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+            liveRuns: () => Effect.succeed(0),
             list: () =>
               Effect.succeed({
                 tasks: [
