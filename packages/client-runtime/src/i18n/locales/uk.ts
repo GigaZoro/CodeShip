@@ -416,6 +416,12 @@ const catalog: MessageCatalog = {
     many: "{count} повідомлень гостя очікують",
     other: "{count} повідомлення гостя очікує",
   },
+  "{count} held queues": {
+    one: "{count} призупинену чергу",
+    few: "{count} призупинені черги",
+    many: "{count} призупинених черг",
+    other: "{count} призупиненої черги",
+  },
   "{count} hidden": "Приховано: {count}",
   "{count} hidden threads": {
     one: "{count} прихований чат",
@@ -9702,6 +9708,7 @@ const catalog: MessageCatalog = {
   "Restoring a checkpoint.": "Відновлення контрольної точки.",
   "Restoring your threads…": "Відновлення ваших чатів…",
   "Restoring...": "Відновлення...",
+  resume: "відновити",
   Resume: "Відновити",
   'Resume {count} tasks in "{group}"?': {
     one: "Відновити {count} завдання в групі «{group}»?",
@@ -9725,6 +9732,7 @@ const catalog: MessageCatalog = {
   "Resume threads stopped by a lost connection once it is back.":
     "Відновлювати чати, зупинені через втрату з’єднання, коли воно повернеться.",
   "Resume when the limit resets": "Продовжити після скидання ліміту",
+  Resumed: "Відновлено",
   Retry: "Повторити",
   "Retry {name}": "Повторити {name}",
   "Retry after network errors": "Повторювати після збоїв мережі",

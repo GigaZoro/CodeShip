@@ -338,6 +338,13 @@ export function summarizeT3ToolCalls(
         ),
       );
       break;
+    case "queue-resume":
+      label = phrase(
+        t("Resumed"),
+        t("resume"),
+        tn(countEntities(threadIds), "{count} held queue", "{count} held queues"),
+      );
+      break;
     case "question-list":
       label = phrase(t("Listed"), t("list"), t("pending questions {times}", { times }));
       break;

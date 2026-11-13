@@ -279,6 +279,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
               return entry === undefined ? [] : [entry];
             }),
             nextCursor: end < runs.length ? end : null,
+            held: runs.some((run) => run.queueHeld === true),
           };
         }
         const queuedRunId = yield* required(input.queuedRunId, "queuedRunId");
@@ -293,6 +294,9 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     ),
     writesThread((input) =>
       Effect.gen(function* () {
+        if (input.action === "resume") {
+          return yield* dispatch(input.threadId, (common) => ({ ...common, type: "queue.resume" }));
+        }
         const runId = yield* required(input.queuedRunId, "queuedRunId");
         switch (input.action) {
           case "edit": {

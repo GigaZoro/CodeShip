@@ -1,3 +1,7 @@
+## 2026-11-13 — Agents can resume a held queue
+
+- After a failed or stopped turn, T3.CodeShip holds the chat's queued messages until you press **Resume**. Agents had no way to do the same, so a helper such as Chat Doctor had to send the chat a new message to get it going. The `t3_queue` tool now has a `resume` action that releases the held queue the way **Resume** does, and its `list` says whether the queue is held.
+
 ## 2026-11-13 — A scheduled task no longer starts a second chat while its last one is still working
 
 - A task that starts a new chat for each run, such as **Machine inbox**, started the next one on schedule even when the chat from its last run was still working, so two chats did the same work side by side. A scheduled time is now skipped while that chat is still working, including one a restart cut that has not continued yet. **Run history** says so ("The chat its last run started was still working."), and the next time after that chat finishes runs as usual.

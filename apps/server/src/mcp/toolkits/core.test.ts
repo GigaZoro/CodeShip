@@ -17,6 +17,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
   type ChatAttachment,
@@ -219,6 +220,66 @@ it.effect("an answered question reports already answered instead of not found", 
                 ],
               }),
             dispatch: () => Effect.die("an answered question must not dispatch again"),
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
+it.effect("t3_queue shows a held queue and releases it with the composer's queue.resume", () => {
+  const heldThreadId = ThreadId.make("held-queue-thread");
+  const shell = McpToolAccessTestkit.liveThreadShell(heldThreadId, { activeRunId: null });
+  const heldRunId = RunId.make("held-run");
+  const dispatched: Array<OrchestrationV2ServerCommand> = [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const queue = (args: Record<string, unknown>) =>
+      server
+        .callTool({ name: "t3_queue", arguments: { threadId: heldThreadId, ...args } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    expect((yield* queue({ action: "list" })).structuredContent).toMatchObject({
+      items: [{ queuedRunId: heldRunId }],
+      held: true,
+    });
+    const resumed = yield* queue({ action: "resume" });
+    expect(resumed.isError).toBe(false);
+    expect(dispatched).toEqual([
+      { type: "queue.resume", threadId: heldThreadId, commandId: expect.any(String) },
+    ]);
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) =>
+              Effect.succeed(
+                id === heldThreadId ? shell : McpToolAccessTestkit.liveThreadShell(id),
+              ),
+            getProjectThreadRecords: () =>
+              Effect.succeed({
+                ...McpToolAccessTestkit.idleThreadProjection(shell),
+                runs: [
+                  {
+                    id: heldRunId,
+                    ordinal: 2,
+                    status: "queued",
+                    queueHeld: true,
+                    userMessageId: "held-message",
+                  } as never,
+                ],
+                messages: [{ id: "held-message", text: "Background command finished." } as never],
+              }),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatched.push(command);
+                return { sequence: 3, storedEvents: [] };
+              }),
           }),
         ),
       ),
