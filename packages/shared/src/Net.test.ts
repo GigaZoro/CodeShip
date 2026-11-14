@@ -18,7 +18,7 @@ const getPort = (server: NodeNet.Server): number => {
   return typeof address === "object" && address !== null ? address.port : 0;
 };
 
-const openServer = (host?: string): Effect.Effect<NodeNet.Server, NetService.NetError> =>
+const openServer = (host: string): Effect.Effect<NodeNet.Server, NetService.NetError> =>
   Effect.callback<NodeNet.Server, NetService.NetError>((resume) => {
     const server = NodeNet.createServer();
     let settled = false;
@@ -35,11 +35,7 @@ const openServer = (host?: string): Effect.Effect<NodeNet.Server, NetService.Net
       );
     });
 
-    if (host) {
-      server.listen(0, host, () => settle(Effect.succeed(server)));
-    } else {
-      server.listen(0, () => settle(Effect.succeed(server)));
-    }
+    server.listen(0, host, () => settle(Effect.succeed(server)));
 
     return closeServer(server);
   });

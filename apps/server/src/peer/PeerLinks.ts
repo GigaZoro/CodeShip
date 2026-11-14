@@ -11,6 +11,7 @@ import {
   PeerLinkError,
   type PeerLinkSummary,
 } from "@t3tools/contracts";
+import type * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -28,6 +29,7 @@ import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
+import type * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
@@ -237,13 +239,42 @@ const make = Effect.gen(function* () {
       Effect.provideService(HttpClient.HttpClient, peerHttpClient),
     );
 
-  /** The environment answering at `origin`, or nothing when it does not answer as T3.CodeShip. */
+  /** The environment answering at `origin`. */
   const describe = (origin: string) =>
     clientFor(origin).pipe(
       Effect.flatMap((client) => client.metadata.descriptor()),
       Effect.timeout(probeTimeout(origin)),
-      Effect.option,
     );
+
+  type DescribeError = HttpClientError.HttpClientError | Schema.SchemaError | Cause.TimeoutError;
+
+  const whatAnswered = (cause: DescribeError) => {
+    if (cause._tag === "TimeoutError") return "it did not answer in time";
+    if (cause._tag === "HttpClientError") {
+      const status = cause.response?.status;
+      if (status === undefined) return "it could not be reached";
+      if (status < 200 || status > 299) return `it answered HTTP ${status}`;
+    }
+    return "its answer is not a T3.CodeShip environment's";
+  };
+
+  /** That nothing at `address` answered as T3.CodeShip, and what happened there instead. */
+  const unanswered = (address: string, cause: DescribeError) =>
+    new PeerLinkError({
+      reason: "not_a_t3_environment",
+      message: `Nothing at ${address} answered as a T3.CodeShip environment: ${whatAnswered(cause)}.`,
+      cause,
+    });
+
+  const answersAsAnother = (address: string) => `${address} answers as another environment.`;
+
+  /** That no address answered as the peer, keeping each address's own failure as the cause. */
+  const noneAnswered = (message: string, failures: ReadonlyArray<PeerLinkError>) =>
+    new PeerLinkError({
+      reason: "unreachable",
+      message,
+      ...(failures.length > 0 ? { cause: failures } : {}),
+    });
 
   const toLink = Effect.fn("PeerLinks.toLink")(function* (row: PeerLinkRow) {
     return {
@@ -409,29 +440,27 @@ const make = Effect.gen(function* () {
       (url) =>
         Effect.gen(function* () {
           const origin = yield* peerOrigin(url);
-          return { origin, descriptor: yield* describe(origin) };
+          const descriptor = yield* describe(origin).pipe(
+            Effect.mapError((cause) => unanswered(origin, cause)),
+          );
+          return { origin, descriptor };
         }).pipe(Effect.result),
       { concurrency: "unbounded" },
     );
     const matching = checked.flatMap((result) =>
-      Result.isSuccess(result) &&
-      Option.isSome(result.success.descriptor) &&
-      result.success.descriptor.value.environmentId === environmentId
-        ? [{ origin: result.success.origin, descriptor: result.success.descriptor.value }]
+      Result.isSuccess(result) && result.success.descriptor.environmentId === environmentId
+        ? [result.success]
         : [],
     );
     const first = matching[0];
     if (first === undefined) {
-      const refusals = checked.flatMap((result) =>
-        Result.isFailure(result) ? [result.failure.message] : [],
+      const misses = checked.map((result) =>
+        Result.isFailure(result) ? result.failure.message : answersAsAnother(result.success.origin),
       );
-      return yield* new PeerLinkError({
-        reason: "unreachable",
-        message:
-          refusals.length === checked.length
-            ? `This environment could not reach ${name}: ${refusals.join(" ")}`
-            : `This environment could not reach ${name} at ${urls.join(", ")}.`,
-      });
+      return yield* noneAnswered(
+        `This environment could not reach ${name}: ${misses.join(" ")}`,
+        checked.flatMap((result) => (Result.isFailure(result) ? [result.failure] : [])),
+      );
     }
     // Each address is kept once, even when two spellings share an origin.
     const origins = [...new Set(matching.map((found) => found.origin))];
@@ -442,14 +471,10 @@ const make = Effect.gen(function* () {
   const answeringAt = Effect.fn("PeerLinks.answeringAt")(function* (urls: ReadonlyArray<string>) {
     const origins = yield* Effect.forEach(urls, peerOrigin);
     const primary = origins[0]!;
-    const descriptor = yield* describe(primary);
-    if (Option.isNone(descriptor)) {
-      return yield* new PeerLinkError({
-        reason: "not_a_t3_environment",
-        message: `Nothing at ${primary} answered as a T3.CodeShip environment.`,
-      });
-    }
-    return { primary, peer: descriptor.value, origins };
+    const peer = yield* describe(primary).pipe(
+      Effect.mapError((cause) => unanswered(primary, cause)),
+    );
+    return { primary, peer, origins };
   });
 
   const alreadyLinked = (label: string) =>
@@ -562,7 +587,7 @@ const make = Effect.gen(function* () {
   const describeUrl: PeerLinks["Service"]["describe"] = (url) =>
     peerOrigin(url).pipe(
       Effect.flatMap(describe),
-      Effect.map(Option.map((peer) => ({ environmentId: peer.environmentId, label: peer.label }))),
+      Effect.map((peer) => Option.some({ environmentId: peer.environmentId, label: peer.label })),
       Effect.orElseSucceed(() => Option.none()),
     );
 
@@ -572,7 +597,7 @@ const make = Effect.gen(function* () {
       return { status: "expired", serverVersion: null } as const;
     }
     for (const url of link.urls) {
-      const found = yield* describe(url);
+      const found = yield* describe(url).pipe(Effect.option);
       if (Option.isSome(found) && found.value.environmentId === link.environmentId) {
         return { status: "reachable", serverVersion: found.value.serverVersion } as const;
       }
@@ -685,21 +710,29 @@ const make = Effect.gen(function* () {
       // reused LAN address or a moved hostname never receives it.
       let fenced = true;
       let serverVersion = "";
+      const misses: Array<string> = [];
+      const failures: Array<PeerLinkError> = [];
       const url = yield* Effect.findFirst(link.urls, (candidate) =>
         describe(candidate).pipe(
           Effect.map((found) => {
-            if (Option.isNone(found) || found.value.environmentId !== environmentId) return false;
-            fenced = linkLimitsHold(found.value);
-            serverVersion = found.value.serverVersion;
+            if (found.environmentId !== environmentId) {
+              misses.push(answersAsAnother(candidate));
+              return false;
+            }
+            fenced = linkLimitsHold(found);
+            serverVersion = found.serverVersion;
             return true;
+          }),
+          Effect.catch((cause) => {
+            const failure = unanswered(candidate, cause);
+            failures.push(failure);
+            misses.push(failure.message);
+            return Effect.succeed(false);
           }),
         ),
       );
       if (Option.isNone(url)) {
-        return yield* new PeerLinkError({
-          reason: "unreachable",
-          message: `${link.label} did not answer at ${link.urls.join(", ")}.`,
-        });
+        return yield* noneAnswered(`${link.label} did not answer: ${misses.join(" ")}`, failures);
       }
       // A link made before the peer had to fence linked work, or a peer moved
       // back to such a version, would carry work past those limits.

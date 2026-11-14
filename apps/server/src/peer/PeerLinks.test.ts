@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - binds 127.0.0.1 at a port it is given, as another program on the machine would.
+import * as NodeHttp from "node:http";
+
 import { NodeHttpServer } from "@effect/platform-node";
 import { type ExecutionEnvironmentDescriptor, OrchestratorMcpFailure } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -33,6 +36,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import {
   descriptorOf,
   layerLinkingEnvironment,
+  linkTo,
   servePeer,
   type ServedPeer,
 } from "./PeerLinks.testkit.ts";
@@ -530,7 +534,24 @@ it.effect("never follows a peer's redirect with the pairing code", () =>
 it.effect("never sends a link's token to an address that stops answering as that peer", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const b = yield* serveB(box);
+      const unavailable = yield* Ref.make(false);
+      const b = yield* servePeer(
+        box,
+        Layer.merge(
+          McpHttpServer.toolkitRegistration(ProbeToolkit, probeHandlers),
+          HttpRouter.middleware(
+            (httpEffect) =>
+              Effect.gen(function* () {
+                const request = yield* HttpServerRequest.HttpServerRequest;
+                return request.url.startsWith("/.well-known/t3/environment") &&
+                  (yield* Ref.get(unavailable))
+                  ? HttpServerResponse.empty({ status: 503 })
+                  : yield* httpEffect;
+              }),
+            { global: true },
+          ),
+        ),
+      );
       const a = yield* makeA(laptop);
       const pairing = yield* b.auth.issuePairingCredential();
       yield* a.links.link({ url: b.url, pairingCode: pairing.credential, access: "auto" });
@@ -541,9 +562,56 @@ it.effect("never sends a link's token to an address that stops answering as that
       yield* Ref.set(b.descriptor, descriptorOf("environment-impostor", "Impostor"));
       yield* Ref.set(b.bearers, []);
       const failed = yield* probe(a).pipe(Effect.flip);
-      expect(failed.message).toContain("Box did not answer");
+      expect(failed.message).toBe(`Box did not answer: ${b.url} answers as another environment.`);
       expect(yield* Ref.get(b.bearers)).toEqual([]);
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["unreachable"]);
+
+      // An address that answers an error instead keeps that failure as the cause.
+      yield* Ref.set(b.descriptor, box);
+      yield* Ref.set(unavailable, true);
+      const refused = yield* a.links.resolve(box.environmentId).pipe(Effect.flip);
+      expect(refused.message).toBe(
+        `Box did not answer: Nothing at ${b.url} answered as a T3.CodeShip environment: it answered HTTP 503.`,
+      );
+      expect(refused.cause).toMatchObject([
+        { reason: "not_a_t3_environment", cause: { _tag: "HttpClientError" } },
+      ]);
+      expect(yield* Ref.get(b.bearers)).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+/**
+ * Another program on this machine opening 127.0.0.1 at `port`, as one that reserved a
+ * free port and opens it later does; nothing when the address is already taken.
+ */
+const listenElsewhere = (port: number) =>
+  Effect.acquireRelease(
+    Effect.callback<Option.Option<NodeHttp.Server>>((resume) => {
+      const server = NodeHttp.createServer((_, response) => response.writeHead(404).end());
+      server.once("error", (error: NodeJS.ErrnoException) =>
+        resume(error.code === "EADDRINUSE" ? Effect.succeedNone : Effect.die(error)),
+      );
+      server.listen(port, "127.0.0.1", () => resume(Effect.succeedSome(server)));
+    }),
+    Option.match({
+      onNone: () => Effect.void,
+      onSome: (server) =>
+        Effect.callback<void>((resume) => {
+          server.close(() => resume(Effect.void));
+        }),
+    }),
+  );
+
+it.effect("links reach the peer while another program opens 127.0.0.1 at its port", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* serveB(box);
+      yield* listenElsewhere(Number(new URL(b.url).port));
+      const a = yield* makeA(laptop);
+
+      const linked = yield* linkTo(a.links, b);
+      expect(linked.environmentId).toBe(box.environmentId);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -752,15 +820,18 @@ it.effect(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("linking a picked machine that answers nowhere names it and links nothing", () =>
+it.effect("linking where no T3.CodeShip answers says what answered instead and links nothing", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const impostor = yield* serveApart(descriptorOf("environment-impostor", "Impostor"));
+      const missing = yield* serveRaw(() =>
+        Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+      );
       const a = yield* makeA(laptop);
       const failed = yield* a.links
         .link({
           url: impostor.url,
-          alternateUrls: ["http://192.168.1.20:3773"],
+          alternateUrls: [missing, "http://192.168.1.20:3773"],
           pairingCode: "unused",
           access: "auto",
           expectedEnvironmentId: box.environmentId,
@@ -769,10 +840,24 @@ it.effect("linking a picked machine that answers nowhere names it and links noth
         .pipe(Effect.flip);
       expect(failed.reason).toBe("unreachable");
       expect(failed.message).toBe(
-        `This environment could not reach Box at ${impostor.url}, http://192.168.1.20:3773.`,
+        `This environment could not reach Box: ${impostor.url} answers as another environment. ` +
+          `Nothing at ${missing} answered as a T3.CodeShip environment: it answered HTTP 404. ` +
+          "http://192.168.1.20:3773 is plain http, which would send the link's credentials unencrypted. Use its https address, or its Tailscale address.",
       );
+      expect(failed.cause).toMatchObject([
+        { reason: "not_a_t3_environment", cause: { _tag: "HttpClientError" } },
+        { message: expect.stringContaining("plain http") },
+      ]);
       expect(yield* a.links.list).toEqual([]);
       expect(yield* linkedSessions(impostor)).toEqual([]);
+
+      const unpicked = yield* a.links
+        .link({ url: missing, pairingCode: "unused", access: "auto" })
+        .pipe(Effect.flip);
+      expect(unpicked).toMatchObject({
+        reason: "not_a_t3_environment",
+        message: `Nothing at ${missing} answered as a T3.CodeShip environment: it answered HTTP 404.`,
+      });
 
       // Every address refused: the message says why.
       const refused = yield* a.links

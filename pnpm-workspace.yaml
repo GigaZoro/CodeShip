@@ -398,6 +398,10 @@ patchedDependencies:
   # Observe the owned host exit independently of descendants retaining its stdio.
   "@muse-code/sdk@1.4.6": patches/@muse-code__sdk@1.4.6.patch
   app-builder-lib@26.16.1: patches/app-builder-lib@26.16.1.patch
+  # layerTest listens on 127.0.0.1, which its client dials. On all interfaces, another program's
+  # 127.0.0.1 listener on the same port answers in its place (PeerLinks.test.ts). Drop it once
+  # Effect's layerTest names its host.
+  "@effect/platform-node@4.0.5": patches/@effect__platform-node@4.0.5.patch
 
 peerDependencyRules:
   allowAny:
