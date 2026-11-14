@@ -17,6 +17,7 @@ import {
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -259,6 +260,36 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       assert.equal(task?.status, "failed");
       assert.match(task?.result ?? "", /without an exit status/);
       assert.equal((yield* commandRow(started.taskId))?.status, "lost");
+    }),
+  );
+
+  it.effect("never starts a command for a retry of a request that could not start it", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("command-unstarted");
+      const request = { command: "echo started", clientRequestId: "command-unstarted" };
+      const unstartable = yield* AgentScope;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), request).pipe(Effect.flip),
+      ).pipe(
+        Effect.provideService(AgentScope, {
+          ...unstartable,
+          wrap: ({ args }) => Effect.succeed({ command: "/nonexistent/t3-shell", args }),
+        }),
+      );
+      assert.match(first.message, /^Could not start the command: /);
+      const retried = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), request).pipe(Effect.flip),
+      );
+      assert.equal(retried.message, first.message);
+      const projection = yield* Orchestrator.OrchestratorV2.pipe(
+        Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(chat.threadId)),
+      );
+      const tasks = projection.subagents.filter((task) => task.command !== undefined);
+      assert.deepEqual(
+        tasks.map((task) => task.status),
+        ["failed"],
+      );
+      assert.isUndefined(yield* commandRow(tasks[0]!.id));
     }),
   );
 

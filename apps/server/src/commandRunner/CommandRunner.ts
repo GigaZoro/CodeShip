@@ -596,11 +596,10 @@ const make = Effect.gen(function* () {
       const taskEvent = recorded.storedEvents.find(
         (stored) => stored.event.type === "subagent.updated",
       );
+      // A retried request recorded the task the first time.
+      const prior = parent.subagents.find((task) => task.command?.logPath === logPath);
       const taskId =
-        taskEvent?.event.type === "subagent.updated"
-          ? taskEvent.event.payload.id
-          : // A retried request recorded the task the first time.
-            parent.subagents.find((task) => task.command?.logPath === logPath)?.id;
+        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : prior?.id;
       if (taskId === undefined) {
         return yield* failure("orchestration_error", "The command was not recorded.");
       }
@@ -611,6 +610,8 @@ const make = Effect.gen(function* () {
             SELECT task_id FROM command_runs WHERE task_id = ${taskId}
           `;
             if (existing.length > 0) return result(taskId);
+            // Its first request could not start it, and the task already says why.
+            if (prior?.result != null) return yield* failure("orchestration_error", prior.result);
             const started = yield* fs
               .makeDirectory(directory, { recursive: true })
               .pipe(Effect.andThen(launch(directory, input.command, cwd)), Effect.result);
@@ -704,13 +705,7 @@ const make = Effect.gen(function* () {
         }
         // A pid reused by another process means this command ended while no server watched it.
         if (yield* isSameProcess(row)) watched.set(row.task_id, row);
-        else
-          yield* settle({
-            ...row,
-            status: "lost",
-            pid: row.pid,
-            ended_at: yield* nowIso,
-          });
+        else yield* settle({ ...row, status: "lost", ended_at: yield* nowIso });
       }),
     );
     const open = yield* projections.getOpenCommandTasks;
