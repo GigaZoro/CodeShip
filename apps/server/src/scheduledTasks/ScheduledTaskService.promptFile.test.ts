@@ -240,7 +240,8 @@ const taskOf = (service: ScheduledTaskService.ScheduledTaskService["Service"], i
 it.effect("each run reads the prompt file again, so a push reaches the next run", () =>
   withService(({ service, remote, launched }) =>
     Effect.gen(function* () {
-      const saved = (yield* service.upsert(upsertInput())).task;
+      const saved = (yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP))
+        .task;
       expect(saved.prompt).toBe("Run the daily check.");
       expect(saved.promptFile).toEqual({
         path: PATH,
@@ -266,7 +267,8 @@ it.effect("each run reads the prompt file again, so a push reaches the next run"
 it.effect("a run whose prompt file cannot be read fails and starts nothing", () =>
   withService(({ service, remote, launched }) =>
     Effect.gen(function* () {
-      const saved = (yield* service.upsert(upsertInput())).task;
+      const saved = (yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP))
+        .task;
       yield* Ref.set(remote, { text: null, commit: "c2" });
 
       const run = yield* service.runNow({ id: saved.id });
@@ -285,7 +287,8 @@ it.effect("a run whose prompt file cannot be read fails and starts nothing", () 
 it.effect("saving keeps the file a client leaves out and refuses what cannot run", () =>
   withService(({ service, remote }) =>
     Effect.gen(function* () {
-      const saved = (yield* service.upsert(upsertInput())).task;
+      const saved = (yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP))
+        .task;
       yield* Ref.set(remote, { text: "Pushed since the save.", commit: "c2" });
 
       // A client without prompt files sends the text it shows and no file.
@@ -295,6 +298,7 @@ it.effect("saving keeps the file a client leaves out and refuses what cannot run
           promptFile: undefined,
           prompt: "Edited on an old client.",
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       )).task;
       expect(resaved).toMatchObject({
         title: "Renamed",
@@ -308,7 +312,7 @@ it.effect("saving keeps the file a client leaves out and refuses what cannot run
         upsertInput({ id: saved.id, promptFile: null }),
       ];
       const messages = yield* Effect.forEach(refusals, (input) =>
-        service.upsert(input).pipe(
+        service.upsert(input, ScheduledTaskService.CHANGED_IN_APP).pipe(
           Effect.flip,
           Effect.map((error) => error.message),
         ),
@@ -321,6 +325,7 @@ it.effect("saving keeps the file a client leaves out and refuses what cannot run
 
       const cleared = (yield* service.upsert(
         upsertInput({ id: saved.id, promptFile: null, prompt: "Typed by hand." }),
+        ScheduledTaskService.CHANGED_IN_APP,
       )).task;
       expect(cleared).toMatchObject({ prompt: "Typed by hand.", promptFile: null });
     }),
@@ -332,6 +337,7 @@ it.effect("shared copies carry the file, and each machine reads it for itself", 
     Effect.gen(function* () {
       const shared = (yield* service.upsert(
         upsertInput({ shared: { excludedEnvironmentIds: [] } }),
+        ScheduledTaskService.CHANGED_IN_APP,
       )).task;
       const copies = yield* service.sharedCopies("environment-other" as never, {
         recordPuller: false,
@@ -400,6 +406,7 @@ it.effect("a save that keeps the file's last read keeps what a run read meanwhil
             workspaceStrategy: worktree,
             shared: { excludedEnvironmentIds: [] },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         ),
       ];
       for (const [index, save] of saves.entries()) {
@@ -434,7 +441,10 @@ it.effect("a read that started before the stored one does not replace it", () =>
 
       yield* Ref.set(remote, { text: "Newer push.", commit: "c2" });
       yield* TestClock.adjust("1 minute");
-      yield* service.upsert(upsertInput({ id, shared: { excludedEnvironmentIds: [] } }));
+      yield* service.upsert(
+        upsertInput({ id, shared: { excludedEnvironmentIds: [] } }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* Deferred.succeed(hold.release, undefined);
       yield* Fiber.join(run);
 
@@ -452,7 +462,10 @@ it.effect("a scheduled run fetches its file in the background, so other due task
   withService(({ service, remote, launched, poll, whenTask }) =>
     Effect.gen(function* () {
       // Due at the same time, and the file task is listed first.
-      const fileTask = (yield* service.upsert(upsertInput({ enabled: true }))).task;
+      const fileTask = (yield* service.upsert(
+        upsertInput({ enabled: true }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      )).task;
       yield* service.upsert(
         upsertInput({
           id: "scheduled-task:plain",
@@ -460,6 +473,7 @@ it.effect("a scheduled run fetches its file in the background, so other due task
           promptFile: null,
           prompt: "Run the plain check.",
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       const hold = yield* makeHold;
       yield* Ref.set(remote, { text: "Pushed before the run.", commit: "c2", hold });
@@ -482,7 +496,10 @@ it.effect(
   () =>
     withService(({ service, remote, launched, network, poll, whenTask }) =>
       Effect.gen(function* () {
-        const task = (yield* service.upsert(upsertInput({ enabled: true }))).task;
+        const task = (yield* service.upsert(
+          upsertInput({ enabled: true }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )).task;
         yield* Ref.set(remote, {
           text: "Pushed before the wake.",
           commit: "c2",
@@ -516,7 +533,10 @@ it.effect(
 it.effect("a scheduled read gives up when the network is not back, and says so", () =>
   withService(({ service, remote, launched, network, poll, whenTask }) =>
     Effect.gen(function* () {
-      const task = (yield* service.upsert(upsertInput({ enabled: true }))).task;
+      const task = (yield* service.upsert(
+        upsertInput({ enabled: true }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      )).task;
       yield* Ref.set(remote, { text: "Never read.", commit: "c2", lostConnection: true });
       yield* Ref.set(network.online, false);
       yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
@@ -541,7 +561,10 @@ it.effect("a scheduled read gives up when the network is not back, and says so",
 it.effect("a task paused while its run waits for the network does not run", () =>
   withService(({ service, remote, launched, network, poll, whenTask }) =>
     Effect.gen(function* () {
-      const task = (yield* service.upsert(upsertInput({ enabled: true }))).task;
+      const task = (yield* service.upsert(
+        upsertInput({ enabled: true }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      )).task;
       yield* Ref.set(remote, {
         text: "Pushed before the pause.",
         commit: "c2",
@@ -553,7 +576,10 @@ it.effect("a task paused while its run waits for the network does not run", () =
 
       yield* poll;
       yield* Queue.take(network.probed);
-      yield* service.setEnabled({ id: task.id, enabled: false });
+      yield* service.setEnabled(
+        { id: task.id, enabled: false },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* Ref.set(remote, { text: "Pushed before the pause.", commit: "c2" });
       yield* Ref.set(network.online, true);
       yield* TestClock.adjust("30 seconds");

@@ -62,16 +62,22 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
         runtimeMode: "full-access",
         interactionMode: "default",
       });
-      const created = yield* service.upsert(input);
+      const created = yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
       const edit = yield* decodeUpsertInput({ ...input, requireExisting: true, title: "Edited" });
-      expect((yield* service.upsert(edit)).task.title).toBe("Edited");
+      expect((yield* service.upsert(edit, ScheduledTaskService.CHANGED_IN_APP)).task.title).toBe(
+        "Edited",
+      );
       yield* service.delete({ id: created.task.id });
 
-      const failure = yield* service.upsert(edit).pipe(Effect.flip);
+      const failure = yield* service
+        .upsert(edit, ScheduledTaskService.CHANGED_IN_APP)
+        .pipe(Effect.flip);
       expect(failure.message).toBe("Schedule task not found.");
       expect((yield* service.list()).tasks).toEqual([]);
 
-      expect((yield* service.upsert(input)).task.id).toBe(created.task.id);
+      expect((yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP)).task.id).toBe(
+        created.task.id,
+      );
     }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -113,7 +119,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
         interactionMode: "default",
         creationSource: "mcp",
       });
-      const created = yield* service.upsert(input);
+      const created = yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
       const expectedDueAt = DateTime.formatIso(DateTime.toUtc(dueAt));
       expect(created.task.nextRunAt).toBe(expectedDueAt);
 
@@ -123,14 +129,17 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
         id: created.task.id,
         schedule: { type: "fixed_time", timeOfDay: "09:00" },
       });
-      const updated = yield* service.upsert(update);
+      const updated = yield* service.upsert(update, ScheduledTaskService.CHANGED_IN_APP);
       expect(updated.task.nextRunAt).toBe(expectedDueAt);
       expect((yield* service.list()).tasks[0]?.nextRunAt).toBe(expectedDueAt);
 
-      const rescheduled = yield* service.upsert({
-        ...update,
-        schedule: { type: "fixed_time", timeOfDay: "09:30" },
-      });
+      const rescheduled = yield* service.upsert(
+        {
+          ...update,
+          schedule: { type: "fixed_time", timeOfDay: "09:30" },
+        },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       expect(rescheduled.task.nextRunAt).toBe(
         DateTime.formatIso(DateTime.toUtc(DateTime.add(dueAt, { minutes: 30 }))),
       );
@@ -173,20 +182,32 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
         .list()
         .pipe(Effect.map(({ tasks }) => tasks.map((task) => String(task.id))));
 
-      const older = yield* service.upsert(yield* decodeUpsertInput(input("scheduled-task:older")));
+      const older = yield* service.upsert(
+        yield* decodeUpsertInput(input("scheduled-task:older")),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* TestClock.adjust("1 second");
-      yield* service.upsert(yield* decodeUpsertInput(input("scheduled-task:newer")));
+      yield* service.upsert(
+        yield* decodeUpsertInput(input("scheduled-task:newer")),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const order = ["scheduled-task:newer", "scheduled-task:older"];
       expect(yield* listedIds).toEqual(order);
 
       yield* TestClock.adjust("1 second");
-      const toggled = yield* service.setEnabled({ id: older.task.id, enabled: false });
+      const toggled = yield* service.setEnabled(
+        { id: older.task.id, enabled: false },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       expect(toggled.task.updatedAt > older.task.updatedAt).toBe(true);
       expect(yield* listedIds).toEqual(order);
 
       yield* TestClock.adjust("1 second");
       const edit = { ...input(older.task.id), requireExisting: true, title: "Edited" };
-      yield* service.upsert(yield* decodeUpsertInput({ ...edit, enabled: false }));
+      yield* service.upsert(
+        yield* decodeUpsertInput({ ...edit, enabled: false }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       expect(yield* listedIds).toEqual(order);
     }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
@@ -234,6 +255,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         const created = yield* service.upsert(
           yield* decodeUpsertInput({
@@ -247,6 +269,7 @@ it.effect(
             runtimeMode: "full-access",
             interactionMode: "default",
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         // This poll records the new task's due time; the later ones must still fire it.
         yield* TestClock.adjust("6 seconds");
@@ -314,14 +337,19 @@ it.effect(
       );
       const { daily, off, weekly } = yield* Effect.gen(function* () {
         const service = yield* ScheduledTaskService.ScheduledTaskService;
-        const daily = (yield* service.upsert(yield* historyTask("Daily"))).task;
+        const daily = (yield* service.upsert(
+          yield* historyTask("Daily"),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )).task;
         const off = (yield* service.upsert(
           yield* historyTask("No catch-up", { catchUpMissedRun: false }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )).task;
         const weekly = (yield* service.upsert(
           yield* historyTask("Mondays", {
             schedule: { type: "fixed_time", timeOfDay: "07:00", weekdays: [1] },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )).task;
         return { daily, off, weekly };
       }).pipe(Effect.provide(layer));
@@ -390,11 +418,13 @@ it.effect(
           yield* historyTask("Mondays", {
             schedule: { type: "fixed_time", timeOfDay: "07:00", weekdays: [1] },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )).task;
         const weekdays = (yield* service.upsert(
           yield* historyTask("Weekdays", {
             schedule: { type: "fixed_time", timeOfDay: "07:00", weekdays: [1, 2, 3, 4, 5] },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )).task;
         return { weekly, weekdays };
       }).pipe(Effect.provide(layer));
@@ -480,7 +510,10 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
     );
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const { task } = yield* service.upsert(yield* historyTask("Flaky"));
+      const { task } = yield* service.upsert(
+        yield* historyTask("Flaky"),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       expect((yield* service.runNow({ id: task.id })).task.lastRunStatus).toBe("failed");
       yield* TestClock.adjust("1 minute");
       expect((yield* service.runNow({ id: task.id })).task.lastRunStatus).toBe("succeeded");
@@ -562,7 +595,10 @@ it.effect.each([
       );
       yield* Effect.gen(function* () {
         const service = yield* ScheduledTaskService.ScheduledTaskService;
-        const { task } = yield* service.upsert(yield* historyTask("Limited"));
+        const { task } = yield* service.upsert(
+          yield* historyTask("Limited"),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         yield* service.runNow({ id: task.id });
         expect(yield* Ref.get(launchedOn)).toEqual([spare]);
         expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
@@ -606,12 +642,14 @@ it.effect(
             schedule: { type: "interval", everyMs: 60_000 },
             delegateProviders: ["codex"],
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         // Its only occurrence would be lost, so a one-time task waits for the room instead.
         const { task: once } = yield* service.upsert(
           yield* historyTask("Once", {
             schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         expect(task.delegateProviders).toEqual(["codex"]);
         const settled = (done: (tasks: ReadonlyArray<ScheduledTask>) => boolean) =>

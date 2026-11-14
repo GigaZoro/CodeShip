@@ -1,3 +1,7 @@
+## 2026-11-14 — Scheduled tasks remember who last changed them
+
+- A scheduled task said when and on which machine it last changed, but not who changed it, so a task switched off by surprise left no trace of whether a person or an agent did it. Each change now records whether it came from the app or from an agent, and for an agent the chat or scheduled run that made it, or the name of the outside client. `list_scheduled_tasks` returns this as `changedBy`, and a shared task's copies carry it to your other machines. Tasks last changed before this update show no author.
+
 ## 2026-11-14 — Windows and Linux updates no longer wait for the Mac build
 
 - Each release waited until GitHub gave it a macOS machine to build the Mac app, which took up to 9 hours, so Windows and Linux updates waited too. Windows and Linux releases now publish as soon as they are built, and the Mac app is attached to the same release when its build finishes. Until then, Macs keep the version they have and their update check keeps working.

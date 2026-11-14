@@ -351,21 +351,24 @@ it.effect.each(
               launchInput({ command: "command:existing", thread: "thread:existing" }),
             )
           : null;
-      const { task } = yield* tasks.upsert({
-        id: ScheduledTaskId.make("scheduled-task:attribution"),
-        title: "Daily audit",
-        prompt: "Audit performance and crashes.",
-        enabled: false,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId,
-        threadId: existing?.threadId ?? null,
-        workspaceStrategy: { type: "root" },
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        createdBy,
-        creationSource: createdBy === "agent" ? "mcp" : "web",
-      });
+      const { task } = yield* tasks.upsert(
+        {
+          id: ScheduledTaskId.make("scheduled-task:attribution"),
+          title: "Daily audit",
+          prompt: "Audit performance and crashes.",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId,
+          threadId: existing?.threadId ?? null,
+          workspaceStrategy: { type: "root" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy,
+          creationSource: createdBy === "agent" ? "mcp" : "web",
+        },
+        ScheduledTasks.CHANGED_IN_APP,
+      );
       const result = yield* tasks.runNow({ id: task.id });
       assert.equal(result.task.lastRunStatus, "succeeded");
       const projectThreads = yield* threads.listProjectThreads({
@@ -411,20 +414,23 @@ it.effect(
     return Effect.gen(function* () {
       const tasks = yield* ScheduledTasks.ScheduledTaskService;
       const threadId = ThreadId.make("thread:missing");
-      const { task } = yield* tasks.upsert({
-        title: "Daily audit",
-        prompt: "Audit performance and crashes.",
-        enabled: false,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId,
-        threadId,
-        workspaceStrategy: { type: "root" },
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        createdBy: "user",
-        creationSource: "web",
-      });
+      const { task } = yield* tasks.upsert(
+        {
+          title: "Daily audit",
+          prompt: "Audit performance and crashes.",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId,
+          threadId,
+          workspaceStrategy: { type: "root" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        },
+        ScheduledTasks.CHANGED_IN_APP,
+      );
       const result = yield* tasks.runNow({ id: task.id });
       assert.equal(result.task.lastRunStatus, "failed");
       assert.isNull(result.threadId);
@@ -454,21 +460,24 @@ it.effect("runs a thread-bound automation on the provider the thread uses now", 
     const launched = yield* launches.launch(
       launchInput({ command: "command:switched", thread: "thread:switched" }),
     );
-    const { task } = yield* tasks.upsert({
-      id: ScheduledTaskId.make("scheduled-task:switched"),
-      title: "Hourly check",
-      prompt: "Check on the delegated workers.",
-      enabled: false,
-      schedule: { type: "interval", everyMs: 3_600_000 },
-      projectId,
-      threadId: launched.threadId,
-      workspaceStrategy: { type: "root" },
-      modelSelection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      createdBy: "agent",
-      creationSource: "mcp",
-    });
+    const { task } = yield* tasks.upsert(
+      {
+        id: ScheduledTaskId.make("scheduled-task:switched"),
+        title: "Hourly check",
+        prompt: "Check on the delegated workers.",
+        enabled: false,
+        schedule: { type: "interval", everyMs: 3_600_000 },
+        projectId,
+        threadId: launched.threadId,
+        workspaceStrategy: { type: "root" },
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdBy: "agent",
+        creationSource: "mcp",
+      },
+      ScheduledTasks.CHANGED_IN_APP,
+    );
     yield* threads.dispatch({
       type: "thread.model-selection.set",
       commandId: CommandId.make("command:switch-selection"),
@@ -1001,10 +1010,12 @@ it.effect("stores a Scratch scheduled task at the root and keeps worktrees elsew
     const tasks = yield* ScheduledTasks.ScheduledTaskService;
     const scratch = yield* tasks.upsert(
       scheduledTaskInput("scheduled-task:scratch-upsert", projectId),
+      ScheduledTasks.CHANGED_IN_APP,
     );
     assert.deepEqual(scratch.task.workspaceStrategy, { type: "root" });
     const git = yield* tasks.upsert(
       scheduledTaskInput("scheduled-task:git-upsert", otherProjectId),
+      ScheduledTasks.CHANGED_IN_APP,
     );
     assert.deepEqual(git.task.workspaceStrategy, worktreeStrategy);
   }).pipe(Effect.provide(harness.layer));
@@ -1018,6 +1029,7 @@ it.effect("runs a Scratch scheduled task saved with a worktree in its own folder
     const sql = yield* SqlClient.SqlClient;
     const { task } = yield* tasks.upsert(
       scheduledTaskInput("scheduled-task:scratch-stored", projectId),
+      ScheduledTasks.CHANGED_IN_APP,
     );
     // Tasks saved before Scratch was coerced still hold a worktree strategy.
     yield* sql`

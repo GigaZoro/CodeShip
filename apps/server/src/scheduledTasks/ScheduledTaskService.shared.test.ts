@@ -9,6 +9,7 @@ import {
   type ScheduledTaskId,
   type ScheduledTaskRunCheck,
   ScheduledTaskUpsertInput,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -167,7 +168,8 @@ it.effect(
   () =>
     withService((service) =>
       Effect.gen(function* () {
-        const scratch = (yield* service.upsert(upsertInput())).task;
+        const scratch = (yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP))
+          .task;
         expect(scratch.shared).toEqual({
           revision: { at: "2026-09-09T12:00:00.000Z", environmentId: HERE_ENVIRONMENT_ID },
           project: { type: "none" },
@@ -175,6 +177,7 @@ it.effect(
         });
         const repo = (yield* service.upsert(
           upsertInput({ id: "scheduled-task:repo", projectId: repoProject.id }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )).task;
         expect(repo.shared?.project).toEqual({
           type: "repository",
@@ -182,7 +185,10 @@ it.effect(
           title: "Repo",
         });
         const noRemote = yield* service
-          .upsert(upsertInput({ id: "scheduled-task:plain", projectId: plainProject.id }))
+          .upsert(
+            upsertInput({ id: "scheduled-task:plain", projectId: plainProject.id }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          )
           .pipe(Effect.flip);
         expect(noRemote.message).toBe(
           "To share a task, pick No project or a project with a git remote, so each machine can find its copy.",
@@ -194,7 +200,9 @@ it.effect(
 it.effect("a shared task cannot post to a thread or use a webhook", () =>
   withService((service) =>
     Effect.gen(function* () {
-      const bound = yield* service.upsert(upsertInput({ threadId: "thread-1" })).pipe(Effect.flip);
+      const bound = yield* service
+        .upsert(upsertInput({ threadId: "thread-1" }), ScheduledTaskService.CHANGED_IN_APP)
+        .pipe(Effect.flip);
       expect(bound.message).toBe(
         "A shared task starts a new thread on each machine, so it can't post to one thread.",
       );
@@ -203,6 +211,7 @@ it.effect("a shared task cannot post to a thread or use a webhook", () =>
           upsertInput({
             schedule: { type: "webhook", signature: null, maxDeliveryAgeMinutes: null },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )
         .pipe(Effect.flip);
       expect(webhook.message).toBe(
@@ -217,20 +226,43 @@ it.effect(
   () =>
     withService((service, sql) =>
       Effect.gen(function* () {
-        yield* service.upsert(upsertInput());
+        yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP);
         yield* sql`UPDATE scheduled_task_shared SET revision_at = '2030-01-01T00:00:00.000Z'`;
-        const saved = (yield* service.upsert(upsertInput({ title: "Edited" }))).task;
+        const saved = (yield* service.upsert(
+          upsertInput({ title: "Edited" }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )).task;
         expect(saved.shared?.revision.at).toBe("2030-01-01T00:00:00.001Z");
 
+        // A task saved before authors were recorded reads as unknown, not as anyone's.
+        yield* sql`DELETE FROM scheduled_task_changed_by`;
+        expect((yield* taskOf(service))?.changedBy).toBeNull();
+
         yield* sql`UPDATE scheduled_task_shared SET revision_at = '2031-01-01T00:00:00.000Z'`;
-        yield* service.setEnabled({ id: saved.id, enabled: false });
-        expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.001Z");
+        yield* service.setEnabled(
+          { id: saved.id, enabled: false },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const toggled = yield* taskOf(service);
+        expect([toggled?.shared?.revision.at, toggled?.changedBy]).toEqual([
+          "2031-01-01T00:00:00.001Z",
+          { kind: "ui", threadId: null, at: "2026-09-09T12:00:00.000Z" },
+        ]);
 
-        yield* service.setFollowsDefaultModel({ ids: [saved.id], followsDefaultModel: true });
+        const agent = { kind: "mcp", threadId: ThreadId.make("thread-agent") } as const;
+        yield* service.setFollowsDefaultModel(
+          { ids: [saved.id], followsDefaultModel: true },
+          agent,
+        );
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.002Z");
 
+        // Where a task sits is this machine's own business: no revision, and the author stays.
         yield* service.setPlacement({ ids: [saved.id], placement: "pinned" });
-        expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.002Z");
+        const placed = yield* taskOf(service);
+        expect([placed?.shared?.revision.at, placed?.changedBy]).toEqual([
+          "2031-01-01T00:00:00.002Z",
+          { ...agent, at: "2026-09-09T12:00:00.000Z" },
+        ]);
       }),
     ),
 );
@@ -240,7 +272,8 @@ it.effect(
   () =>
     withService((service) =>
       Effect.gen(function* () {
-        const id = (yield* service.upsert(upsertInput())).task.id;
+        const id = (yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP)).task
+          .id;
         yield* service.delete({ id });
         const afterDelete = yield* service.list();
         expect(afterDelete.tasks).toEqual([]);
@@ -252,11 +285,15 @@ it.effect(
         ]);
 
         // Sharing again takes the deletion back, and the new revision beats it.
-        const reshared = (yield* service.upsert(upsertInput())).task;
+        const reshared = (yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP))
+          .task;
         expect(reshared.shared?.revision.at).toBe("2026-09-09T12:00:00.002Z");
         expect((yield* service.list()).sharedDeletions).toEqual([]);
 
-        const unshared = (yield* service.upsert(upsertInput({ shared: null }))).task;
+        const unshared = (yield* service.upsert(
+          upsertInput({ shared: null }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )).task;
         expect(unshared.shared).toBeNull();
         expect((yield* service.list()).sharedDeletions?.map((entry) => entry.id)).toEqual([id]);
       }),
@@ -268,7 +305,8 @@ it.effect(
   () =>
     withService((service, sql) =>
       Effect.gen(function* () {
-        const id = (yield* service.upsert(upsertInput())).task.id;
+        const id = (yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP)).task
+          .id;
         yield* sql`UPDATE scheduled_tasks SET run_count = 5, last_run_status = 'succeeded'`;
         const at = "2026-09-10T00:00:00.000Z";
         expect(yield* service.applyShared(copy(at))).toEqual({ outcome: "applied" });
@@ -278,6 +316,15 @@ it.effect(
         expect(task?.lastRunStatus).toBe("succeeded");
         expect(task?.shared?.revision).toEqual({ at, environmentId: OTHER });
         expect(task?.id).toBe(id);
+        // A copy that does not say who made it leaves the author unknown, not this machine's.
+        expect(task?.changedBy).toBeNull();
+        const author = {
+          kind: "mcp",
+          threadId: "thread-there",
+          at: "2026-09-10T00:00:30.000Z",
+        } as const;
+        yield* service.applyShared(copy("2026-09-10T00:00:30.000Z", { changedBy: author }));
+        expect((yield* taskOf(service))?.changedBy).toEqual(author);
 
         // A copy without the field keeps this machine's run condition; null clears it.
         const condition = { command: "node ~/check.mjs", timeoutSeconds: 30 };
@@ -294,7 +341,7 @@ it.effect(
 it.effect("applying an older or equal revision changes nothing", () =>
   withService((service) =>
     Effect.gen(function* () {
-      yield* service.upsert(upsertInput());
+      yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP);
       expect(yield* service.applyShared(copy("2026-09-09T11:59:59.999Z"))).toEqual({
         outcome: "stale",
       });
@@ -335,11 +382,13 @@ it.effect("a copy at the same revision fills in the settings an older app's copy
         3,
       ]);
       // The fuller copy of that revision, from the link pull, completes it.
+      const author = { kind: "ui", threadId: null, at } as const;
       const full = copy(at, {
         title: "From an older app",
         runCondition: null,
         delegateProviders: [],
         maxLiveRuns: 1,
+        changedBy: author,
       });
       expect(yield* service.applyShared(full)).toEqual({ outcome: "applied" });
       const completed = yield* taskOf(service);
@@ -347,7 +396,8 @@ it.effect("a copy at the same revision fills in the settings an older app's copy
         completed?.runCondition,
         completed?.delegateProviders,
         completed?.maxLiveRuns,
-      ]).toEqual([null, [], 1]);
+        completed?.changedBy,
+      ]).toEqual([null, [], 1, author]);
       expect(yield* service.applyShared(full)).toEqual({ outcome: "stale" });
       expect(
         yield* service.applyShared(copy("2026-09-10T12:00:00.000Z", { runCondition: condition })),
@@ -361,7 +411,7 @@ it.effect("a copy at the same revision fills in the settings an older app's copy
 it.effect("a machine in the exclusion list drops its copy without leaving a deletion", () =>
   withService((service) =>
     Effect.gen(function* () {
-      yield* service.upsert(upsertInput());
+      yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP);
       const result = yield* service.applyShared(
         copy("2026-09-10T00:00:00.000Z", {}, [HERE_ENVIRONMENT_ID]),
       );
@@ -379,7 +429,7 @@ it.effect("a machine in the exclusion list drops its copy without leaving a dele
 it.effect("a deletion removes the copy and blocks an older copy from coming back", () =>
   withService((service) =>
     Effect.gen(function* () {
-      yield* service.upsert(upsertInput());
+      yield* service.upsert(upsertInput(), ScheduledTaskService.CHANGED_IN_APP);
       expect(yield* service.applyShared(deletion("2026-09-10T00:00:00.000Z"))).toEqual({
         outcome: "applied",
       });
@@ -398,7 +448,7 @@ it.effect("a deletion removes the copy and blocks an older copy from coming back
 it.effect("a task here that is not shared keeps its id", () =>
   withService((service) =>
     Effect.gen(function* () {
-      yield* service.upsert(upsertInput({ shared: null }));
+      yield* service.upsert(upsertInput({ shared: null }), ScheduledTaskService.CHANGED_IN_APP);
       expect(yield* service.applyShared(copy("2026-09-10T00:00:00.000Z"))).toEqual({
         outcome: "local",
       });
@@ -481,7 +531,10 @@ it.effect("saving with a machine order stamps the project's order and keeps run-
   withService((service) =>
     Effect.gen(function* () {
       const shared = { excludedEnvironmentIds: [], runOn: "one", machineOrder: [OTHER] };
-      const first = (yield* service.upsert(upsertInput({ shared }))).task;
+      const first = (yield* service.upsert(
+        upsertInput({ shared }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      )).task;
       expect(first.shared?.runOn).toBe("one");
       const orders = (yield* service.list()).projectMachineOrders;
       expect(orders).toEqual([
@@ -493,6 +546,7 @@ it.effect("saving with a machine order stamps the project's order and keeps run-
       ]);
       yield* service.upsert(
         upsertInput({ shared: { excludedEnvironmentIds: [], machineOrder: [] } }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       const second = (yield* service.list()).projectMachineOrders?.[0];
       expect(second?.revision.at).toBe("2026-09-09T12:00:00.001Z");
@@ -684,6 +738,7 @@ const runScenario = <A, E>(
                 ? {}
                 : { projectId: repoProject.id, runCondition: { command: "node ~/check.mjs" } }),
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const changes = yield* Queue.unbounded<void>();
           yield* Effect.forkScoped(
@@ -1095,6 +1150,7 @@ it.effect("a late takeover of the occurrence before does not count as this occur
               shared: oneMachineShared([OTHER, HERE_ENVIRONMENT_ID, MIDDLE]),
               schedule: { type: "interval", everyMs: HOUR_MS },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const changes = yield* Queue.unbounded<void>();
           yield* Effect.forkScoped(
@@ -1291,6 +1347,7 @@ it.effect(
               shared: oneMachineShared([OTHER, MIDDLE, HERE_ENVIRONMENT_ID]),
               schedule: { type: "interval", everyMs: HOUR_MS },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const claimAt =
             (occurrence: number) =>
@@ -1583,6 +1640,7 @@ it.effect("copies of a one-machine interval task run the same slots whenever the
               shared: oneMachineShared([]),
               schedule: { type: "interval", everyMs: HOUR_MS },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           )).task;
           yield* service.applyShared(copyOf("scheduled-task:copy"));
           yield* service.upsert(
@@ -1591,6 +1649,7 @@ it.effect("copies of a one-machine interval task run the same slots whenever the
               shared: null,
               schedule: { type: "interval", everyMs: HOUR_MS },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           yield* TestClock.setTime(NOW + 10 * MINUTE_MS);
           yield* service.runNow({ id: local.id });
@@ -1623,7 +1682,10 @@ it.effect(
         (service) =>
           Effect.gen(function* () {
             const own = { instanceId: "codex_elsewhere", model: "gpt-5.4" };
-            const id = (yield* service.upsert(upsertInput({ modelSelection: own }))).task.id;
+            const id = (yield* service.upsert(
+              upsertInput({ modelSelection: own }),
+              ScheduledTaskService.CHANGED_IN_APP,
+            )).task.id;
             const listed = yield* taskOf(service);
             expect(listed?.modelUnavailableHere).toBe(true);
             expect(listed?.modelSelection).toEqual(own);
@@ -1637,6 +1699,7 @@ it.effect(
                 id: "scheduled-task:here",
                 modelSelection: { instanceId: "codex", model: "gpt-5.4" },
               }),
+              ScheduledTaskService.CHANGED_IN_APP,
             );
             expect(here.task.modelUnavailableHere).toBeUndefined();
           }),
@@ -1687,6 +1750,7 @@ it.effect("a linked machine gets this machine's stored copies, minus those that 
             shared: { excludedEnvironmentIds: [], machineOrder: [OTHER] },
             runCondition: { command: "node ~/check.mjs" },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         yield* service.upsert(
           upsertInput({
@@ -1694,9 +1758,16 @@ it.effect("a linked machine gets this machine's stored copies, minus those that 
             projectId: repoProject.id,
             shared: { excludedEnvironmentIds: [OTHER], machineOrder: [HERE_ENVIRONMENT_ID] },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
-        yield* service.upsert(upsertInput({ id: "scheduled-task:local-only", shared: null }));
-        yield* service.upsert(upsertInput({ id: "scheduled-task:gone" }));
+        yield* service.upsert(
+          upsertInput({ id: "scheduled-task:local-only", shared: null }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        yield* service.upsert(
+          upsertInput({ id: "scheduled-task:gone" }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         yield* service.delete({ id: "scheduled-task:gone" as ScheduledTaskId });
 
         const pulled = yield* service.sharedCopies(OTHER as never, { recordPuller: true });
@@ -1718,8 +1789,16 @@ it.effect("a linked machine gets this machine's stored copies, minus those that 
 it.effect("a shared task's group and its group pause travel with its copies", () =>
   withService((service) =>
     Effect.gen(function* () {
-      const id = (yield* service.upsert(upsertInput({ group: "Machine care" }))).task.id;
-      expect(yield* service.setGroupPaused({ ids: [id], paused: true })).toEqual({
+      const id = (yield* service.upsert(
+        upsertInput({ group: "Machine care" }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      )).task.id;
+      expect(
+        yield* service.setGroupPaused(
+          { ids: [id], paused: true },
+          ScheduledTaskService.CHANGED_IN_APP,
+        ),
+      ).toEqual({
         ids: [id],
         refused: [],
       });
@@ -1729,6 +1808,7 @@ it.effect("a shared task's group and its group pause travel with its copies", ()
         enabled: false,
         group: "Machine care",
         pausedWithGroup: true,
+        changedBy: { kind: "ui", threadId: null, at: "2026-09-09T12:00:00.000Z" },
       });
 
       const applied = (at: string, overrides: Record<string, unknown>) =>

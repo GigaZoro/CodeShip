@@ -2237,16 +2237,18 @@ export const layerWsRpc = (
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribeLinked]: (_input) => linkedScheduledTasks.subscribe(),
         [WS_METHODS.scheduledTasksStats]: (input) => scheduledTaskStats.stats(input),
-        [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),
+        [WS_METHODS.scheduledTasksUpsert]: (input) =>
+          scheduledTasks.upsert(input, ScheduledTasks.CHANGED_IN_APP),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
-            Effect.andThen(scheduledTasks.setEnabled(input)),
+            Effect.andThen(scheduledTasks.setEnabled(input, ScheduledTasks.CHANGED_IN_APP)),
           ),
         [WS_METHODS.scheduledTasksSetPlacement]: (input) => scheduledTasks.setPlacement(input),
-        [WS_METHODS.scheduledTasksSetGroupPaused]: (input) => scheduledTasks.setGroupPaused(input),
+        [WS_METHODS.scheduledTasksSetGroupPaused]: (input) =>
+          scheduledTasks.setGroupPaused(input, ScheduledTasks.CHANGED_IN_APP),
         [WS_METHODS.scheduledTasksReorderPinned]: (input) => scheduledTasks.reorderPinned(input),
         [WS_METHODS.scheduledTasksSetFollowsDefaultModel]: (input) =>
-          scheduledTasks.setFollowsDefaultModel(input),
+          scheduledTasks.setFollowsDefaultModel(input, ScheduledTasks.CHANGED_IN_APP),
         [WS_METHODS.scheduledTasksDelete]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.delete(input)),

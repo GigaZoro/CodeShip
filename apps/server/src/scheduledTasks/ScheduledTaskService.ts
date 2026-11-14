@@ -5,6 +5,7 @@ import {
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProjectId,
   ScheduledTask,
+  ScheduledTaskChangedBy,
   ScheduledTaskSharing,
   ScheduledTaskOneMachineDecision,
   ScheduledTaskProjectMachineOrder,
@@ -298,6 +299,9 @@ const decodeRunConditionJson = Schema.decodeUnknownEffect(
 const decodeNoWorkSkipJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTaskNoWorkSkip),
 );
+const ChangedByJson = Schema.fromJsonString(ScheduledTaskChangedBy);
+const decodeChangedByJson = Schema.decodeUnknownEffect(ChangedByJson);
+const encodeChangedByJson = Schema.encodeSync(ChangedByJson);
 const decodeRunCheckJson = Schema.decodeUnknownOption(Schema.fromJsonString(ScheduledTaskRunCheck));
 const RunUsageLimitJson = Schema.fromJsonString(ScheduledTaskRunUsageLimit);
 const decodeRunUsageLimitJson = Schema.decodeUnknownOption(RunUsageLimitJson);
@@ -376,6 +380,8 @@ interface ScheduledTaskRow {
   readonly delegate_providers_json?: string | null;
   /** From scheduled_task_live_run_limit: null for the default. */
   readonly max_live_runs?: number | null;
+  /** From scheduled_task_changed_by: null when who made the latest change is unknown. */
+  readonly changed_by_json?: string | null;
 }
 
 interface RunRecordRow {
@@ -438,6 +444,12 @@ interface WebhookDeliveryRow {
   readonly error: string | null;
 }
 
+/** Who asks for a change; the service adds when. */
+export type ScheduledTaskChanger = Omit<ScheduledTaskChangedBy, "at">;
+
+/** A person in the app: the web, desktop and mobile clients reach the service only over WebSocket. */
+export const CHANGED_IN_APP: ScheduledTaskChanger = { kind: "ui", threadId: null };
+
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
@@ -447,9 +459,11 @@ export class ScheduledTaskService extends Context.Service<
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
+      by: ScheduledTaskChanger,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
+      by: ScheduledTaskChanger,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     readonly setPlacement: (
       input: ScheduledTaskSetPlacementInput,
@@ -460,12 +474,14 @@ export class ScheduledTaskService extends Context.Service<
      */
     readonly setGroupPaused: (
       input: ScheduledTaskSetGroupPausedInput,
+      by: ScheduledTaskChanger,
     ) => Effect.Effect<ScheduledTaskSetGroupPausedResult, ScheduledTaskError>;
     readonly reorderPinned: (
       input: ScheduledTaskReorderPinnedInput,
     ) => Effect.Effect<ScheduledTaskReorderPinnedResult, ScheduledTaskError>;
     readonly setFollowsDefaultModel: (
       input: ScheduledTaskSetFollowsDefaultModelInput,
+      by: ScheduledTaskChanger,
     ) => Effect.Effect<ScheduledTaskSetFollowsDefaultModelResult, ScheduledTaskError>;
     readonly delete: (
       input: ScheduledTaskDeleteInput,
@@ -807,6 +823,12 @@ const decodeRow = Effect.fnUntraced(
       ...(row.max_live_runs === undefined
         ? {}
         : { maxLiveRuns: row.max_live_runs ?? DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS }),
+      ...(row.changed_by_json === undefined
+        ? {}
+        : {
+            changedBy:
+              row.changed_by_json === null ? null : yield* decodeChangedByJson(row.changed_by_json),
+          }),
     });
   },
   (effect, row, _origin?) =>
@@ -1069,6 +1091,14 @@ export const layer = Layer.effect(
         max_live_runs INTEGER NOT NULL
       )
     `;
+    // Who made a task's latest change. Tasks changed before this table existed have no row, so
+    // their author reads as unknown rather than a guess.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_changed_by (
+        task_id TEXT PRIMARY KEY,
+        changed_by_json TEXT NOT NULL
+      )
+    `;
     const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
     if (!runColumns.some((column) => column.name === "usage_limit_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
@@ -1195,7 +1225,9 @@ export const layer = Layer.effect(
         (SELECT providers_json FROM scheduled_task_delegate_providers dp
           WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json,
         (SELECT max_live_runs FROM scheduled_task_live_run_limit lr
-          WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs
+          WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs,
+        (SELECT changed_by_json FROM scheduled_task_changed_by cb
+          WHERE cb.task_id = scheduled_tasks.task_id) AS changed_by_json
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -1299,7 +1331,9 @@ export const layer = Layer.effect(
         (SELECT providers_json FROM scheduled_task_delegate_providers dp
           WHERE dp.task_id = scheduled_tasks.task_id) AS delegate_providers_json,
         (SELECT max_live_runs FROM scheduled_task_live_run_limit lr
-          WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs
+          WHERE lr.task_id = scheduled_tasks.task_id) AS max_live_runs,
+        (SELECT changed_by_json FROM scheduled_task_changed_by cb
+          WHERE cb.task_id = scheduled_tasks.task_id) AS changed_by_json
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -1525,17 +1559,32 @@ export const layer = Layer.effect(
           revision_environment_id = excluded.revision_environment_id
       `.pipe(Effect.andThen(sql`DELETE FROM scheduled_task_shared WHERE task_id = ${id}`));
 
-    // For an edit that is not a save: stamps a shared task and leaves any other alone.
-    const bumpSharedRevision = Effect.fn("ScheduledTaskService.bumpSharedRevision")(function* (
+    const writeChangedBy = (id: ScheduledTaskId, changedBy: ScheduledTaskChangedBy | null) =>
+      changedBy === null
+        ? sql`DELETE FROM scheduled_task_changed_by WHERE task_id = ${id}`
+        : sql`
+            INSERT INTO scheduled_task_changed_by (task_id, changed_by_json)
+            VALUES (${id}, ${encodeChangedByJson(changedBy)})
+            ON CONFLICT (task_id) DO UPDATE SET changed_by_json = excluded.changed_by_json
+          `;
+
+    // For an edit that is not a save: records who made it, and stamps a shared task with a new
+    // revision so other machines take the change and its author together.
+    const recordChange = Effect.fn("ScheduledTaskService.recordChange")(function* (
       id: ScheduledTaskId,
+      by: ScheduledTaskChanger,
     ) {
-      if ((yield* storedRevisions(id)).shared === null) return;
-      const revision = yield* stampRevision(id);
-      yield* sql`
-        UPDATE scheduled_task_shared
-        SET revision_at = ${revision.at}, revision_environment_id = ${revision.environmentId}
-        WHERE task_id = ${id}
-      `;
+      const changedBy: ScheduledTaskChangedBy = { ...by, at: iso(yield* localNow) };
+      yield* writeChangedBy(id, changedBy);
+      if ((yield* storedRevisions(id)).shared !== null) {
+        const revision = yield* stampRevision(id);
+        yield* sql`
+          UPDATE scheduled_task_shared
+          SET revision_at = ${revision.at}, revision_environment_id = ${revision.environmentId}
+          WHERE task_id = ${id}
+        `;
+      }
+      return changedBy;
     });
 
     const stampOrderRevision = Effect.fn("ScheduledTaskService.stampOrderRevision")(function* (
@@ -1577,6 +1626,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_delegate_providers WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_live_run_limit WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_changed_by WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
       );
@@ -3551,6 +3601,7 @@ export const layer = Layer.effect(
                   shared: task.shared,
                   group: task.group ?? null,
                   pausedWithGroup: task.pausedWithGroup === true,
+                  changedBy: task.changedBy ?? null,
                 },
               ],
         );
@@ -3705,7 +3756,7 @@ export const layer = Layer.effect(
 
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
-    )(function* (input) {
+    )(function* (input, by) {
       // A webhook task the policy blocks can still be edited while it is off.
       if (input.enabled && input.schedule.type === "webhook" && webhookPolicyBlock !== undefined) {
         return yield* taskError(
@@ -3977,6 +4028,7 @@ export const layer = Layer.effect(
             );
             // Turning a task on by saving it ends its group's hold on it.
             yield* writeGroup(id, input.group, input.enabled ? false : "keep");
+            yield* writeChangedBy(id, { ...by, at: iso(now) });
             if (sharedExclusions !== undefined && sharedProject !== null) {
               yield* writeSharing(id, {
                 revision: yield* stampRevision(id),
@@ -4086,6 +4138,10 @@ export const layer = Layer.effect(
             const liveRunLimitDiffers =
               task.maxLiveRuns !== undefined &&
               task.maxLiveRuns !== (yield* liveRunLimitOf(taskId));
+            const [changedBy] = yield* sql<{ readonly changed_by_json: string }>`
+              SELECT changed_by_json FROM scheduled_task_changed_by WHERE task_id = ${taskId}`;
+            // One revision has one author, so only a copy that lacked it can be filled in.
+            const changedByMissing = task.changedBy != null && changedBy === undefined;
             const delegatesDiffer =
               task.delegateProviders !== undefined &&
               (task.delegateProviders.length === 0
@@ -4111,7 +4167,8 @@ export const layer = Layer.effect(
               !catchUpDiffers &&
               !promptFileDiffers &&
               !delegatesDiffer &&
-              !liveRunLimitDiffers
+              !liveRunLimitDiffers &&
+              !changedByMissing
             ) {
               return { outcome: "stale" as const };
             }
@@ -4120,6 +4177,7 @@ export const layer = Layer.effect(
             if (promptFileDiffers) yield* writePromptFile(taskId, task.promptFile ?? null, null);
             if (delegatesDiffer) yield* writeDelegateProviders(taskId, task.delegateProviders);
             if (liveRunLimitDiffers) yield* writeMaxLiveRuns(taskId, task.maxLiveRuns);
+            if (changedByMissing) yield* writeChangedBy(taskId, task.changedBy ?? null);
             return { outcome: "applied" as const };
           }),
         );
@@ -4268,6 +4326,9 @@ export const layer = Layer.effect(
             : writeGroup(id, task.group, task.pausedWithGroup === true && !task.enabled);
           yield* writeDelegateProviders(id, task.delegateProviders);
           yield* writeMaxLiveRuns(id, task.maxLiveRuns);
+          // A copy that does not say who made its revision leaves the author unknown here, not
+          // the author of the revision it replaces.
+          yield* writeChangedBy(id, task.changedBy ?? null);
           yield* writeSharing(id, task.shared);
         }),
         "applied",
@@ -4288,16 +4349,14 @@ export const layer = Layer.effect(
 
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
       "ScheduledTaskService.setEnabled",
-    )(function* (input) {
+    )(function* (input, by) {
       const existing = yield* loadTask(input.id);
       if (existing.enabled === input.enabled) {
         if (existing.pausedWithGroup !== true) return { task: existing };
         // Still a choice made by hand: its group's resume must leave the task alone.
-        yield* sql
+        const changedBy = yield* sql
           .withTransaction(
-            writeGroup(input.id, undefined, false).pipe(
-              Effect.andThen(bumpSharedRevision(input.id)),
-            ),
+            writeGroup(input.id, undefined, false).pipe(Effect.andThen(recordChange(input.id, by))),
           )
           .pipe(
             Effect.mapError((cause) =>
@@ -4306,7 +4365,7 @@ export const layer = Layer.effect(
           );
         yield* notifyChanged;
         const { pausedWithGroup: _cleared, ...task } = existing;
-        return { task };
+        return { task: { ...task, changedBy } };
       }
       const now = yield* localNow;
       const refusal = input.enabled ? enableRefusal(existing, now) : undefined;
@@ -4314,7 +4373,7 @@ export const layer = Layer.effect(
       const next = nextRunAt({ ...existing, enabled: input.enabled }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
-      yield* sql
+      const changedBy = yield* sql
         .withTransaction(
           Effect.gen(function* () {
             const updated = yield* sql<{ task_id: string }>`
@@ -4330,7 +4389,7 @@ export const layer = Layer.effect(
             }
             // A task switched by hand is no longer its group pause's to resume.
             yield* writeGroup(input.id, undefined, false);
-            yield* bumpSharedRevision(input.id);
+            return yield* recordChange(input.id, by);
           }),
         )
         .pipe(
@@ -4343,13 +4402,13 @@ export const layer = Layer.effect(
       yield* notifyChanged;
       const { pausedWithGroup: _cleared, ...task } = existing;
       return {
-        task: { ...task, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
+        task: { ...task, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now), changedBy },
       };
     });
 
     const setGroupPaused: ScheduledTaskService["Service"]["setGroupPaused"] = Effect.fn(
       "ScheduledTaskService.setGroupPaused",
-    )(function* (input) {
+    )(function* (input, by) {
       const ids = [...new Set(input.ids)];
       const now = yield* localNow;
       // Read before the write, which checks the task is still off, marked and unedited.
@@ -4381,7 +4440,7 @@ export const layer = Layer.effect(
               `;
               if (paused === undefined) continue;
               yield* writeGroup(id, undefined, true);
-              yield* bumpSharedRevision(id);
+              yield* recordChange(id, by);
               changed.push(paused.task_id);
             }
             for (const { task, updatedAt } of marked) {
@@ -4412,7 +4471,7 @@ export const layer = Layer.effect(
               } else {
                 refused.push({ id: settled.task_id, message: refusal });
               }
-              yield* bumpSharedRevision(task.id);
+              yield* recordChange(task.id, by);
             }
             return { ids: changed, refused };
           }),
@@ -4466,7 +4525,7 @@ export const layer = Layer.effect(
     });
 
     const setFollowsDefaultModel: ScheduledTaskService["Service"]["setFollowsDefaultModel"] =
-      Effect.fn("ScheduledTaskService.setFollowsDefaultModel")(function* (input) {
+      Effect.fn("ScheduledTaskService.setFollowsDefaultModel")(function* (input, by) {
         // Only the flag changes: a task's own model stays stored, so turning it off restores it.
         const changed = yield* sql
           .withTransaction(
@@ -4483,7 +4542,7 @@ export const layer = Layer.effect(
                     WHERE task_id IN ${sql.in(input.ids)}
                     RETURNING task_id
                   `;
-              yield* Effect.forEach(rows, (row) => bumpSharedRevision(row.task_id), {
+              yield* Effect.forEach(rows, (row) => recordChange(row.task_id, by), {
                 discard: true,
               });
               return rows;
@@ -4543,57 +4602,13 @@ export const layer = Layer.effect(
       const removed = yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            yield* sql`
-            DELETE FROM scheduled_task_webhook_deliveries
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_sidebar
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_default_model
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_shared
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_one_machine_decision
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_occurrence_claims
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_catch_up
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_run_conditions
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_group
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_delegate_providers
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_live_run_limit
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            yield* sql`
-            DELETE FROM scheduled_task_runs
-            WHERE task_id IN (SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId})
-          `;
-            return yield* sql<{ task_id: ScheduledTaskId }>`
-            DELETE FROM scheduled_tasks WHERE thread_id = ${threadId} RETURNING task_id
-          `;
+            const bound = yield* sql<{ task_id: ScheduledTaskId }>`
+              SELECT task_id FROM scheduled_tasks WHERE thread_id = ${threadId}
+            `;
+            yield* Effect.forEach(bound, ({ task_id }) => deleteLocalRows(task_id), {
+              discard: true,
+            });
+            return bound;
           }),
         )
         .pipe(

@@ -114,6 +114,7 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
     ...(task.group === undefined
       ? {}
       : { group: task.group, pausedWithGroup: task.pausedWithGroup === true }),
+    ...(task.changedBy === undefined ? {} : { changedBy: task.changedBy }),
   };
 }
 

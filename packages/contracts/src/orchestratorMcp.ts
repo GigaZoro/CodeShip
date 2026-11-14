@@ -22,6 +22,7 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  ScheduledTaskChangedBy,
   ScheduledTaskGroupLabel,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
@@ -849,6 +850,10 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   definedAt: Schema.optional(IsoDateTime).annotate({
     description: "Shared task: when that save happened.",
+  }),
+  changedBy: Schema.optional(ScheduledTaskChangedBy).annotate({
+    description:
+      "Who made the latest change: ui is a person in the app; mcp is an agent, with threadId the chat or run (on definedOn) or client. Absent: unknown.",
   }),
   runCondition: Schema.optional(ScheduledTaskRunCondition),
   checkingSince: Schema.optional(IsoDateTime).annotate({

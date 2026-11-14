@@ -51,8 +51,12 @@ it.effect(
         };
         const { task } = yield* service.upsert(
           yield* webhookTaskInput({ schedule: { type: "webhook", dedupe } }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
-        const updated = yield* service.upsert(yield* webhookTaskInput());
+        const updated = yield* service.upsert(
+          yield* webhookTaskInput(),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.deepEqual(
           updated.task.schedule.type === "webhook" && updated.task.schedule.dedupe,
           dedupe,
@@ -92,6 +96,7 @@ it.effect(
         yield* Queue.take(launches);
         const cleared = yield* service.upsert(
           yield* webhookTaskInput({ schedule: { type: "webhook", dedupe: {} } }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         assert.deepEqual(
           cleared.task.schedule.type === "webhook" && cleared.task.schedule.dedupe,
@@ -284,7 +289,10 @@ it.effect("a delivery runs without a run condition, even one stored for the task
     yield* withService(
       ({ service, launches, sql }) =>
         Effect.gen(function* () {
-          const { task } = yield* service.upsert(yield* webhookTaskInput());
+          const { task } = yield* service.upsert(
+            yield* webhookTaskInput(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
           yield* sql`INSERT INTO scheduled_task_run_conditions (task_id, command, timeout_seconds)
             VALUES (${task.id}, 'node check.mjs', 30)`;
           yield* service.triggerWebhook(requestFor(task));
@@ -306,7 +314,10 @@ it.effect("a delivery runs without a run condition, even one stored for the task
 it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       assert.equal(task.nextRunAt, null);
       assert.isDefined(task.webhook);
       assert.isTrue(task.webhook!.path.startsWith("/api/hooks/scheduled-task%3Ahook/"));
@@ -363,7 +374,10 @@ it.effect("gives webhook tasks a relay URL when the environment has a managed tu
   withService(
     ({ service }) =>
       Effect.gen(function* () {
-        const { task } = yield* service.upsert(yield* webhookTaskInput());
+        const { task } = yield* service.upsert(
+          yield* webhookTaskInput(),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         const token = task.webhook!.path.split("/").at(-1);
         assert.equal(
           task.webhook?.url,
@@ -377,7 +391,10 @@ it.effect("gives webhook tasks a relay URL when the environment has a managed tu
 it.effect("answers not found for a wrong token or unknown hook without logging", () =>
   withService(({ service }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const wrongToken = yield* service.triggerWebhook(requestFor(task, { token: "nope" }));
       assert.equal(wrongToken._tag, "not_found");
       const unknown = yield* service.triggerWebhook(requestFor(task, { hookId: "missing" }));
@@ -395,8 +412,11 @@ it.effect("rotating the token retires the old URL and saving keeps it", () =>
   withService(({ service }) =>
     Effect.gen(function* () {
       const input = yield* webhookTaskInput();
-      const { task } = yield* service.upsert(input);
-      const saved = yield* service.upsert(yield* webhookTaskInput({ title: "Renamed" }));
+      const { task } = yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP);
+      const saved = yield* service.upsert(
+        yield* webhookTaskInput({ title: "Renamed" }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       assert.equal(saved.task.webhook?.path, task.webhook?.path);
 
       const rotated = yield* service.rotateWebhookToken({ id: task.id });
@@ -422,6 +442,7 @@ it.effect("checks the configured signature and keeps the secret write-only", () 
             },
           },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       assert.deepEqual(task.schedule, {
         type: "webhook",
@@ -448,6 +469,7 @@ it.effect("checks the configured signature and keeps the secret write-only", () 
             signature: { header: "x-hub-signature-256", encoding: "hex", prefix: "sha256=" },
           },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       assert.isTrue(resaved.task.webhook?.hasSecret);
 
@@ -466,7 +488,10 @@ it.effect("checks the configured signature and keeps the secret write-only", () 
 it.effect("a policy without webhook tasks keeps existing ones but refuses saves and requests", () =>
   withService(({ service, sql }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const timer = yield* webhookTaskInput({
         id: "scheduled-task:timer",
         schedule: { type: "interval", everyMs: 3_600_000 },
@@ -479,18 +504,29 @@ it.effect("a policy without webhook tasks keeps existing ones but refuses saves 
             assert.equal(listed?.blockedByPolicy, blocked);
             assert.isTrue(listed?.enabled);
 
-            const refused = yield* service.upsert(yield* webhookTaskInput()).pipe(Effect.flip);
+            const refused = yield* service
+              .upsert(yield* webhookTaskInput(), ScheduledTaskService.CHANGED_IN_APP)
+              .pipe(Effect.flip);
             assert.equal(refused.message, blocked);
             const created = yield* service
-              .upsert(yield* webhookTaskInput({ id: "scheduled-task:new-hook" }))
+              .upsert(
+                yield* webhookTaskInput({ id: "scheduled-task:new-hook" }),
+                ScheduledTaskService.CHANGED_IN_APP,
+              )
               .pipe(Effect.flip);
             assert.equal(created.message, blocked);
 
             // Turned off, it can still be edited, but not turned back on.
-            yield* service.setEnabled({ id: task.id, enabled: false });
-            yield* service.upsert(yield* webhookTaskInput({ enabled: false }));
+            yield* service.setEnabled(
+              { id: task.id, enabled: false },
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
+            yield* service.upsert(
+              yield* webhookTaskInput({ enabled: false }),
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
             const reenabled = yield* service
-              .setEnabled({ id: task.id, enabled: true })
+              .setEnabled({ id: task.id, enabled: true }, ScheduledTaskService.CHANGED_IN_APP)
               .pipe(Effect.flip);
             assert.equal(reenabled.message, blocked);
 
@@ -500,9 +536,13 @@ it.effect("a policy without webhook tasks keeps existing ones but refuses saves 
             assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_deliveries`).length, 0);
 
             // Timer tasks are unaffected, including a webhook task switched to a timer.
-            assert.isUndefined((yield* service.upsert(timer)).task.blockedByPolicy);
+            assert.isUndefined(
+              (yield* service.upsert(timer, ScheduledTaskService.CHANGED_IN_APP)).task
+                .blockedByPolicy,
+            );
             const switched = yield* service.upsert(
               yield* webhookTaskInput({ schedule: { type: "interval", everyMs: 3_600_000 } }),
+              ScheduledTaskService.CHANGED_IN_APP,
             );
             assert.isUndefined(switched.task.blockedByPolicy);
           }),
@@ -522,7 +562,10 @@ it.effect("a policy without webhook tasks keeps existing ones but refuses saves 
 it.effect("logs but does not run deliveries to a disabled task, and refuses run now", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput({ enabled: false }));
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput({ enabled: false }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "disabled");
       assert.equal(yield* Queue.size(launches), 0);
       const runNow = yield* service.runNow({ id: task.id }).pipe(Effect.flip);
@@ -534,9 +577,15 @@ it.effect("logs but does not run deliveries to a disabled task, and refuses run 
 it.effect("a save carrying a stale token cannot undo a rotation", () =>
   withService(({ service }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const rotated = yield* service.rotateWebhookToken({ id: task.id });
-      const saved = yield* service.upsert(yield* webhookTaskInput({ title: "Edited" }));
+      const saved = yield* service.upsert(
+        yield* webhookTaskInput({ title: "Edited" }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       assert.equal(saved.task.webhook?.path, rotated.task.webhook?.path);
       assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "not_found");
     }),
@@ -546,7 +595,10 @@ it.effect("a save carrying a stale token cannot undo a rotation", () =>
 it.effect("keeps credential headers and query values out of the delivery log", () =>
   withService(({ service }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput({ enabled: false }));
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput({ enabled: false }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* service.triggerWebhook(
         requestFor(task, {
           query: "page=2&api_key=k",
@@ -577,7 +629,10 @@ it.effect("keeps credential headers and query values out of the delivery log", (
 it.effect("drops a character split by the delivery log's body limit", () =>
   withService(({ service }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput({ enabled: false }));
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput({ enabled: false }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const limit = 64 * 1024;
       const euro = new TextEncoder().encode("€");
       const body = new Uint8Array(limit - 1 + euro.length).fill(0x61);
@@ -606,14 +661,14 @@ const queuedDeliveryCases = [
     change: "paused",
     reason: "The task was paused before this delivery ran.",
     apply: (service: ScheduledTaskService.ScheduledTaskService["Service"], id: string) =>
-      service.setEnabled({ id: id as never, enabled: false }),
+      service.setEnabled({ id: id as never, enabled: false }, ScheduledTaskService.CHANGED_IN_APP),
   },
   {
     change: "switched to an interval trigger",
     reason: "The task's trigger changed before this delivery ran.",
     apply: (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
       webhookTaskInput({ schedule: { type: "interval", everyMs: 3_600_000 } }).pipe(
-        Effect.flatMap(service.upsert),
+        Effect.flatMap((input) => service.upsert(input, ScheduledTaskService.CHANGED_IN_APP)),
       ),
   },
 ] as const;
@@ -640,7 +695,10 @@ it.effect.each(queuedDeliveryCases)(
       yield* withService(
         ({ service, launches }) =>
           Effect.gen(function* () {
-            const { task } = yield* service.upsert(yield* webhookTaskInput());
+            const { task } = yield* service.upsert(
+              yield* webhookTaskInput(),
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
             yield* service.triggerWebhook(requestFor(task));
             const queued = yield* service.triggerWebhook(requestFor(task));
             yield* Queue.take(launches);
@@ -669,14 +727,17 @@ it.effect("a save without a secret keeps a secret changed after it was read", ()
         yield* webhookTaskInput({
           schedule: { type: "webhook", signature: { ...signature, secret: "old" } },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       yield* service.upsert(
         yield* webhookTaskInput({
           schedule: { type: "webhook", signature: { ...signature, secret: "new" } },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       yield* service.upsert(
         yield* webhookTaskInput({ title: "Edited", schedule: { type: "webhook", signature } }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       const sign = (secret: string) =>
         `sha256=${NodeCrypto.createHmac("sha256", secret).update(pullRequestBody).digest("hex")}`;
@@ -696,7 +757,10 @@ it.effect("a save without a secret keeps a secret changed after it was read", ()
 it.effect("a held request already delivered directly runs only once", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const direct = yield* service.triggerWebhook(
         requestFor(task, { relayDeliveryId: "relay-1" }),
       );
@@ -716,7 +780,10 @@ it.effect("a held request already delivered directly runs only once", () =>
 it.effect("relay retries recover failed acceptance without releasing another request's claim", () =>
   withService(({ service, launches, sql }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const request = requestFor(task, { relayDeliveryId: "retry-after-log-failure" });
       yield* sql`
         CREATE TRIGGER fail_webhook_delivery_log
@@ -768,7 +835,10 @@ it.effect("relay retries recover failed acceptance without releasing another req
 it.effect("a held request whose sender hung up mid-request still runs", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       for (let step = 0; step < 60; step++) {
         const request = requestFor(task, { relayDeliveryId: `hung-up-${step}` });
         const fiber = yield* service
@@ -792,15 +862,21 @@ it.effect("a held request whose sender hung up mid-request still runs", () =>
 it.effect("a held request runs once even after the log has trimmed it", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const first = yield* service.triggerWebhook(requestFor(task, { relayDeliveryId: "kept" }));
       assert.equal(first._tag, "accepted");
       yield* Queue.take(launches);
-      const paused = yield* service.upsert(yield* webhookTaskInput({ enabled: false }));
+      const paused = yield* service.upsert(
+        yield* webhookTaskInput({ enabled: false }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* Effect.forEach(Array.from({ length: 55 }), () =>
         service.triggerWebhook(requestFor(paused.task)),
       );
-      yield* service.upsert(yield* webhookTaskInput());
+      yield* service.upsert(yield* webhookTaskInput(), ScheduledTaskService.CHANGED_IN_APP);
       const replay = yield* service.triggerWebhook(requestFor(task, { relayDeliveryId: "kept" }));
       assert.equal(replay._tag, "accepted");
       assert.equal(yield* Queue.size(launches), 0);
@@ -813,6 +889,7 @@ it.effect("skips a held request older than the task's max age", () =>
     Effect.gen(function* () {
       const { task } = yield* service.upsert(
         yield* webhookTaskInput({ schedule: { type: "webhook", maxDeliveryAgeMinutes: 30 } }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       const now = yield* DateTime.now;
       const old = DateTime.formatIso(DateTime.subtract(now, { minutes: 31 }));
@@ -850,6 +927,7 @@ it.effect("a signature can take the user's secret by ref, which works only once"
         yield* webhookTaskInput({
           schedule: githubSchedule("secret-ref:00000000000000000000000000000001"),
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       assert.isTrue(task.webhook!.hasSecret);
       const signed = yield* service.triggerWebhook(
@@ -869,6 +947,7 @@ it.effect("a signature can take the user's secret by ref, which works only once"
             id: "scheduled-task:other",
             schedule: githubSchedule("secret-ref:00000000000000000000000000000001"),
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )
         .pipe(Effect.flip);
       assert.include(reused.message, "already used");
@@ -893,7 +972,7 @@ it.effect("a retried save with an already used secretRef keeps the stored secret
           },
         },
       });
-      const first = yield* service.upsert(yield* save);
+      const first = yield* service.upsert(yield* save, ScheduledTaskService.CHANGED_IN_APP);
       const retried = yield* service.upsert(
         yield* webhookTaskInput({
           id: undefined,
@@ -909,6 +988,7 @@ it.effect("a retried save with an already used secretRef keeps the stored secret
             },
           },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       assert.equal(retried.task.id, first.task.id);
       const signed = yield* service.triggerWebhook(
@@ -936,6 +1016,7 @@ it.effect("a signature without any secret is refused", () =>
               signature: { header: "x-hub-signature-256", encoding: "hex", prefix: "sha256=" },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         )
         .pipe(Effect.flip);
       assert.include(failure.message, "needs a signing secret");
@@ -948,7 +1029,10 @@ it.effect("dedupes replay keys per task, persists them, and expires them after s
     ({ service, launches, sql }) =>
       Effect.gen(function* () {
         const schedule = { type: "webhook", dedupe: { replayKey: "{{headers.delivery-id}}" } };
-        const { task } = yield* service.upsert(yield* webhookTaskInput({ schedule }));
+        const { task } = yield* service.upsert(
+          yield* webhookTaskInput({ schedule }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         const request = requestFor(task, { headers: { "delivery-id": "A" } });
         const first = yield* service.triggerWebhook(request);
         assert.equal(first._tag === "accepted" && first.outcome, "accepted");
@@ -958,6 +1042,7 @@ it.effect("dedupes replay keys per task, persists them, and expires them after s
         assert.equal(yield* Queue.size(launches), 0);
         const other = yield* service.upsert(
           yield* webhookTaskInput({ id: "scheduled-task:other", schedule }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         yield* service.triggerWebhook(requestFor(other.task, { headers: request.headers }));
         yield* Queue.take(launches);
@@ -1000,6 +1085,7 @@ it.effect.each([1, 3])(
                 dedupe: { coalesceKey: "{{body.key}}", coalesceWindowSeconds: 10 },
               },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           for (let value = 1; value <= count; value++) {
             const bodyText = JSON.stringify({ key: "B", value });
@@ -1075,6 +1161,7 @@ it.effect("recovers a persisted coalescing window after restarting the service",
               dedupe: { coalesceKey: "{{headers.content-type}}", coalesceWindowSeconds: 10 },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         yield* service.triggerWebhook(requestFor(task));
         yield* TestClock.adjust("4 seconds");
@@ -1113,6 +1200,7 @@ it.effect("a pending dispatch interrupted at its permit does not block later pol
               dedupe: { coalesceKey: "{{headers.content-type}}", coalesceWindowSeconds: 10 },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         yield* service.triggerWebhook(requestFor(task));
         yield* TestClock.adjust("10 seconds");
@@ -1165,6 +1253,7 @@ it.effect("rolls back replay and pending state when recording a delivery fails",
               },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         yield* sql`CREATE TRIGGER fail_dedupe_log BEFORE INSERT ON scheduled_task_webhook_deliveries BEGIN SELECT RAISE(FAIL, 'injected'); END`;
         yield* service.triggerWebhook(requestFor(task)).pipe(Effect.flip);
@@ -1191,6 +1280,7 @@ it.effect("queue-full deliveries release replay keys so a later retry runs", () 
             yield* webhookTaskInput({
               schedule: { type: "webhook", dedupe: { replayKey: "{{headers.delivery-id}}" } },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const request = (i: number) =>
             requestFor(task, { headers: { "delivery-id": String(i) } });
@@ -1227,6 +1317,7 @@ it.effect.each(["task_json", "request_json"] as const)(
                 },
               },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           yield* service.triggerWebhook(requestFor(task));
           yield* sql`UPDATE scheduled_task_webhook_pending SET ${sql(column)} = 'broken'`;
@@ -1259,6 +1350,7 @@ it.effect(
                 dedupe: { coalesceKey: "{{body}}", coalesceWindowSeconds: 10 },
               },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const accepted = yield* service.triggerWebhook(requestFor(task));
           yield* sql`CREATE TRIGGER fail_pending_delete BEFORE DELETE ON scheduled_task_webhook_pending BEGIN SELECT RAISE(FAIL,'crash after launch'); END`;
@@ -1303,6 +1395,7 @@ it.effect("guards bad-signature floods separately from valid run admission", () 
             signature: { header: "signature", encoding: "hex", prefix: "", secret: "secret" },
           },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       const results = yield* Effect.forEach(Array.from({ length: 75 }), () =>
         service.triggerWebhook(requestFor(task)),
@@ -1322,6 +1415,7 @@ it.effect("start failures release both replay keys and relay claims for redelive
           yield* webhookTaskInput({
             schedule: { type: "webhook", dedupe: { replayKey: "{{body}}" } },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         const request = requestFor(task, { relayDeliveryId: "failed-start" });
         yield* waitForSpan(
@@ -1349,7 +1443,10 @@ it.effect("a start failure releases the relay claim when the task row is replace
     yield* withService(
       ({ service, sql, launches }) =>
         Effect.gen(function* () {
-          const { task } = yield* service.upsert(yield* webhookTaskInput());
+          const { task } = yield* service.upsert(
+            yield* webhookTaskInput(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
           const request = requestFor(task, { relayDeliveryId: "replaced-mid-run" });
           const first = yield* waitForSpan(
             service.triggerWebhook(request),
@@ -1372,7 +1469,10 @@ it.effect("a start failure releases the relay claim when the task row is replace
 it.effect("main retention keeps fifty runs and preserves filtered and dedupe buckets", () =>
   withService(({ service, sql, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* webhookTaskInput());
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* service.triggerWebhook(requestFor(task));
       yield* Queue.take(launches);
       for (const outcome of ["filtered", "duplicate"]) {
@@ -1415,6 +1515,7 @@ it.effect(
                   signature: { header: "signature", encoding: "hex", prefix: "", secret: "secret" },
                 },
               }),
+              ScheduledTaskService.CHANGED_IN_APP,
             );
             const signature = NodeCrypto.createHmac("sha256", "secret")
               .update(pullRequestBody)
@@ -1455,6 +1556,7 @@ it.effect("keeps replay keys when dispatch succeeds but completion bookkeeping f
             dedupe: { replayKey: "{{body}}" },
           },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       yield* sql`CREATE TRIGGER fail_completion BEFORE UPDATE ON scheduled_tasks
       WHEN NEW.last_run_status = 'succeeded' BEGIN SELECT RAISE(FAIL, 'completion unavailable'); END`;
@@ -1488,6 +1590,7 @@ it.effect.each([119_000, 120_000])(
                 dedupe: { coalesceKey: "{{body.group}}", coalesceWindowSeconds: 10 },
               },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const bodyText = JSON.stringify({ group: "B", text: "x".repeat(length) });
           const accepted = yield* service.triggerWebhook(
@@ -1530,6 +1633,7 @@ it.effect("oversized coalesced windows stay within the suppression bucket's limi
               dedupe: { coalesceKey: "{{body.group}}", coalesceWindowSeconds: 10 },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         const bodyText = JSON.stringify({ group: "B", text: "x".repeat(120_000) });
         for (let i = 0; i < 21; i++) {
@@ -1566,6 +1670,7 @@ it.effect.each([1, 11])(
                 dedupe: { coalesceKey: "{{body.group}}", coalesceWindowSeconds: 10 },
               },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const request = (value: number) => {
             const bodyText = JSON.stringify({ group: "B", value });
@@ -1615,6 +1720,7 @@ it.effect("failed windows release every member's replay key and relay claim", ()
               },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         const request = (id: string) => {
           const bodyText = JSON.stringify({ group: "same", value: id });
@@ -1665,6 +1771,7 @@ it.effect(
                 },
               },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           const request = (id: string) =>
             requestFor(task, { headers: { "delivery-id": id }, relayDeliveryId: id });
@@ -1726,6 +1833,7 @@ it.effect("dispatches an overdue window exactly once after its deadline passed w
                 dedupe: { coalesceKey: "{{body}}", coalesceWindowSeconds: 10 },
               },
             }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           yield* service.triggerWebhook(requestFor(task));
           assert.equal(yield* Queue.size(launches), 0);
@@ -1781,6 +1889,7 @@ it.effect("removes a window with a render defect and dispatches the task's next 
               },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         const request = (id: string, bodyText: string) =>
           requestFor(task, {
@@ -1844,6 +1953,7 @@ it.effect.each([false, true])(
                   dedupe: { coalesceKey: "{{headers.group}}", coalesceWindowSeconds: 10 },
                 },
               }),
+              ScheduledTaskService.CHANGED_IN_APP,
             );
             const window = yield* service.triggerWebhook(
               requestFor(task, { headers: { group: "old" }, bodyText: '{"value":"old"}' }),
@@ -1935,6 +2045,7 @@ it.effect("checks filters after the signature and max age, and runs only matchin
             ],
           },
         }),
+        ScheduledTaskService.CHANGED_IN_APP,
       );
       const delivery = (
         event: string,
@@ -2009,7 +2120,10 @@ const githubEvent = (event: string) => ({
 it.effect("a filtered relay delivery releases its claim, so a redelivery is evaluated again", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* pullRequestFilterInput());
+      const { task } = yield* service.upsert(
+        yield* pullRequestFilterInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const held = { relayDeliveryId: "relay-filtered" };
       const first = yield* service.triggerWebhook(
         requestFor(task, { ...held, ...githubEvent("push") }),
@@ -2035,7 +2149,10 @@ it.effect("a filtered relay delivery releases its claim, so a redelivery is eval
 it.effect("leaves filtered rows out of the list for clients that only decode older outcomes", () =>
   withService(({ service, launches }) =>
     Effect.gen(function* () {
-      const { task } = yield* service.upsert(yield* pullRequestFilterInput());
+      const { task } = yield* service.upsert(
+        yield* pullRequestFilterInput(),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* service.triggerWebhook(requestFor(task, githubEvent("push")));
       yield* service.triggerWebhook(requestFor(task, githubEvent("pull_request")));
       yield* Queue.take(launches);
@@ -2074,6 +2191,7 @@ it.effect("filters run before replay and coalescing without claiming ignored del
               },
             },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         const request = (id: string, run: boolean, value: string) => {
           const bodyText = JSON.stringify({ run, group: "B", value });

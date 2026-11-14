@@ -71,6 +71,7 @@ import {
   type ProviderOptionSelection,
   ProviderRequestKind,
   type RuntimeMode,
+  MAX_SCHEDULED_TASK_CHANGED_BY_CLIENT_LENGTH,
   type ScheduledTask,
   ScheduledTaskId,
   type ScheduledTaskProjectMachineOrder,
@@ -354,6 +355,15 @@ function occurrenceOf(task: ScheduledTask, scheduledFor: string): string {
   return occurrenceSlot(task.schedule, DateTime.makeUnsafe(scheduledFor));
 }
 
+/** The MCP caller as the author of a task change: its thread, or the client's name outside one. */
+function scheduledTaskChanger(
+  scope: McpInvocationScope,
+): ScheduledTaskService.ScheduledTaskChanger {
+  if (scope.thread !== undefined) return { kind: "mcp", threadId: scope.thread.threadId };
+  const client = scope.client?.label.trim().slice(0, MAX_SCHEDULED_TASK_CHANGED_BY_CLIENT_LENGTH);
+  return { kind: "mcp", threadId: null, ...(client ? { client } : {}) };
+}
+
 function scheduledTaskSummary(
   task: ScheduledTask,
   mayRun: boolean,
@@ -405,6 +415,7 @@ function scheduledTaskSummary(
     ...(task.shared == null
       ? {}
       : { definedOn: task.shared.revision.environmentId, definedAt: task.shared.revision.at }),
+    ...(task.changedBy == null ? {} : { changedBy: task.changedBy }),
     ...(task.runCondition == null ? {} : { runCondition: task.runCondition }),
     ...(task.runCheckStartedAt == null ? {} : { checkingSince: task.runCheckStartedAt }),
     ...(task.runCheckScheduledFor == null
@@ -2642,7 +2653,7 @@ const make = Effect.gen(function* () {
         ...replay,
       };
       const { task } = yield* scheduledTasks
-        .upsert(upsertInput)
+        .upsert(upsertInput, scheduledTaskChanger(scope))
         .pipe(
           Effect.mapError((error) =>
             failure("orchestration_error", `Could not schedule task: ${error.message}`),
@@ -2867,7 +2878,7 @@ const make = Effect.gen(function* () {
               : {}),
         };
         const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+          .upsert(upsertInput, scheduledTaskChanger(scope))
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),

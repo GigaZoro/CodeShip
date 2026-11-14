@@ -318,6 +318,7 @@ it.effect.each(deliveries)(
                   runtimeMode: "full-access",
                   interactionMode: "default",
                 }),
+                ScheduledTaskService.CHANGED_IN_APP,
               );
               const ran = yield* service.runNow({ id: task.id });
               assert.equal(ran.task.lastRunStatus, "succeeded");

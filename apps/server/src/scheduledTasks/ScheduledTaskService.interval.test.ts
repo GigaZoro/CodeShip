@@ -90,13 +90,19 @@ it.effect.each([
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const decoded = yield* decodeInput({ ...input, schedule: { type: "interval", everyMs } });
-      const created = yield* service.upsert(decoded);
+      const created = yield* service.upsert(decoded, ScheduledTaskService.CHANGED_IN_APP);
       expect(created.task.nextRunAt).toBe(expected);
       expect((yield* service.list()).tasks[0]?.nextRunAt).toBe(expected);
 
-      const paused = yield* service.setEnabled({ id: created.task.id, enabled: false });
+      const paused = yield* service.setEnabled(
+        { id: created.task.id, enabled: false },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       expect(paused.task.nextRunAt).toBeNull();
-      const resumed = yield* service.setEnabled({ id: created.task.id, enabled: true });
+      const resumed = yield* service.setEnabled(
+        { id: created.task.id, enabled: true },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       expect(resumed.task.nextRunAt).toBe(expected);
 
       // Exercise completion rescheduling without starting any provider process.
@@ -127,7 +133,7 @@ it.effect.each([
         ...input,
         schedule: { type: "fixed_time", timeOfDay: "09:00" },
       });
-      const created = yield* service.upsert(decoded);
+      const created = yield* service.upsert(decoded, ScheduledTaskService.CHANGED_IN_APP);
       expect(created.task.nextRunAt).toBe(expected);
       expect((yield* service.list()).tasks[0]?.nextRunAt).toBe(expected);
     }).pipe(Effect.provide(serviceLayer));
@@ -158,7 +164,7 @@ it.effect("runs a one-time schedule once and rejects past times", () =>
         ...input,
         schedule: { type: "once", runAt: "2026-11-01T03:00:00-05:00" },
       });
-      const created = yield* service.upsert(decoded);
+      const created = yield* service.upsert(decoded, ScheduledTaskService.CHANGED_IN_APP);
       expect(created.task.schedule).toEqual({ type: "once", runAt: "2026-11-01T08:00:00.000Z" });
       expect(created.task.nextRunAt).toBe("2026-11-01T08:00:00.000Z");
 
@@ -170,14 +176,20 @@ it.effect("runs a one-time schedule once and rejects past times", () =>
       expect(due.task.nextRunAt).toBeNull();
       expect((yield* service.list()).tasks[0]?.nextRunAt).toBeNull();
 
-      yield* service.setEnabled({ id: created.task.id, enabled: false });
+      yield* service.setEnabled(
+        { id: created.task.id, enabled: false },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const resumed = yield* service
-        .setEnabled({ id: created.task.id, enabled: true })
+        .setEnabled({ id: created.task.id, enabled: true }, ScheduledTaskService.CHANGED_IN_APP)
         .pipe(Effect.flip);
       expect(resumed.message).toBe("The run time has passed. Pick a time in the future.");
 
       const past = yield* service
-        .upsert({ ...decoded, commandId: undefined, title: "Late" })
+        .upsert(
+          { ...decoded, commandId: undefined, title: "Late" },
+          ScheduledTaskService.CHANGED_IN_APP,
+        )
         .pipe(Effect.flip);
       expect(past.message).toBe("The run time has passed. Pick a time in the future.");
     }).pipe(Effect.provide(slowLaunchLayer));
@@ -245,6 +257,7 @@ it.effect.each([
             schedule: saved,
             workspaceStrategy: { type: "root" },
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         const renamed = yield* service.upsert(
           yield* decodeInput({
@@ -253,6 +266,7 @@ it.effect.each([
             workspaceStrategy: worktree,
             title: "Renamed",
           }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         expect(renamed.task.enabled).toBe(true);
         expect(renamed.task.nextRunAt).toBe(expected);
@@ -269,7 +283,10 @@ it.effect("keeps a one-time run after a restart interrupts an earlier manual run
     const sql = yield* SqlClient.SqlClient;
     const created = yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
-      return yield* service.upsert(yield* decodeInput(onceInput));
+      return yield* service.upsert(
+        yield* decodeInput(onceInput),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
     }).pipe(Effect.provide(serviceLayer));
     yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running', last_run_at = '2026-11-01T07:59:00.000Z'`;
 
@@ -308,7 +325,10 @@ it.effect("reports the stored task when the row was replaced during the run", ()
     );
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const created = yield* service.upsert(yield* decodeInput(onceInput));
+      const created = yield* service.upsert(
+        yield* decodeInput(onceInput),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       const ran = yield* service.runNow({ id: created.task.id });
       expect(ran.task.runCount).toBe(0);
       expect(ran.task.lastRunStatus).toBe("never");

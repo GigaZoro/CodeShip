@@ -401,19 +401,22 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const threadId = ThreadId.make("thread:deleted-during-run");
-      const { task } = yield* service.upsert({
-        id: ScheduledTaskId.make("task:deleted-during-run"),
-        title: "Check orchestration",
-        prompt: "Check progress",
-        enabled: true,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId: ProjectId.make("project:test"),
-        threadId,
-        workspaceStrategy: { type: "root" },
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      });
+      const { task } = yield* service.upsert(
+        {
+          id: ScheduledTaskId.make("task:deleted-during-run"),
+          title: "Check orchestration",
+          prompt: "Check progress",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: ProjectId.make("project:test"),
+          threadId,
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* service.subscribeList().pipe(
         Stream.runForEach(({ tasks }) => {
           const current = tasks.find((candidate) => candidate.id === task.id);
@@ -428,11 +431,27 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
       const run = yield* service.runNow({ id: task.id }).pipe(Effect.forkChild);
       yield* Deferred.await(started);
       yield* Deferred.await(running);
+      // Added once the run is underway, which already read its prompt.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO scheduled_task_prompt_files (task_id, path) VALUES (${task.id}, 'check.md')
+      `;
       yield* service.deleteForThread(threadId);
       yield* Deferred.await(removed);
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(run);
       assert.lengthOf((yield* service.list()).tasks, 0);
+      const tables = yield* sql<{ readonly name: string }>`
+        SELECT m.name FROM sqlite_master m
+        WHERE m.type = 'table' AND m.name LIKE 'scheduled_task%'
+          AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'task_id')
+      `;
+      const leftover = yield* Effect.forEach(tables, ({ name }) =>
+        sql`SELECT 1 FROM ${sql(name)} WHERE task_id = ${task.id}`.pipe(
+          Effect.map((rows) => (rows.length === 0 ? [] : [name])),
+        ),
+      );
+      assert.deepEqual(leftover.flat(), []);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -487,19 +506,22 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const threadId = ThreadId.make("thread:promoted-during-run");
-      const { task } = yield* service.upsert({
-        id: ScheduledTaskId.make("task:promoted-during-run"),
-        title: "Check in",
-        prompt: "Check progress",
-        enabled: true,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId: promoted,
-        threadId,
-        workspaceStrategy: { type: "root" },
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      });
+      const { task } = yield* service.upsert(
+        {
+          id: ScheduledTaskId.make("task:promoted-during-run"),
+          title: "Check in",
+          prompt: "Check progress",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: promoted,
+          threadId,
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
 
       const result = yield* service.runNow({ id: task.id });
 
@@ -554,19 +576,22 @@ it.effect("a placement and the last run's thread survive edits and leave with th
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const settings = yield* ServerSettings.ServerSettingsService;
       const upsert = (title: string, id = "task:pinned", placement?: ScheduledTaskPlacement) =>
-        service.upsert({
-          id: ScheduledTaskId.make(id),
-          ...(placement === undefined ? {} : { placement }),
-          title,
-          prompt: "Check progress",
-          enabled: true,
-          schedule: { type: "interval", everyMs: 300_000 },
-          projectId: ProjectId.make("project:test"),
-          workspaceStrategy: { type: "root" },
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-        });
+        service.upsert(
+          {
+            id: ScheduledTaskId.make(id),
+            ...(placement === undefined ? {} : { placement }),
+            title,
+            prompt: "Check progress",
+            enabled: true,
+            schedule: { type: "interval", everyMs: 300_000 },
+            projectId: ProjectId.make("project:test"),
+            workspaceStrategy: { type: "root" },
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
       const legacy = yield* sql<{ placement: string; pinned_at: string }>`
         SELECT placement, pinned_at FROM scheduled_task_sidebar WHERE task_id = 'task:legacy'
       `;
@@ -708,19 +733,22 @@ it.effect("a task that follows the default runs the scheduled tasks model and ke
       const sql = yield* SqlClient.SqlClient;
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const upsert = (followsDefaultModel?: boolean) =>
-        service.upsert({
-          id: ScheduledTaskId.make("task:default-model"),
-          title: "Nightly review",
-          prompt: "Review today's changes",
-          enabled: true,
-          schedule: { type: "interval", everyMs: 300_000 },
-          projectId: ProjectId.make("project:test"),
-          workspaceStrategy: { type: "root" },
-          modelSelection: ownModel,
-          ...(followsDefaultModel === undefined ? {} : { followsDefaultModel }),
-          runtimeMode: "full-access",
-          interactionMode: "default",
-        });
+        service.upsert(
+          {
+            id: ScheduledTaskId.make("task:default-model"),
+            title: "Nightly review",
+            prompt: "Review today's changes",
+            enabled: true,
+            schedule: { type: "interval", everyMs: 300_000 },
+            projectId: ProjectId.make("project:test"),
+            workspaceStrategy: { type: "root" },
+            modelSelection: ownModel,
+            ...(followsDefaultModel === undefined ? {} : { followsDefaultModel }),
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
       const { task } = yield* upsert(true);
       // With no scheduled tasks model, it runs the new-thread default.
       assert.equal(task.modelSelection.model, "gpt-new");
@@ -728,7 +756,10 @@ it.effect("a task that follows the default runs the scheduled tasks model and ke
         (candidate) => candidate.id === task.id,
       )!;
       assert.deepEqual(stored.modelSelection, ownModel);
-      yield* service.upsert({ ...stored, title: "Renamed", promptFile: null });
+      yield* service.upsert(
+        { ...stored, title: "Renamed", promptFile: null },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       assert.deepEqual(
         (yield* service.list({ resolveModels: false })).tasks[0]?.modelSelection,
         ownModel,
@@ -765,11 +796,20 @@ it.effect("a task that follows the default runs the scheduled tasks model and ke
       assert.equal(yield* listedModel(), "opus");
 
       const off = { ids: [task.id], followsDefaultModel: false };
-      assert.deepEqual((yield* service.setFollowsDefaultModel(off)).ids, [task.id]);
+      assert.deepEqual(
+        (yield* service.setFollowsDefaultModel(off, ScheduledTaskService.CHANGED_IN_APP)).ids,
+        [task.id],
+      );
       assert.equal(yield* listedModel(), "gpt-5.4");
-      assert.deepEqual((yield* service.setFollowsDefaultModel(off)).ids, []);
+      assert.deepEqual(
+        (yield* service.setFollowsDefaultModel(off, ScheduledTaskService.CHANGED_IN_APP)).ids,
+        [],
+      );
 
-      yield* service.setFollowsDefaultModel({ ids: [task.id], followsDefaultModel: true });
+      yield* service.setFollowsDefaultModel(
+        { ids: [task.id], followsDefaultModel: true },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       yield* service.delete({ id: task.id });
       assert.lengthOf(yield* sql`SELECT task_id FROM scheduled_task_default_model`, 0);
     }).pipe(Effect.provide(layer));
@@ -803,18 +843,21 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const save = (enabled: boolean) =>
-        service.upsert({
-          id: ScheduledTaskId.make("task:above-ceiling"),
-          title: "Nightly",
-          prompt: "Check progress",
-          enabled,
-          schedule: { type: "interval", everyMs: 60_000 },
-          projectId: ProjectId.make("project:test"),
-          workspaceStrategy: { type: "root" },
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-        });
+        service.upsert(
+          {
+            id: ScheduledTaskId.make("task:above-ceiling"),
+            title: "Nightly",
+            prompt: "Check progress",
+            enabled,
+            schedule: { type: "interval", everyMs: 60_000 },
+            projectId: ProjectId.make("project:test"),
+            workspaceStrategy: { type: "root" },
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
       const refused = yield* save(true).pipe(Effect.flip);
       assert.equal(refused.message, "Example Corp limits threads to Auto-accept edits.");
       assert.lengthOf((yield* service.list()).tasks, 0);
@@ -823,23 +866,29 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
       assert.lengthOf((yield* service.list()).tasks, 1);
       // Nor can it be switched back on while its mode is above the ceiling.
       const reenabled = yield* service
-        .setEnabled({ id: ScheduledTaskId.make("task:above-ceiling"), enabled: true })
+        .setEnabled(
+          { id: ScheduledTaskId.make("task:above-ceiling"), enabled: true },
+          ScheduledTaskService.CHANGED_IN_APP,
+        )
         .pipe(Effect.flip);
       assert.equal(reenabled.message, "Example Corp limits threads to Auto-accept edits.");
       // A task bound to a thread runs in that thread's mode, so its own is not checked.
-      yield* service.upsert({
-        id: ScheduledTaskId.make("task:bound"),
-        title: "Follow up",
-        prompt: "Check progress",
-        enabled: true,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId: ProjectId.make("project:test"),
-        threadId: ThreadId.make("thread:bound"),
-        workspaceStrategy: { type: "root" },
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      });
+      yield* service.upsert(
+        {
+          id: ScheduledTaskId.make("task:bound"),
+          title: "Follow up",
+          prompt: "Check progress",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: ProjectId.make("project:test"),
+          threadId: ThreadId.make("thread:bound"),
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -872,18 +921,21 @@ it.effect("a run interrupted right after it reserves the task does not block the
     );
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const { task } = yield* service.upsert({
-        id: ScheduledTaskId.make("task:interrupted-reservation"),
-        title: "Check in",
-        prompt: "Check progress",
-        enabled: true,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId: ProjectId.make("project:test"),
-        workspaceStrategy: { type: "root" },
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      });
+      const { task } = yield* service.upsert(
+        {
+          id: ScheduledTaskId.make("task:interrupted-reservation"),
+          title: "Check in",
+          prompt: "Check progress",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: ProjectId.make("project:test"),
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
 
       // The reservation is the first Set.add of the task id; interrupt the run right there.
       const add = Set.prototype.add;
@@ -1108,7 +1160,10 @@ it.effect("a check that finds no work starts no chat and records the occurrence 
     () => Effect.succeed(NO_WORK),
     ({ service, poll, launches, checks, whenTask }) =>
       Effect.gen(function* () {
-        const { task } = yield* service.upsert(conditionTask());
+        const { task } = yield* service.upsert(
+          conditionTask(),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
         const skipped = yield* whenTask(
           (t) => t.lastNoWorkSkip != null && t.runCheckStartedAt == null,
@@ -1141,7 +1196,10 @@ it.effect("a check that finds no work starts no chat and records the occurrence 
         );
 
         // The skip stays history once the condition is cleared: other machines still read it.
-        yield* service.upsert(conditionTask({ runCondition: null }));
+        yield* service.upsert(
+          conditionTask({ runCondition: null }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         const cleared = (yield* service.list()).tasks[0]!;
         assert.deepEqual(
           [cleared.runCondition, cleared.lastNoWorkSkip],
@@ -1172,9 +1230,13 @@ it.effect.each([
       () => Effect.succeed(check),
       ({ service, poll, launches }) =>
         Effect.gen(function* () {
-          const { task } = yield* service.upsert(conditionTask());
+          const { task } = yield* service.upsert(
+            conditionTask(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
           yield* service.upsert(
             conditionTask({ id: ScheduledTaskId.make("task:plain"), runCondition: null }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
           yield* poll;
@@ -1201,9 +1263,13 @@ it.effect("a slow check holds up no other task, and the next poll starts no seco
       () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
       ({ service, poll, launches, checks, whenTask }) =>
         Effect.gen(function* () {
-          const { task } = yield* service.upsert(conditionTask());
+          const { task } = yield* service.upsert(
+            conditionTask(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
           yield* service.upsert(
             conditionTask({ id: ScheduledTaskId.make("task:plain"), runCondition: null }),
+            ScheduledTaskService.CHANGED_IN_APP,
           );
           yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
           yield* poll;
@@ -1233,7 +1299,10 @@ it.effect("run now starts the chat without running the check", () =>
     () => Effect.succeed(NO_WORK),
     ({ service, launches, checks }) =>
       Effect.gen(function* () {
-        const { task } = yield* service.upsert(conditionTask());
+        const { task } = yield* service.upsert(
+          conditionTask(),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         const ran = yield* service.runNow({ id: task.id });
         assert.equal(ran.threadId, ThreadId.make("thread:launched"));
         assert.equal(yield* Queue.size(launches), 1);
@@ -1298,7 +1367,10 @@ it.effect.each([
       () => Effect.succeed(FOUND_WORK),
       ({ service, poll, launches, chatRuns, whenTask }) =>
         Effect.gen(function* () {
-          const { task } = yield* service.upsert(conditionTask({ runCondition: null }));
+          const { task } = yield* service.upsert(
+            conditionTask({ runCondition: null }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
           yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
           const recorded = yield* whenTask((t) => t.lastRunThreadId === "thread:launched");
           yield* poll;
@@ -1350,7 +1422,10 @@ it.effect(
       ({ service, poll, launches, chatRuns, threadRuns, whenTask }) =>
         Effect.gen(function* () {
           yield* Ref.set(chatRuns, { statuses: ["running"], continuationPending: false });
-          yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 2 }));
+          yield* service.upsert(
+            conditionTask({ runCondition: null, maxLiveRuns: 2 }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
           const fireNext = Effect.gen(function* () {
             const due = (yield* service.list()).tasks[0]!.nextRunAt!;
             yield* TestClock.setTime(Date.parse(due) + 1_000);
@@ -1396,16 +1471,31 @@ it.effect("saving keeps a live-run limit it does not name, and deleting the task
       Effect.gen(function* () {
         const limitOf = service.list().pipe(Effect.map(({ tasks }) => tasks[0]?.maxLiveRuns));
         const stored = sql`SELECT max_live_runs FROM scheduled_task_live_run_limit`;
-        yield* service.upsert(conditionTask({ runCondition: null }));
+        yield* service.upsert(
+          conditionTask({ runCondition: null }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.equal(yield* limitOf, 1);
-        yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 3 }));
-        yield* service.upsert(conditionTask({ runCondition: null, title: "Renamed" }));
+        yield* service.upsert(
+          conditionTask({ runCondition: null, maxLiveRuns: 3 }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        yield* service.upsert(
+          conditionTask({ runCondition: null, title: "Renamed" }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.equal(yield* limitOf, 3);
-        yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 1 }));
+        yield* service.upsert(
+          conditionTask({ runCondition: null, maxLiveRuns: 1 }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.equal(yield* limitOf, 1);
         assert.lengthOf(yield* stored, 0);
 
-        yield* service.upsert(conditionTask({ runCondition: null, maxLiveRuns: 2 }));
+        yield* service.upsert(
+          conditionTask({ runCondition: null, maxLiveRuns: 2 }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         yield* service.delete({ id: ScheduledTaskId.make("task:checked") });
         assert.lengthOf(yield* stored, 0);
       }),
@@ -1421,14 +1511,23 @@ it.effect("saving keeps, clears and sets a run condition, and refuses one it can
           service
             .list()
             .pipe(Effect.map(({ tasks }) => tasks.find((task) => task.id === id)?.runCondition));
-        yield* service.upsert(conditionTask({ runCondition: { command: "node ~/check.mjs" } }));
+        yield* service.upsert(
+          conditionTask({ runCondition: { command: "node ~/check.mjs" } }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.deepEqual(yield* conditionOf(), { command: "node ~/check.mjs", timeoutSeconds: 60 });
         const { runCondition: _omitted, ...withoutCondition } = conditionTask();
-        yield* service.upsert({ ...withoutCondition, title: "Renamed" });
+        yield* service.upsert(
+          { ...withoutCondition, title: "Renamed" },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.deepEqual(yield* conditionOf(), { command: "node ~/check.mjs", timeoutSeconds: 60 });
-        yield* service.upsert(conditionTask());
+        yield* service.upsert(conditionTask(), ScheduledTaskService.CHANGED_IN_APP);
         assert.deepEqual(yield* conditionOf(), RUN_CONDITION);
-        yield* service.upsert(conditionTask({ runCondition: null }));
+        yield* service.upsert(
+          conditionTask({ runCondition: null }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.isNull(yield* conditionOf());
 
         const webhook = { type: "webhook", signature: null, maxDeliveryAgeMinutes: null } as const;
@@ -1446,16 +1545,23 @@ it.effect("saving keeps, clears and sets a run condition, and refuses one it can
             "A webhook task runs on each request, so it can't have a check.",
           ],
         ] as const) {
-          assert.equal((yield* service.upsert(input).pipe(Effect.flip)).message, message);
+          assert.equal(
+            (yield* service.upsert(input, ScheduledTaskService.CHANGED_IN_APP).pipe(Effect.flip))
+              .message,
+            message,
+          );
         }
         assert.isNull(yield* conditionOf());
 
         // Saved as a webhook task, it loses the stored condition.
-        yield* service.upsert(conditionTask());
-        yield* service.upsert({ ...withoutCondition, schedule: webhook });
+        yield* service.upsert(conditionTask(), ScheduledTaskService.CHANGED_IN_APP);
+        yield* service.upsert(
+          { ...withoutCondition, schedule: webhook },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         assert.isNull(yield* conditionOf());
 
-        yield* service.upsert(conditionTask());
+        yield* service.upsert(conditionTask(), ScheduledTaskService.CHANGED_IN_APP);
         yield* service.delete({ id: ScheduledTaskId.make("task:checked") });
         assert.lengthOf(yield* sql`SELECT task_id FROM scheduled_task_run_conditions`, 0);
       }),
@@ -1468,7 +1574,10 @@ it.effect("a policy that forbids full access refuses saving a run condition", ()
     ({ service }) =>
       Effect.gen(function* () {
         const refused = yield* service
-          .upsert(conditionTask({ runtimeMode: "auto-accept-edits" }))
+          .upsert(
+            conditionTask({ runtimeMode: "auto-accept-edits" }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          )
           .pipe(Effect.flip);
         assert.equal(refused.message, "Example Corp limits threads to Auto-accept edits.");
       }),
@@ -1481,9 +1590,12 @@ it.effect("a policy that forbids full access refuses saving a run condition", ()
 );
 
 const clearCondition = (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
-  service.upsert(conditionTask({ runCondition: null }));
+  service.upsert(conditionTask({ runCondition: null }), ScheduledTaskService.CHANGED_IN_APP);
 const pause = (service: ScheduledTaskService.ScheduledTaskService["Service"]) =>
-  service.setEnabled({ id: ScheduledTaskId.make("task:checked"), enabled: false });
+  service.setEnabled(
+    { id: ScheduledTaskId.make("task:checked"), enabled: false },
+    ScheduledTaskService.CHANGED_IN_APP,
+  );
 
 it.effect.each([
   { name: "its condition is cleared", answer: NO_WORK, change: clearCondition, launchesAfter: 1 },
@@ -1512,7 +1624,10 @@ it.effect.each([
         () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))),
         ({ service, poll, launches, checks, whenTask }) =>
           Effect.gen(function* () {
-            const { task } = yield* service.upsert(conditionTask());
+            const { task } = yield* service.upsert(
+              conditionTask(),
+              ScheduledTaskService.CHANGED_IN_APP,
+            );
             yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
             yield* poll;
             yield* Deferred.await(started);
@@ -1549,6 +1664,7 @@ it.effect(
           Effect.gen(function* () {
             const { task } = yield* service.upsert(
               conditionTask({ schedule: { type: "interval", everyMs: 5 * 60_000 } }),
+              ScheduledTaskService.CHANGED_IN_APP,
             );
             yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
             yield* poll;
@@ -1588,7 +1704,10 @@ it.effect("a one-time task whose check finds no work is used up", () =>
     ({ service, poll, launches, checks, whenTask }) =>
       Effect.gen(function* () {
         const runAt = DateTime.formatIso(DateTime.add(yield* DateTime.now, { minutes: 5 }));
-        yield* service.upsert(conditionTask({ schedule: { type: "once", runAt } }));
+        yield* service.upsert(
+          conditionTask({ schedule: { type: "once", runAt } }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
         yield* TestClock.setTime(Date.parse(runAt) + 1_000);
         const usedUp = yield* whenTask((t) => t.nextRunAt === null && t.runCheckStartedAt == null);
         yield* poll;
@@ -1621,6 +1740,7 @@ it.effect("a check that skips a caught-up missed run records it as a catch-up", 
         yield* TestClock.setTime(DateTime.toEpochMillis(at(10, 12)));
         yield* service.upsert(
           conditionTask({ schedule: { type: "fixed_time", timeOfDay: "07:00" } }),
+          ScheduledTaskService.CHANGED_IN_APP,
         );
         // The app was off over three daily times.
         yield* TestClock.setTime(DateTime.toEpochMillis(at(13, 9)));
@@ -1648,7 +1768,10 @@ it.effect(
       () => Effect.succeed(NO_WORK),
       ({ service, sql, poll, whenTask }) =>
         Effect.gen(function* () {
-          const { task } = yield* service.upsert(conditionTask());
+          const { task } = yield* service.upsert(
+            conditionTask(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
           yield* service.runNow({ id: task.id });
           const ranAt = Date.parse((yield* runsOf(service))[0]!.startedAt);
           // More skips of each kind than the whole history keeps, all after the run.
@@ -1726,22 +1849,25 @@ it.effect("a group pause turns off the group's running tasks and resume turns on
           readonly runAt?: string;
         } = {},
       ) =>
-        service.upsert({
-          id: ScheduledTaskId.make(id),
-          title: id,
-          prompt: "Check progress",
-          enabled: options.enabled ?? true,
-          schedule:
-            options.runAt === undefined
-              ? { type: "interval", everyMs: 300_000 }
-              : { type: "once", runAt: options.runAt },
-          projectId: ProjectId.make("project:test"),
-          workspaceStrategy: { type: "root" },
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          ...(options.group === undefined ? {} : { group: options.group }),
-        });
+        service.upsert(
+          {
+            id: ScheduledTaskId.make(id),
+            title: id,
+            prompt: "Check progress",
+            enabled: options.enabled ?? true,
+            schedule:
+              options.runAt === undefined
+                ? { type: "interval", everyMs: 300_000 }
+                : { type: "once", runAt: options.runAt },
+            projectId: ProjectId.make("project:test"),
+            workspaceStrategy: { type: "root" },
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            ...(options.group === undefined ? {} : { group: options.group }),
+          },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
       const listed = service
         .list()
         .pipe(
@@ -1772,7 +1898,10 @@ it.effect("a group pause turns off the group's running tasks and resume turns on
         "task:paused-again",
       ].map((id) => ScheduledTaskId.make(id));
 
-      const paused = yield* service.setGroupPaused({ ids, paused: true });
+      const paused = yield* service.setGroupPaused(
+        { ids, paused: true },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       assert.deepEqual(paused, { ids: [ids[0]!, ids[2]!, ids[3]!, ids[5]!], refused: [] });
       assert.deepEqual(yield* listed, {
         "task:on": { enabled: false, marked: true },
@@ -1785,12 +1914,24 @@ it.effect("a group pause turns off the group's running tasks and resume turns on
       // Saving a paused task with enabled:false keeps the mark; switching one by hand clears it,
       // even a pause sent by a client that still showed the task on.
       yield* save("task:on", { enabled: false });
-      yield* service.setEnabled({ id: ids[3]!, enabled: true });
-      yield* service.setEnabled({ id: ids[3]!, enabled: false });
-      yield* service.setEnabled({ id: ids[5]!, enabled: false });
+      yield* service.setEnabled(
+        { id: ids[3]!, enabled: true },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      yield* service.setEnabled(
+        { id: ids[3]!, enabled: false },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      yield* service.setEnabled(
+        { id: ids[5]!, enabled: false },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
 
       yield* TestClock.adjust("2 hours");
-      const resumed = yield* service.setGroupPaused({ ids, paused: false });
+      const resumed = yield* service.setGroupPaused(
+        { ids, paused: false },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
       assert.deepEqual(resumed, {
         ids: [ids[0]!],
         refused: [{ id: ids[2]!, message: "The run time has passed. Pick a time in the future." }],
@@ -1804,10 +1945,13 @@ it.effect("a group pause turns off the group's running tasks and resume turns on
         "task:paused-again": { enabled: false, marked: false },
       });
       assert.isNotNull((yield* service.list()).tasks.find(({ id }) => id === ids[0])?.nextRunAt);
-      assert.deepEqual(yield* service.setGroupPaused({ ids, paused: false }), {
-        ids: [],
-        refused: [],
-      });
+      assert.deepEqual(
+        yield* service.setGroupPaused({ ids, paused: false }, ScheduledTaskService.CHANGED_IN_APP),
+        {
+          ids: [],
+          refused: [],
+        },
+      );
 
       assert.isNull((yield* save("task:on", { group: null })).task.group);
       yield* service.delete({ id: ids[1]! });

@@ -3592,6 +3592,59 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
     );
 
+    it.effect("a change names the chat that made it, or the client outside a chat", () =>
+      Effect.gen(function* () {
+        const at = "2026-11-13T19:41:29.000Z";
+        const callerId = ThreadId.make("thread:scheduled-author");
+        const caller = idleThreadProjection({ ...liveThreadShell(callerId), projectId });
+        const stored = yield* Ref.make<ScheduledTask>(existing);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              [],
+              { getThreadRecords: () => Effect.succeed(caller) },
+              {
+                list: () => Ref.get(stored).pipe(Effect.map((task) => ({ tasks: [task] }))),
+                upsert: (input, by) =>
+                  Ref.updateAndGet(stored, (task) => ({
+                    ...task,
+                    enabled: input.enabled,
+                    changedBy: { ...by, at },
+                  })).pipe(Effect.map((task) => ({ task }))),
+              },
+            ),
+          ),
+        );
+        const author = Effect.map(
+          mcp.listScheduledTasks(client, {}),
+          (listed) => listed.tasks[0]?.changedBy,
+        );
+        assert.equal(yield* author, undefined);
+
+        yield* mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, enabled: false });
+        assert.deepEqual(yield* author, {
+          kind: "mcp",
+          threadId: null,
+          client: "Claude Code",
+          at,
+        });
+
+        const fromChat: McpInvocationScope = {
+          ...client,
+          thread: {
+            threadId: callerId,
+            providerSessionId: "provider:scheduled-author",
+            providerInstanceId: caller.thread.providerInstanceId,
+          },
+          client: undefined,
+        };
+        yield* mcp.updateScheduledTask(fromChat, { scheduledTaskId: existing.id, enabled: true });
+        assert.deepEqual(yield* author, { kind: "mcp", threadId: callerId, at });
+      }),
+    );
+
     it.effect.each(
       [
         { model: "gpt-5", options: [], code: "model_unavailable", catalog: "missing" },

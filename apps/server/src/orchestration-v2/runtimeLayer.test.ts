@@ -445,21 +445,24 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
           });
         }
         const save = (name: string, target: ThreadId | null, webhook = false) =>
-          tasks.upsert({
-            id: ScheduledTaskId.make(`automation:${deletion}:${name}`),
-            title: name,
-            prompt: "Check orchestration progress",
-            enabled: !webhook,
-            schedule: webhook ? { type: "webhook" } : { type: "interval", everyMs: 60_000 },
-            projectId,
-            threadId: target,
-            workspaceStrategy: { type: "root" },
-            modelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            createdBy: "agent",
-            creationSource: "mcp",
-          });
+          tasks.upsert(
+            {
+              id: ScheduledTaskId.make(`automation:${deletion}:${name}`),
+              title: name,
+              prompt: "Check orchestration progress",
+              enabled: !webhook,
+              schedule: webhook ? { type: "webhook" } : { type: "interval", everyMs: 60_000 },
+              projectId,
+              threadId: target,
+              workspaceStrategy: { type: "root" },
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              createdBy: "agent",
+              creationSource: "mcp",
+            },
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
         const { task: bound } = yield* save("bound", threadId);
         const { task: webhook } = yield* save("webhook", threadId, true);
         const { task: independent } = yield* save("independent", null);
@@ -8379,21 +8382,24 @@ it.layer(layerScratchPromotionTest)("turning a No project thread into a project"
         commandId: CommandId.make("promotion-moves-sibling-archive"),
         threadId: siblingId,
       });
-      const { task } = yield* tasks.upsert({
-        id: ScheduledTaskId.make("promotion-moves-bound"),
-        title: "Bound",
-        prompt: "Check in",
-        enabled: true,
-        schedule: { type: "interval", everyMs: 60_000 },
-        projectId: SCRATCH_PROJECT_ID,
-        threadId: siblingId,
-        workspaceStrategy: { type: "root" },
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        createdBy: "user",
-        creationSource: "web",
-      });
+      const { task } = yield* tasks.upsert(
+        {
+          id: ScheduledTaskId.make("promotion-moves-bound"),
+          title: "Bound",
+          prompt: "Check in",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: SCRATCH_PROJECT_ID,
+          threadId: siblingId,
+          workspaceStrategy: { type: "root" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        },
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
 
       const { projectId } = yield* promotion.promote({ threadId });
 

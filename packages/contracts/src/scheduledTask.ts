@@ -418,6 +418,25 @@ export const ScheduledTaskSharedRevision = Schema.Struct({
 });
 export type ScheduledTaskSharedRevision = typeof ScheduledTaskSharedRevision.Type;
 
+export const MAX_SCHEDULED_TASK_CHANGED_BY_CLIENT_LENGTH = 120;
+
+/**
+ * Who made a task's latest change: a person in the app (`ui`), or an agent or outside client
+ * through MCP (`mcp`). A shared task's copy carries it with its revision, so `threadId` names a
+ * thread on the machine that made the revision.
+ */
+export const ScheduledTaskChangedBy = Schema.Struct({
+  kind: Schema.Literals(["ui", "mcp"]),
+  /** The chat or scheduled run that called MCP; null for the app and for MCP clients outside a thread. */
+  threadId: Schema.NullOr(ThreadId),
+  /** The MCP client's name when no thread called, such as another machine's link. */
+  client: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_SCHEDULED_TASK_CHANGED_BY_CLIENT_LENGTH)),
+  ),
+  at: IsoDateTime,
+});
+export type ScheduledTaskChangedBy = typeof ScheduledTaskChangedBy.Type;
+
 export function compareScheduledTaskSharedRevisions(
   left: ScheduledTaskSharedRevision,
   right: ScheduledTaskSharedRevision,
@@ -642,6 +661,8 @@ export const ScheduledTask = Schema.Struct({
   delegateProviders: Schema.optional(ScheduledTaskDelegateProviders),
   /** Absent from servers without a live-run limit. */
   maxLiveRuns: Schema.optional(ScheduledTaskMaxLiveRuns),
+  /** Null when unknown: changed before changes were recorded, or by a machine without them. */
+  changedBy: Schema.optional(Schema.NullOr(ScheduledTaskChangedBy)),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -801,6 +822,8 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   /** Absent from machines without groups; the receiving machine keeps its own group and pause. */
   group: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   pausedWithGroup: Schema.optional(Schema.Boolean),
+  /** Who made this revision. Null or absent: unknown, as from a machine that does not record it. */
+  changedBy: Schema.optional(Schema.NullOr(ScheduledTaskChangedBy)),
 });
 export type ScheduledTaskSharedCopy = typeof ScheduledTaskSharedCopy.Type;
 
