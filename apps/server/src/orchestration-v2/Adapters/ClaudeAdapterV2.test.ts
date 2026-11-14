@@ -98,6 +98,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import * as ClaudeSettingsCascade from "../../provider/Drivers/ClaudeSettingsCascade.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
@@ -164,6 +165,16 @@ const CLAUDE_TEST_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolic
   runtimeMode: "full-access",
   interactionMode: "default",
   cwd: "/workspace",
+});
+
+const POLICY_HELPER_REASON =
+  "Your organization computes Claude's settings with a policy helper, which T3.CodeShip cannot run.";
+
+const useRealResolver = Effect.fn(function* () {
+  const sdk = yield* Effect.promise(() =>
+    vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
+  );
+  vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
 });
 
 function makeClaudeTestAppThread(input: {
@@ -1173,24 +1184,28 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
     [
       "--settings missing.json",
       (cwd: string) =>
-        new ClaudeAdapterV2.ClaudeSettingsLaunchArgError({
+        new ClaudeSettingsCascade.ClaudeSettingsLaunchArgError({
           path: NodePath.join(cwd, "missing.json"),
         }).message,
     ],
-    ["--settings '{not json}'", () => new ClaudeAdapterV2.ClaudeSettingsLaunchArgError({}).message],
+    [
+      "--settings '{not json}'",
+      () => new ClaudeSettingsCascade.ClaudeSettingsLaunchArgError({}).message,
+    ],
     // Without a closing brace this must not become a file path that echoes the secret.
     [
       `--settings '{"env":{"ANTHROPIC_API_KEY":"secret-settings-key"},'`,
-      () => new ClaudeAdapterV2.ClaudeSettingsLaunchArgError({}).message,
+      () => new ClaudeSettingsCascade.ClaudeSettingsLaunchArgError({}).message,
     ],
     [
       "--project-config-root relative/folder",
-      () => new ClaudeAdapterV2.ClaudeProjectConfigRootError({ path: "relative/folder" }).message,
+      () =>
+        new ClaudeSettingsCascade.ClaudeProjectConfigRootError({ path: "relative/folder" }).message,
     ],
     [
       "--project-config-root /t3-missing-project-config-root",
       () =>
-        new ClaudeAdapterV2.ClaudeProjectConfigRootError({
+        new ClaudeSettingsCascade.ClaudeProjectConfigRootError({
           path: "/t3-missing-project-config-root",
         }).message,
     ],
@@ -3813,10 +3828,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-remote-" });
         const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-remote-cwd-" });
         const remoteFile = path.join(home, "remote-settings.json");
-        const sdk = yield* Effect.promise(() =>
-          vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-        );
-        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        yield* useRealResolver();
         const openWith = (launchArgs: string) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -3879,6 +3891,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           JSON.stringify({ permissions: { disableBypassPermissionsMode: true } }),
         );
         assert.equal((yield* open).permissionMode, "auto");
+        // A policy helper, or organization settings Claude Code fetches in place of an unreadable
+        // cache, may turn bypass off.
+        yield* fileSystem.writeFileString(
+          remoteFile,
+          JSON.stringify({ policyHelper: { path: "/opt/org/policy-helper" } }),
+        );
+        assert.equal((yield* open).permissionMode, "auto");
+        yield* fileSystem.writeFileString(remoteFile, "{");
+        assert.equal((yield* open).permissionMode, "auto");
         yield* fileSystem.remove(remoteFile);
         assert.equal((yield* open).permissionMode, "bypassPermissions");
         const launchRestricted = yield* openWith(
@@ -3903,10 +3924,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-launch-" });
         const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-launch-cwd-" });
-        const sdk = yield* Effect.promise(() =>
-          vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-        );
-        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        yield* useRealResolver();
         const openWith = (settings: Record<string, unknown>) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -3973,27 +3991,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.gen(function* () {
         const resolver = vi
           .mocked(ClaudeSdk.resolveSettings)
-          .mockImplementation(async (options) => ({
-            effective:
-              options?.cwd === "/unrestricted"
-                ? {}
-                : {
+          .mockImplementation(async (options) => {
+            const settings =
+              options?.cwd === "/restricted" || options?.cwd === "/restricted-worktree"
+                ? {
                     permissions: {
-                      disableBypassPermissionsMode: "disable",
-                      ...(options?.cwd === "/restricted-worktree"
+                      disableBypassPermissionsMode: "disable" as const,
+                      ...(options.cwd === "/restricted-worktree"
                         ? { disableAutoMode: "disable" as const }
                         : {}),
                     },
-                  },
-            provenance: {},
-            sources: [],
-          }));
-        // Only the bypass check passes server-managed settings with its folder.
-        const folderResolutions = () =>
-          resolver.mock.calls.filter(
-            ([options]) =>
-              options?.cwd !== undefined && options.serverManagedSettings !== undefined,
-          );
+                  }
+                : {};
+            return {
+              effective: settings,
+              provenance: {},
+              sources: [{ source: "project", settings }],
+            };
+          });
+        // Each query reads its folder's settings once, and Full access once per folder.
+        const folderReads = (cwd: string) =>
+          resolver.mock.calls.filter(([options]) => options?.cwd === cwd).length;
         const harness = yield* makeWakeHarnessWithOptions({
           close: Queue.shutdown,
           freshQueueOnReopen: true,
@@ -4044,7 +4062,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(harness.getOpenedOptions()?.permissionMode, "auto");
         yield* finish;
         assert.equal(notices().length, 0);
-        assert.equal(folderResolutions().length, 0);
+        assert.equal(folderReads("/restricted-worktree"), 1);
 
         yield* start("/restricted");
         const openedOptions = harness.getOpenedOptions()!;
@@ -4097,13 +4115,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* start("/restricted");
         assert.strictEqual(harness.getOpenedOptions(), openedOptions);
         assert.deepEqual(harness.permissionModeChanges, ["auto"]);
-        assert.equal(folderResolutions().length, 1);
+        assert.equal(folderReads("/restricted"), 2);
         yield* finish;
 
         yield* start("/restricted-worktree");
         assert.equal(harness.getOpenedOptions()?.permissionMode, "default");
         assert.isUndefined(harness.getOpenedOptions()?.allowDangerouslySkipPermissions);
-        assert.equal(folderResolutions().length, 2);
+        assert.equal(folderReads("/restricted-worktree"), 3);
         yield* finish;
 
         yield* start("/unrestricted");
@@ -4202,7 +4220,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ["auto"],
           "A CLI policy downgrade must not be restored to bypass on the next turn",
         );
-        assert.equal(folderResolutions().length, 3);
+        assert.equal(folderReads("/unrestricted"), 2);
         yield* harness.offerAndWait(
           claudeSdkFrame({
             type: "system",
@@ -4301,10 +4319,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           assert.equal(harness.getOpenedOptions()?.permissionMode, "default");
           assert.isUndefined(harness.getOpenedOptions()?.allowDangerouslySkipPermissions);
-          assert.deepEqual(resolveSettings.mock.calls[0]?.[0]?.settingSources, [
-            "project",
-            "local",
-          ]);
+          // In-process, the user tier would be this process's; Full access reads the home's raw.
+          assert.deepEqual(
+            resolveSettings.mock.calls
+              .filter(([options]) => options?.cwd === CLAUDE_TEST_RUNTIME_POLICY.cwd)
+              .map(([options]) => options?.settingSources),
+            [["project", "local"]],
+          );
         }).pipe(
           Effect.provide(
             Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -4350,13 +4371,22 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* fileSystem.writeFileString(settingsFile, "{ invalid json");
           assert.equal((yield* open).permissionMode, "auto");
           yield* fileSystem.remove(settingsFile);
-          const resolver = vi
-            .mocked(ClaudeSdk.resolveSettings)
-            .mockClear()
-            .mockRejectedValueOnce(new Error("Cannot resolve managed settings"))
-            .mockResolvedValue({ effective: {}, provenance: {}, sources: [] });
+          const resolver = vi.mocked(ClaudeSdk.resolveSettings).mockClear();
+          // Only Full access resolves the turn's folder here: this account's worker reads it for
+          // the query, and --settings is checked in a folder of its own.
           const folderResolutions = () =>
-            resolver.mock.calls.filter(([options]) => options?.cwd !== undefined);
+            resolver.mock.calls.filter(
+              ([options]) => options?.cwd === CLAUDE_TEST_RUNTIME_POLICY.cwd,
+            );
+          resolver.mockImplementation(async (options) => {
+            if (
+              options?.cwd === CLAUDE_TEST_RUNTIME_POLICY.cwd &&
+              folderResolutions().length === 1
+            ) {
+              throw new Error("Cannot resolve managed settings");
+            }
+            return { effective: {}, provenance: {}, sources: [] };
+          });
           const harness = yield* makeWakeHarnessWithOptions({
             settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home },
             close: Queue.shutdown,
@@ -4389,7 +4419,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
           }
           assert.equal(harness.offeredMessages.length, 2);
-          assert.equal(folderResolutions()[0]?.[0]?.cwd, folderResolutions()[1]?.[0]?.cwd);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -4521,13 +4550,35 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         "and says when its organization's policy helper may add to it",
         "",
         { policyHelper: { path: "/opt/org/policy-helper" } },
-        { FROM: "project", LAUNCHED: "--settings", computedByPolicyHelper: true },
+        { FROM: "project", LAUNCHED: "--settings", unreadablePolicy: POLICY_HELPER_REASON },
       ],
       [
-        "and says so for a per-OS policy helper, whose static default it cannot apply either",
+        "and says so for this OS's policy helper",
+        "",
+        { policyHelpers: { macos: { path: "/opt/org/policy-helper" } } },
+        { FROM: "project", LAUNCHED: "--settings", unreadablePolicy: POLICY_HELPER_REASON },
+      ],
+      [
+        "and says so for a per-OS static default, which it cannot apply either",
         "",
         { policyHelpers: { default: { env: { FROM: "policy default" } } } },
-        { FROM: "project", LAUNCHED: "--settings", computedByPolicyHelper: true },
+        { FROM: "project", LAUNCHED: "--settings", unreadablePolicy: POLICY_HELPER_REASON },
+      ],
+      [
+        "whatever another OS's policy helper does",
+        "",
+        { policyHelpers: { linux: { path: "/opt/org/policy-helper" } } },
+        { FROM: "project", LAUNCHED: "--settings" },
+      ],
+      [
+        "and says when its organization's cached settings cannot be read",
+        "",
+        "{",
+        {
+          FROM: "project",
+          LAUNCHED: "--settings",
+          unreadablePolicy: "Claude's cached organization settings could not be read.",
+        },
       ],
     ] as const)(
       "reads the env Claude's settings give its shell commands %s",
@@ -4535,10 +4586,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const sdk = yield* Effect.promise(() =>
-            vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-          );
-          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+          yield* useRealResolver();
           const home = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "t3-claude-shell-home-",
           });
@@ -4554,7 +4602,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           if (remote !== undefined) {
             yield* fileSystem.writeFileString(
               path.join(home, "remote-settings.json"),
-              JSON.stringify(remote),
+              typeof remote === "string" ? remote : JSON.stringify(remote),
             );
           }
           yield* fileSystem.makeDirectory(path.join(project, ".claude"));
@@ -4562,12 +4610,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             path.join(project, ".claude", "settings.json"),
             '{"env":{"FROM":"project"}}',
           );
-          const { environment, computedByPolicyHelper } =
-            yield* ClaudeAdapterV2.readClaudeSettingsEnvironment({
+          const { environment, unreadablePolicy } =
+            yield* ClaudeSettingsCascade.readClaudeSettingsEnvironment({
               homePath: home,
               environment: {},
               cwd: project,
-              settingSources: ClaudeAdapterV2.claudeSettingSources({
+              settingSources: ClaudeSettingsCascade.claudeSettingSources({
                 ...DEFAULT_CLAUDE_SETTINGS,
                 launchArgs,
               }),
@@ -4575,16 +4623,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               flagSettings: { env: { LAUNCHED: "--settings" } },
               fileSystem,
               path,
-            });
+            }).pipe(Effect.provideService(HostProcess.Platform, "darwin"));
           // Picked, so managed settings on the machine running the test cannot add to it.
           const { NODE_OPTIONS, FROM, LAUNCHED, COUNT } = environment;
           assert.deepEqual(
-            { NODE_OPTIONS, FROM, LAUNCHED, COUNT, computedByPolicyHelper },
+            { NODE_OPTIONS, FROM, LAUNCHED, COUNT, unreadablePolicy },
             {
               NODE_OPTIONS: "--max-old-space-size=4096",
               // Claude Code gives its shell a number in settings as text.
               COUNT: "3",
-              computedByPolicyHelper: false,
+              unreadablePolicy: undefined,
               ...expected,
             },
           );
@@ -4595,10 +4643,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const sdk = yield* Effect.promise(() =>
-          vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-        );
-        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        yield* useRealResolver();
         const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-owner-home-" });
         const repo = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-owner-repo-" });
         const cwd = path.join(repo, "app");
@@ -4615,7 +4660,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         const owner = Option.getOrThrow((yield* fileSystem.stat(repo)).uid);
         const readAs = (uid: number, platform: NodeJS.Platform) =>
-          ClaudeAdapterV2.readClaudeSettingsEnvironment({
+          ClaudeSettingsCascade.readClaudeSettingsEnvironment({
             homePath: home,
             environment: {},
             cwd,
@@ -4639,6 +4684,77 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ["root", "cwd", "cwd"],
         );
       }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect.each([
+      [
+        "its own account's managed settings",
+        "",
+        { subagentPromptCacheTtl: "5m" },
+        { subagentPromptCacheTtl: "1h" },
+        "1h",
+      ],
+      [
+        "--settings above every file",
+        `--settings '{"subagentPromptCacheTtl":"5m"}'`,
+        { subagentPromptCacheTtl: "1h" },
+        undefined,
+        "5m",
+      ],
+      [
+        "nobody when a policy helper may set it",
+        "",
+        { subagentPromptCacheTtl: "1h" },
+        { policyHelper: { path: "/opt/org/policy-helper" } },
+        undefined,
+      ],
+    ] as const)(
+      "gives a delegated child the subagent cache TTL from %s",
+      ([, launchArgs, user, remote, expected]) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* useRealResolver();
+          const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-ttl-" });
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-ttl-cwd-" });
+          yield* fileSystem.writeFileString(path.join(home, "settings.json"), JSON.stringify(user));
+          // Any server-managed cache outranks the managed files of the machine running the test.
+          yield* fileSystem.writeFileString(
+            path.join(home, "remote-settings.json"),
+            JSON.stringify(remote ?? { cleanupPeriodDays: 30 }),
+          );
+          const harness = yield* makeWakeHarnessWithOptions({
+            settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home, launchArgs },
+          });
+          const input = makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-subagent-cache-ttl"),
+            text: "Run git status.",
+            attachments: [],
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              ...CLAUDE_TEST_RUNTIME_POLICY,
+              cwd,
+            }),
+          });
+          yield* harness.runtime.startTurn({
+            ...input,
+            appThread: {
+              ...input.appThread,
+              lineage: {
+                parentThreadId: ThreadId.make("thread-ttl-parent"),
+                relationshipToParent: "subagent",
+                rootThreadId: ThreadId.make("thread-ttl-parent"),
+              },
+            },
+          });
+          assert.equal(harness.getOpenedOptions()?.env?.CLAUDE_CODE_PROMPT_CACHE_TTL, expected);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
     );
 
     const INVALID_LAUNCH_SETTINGS = '{"env":{"FROM_FLAG":"flag"},"cleanupPeriodDays":"weekly"}';
@@ -4691,10 +4807,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const sdk = yield* Effect.promise(() =>
-            vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-          );
-          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+          yield* useRealResolver();
           const home = yield* fileSystem.makeTempDirectoryScoped({
             prefix: "t3-claude-invalid-home-",
           });
@@ -4718,14 +4831,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             path.join(project, "launch-settings.json"),
             INVALID_LAUNCH_SETTINGS,
           );
-          const { environment } = yield* ClaudeAdapterV2.readClaudeSettingsEnvironment({
+          const { environment } = yield* ClaudeSettingsCascade.readClaudeSettingsEnvironment({
             homePath: home,
             environment: {},
             cwd: project,
             settingSources,
             projectConfigRoot: undefined,
             flagSettings: ClaudeAdapterV2.claudeFlagSettings({
-              launchArgSettings: yield* ClaudeAdapterV2.readClaudeLaunchArgSettings({
+              launchArgSettings: yield* ClaudeSettingsCascade.readClaudeLaunchArgSettings({
                 settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs },
                 cwd: project,
                 fileSystem,
@@ -4760,10 +4873,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const sdk = yield* Effect.promise(() =>
-            vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-          );
-          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+          yield* useRealResolver();
           const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pcr-home-" });
           const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pcr-cwd-" });
           const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pcr-root-" });
@@ -4784,12 +4894,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* fileSystem.makeDirectory(path.join(root, "sub"));
           yield* fileSystem.symlink(path.join(root, "sub"), path.join(cwd, "link"));
           const named = throughSymlink ? `${path.join(cwd, "link")}/..` : root;
-          const { environment } = yield* ClaudeAdapterV2.readClaudeSettingsEnvironment({
+          const { environment } = yield* ClaudeSettingsCascade.readClaudeSettingsEnvironment({
             homePath: home,
             environment: {},
             cwd,
             settingSources: ["project", "local"],
-            projectConfigRoot: ClaudeAdapterV2.claudeProjectConfigRoot({
+            projectConfigRoot: ClaudeSettingsCascade.claudeProjectConfigRoot({
               ...DEFAULT_CLAUDE_SETTINGS,
               launchArgs: `--project-config-root '${named}'`,
             }),

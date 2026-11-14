@@ -57,7 +57,11 @@ import {
   makeClaudeEnvironment,
   resolveClaudeHomePath,
 } from "./Drivers/ClaudeHome.ts";
-import { discoverClaudeSkills, readClaudeSettingsEnv } from "./Drivers/ClaudeSkills.ts";
+import {
+  claudeSettingsEnvironment,
+  readConfirmedClaudeSettings,
+} from "./Drivers/ClaudeSettingsCascade.ts";
+import { discoverClaudeSkills, resolveClaudeConfigDirPath } from "./Drivers/ClaudeSkills.ts";
 import type { ProviderWorkspaceSnapshot } from "@t3tools/provider-core/server/driver";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import {
@@ -503,7 +507,11 @@ export const probeClaudeWorkspaceSnapshot = Effect.fn("probeClaudeWorkspaceSnaps
   machineSnapshot: ServerProvider,
   cwd: string,
   environment?: NodeJS.ProcessEnv,
-): Effect.fn.Return<ProviderWorkspaceSnapshot, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  ProviderWorkspaceSnapshot,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> {
   if (!claudeSettings.enabled) return machineSnapshot;
   const skills = yield* discoverClaudeSkills(claudeSettings, cwd, environment);
   const fileSystem = yield* FileSystem.FileSystem;
@@ -709,10 +717,21 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  // First-party account fields cannot verify custom endpoint credentials.
+  // First-party account fields cannot verify custom endpoint credentials. The status speaks for
+  // every folder, so the tiers relative to one are left out.
+  const settings = yield* readConfirmedClaudeSettings({
+    settings: claudeSettings,
+    homePath: yield* resolveClaudeConfigDirPath(claudeSettings, resolvedEnvironment, cwd),
+    environment: resolvedEnvironment,
+    cwd: null,
+    fileSystem: yield* FileSystem.FileSystem,
+    path: yield* Path.Path,
+  });
   const baseUrl =
-    (yield* readClaudeSettingsEnv(claudeSettings, cwd, resolvedEnvironment)).ANTHROPIC_BASE_URL ??
-    resolvedEnvironment.ANTHROPIC_BASE_URL;
+    Option.match(settings, {
+      onNone: () => undefined,
+      onSome: (tiers) => claudeSettingsEnvironment(tiers).ANTHROPIC_BASE_URL,
+    }) ?? resolvedEnvironment.ANTHROPIC_BASE_URL;
   const endpoint = URL.parse(baseUrl?.trim() ?? "");
   const customApiEndpoint =
     endpoint !== null &&
@@ -721,7 +740,8 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     endpoint.hostname !== "api.anthropic.com";
   if (!customApiEndpoint && claudeAuthStatus(capabilities) === "unauthenticated") {
     // A lapsed login reads as signed out; its date tells the person why.
-    const loginExpiresAt = resolveLoginExpiry ? yield* resolveLoginExpiry : undefined;
+    const loginExpiresAt =
+      resolveLoginExpiry && Option.isSome(settings) ? yield* resolveLoginExpiry : undefined;
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -730,16 +750,26 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       updateRequiredModels,
       slashCommands: dedupedSlashCommands,
       skills,
-      probe: {
-        installed: true,
-        version: parsedVersion,
-        status: "error",
-        auth: {
-          status: "unauthenticated",
-          ...(loginExpiresAt ? { loginExpiresAt } : {}),
-        },
-        message: "Claude Code is not authenticated. Run `claude auth login` and try again.",
-      },
+      // Settings T3.CodeShip cannot read may send Claude to an endpoint with a login of its own.
+      probe: Option.isNone(settings)
+        ? {
+            installed: true,
+            version: parsedVersion,
+            status: "warning",
+            auth: { status: "unknown" },
+            message:
+              "T3.CodeShip could not read all of Claude's settings here, so it cannot confirm the Claude login.",
+          }
+        : {
+            installed: true,
+            version: parsedVersion,
+            status: "error",
+            auth: {
+              status: "unauthenticated",
+              ...(loginExpiresAt ? { loginExpiresAt } : {}),
+            },
+            message: "Claude Code is not authenticated. Run `claude auth login` and try again.",
+          },
     });
   }
 

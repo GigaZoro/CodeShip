@@ -17,7 +17,12 @@ import {
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import { readClaudeSettingsEnv } from "./ClaudeSkills.ts";
+import {
+  claudeProjectConfigRoot,
+  claudeSettingSources,
+  claudeSettingsEnvironment,
+  readClaudeSettingsCascade,
+} from "./ClaudeSettingsCascade.ts";
 
 const quotePath = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
@@ -85,10 +90,11 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
  * Claude Code reads its entrypoint from the process env, not its settings `env`, so T3.CodeShip applies that override itself.
  */
 export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnvironment")(function* (
-  config: Pick<ClaudeSettings, "homePath">,
+  config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "launchArgs">>,
   instanceEnvironment: ProviderInstanceEnvironment | undefined,
   hostEnvironment: NodeJS.ProcessEnv,
 ) {
+  const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const entrypoint = yield* findProviderInstanceEnvironmentVariable(
     instanceEnvironment,
@@ -105,8 +111,25 @@ export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnviro
     configDir && !path.isAbsolute(configDir)
       ? { ...merged, CLAUDE_CONFIG_DIR: path.resolve(configDir) }
       : merged;
-  const settingsEntrypoint = (yield* readClaudeSettingsEnv(config, undefined, environment))
-    .CLAUDE_CODE_ENTRYPOINT;
+  // One entrypoint serves every folder, so the tiers relative to one are left out. It is only a
+  // label, so one set by policy T3.CodeShip cannot read may be missing.
+  const settingsEntrypoint = yield* readClaudeSettingsCascade({
+    homePath: yield* resolveClaudeHomePath(config, environment),
+    environment,
+    cwd: null,
+    settingSources: claudeSettingSources(config),
+    projectConfigRoot: claudeProjectConfigRoot(config),
+    flagSettings: undefined,
+    fileSystem,
+    path,
+  }).pipe(
+    Effect.map(({ tiers }) => claudeSettingsEnvironment(tiers).CLAUDE_CODE_ENTRYPOINT),
+    Effect.catch((error) =>
+      Effect.logWarning("Claude's settings entrypoint could not be read.", {
+        reason: error.message,
+      }).pipe(Effect.as(undefined)),
+    ),
+  );
   return settingsEntrypoint
     ? { ...environment, CLAUDE_CODE_ENTRYPOINT: settingsEntrypoint }
     : environment;

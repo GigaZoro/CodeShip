@@ -8,11 +8,10 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { parse as parseYamlDocument } from "yaml";
+import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-const SKILL_MENTION_PATTERN =
-  /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
 const HAS_SKILL_MENTION_PATTERN = new RegExp(SKILL_MENTION_PATTERN.source, "u");
 const MAX_SKILL_DEPTH = 10;
 const MAX_SKILL_BYTES = ByteSize.bytes(1_000_000);

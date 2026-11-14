@@ -1,10 +1,13 @@
+import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import { beforeEach, vi } from "vite-plus/test";
 
 import {
   discoverClaudeSkills,
@@ -13,6 +16,31 @@ import {
   setClaudeSkillOverride,
 } from "./ClaudeSkills.ts";
 import { planClaudeSkillDispatch } from "./ClaudeSkillDispatch.ts";
+
+// The real resolver reads the managed settings of the machine running the test.
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof ClaudeSdk>()),
+  resolveSettings: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(ClaudeSdk.resolveSettings).mockReset().mockResolvedValue({
+    effective: {},
+    provenance: {},
+    sources: [],
+  });
+});
+
+// With the account's server-managed settings, the real resolver ignores the machine's own: the
+// highest policy source present wins.
+const useRealResolver = Effect.fn(function* () {
+  const sdk = yield* Effect.promise(() =>
+    vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
+  );
+  vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+});
+
+const POLICY_HELPER = { policyHelper: { path: "/opt/org/policy-helper" } };
 
 const writeSkill = Effect.fn(function* (
   skillsDir: string,
@@ -209,16 +237,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
         path.join(worktreeGitDirectory, "gitdir"),
         path.join(worktree, ".git"),
       );
-      assert.deepEqual(
-        yield* discoverClaudeSkills({ homePath: configDir }, worktree),
-        localSettings,
-      );
       const linkedWorktree = path.join(tempDir, "linked-worktree");
       yield* fs.symlink(worktree, linkedWorktree);
-      assert.deepEqual(
-        yield* discoverClaudeSkills({ homePath: configDir }, linkedWorktree),
-        localSettings,
-      );
+      // A worktree reads the main checkout's settings.local.json, whose extended local@shop entry
+      // enables nothing.
+      for (const cwd of [worktree, linkedWorktree]) {
+        assert.deepEqual(
+          (yield* discoverClaudeSkills({ homePath: configDir }, cwd)).map((skill) => [
+            skill.name,
+            skill.scope,
+            skill.path,
+          ]),
+          [["plugin:review", "project", path.join(projectInstall, "skills", "review", "SKILL.md")]],
+        );
+      }
     }),
   );
 
@@ -618,42 +650,40 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
     }),
   );
 
-  it.effect("reads autoUpdatesChannel from the user settings, with managed settings winning", () =>
+  it.effect.each([
+    ["the user settings", { autoUpdatesChannel: "stable" }, undefined, Option.some("stable")],
+    ["latest when no settings name one", undefined, undefined, Option.some("latest")],
+    [
+      "the account's server-managed settings above the user's",
+      { autoUpdatesChannel: "stable" },
+      { autoUpdatesChannel: "rc" },
+      Option.some("rc"),
+    ],
+    [
+      "nothing when a policy helper may set it",
+      { autoUpdatesChannel: "stable" },
+      POLICY_HELPER,
+      Option.none(),
+    ],
+  ] as const)("reads autoUpdatesChannel from %s", ([, user, remote, expected]) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-channel-" });
-      yield* fs.writeFileString(
-        path.join(tempDir, "settings.json"),
-        JSON.stringify({ autoUpdatesChannel: "stable" }),
-      );
-      const emptyDir = path.join(tempDir, "empty");
-      yield* fs.makeDirectory(emptyDir);
-      const programData = path.join(tempDir, "program-data");
-      const noManaged = path.join(tempDir, "no-managed");
-      yield* fs.makeDirectory(path.join(programData, "ClaudeCode"), { recursive: true });
-      yield* fs.writeFileString(
-        path.join(programData, "ClaudeCode", "managed-settings.json"),
-        JSON.stringify({ autoUpdatesChannel: "latest" }),
-      );
-      // Windows is the one platform whose managed settings path a test can redirect.
-      const channel = (environment: NodeJS.ProcessEnv) =>
-        readClaudeAutoUpdatesChannel(environment).pipe(
-          Effect.provideService(HostProcess.Platform, "win32"),
+      const configDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-channel-" });
+      if (user !== undefined) {
+        yield* fs.writeFileString(path.join(configDir, "settings.json"), JSON.stringify(user));
+      }
+      if (remote !== undefined) {
+        yield* useRealResolver();
+        yield* fs.writeFileString(
+          path.join(configDir, "remote-settings.json"),
+          JSON.stringify(remote),
         );
+      }
 
-      assert.equal(
-        yield* channel({ CLAUDE_CONFIG_DIR: tempDir, PROGRAMDATA: noManaged }),
-        "stable",
-      );
-      assert.equal(
-        yield* channel({ CLAUDE_CONFIG_DIR: emptyDir, PROGRAMDATA: noManaged }),
-        undefined,
-      );
-      assert.equal(
-        yield* channel({ CLAUDE_CONFIG_DIR: tempDir, PROGRAMDATA: programData }),
-        "latest",
-      );
+      const channel = yield* readClaudeAutoUpdatesChannel({ CLAUDE_CONFIG_DIR: configDir });
+
+      assert.deepEqual(channel, expected);
     }),
   );
 
@@ -721,6 +751,89 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
           ["off-by-user", false],
         ],
       );
+    }),
+  );
+
+  it.effect.each([
+    [
+      "only the settings files its launch arguments name",
+      "--setting-sources user",
+      undefined,
+      [
+        ["kept", true],
+        ["off-by-project", true],
+      ],
+    ],
+    [
+      "a managed drop-in above every file",
+      "",
+      { resolved: { skillOverrides: { kept: "off" } } },
+      [
+        ["kept", false],
+        ["off-by-project", false],
+      ],
+    ],
+    [
+      "the account's server-managed settings above every file",
+      "",
+      { remote: { skillOverrides: { kept: "off" } } },
+      [
+        ["kept", false],
+        ["off-by-project", false],
+      ],
+    ],
+    // Its settings may turn any skill off, so none is offered.
+    ["nothing when a policy helper may add to them", "", { remote: POLICY_HELPER }, []],
+  ] as const)("takes skillOverrides from %s", ([, launchArgs, policy, expected]) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skills-" });
+      const configDir = path.join(tempDir, "claude-home");
+      const workspace = path.join(tempDir, "workspace");
+      for (const name of ["kept", "off-by-project"]) {
+        yield* writeSkill(path.join(configDir, "skills"), name, `---\nname: ${name}\n---\n`);
+      }
+      yield* fs.makeDirectory(path.join(workspace, ".claude"), { recursive: true });
+      yield* fs.writeFileString(
+        path.join(workspace, ".claude", "settings.json"),
+        '{ "skillOverrides": { "off-by-project": "off" } }',
+      );
+      const resolveSettings = vi.mocked(ClaudeSdk.resolveSettings);
+      if (policy !== undefined && "resolved" in policy) {
+        resolveSettings.mockResolvedValue({
+          effective: policy.resolved,
+          provenance: {},
+          sources: [
+            {
+              source: "managed",
+              path: "/Library/Application Support/ClaudeCode/managed-settings.d/50-skills.json",
+              settings: policy.resolved,
+            },
+          ],
+        });
+      }
+      if (policy !== undefined && "remote" in policy) {
+        yield* useRealResolver();
+        yield* fs.writeFileString(
+          path.join(configDir, "remote-settings.json"),
+          JSON.stringify(policy.remote),
+        );
+      }
+
+      const skills = yield* discoverClaudeSkills({ homePath: configDir, launchArgs }, workspace);
+
+      assert.deepEqual<ReadonlyArray<readonly [string, boolean]>>(
+        skills.map((skill) => [skill.name, skill.enabled]),
+        expected,
+      );
+      // An empty cache keeps the resolver off this process's own account's.
+      if (policy !== undefined && "resolved" in policy) {
+        assert.deepEqual(resolveSettings.mock.calls[0]?.[0], {
+          settingSources: [],
+          serverManagedSettings: {},
+        });
+      }
     }),
   );
 

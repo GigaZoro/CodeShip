@@ -80,6 +80,25 @@ const RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS = {
     "Pick a glyph by meaning from PullRequestGlyph in apps/web/src/components/pullRequest/pullRequestIcons.tsx so every surface draws the same pull request the same way.",
 };
 
+const SERVER_RESTRICTED_IMPORT_PATTERNS = [
+  {
+    group: [
+      "@t3tools/source-control-*/client/*",
+      "../client/*",
+      "../../client/*",
+      "../../../client/*",
+    ],
+    message: "A forge's client entry is UI-only; the server reads its `shared/definition`.",
+  },
+];
+
+const RESTRICTED_CLAUDE_SETTINGS_RESOLVER = {
+  name: "@anthropic-ai/claude-agent-sdk",
+  importNames: ["resolveSettings"],
+  message:
+    "Read Claude's settings through apps/server/src/provider/Drivers/ClaudeSettingsCascade.ts: by itself, resolveSettings reads this process's account and organization cache.",
+};
+
 // Vite+ supports remote configuration before its published types include it.
 const cacheUrl = remoteCacheUrl(import.meta.dirname);
 const taskCacheConfig = {
@@ -438,19 +457,29 @@ export default defineConfig({
           "eslint/no-restricted-imports": [
             "error",
             {
-              paths: [...RESTRICTED_IMPORT_PATHS, RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS],
-              patterns: [
-                {
-                  group: [
-                    "@t3tools/source-control-*/client/*",
-                    "../client/*",
-                    "../../client/*",
-                    "../../../client/*",
-                  ],
-                  message:
-                    "A forge's client entry is UI-only; the server reads its `shared/definition`.",
-                },
+              paths: [
+                ...RESTRICTED_IMPORT_PATHS,
+                RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS,
+                RESTRICTED_CLAUDE_SETTINGS_RESOLVER,
               ],
+              patterns: SERVER_RESTRICTED_IMPORT_PATTERNS,
+            },
+          ],
+        },
+      },
+      {
+        // The cascade reads the policy tier; the history worker reads the files it is handed.
+        files: [
+          "apps/server/src/provider/Drivers/ClaudeSettingsCascade.ts",
+          "apps/server/src/claudeHistoryWorker.ts",
+          "apps/server/src/**/*.test.ts",
+        ],
+        rules: {
+          "eslint/no-restricted-imports": [
+            "error",
+            {
+              paths: [...RESTRICTED_IMPORT_PATHS, RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS],
+              patterns: SERVER_RESTRICTED_IMPORT_PATTERNS,
             },
           ],
         },

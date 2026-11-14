@@ -5,6 +5,7 @@ import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -15,6 +16,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import { linkPath } from "./ClaudeAccountHome.ts";
+import { readConfirmedClaudeSettings } from "./ClaudeSettingsCascade.ts";
 
 type ClaudeSkillScope = "user" | "project";
 
@@ -108,45 +110,6 @@ function parseSkillFrontmatter(contents: string): SkillFrontmatter {
   };
 }
 
-function claudeManagedSettingsPath(
-  path: Path.Path,
-  platform: NodeJS.Platform,
-  environment: NodeJS.ProcessEnv,
-): string | undefined {
-  if (platform === "darwin") {
-    return "/Library/Application Support/ClaudeCode/managed-settings.json";
-  }
-  if (platform === "win32") {
-    const programData = environment.PROGRAMDATA?.trim();
-    return programData ? path.join(programData, "ClaudeCode", "managed-settings.json") : undefined;
-  }
-  return "/etc/claude-code/managed-settings.json";
-}
-
-/** Claude Code settings files, lowest precedence first. */
-function claudeSettingsPaths(
-  path: Path.Path,
-  configDirPath: string,
-  cwd: string | undefined,
-  platform: NodeJS.Platform,
-  environment: NodeJS.ProcessEnv,
-  repositoryRoot?: string,
-): ReadonlyArray<string> {
-  const managedPath = claudeManagedSettingsPath(path, platform, environment);
-  const root = repositoryRoot !== undefined && repositoryRoot !== cwd ? repositoryRoot : undefined;
-  return [
-    path.join(configDirPath, "settings.json"),
-    ...(cwd
-      ? [
-          path.join(cwd, ".claude", "settings.json"),
-          path.join(cwd, ".claude", "settings.local.json"),
-        ]
-      : []),
-    ...(root ? [path.join(root, ".claude", "settings.local.json")] : []),
-    ...(managedPath ? [managedPath] : []),
-  ];
-}
-
 const findRepositoryRoot = Effect.fn("findRepositoryRoot")(function* (
   cwd: string,
 ): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
@@ -213,15 +176,12 @@ const findPluginRepositoryRoot = Effect.fn("findPluginRepositoryRoot")(function*
  */
 const SkillOverrideValue = Schema.Literals(["on", "name-only", "user-invocable-only", "off"]);
 
-// Lenient because these settings files are hand-edited and Claude Code itself
-// tolerates comments and trailing commas in them.
-const SkillSettings = fromLenientJson(
+const decodeSkillSettings = Schema.decodeUnknownOption(
   Schema.Struct({
     skillOverrides: Schema.optional(Schema.Record(Schema.String, SkillOverrideValue)),
     enabledPlugins: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   }),
 );
-const decodeSkillSettings = Schema.decodeUnknownEffect(SkillSettings);
 
 type SkillOverride = {
   readonly enabled: boolean;
@@ -240,42 +200,11 @@ function parseSkillOverride(value: typeof SkillOverrideValue.Type): SkillOverrid
   }
 }
 
-const readSkillSettings = Effect.fn("readSkillSettings")(function* (
-  configDirPath: string,
-  cwd: string | undefined,
-  environment: NodeJS.ProcessEnv,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const platform = yield* HostProcess.Platform;
+function readSkillSettings(tiers: ReadonlyArray<Readonly<Record<string, unknown>>>) {
   const overridesByName = new Map<string, SkillOverride>();
   const enabledPlugins = new Map<string, boolean>();
-  const repositoryRoot = cwd === undefined ? undefined : yield* findRepositoryRoot(cwd);
-
-  for (const settingsPath of claudeSettingsPaths(
-    path,
-    configDirPath,
-    cwd,
-    platform,
-    environment,
-    repositoryRoot,
-  )) {
-    const contents = yield* fileSystem
-      .readFileString(settingsPath)
-      .pipe(Effect.orElseSucceed(() => undefined));
-    if (contents === undefined) {
-      continue;
-    }
-
-    const parsed = yield* decodeSkillSettings(contents).pipe(
-      Effect.tapError((cause) =>
-        Effect.logDebug("claude settings file is unreadable; ignoring skill settings", {
-          path: settingsPath,
-          cause,
-        }),
-      ),
-      Effect.orElseSucceed(() => undefined),
-    );
+  for (const tier of tiers) {
+    const parsed = Option.getOrUndefined(decodeSkillSettings(tier));
     for (const [name, value] of Object.entries(parsed?.skillOverrides ?? {})) {
       overridesByName.set(name, parseSkillOverride(value));
     }
@@ -290,7 +219,7 @@ const readSkillSettings = Effect.fn("readSkillSettings")(function* (
   }
 
   return { skillOverrides: overridesByName, enabledPlugins };
-});
+}
 
 const UserSettingsObject = fromLenientJson(Schema.Record(Schema.String, Schema.Unknown));
 const decodeUserSettingsObject = Schema.decodeUnknownEffect(UserSettingsObject);
@@ -491,7 +420,7 @@ const discoverPluginSkillRoots = Effect.fn("discoverPluginSkillRoots")(function*
   return roots;
 });
 
-const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(function* (
+export const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   environment: NodeJS.ProcessEnv,
   cwd?: string,
@@ -510,68 +439,37 @@ const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath")(funct
   return path.join(home, ".claude");
 });
 
-const SettingsEnv = Schema.Struct({
-  ANTHROPIC_BASE_URL: Schema.optional(Schema.String),
-  CLAUDE_CODE_ENTRYPOINT: Schema.optional(Schema.String),
-});
-const decodeSettingsEnv = Schema.decodeUnknownEffect(
-  fromLenientJson(Schema.Struct({ env: Schema.optional(SettingsEnv) })),
-);
+const decodeAutoUpdatesChannel = Schema.decodeUnknownOption(Schema.String);
 
-/** Claude's user and managed settings files that `decode` accepts, lowest precedence first. */
-const readClaudeUserSettingsFiles = Effect.fn("readClaudeUserSettingsFiles")(function* <A>(
-  decode: (contents: string) => Effect.Effect<A, Schema.SchemaError>,
-  config: Pick<ClaudeSettings, "homePath">,
-  cwd: string | undefined,
-  environment: NodeJS.ProcessEnv,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const platform = yield* HostProcess.Platform;
-  const configDirPath = yield* resolveClaudeConfigDirPath(config, environment, cwd);
-  const files: Array<A> = [];
-  for (const settingsPath of claudeSettingsPaths(
-    path,
-    configDirPath,
-    undefined,
-    platform,
-    environment,
-  )) {
-    const contents = yield* fileSystem.readFileString(settingsPath).pipe(Effect.option);
-    if (Option.isNone(contents)) continue;
-    const parsed = yield* decode(contents.value).pipe(Effect.option);
-    if (Option.isSome(parsed)) files.push(parsed.value);
-  }
-  return files;
-});
-
-/** The `env` values T3.CodeShip reads from Claude's user and managed settings; later files win. */
-export const readClaudeSettingsEnv = Effect.fn("readClaudeSettingsEnv")(function* (
-  config: Pick<ClaudeSettings, "homePath">,
-  cwd: string | undefined,
-  environment: NodeJS.ProcessEnv,
-): Effect.fn.Return<typeof SettingsEnv.Type, never, FileSystem.FileSystem | Path.Path> {
-  const files = yield* readClaudeUserSettingsFiles(decodeSettingsEnv, config, cwd, environment);
-  const settingsEnv: typeof SettingsEnv.Type = {};
-  for (const file of files) Object.assign(settingsEnv, file.env);
-  return settingsEnv;
-});
-
-const decodeSettingsAutoUpdatesChannel = Schema.decodeUnknownEffect(
-  fromLenientJson(Schema.Struct({ autoUpdatesChannel: Schema.optional(Schema.String) })),
-);
-
-/** The release channel `claude update` follows, from the user and managed settings; later files win. */
+/**
+ * The release channel `claude update` follows, from the user and policy settings, or None when
+ * policy T3.CodeShip cannot read may choose another one or the settings cannot be read.
+ */
 export const readClaudeAutoUpdatesChannel = Effect.fn("readClaudeAutoUpdatesChannel")(function* (
   environment: NodeJS.ProcessEnv,
-): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
-  const files = yield* readClaudeUserSettingsFiles(
-    decodeSettingsAutoUpdatesChannel,
-    { homePath: "" },
-    undefined,
+): Effect.fn.Return<
+  Option.Option<string>,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const settings = yield* readConfirmedClaudeSettings({
+    settings: undefined,
+    homePath: yield* resolveClaudeConfigDirPath({ homePath: "" }, environment),
     environment,
+    cwd: null,
+    fileSystem,
+    path,
+  });
+  return Option.map(
+    settings,
+    (tiers) =>
+      tiers
+        .map((tier) => Option.getOrUndefined(decodeAutoUpdatesChannel(tier.autoUpdatesChannel)))
+        .findLast((channel) => channel !== undefined)
+        ?.trim() || "latest",
   );
-  return files.findLast((file) => file.autoUpdatesChannel !== undefined)?.autoUpdatesChannel;
 });
 
 // Claude's --add-dir is repeatable and variadic; parseCliArgs keeps only one value.
@@ -639,15 +537,27 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
   config: Pick<ClaudeSettings, "homePath"> & Partial<Pick<ClaudeSettings, "launchArgs">>,
   cwd?: string,
   environment?: NodeJS.ProcessEnv,
-): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
+): Effect.fn.Return<
+  ReadonlyArray<ServerProviderSkill>,
+  never,
+  FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
+> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const configDirPath = yield* resolveClaudeConfigDirPath(config, environment ?? process.env, cwd);
-  const { skillOverrides, enabledPlugins } = yield* readSkillSettings(
-    configDirPath,
-    cwd,
-    environment ?? process.env,
-  );
+  const resolvedEnvironment = environment ?? process.env;
+  const configDirPath = yield* resolveClaudeConfigDirPath(config, resolvedEnvironment, cwd);
+  const settings = yield* readConfirmedClaudeSettings({
+    settings: config,
+    homePath: configDirPath,
+    environment: resolvedEnvironment,
+    cwd: cwd ?? null,
+    fileSystem,
+    path,
+  });
+  // Settings T3.CodeShip cannot confirm may turn skills off, and offering one anyway would bypass
+  // that: dispatch points at the file. Claude Code still lists its skills as slash commands.
+  if (Option.isNone(settings)) return [];
+  const { skillOverrides, enabledPlugins } = readSkillSettings(settings.value);
 
   const roots: ReadonlyArray<ClaudeSkillRoot> = [
     { directory: path.join(configDirPath, "skills"), scope: "user" },

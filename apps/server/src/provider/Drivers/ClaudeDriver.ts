@@ -29,13 +29,15 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
   claudeFlagSettings,
-  claudeProjectConfigRoot,
-  claudeSettingSources,
   createClaudeAdapterV2,
-  readClaudeLaunchArgSettings,
-  readClaudeSettingsEnvironment,
   type ClaudeAdapterV2DriverEnv,
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import {
+  claudeProjectConfigRoot,
+  claudeSettingSources,
+  readClaudeLaunchArgSettings,
+  readClaudeSettingsEnvironment,
+} from "./ClaudeSettingsCascade.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
@@ -132,12 +134,11 @@ const CLAUDE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const lookupClaudeChannelVersion = Effect.fn("ClaudeDriver.lookupChannelVersion")(function* (
   environment: NodeJS.ProcessEnv,
 ) {
-  const configured = yield* readClaudeAutoUpdatesChannel(environment);
-  const channel = configured?.trim() || "latest";
-  if (!CLAUDE_CHANNEL_PATTERN.test(channel)) return null;
+  const channel = yield* readClaudeAutoUpdatesChannel(environment);
+  if (Option.isNone(channel) || !CLAUDE_CHANNEL_PATTERN.test(channel.value)) return null;
   const client = yield* HttpClient.HttpClient;
   const body = yield* client
-    .execute(HttpClientRequest.get(`${CLAUDE_RELEASES_URL}/${channel}`))
+    .execute(HttpClientRequest.get(`${CLAUDE_RELEASES_URL}/${channel.value}`))
     .pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.text),
@@ -152,6 +153,7 @@ const makeUpdateResolver = (services: {
   readonly httpClient: HttpClient.HttpClient;
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
+  readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
 }) =>
   makePackageManagedProviderMaintenanceResolver({
     provider: DRIVER_KIND,
@@ -164,6 +166,7 @@ const makeUpdateResolver = (services: {
           Effect.provideService(HttpClient.HttpClient, services.httpClient),
           Effect.provideService(FileSystem.FileSystem, services.fileSystem),
           Effect.provideService(Path.Path, services.path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, services.spawner),
         ),
     },
   });
@@ -269,7 +272,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     } satisfies ClaudeSettings;
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
       resolveProviderMaintenanceCapabilitiesEffect(
-        makeUpdateResolver({ httpClient, fileSystem, path }),
+        makeUpdateResolver({ httpClient, fileSystem, path, spawner }),
         {
           binaryPath: effectiveConfig.binaryPath,
           env: processEnv,
@@ -740,14 +743,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                 cause,
               }),
           ),
-          Effect.flatMap(({ environment: settingsEnvironment, computedByPolicyHelper }) =>
-            computedByPolicyHelper
+          Effect.flatMap(({ environment: settingsEnvironment, unreadablePolicy }) =>
+            unreadablePolicy !== undefined
               ? Effect.fail(
                   new ProviderDriverError({
                     driver: DRIVER_KIND,
                     instanceId,
-                    detail:
-                      "Your organization computes Claude's settings with a policy helper, which T3.CodeShip cannot run.",
+                    detail: unreadablePolicy,
                   }),
                 )
               : Effect.all([
@@ -769,6 +771,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         ),
       orchestrationAdapter,
       textGeneration,

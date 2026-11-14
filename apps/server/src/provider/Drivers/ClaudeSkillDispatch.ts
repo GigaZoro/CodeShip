@@ -1,14 +1,11 @@
 import type { ServerProviderSkill } from "@t3tools/contracts";
+import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 
 /**
  * Claude expands one skill per message only when `/name` starts the text block.
  * Everything after the name, including newlines or a second `/x`, becomes `ARGUMENTS`.
  * https://github.com/anthropics/claude-code/issues/87113
  */
-
-/** Match packages/shared/src/composerInlineTokens.ts so displayed chips and dispatched skills accept the same tokens. */
-const SKILL_MENTION_PATTERN =
-  /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
 
 export type ClaudeSkillTarget = Pick<ServerProviderSkill, "path" | "userInvocationOnly">;
 

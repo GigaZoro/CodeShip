@@ -214,13 +214,18 @@ function layerMockSpawner(
     code: number;
   },
 ) {
-  return Layer.succeed(
+  // Claude's settings worker reads another account's settings files, so it runs for real.
+  return Layer.effect(
     ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const cmd = command as unknown as { args: ReadonlyArray<string> };
-      return Effect.succeed(mockHandle(handler(cmd.args)));
-    }),
-  );
+    Effect.map(ChildProcessSpawner.ChildProcessSpawner, (real) =>
+      ChildProcessSpawner.make((command) => {
+        const cmd = command as unknown as { args: ReadonlyArray<string> };
+        return cmd.args.some((arg) => arg.endsWith("claude-history-worker.ts"))
+          ? real.spawn(command)
+          : Effect.succeed(mockHandle(handler(cmd.args)));
+      }),
+    ),
+  ).pipe(Layer.provide(NodeServices.layer));
 }
 
 // A Codex CLI on disk whose `app-server` and `--version` behave as `script` says.
@@ -3107,6 +3112,39 @@ it.layer(
         assert.strictEqual(status.status, "error");
         assert.strictEqual(status.auth.status, "unauthenticated");
         assert.strictEqual(status.auth.type, undefined);
+      }).pipe(
+        Effect.provide(
+          layerMockSpawner((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("leaves the login unconfirmed when a policy helper adds to Claude's settings", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-settings-",
+        });
+        yield* fileSystem.writeFileString(
+          path.join(configDir, "remote-settings.json"),
+          JSON.stringify({ policyHelper: { path: "/opt/org/policy-helper" } }),
+        );
+        const status = yield* checkClaudeProviderStatus(
+          { ...defaultClaudeSettings, homePath: configDir },
+          claudeCapabilities({
+            tokenSource: "none",
+            apiKeySource: "none",
+            apiProvider: "firstParty",
+          }),
+          {},
+        );
+        assert.strictEqual(status.status, "warning");
+        assert.strictEqual(status.auth.status, "unknown");
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {
