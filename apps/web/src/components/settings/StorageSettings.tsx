@@ -12,7 +12,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { formatBytes } from "../../lib/formatBytes";
+import { formatBytes } from "@t3tools/shared/formatBytes";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -783,6 +783,13 @@ export function StorageCleanupSections() {
     targets.some(
       (target) => target.settings.storageCleanup.logsAfterDays !== settings.logsAfterDays,
     );
+  const toolOutputMixed =
+    targets.length > 1 &&
+    targets.some(
+      (target) =>
+        target.settings.storageCleanup.toolOutputAfterDays !== settings.toolOutputAfterDays,
+    );
+  const settledToolOutputStatus = useDebouncedValue(`${targetIdsKey}:${toolOutputMixed}`, 300);
   const settledArtifactsStatus = useDebouncedValue(`${targetIdsKey}:${artifactsMixed}`, 300);
   const settledLogsStatus = useDebouncedValue(`${targetIdsKey}:${logsMixed}`, 300);
   const artifactsStatus =
@@ -791,6 +798,10 @@ export function StorageCleanupSections() {
       : undefined;
   const logsStatus =
     targets.length > 1 && settledLogsStatus === `${targetIdsKey}:true`
+      ? t("Mixed across selected machines")
+      : undefined;
+  const toolOutputStatus =
+    targets.length > 1 && settledToolOutputStatus === `${targetIdsKey}:true`
       ? t("Mixed across selected machines")
       : undefined;
   if (scope.kind === "project" || scope.kind === "checkout") {
@@ -863,6 +874,24 @@ export function StorageCleanupSections() {
                 label={t("Delete old rotated logs")}
                 value={settings.logsAfterDays}
                 onChange={(logsAfterDays) => update({ logsAfterDays })}
+              />
+            }
+          />
+        </AnimatedHeight>
+        <AnimatedHeight>
+          <SettingsRow
+            title={t("Remove old tool output")}
+            status={toolOutputStatus}
+            managedPaths={["storageCleanup.toolOutputAfterDays"]}
+            description={t(
+              "Remove command and tool output from settled and archived chats after this many days without activity. The steps stay in the chat.",
+            )}
+            serverScoped
+            control={
+              <RetentionControl
+                label={t("Remove old tool output")}
+                value={settings.toolOutputAfterDays}
+                onChange={(toolOutputAfterDays) => update({ toolOutputAfterDays })}
               />
             }
           />

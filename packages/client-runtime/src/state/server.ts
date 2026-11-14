@@ -1337,7 +1337,7 @@ export function createServerEnvironmentAtoms<R, E>(
     idleTtlMs: 0,
   });
   // Keyed by a JSON array of environment ids so one notice can list every machine.
-  const databaseCompactionRecommendations = Atom.family((environmentIdsKey: string) => {
+  const databaseStorageStatuses = Atom.family((environmentIdsKey: string) => {
     const sources = (JSON.parse(environmentIdsKey) as EnvironmentId[]).map((environmentId) => ({
       environmentId,
       atom: databaseStorage({ environmentId, input: {} }),
@@ -1346,19 +1346,26 @@ export function createServerEnvironmentAtoms<R, E>(
       sources
         .flatMap(({ environmentId, atom }) => {
           const result = get(atom);
-          return result._tag === "Success" &&
-            result.value !== null &&
-            shouldRecommendDatabaseCompaction(result.value)
+          return result._tag === "Success" && result.value !== null
             ? [{ environmentId, status: result.value }]
             : [];
         })
+        .sort((left, right) => right.status.databaseBytes - left.status.databaseBytes),
+    ).pipe(
+      Atom.withLabel(`environment-data:server:database-storage-statuses:${environmentIdsKey}`),
+    );
+  });
+  const databaseCompactionRecommendations = Atom.family((environmentIdsKey: string) =>
+    Atom.make((get) =>
+      get(databaseStorageStatuses(environmentIdsKey))
+        .filter(({ status }) => shouldRecommendDatabaseCompaction(status))
         .sort((left, right) => right.status.reclaimableBytes - left.status.reclaimableBytes),
     ).pipe(
       Atom.withLabel(
         `environment-data:server:database-compaction-recommendations:${environmentIdsKey}`,
       ),
-    );
-  });
+    ),
+  );
   const welcome = (target: {
     readonly environmentId: EnvironmentId;
     readonly input: EnvironmentRpcInput<typeof WS_METHODS.subscribeServerLifecycle>;
@@ -1389,6 +1396,7 @@ export function createServerEnvironmentAtoms<R, E>(
       concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
     }),
     databaseStorage,
+    databaseStorageStatuses,
     databaseCompactionRecommendations,
     restartHold,
     awaitRestartHold,

@@ -10,11 +10,14 @@ export interface CommandOutputView {
   readonly output: TerminalOutputState;
   /** False once the command settled and `output` is final. */
   readonly running: boolean;
+  /** The server's retention removed this settled command's output. */
+  readonly removed: boolean;
 }
 
 export const EMPTY_COMMAND_OUTPUT: CommandOutputView = {
   output: EMPTY_TERMINAL_OUTPUT,
   running: true,
+  removed: false,
 };
 
 /**
@@ -33,5 +36,6 @@ export function applyCommandOutputFrame(
       frame.text,
     ),
     running: frame.running,
+    removed: frame.removed === true,
   };
 }

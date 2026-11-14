@@ -5,6 +5,7 @@ import type {
   OrchestrationV2Checkpoint,
   OrchestrationV2DomainEvent,
   OrchestrationV2ContextHandoff,
+  OrchestrationV2GetTurnItemResult,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadStreamItem,
@@ -236,6 +237,36 @@ function boundToolOutput(output: unknown): unknown {
         { type: "text", text: bounded },
         ...images.map((image) => ({ type: "image", mimeType: image.mimeType })),
       ];
+}
+
+/** Retention stores the wire shape, so a stored omission marker means the full output is gone. */
+export function turnItemDetailRemoved(item: OrchestrationV2TurnItem): boolean {
+  switch (item.type) {
+    case "command_execution":
+      return item.outputOmitted === true;
+    case "dynamic_tool":
+      return (
+        item.outputOmitted === true ||
+        (typeof item.input === "object" &&
+          item.input !== null &&
+          "truncated" in item.input &&
+          item.input.truncated === true &&
+          "summary" in item.input &&
+          typeof item.input.summary === "string")
+      );
+    default:
+      return false;
+  }
+}
+
+/** The detail a client reads when it expands an item; a removed item keeps its timeline shape. */
+export function turnItemDetailResult(
+  item: OrchestrationV2TurnItem | null,
+): OrchestrationV2GetTurnItemResult {
+  if (item === null) return { item: null };
+  return turnItemDetailRemoved(item)
+    ? { item, outputRemoved: true }
+    : { item: projectTurnItemForDetail(item) };
 }
 
 export function projectTurnItemForDetail(item: OrchestrationV2TurnItem): OrchestrationV2TurnItem {

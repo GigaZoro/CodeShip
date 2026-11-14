@@ -1612,8 +1612,10 @@ const catalog: MessageCatalog = {
   "{singular} reference": "Посилання: {singular}",
   "{size} · Use {shortcut} to keep a large paste inline.":
     "{size} · Натисніть {shortcut}, щоб вставити великий фрагмент як текст.",
+  "{size} ({reclaimable} can be reclaimed)": "{size} ({reclaimable} можна повернути)",
   "{size} {term} chained by base branch.": "{size} {term}, з’єднані за базовою гілкою.",
   "{size} B": "{size} Б",
+  "{size} can be reclaimed": "{size} можна повернути",
   "{size} combined process peaks": "{size} сумарних піків процесів",
   "{size} GiB": "{size} ГіБ",
   "{size} GiB on {environment}": "{size} ГіБ у {environment}",
@@ -4720,6 +4722,7 @@ const catalog: MessageCatalog = {
   Dark: "Темна",
   "dark mode": "темний режим",
   Database: "База даних",
+  "Database on {environment}": "База даних на {environment}",
   Date: "Дата",
   "Date and time": "Дата й час",
   Day: "День",
@@ -9433,6 +9436,8 @@ const catalog: MessageCatalog = {
   'Remove checkout "{label}"?': "Видалити checkout «{label}»?",
   "Remove checkout {path}": "Видалити робочу копію {path}",
   "Remove choice": "Видалити варіант",
+  "Remove command and tool output from settled and archived chats after this many days without activity. The steps stay in the chat.":
+    "Видаляти вивід команд та інструментів із завершених і заархівованих чатів після стількох днів без активності. Кроки залишаються в чаті.",
   "Remove condition": "Видалити умову",
   "Remove context items until there are at most {max}.":
     "Видаліть елементи контексту, щоб лишилося не більше {max}.",
@@ -9451,6 +9456,7 @@ const catalog: MessageCatalog = {
   "Remove group and its conditions": "Видалити групу та її умови",
   "Remove hub": "Видалити хаб",
   "Remove new model": "Видалити нову модель",
+  "Remove old tool output": "Видаляти старий вивід інструментів",
   "Remove option {number}": "Видалити опцію {number}",
   "Remove profile": "Видалити профіль",
   "Remove profile and data": "Видалити профіль і дані",

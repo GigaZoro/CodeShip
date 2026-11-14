@@ -16,6 +16,8 @@ export interface PendingServiceUpdate {
   readonly fromVersion: string;
   readonly targetVersion: string;
   readonly dbPath: string;
+  /** False when the target applies no migration, so no snapshot was made. Absent means true. */
+  readonly migratesDatabase?: boolean;
   readonly status: "pending";
 }
 
@@ -38,6 +40,8 @@ export type ServiceLauncherChildMessage =
       readonly type: "request-update";
       readonly targetVersion: string;
       readonly dbPath: string;
+      /** Optional so older servers still request updates; absent means the target migrates. */
+      readonly migratesDatabase?: boolean;
     }
   | {
       readonly type: "prepared";
@@ -85,7 +89,14 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   }
   if (status === "pending") {
     return typeof value.dbPath === "string" && value.dbPath.trim() !== ""
-      ? { id, fromVersion, targetVersion, dbPath: value.dbPath, status }
+      ? {
+          id,
+          fromVersion,
+          targetVersion,
+          dbPath: value.dbPath,
+          ...(value.migratesDatabase === false ? { migratesDatabase: false } : {}),
+          status,
+        }
       : undefined;
   }
   if (
@@ -236,7 +247,12 @@ export function decodeServiceLauncherChildMessage(
     typeof value.targetVersion === "string" &&
     typeof value.dbPath === "string"
   ) {
-    return { type: value.type, targetVersion: value.targetVersion, dbPath: value.dbPath };
+    return {
+      type: value.type,
+      targetVersion: value.targetVersion,
+      dbPath: value.dbPath,
+      ...(value.migratesDatabase === false ? { migratesDatabase: false } : {}),
+    };
   }
   return value.type === "prepared" && typeof value.updateId === "string"
     ? { type: value.type, updateId: value.updateId }

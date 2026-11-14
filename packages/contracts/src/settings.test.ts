@@ -60,6 +60,7 @@ describe("storage cleanup settings", () => {
       worktreeKeepWhen: "uncommitted-changes",
       browserArtifactsAfterDays: null,
       logsAfterDays: null,
+      toolOutputAfterDays: 7,
     });
   });
 

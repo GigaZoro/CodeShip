@@ -105,6 +105,7 @@ export class ServiceLauncherClient extends Context.Service<
     readonly requestUpdate: (input: {
       readonly targetVersion: string;
       readonly dbPath: string;
+      readonly migratesDatabase?: boolean;
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,
@@ -199,7 +200,11 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
       }),
     );
 
-  const requestUpdate = (input: { readonly targetVersion: string; readonly dbPath: string }) =>
+  const requestUpdate = (input: {
+    readonly targetVersion: string;
+    readonly dbPath: string;
+    readonly migratesDatabase?: boolean;
+  }) =>
     exchange(
       { type: "request-update", ...input },
       (reply) => reply.type === "update-accepted" || reply.type === "update-rejected",

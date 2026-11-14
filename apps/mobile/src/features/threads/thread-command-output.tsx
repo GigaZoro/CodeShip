@@ -45,7 +45,9 @@ export function ThreadCommandOutput(props: {
         ? t("Loading output…")
         : data.running
           ? null
-          : t("No output.");
+          : data.removed
+            ? t("Output is no longer available.")
+            : t("No output.");
     return message === null ? null : (
       <Text className="pt-1.5 font-mono text-2xs leading-normal text-foreground-muted">
         {message}

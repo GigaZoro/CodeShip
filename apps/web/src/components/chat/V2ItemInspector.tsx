@@ -128,7 +128,8 @@ function useFetchedTurnItem(
       : null,
     source?.detail,
   );
-  const fetchedItem = detail.data?.item;
+  const removed = detail.data?.item === null || detail.data?.outputRemoved === true;
+  const fetchedItem = removed ? undefined : detail.data?.item;
   const item = fetchedItem?.type === wireItem.type ? fetchedItem : wireItem;
   return {
     item,
@@ -138,11 +139,7 @@ function useFetchedTurnItem(
       environmentId,
       pending: item === wireItem && detail.isPending,
       error:
-        item !== wireItem
-          ? null
-          : detail.data?.item === null
-            ? t("Output is no longer available.")
-            : detail.error,
+        item !== wireItem ? null : removed ? t("Output is no longer available.") : detail.error,
       empty: fetches && item !== wireItem,
     },
   };

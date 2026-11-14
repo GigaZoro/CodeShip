@@ -40,7 +40,7 @@ import {
   useResourceTelemetryHistory,
 } from "../../lib/resourceTelemetryState";
 import { cn } from "../../lib/utils";
-import { formatBytes } from "../../lib/formatBytes";
+import { formatBytes } from "@t3tools/shared/formatBytes";
 import { ensureLocalApi } from "../../localApi";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
@@ -1288,7 +1288,7 @@ function ResourceTelemetryDiagnosticsBody({
         </div>
       </SettingsSection>
 
-      {liveCounters || (history.data?.buckets.length ?? 0) > 0 ? (
+      {liveCounters || history.error !== null || (history.data?.buckets.length ?? 0) > 0 ? (
         <SettingsSection
           title={t("Resource timeline")}
           icon={<HardDriveIcon className="size-4 text-muted-foreground" />}

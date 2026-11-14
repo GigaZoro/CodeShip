@@ -38,16 +38,33 @@ Client update waits must outlast the deadline, or a slow update shows as failed.
 
 ## Database rollback
 
-Before stopping the old child, the launcher refuses an update whose snapshot will
-not fit on disk, so a full disk does not cause an outage. After the old child
-exits, the launcher snapshots SQLite's main file, WAL, and shared-memory file. This makes trial migrations reversible without down
-migrations. The snapshot is made once per update and survives launcher restarts;
-replacing it during a retry could capture changes from the failed trial.
+The snapshot exists to undo migrations, so the launcher makes one only when the
+target build will apply a migration. The target's preflight reports this as
+`migratesDatabase`: startup's migrator runs every migration above the highest
+recorded id, so the database migrates when its history is empty or ends below the
+build's migration head. When the head is equal, nothing changes the schema, the
+previous build still reads the database, and rollback needs no restore. The
+preflight already refuses a database that records migrations the target does not
+know. A target whose preflight predates the field, or a request without it, is
+treated as migrating.
+
+For a migrating update, the launcher refuses before stopping the old child when
+the snapshot will not fit on disk, so a full disk does not cause an outage. After
+the old child exits, it snapshots SQLite's main file, WAL, and shared-memory file.
+This makes trial migrations reversible without down migrations. The snapshot is
+made once per update and survives launcher restarts; replacing it during a retry
+could capture changes from the failed trial. An update that skips the snapshot
+records that on its pending state, so the space check and the copy are both skipped.
+An older launcher ignores the field and snapshots every update, so the launcher
+needs a local service update to benefit.
 
 Rollback stops the trial before restoring. A durable restore marker makes an
 interrupted restore finish before either version boots. Keep the snapshot until
 commit, or until both restoration and the terminal rollback state are durable.
-Attachments and other files outside SQLite are outside this rollback boundary.
+Restoring with no snapshot leaves the database as the trial left it: the previous
+schema, and little else written, because the trial accepts no commands and runs no
+background work before commit. Attachments and other files outside SQLite are outside this
+rollback boundary.
 
 ## Client acknowledgement
 

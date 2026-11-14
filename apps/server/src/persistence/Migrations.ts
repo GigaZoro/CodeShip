@@ -92,6 +92,7 @@ import Migration0086 from "./Migrations/086_ScheduledTaskRunConditions.ts";
 import Migration0087 from "./Migrations/087_UsageLimitAnsweredAttempts.ts";
 import Migration0088 from "./Migrations/088_ScheduledTaskLastRunOccurrence.ts";
 import Migration0089 from "./Migrations/089_ScheduledTaskRunFailoverReason.ts";
+import Migration0090 from "./Migrations/090_ThreadToolOutputRetention.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -184,6 +185,7 @@ const migrationEntries = [
   [87, "UsageLimitAnsweredAttempts", Migration0087],
   [88, "ScheduledTaskLastRunOccurrence", Migration0088],
   [89, "ScheduledTaskRunFailoverReason", Migration0089],
+  [90, "ThreadToolOutputRetention", Migration0090],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

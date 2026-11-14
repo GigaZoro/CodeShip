@@ -269,7 +269,9 @@ export async function databaseBackupBlocker(
 }
 
 // Preserve completed backups; restarted trials may already have changed the live database.
+// A target that applies no migration leaves the schema as it was, so there is nothing to undo.
 async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
+  if (pending.migratesDatabase === false) return;
   const backupDir = databaseBackupDir(baseDir, pending.id);
   if (await pathExists(backupDir)) return;
 
@@ -696,15 +698,14 @@ export class Launcher {
       await reject("The requested target runtime is missing or incomplete.");
       return;
     }
+    const snapshotsDatabase = message.migratesDatabase !== false;
     // Failed checks must refuse updates rather than stop the server with unknown backup capacity.
-    const backupBlocker = await databaseBackupBlocker(
-      this.#baseDir,
-      message.dbPath,
-      this.#backupSpaceProbe,
-    ).catch(
-      (error: unknown) =>
-        `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
-    );
+    const backupBlocker = snapshotsDatabase
+      ? await databaseBackupBlocker(this.#baseDir, message.dbPath, this.#backupSpaceProbe).catch(
+          (error: unknown) =>
+            `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
+        )
+      : undefined;
     if (!child.process.connected) return;
     if (backupBlocker !== undefined) {
       await reject(backupBlocker);
@@ -716,6 +717,7 @@ export class Launcher {
       fromVersion: child.version,
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,
+      ...(snapshotsDatabase ? {} : { migratesDatabase: false }),
       status: "pending",
     };
     const next: ServiceState = { ...this.#state, update: pending };

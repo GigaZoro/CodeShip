@@ -1018,7 +1018,8 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       : undefined;
   const canExpand = row.canExpand && notifiedSubagentThreadId === undefined;
   const reasoning = row.projectedItem.item.type === "reasoning" ? row.projectedItem.item : null;
-  const fetchedItem = fetchedDetail.data?.item ?? null;
+  const fetchedItem =
+    fetchedDetail.data?.outputRemoved === true ? null : (fetchedDetail.data?.item ?? null);
   const isRead = toolGroupAction(row.workEntry) === "read";
   const shownItem = fetchedItem ?? row.projectedItem.item;
   const call =

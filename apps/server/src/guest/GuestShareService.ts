@@ -59,6 +59,7 @@ import {
   projectDomainEventForWire,
   projectTurnItemForDetail,
   projectTurnItemForWire,
+  turnItemDetailRemoved,
 } from "../orchestration-v2/WireProjection.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -665,6 +666,7 @@ const make = Effect.gen(function* () {
 
   const item = Effect.fn("GuestShareService.item")(function* (session: string, itemId: string) {
     const { item } = yield* threadItem(session, itemId);
+    if (turnItemDetailRemoved(item)) return yield* unavailable;
     return {
       item:
         item.type === "file_change" ? projectTurnItemForWire(item) : projectTurnItemForDetail(item),

@@ -12,6 +12,7 @@ import * as ServerConfig from "../config.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as DatabaseStorage from "./DatabaseStorage.ts";
 import * as Sqlite from "./Sqlite.ts";
 
@@ -29,6 +30,7 @@ const storageLayer = <E>(
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
     Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(config),
     Layer.provide(NodeServices.layer),
@@ -60,16 +62,19 @@ const compactionLayer = (
     Layer.provide(
       Layer.succeed(ProjectionMaintenance.ProjectionMaintenanceV2, {
         compactEventStore,
+        pruneColdThreadToolOutput: () => Effect.succeed(emptyRetention),
         verify: Effect.die("unexpected verification"),
         rebuild: Effect.die("unexpected rebuild"),
       }),
     ),
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(Sqlite.layerMemory),
   );
 
 const minute = 60_000;
 const startupTime = Date.UTC(2026, 9, 19);
 const emptyCompaction = { deletedEventCount: 0, deletedReceiptCount: 0, reclaimableBytes: 0 };
+const emptyRetention = { threadCount: 0, itemCount: 0, eventCount: 0, unreadableItemCount: 0 };
 
 it.effect("remembers completion only after the paced pass finishes", () =>
   Effect.gen(function* () {

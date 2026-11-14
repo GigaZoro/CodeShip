@@ -108,7 +108,7 @@ const writeCommandItem = (
   threadId: ThreadId,
   fields: Pick<
     Extract<OrchestrationV2TurnItem, { type: "command_execution" }>,
-    "status" | "output" | "exitCode"
+    "status" | "output" | "exitCode" | "outputOmitted"
   >,
 ) =>
   Effect.gen(function* () {
@@ -298,6 +298,28 @@ layer("CommandOutputHub", (it) => {
         assert.isTrue(final.truncated);
         assert.isTrue(final.text.includes("xxxx"));
         assert.isAtMost(final.text.length, TERMINAL_OUTPUT_TAIL_CHARS);
+      }),
+    ),
+  );
+
+  it.effect("a command whose output retention removed says so and ends", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const threadId = yield* seedThread;
+        yield* writeCommandItem(threadId, {
+          status: "completed",
+          exitCode: 0,
+          outputOmitted: true,
+        });
+        const frames = yield* subscribeFrames(threadId);
+        assert.deepEqual(yield* takeFrame(frames), {
+          kind: "replace",
+          text: "",
+          truncated: false,
+          running: false,
+          removed: true,
+        });
+        assert.equal(yield* Queue.take(frames), "ended");
       }),
     ),
   );

@@ -3784,6 +3784,8 @@ export const OrchestrationV2CommandOutputFrame = Schema.Struct({
   /** Earlier output was dropped to keep the tail bounded. */
   truncated: Schema.Boolean,
   running: Schema.Boolean,
+  /** Retention removed this settled command's output; older servers never send it. */
+  removed: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2CommandOutputFrame = typeof OrchestrationV2CommandOutputFrame.Type;
 
@@ -4368,6 +4370,8 @@ export type OrchestrationV2GetTurnItemInput = typeof OrchestrationV2GetTurnItemI
 
 export const OrchestrationV2GetTurnItemResult = Schema.Struct({
   item: Schema.NullOr(OrchestrationV2TurnItem),
+  /** Retention removed the full output; `item` is the timeline shape, status included. */
+  outputRemoved: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2GetTurnItemResult = typeof OrchestrationV2GetTurnItemResult.Type;
 

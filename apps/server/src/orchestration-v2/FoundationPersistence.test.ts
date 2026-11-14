@@ -356,6 +356,7 @@ it.effect("paces scheduled compaction while preserving retention state and fixed
     }).pipe(
       Effect.provide(
         DatabaseStorage.layer.pipe(
+          Layer.provide(ServerSettings.layerTest()),
           Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "compaction-" })),
           Layer.provide(NodeServices.layer),
         ),

@@ -31,7 +31,7 @@ import {
   addProjectToMachine,
   isDefaultCopiedFile,
 } from "../lib/addProjectToMachine";
-import { formatBytes } from "../lib/formatBytes";
+import { formatBytes } from "@t3tools/shared/formatBytes";
 import { newProjectId } from "../lib/utils";
 import { readProject, subscribeProject, useProject } from "../state/entities";
 import { useEnvironments } from "../state/environments";

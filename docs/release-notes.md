@@ -1,3 +1,9 @@
+## 2026-11-14 — The database stops growing with old tool output
+
+- Every command and tool result stayed in the database forever, so it grew by about a gigabyte a day on a busy machine, and most of that was output nobody would open again. The server now removes command and tool output from a settled, archived or deleted chat once it and every fork of it have had 7 days without activity. Every step stays in the chat, and expanding one shows "Output is no longer available." A chat keeps its output while it or any fork of it is open, pinned or recently active, and MCP app results always keep theirs. Change or turn this off with **Remove old tool output** in Settings → Maintenance & about → Storage & cleanup; the space returns to disk gradually while the server runs.
+- That page also shows how large each machine's database is and how much of it can be reclaimed, and the server logs the size after each cleanup pass.
+- A server update that applies no database migration no longer copies the whole database for its rollback, so it needs no free space for a copy and no time to make one. An update that migrates still makes the copy. The launcher picks this up after a local `t3 service update`.
+
 ## 2026-11-14 — A scheduled chat no longer waits for hours on an approval nobody sees
 
 - In a scheduled task with Full access, Claude still asks before touching files it protects even under bypass, such as its own settings. Nobody was watching to approve, so the chat waited for hours and the task skipped every time after it. Such a step, in the chat or in a delegated task with Full access it started, is now declined, with a reply from T3.CodeShip telling the agent to finish the rest and say what still needs you. A step in work you started yourself, such as a message you sent into one of those chats, still waits for you.

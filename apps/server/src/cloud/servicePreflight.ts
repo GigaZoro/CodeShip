@@ -9,6 +9,8 @@ export type ServicePreflightResult =
       readonly status: "ready";
       readonly version: string;
       readonly launcherProtocol: typeof SERVICE_LAUNCHER_PROTOCOL;
+      /** Whether starting this build would apply a migration to the database. */
+      readonly migratesDatabase: boolean;
     }
   | {
       readonly status: "blocked";
@@ -53,7 +55,19 @@ export function runServicePreflight(input: {
     };
   }
 
-  return { status: "ready", version, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL };
+  return {
+    status: "ready",
+    version,
+    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+    migratesDatabase: willMigrate(input.databasePath),
+  };
+}
+
+/** Startup's migrator runs every migration above the highest recorded id, so an empty history or
+ * one below this build's head migrates; an unreadable one was already blocked. */
+function willMigrate(databasePath: string): boolean {
+  const recorded = recordedMigrations(databasePath) ?? [];
+  return Math.max(0, ...recorded.map(({ id }) => id)) < BUILD_MIGRATION_HEAD;
 }
 
 /** Migrations a newer build recorded, or null when the database exists but cannot be read.
@@ -79,6 +93,8 @@ export function decodeServicePreflightResult(value: unknown): ServicePreflightRe
       status: "ready",
       version: record.version,
       launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      // Builds from before this field migrate whenever they need to, so assume they do.
+      migratesDatabase: record.migratesDatabase !== false,
     };
   }
   if (

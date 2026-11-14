@@ -491,6 +491,84 @@ if (context.update?.status === "pending") {
     }),
   );
 
+  it.effect.each([false, true, undefined] as const)(
+    "snapshots the database unless the target migrates nothing (migratesDatabase %s)",
+    (migratesDatabase) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-nomig-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const databasePath = path.join(root, "userdata", "state.sqlite");
+        const seenPath = path.join(root, "backup-seen.txt");
+        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+        yield* fs.writeFileString(databasePath, "database");
+        const encoded = JSON.stringify({ databasePath, seenPath, migratesDatabase });
+        const childSource = `
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const paths = ${encoded};
+const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+if (context.update?.status === "pending") {
+  const backupDir = join(paths.databasePath, "..", "..", "runtime", "db-backup", context.update.id);
+  writeFileSync(paths.seenPath, String(existsSync(backupDir)));
+  process.exit(1);
+} else if (context.update === undefined) {
+  process.send({
+    type: "request-update",
+    targetVersion: "1.1.0",
+    dbPath: paths.databasePath,
+    ...(paths.migratesDatabase === undefined ? {} : { migratesDatabase: paths.migratesDatabase }),
+  });
+  setInterval(() => {}, 1_000);
+} else {
+  process.exit(0);
+}
+`;
+        for (const version of ["1.0.0", "1.1.0"]) {
+          yield* writeFakeRuntime(
+            fs,
+            path,
+            path.join(root, "runtime", "versions", version),
+            childSource,
+          );
+        }
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+          }),
+        );
+        let spaceChecks = 0;
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+          {
+            backupSpaceProbe: {
+              readFreeBytes: async () => {
+                spaceChecks += 1;
+                return Number.MAX_SAFE_INTEGER;
+              },
+            },
+          },
+        );
+        yield* Effect.promise(() =>
+          launcher.run().then(
+            () => Promise.reject(new Error("launcher unexpectedly completed")),
+            () => Promise.resolve(),
+          ),
+        );
+
+        const snapshots = migratesDatabase !== false;
+        assert.equal(yield* fs.readFileString(seenPath), String(snapshots));
+        assert.equal(spaceChecks, snapshots ? 1 : 0);
+        const state = yield* Effect.promise(() => readServiceState(statePath));
+        assert.equal(state.activeVersion, "1.0.0");
+        assert.equal(state.update?.status, "rolled-back");
+        assert.equal(yield* fs.readFileString(databasePath), "database");
+      }),
+  );
+
   it.effect.each(["file", "symlink", "dangling symlink"] as const)(
     "restores the database when a migrating trial exits, with the database a %s",
     (kind) =>

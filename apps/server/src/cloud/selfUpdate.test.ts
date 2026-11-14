@@ -27,6 +27,7 @@ interface HarnessOptions {
   readonly mode?: "web" | "desktop";
   readonly managed?: boolean;
   readonly preflight?: "ready" | "blocked";
+  readonly preflightMigratesDatabase?: boolean;
   readonly preflightDuration?: Duration.Input;
   readonly preflightStarted?: Deferred.Deferred<void>;
   readonly beforeDownload?: Effect.Effect<void>;
@@ -104,6 +105,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
                 status: "ready",
                 version: "1.1.0",
                 launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                migratesDatabase: options.preflightMigratesDatabase ?? true,
               };
         return {
           stdout: JSON.stringify(result),
@@ -253,6 +255,24 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       // Not left in flight: the next update goes ahead.
       expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
     }),
+  );
+
+  it.effect.each([false, true] as const)(
+    "tells the launcher whether the target migrates the database (%s)",
+    (migratesDatabase) =>
+      Effect.gen(function* () {
+        const requests: Array<{ readonly migratesDatabase?: boolean }> = [];
+        const { selfUpdate } = yield* makeHarness({
+          preflightMigratesDatabase: migratesDatabase,
+          requestUpdate: (input) =>
+            Effect.sync(() => {
+              requests.push(input);
+              return "launcher-id";
+            }),
+        });
+        yield* selfUpdate.update({ targetVersion: "1.1.0" });
+        expect(requests.map((request) => request.migratesDatabase)).toEqual([migratesDatabase]);
+      }),
   );
 
   it.effect("allows only one update at a time", () =>

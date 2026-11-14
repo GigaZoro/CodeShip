@@ -21,4 +21,12 @@ describe("applyCommandOutputFrame", () => {
     expect(view.output.text).toBe("install\n\u001b[0;32m100%\u001b[0m\n");
     expect(view.running).toBe(true);
   });
+
+  it("marks output the server removed, and only that output", () => {
+    const frame = { kind: "replace", text: "", truncated: false, running: false } as const;
+    expect(applyCommandOutputFrame(EMPTY_COMMAND_OUTPUT, { ...frame, removed: true }).removed).toBe(
+      true,
+    );
+    expect(applyCommandOutputFrame(EMPTY_COMMAND_OUTPUT, frame).removed).toBe(false);
+  });
 });

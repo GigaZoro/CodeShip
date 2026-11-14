@@ -59,7 +59,9 @@ export function CommandOutputPanel(props: {
     ) : data === null ? (
       <div className="text-muted-foreground italic">{t("Loading output…")}</div>
     ) : data.running ? null : (
-      <div className="text-muted-foreground italic">{t("No output.")}</div>
+      <div className="text-muted-foreground italic">
+        {data.removed ? t("Output is no longer available.") : t("No output.")}
+      </div>
     );
     return (
       <>

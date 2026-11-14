@@ -12,7 +12,7 @@ import {
 } from "../persistence/databaseMigrationHead.ts";
 import { migrationManifest } from "../persistence/Migrations.ts";
 
-import { runServicePreflight } from "./servicePreflight.ts";
+import { decodeServicePreflightResult, runServicePreflight } from "./servicePreflight.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 // regression: #13239 a stale CLI shadowing the updated one kept "updating" to itself
@@ -49,8 +49,29 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       const preflight = () =>
         runServicePreflight({ databasePath, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL });
 
-      expect(preflight().status).toBe("ready");
+      expect(preflight()).toMatchObject({ status: "ready", migratesDatabase: false });
       expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
+
+      // A build ahead of the database applies migrations; a missing database is built from scratch.
+      db.prepare("DELETE FROM effect_sql_migrations WHERE migration_id = ?").run(
+        BUILD_MIGRATION_HEAD,
+      );
+      expect(preflight()).toMatchObject({ status: "ready", migratesDatabase: true });
+      insert.run(BUILD_MIGRATION_HEAD, "Restored");
+      expect(
+        runServicePreflight({
+          databasePath: path.join(path.dirname(databasePath), "fresh.sqlite"),
+          launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+        }),
+      ).toMatchObject({ status: "ready", migratesDatabase: true });
+      // Builds that predate the field report nothing, which must read as "migrates".
+      expect(
+        decodeServicePreflightResult({
+          status: "ready",
+          version: "1.0.0",
+          launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+        }),
+      ).toMatchObject({ migratesDatabase: true });
 
       const newerId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
       insert.run(newerId, "FromNightly");

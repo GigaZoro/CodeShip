@@ -27,6 +27,7 @@ import {
   makeLiveBodyDeduper,
   projectTurnItemForWire,
   projectTurnItemForDetail,
+  turnItemDetailResult,
   projectDomainEventForWire,
 } from "./WireProjection.ts";
 import { threadShellFromProjection } from "./ProjectionStore.ts";
@@ -216,6 +217,34 @@ describe("orchestration V2 wire projection", () => {
       output: { content: [{ type: "image", mimeType: "image/png" }] },
     });
     expect(item.output.content[0]?.source.data).toBe(data);
+  });
+
+  it("returns the timeline shape with its status once retention removed the output", () => {
+    const command = {
+      ...base,
+      type: "command_execution" as const,
+      input: "ls",
+      output: "file\n",
+      exitCode: 0,
+    };
+    const tool = {
+      ...base,
+      type: "dynamic_tool" as const,
+      toolName: "mcp__docs__search",
+      input: { query: "x".repeat(20_000) },
+    };
+    expect(turnItemDetailResult(command)).toEqual({ item: projectTurnItemForDetail(command) });
+    expect(turnItemDetailResult(tool)).toEqual({ item: projectTurnItemForDetail(tool) });
+    // Stop reads the status to settle a stale spinner, so the removed item still comes back.
+    expect(turnItemDetailResult(projectTurnItemForWire(command))).toEqual({
+      item: projectTurnItemForWire(command),
+      outputRemoved: true,
+    });
+    expect(turnItemDetailResult(projectTurnItemForWire(tool))).toEqual({
+      item: projectTurnItemForWire(tool),
+      outputRemoved: true,
+    });
+    expect(turnItemDetailResult(null)).toEqual({ item: null });
   });
 
   it("keeps image markers when the rest of a tool output is too large to send", () => {

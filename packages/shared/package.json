@@ -7,6 +7,10 @@
       "types": "./src/providerLoginExpiry.ts",
       "import": "./src/providerLoginExpiry.ts"
     },
+    "./formatBytes": {
+      "types": "./src/formatBytes.ts",
+      "import": "./src/formatBytes.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

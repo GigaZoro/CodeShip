@@ -547,6 +547,12 @@ Results also list folders in the worktree folder that no thread uses, with their
 Browser captures and rotated logs have separate retention periods. Expired capture links stop
 working. Current logs, message attachments, and browser profiles are kept.
 
+**Remove old tool output** removes command and tool output from settled and archived chats
+after the chosen number of idle days (7 by default; turn it off to keep all output). The steps
+stay in the chat and show "Output is no longer available." A chat keeps its output while it or
+any fork of it is open or pinned. The Database section shows how large each machine's database
+is.
+
 ## Project icons
 
 Select the project and open Project to choose an icon, emoji, monogram, or image. The choice applies to

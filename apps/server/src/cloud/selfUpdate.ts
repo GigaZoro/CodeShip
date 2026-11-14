@@ -209,6 +209,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
     return yield* Effect.gen(function* () {
       yield* reportProgress("downloading");
+      const migratesDatabase = yield* Ref.make(true);
       const paths = yield* ensurePinnedRuntimeInstalled({
         baseDir: serverConfig.baseDir,
         version: targetVersion,
@@ -278,7 +279,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
                     );
                   }
                   return preflight.status === "ready"
-                    ? Effect.void
+                    ? Ref.set(migratesDatabase, preflight.migratesDatabase)
                     : Effect.fail(
                         new PinnedRuntimePreflightBlockedError({
                           version: targetVersion,
@@ -299,17 +300,23 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       yield* beforeHandoff();
       yield* reportProgress("installing");
       const updateId = yield* Effect.uninterruptible(
-        launcher.requestUpdate({ targetVersion, dbPath: serverConfig.dbPath }).pipe(
-          Effect.mapError((error) =>
-            failWith(
-              error._tag === "ServiceLauncherRejectedError"
-                ? error.reason
-                : "Could not ask the service launcher to activate the prepared update.",
-              error,
+        launcher
+          .requestUpdate({
+            targetVersion,
+            dbPath: serverConfig.dbPath,
+            migratesDatabase: yield* Ref.get(migratesDatabase),
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              failWith(
+                error._tag === "ServiceLauncherRejectedError"
+                  ? error.reason
+                  : "Could not ask the service launcher to activate the prepared update.",
+                error,
+              ),
             ),
+            Effect.tap(() => onHandoffAccepted()),
           ),
-          Effect.tap(() => onHandoffAccepted()),
-        ),
       );
 
       yield* Effect.logInfo("Server update prepared; handing off to the service launcher.", {

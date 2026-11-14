@@ -1,6 +1,7 @@
 import type { DatabaseStorageStatus } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -16,6 +17,7 @@ import { resolveHostCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import { forkParked } from "../serverActivation.ts";
+import * as Settings from "../serverSettings.ts";
 
 // Bound each reclaim pass to one minute of churn.
 const RECLAIM_PAGES_PER_PASS = 1024;
@@ -35,6 +37,7 @@ export class DatabaseStorage extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+  const settingsService = yield* Settings.ServerSettingsService;
   const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -96,6 +99,19 @@ const make = Effect.gen(function* () {
     Effect.catch((cause) => Effect.logWarning("Database space reclamation failed", { cause })),
   );
 
+  const pruneToolOutput = Effect.fn("DatabaseStorage.pruneToolOutput")(
+    function* (betweenPages: Effect.Effect<void>) {
+      const days = (yield* settingsService.getSettings).storageCleanup.toolOutputAfterDays;
+      if (days === null) return;
+      const idleBefore = DateTime.subtract(yield* DateTime.now, { days });
+      const result = yield* maintenance.pruneColdThreadToolOutput({ idleBefore, betweenPages });
+      if (result.threadCount > 0 || result.unreadableItemCount > 0) {
+        yield* Effect.logInfo("Removed old tool output from idle chats", result);
+      }
+    },
+    Effect.catch((cause) => Effect.logWarning("Old tool output removal failed", { cause })),
+  );
+
   // Even a pass that deletes nothing scans the event store. Persist completion
   // so restarting does not trigger another scan before the six-hour interval.
   const compactedAtPath = path.join(path.dirname(config.dbPath), "compacted-at");
@@ -108,12 +124,19 @@ const make = Effect.gen(function* () {
       yield* Effect.sleep((Number(elapsed) / 1_000_000) * 9);
       sliceStarted = yield* Clock.monotonicTimeNanos;
     });
+    yield* pruneToolOutput(betweenPages);
     const result = yield* maintenance.compactEventStore(betweenPages);
     const completedAt = yield* Clock.currentTimeMillis;
     yield* fs.writeFileString(compactedAtPath, String(completedAt)).pipe(Effect.ignore);
     if (result.deletedEventCount > 0 || result.deletedReceiptCount > 0) {
       yield* Effect.logInfo("Compacted orchestration history", result);
     }
+    const { pageSize } = yield* readLayout;
+    const pages = yield* sql<{ readonly page_count: number }>`PRAGMA page_count`;
+    yield* Effect.logInfo("Database size", {
+      databaseBytes: (pages[0]?.page_count ?? 0) * pageSize,
+      reclaimableBytes: result.reclaimableBytes,
+    });
   }).pipe(
     Effect.catch((cause) =>
       Effect.logWarning("Orchestration history compaction failed", { cause }),
