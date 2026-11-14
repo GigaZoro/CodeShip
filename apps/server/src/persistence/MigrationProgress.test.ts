@@ -33,12 +33,25 @@ const listen = (server: NodeHttp.Server) =>
   );
 
 const get = (port: number, path: string) =>
-  Effect.callback<{ readonly status: number; readonly body: string }>((resume) => {
+  Effect.callback<{
+    readonly status: number;
+    readonly body: string;
+    readonly allowOrigin?: string | string[];
+  }>((resume) => {
     NodeHttp.get({ host: "127.0.0.1", port, path, agent: false }, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk: string) => (body += chunk));
-      response.on("end", () => resume(Effect.succeed({ status: response.statusCode ?? 0, body })));
+      response.on("end", () => {
+        const allowOrigin = response.headers["access-control-allow-origin"];
+        resume(
+          Effect.succeed({
+            status: response.statusCode ?? 0,
+            body,
+            ...(allowOrigin === undefined ? {} : { allowOrigin }),
+          }),
+        );
+      });
     }).on("error", (error) => resume(Effect.die(error)));
   });
 
@@ -110,6 +123,7 @@ it.effect("a server migrating a large database answers its descriptor path with 
     const afterMigration = yield* get(port, ENVIRONMENT_DESCRIPTOR_PATH);
 
     assert.strictEqual(descriptor.status, 503);
+    assert.strictEqual(descriptor.allowOrigin, "*");
     const { startup } = JSON.parse(descriptor.body) as {
       readonly startup: { readonly migration: string; readonly progress: number };
     };

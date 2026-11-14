@@ -683,13 +683,13 @@ describe("DesktopBackendManager", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
-        const migration: EnvironmentStartup = {
+        const migration = (progress: number): EnvironmentStartup => ({
           migration: "91_CompactOrchestrationIds",
-          progress: 0.5,
-        };
+          progress,
+        });
         const lastProgress = yield* Ref.make(Option.none<EnvironmentStartup>());
         const startInstance = (
-          status: Ref.Ref<number | "migrating">,
+          status: Ref.Ref<number | EnvironmentStartup>,
           onReady?: Effect.Effect<void>,
         ) =>
           makeTestInstance({
@@ -702,17 +702,15 @@ describe("DesktopBackendManager", () => {
             httpClientLayer: layerHttpClient((request) =>
               Ref.get(status).pipe(
                 Effect.map((code) =>
-                  code === "migrating"
-                    ? HttpClientResponse.fromWeb(
+                  typeof code === "number"
+                    ? responseForRequest(request, code)
+                    : HttpClientResponse.fromWeb(
                         request,
                         new Response(
-                          JSON.stringify({
-                            startup: migration,
-                          } satisfies EnvironmentStartingResponse),
+                          JSON.stringify({ startup: code } satisfies EnvironmentStartingResponse),
                           { status: 503 },
                         ),
-                      )
-                    : responseForRequest(request, code),
+                      ),
                 ),
               ),
             ),
@@ -721,7 +719,7 @@ describe("DesktopBackendManager", () => {
             ...(onReady ? { onReady } : {}),
           }).pipe(Effect.tap((instance) => instance.start));
 
-        const slowStatus = yield* Ref.make<number | "migrating">(503);
+        const slowStatus = yield* Ref.make<number | EnvironmentStartup>(503);
         const ready = yield* Deferred.make<void>();
         yield* startInstance(slowStatus, Deferred.succeed(ready, undefined).pipe(Effect.asVoid));
         yield* TestClock.adjust(Duration.seconds(66));
@@ -731,20 +729,29 @@ describe("DesktopBackendManager", () => {
         assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
         assert.isTrue(Option.isNone(yield* Ref.get(lastProgress)));
 
-        const migratingStatus = yield* Ref.make<number | "migrating">("migrating");
+        // Each 3-minute round in which the migration moves is not a failure; a stalled one is.
+        const migratingStatus = yield* Ref.make<number | EnvironmentStartup>(migration(0.5));
         const migrated = yield* Deferred.make<void>();
         yield* startInstance(
           migratingStatus,
           Deferred.succeed(migrated, undefined).pipe(Effect.asVoid),
         );
         yield* TestClock.adjust(Duration.minutes(4));
+        yield* Ref.set(migratingStatus, migration(0.75));
+        yield* TestClock.adjust(Duration.minutes(3));
         assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
-        assert.deepEqual(yield* Ref.get(lastProgress), Option.some(migration));
+        assert.deepEqual(yield* Ref.get(lastProgress), Option.some(migration(0.75)));
+        yield* TestClock.adjust(Duration.minutes(3));
+        const stalled = yield* Queue.poll(reports);
+        assert.equal(
+          Option.getOrUndefined(stalled)?.reason,
+          "The server started but did not become ready in time.",
+        );
         yield* Ref.set(migratingStatus, 200);
         yield* TestClock.adjust(Duration.millis(100));
         yield* Deferred.await(migrated);
 
-        yield* startInstance(yield* Ref.make<number | "migrating">(503));
+        yield* startInstance(yield* Ref.make<number | EnvironmentStartup>(503));
         yield* TestClock.adjust(Duration.seconds(179));
         assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
         yield* TestClock.adjust(Duration.seconds(1));

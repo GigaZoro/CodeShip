@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type EnvironmentStartup,
   type OrchestrationV2RestartHold,
   OrchestrationV2RestartHoldError,
   type OrchestrationV2RestartHoldWork,
@@ -26,9 +27,11 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as HttpClient from "effect/http/HttpClient";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
@@ -42,7 +45,9 @@ import {
   scheduleAtomCommandEffect,
 } from "./runtime.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
+import { connectionRoutes, routeHttpBaseUrl } from "../connection/routes.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import { fetchEnvironmentStartup } from "../environment/descriptor.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
@@ -191,10 +196,61 @@ export class ServerUpdateTerminalError extends Schema.TaggedError<ServerUpdateTe
   }
 }
 
-// Covers a trial that finishes within the launcher's first 30-minute deadline (PREPARED_TIMEOUT_MS)
-// and the restart of the previous version on rollback. A trial whose migration keeps reporting
-// progress may run longer; this wait then ends in the reconnect prompt, not a failure.
+// The launcher's 30-minute trial deadline (PREPARED_TIMEOUT_MS) plus the restart of the previous
+// version on rollback. Like that deadline, it starts again whenever the starting server reports
+// new migration progress.
 const SERVER_UPDATE_RESUME_TIMEOUT = Duration.minutes(32);
+const SERVER_STARTUP_POLL_INTERVAL = Duration.seconds(5);
+
+/** None once `quiet` passes without a new startup report; each different report restarts it. */
+export function timeoutUnlessStartupAdvances<A, E, R, R2>(
+  effect: Effect.Effect<A, E, R>,
+  reports: Stream.Stream<EnvironmentStartup, never, R2>,
+  quiet: Duration.Duration,
+): Effect.Effect<Option.Option<A>, E, R | R2> {
+  return Effect.raceFirst(
+    Effect.asSome(effect),
+    Stream.make(null).pipe(
+      Stream.concat(Stream.changes(reports)),
+      // debounce emits at once when its source ends, so the reports must not end the wait.
+      Stream.concat(Stream.never),
+      Stream.debounce(quiet),
+      Stream.runHead,
+      Effect.as(Option.none<A>()),
+    ),
+  );
+}
+
+/** The migration progress any route of the environment reports while its server starts. */
+const serverStartupReports = (
+  environmentRegistry: EnvironmentRegistry.EnvironmentRegistry["Service"],
+  environmentId: EnvironmentId,
+): Stream.Stream<EnvironmentStartup, never, HttpClient.HttpClient> =>
+  Stream.fromEffectSchedule(
+    Effect.gen(function* () {
+      const entry = (yield* SubscriptionRef.get(environmentRegistry.entries)).get(environmentId);
+      const urls = new Set(
+        entry === undefined
+          ? []
+          : connectionRoutes(entry).flatMap((route) => routeHttpBaseUrl(route) ?? []),
+      );
+      const reports = yield* Effect.forEach(
+        urls,
+        (url) =>
+          fetchEnvironmentStartup(url).pipe(
+            Effect.timeoutOption(SERVER_STARTUP_POLL_INTERVAL),
+            Effect.map(Option.flatten),
+            Effect.orElseSucceed(() => Option.none<EnvironmentStartup>()),
+          ),
+        { concurrency: "unbounded" },
+      );
+      return Option.firstSomeOf(reports);
+    }),
+    Schedule.spaced(SERVER_STARTUP_POLL_INTERVAL),
+  ).pipe(
+    Stream.filter(Option.isSome),
+    Stream.map((report) => report.value),
+  );
 
 export function matchesServerUpdateReadyEvent(
   result: ServerSelfUpdateResult,
@@ -267,7 +323,6 @@ export function nudgeReconnectDuringUpdateRestart(input: {
     Stream.runForEach(() =>
       Effect.sleep(input.interval ?? Duration.seconds(1)).pipe(Effect.andThen(input.retryNow)),
     ),
-    Effect.timeoutOption(SERVER_UPDATE_RESUME_TIMEOUT),
     Effect.ignore,
   );
 }
@@ -285,9 +340,10 @@ export function waitForNextEnvironmentReconnect<E>(
 
 export const runDesktopCommitWithReconnectObserver = Effect.fn(
   "runDesktopCommitWithReconnectObserver",
-)(function* <EState, ECommit>(
+)(function* <EState, ECommit, EResume>(
   stateChanges: Stream.Stream<{ readonly phase: string }, EState>,
   commit: Effect.Effect<void, ECommit>,
+  untilResumed: (reconnected: Effect.Effect<void>) => Effect.Effect<void, EResume>,
 ) {
   const armed = yield* Deferred.make<void>();
   const reconnected = yield* Deferred.make<void>();
@@ -307,7 +363,7 @@ export const runDesktopCommitWithReconnectObserver = Effect.fn(
     yield* Fiber.interrupt(observer);
     return yield* Effect.failCause(commitExit.cause);
   }
-  yield* Deferred.await(reconnected).pipe(Effect.timeout(SERVER_UPDATE_RESUME_TIMEOUT));
+  yield* untilResumed(Deferred.await(reconnected));
   return yield* Effect.failCause(commitExit.cause);
 });
 
@@ -989,6 +1045,27 @@ export function createServerEnvironmentAtoms<R, E>(
 
       return Effect.gen(function* () {
         const environmentRegistry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const httpClient = yield* Effect.serviceOption(HttpClient.HttpClient);
+        const startupReports = Option.match(httpClient, {
+          onNone: () => Stream.empty,
+          onSome: (client) =>
+            serverStartupReports(environmentRegistry, target.environmentId).pipe(
+              Stream.provideService(HttpClient.HttpClient, client),
+            ),
+        });
+        const orResumeTimeout = <A>(resumed: Option.Option<A>) =>
+          Effect.fromOption(
+            resumed,
+            () =>
+              new ServerUpdateResumeTimeoutError({
+                environmentId: target.environmentId,
+                targetVersion,
+              }),
+          );
+        const untilResumed = <A, E2>(wait: Effect.Effect<A, E2>) =>
+          timeoutUnlessStartupAdvances(wait, startupReports, SERVER_UPDATE_RESUME_TIMEOUT).pipe(
+            Effect.flatMap(orResumeTimeout),
+          );
         const desktopCommitStarting = yield* Deferred.make<void>();
         const desktopReconnectObserverArmed = yield* Deferred.make<void>();
         const desktopReconnected = yield* Deferred.make<void>();
@@ -1165,12 +1242,10 @@ export function createServerEnvironmentAtoms<R, E>(
         }).pipe(Effect.forkChild);
 
         if (result.method === "desktop-app" && desktopCommitLostTransport) {
-          yield* Deferred.await(desktopReconnected).pipe(
-            Effect.timeout(SERVER_UPDATE_RESUME_TIMEOUT),
-          );
+          yield* untilResumed(Deferred.await(desktopReconnected));
         }
 
-        const waitForReady = environmentRegistry
+        const nextReady = environmentRegistry
           .followStream(target.environmentId, subscribe(WS_METHODS.subscribeServerLifecycle, {}))
           .pipe(
             Stream.filter(
@@ -1178,21 +1253,9 @@ export function createServerEnvironmentAtoms<R, E>(
                 event.type === "ready" && matchesServerUpdateResumeEvent(result, event),
             ),
             Stream.runHead,
-            Effect.timeoutOption(SERVER_UPDATE_RESUME_TIMEOUT),
-            Effect.map(Option.flatten),
+            untilResumed,
+            Effect.flatMap(orResumeTimeout),
           );
-        const nextReady = waitForReady.pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () =>
-                new ServerUpdateResumeTimeoutError({
-                  environmentId: target.environmentId,
-                  targetVersion,
-                }),
-              onSome: Effect.succeed,
-            }),
-          ),
-        );
         const desktopUpdateToken = result.desktopUpdateToken;
         const resumed =
           result.method === "desktop-app" && desktopUpdateToken !== undefined
@@ -1209,6 +1272,7 @@ export function createServerEnvironmentAtoms<R, E>(
                       }),
                     )
                     .pipe(Effect.asVoid),
+                  untilResumed,
                 ),
               )
             : yield* nextReady;

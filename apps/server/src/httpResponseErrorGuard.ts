@@ -50,6 +50,8 @@ export function rejectRequestsUntilServing<T extends NodeHttp.Server>(
         "retry-after": "1",
         "content-type": "application/json",
         "cache-control": "no-store",
+        // The router's CORS layer is not running yet; web clients on other origins read progress.
+        "access-control-allow-origin": "*",
         connection: "close",
       })
       .end(JSON.stringify(body));

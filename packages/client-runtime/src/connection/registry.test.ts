@@ -561,6 +561,7 @@ describe("EnvironmentRegistry", () => {
           Ref.update(commits, (count) => count + 1).pipe(
             Effect.andThen(Effect.fail("commit refused")),
           ),
+          (reconnected) => reconnected,
         ).pipe(Effect.flip, Effect.timeout("1 second"));
 
         expect(result).toBe("commit refused");

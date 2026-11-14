@@ -1,6 +1,7 @@
 import {
   type AuthEnvironmentScope,
   AuthStandardClientScopes,
+  ENVIRONMENT_DESCRIPTOR_PATH,
   ExecutionEnvironmentDescriptor,
   ORCHESTRATION_PROTOCOL_VERSION,
   PortSchema,
@@ -50,7 +51,6 @@ import {
 import { authScopesFlag } from "./authScopes.ts";
 import { baseDirFlag, DurationFromString } from "./config.ts";
 
-const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
 const PAIR_PROBE_TIMEOUT = Duration.millis(2_500);
 const MAX_PROBE_BODY_BYTES = 64 * 1024;
 // Tailscale's first HTTPS request may take seconds to provision a certificate.
@@ -246,7 +246,7 @@ const probeEnvironmentDescriptor: (
 )(
   function* (baseUrl: string) {
     const client = yield* HttpClient.HttpClient;
-    const request = HttpClientRequest.get(new URL(WELL_KNOWN_ENVIRONMENT_PATH, baseUrl).toString());
+    const request = HttpClientRequest.get(new URL(ENVIRONMENT_DESCRIPTOR_PATH, baseUrl).toString());
     const response = yield* client.execute(request).pipe(
       Effect.timeout(PAIR_PROBE_TIMEOUT),
       Effect.mapError(() => ({ _tag: "unreachable" }) as const),

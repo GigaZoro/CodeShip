@@ -77,8 +77,9 @@ export default ResumableMigration.make({
     const compactValue = (column: string, value: string) =>
       column.endsWith("_json") ? compactLegacyIdsInJson(value) : compactLegacyId(value);
     const selectList = columns.map((column) => `"${column}"`).join(", ");
+    const stopAt = (next: Cursor | undefined) =>
+      Effect.map(progressAt(tables, next), (progress) => ({ next, progress }));
 
-    let next: Cursor | undefined = afterTable;
     let text = 0;
     while (columns.length > 0) {
       const rows = yield* sql.unsafe<Row>(
@@ -93,19 +94,17 @@ export default ResumableMigration.make({
           const compacted = compactValue(column, value);
           return compacted === value ? [] : [[column, compacted] as const];
         });
-        if (changed.length === 0) continue;
-        yield* sql.unsafe(
-          `UPDATE "${table}" SET ${changed.map(([column]) => `"${column}" = ?`).join(", ")} WHERE rowid = ?`,
-          [...changed.map(([, compacted]) => compacted), row.rid],
-        );
+        if (changed.length > 0) {
+          yield* sql.unsafe(
+            `UPDATE "${table}" SET ${changed.map(([column]) => `"${column}" = ?`).join(", ")} WHERE rowid = ?`,
+            [...changed.map(([, compacted]) => compacted), row.rid],
+          );
+        }
+        if (text >= TEXT_PER_STEP) return yield* stopAt({ table, rowid: row.rid });
       }
       if (rows.length < ROWS_PER_QUERY) break;
       lastRowid = rows[rows.length - 1]!.rid;
-      if (text >= TEXT_PER_STEP) {
-        next = { table, rowid: lastRowid };
-        break;
-      }
     }
-    return { next, progress: yield* progressAt(tables, next) };
+    return yield* stopAt(afterTable);
   }),
 });

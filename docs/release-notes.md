@@ -1,7 +1,8 @@
 ## 2026-11-14 — An update that rewrites the database shows its progress instead of failing to start
 
 - The update that shortens stored event ids rewrites every event, which takes minutes on a large database. The desktop app gave up on the backend after 3 minutes, reported that it could not start and restarted it, and each restart began the rewrite again. The rewrite now saves its progress as it goes and continues where it stopped after a restart or a quit, and the desktop app shows **Updating T3.CodeShip** with how much is done until it finishes. Scheduled tasks wait for it.
-- A background service that updates itself now rolls an update back only when its migration stops making progress for 30 minutes, not after 30 minutes in total. This starts with the update after this one, because the version already running decides the deadline.
+- A background service that updates itself now rolls an update back only when its migration stops making progress for 30 minutes, not after 30 minutes in total. This starts with the update after this one, because the version already running decides the deadline. The app that started the update waits as long, instead of reporting it failed after 32 minutes.
+- When a migration stops making progress for 3 minutes, the desktop app reports that the server did not become ready and offers its recovery options, instead of showing the same progress forever.
 
 ## 2026-11-14 — Tool-use evals name the Codex login they run on
 

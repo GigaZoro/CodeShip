@@ -3,6 +3,7 @@ import * as Brand from "effect/Brand";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -553,9 +554,11 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     );
   }
   // Cold WSL boots across /mnt/c can exceed one probe budget; retry while the backend is alive.
-  // A round that saw the backend migrating is not a failure: large databases take many rounds.
+  // A round in which the migration moved is not a failure: large databases take many rounds. A
+  // round in which it stalled is, so the recovery window offers a way out.
+  let lastStartup: EnvironmentStartup | undefined;
   const probeReadiness = Effect.fn("desktop.backendProcess.probeReadiness")(function* () {
-    let migrating = false;
+    let migrated = false;
     const client = (yield* HttpClient.HttpClient).pipe(
       HttpClient.tap((response) =>
         response.status !== 503
@@ -565,7 +568,11 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
                 Option.match(decodeStartingResponse(body), {
                   onNone: () => Effect.void,
                   onSome: ({ startup }) => {
-                    migrating = true;
+                    if (lastStartup !== undefined && Equal.equals(lastStartup, startup)) {
+                      return Effect.void;
+                    }
+                    lastStartup = startup;
+                    migrated = true;
                     return options.onStartupProgress?.(startup) ?? Effect.void;
                   },
                 }),
@@ -586,7 +593,7 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       Effect.as(true),
       Effect.catchTags({
         BackendReadinessTimeoutError: (error) =>
-          migrating
+          migrated
             ? Effect.succeed(false)
             : (options.onReadinessFailure?.(error) ?? Effect.void).pipe(Effect.as(false)),
       }),

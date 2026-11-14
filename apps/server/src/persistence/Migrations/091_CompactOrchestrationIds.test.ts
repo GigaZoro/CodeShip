@@ -122,8 +122,9 @@ it.effect("091 splits a large table into bounded steps and reports growing progr
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 90 });
-    const filler = "x".repeat(20_000);
-    for (let index = 1; index <= 250; index++) {
+    // Small rows span more than one query; each pair of large rows fills a step's text budget.
+    for (let index = 1; index <= 160; index++) {
+      const filler = "x".repeat(index <= 150 ? 1_000 : 600_000);
       yield* insertEvent(`event:${index}`, index, { id: LEGACY_ROOT, filler });
     }
     const reports: Array<{ readonly progress: number; readonly cursor: unknown }> = [];
@@ -143,11 +144,10 @@ it.effect("091 splits a large table into bounded steps and reports growing progr
         ? [cursor]
         : [],
     );
-    assert.deepStrictEqual(eventCursors, [
-      { table: "orchestration_events", rowid: 0 },
-      { table: "orchestration_events", rowid: 100 },
-      { table: "orchestration_events", rowid: 200 },
-    ]);
+    assert.deepStrictEqual(
+      eventCursors,
+      [0, 152, 154, 156, 158, 160].map((rowid) => ({ table: "orchestration_events", rowid })),
+    );
     const progress = reports.map((report) => report.progress);
     assert.deepStrictEqual(
       progress,

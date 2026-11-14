@@ -864,10 +864,15 @@ export class Launcher {
   }
 
   #armPreparedTimeout(child: ManagedChild): void {
-    this.#timer = setTimeout(
-      () => this.#enqueue(() => this.#handlePreparedTimeout(child)),
+    // A deadline that fires while a progress report waits in the queue must not outlive its re-arm.
+    const timer = setTimeout(
+      () =>
+        this.#enqueue(async () => {
+          if (this.#timer === timer) await this.#handlePreparedTimeout(child);
+        }),
       PREPARED_TIMEOUT_MS,
     );
+    this.#timer = timer;
   }
 
   async #handleMessage(child: ManagedChild, message: ServiceLauncherChildMessage): Promise<void> {

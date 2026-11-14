@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  type EnvironmentStartup,
   ProviderDriverKind,
   ServerSelfUpdateError,
   ProviderInstanceId,
@@ -60,6 +61,7 @@ import {
   resolveServerUpdateProgressResult,
   serverUpdateStateForProgressEvent,
   serverUpdateStateForServerVersion,
+  timeoutUnlessStartupAdvances,
   validateServerUpdateReadyEvent,
   waitForNextEnvironmentReconnect,
   waitForDesktopUpdateTarget,
@@ -170,6 +172,7 @@ describe("update restart reconnect nudges", () => {
           Effect.andThen(Queue.offerAll(states, [{ phase: "backoff" }, { phase: "connected" }])),
           Effect.andThen(Effect.fail(disconnect)),
         ),
+        (reconnected) => reconnected,
       ).pipe(Effect.flip, Effect.forkChild);
 
       yield* Deferred.await(subscriptionStarted);
@@ -222,6 +225,28 @@ describe("update restart reconnect nudges", () => {
       });
 
       expect(yield* Ref.get(retries)).toBe(1);
+    }),
+  );
+
+  it.effect("keeps waiting for the updated server while its migration reports new progress", () =>
+    Effect.gen(function* () {
+      const reports = yield* Queue.unbounded<EnvironmentStartup>();
+      const wait = yield* timeoutUnlessStartupAdvances(
+        Effect.never,
+        Stream.fromQueue(reports),
+        Duration.minutes(32),
+      ).pipe(Effect.forkChild);
+
+      // The last report repeats the one before it, so it does not restart the wait.
+      for (const progress of [0.25, 0.5, 0.5]) {
+        yield* TestClock.adjust(Duration.minutes(31));
+        yield* Queue.offer(reports, { migration: "91_CompactOrchestrationIds", progress });
+      }
+      yield* TestClock.adjust(Duration.seconds(59));
+      expect(wait.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust(Duration.seconds(1));
+
+      expect(yield* Fiber.join(wait)).toEqual(Option.none());
     }),
   );
 });

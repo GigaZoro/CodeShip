@@ -8,6 +8,7 @@ import { SERVER_EXIT_CODE_STATE_DIR_OWNED } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import { vi } from "vite-plus/test";
 
 import {
@@ -582,6 +583,12 @@ if (context.update?.status === "pending") {
         yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
         const trial = yield* Effect.promise(() => trialStarted);
         yield* Effect.promise(() => vi.advanceTimersByTimeAsync(29 * 60_000));
+        // The first deadline fires after the launcher queued the progress report, before it handles it.
+        trial.on("message", (message) => {
+          if (Predicate.hasProperty(message, "type") && message.type === "preparing") {
+            vi.advanceTimersByTime(60_000);
+          }
+        });
         const migrated = new Promise<void>((resolve) =>
           trial.on("message", (message) => {
             if (message === "migrated") resolve();
