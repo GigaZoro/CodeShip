@@ -1,3 +1,7 @@
+## 2026-11-14 — Windows and Linux updates no longer wait for the Mac build
+
+- Each release waited until GitHub gave it a macOS machine to build the Mac app, which took up to 9 hours, so Windows and Linux updates waited too. Windows and Linux releases now publish as soon as they are built, and the Mac app is attached to the same release when its build finishes. Until then, Macs keep the version they have and their update check keeps working.
+
 ## 2026-11-14 — Auto reviews with both providers' configured primary models
 
 - Auto's coordinator reviews implementation itself and requests an independent review from the other provider, using each provider's Auto model and effort from Settings. It reports an unavailable independent review as incomplete. Implementation can use whichever Claude or Codex model best suits the task.

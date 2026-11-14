@@ -63,11 +63,18 @@ the version.
 
 `release.yml` only runs in `pingdotgg/t3code`. A fork ships its own installers with
 `.github/workflows/release-fork.yml` on every push to `main`, or by hand from `main` to set a
-version (**Actions → Release (fork) → Run workflow**). It packages macOS arm64 (DMG) and Windows
-x64 (NSIS) through the same `release-desktop.yml` on GitHub-hosted runners. A Linux x64 job also
-runs: the Windows app embeds its CLI archive as the WSL runtime, and the release publishes that
-archive with `SHA256SUMS` and `install.sh` for Linux servers. Its Linux installers are not
-published.
+version (**Actions → Release (fork) → Run workflow**). It packages Windows x64 (NSIS) through the
+same `release-desktop.yml` on GitHub-hosted runners. A Linux x64 job also runs: the Windows app
+embeds its CLI archive as the WSL runtime, and the release publishes that archive with `SHA256SUMS`
+and `install.sh` for Linux servers. Its Linux installers are not published.
+
+The macOS arm64 app (DMG and the zip updates use) comes from `release-fork-macos.yml` (**Release
+(fork) macOS**), which the release starts once it is published, because GitHub can run short of
+hosted macOS runners for hours and Windows and Linux do not need one. Until it attaches the app and
+its `latest-mac.yml`, the release serves the previous release's `latest-mac.yml` with its file
+links pointing back at that release, so Macs stay on the build they have instead of failing their
+update check. Only one macOS build runs at a time; a newer release's waiting build replaces an
+older one's.
 
 The release is marked latest in the fork's own repository, with the updater manifests, so
 desktop apps built by that workflow offer each new release through the update button. The server,
@@ -84,13 +91,15 @@ t3 service install
 ```
 
 Builds use the public T3 Connect identifiers in `.env.example`. Releases also fail for reasons
-outside the build: GitHub runs short of hosted macOS arm64 runners for hours, so the macOS job is
-cancelled after about 15 minutes without a runner, and GitHub outages make downloads such as
-Electron's time out for hours. `release-fork-retry.yml` reruns a failed release's failed jobs while
-its commit is still the head of `main`: right away while the only failures are jobs that never got
-a runner, otherwise twice right away and then from its half-hourly schedule, which GitHub often
-delays by hours. It also starts a release when the head of `main` has no run at all. Past 24
-attempts it fails the scheduled run; rerun the release by hand or push a fix.
+outside the build: a job waiting for a GitHub-hosted runner is cancelled after about 15 minutes
+without one, and GitHub outages make downloads such as Electron's time out for hours.
+`release-fork-retry.yml` reruns a failed release's failed jobs while its commit is still the head of
+`main`, and a failed macOS build's while its release is still the latest: right away while the only
+failures are jobs that never got a runner, otherwise twice right away and then from its half-hourly
+schedule, which GitHub often delays by hours. The schedule also starts a release when the head of
+`main` has no run at all, and a macOS build when the latest release has none. Past 24 attempts it
+fails the scheduled run. To repair one by hand, rerun the failed run, or run **Release (fork)
+macOS** with the release's version and the id of the **Release (fork)** run that published it.
 
 - **One-time setup.** Forks start with Actions disabled; enable them in the fork's Actions tab.
   Most other workflows ask for upstream's Blacksmith runners, which a fork does not have, so their
@@ -105,7 +114,8 @@ attempts it fails the scheduled run; rerun the release by hand or push a fix.
   updates install without it.
 - **macOS signing.** An ad hoc signed app cannot apply an update, because Squirrel.Mac only accepts
   a new version whose signature satisfies the running app's designated requirement, and an ad hoc
-  requirement is that one build's hash. The workflow stops in preflight without a signing identity.
+  requirement is that one build's hash. **Release (fork) macOS** stops in preflight without a
+  signing identity, so Macs stay on the build they have.
   Without a Developer ID, use a self-signed one: every build signed with one certificate shares a
   requirement. Create it once, keep the folder, and add the base64 text and the password as the
   `MACOS_SELF_SIGNED_CERTIFICATE` and `MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD` repository

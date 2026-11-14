@@ -1,0 +1,165 @@
+name: Release (fork) macOS
+run-name: Release (fork) macOS v${{ inputs.version }}
+
+# Builds the macOS arm64 app for a release that release-fork.yml published, and
+# attaches it with its update feed. It runs apart from that workflow because
+# GitHub runs short of hosted macOS runners for hours, and Windows and Linux do
+# not need one. Until it attaches, the release carries the previous release's
+# macOS feed, so Macs stay on that build. release-fork.yml starts it, and
+# release-fork-retry.yml reruns it while its release is the latest. See
+# "Releasing from a fork" in docs/operations/release.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The published release to attach the macOS app to, for example 2026.1113.13."
+        required: true
+        type: string
+      bundle_run:
+        description: "The Release (fork) run that built its JS bundle."
+        required: true
+        type: string
+
+# A newer pending run replaces an older pending one: Macs only need the newest
+# release. release-fork-retry.yml matches runs to releases by the run name.
+concurrency:
+  group: release-fork-macos
+  cancel-in-progress: false
+
+permissions:
+  # The preflight copies the JS bundle from the release's own run.
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      clerk_publishable_key: ${{ steps.public_config.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ steps.public_config.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ steps.public_config.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ steps.public_config.outputs.relay_url }}
+    steps:
+      # An ad hoc signed Mac app cannot apply an update, so attaching one would
+      # offer installed Macs an update that always fails.
+      - name: Require a macOS signing identity
+        env:
+          MACOS_SELF_SIGNED_CERTIFICATE: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE }}
+          MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          if [[ ( -z "$MACOS_SELF_SIGNED_CERTIFICATE" || -z "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD" ) && ( -z "$CSC_LINK" || -z "$APPLE_API_KEY" ) ]]; then
+            echo "::error::Add the MACOS_SELF_SIGNED_CERTIFICATE and MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD secrets (see docs/operations/release.md)."
+            exit 1
+          fi
+
+      - id: release
+        name: Find the release and its JS bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          BUNDLE_RUN: ${{ inputs.bundle_run }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$BUNDLE_RUN" =~ ^[0-9]+$ ]]; then
+            echo "::error::Pass a version such as 2026.1113.13 and the numeric id of its Release (fork) run."
+            exit 1
+          fi
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" --jq .target_commitish)"
+          bundle_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUNDLE_RUN" --jq .head_sha)"
+          if [[ "$sha" != "$bundle_sha" ]]; then
+            echo "::error::v$VERSION was built from $sha, but run $BUNDLE_RUN built $bundle_sha."
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.sha }}
+          sparse-checkout: |
+            /.env.example
+            /.github/scripts/fork-release.cjs
+          sparse-checkout-cone-mode: false
+
+      - id: public_config
+        name: Read public T3 Connect configuration
+        run: |
+          set -euo pipefail
+          node .github/scripts/fork-release.cjs public-config > "$RUNNER_TEMP/public-config"
+          cat "$RUNNER_TEMP/public-config" >> "$GITHUB_OUTPUT"
+
+      # release-desktop.yml reads the bundle from its own run.
+      - name: Download the release's JS bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: js-bundle
+          path: js-bundle
+          run-id: ${{ inputs.bundle_run }}
+          github-token: ${{ github.token }}
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: js-bundle
+          path: js-bundle/
+          if-no-files-found: error
+          retention-days: 3
+
+  desktop_mac_arm64:
+    name: Desktop macOS arm64
+    needs: [preflight]
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      ref: ${{ needs.preflight.outputs.sha }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ${{ needs.preflight.outputs.clerk_publishable_key }}
+      clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
+      clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
+      relay_url: ${{ needs.preflight.outputs.relay_url }}
+      label: macOS arm64
+      # The macOS version upstream's release.yml builds on.
+      runner: macos-26
+      platform: mac
+      target: dmg
+      arch: arm64
+      rust_target: aarch64-apple-darwin
+      resource_key: darwin-arm64
+      launch_check: true
+      timeout_minutes: 60
+
+  attach:
+    name: Attach to the release
+    needs: [desktop_mac_arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-mac-arm64
+          path: release-assets
+
+      # latest-mac.yml replaces the carried feed last, so a Mac never reads a
+      # feed whose files are not there yet.
+      - name: Attach the app, then its update feed
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          rm -f builder-debug.yml
+          ls -la
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber ./*.dmg ./*.zip ./*.blockmap
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber latest-mac.yml

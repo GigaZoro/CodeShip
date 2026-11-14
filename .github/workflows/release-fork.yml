@@ -1,14 +1,15 @@
 name: Release (fork)
 
-# Publishes macOS and Windows installers from a fork, where release.yml cannot
-# run: it needs the upstream Blacksmith runners, relay state, and npm and
-# signing credentials. This builds macOS arm64 and Windows x64 on GitHub-hosted
-# runners through the same release-desktop.yml, and publishes a GitHub Release
-# with the updater manifests, so installed apps offer it through their update
-# button. It also publishes the Linux x64 CLI archive, SHA256SUMS and
-# install.sh, so a Linux server can install and update the fork's t3. Every
-# push to main releases; a manual run can pick the version. See "Releasing
-# from a fork" in docs/operations/release.md.
+# Publishes a fork's release, where release.yml cannot run: it needs the
+# upstream Blacksmith runners, relay state, and npm and signing credentials.
+# This builds Windows x64 on GitHub-hosted runners through the same
+# release-desktop.yml, and publishes a GitHub Release with its updater manifest,
+# so installed apps offer it through their update button. It also publishes the
+# Linux x64 CLI archive, SHA256SUMS and install.sh, so a Linux server can
+# install and update the fork's t3. release-fork-macos.yml then builds the
+# macOS app and attaches it, because GitHub runs short of hosted macOS runners
+# for hours. Every push to main releases; a manual run can pick the version.
+# See "Releasing from a fork" in docs/operations/release.md.
 
 on:
   push:
@@ -55,20 +56,6 @@ jobs:
             exit 1
           fi
 
-      # An ad hoc signed Mac app cannot apply an update, so a release without a
-      # signing identity would offer installed Macs one that always fails.
-      - name: Require a macOS signing identity
-        env:
-          MACOS_SELF_SIGNED_CERTIFICATE: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE }}
-          MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-        run: |
-          if [[ ( -z "$MACOS_SELF_SIGNED_CERTIFICATE" || -z "$MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD" ) && ( -z "$CSC_LINK" || -z "$APPLE_API_KEY" ) ]]; then
-            echo "::error::Add the MACOS_SELF_SIGNED_CERTIFICATE and MACOS_SELF_SIGNED_CERTIFICATE_PASSWORD secrets (see docs/operations/release.md)."
-            exit 1
-          fi
-
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -76,6 +63,7 @@ jobs:
           sparse-checkout: |
             /.env.example
             /docs/release-notes.md
+            /.github/scripts/fork-release.cjs
             /.github/scripts/release-notes.cjs
           sparse-checkout-cone-mode: false
 
@@ -123,16 +111,8 @@ jobs:
         name: Read public T3 Connect configuration
         run: |
           set -euo pipefail
-          for key in clerk_publishable_key:T3CODE_CLERK_PUBLISHABLE_KEY clerk_jwt_template:T3CODE_CLERK_JWT_TEMPLATE clerk_cli_oauth_client_id:T3CODE_CLERK_CLI_OAUTH_CLIENT_ID relay_url:T3CODE_RELAY_URL; do
-            output="${key%%:*}"
-            name="${key##*:}"
-            value="$(sed -n "s/^${name}=//p" .env.example | head -n 1)"
-            if [[ -n "$value" && ! "$value" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
-              echo "::error::$name is malformed in .env.example."
-              exit 1
-            fi
-            echo "${output}=${value}" >> "$GITHUB_OUTPUT"
-          done
+          node .github/scripts/fork-release.cjs public-config > "$RUNNER_TEMP/public-config"
+          cat "$RUNNER_TEMP/public-config" >> "$GITHUB_OUTPUT"
 
   # The server bundle, web client, and Electron main, built once and packaged
   # by each platform job, as release.yml's build_bundle does.
@@ -171,6 +151,8 @@ jobs:
       - name: Build JS bundle
         run: vp run build:desktop
 
+      # release-fork-macos.yml packages this bundle too, once GitHub has a macOS
+      # runner for it, which can take hours.
       - name: Upload JS bundle
         uses: actions/upload-artifact@v7
         with:
@@ -179,7 +161,7 @@ jobs:
             apps/server/dist
             apps/desktop/dist-electron
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 3
 
   # Runs for the Linux CLI archive: the Windows app embeds it as its WSL runtime
   # (the Windows job waits for a job named "Build Linux x64"), and the release
@@ -233,37 +215,16 @@ jobs:
       resource_key: win32-x64
       timeout_minutes: 100
 
-  desktop_mac_arm64:
-    name: Desktop macOS arm64
-    needs: [preflight, bundle]
-    uses: ./.github/workflows/release-desktop.yml
-    secrets: inherit
-    with:
-      version: ${{ needs.preflight.outputs.version }}
-      ref: ${{ github.sha }}
-      release_channel: stable
-      relay_client_tracing: false
-      clerk_publishable_key: ${{ needs.preflight.outputs.clerk_publishable_key }}
-      clerk_jwt_template: ${{ needs.preflight.outputs.clerk_jwt_template }}
-      clerk_cli_oauth_client_id: ${{ needs.preflight.outputs.clerk_cli_oauth_client_id }}
-      relay_url: ${{ needs.preflight.outputs.relay_url }}
-      label: macOS arm64
-      # The macOS version upstream's release.yml builds on.
-      runner: macos-26
-      platform: mac
-      target: dmg
-      arch: arm64
-      rust_target: aarch64-apple-darwin
-      resource_key: darwin-arm64
-      launch_check: true
-      timeout_minutes: 60
-
+  # Never waits for a macOS runner, which Windows and Linux do not need.
+  # scripts/release-fork.test.ts checks that.
   release:
     name: Publish GitHub Release
-    needs: [preflight, desktop_win_x64, desktop_mac_arm64]
+    needs: [preflight, desktop_win_x64]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      # Starts release-fork-macos.yml.
+      actions: write
       contents: write
     steps:
       - name: Checkout release notes
@@ -272,6 +233,7 @@ jobs:
           fetch-depth: 0
           sparse-checkout: |
             /docs/release-notes.md
+            /.github/scripts/fork-release.cjs
             /.github/scripts/release-notes.cjs
             /scripts/install.sh
           sparse-checkout-cone-mode: false
@@ -292,12 +254,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: desktop-win-x64
-          path: release-assets
-
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: desktop-mac-arm64
           path: release-assets
 
       # The Windows job could not finish without this artifact, so it is here.
@@ -334,6 +290,29 @@ jobs:
             mv "$manifest" "${manifest%-win-x64.yml}.yml"
           done
           cp scripts/install.sh release-assets/install.sh
+
+      # Macs read latest-mac.yml from the release marked latest and fail their
+      # update check without it. Until release-fork-macos.yml attaches this
+      # version's, carry the previous release's, so Macs stay on its build.
+      - name: Carry the macOS update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=1" --jq length)" == 0 ]]; then
+            echo "The first release has no macOS update feed to carry."
+          else
+            read -r previous has_feed <<<"$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
+              --jq '"\(.tag_name) \(any(.assets[]; .name == "latest-mac.yml"))"')"
+            if [[ "$has_feed" == true ]]; then
+              gh release download "$previous" --repo "$GITHUB_REPOSITORY" --pattern latest-mac.yml --dir "$RUNNER_TEMP/previous-feed"
+              node .github/scripts/fork-release.cjs carry-macos-feed "$previous" "$RUNNER_TEMP/previous-feed/latest-mac.yml" \
+                > release-assets/latest-mac.yml
+              cat release-assets/latest-mac.yml
+            else
+              echo "::warning::$previous has no latest-mac.yml, so Macs fail their update check until this release's macOS build is attached."
+            fi
+          fi
           ls -la release-assets
 
       - name: Publish release
@@ -346,8 +325,6 @@ jobs:
           make_latest: true
           files: |
             release-assets/*.exe
-            release-assets/*.dmg
-            release-assets/*.zip
             release-assets/*.blockmap
             release-assets/*.yml
             release-assets/t3-*.tar.gz
@@ -355,3 +332,11 @@ jobs:
             release-assets/install.sh
           fail_on_unmatched_files: true
           token: ${{ github.token }}
+
+      - name: Build the macOS app for this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          gh workflow run release-fork-macos.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f version="$VERSION" -f bundle_run="$GITHUB_RUN_ID"
