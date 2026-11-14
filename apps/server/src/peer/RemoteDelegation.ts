@@ -17,12 +17,14 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import type * as Tool from "effect/ai/Tool";
 
@@ -47,6 +49,8 @@ import * as PeerLinks from "./PeerLinks.ts";
 const FOLLOW_WAIT_MS = 10 * 60 * 1_000;
 /** A linked environment that stops answering is retried, backing off to this. */
 const FOLLOW_MAX_BACKOFF = Duration.minutes(5);
+/** About 20 minutes of retrying a settle at the follow back-off, after which the thread there stays active. */
+const SETTLE_RETRIES = 10;
 /** How a follower retries; tests step it by hand. */
 export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>(
   "t3/peer/RemoteDelegation/FollowRetrySchedule",
@@ -473,9 +477,8 @@ const make = Effect.gen(function* () {
 
   /**
    * The last reply `runId` gave on the task's thread there, which is its
-   * result, read whole however long it is, and the thread as the last read
-   * found it. A failed run prefers its error from the activity view over an
-   * earlier reply, without taking another run's.
+   * result, read whole however long it is. A failed run prefers its error
+   * from the activity view over an earlier reply, without taking another run's.
    */
   const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     scope: ThreadScope,
@@ -489,7 +492,6 @@ const make = Effect.gen(function* () {
     let afterPosition: number | undefined;
     let remainingItems = 0;
     let tailProbed = false;
-    let thread: OrchestratorMcpThreadDetail;
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -500,7 +502,6 @@ const make = Effect.gen(function* () {
         ...(failed && remainingItems > 100 ? { maxCharsPerItem: 1 } : {}),
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
-      thread = read.thread;
       reply =
         read.items.findLast(
           (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
@@ -527,7 +528,6 @@ const make = Effect.gen(function* () {
           );
           if (!tail.hasMore && tailReply !== undefined) {
             reply = tailReply;
-            thread = tail.thread;
             break;
           }
         }
@@ -536,7 +536,7 @@ const make = Effect.gen(function* () {
       remainingItems = read.thread.itemCount - afterPosition - 1;
     }
     reply = error ?? reply;
-    if (reply === undefined) return { text: undefined, thread };
+    if (reply === undefined) return undefined;
     let text = reply.text ?? "";
     let textOffset = reply.textTruncated ? (reply.nextTextOffset ?? null) : null;
     while (textOffset !== null) {
@@ -546,37 +546,12 @@ const make = Effect.gen(function* () {
         textOffset,
         maxCharsPerItem: 50_000,
       });
-      thread = rest.thread;
       const part = rest.items[0];
       if (part === undefined) break;
       text += part.text ?? "";
       textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
     }
-    return { text, thread };
-  });
-
-  /**
-   * Settles a task's thread there once the task here holds the result its run gave, so a
-   * finished helper leaves that machine's active list. A cancel or Stop that landed first owns
-   * the thread there instead. A message there later unsettles it, as for any settled chat.
-   */
-  const settleThere = Effect.fn("RemoteDelegation.settleThere")(function* (
-    scope: ThreadScope,
-    remote: OrchestrationV2RemoteTaskChild,
-    parentThreadId: ThreadId,
-    taskId: NodeId,
-  ) {
-    const { task } = yield* readTask(parentThreadId, taskId);
-    if (task?.status !== "completed" || task.remoteChild?.stoppedThere !== true) return;
-    yield* forwarding.settleThread(scope, remote.environmentId, remote.threadId).pipe(
-      // Auto-settlement there still ends it; no retry would change a refusal.
-      Effect.catch((error) =>
-        Effect.logWarning("A linked environment kept a finished delegated task's thread active", {
-          taskId,
-          reason: error.message,
-        }),
-      ),
-    );
+    return text;
   });
 
   /**
@@ -596,6 +571,79 @@ const make = Effect.gen(function* () {
     },
     Effect.orElseSucceed(() => undefined),
   );
+
+  /** Each task's settle there in progress, given up by `giveUpSettle`. */
+  const settling = new Map<NodeId, Deferred.Deferred<void>>();
+
+  /**
+   * Ends the task's settle there once its attempt in flight has decided, for a Stop or cancel
+   * here, so neither waits on the back-off and the settle never follows them there.
+   */
+  const giveUpSettle = (taskId: NodeId) =>
+    Effect.suspend(() => {
+      const givenUp = settling.get(taskId);
+      return givenUp === undefined ? Effect.void : Deferred.succeed(givenUp, undefined);
+    });
+
+  /**
+   * Settles a task's thread there once the task here holds its run's result, so a finished
+   * helper leaves that machine's active list. Each attempt settles only while the thread still
+   * rests on `runId`, so a settle whose answer was lost, or a message there since, ends the
+   * retries; so does a cancel or Stop here, which then owns the thread there instead.
+   */
+  const settleThere = Effect.fn("RemoteDelegation.settleThere")(function* (
+    scope: ThreadScope,
+    remote: OrchestrationV2RemoteTaskChild,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    runId: RunId,
+  ) {
+    const { task } = yield* readTask(parentThreadId, taskId);
+    if (task?.status !== "completed" || task.remoteChild?.stoppedThere !== true) return;
+    const givenUp = yield* Deferred.make<void>();
+    const inFlight = yield* Semaphore.make(1);
+    settling.set(taskId, givenUp);
+    yield* forwarding
+      .readThread(scope, remote.environmentId, {
+        threadId: remote.threadId,
+        limit: 1,
+        runLimit: 1,
+        maxCharsPerItem: 1,
+      })
+      .pipe(
+        Effect.flatMap(({ thread }) =>
+          restsOn(thread, runId)
+            ? forwarding.settleThread(scope, remote.environmentId, remote.threadId)
+            : Effect.void,
+        ),
+        inFlight.withPermits(1),
+        Effect.retry({
+          schedule: followRetry,
+          times: SETTLE_RETRIES,
+          while: (error) =>
+            isModeRefusal(error)
+              ? false
+              : finalReason(parentThreadId, taskId, error).pipe(
+                  Effect.map((reason) => reason === undefined),
+                ),
+        }),
+        Effect.catch((error) =>
+          Effect.logWarning("A linked environment kept a finished delegated task's thread active", {
+            taskId,
+            reason: error.message,
+          }),
+        ),
+        // Waits out the attempt in flight, so only a back-off is cut short.
+        Effect.raceFirst(
+          Deferred.await(givenUp).pipe(Effect.andThen(inFlight.withPermits(1)(Effect.void))),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (settling.get(taskId) === givenUp) settling.delete(taskId);
+          }),
+        ),
+      );
+  });
 
   /** A task's thread there that ended without a reply. */
   const noReply = "(The thread in the linked environment ended without a reply.)";
@@ -708,7 +756,7 @@ const make = Effect.gen(function* () {
     // A task recorded without its run waits on the thread's latest; a
     // thread there with none has nothing left to wait for.
     if (waited.runId === null) {
-      const { text: reply } = yield* lastReply(scope, remote, null);
+      const reply = yield* lastReply(scope, remote, null);
       yield* complete(
         parentThreadId,
         taskId,
@@ -723,7 +771,7 @@ const make = Effect.gen(function* () {
       runId: remote.runId ?? waited.runId,
       status: waited.status,
     };
-    const { text: result, thread: there } = yield* lastReply(
+    const result = yield* lastReply(
       scope,
       remote,
       resultRun.runId,
@@ -737,8 +785,8 @@ const make = Effect.gen(function* () {
       result ?? noReply,
       "ran-out",
     );
-    if (resultRun.status === "completed" && restsOn(there, resultRun.runId)) {
-      yield* settleThere(scope, remote, parentThreadId, taskId);
+    if (resultRun.status === "completed") {
+      yield* settleThere(scope, remote, parentThreadId, taskId, resultRun.runId);
     }
     return yield* settled(parentThreadId, taskId);
   });
@@ -806,6 +854,7 @@ const make = Effect.gen(function* () {
         input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie))
       }`;
       if (task.result !== null) {
+        yield* giveUpSettle(task.id);
         // Best effort: the result stands whether or not the stop gets there.
         yield* stopThere(there, remote, key, reason).pipe(
           Effect.andThen(
@@ -867,11 +916,15 @@ const make = Effect.gen(function* () {
     forkParked(
       Effect.gen(function* () {
         // A finished task's follower has ended, so a Stop here that owes its
-        // thread there a stop starts it again. Started before the scan below;
-        // a Stop that slips between the two stays owed for the next start.
+        // thread there a stop starts it again, or ends the settle it still waits on.
+        // Started before the scan below; a Stop that slips between the two stays
+        // owed for the next start.
         yield* Stream.runForEach(threads.streamDomainEvents, (event) =>
           event.type === "subagent.updated" && event.payload.remoteChild?.stoppedThere === false
-            ? followOne(event.threadId, event.payload.id).pipe(Effect.forkIn(followers))
+            ? giveUpSettle(event.payload.id).pipe(
+                Effect.andThen(followOne(event.threadId, event.payload.id)),
+                Effect.forkIn(followers),
+              )
             : Effect.void,
         ).pipe(
           Effect.ignoreCause({ log: true }),

@@ -1,3 +1,7 @@
+## 2026-11-15 — Delegated chats on another machine settle even when that machine is busy
+
+- A task delegated to a linked machine settles its chat there once its parent has the result, but when that machine was too busy to answer or the connection dropped at that moment, the chat stayed active until it settled by itself after three quiet days. The settle is now tried again for about 20 minutes, and only while that chat still has nothing newer to show, such as a message sent to it since. Stopping the parent or cancelling the task ends those tries at once, so the stop reaches that machine without waiting and the chat there stays as the stop left it.
+
 ## 2026-11-15 — A scheduled run cut by a restart keeps its chat
 
 - When a restart cut a scheduled task's run right after its chat started, **Run history** marked the run as failed and lost its chat. The chat went on working after the restart, but it did not count toward the task's **Live runs** limit, so the next time could start a second chat beside it, and the task's group did not file it. A run now records its chat before starting it, and after a restart a run whose chat got its prompt counts as started: it opens its chat, counts toward the limit and is filed with the task. A run whose chat never got its prompt still fails as interrupted. This holds whether T3.CodeShip was quit or crashed, and a **Run now** run goes on when the client that started it disconnects.

@@ -152,6 +152,10 @@ interface BoxThread {
   readonly afterLaunch: Ref.Ref<Effect.Effect<void>>;
   /** The threads settled there, in order. */
   readonly settles: Ref.Ref<ReadonlyArray<ThreadId>>;
+  /** Completed on the first settle recorded there. */
+  readonly settledOnce: Deferred.Deferred<void>;
+  /** Settles there fail this many times first, as on a machine too busy to record them. */
+  readonly dropSettles: Ref.Ref<number>;
   /** The thread there waits on a question its run asked. */
   readonly question: Ref.Ref<boolean>;
   /** A run after the task's own on the thread there, with this status. */
@@ -196,6 +200,8 @@ const makeBoxThread = Effect.gen(function* () {
     sent: yield* Ref.make<ReadonlyArray<string>>([]),
     afterLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     settles: yield* Ref.make<ReadonlyArray<ThreadId>>([]),
+    settledOnce: yield* Deferred.make<void>(),
+    dropSettles: yield* Ref.make(0),
     question: yield* Ref.make(false),
     laterRun: yield* Ref.make<OrchestrationV2Run["status"] | null>(null),
   } satisfies BoxThread;
@@ -499,8 +505,20 @@ const boxToolkitLayer = (thread: BoxThread) => {
     stopDelegatedTasks: (input) => recordStop(input.commandId, "delegated-tasks"),
     organizeThread: (input) =>
       input.action === "settle"
-        ? Ref.update(thread.settles, (seen) => [...seen, input.threadId]).pipe(
-            Effect.as({ sequence: 0 }),
+        ? Ref.modify(thread.dropSettles, (left) => [left, Math.max(0, left - 1)]).pipe(
+            Effect.flatMap((left) =>
+              left > 0
+                ? Effect.fail(
+                    new Orchestrator.OrchestratorDispatchError({
+                      commandId: input.commandId,
+                      commandType: "thread.settle",
+                    }),
+                  )
+                : Ref.update(thread.settles, (seen) => [...seen, input.threadId]).pipe(
+                    Effect.andThen(Deferred.succeed(thread.settledOnce, undefined)),
+                    Effect.as({ sequence: 0 }),
+                  ),
+            ),
           )
         : Effect.die(`The box does not expect ${input.action}`),
     sendToThread: (input) =>
@@ -2023,14 +2041,23 @@ it.effect("stopping the parent stops its task there", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-/** A follower retry schedule the test steps: each failed attempt is offered, then waits for `retry`. */
+/**
+ * A follower retry schedule the test steps: each failed attempt is offered, then waits for
+ * `retry`. `cut` completes once such a wait is interrupted.
+ */
 const steppedRetries = Effect.gen(function* () {
   const failed = yield* Queue.unbounded<void>();
   const retry = yield* Queue.unbounded<void>();
+  const cut = yield* Deferred.make<void>();
   const schedule = Schedule.forever.pipe(
-    Schedule.tap(() => Queue.offer(failed, undefined).pipe(Effect.andThen(Queue.take(retry)))),
+    Schedule.tap(() =>
+      Queue.offer(failed, undefined).pipe(
+        Effect.andThen(Queue.take(retry)),
+        Effect.onInterrupt(() => Deferred.succeed(cut, undefined).pipe(Effect.asVoid)),
+      ),
+    ),
   );
-  return { failed, retry, schedule };
+  return { failed, retry, cut, schedule };
 });
 
 /** Waits until the task here records that the `stopCount`th Stop after its result reached there. */
@@ -2121,9 +2148,40 @@ it.effect.each([
   { case: "a question waits there", status: "completed", question: true, settled: false },
   { case: "a message is queued there", status: "completed", laterRun: "queued", settled: false },
   { case: "a later run ended there", status: "completed", laterRun: "completed", settled: false },
+  { case: "the box dropped the first settle", status: "completed", dropped: true, settled: true },
+  {
+    case: "a message was queued there after a dropped settle",
+    status: "completed",
+    dropped: true,
+    laterRunAfterDrop: "queued",
+    settled: false,
+  },
+  {
+    case: "a Stop came while a dropped settle backed off",
+    status: "completed",
+    dropped: true,
+    stopWhileBackingOff: true,
+    settled: false,
+  },
+  {
+    case: "a cancel came while a dropped settle backed off",
+    status: "completed",
+    dropped: true,
+    cancelWhileBackingOff: true,
+    settled: false,
+  },
 ] as const)(
   "settles the task's thread there once the parent has its result, only when $case",
-  ({ status, question = false, laterRun = null, settled }) =>
+  ({
+    status,
+    question = false,
+    laterRun = null,
+    dropped = false,
+    laterRunAfterDrop,
+    stopWhileBackingOff = false,
+    cancelWhileBackingOff = false,
+    settled,
+  }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
@@ -2132,7 +2190,10 @@ it.effect.each([
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
         const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
+        const retries = yield* steppedRetries;
+        const a = yield* makeLaptop(database, offers).pipe(
+          Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+        );
         yield* a.remote.start();
         yield* linkTo(a.links, b, "full-access");
         yield* seedParent(a);
@@ -2140,12 +2201,33 @@ it.effect.each([
         yield* Ref.set(thread.reply, "All green.");
         yield* Ref.set(thread.question, question);
         yield* Ref.set(thread.laterRun, laterRun);
+        yield* Ref.set(thread.dropSettles, dropped ? 1 : 0);
         yield* Ref.set(thread.status, status);
         yield* Deferred.succeed(thread.finished, undefined);
         expect(yield* taskResult(a, delegated.taskId)).toMatchObject({ status });
+        if (dropped) {
+          yield* Queue.take(retries.failed);
+          if (laterRunAfterDrop !== undefined) {
+            yield* Ref.set(thread.laterRun, laterRunAfterDrop);
+            yield* Ref.set(thread.holdRead, true);
+            yield* Queue.offer(retries.retry, undefined);
+            // The retry reads the thread there again before it decides.
+            yield* Deferred.await(thread.readStarted);
+            yield* Deferred.succeed(thread.releaseRead, undefined);
+          } else if (cancelWhileBackingOff) {
+            const cancelled = yield* a.call("task_cancel", { taskId: delegated.taskId });
+            expect(cancelled.isError, JSON.stringify(cancelled.content)).toBe(false);
+            // The cancel stops it there itself, so only the ended back-off shows no settle follows.
+            yield* Deferred.await(retries.cut);
+          } else if (!stopWhileBackingOff) {
+            yield* Queue.offer(retries.retry, undefined);
+          }
+        }
+        if (settled) yield* Deferred.await(thread.settledOnce);
 
-        // A Stop is followed only after the follow that recorded the result ends, so once
-        // its stop is recorded, that follow has settled the thread there or left it active.
+        // A Stop ends a settle that backs off once its attempt in flight has decided, and is
+        // otherwise followed after the follow that recorded the result, so once its stop is
+        // recorded, no settle there is left to come.
         yield* a.threads.stopDelegatedTasks({
           threadId: parentThreadId,
           commandId: CommandId.make("command:stop:laptop-parent-after-settle"),
