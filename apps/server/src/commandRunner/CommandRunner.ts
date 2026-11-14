@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - A command outlives the server, so it starts detached and unreferenced, outside every Effect scope.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
 
 import {
   CommandId,
@@ -213,47 +214,61 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /** Nothing a command started outlives a reboot, after which its pid can name anything. */
+  const rebootedSince = (row: CommandRunRow) =>
+    DateTime.now.pipe(
+      Effect.map(
+        (now) => DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 > Date.parse(row.started_at),
+      ),
+    );
+
   /** Whether `pid` is still the process this command started, not a later one reusing it. */
   const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (row: CommandRunRow) {
-    if (row.pid === null || !isProcessAlive(row.pid)) return false;
+    if (row.pid === null || !isProcessAlive(row.pid) || (yield* rebootedSince(row))) return false;
     if (row.process_started_at === null) return true;
     const startedAt = yield* startedAtOf(row.pid);
     // ps reports whole seconds. Unknown identity stays conservative.
     return startedAt === undefined || Math.abs(startedAt - row.process_started_at) <= 1_000;
   });
 
-  /** Stops the command and everything it started: its process group, or its tree on Windows. */
+  /** SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period. */
+  const killGroup = Effect.fn("CommandRunner.killGroup")(function* (pid: number) {
+    const signal = (name: NodeJS.Signals | 0) =>
+      Effect.sync(() => {
+        try {
+          signalProcessGroup(pid, name);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    if (!(yield* signal("SIGTERM"))) return;
+    const gone = yield* signal(0).pipe(
+      Effect.repeat({ while: (alive) => alive, schedule: Schedule.spaced(Duration.millis(200)) }),
+      Effect.timeoutOption(KILL_GRACE),
+    );
+    if (Option.isNone(gone)) yield* signal("SIGKILL");
+  });
+
+  /**
+   * Stops the command and everything it started: its process group, or its tree on Windows. A
+   * group outlives its wrapper and its id is not reused while any member lives, so short of a
+   * reboot, only a live process reusing the wrapper's pid means nothing of the group is left.
+   */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     const pid = row.pid;
-    if (pid === null || !(yield* isSameProcess(row))) return;
-    if (windows) {
-      yield* processRunner
-        .run({
-          command: "taskkill",
-          args: ["/PID", String(pid), "/T", "/F"],
-          timeout: Duration.seconds(30),
-          maxOutputBytes: 16_384,
-        })
-        .pipe(Effect.ignore({ log: true }));
-    } else {
-      const signal = (name: NodeJS.Signals | 0) =>
-        Effect.sync(() => {
-          try {
-            signalProcessGroup(pid, name);
-            return true;
-          } catch {
-            return false;
-          }
-        });
-      if (yield* signal("SIGTERM")) {
-        const gone = yield* signal(0).pipe(
-          Effect.repeat({
-            while: (alive) => alive,
-            schedule: Schedule.spaced(Duration.millis(200)),
-          }),
-          Effect.timeoutOption(KILL_GRACE),
-        );
-        if (Option.isNone(gone)) yield* signal("SIGKILL");
+    if (pid !== null && !(yield* rebootedSince(row))) {
+      if (!windows) {
+        if (!isProcessAlive(pid) || (yield* isSameProcess(row))) yield* killGroup(pid);
+      } else if (yield* isSameProcess(row)) {
+        yield* processRunner
+          .run({
+            command: "taskkill",
+            args: ["/PID", String(pid), "/T", "/F"],
+            timeout: Duration.seconds(30),
+            maxOutputBytes: 16_384,
+          })
+          .pipe(Effect.ignore({ log: true }));
       }
     }
     if (row.unit !== null) yield* agentScope.stop(row.unit);
@@ -409,9 +424,10 @@ const make = Effect.gen(function* () {
     if (row.pid === null || !isProcessAlive(row.pid)) {
       // Its wrapper writes the status just before it exits.
       const late = yield* readExitStatus(row);
-      return yield* late === undefined
-        ? ended("lost", null)
-        : ended("exited", late.code, late.endedAt);
+      if (late !== undefined) return yield* ended("exited", late.code, late.endedAt);
+      // Its wrapper was killed; what it started is not left running unwatched.
+      yield* killTree(row);
+      return yield* ended("lost", null);
     }
     if (!windows) yield* trimLog(row);
   });
@@ -603,6 +619,7 @@ const make = Effect.gen(function* () {
           "Commands require an active run owned by this MCP provider session.",
         );
       }
+      const parentNodeId = parentRun.rootNodeId;
       const project = yield* projects.getById(parent.thread.projectId).pipe(
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
@@ -638,93 +655,99 @@ const make = Effect.gen(function* () {
         timeoutMinutes,
         next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
       });
-      const recorded = yield* threads
-        .dispatch({
-          type: "delegated_task.command.request",
-          commandId,
-          parentThreadId: scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId: parentRun.rootNodeId,
-          ...(input.label === undefined ? {} : { title: input.label }),
-          driver: COMMAND_DRIVER,
-          providerInstanceId: scope.thread.providerInstanceId,
-          command: { command: input.command, cwd, logPath, timeoutMinutes },
-        })
-        .pipe(
-          Effect.tapError((cause) =>
-            Effect.logWarning("command-runner.record-failed", {
+      // A request cancelled in here would leave a task, or a command, that nothing watches.
+      return yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const recorded = yield* threads
+            .dispatch({
+              type: "delegated_task.command.request",
+              commandId,
               parentThreadId: scope.thread.threadId,
-              cause,
-            }),
-          ),
-          Effect.mapError(() => failure("orchestration_error", "Unable to record the command.")),
-        );
-      const taskEvent = recorded.storedEvents.find(
-        (stored) => stored.event.type === "subagent.updated",
-      );
-      // A retried request recorded the task the first time.
-      const prior = parent.subagents.find((task) => task.command?.logPath === logPath);
-      const taskId =
-        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : prior?.id;
-      if (taskId === undefined) {
-        return yield* failure("orchestration_error", "The command was not recorded.");
-      }
-      /** Fails a task whose command never started, with nothing left to wake its thread for. */
-      const unstarted = (message: string) =>
-        threads
-          .dispatch({
-            type: "delegated_task.command.complete",
-            commandId: CommandId.make(`command:command-task-unstarted:${taskId}`),
-            parentThreadId: scope.thread.threadId,
-            taskId,
-            status: "failed",
-            result: message,
-          })
-          .pipe(
-            Effect.andThen(
-              threads.dispatch({
-                type: "delegated_task.completion-delivery.dispose",
-                commandId: CommandId.make(`command:command-task-unstarted-dispose:${taskId}`),
+              parentRunId: parentRun.id,
+              parentNodeId,
+              ...(input.label === undefined ? {} : { title: input.label }),
+              driver: COMMAND_DRIVER,
+              providerInstanceId: scope.thread.providerInstanceId,
+              command: { command: input.command, cwd, logPath, timeoutMinutes },
+            })
+            .pipe(
+              Effect.tapError((cause) =>
+                Effect.logWarning("command-runner.record-failed", {
+                  parentThreadId: scope.thread.threadId,
+                  cause,
+                }),
+              ),
+              Effect.mapError(() =>
+                failure("orchestration_error", "Unable to record the command."),
+              ),
+            );
+          const taskEvent = recorded.storedEvents.find(
+            (stored) => stored.event.type === "subagent.updated",
+          );
+          // A retried request recorded the task the first time.
+          const prior = parent.subagents.find((task) => task.command?.logPath === logPath);
+          const taskId =
+            taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : prior?.id;
+          if (taskId === undefined) {
+            return yield* failure("orchestration_error", "The command was not recorded.");
+          }
+          /** Fails a task whose command never started, with nothing left to wake its thread for. */
+          const unstarted = (message: string) =>
+            threads
+              .dispatch({
+                type: "delegated_task.command.complete",
+                commandId: CommandId.make(`command:command-task-unstarted:${taskId}`),
                 parentThreadId: scope.thread.threadId,
                 taskId,
-              }),
-            ),
-            Effect.ignore({ log: true }),
-            Effect.andThen(Effect.fail(failure("orchestration_error", message))),
-          );
-      return yield* lock
-        .withPermits(1)(
-          Effect.gen(function* () {
-            const existing = yield* sql<{ readonly task_id: string }>`
+                status: "failed",
+                result: message,
+              })
+              .pipe(
+                Effect.andThen(
+                  threads.dispatch({
+                    type: "delegated_task.completion-delivery.dispose",
+                    commandId: CommandId.make(`command:command-task-unstarted-dispose:${taskId}`),
+                    parentThreadId: scope.thread.threadId,
+                    taskId,
+                  }),
+                ),
+                Effect.ignore({ log: true }),
+                Effect.andThen(Effect.fail(failure("orchestration_error", message))),
+              );
+          return yield* lock
+            .withPermits(1)(
+              Effect.gen(function* () {
+                const existing = yield* sql<{ readonly task_id: string }>`
             SELECT task_id FROM command_runs WHERE task_id = ${taskId}
           `;
-            if (existing.length > 0) return result(taskId);
-            // Its first request could not start it, and the task already says why.
-            if (prior?.result != null) return yield* failure("orchestration_error", prior.result);
-            const now = yield* DateTime.now;
-            const row: CommandRunRow = {
-              task_id: taskId,
-              thread_id: scope.thread.threadId,
-              run_id: parentRun.id,
-              label: input.label ?? null,
-              command: input.command,
-              cwd,
-              directory,
-              pid: null,
-              process_started_at: null,
-              unit: null,
-              status: "running",
-              exit_code: null,
-              started_at: DateTime.formatIso(now),
-              deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
-              ended_at: null,
-              delivered_at: null,
-            };
-            // Recorded before it starts, so a server that stops in between leaves the next one
-            // a record to adopt it by, never a command nothing watches.
-            const recordedRow = yield* fs.makeDirectory(directory, { recursive: true }).pipe(
-              Effect.andThen(
-                sql`
+                if (existing.length > 0) return result(taskId);
+                // Its first request could not start it, and the task already says why.
+                if (prior?.result != null)
+                  return yield* failure("orchestration_error", prior.result);
+                const now = yield* DateTime.now;
+                const row: CommandRunRow = {
+                  task_id: taskId,
+                  thread_id: scope.thread.threadId,
+                  run_id: parentRun.id,
+                  label: input.label ?? null,
+                  command: input.command,
+                  cwd,
+                  directory,
+                  pid: null,
+                  process_started_at: null,
+                  unit: null,
+                  status: "running",
+                  exit_code: null,
+                  started_at: DateTime.formatIso(now),
+                  deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
+                  ended_at: null,
+                  delivered_at: null,
+                };
+                // Recorded before it starts, so a server that stops in between leaves the next one
+                // a record to adopt it by, never a command nothing watches.
+                const recordedRow = yield* fs.makeDirectory(directory, { recursive: true }).pipe(
+                  Effect.andThen(
+                    sql`
                 INSERT INTO command_runs (
                   task_id, thread_id, run_id, label, command, cwd, directory, pid,
                   process_started_at, unit, status, exit_code, started_at, deadline_at, ended_at,
@@ -736,44 +759,48 @@ const make = Effect.gen(function* () {
                   ${row.ended_at}, ${row.delivered_at}
                 )
               `,
-              ),
-              Effect.result,
+                  ),
+                  Effect.result,
+                );
+                if (recordedRow._tag === "Failure") {
+                  return yield* unstarted(
+                    `Could not start the command: ${recordedRow.failure.message}`,
+                  );
+                }
+                const started = yield* launch(directory, input.command, cwd).pipe(Effect.result);
+                if (started._tag === "Failure") {
+                  yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`.pipe(
+                    Effect.ignore({ log: true }),
+                  );
+                  return yield* unstarted(
+                    `Could not start the command: ${started.failure.message}`,
+                  );
+                }
+                const { pid, unit } = started.success;
+                const launched: CommandRunRow = {
+                  ...row,
+                  pid,
+                  process_started_at: (yield* startedAtOf(pid)) ?? null,
+                  unit,
+                };
+                watched.set(taskId, launched);
+                // Its pid file names it to the next server if this write is lost.
+                yield* writeRow(launched).pipe(Effect.ignore({ log: true }));
+                return result(taskId);
+              }),
+            )
+            .pipe(
+              Effect.catchTags({
+                SqlError: (cause) =>
+                  Effect.logWarning("command-runner.insert-failed", { taskId, cause }).pipe(
+                    Effect.andThen(
+                      Effect.fail(failure("orchestration_error", "Unable to record the command.")),
+                    ),
+                  ),
+              }),
             );
-            if (recordedRow._tag === "Failure") {
-              return yield* unstarted(
-                `Could not start the command: ${recordedRow.failure.message}`,
-              );
-            }
-            const started = yield* launch(directory, input.command, cwd).pipe(Effect.result);
-            if (started._tag === "Failure") {
-              yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`.pipe(
-                Effect.ignore({ log: true }),
-              );
-              return yield* unstarted(`Could not start the command: ${started.failure.message}`);
-            }
-            const { pid, unit } = started.success;
-            const launched: CommandRunRow = {
-              ...row,
-              pid,
-              process_started_at: (yield* startedAtOf(pid)) ?? null,
-              unit,
-            };
-            watched.set(taskId, launched);
-            // Its pid file names it to the next server if this write is lost.
-            yield* writeRow(launched).pipe(Effect.ignore({ log: true }));
-            return result(taskId);
-          }),
-        )
-        .pipe(
-          Effect.catchTags({
-            SqlError: (cause) =>
-              Effect.logWarning("command-runner.insert-failed", { taskId, cause }).pipe(
-                Effect.andThen(
-                  Effect.fail(failure("orchestration_error", "Unable to record the command.")),
-                ),
-              ),
-          }),
-        );
+        }),
+      );
     },
   );
 
@@ -841,8 +868,12 @@ const make = Effect.gen(function* () {
       return;
     }
     // A pid reused by another process means this command ended while no server watched it.
-    if (yield* isSameProcess(row)) watched.set(row.task_id, row);
-    else yield* settle({ ...row, status: "lost", ended_at: yield* nowIso });
+    if (yield* isSameProcess(row)) {
+      watched.set(row.task_id, row);
+      return;
+    }
+    yield* killTree(row);
+    yield* settle({ ...row, status: "lost", ended_at: yield* nowIso });
   });
 
   /**

@@ -1,7 +1,7 @@
 ## 2026-11-14 — Commands agents wait on keep running through updates
 
 - An agent that ran tests, a build or a push in its own shell and waited for it lost the result when T3.CodeShip restarted for an update, so updates sat on "waiting for background work". Agents now run such commands with `t3_command_run`. T3.CodeShip runs the command itself, outside the agent and the server, and keeps its log and exit status on disk. After a restart it picks the command up again, and it wakes the chat once when the command ends. Because the command runs without an approval prompt, `t3_command_run` works only in chats set to Full access and the default mode; elsewhere the agent runs the command in its own shell.
-- On web and mobile, the chat's Working line and background-work list show each of these commands with its elapsed time, and stopping the chat ends them. Updates no longer wait for them. The Safe update dialog, Update everything and the update button's tooltip say which commands carry on through the update.
+- On web and mobile, the chat's Working line and background-work list show each of these commands with its elapsed time, and stopping the chat ends them and everything they started, even when T3.CodeShip restarts while stopping them. Updates no longer wait for them. The Safe update dialog, Update everything and the update button's tooltip say which commands carry on through the update.
 - `t3_background_wait` is removed. A chat that was waiting through it when this update installs gets its note with your next message.
 
 ## 2026-11-14 — An update that rewrites the database shows its progress instead of failing to start
