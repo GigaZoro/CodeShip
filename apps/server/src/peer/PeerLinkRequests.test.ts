@@ -72,6 +72,7 @@ import {
   servePeer,
   type ServedPeer,
 } from "./PeerLinks.testkit.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 
 // The laptop's agent asks the user to link the box. The laptop is its real
@@ -195,7 +196,12 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provideMerge(PeerLinkRequests.layer),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
     Layer.provide(layerLinkBack),
-    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+    Layer.provide(
+      Layer.merge(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
+      ),
+    ),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),
     Layer.provideMerge(layerThreads),

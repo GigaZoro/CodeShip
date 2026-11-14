@@ -2,6 +2,7 @@ import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
 
+import * as CommandRunner from "../../../commandRunner/CommandRunner.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkBack from "../../../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
@@ -61,6 +62,14 @@ const handlers = {
           ),
         );
       }),
+  ),
+  t3_command_run: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const caller = yield* McpInvocationContext.requireThreadScope(scope, "t3_command_run");
+      const runner = yield* CommandRunner.CommandRunner;
+      return yield* runner.run(caller, input);
+    }),
   ),
   t3_background_wait: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {

@@ -69,6 +69,7 @@ import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as PeerLinkBack from "./PeerLinkBack.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -562,7 +563,12 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Layer.provide(NodeCrypto.layer),
     Layer.provide(layerBoxThreads),
     Layer.provide(layerBoxLaunches),
-    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+    Layer.provide(
+      Layer.merge(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
+      ),
+    ),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
     Layer.provide(
       Layer.mergeAll(
@@ -675,6 +681,7 @@ const makeLaptop = (
     );
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provide(Layer.mock(CommandRunner.CommandRunner)({})),
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
           Layer.provideMerge(PeerForwarding.layer),

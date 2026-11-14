@@ -33,6 +33,7 @@ import {
   isProcessAlive,
   persistServerRuntimeState,
   readPersistedServerRuntimeState,
+  readProcessStartedAt,
   type PersistedServerRuntimeState,
 } from "./serverRuntimeState.ts";
 
@@ -80,29 +81,9 @@ const legacyOwnerIsLive = Effect.fn("legacyOwnerIsLive")(function* (
   if (!isProcessAlive(state.pid)) return false;
   const recordedAt = Date.parse(state.startedAt);
   if (!Number.isFinite(recordedAt)) return true;
-  const windows = (yield* HostProcess.Platform) === "win32";
-  const runner = yield* ProcessRunner.ProcessRunner;
-  const result = yield* runner
-    .run({
-      command: windows ? "powershell.exe" : "ps",
-      args: windows
-        ? [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `(Get-Process -Id ${state.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
-          ]
-        : ["-p", String(state.pid), "-o", "lstart="],
-      env: { LC_ALL: "C", TZ: "UTC" },
-      timeout: Duration.seconds(2),
-      maxOutputBytes: 16_384,
-    })
-    .pipe(Effect.option);
-  if (Option.isNone(result) || result.value.code !== 0) return true;
-  const output = result.value.stdout.trim();
-  const startedAt = Date.parse(windows ? output : `${output} UTC`);
+  const startedAt = yield* readProcessStartedAt(state.pid);
   // ps reports whole seconds. Unknown identity stays conservative.
-  return !Number.isFinite(startedAt) || startedAt <= recordedAt + 1_000;
+  return startedAt === undefined || startedAt <= recordedAt + 1_000;
 });
 
 // Pre-lock services become invisible when another server replaces their runtime

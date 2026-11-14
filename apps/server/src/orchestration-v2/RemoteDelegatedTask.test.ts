@@ -2,29 +2,22 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
-  EventId,
-  MessageId,
-  NodeId,
-  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
-  ProviderThreadId,
-  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
-import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { seedLiveParent as seedLiveParentThread } from "./testkit/LiveParentThread.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 
@@ -77,115 +70,7 @@ const layerTest = Layer.mergeAll(
   Layer.provideMerge(layerOffers),
 );
 
-/** A parent thread whose run is live, as when its agent calls delegate_task. */
-const seedLiveParent = (name: string) =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const sink = yield* EventSink.EventSinkV2;
-    const now = yield* DateTime.now;
-    const threadId = ThreadId.make(`thread:${name}`);
-    const runId = RunId.make(`run:${name}`);
-    const rootNodeId = NodeId.make(`node:${name}:root`);
-    const providerThreadId = ProviderThreadId.make(`provider-thread:${name}`);
-    yield* orchestrator.dispatch({
-      type: "thread.create",
-      createdBy: "user",
-      creationSource: "web",
-      commandId: CommandId.make(`command:create:${name}`),
-      threadId,
-      projectId: ProjectId.make("project:remote-delegated-task"),
-      title: "Parent",
-      modelSelection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
-    });
-    yield* sink.write({
-      commandId: CommandId.make(`command:seed:${name}`),
-      events: [
-        {
-          id: EventId.make(`event:seed-provider-thread:${name}`),
-          type: "provider-thread.updated",
-          threadId,
-          driver,
-          providerInstanceId: instanceId,
-          occurredAt: now,
-          payload: {
-            id: providerThreadId,
-            driver,
-            providerInstanceId: instanceId,
-            providerSessionId: null,
-            appThreadId: threadId,
-            ownerNodeId: rootNodeId,
-            nativeThreadRef: { driver, nativeId: `native:${name}`, strength: "strong" },
-            nativeConversationHeadRef: null,
-            status: "active",
-            firstRunOrdinal: 1,
-            lastRunOrdinal: 1,
-            handoffIds: [],
-            forkedFrom: null,
-            createdAt: now,
-            updatedAt: now,
-          },
-        },
-        {
-          id: EventId.make(`event:seed-node:${name}`),
-          type: "node.updated",
-          threadId,
-          runId,
-          nodeId: rootNodeId,
-          driver,
-          providerInstanceId: instanceId,
-          occurredAt: now,
-          payload: {
-            id: rootNodeId,
-            threadId,
-            runId,
-            parentNodeId: null,
-            rootNodeId,
-            kind: "root_turn",
-            status: "running",
-            countsForRun: true,
-            providerThreadId,
-            providerTurnId: null,
-            nativeItemRef: null,
-            runtimeRequestId: null,
-            checkpointScopeId: null,
-            startedAt: now,
-            completedAt: null,
-          },
-        },
-        {
-          id: EventId.make(`event:seed-run:${name}`),
-          type: "run.updated",
-          threadId,
-          runId,
-          nodeId: rootNodeId,
-          providerInstanceId: instanceId,
-          occurredAt: now,
-          payload: {
-            id: runId,
-            threadId,
-            ordinal: 1,
-            providerInstanceId: instanceId,
-            modelSelection,
-            providerThreadId,
-            userMessageId: MessageId.make(`message:seed-user:${name}`),
-            rootNodeId,
-            activeAttemptId: null,
-            status: "running",
-            requestedAt: now,
-            startedAt: now,
-            completedAt: null,
-            checkpointId: null,
-            contextHandoffId: null,
-          },
-        },
-      ],
-    });
-    return { threadId, runId, rootNodeId };
-  });
+const seedLiveParent = (name: string) => seedLiveParentThread({ name, driver, modelSelection });
 
 const remoteChild = {
   environmentId: EnvironmentId.make("environment:box"),

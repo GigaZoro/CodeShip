@@ -52,6 +52,7 @@ import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 
 // Linking both ways: Laptop links Box and asks it to link back over the new link, with a code
@@ -119,7 +120,12 @@ const serveBox = (boxLinking: LinkingContext) =>
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
       Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(
+        Layer.merge(
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
+        ),
+      ),
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),

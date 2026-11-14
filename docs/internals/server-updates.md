@@ -281,6 +281,24 @@ restarting and lets the user update now or cancel. The wait happens outside the
 per-environment config queue so other settings for that server are not held. A
 crash still loses the work; the note reports it.
 
+A command an agent starts with `t3_command_run` is not the provider's, so neither a restart nor
+a crash cuts it. The [command runner](../../apps/server/src/commandRunner/CommandRunner.ts)
+starts it outside the provider and the server: in its own session, which on Linux under systemd
+is also a scope outside the service's cgroup (`AgentScope` with `survivesRestart`), and on
+Windows through `Win32_Process.Create`, outside the server's job. Neither the desktop app, the
+launcher nor the service manager reaches it. A wrapper writes its output to a capped log under
+the state directory and its exit status to a file it renames into place, so a reader never sees
+half a status. The command is an app-owned task on its thread, recorded like a delegated task,
+with a `command_runs` row holding its pid and that process's start time. Startup adopts every
+row not yet delivered: a status file means it ended; a live pid with the same start time is
+watched again; anything else is lost, and reported once. Its end completes the task through
+`delegated_task.command.complete`, which wakes the chat through the durable delivery a child's
+result uses and refuses a second result, so a restart between the end and its delivery cannot
+wake the chat twice. task_cancel, Stop, archiving and deleting the thread also give the task
+its result, and the runner then kills the command's process group (its tree on Windows). The
+hold leaves these tasks out like every app-owned task, and the continuation of a cut turn tells
+the agent the commands it started still run and will wake it.
+
 The hold also lists a running turn's in-flight tool calls and native subagents as `turnCall`
 entries. Claude creates a running item for every `tool_use` block of an assistant message at
 once, so a call queued behind a slow one is already listed, and a restart would cut the slow one

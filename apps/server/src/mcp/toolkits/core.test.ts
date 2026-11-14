@@ -52,6 +52,7 @@ import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
+import * as CommandRunner from "../../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as MemoryAdmission from "../../resourceTelemetry/MemoryAdmission.ts";
@@ -101,7 +102,12 @@ const layerOrchestratorMcpServer = ({
     Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+    Layer.provide(
+      Layer.merge(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
+      ),
+    ),
   );
 
 const declaredFailure = (result: McpSchema.CallToolResult) => {

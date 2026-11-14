@@ -35,6 +35,7 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -241,7 +242,12 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
       Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(
+        Layer.merge(
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(CommandRunner.CommandRunner)({}),
+        ),
+      ),
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
@@ -329,6 +335,7 @@ const makeLaptop = Effect.gen(function* () {
         ServerSettings.layerTest(),
         MemoryAdmission.layerTest(),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(CommandRunner.CommandRunner)({}),
         Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
         Layer.mock(PeerLinkBack.PeerLinkBack)({}),
         Layer.mock(SharedSettings.SharedSettings)({}),

@@ -22,6 +22,8 @@ import {
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpRequestSecretInput,
   OrchestratorMcpRequestSecretResult,
+  OrchestratorMcpRunCommandInput,
+  OrchestratorMcpRunCommandResult,
   OrchestratorMcpFailure,
   OrchestratorMcpListScheduledTasksInput,
   OrchestratorMcpListScheduledTasksResult,
@@ -51,6 +53,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
+import * as CommandRunner from "../../../commandRunner/CommandRunner.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkBack from "../../../peer/PeerLinkBack.ts";
@@ -151,6 +154,19 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
 })
   .annotate(Tool.Title, "Stop a workflow")
   .annotate(Tool.Destructive, true);
+
+const CommandRunTool = Tool.make("t3_command_run", {
+  description:
+    "Run a shell command that ends (tests, build, install, deploy) apart from you. It keeps running through a restart. Its end wakes you with the exit code and the last output. Not for dev servers or watchers. `task_cancel` stops it.",
+  parameters: OrchestratorMcpRunCommandInput,
+  success: OrchestratorMcpRunCommandResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: [...dependencies, CommandRunner.CommandRunner],
+})
+  .annotate(Tool.Title, "Run a command")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true);
 
 const BackgroundWaitTool = Tool.make("t3_background_wait", {
   description:
@@ -439,6 +455,7 @@ export const OrchestratorToolkit = Toolkit.make(
   TaskStatusTool,
   TaskCancelTool,
   WorkflowStopTool,
+  CommandRunTool,
   BackgroundWaitTool,
   ScheduleTaskTool,
   ListScheduledTasksTool,

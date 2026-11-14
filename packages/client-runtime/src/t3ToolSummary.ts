@@ -203,6 +203,13 @@ export function summarizeT3ToolCalls(
     case "task-status":
       label = phrase(t("Checked"), t("check"), t("task status {times}", { times }));
       break;
+    case "command-run":
+      label = phrase(
+        t("Started"),
+        t("start"),
+        tn(countEntities(entityIds("taskId")), "{count} command", "{count} commands"),
+      );
+      break;
     case "background-wait":
       label = phrase(t("Updated"), t("update"), t("background waits {times}", { times }));
       break;

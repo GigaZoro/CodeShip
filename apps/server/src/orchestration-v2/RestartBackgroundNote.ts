@@ -696,16 +696,13 @@ export function restartContinuationNote(
   return { work, settled: isRestartNoteSource(current, providerTurns), runIds: [...visited] };
 }
 
-/**
- * A restart can cut `delegate_task` after the task exists but before its ids reach the agent, and
- * the ids are not derivable from anything the agent holds.
- * Unfinished tasks are listed first, newest first, so the limit never drops the one the cut call started.
- */
-export function restartDelegatedTasksNote(
-  tasks: ReadonlyArray<
-    Pick<OrchestrationV2Subagent, "id" | "childThreadId" | "title" | "prompt" | "status">
-  >,
-): string | undefined {
+type RestartTask = Pick<
+  OrchestrationV2Subagent,
+  "id" | "childThreadId" | "title" | "prompt" | "status" | "command"
+>;
+
+/** Unfinished tasks first, newest first, so the limit never drops the one the cut call started. */
+function restartTaskList(lead: string, fallback: string, tasks: ReadonlyArray<RestartTask>) {
   if (tasks.length === 0) return undefined;
   const newestFirst = tasks.toReversed();
   const listed = [
@@ -714,18 +711,39 @@ export function restartDelegatedTasksNote(
   ];
   const omitted = tasks.length - MAX_NOTE_ENTRIES;
   return [
-    "Note: that turn started these delegated tasks. Use their ids with task_status or task_cancel instead of delegating them again:",
+    lead,
     ...listed
       .slice(0, MAX_NOTE_ENTRIES)
       .map((task) =>
         [
-          `- ${compactLabel(task.title) ?? compactLabel(task.prompt) ?? "delegated task"}: taskId ${task.id}`,
+          `- ${compactLabel(task.title) ?? compactLabel(task.prompt) ?? fallback}: taskId ${task.id}`,
           ...(task.childThreadId === null ? [] : [`childThreadId ${task.childThreadId}`]),
           task.status,
         ].join(", "),
       ),
     ...(omitted > 0 ? [`- and ${omitted} more`] : []),
   ].join("\n");
+}
+
+/**
+ * A restart can cut `delegate_task` or `t3_command_run` after the task exists but before its ids
+ * reach the agent, and the ids are not derivable from anything the agent holds. A command runs
+ * apart from the agent, so the restart did not stop it.
+ */
+export function restartDelegatedTasksNote(tasks: ReadonlyArray<RestartTask>): string | undefined {
+  const parts = [
+    restartTaskList(
+      "Note: that turn started these delegated tasks. Use their ids with task_status or task_cancel instead of delegating them again:",
+      "delegated task",
+      tasks.filter((task) => task.command === undefined),
+    ),
+    restartTaskList(
+      "Note: that turn started these commands with t3_command_run. The restart did not stop them, and each one's end wakes you, so do not run them again. Use their ids with task_status or task_cancel:",
+      "command",
+      tasks.filter((task) => task.command !== undefined),
+    ),
+  ].filter((part) => part !== undefined);
+  return parts.length === 0 ? undefined : parts.join("\n\n");
 }
 
 export function isRestartNoteContinuation(

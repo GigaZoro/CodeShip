@@ -36,6 +36,7 @@ import {
 } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
+import * as CommandRunner from "./commandRunner/CommandRunner.ts";
 import * as AgentScopeLive from "./process/agentScope.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
@@ -916,6 +917,8 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
+  // Watches t3_command_run commands to their end, including ones an earlier server started.
+  Layer.effectDiscard(CommandRunner.CommandRunner.pipe(Effect.flatMap((runner) => runner.start()))),
   // Installs new releases on a background service once nothing a restart would stop is running.
   ServerAutoUpdate.layer,
 ).pipe(
@@ -924,6 +927,8 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+  // t3_command_run, from /mcp and the watcher above.
+  Layer.provide(CommandRunner.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Agents see which accounts a usage limit stopped, and launches onto one fail before they start.
   Layer.provide(layerAccountRouting),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.

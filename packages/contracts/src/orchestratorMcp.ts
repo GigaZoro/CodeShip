@@ -270,7 +270,7 @@ export const OrchestratorMcpTaskCancelResult = Schema.Struct({
 });
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
 
-const ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES = 60;
+export const ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES = 60;
 const ORCHESTRATOR_MCP_COMMAND_MAX_TIMEOUT_MINUTES = 720;
 
 export const OrchestratorMcpRunCommandInput = Schema.Struct({

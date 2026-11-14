@@ -22,6 +22,7 @@ export type T3McpToolSummaryAction =
   | "thread-wait"
   | "thread-interrupt"
   | "workflow-stop"
+  | "command-run"
   | "background-wait"
   | "thread-configuration"
   | "thread-configure"
@@ -178,6 +179,7 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Stop", "Stopping", "Requested a stop for", "a workflow"],
     "workflow-stop",
   ),
+  t3_command_run: tool(["Run", "Running", "Started", "a command"], "command-run"),
   t3_background_wait: tool(
     ["Update", "Updating", "Updated", "background waits"],
     "background-wait",

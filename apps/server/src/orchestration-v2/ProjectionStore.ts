@@ -677,6 +677,11 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
     ProjectionStoreV2Error
   >;
+  /** `t3_command_run` tasks without a result yet. */
+  readonly getOpenCommandTasks: Effect.Effect<
+    ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
+    ProjectionStoreV2Error
+  >;
   readonly getTurnStartContext: (
     threadId: ThreadId,
     runId: RunId,
@@ -7191,6 +7196,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getOpenCommandTasks: ProjectionStoreV2Shape["getOpenCommandTasks"] = sql<{
+      readonly thread_id: string;
+      readonly subagent_id: string;
+    }>`
+      SELECT thread_id, subagent_id FROM orchestration_v2_projection_subagents
+      WHERE origin = 'app_owned'
+        AND child_thread_id IS NULL
+        AND json_type(payload_json, '$.command') = 'object'
+        AND json_type(payload_json, '$.result') = 'null'
+    `.pipe(
+      Effect.map((rows) =>
+        rows.map((row) => ({
+          parentThreadId: ThreadId.make(row.thread_id),
+          taskId: NodeId.make(row.subagent_id),
+        })),
+      ),
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getThreadsWithPullRequests: ProjectionStoreV2Shape["getThreadsWithPullRequests"] =
       Effect.fn("ProjectionStore.getThreadsWithPullRequests")(
         function* (threadId) {
@@ -7921,6 +7945,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadWorktreePaths: readOnReader(getThreadWorktreePaths),
       getActiveTurnWorkspaces: readOnReader(getActiveTurnWorkspaces),
       getOpenRemoteDelegatedTasks: getOpenRemoteDelegatedTasks.pipe(NodeSqliteClient.readOnly),
+      getOpenCommandTasks: getOpenCommandTasks.pipe(NodeSqliteClient.readOnly),
       getThreadProjection,
       getTurnStartContext: readOnReader(getTurnStartContext),
       getTurnStartHistory: readOnReader(getTurnStartHistory),

@@ -306,6 +306,30 @@ it("lists the unfinished delegated task a restart cut, however many finished bef
   assert.equal(note.at(-1), "- and 1 more");
 });
 
+it("tells the agent a command it started still runs and will wake it", () => {
+  const note = restartDelegatedTasksNote([
+    {
+      id: NodeId.make("node:delegated-task:command"),
+      childThreadId: null,
+      title: "Checks",
+      prompt: "vp run check:changed",
+      status: "running",
+      command: {
+        command: "vp run check:changed",
+        cwd: "/work",
+        logPath: "/state/logs/commands/a/output.log",
+        timeoutMinutes: 60,
+      },
+    },
+  ])!.split("\n");
+
+  assert.match(
+    note[0]!,
+    /t3_command_run\. The restart did not stop them, and each one's end wakes you/,
+  );
+  assert.equal(note[1], "- Checks: taskId node:delegated-task:command, running");
+});
+
 it("gives each loss on a run its own notice, listing only the work it adds", () => {
   const now = DateTime.makeUnsafe("2026-11-12T10:00:00.000Z");
   const shell = { kind: "shell" as const, label: "sleep 20", id: "task-1" };

@@ -2132,11 +2132,6 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * A task with no child thread here, answered from its row: one in a linked environment,
-   * whose follower records its result once its thread there ends, or a command, whose
-   * runner records it once the command exits.
-   */
-  /**
    * Records a running command as cancelled; its runner then stops the command's processes.
    * The caller asked for the stop, so the command's end does not wake it.
    */
@@ -2206,6 +2201,11 @@ const make = Effect.gen(function* () {
     return { taskId: current.taskId, status: "cancel_requested" };
   });
 
+  /**
+   * A task with no child thread here, answered from its row: one in a linked environment,
+   * whose follower records its result once its thread there ends, or a command, whose
+   * runner records it once the command exits.
+   */
   const readRecordedTask = Effect.fn("OrchestratorMcpService.readRecordedTask")(function* (
     scope: McpThreadInvocationScope,
     task: OrchestrationV2Subagent,

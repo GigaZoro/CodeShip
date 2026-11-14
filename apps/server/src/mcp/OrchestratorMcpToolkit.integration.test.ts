@@ -46,6 +46,7 @@ import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMoc
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
@@ -272,7 +273,12 @@ describe("orchestrator MCP toolkit", () => {
               Layer.provide(layerOrchestration),
             ),
           ),
-          Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+          Layer.provide(
+            Layer.merge(
+              Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+              Layer.mock(CommandRunner.CommandRunner)({}),
+            ),
+          ),
           Layer.provide(NodeServices.layer),
         );
 

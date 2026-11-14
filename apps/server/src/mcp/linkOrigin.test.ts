@@ -40,6 +40,7 @@ import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as CommandRunner from "../commandRunner/CommandRunner.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -176,7 +177,12 @@ const layerTools = Layer.mergeAll(
   ),
   Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
-  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+  Layer.provide(
+    Layer.merge(
+      Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+      Layer.mock(CommandRunner.CommandRunner)({}),
+    ),
+  ),
   Layer.provide(
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/p" }),
   ),

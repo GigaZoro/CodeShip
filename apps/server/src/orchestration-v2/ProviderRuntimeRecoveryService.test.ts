@@ -1889,6 +1889,18 @@ it.effect("lists the calls a running turn waits on, until it runs none", () => {
       title: "Fix the bug",
       childThreadId: ThreadId.make("thread_child"),
     }),
+    // A t3_command_run command runs apart from the provider and outlives the restart.
+    item("turn-item:command", "subagent", "running", {
+      origin: "app_owned",
+      title: "Checks",
+      childThreadId: null,
+      command: {
+        command: "vp run check:changed",
+        cwd: "/work",
+        logPath: "/state/logs/commands/a/output.log",
+        timeoutMinutes: 60,
+      },
+    }),
   ];
   let projection = running([answer, bash("running"), edit("pending"), reviewer("running")]);
   return Effect.gen(function* () {
