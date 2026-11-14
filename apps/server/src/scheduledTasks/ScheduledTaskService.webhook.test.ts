@@ -1187,6 +1187,52 @@ it.effect("recovers a persisted coalescing window after restarting the service",
   );
 });
 
+it.effect("a window dispatch that shutdown cuts mid-launch is replayed after the restart", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const workers = new Map<string, Effect.Effect<void>>();
+    const { first, poll } = yield* withService(
+      ({ service, launches }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(
+            yield* webhookTaskInput({
+              schedule: {
+                type: "webhook",
+                dedupe: { coalesceKey: "{{headers.content-type}}", coalesceWindowSeconds: 10 },
+              },
+            }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          yield* service.triggerWebhook(requestFor(task));
+          yield* TestClock.adjust("10 seconds");
+          const poll = yield* workers.get("webhook-coalescing")!.pipe(Effect.forkChild);
+          return { first: yield* Queue.take(launches), poll };
+        }),
+      { sql, workers, gate: yield* Deferred.make<void>() },
+    );
+    // The scheduler's jobs stop after the service has begun to close.
+    yield* Fiber.interrupt(poll);
+    const restartedWorkers = new Map<string, Effect.Effect<void>>();
+    const replayed = yield* withService(
+      ({ launches }) =>
+        Effect.gen(function* () {
+          // Shutdown left the delivery to its replay: still pending, and not counted yet.
+          assert.deepEqual(
+            yield* sql`
+              SELECT p.state, t.run_count
+              FROM scheduled_task_webhook_pending p JOIN scheduled_tasks t USING (task_id)
+            `,
+            [{ state: "running", run_count: 0 }],
+          );
+          yield* restartedWorkers.get("webhook-coalescing")!;
+          return yield* Queue.take(launches);
+        }),
+      { sql, workers: restartedWorkers },
+    );
+    assert.equal(replayed.commandId, first.commandId);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("a pending dispatch interrupted at its permit does not block later polls", () => {
   const workers = new Map<string, Effect.Effect<void>>();
   // One shared dispatcher lets the test run the retry's forked worker to completion.

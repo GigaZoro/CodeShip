@@ -76,7 +76,9 @@ import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Duration from "effect/Duration";
 import * as Metric from "effect/Metric";
 import * as Layer from "effect/Layer";
@@ -142,6 +144,7 @@ const isLostPromptFileRead = (
 ): error is PromptFileReader.PromptFileReadError =>
   error._tag === "PromptFileReadError" && error.lostConnection;
 const PROMPT_TOO_LONG = "The filled-in prompt is too long.";
+const INTERRUPTED_BY_RESTART = "Run was interrupted by a server restart.";
 const MINUTE_MS = 60_000;
 // An occurrence of a one-machine task counts as run if a machine started it within this
 // long before the occurrence was due.
@@ -912,6 +915,7 @@ export const layer = Layer.effect(
     const projects = yield* ProjectService.ProjectService;
     const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+    const ids = yield* IdAllocator.IdAllocatorV2;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
     const secretRequests = yield* SecretRequests.SecretRequests;
@@ -1157,6 +1161,10 @@ export const layer = Layer.effect(
     }
     if (!runColumns.some((column) => column.name === "memory_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN memory_json TEXT`;
+    }
+    // The folder a run started its chat in, so a run a restart cut files the chat as its launch did.
+    if (!runColumns.some((column) => column.name === "chat_folder")) {
+      yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN chat_folder TEXT`;
     }
     yield* sql`
       UPDATE scheduled_task_runs SET skip_reason = 'live_run_limit'
@@ -1880,6 +1888,21 @@ export const layer = Layer.effect(
         taskId,
       );
 
+    // Before the launch, so startup still finds the chat when a restart cuts the run after it.
+    const nameRunChat = (
+      taskId: ScheduledTaskId,
+      id: string,
+      threadId: ThreadId,
+      folder: string | null,
+    ) =>
+      keepRunHistory(
+        sql`
+          UPDATE scheduled_task_runs SET thread_id = ${threadId}, chat_folder = ${folder}
+          WHERE run_id = ${id} AND outcome = 'running'
+        `,
+        taskId,
+      );
+
     // A failure between markRunning and markCompleted must still write a terminal record:
     // runDueTasks skips 'running' rows forever, and the dispatch may already have gone out,
     // so next_run_at must advance. Pending webhook attempts count only with their completion.
@@ -2223,9 +2246,19 @@ export const layer = Layer.effect(
           ? Exit.fail(prompt.failure)
           : target.type === "launch"
             ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
+                Effect.gen(function* () {
+                  // A webhook delivery cut by a restart is replayed under its command id, and its
+                  // launch finds the chat it started then.
+                  const threadId =
+                    webhook === undefined
+                      ? yield* ids.allocate.thread({ projectId: active.projectId })
+                      : undefined;
+                  if (threadId !== undefined) {
+                    yield* nameRunChat(task.id, runRecordId, threadId, active.group ?? null);
+                  }
+                  const launched = yield* threadLaunch.launch({
                     commandId,
+                    ...(threadId === undefined ? {} : { threadId }),
                     projectId: active.projectId,
                     title: active.title,
                     modelSelection: target.selection,
@@ -2241,8 +2274,9 @@ export const layer = Layer.effect(
                     createdBy: active.createdBy,
                     creationSource: active.creationSource,
                     ...(active.group == null ? {} : { folder: active.group }),
-                  })
-                  .pipe(Effect.map((launched) => launched.threadId)),
+                  });
+                  return launched.threadId;
+                }),
               )
             : yield* Effect.exit(
                 // The stored selection only seeds fresh threads. A bound run
@@ -2348,20 +2382,24 @@ export const layer = Layer.effect(
         return { task: recorded, threadId, dispatchFailed: !runSucceeded };
       }).pipe(
         Effect.onError((cause) =>
-          releaseStuckRun(task, startedAtIso, errorMessage(cause), webhook?.deliveryId).pipe(
-            Effect.andThen(
-              localNow.pipe(
-                Effect.flatMap((now) =>
-                  finishRunRecord(task.id, runRecordId, {
-                    completedAt: iso(now),
-                    outcome: "failed",
-                    threadId: null,
-                    error: errorMessage(cause),
-                  }),
+          // A run that shutdown cuts may still get its prompt to its chat, so startup recovery,
+          // which can read the chat, settles both rows as it does after a crash.
+          serviceScope.state._tag === "Closed"
+            ? Effect.void
+            : releaseStuckRun(task, startedAtIso, errorMessage(cause), webhook?.deliveryId).pipe(
+                Effect.andThen(
+                  localNow.pipe(
+                    Effect.flatMap((now) =>
+                      finishRunRecord(task.id, runRecordId, {
+                        completedAt: iso(now),
+                        outcome: "failed",
+                        threadId: null,
+                        error: errorMessage(cause),
+                      }),
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
         ),
       );
 
@@ -3745,17 +3783,89 @@ export const layer = Layer.effect(
       );
     });
 
-    // Nothing runs before startup finishes, so a run record still running was cut off.
-    yield* localNow.pipe(
-      Effect.flatMap(
-        (now) => sql`
-          UPDATE scheduled_task_runs
-          SET outcome = 'failed',
-              error = 'Run was interrupted by a server restart.',
-              completed_at = ${iso(now)}
-          WHERE outcome = 'running'
-        `,
-      ),
+    // Nothing runs before startup finishes, so a run record still running was cut off. A cut run
+    // whose chat got its prompt goes on after the restart: it keeps its chat, so the chat counts
+    // toward the live-run limit and is filed with the task.
+    yield* Effect.gen(function* () {
+      const cut = yield* sql<{
+        readonly run_id: string;
+        readonly task_id: ScheduledTaskId;
+        readonly thread_id: string | null;
+        readonly chat_folder: string | null;
+        readonly started_at: string;
+      }>`
+        SELECT run_id, task_id, thread_id, chat_folder, started_at
+        FROM scheduled_task_runs WHERE outcome = 'running'
+      `;
+      const settled = yield* Effect.forEach(
+        cut,
+        (run) => {
+          if (run.thread_id === null) return Effect.succeed({ run, chat: null });
+          const threadId = ThreadId.make(run.thread_id);
+          return Effect.gen(function* () {
+            if ((yield* threadManagement.getMessageCount(threadId)) === 0) {
+              return { run, chat: null };
+            }
+            const shell = yield* threadManagement.getThreadShell(threadId);
+            return { run, chat: shell === null || shell.deletedAt !== null ? null : threadId };
+          }).pipe(
+            // Unread is not absent: the run keeps its chat, which still counts toward the live-run
+            // limit, and stays running for a later startup to settle.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not read the chat of an interrupted scheduled task run", {
+                taskId: run.task_id,
+                threadId,
+                cause,
+              }).pipe(Effect.as(null)),
+            ),
+          );
+        },
+        { concurrency: 4 },
+      );
+      const completedAt = iso(yield* localNow);
+      yield* sql.withTransaction(
+        Effect.forEach(
+          settled,
+          (entry) => {
+            if (entry === null) return Effect.void;
+            const { run, chat } = entry;
+            return chat === null
+              ? sql`
+                  UPDATE scheduled_task_runs
+                  SET outcome = 'failed', error = ${INTERRUPTED_BY_RESTART},
+                      completed_at = ${completedAt}, thread_id = NULL
+                  WHERE run_id = ${run.run_id} AND outcome = 'running'
+                `
+              : Effect.gen(function* () {
+                  yield* recordRunThread(run.task_id, chat, run.started_at);
+                  yield* recordTaskThread(run.task_id, chat, run.chat_folder);
+                  yield* sql`
+                    UPDATE scheduled_task_runs SET outcome = 'succeeded', completed_at = ${completedAt}
+                    WHERE run_id = ${run.run_id} AND outcome = 'running'
+                  `;
+                  // An earlier startup that could not read this chat settled the task as cut. While
+                  // this run is still the task's latest, the task takes its outcome and chat.
+                  const corrected = yield* sql`
+                    UPDATE scheduled_tasks
+                    SET last_run_status = 'succeeded', last_run_error = NULL,
+                        updated_at = ${completedAt}
+                    WHERE task_id = ${run.task_id} AND last_run_at = ${run.started_at}
+                      AND last_run_status = 'failed' AND last_run_error = ${INTERRUPTED_BY_RESTART}
+                    RETURNING task_id
+                  `;
+                  if (corrected.length > 0) {
+                    yield* sql`
+                      INSERT INTO scheduled_task_sidebar (task_id, last_run_thread_id)
+                      VALUES (${run.task_id}, ${chat})
+                      ON CONFLICT (task_id) DO UPDATE SET last_run_thread_id = excluded.last_run_thread_id
+                    `;
+                  }
+                });
+          },
+          { discard: true },
+        ),
+      );
+    }).pipe(
       Effect.catch((cause) =>
         Effect.logWarning("Could not close interrupted schedule task run records", { cause }),
       ),
@@ -3771,12 +3881,22 @@ export const layer = Layer.effect(
         stuck,
         (row) =>
           Effect.gen(function* () {
+            // From the stored run, so a run kept by a startup that a restart then cut still counts.
+            const kept = yield* sql`
+              SELECT 1 FROM scheduled_task_runs
+              WHERE task_id = ${row.task_id} AND started_at = ${row.last_run_at}
+                AND outcome = 'succeeded'
+              LIMIT 1
+            `;
+            const started = kept.length > 0;
+            const status = started ? "succeeded" : "failed";
+            const error = started ? null : INTERRUPTED_BY_RESTART;
             const decoded = yield* Effect.result(decodeRow(row));
             if (Result.isSuccess(decoded)) {
               yield* sql`
                 UPDATE scheduled_tasks
-                SET last_run_status = 'failed',
-                    last_run_error = 'Run was interrupted by a server restart.',
+                SET last_run_status = ${status},
+                    last_run_error = ${error},
                     next_run_at = ${nextRunAfterRun(decoded.success, now)},
                     updated_at = ${iso(now)},
                     run_count = run_count + CASE WHEN EXISTS (
@@ -3794,8 +3914,8 @@ export const layer = Layer.effect(
             );
             yield* sql`
               UPDATE scheduled_tasks
-              SET last_run_status = 'failed',
-                  last_run_error = 'Run was interrupted by a server restart.',
+              SET last_run_status = ${status},
+                  last_run_error = ${error},
                   updated_at = ${iso(now)},
                   run_count = run_count + CASE WHEN EXISTS (
                     SELECT 1 FROM scheduled_task_webhook_pending
@@ -4992,7 +5112,11 @@ export const layer = Layer.effect(
           taskId: input.id,
         });
       }
+      // Other runs start in fibers the service owns and stop with them at shutdown. This one
+      // would run in the request's fiber, which a client that disconnects interrupts.
       return yield* runTask(task, "manual").pipe(
+        Effect.forkIn(serviceScope),
+        Effect.flatMap(Fiber.join),
         Effect.mapError((cause) =>
           taskError("Could not run schedule task.", { taskId: input.id, cause }),
         ),
@@ -5063,7 +5187,8 @@ export const layer = Layer.effect(
                 startedAt: row.started_at,
                 completedAt: row.completed_at,
                 outcome: row.outcome,
-                threadId: row.thread_id,
+                // A running run names its chat before the chat exists.
+                threadId: row.outcome === "running" ? null : row.thread_id,
                 error: row.error,
                 skipReason: row.skip_reason,
                 ranOn: row.ran_on,

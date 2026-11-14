@@ -1,4 +1,5 @@
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -47,8 +48,8 @@ const layerNoPromptFiles = Layer.mock(PromptFileReader.PromptFileReader)({
 });
 
 /**
- * This machine's id, its projects and its prompt files, for services that only need to identify
- * a repository or read from it.
+ * This machine's id, its projects, its prompt files and new chat ids, for services that only need
+ * to identify a repository or read from it.
  */
 export const layerSharedTaskIdentities = (
   projects: ReadonlyArray<TestSharedProject> = [],
@@ -60,6 +61,7 @@ export const layerSharedTaskIdentities = (
     peerCheck,
     runConditionCheck,
     promptFiles,
+    IdAllocator.layer,
     Layer.mock(ServerEnvironment.ServerEnvironmentIdentity)({
       getEnvironmentId: Effect.succeed(HERE_ENVIRONMENT_ID),
     }),

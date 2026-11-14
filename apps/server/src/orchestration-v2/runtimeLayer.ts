@@ -315,6 +315,7 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
       layerManagedProjectFoldersProvided,
       layerSecretRequestsProvided,
       PromptFileReader.layer.pipe(Layer.provide(GitVcsDriver.layer)),
+      IdAllocator.layer,
     ),
   ),
 );
