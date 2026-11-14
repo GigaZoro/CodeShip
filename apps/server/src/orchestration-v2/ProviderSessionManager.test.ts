@@ -274,7 +274,7 @@ function makeThreadCreatedEvent(input: {
       deletedAt: null,
     };
     return {
-      id: yield* input.idAllocator.allocate.event({ threadId: input.threadId }),
+      id: yield* input.idAllocator.allocate.event(),
       type: "thread.created" as const,
       threadId: input.threadId,
       occurredAt: input.now,
@@ -804,10 +804,7 @@ function makePendingRuntimeRequestEvents(input: {
     };
     const events = [
       {
-        id: yield* input.idAllocator.allocate.event({
-          threadId: input.threadId,
-          providerSessionId: input.providerSessionId,
-        }),
+        id: yield* input.idAllocator.allocate.event(),
         type: "node.updated" as const,
         threadId: input.threadId,
         nodeId,
@@ -816,10 +813,7 @@ function makePendingRuntimeRequestEvents(input: {
         payload: node,
       },
       {
-        id: yield* input.idAllocator.allocate.event({
-          threadId: input.threadId,
-          providerSessionId: input.providerSessionId,
-        }),
+        id: yield* input.idAllocator.allocate.event(),
         type: "runtime-request.updated" as const,
         threadId: input.threadId,
         nodeId,
@@ -828,10 +822,7 @@ function makePendingRuntimeRequestEvents(input: {
         payload: request,
       },
       {
-        id: yield* input.idAllocator.allocate.event({
-          threadId: input.threadId,
-          providerSessionId: input.providerSessionId,
-        }),
+        id: yield* input.idAllocator.allocate.event(),
         type: "turn-item.updated" as const,
         threadId: input.threadId,
         nodeId,
@@ -2459,7 +2450,7 @@ const openSessionWithBackgroundCommand = (
         yield* eventSink.write({
           events: [
             {
-              id: yield* idAllocator.allocate.event({ threadId }),
+              id: yield* idAllocator.allocate.event(),
               type: "provider-thread.updated",
               threadId,
               driver: CODEX_DRIVER,
@@ -2511,7 +2502,7 @@ const openSessionWithBackgroundCommand = (
         yield* eventSink.write({
           events: [
             {
-              id: yield* idAllocator.allocate.event({ threadId }),
+              id: yield* idAllocator.allocate.event(),
               type: "run.updated",
               threadId,
               runId: run.id,
@@ -3592,7 +3583,7 @@ it.effect(
         yield* eventSink.write({
           events: [
             {
-              id: yield* idAllocator.allocate.event({ threadId: firstThreadId }),
+              id: yield* idAllocator.allocate.event(),
               type: "provider-thread.updated",
               threadId: firstThreadId,
               driver: CODEX_DRIVER,
@@ -3600,7 +3591,7 @@ it.effect(
               payload: firstProviderThread,
             },
             {
-              id: yield* idAllocator.allocate.event({ threadId: firstThreadId }),
+              id: yield* idAllocator.allocate.event(),
               type: "provider-turn.updated",
               threadId: firstThreadId,
               runId: firstRunId,
@@ -3871,7 +3862,7 @@ it.effect(
             yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
             yield* makeThreadCreatedEvent({ idAllocator, threadId: otherThreadId, now }),
             {
-              id: yield* idAllocator.allocate.event({ threadId }),
+              id: yield* idAllocator.allocate.event(),
               type: "provider-thread.updated",
               threadId,
               driver: CODEX_DRIVER,

@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import { encodeIdPart } from "./compactId.ts";
 import { randomUuidV4 } from "./randomUuid.ts";
 
 export const IdAllocatorV2Kind = Schema.Literals([
@@ -72,11 +73,7 @@ export interface IdAllocatorV2Allocate {
     readonly fixtureName: string;
     readonly commandName: string;
   }) => Effect.Effect<CommandId, IdAllocatorV2Error>;
-  readonly event: (input: {
-    readonly threadId?: ThreadId;
-    readonly commandId?: CommandId;
-    readonly providerSessionId?: ProviderSessionId;
-  }) => Effect.Effect<EventId, IdAllocatorV2Error>;
+  readonly event: () => Effect.Effect<EventId, IdAllocatorV2Error>;
   readonly rawEvent: (input: {
     readonly providerSessionId: ProviderSessionId;
     readonly method: string | null;
@@ -188,10 +185,13 @@ export class IdAllocatorV2 extends Context.Service<
   }
 >()("@t3tools/provider-core/server/IdAllocator/IdAllocatorV2") {}
 
-const encodePart = (part: string | number): string => encodeURIComponent(String(part));
+// Thread, provider thread and session, checkpoint, project, command and raw event ids are lookup
+// keys stored outside the orchestration tables, so they keep this one-level escaping.
+const joinKeyId = (prefix: string, ...parts: ReadonlyArray<string | number>): string =>
+  [prefix, ...parts.map((part) => encodeURIComponent(String(part)))].join(":");
 
 const joinId = (prefix: string, ...parts: ReadonlyArray<string | number>): string =>
-  [prefix, ...parts.map(encodePart)].join(":");
+  [prefix, ...parts.map(encodeIdPart)].join(":");
 
 export function deriveThreadFromProviderThread(input: {
   readonly driver: ProviderDriverKind;
@@ -199,7 +199,7 @@ export function deriveThreadFromProviderThread(input: {
   readonly nativeThreadId: string;
 }): ThreadId {
   return ThreadId.make(
-    joinId(
+    joinKeyId(
       "thread",
       "provider",
       input.driver,
@@ -218,7 +218,7 @@ export function deriveProviderThread(input: {
   readonly nativeThreadId: string;
 }): ProviderThreadId {
   return ProviderThreadId.make(
-    joinId(
+    joinKeyId(
       "provider-thread",
       "provider",
       input.driver,
@@ -237,10 +237,13 @@ const randomId =
     readonly prefix: string;
     readonly parts: ReadonlyArray<string | number>;
     readonly make: (value: string) => Id;
+    readonly join?: typeof joinId;
   }) =>
   (allocationInput: Input): Effect.Effect<Id, IdAllocatorV2Error> =>
     randomUuidV4.pipe(
-      Effect.map((uuid) => input.make(joinId(input.prefix, ...input.parts, uuid))),
+      Effect.map((uuid) =>
+        input.make((input.join ?? joinKeyId)(input.prefix, ...input.parts, uuid)),
+      ),
       Effect.mapError(
         (cause) =>
           new IdAllocatorV2AllocationError({
@@ -254,11 +257,11 @@ const randomId =
 export const derive: IdAllocatorV2Derive = {
   providerSession: (input) =>
     ProviderSessionId.make(
-      joinId("provider-session", "provider-instance", input.providerInstanceId, "shared"),
+      joinKeyId("provider-session", "provider-instance", input.providerInstanceId, "shared"),
     ),
   delegatedTaskNode: (input) => NodeId.make(joinId("node", "delegated-task", input.commandId)),
   delegatedTaskThread: (input) =>
-    ThreadId.make(joinId("thread", "delegated-task", input.commandId)),
+    ThreadId.make(joinKeyId("thread", "delegated-task", input.commandId)),
   delegatedTaskMessage: (input) =>
     MessageId.make(joinId("message", "delegated-task", input.commandId)),
   delegatedTaskTurnItem: (input) =>
@@ -304,19 +307,14 @@ export const layer: Layer.Layer<IdAllocatorV2> = Layer.succeed(
           parts: ["fixture", input.fixtureName, input.commandName],
           make: CommandId.make,
         })(input),
-      event: (input) =>
-        randomId<EventId, typeof input>({
+      event: () =>
+        randomId<EventId, undefined>({
           kind: "event",
           prefix: "event",
-          parts: [
-            ...(input.threadId === undefined ? [] : ["thread", input.threadId]),
-            ...(input.commandId === undefined ? [] : ["command", input.commandId]),
-            ...(input.providerSessionId === undefined
-              ? []
-              : ["provider-session", input.providerSessionId]),
-          ],
+          parts: [],
           make: EventId.make,
-        })(input),
+          join: joinId,
+        })(undefined),
       rawEvent: (input) =>
         randomId<RawEventId, typeof input>({
           kind: "raw_event",
@@ -351,6 +349,7 @@ export const layer: Layer.Layer<IdAllocatorV2> = Layer.succeed(
           prefix: "message",
           parts: ["thread", input.threadId, "ordinal", input.ordinal],
           make: MessageId.make,
+          join: joinId,
         })(input),
       providerSession: (input) =>
         randomId<ProviderSessionId, typeof input>({
@@ -372,17 +371,18 @@ export const layer: Layer.Layer<IdAllocatorV2> = Layer.succeed(
               : ["native-request", input.nativeRequestId]),
           ],
           make: RuntimeRequestId.make,
+          join: joinId,
         })(input),
       checkpointScope: (input) =>
         Effect.succeed(
           CheckpointScopeId.make(
-            joinId("checkpoint-scope", "thread", input.threadId, "name", input.name),
+            joinKeyId("checkpoint-scope", "thread", input.threadId, "name", input.name),
           ),
         ),
       checkpoint: (input) =>
         Effect.succeed(
           CheckpointId.make(
-            joinId("checkpoint", "scope", input.checkpointScopeId, "name", input.name),
+            joinKeyId("checkpoint", "scope", input.checkpointScopeId, "name", input.name),
           ),
         ),
       contextHandoff: (input) =>
@@ -425,6 +425,7 @@ export const layer: Layer.Layer<IdAllocatorV2> = Layer.succeed(
             ...(input.runId === undefined ? [] : ["run", input.runId]),
           ],
           make: PlanId.make,
+          join: joinId,
         })(input),
     },
     derive,

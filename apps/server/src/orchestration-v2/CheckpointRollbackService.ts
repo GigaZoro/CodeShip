@@ -172,7 +172,7 @@ export const layer: Layer.Layer<
         providerInstanceId: run.providerInstanceId,
         occurredAt: now,
       };
-      const eventId = ids.allocate.event({ threadId: run.threadId });
+      const eventId = ids.allocate.event();
       const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
         {
           ...base,
@@ -246,7 +246,7 @@ export const layer: Layer.Layer<
           const events: Array<OrchestrationV2DomainEvent> = [];
           if (stored !== undefined && remaining.length !== listed.length) {
             events.push({
-              id: yield* ids.allocate.event({ threadId }),
+              id: yield* ids.allocate.event(),
               type: "provider-thread.updated",
               threadId,
               driver: stored.driver,
@@ -465,7 +465,7 @@ export const layer: Layer.Layer<
             : () => false;
           const makeEvent = <Event extends OrchestrationV2DomainEvent>(event: Omit<Event, "id">) =>
             Effect.map(
-              ids.allocate.event({ threadId: event.threadId }),
+              ids.allocate.event(),
               (id) =>
                 ({
                   ...event,

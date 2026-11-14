@@ -323,7 +323,7 @@ export const layer: Layer.Layer<
           Effect.gen(function* () {
             return {
               ...event,
-              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              id: yield* idAllocator.allocate.event(),
               threadId: projection.thread.id,
               runId: run.id,
               ...(nodeId === null ? {} : { nodeId }),
@@ -933,7 +933,7 @@ export const layer: Layer.Layer<
           events: yield* Effect.forEach(abandonedTurns, ({ turn, run: failedRun }) =>
             Effect.gen(function* () {
               return {
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                id: yield* idAllocator.allocate.event(),
                 type: "provider-turn.updated" as const,
                 threadId: projection.thread.id,
                 runId: failedRun.id,
@@ -1419,7 +1419,7 @@ export const layer: Layer.Layer<
           yield* eventSink.write({
             events: [
               {
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                id: yield* idAllocator.allocate.event(),
                 type: "context-handoff.updated",
                 threadId: projection.thread.id,
                 runId: run.id,
@@ -1428,7 +1428,7 @@ export const layer: Layer.Layer<
                 payload: handoff,
               },
               {
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                id: yield* idAllocator.allocate.event(),
                 type: "context-transfer.updated",
                 threadId: projection.thread.id,
                 runId: run.id,
@@ -1600,7 +1600,7 @@ export const layer: Layer.Layer<
         yield* eventSink.write({
           events: [
             {
-              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              id: yield* idAllocator.allocate.event(),
               type: "context-handoff.updated",
               threadId: projection.thread.id,
               runId: run.id,
@@ -1609,7 +1609,7 @@ export const layer: Layer.Layer<
               payload: handoff,
             },
             {
-              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              id: yield* idAllocator.allocate.event(),
               type: "context-transfer.updated",
               threadId: projection.thread.id,
               runId: run.id,
@@ -1696,10 +1696,7 @@ export const layer: Layer.Layer<
       };
       const events: Array<OrchestrationV2DomainEvent> = [
         {
-          id: yield* idAllocator.allocate.event({
-            threadId: projection.thread.id,
-            providerSessionId,
-          }),
+          id: yield* idAllocator.allocate.event(),
           type: "provider-session.updated",
           threadId: projection.thread.id,
           driver: session.driver,
@@ -1708,7 +1705,7 @@ export const layer: Layer.Layer<
           payload: session.providerSession,
         },
         {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+          id: yield* idAllocator.allocate.event(),
           type: "provider-thread.updated",
           threadId: projection.thread.id,
           driver: session.driver,
@@ -1722,7 +1719,7 @@ export const layer: Layer.Layer<
           ? []
           : [
               {
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                id: yield* idAllocator.allocate.event(),
                 type: "context-transfer.updated" as const,
                 threadId: projection.thread.id,
                 runId: run.id,
@@ -1745,7 +1742,7 @@ export const layer: Layer.Layer<
               },
             ]),
         {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+          id: yield* idAllocator.allocate.event(),
           type: "run.updated",
           threadId: projection.thread.id,
           runId: run.id,
@@ -1755,7 +1752,7 @@ export const layer: Layer.Layer<
           payload: runningRun,
         },
         {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+          id: yield* idAllocator.allocate.event(),
           type: "run-attempt.updated",
           threadId: projection.thread.id,
           runId: run.id,
@@ -1765,7 +1762,7 @@ export const layer: Layer.Layer<
           payload: runningAttempt,
         },
         {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+          id: yield* idAllocator.allocate.event(),
           type: "node.updated",
           threadId: projection.thread.id,
           runId: run.id,
@@ -1795,9 +1792,7 @@ export const layer: Layer.Layer<
         yield* eventSink.write({
           events: [
             {
-              id: yield* idAllocator.allocate.event({
-                threadId: projection.thread.id,
-              }),
+              id: yield* idAllocator.allocate.event(),
               type: "context-handoff.updated",
               threadId: projection.thread.id,
               runId: run.id,

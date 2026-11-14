@@ -144,7 +144,7 @@ export const layer: Layer.Layer<
             ? []
             : [
                 {
-                  id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                  id: yield* ids.allocate.event(),
                   type: "checkpoint.captured" as const,
                   threadId: input.threadId,
                   nodeId: threadStartCheckpoint.nodeId,
@@ -158,7 +158,7 @@ export const layer: Layer.Layer<
             ? []
             : [
                 {
-                  id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                  id: yield* ids.allocate.event(),
                   type: "checkpoint.captured" as const,
                   threadId: input.threadId,
                   nodeId: baselineCheckpoint.nodeId,
@@ -169,7 +169,7 @@ export const layer: Layer.Layer<
                 },
               ]),
           {
-            id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+            id: yield* ids.allocate.event(),
             type: "checkpoint.captured",
             threadId: input.threadId,
             runId: run.id,
@@ -180,7 +180,7 @@ export const layer: Layer.Layer<
             payload: checkpoint,
           },
           {
-            id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+            id: yield* ids.allocate.event(),
             type: "turn-item.updated",
             threadId: input.threadId,
             runId: run.id,
@@ -198,7 +198,7 @@ export const layer: Layer.Layer<
             }),
           },
           {
-            id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+            id: yield* ids.allocate.event(),
             type: "run.updated",
             threadId: input.threadId,
             runId: run.id,
@@ -218,7 +218,7 @@ export const layer: Layer.Layer<
             ? []
             : [
                 {
-                  id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                  id: yield* ids.allocate.event(),
                   type: "node.updated" as const,
                   threadId: input.threadId,
                   runId: run.id,
@@ -261,7 +261,7 @@ export const layer: Layer.Layer<
         effects: [],
         events: [
           {
-            id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+            id: yield* ids.allocate.event(),
             type: "run.updated",
             threadId: input.threadId,
             runId: run.id,
@@ -274,7 +274,7 @@ export const layer: Layer.Layer<
             ? []
             : [
                 {
-                  id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                  id: yield* ids.allocate.event(),
                   type: "node.updated" as const,
                   threadId: input.threadId,
                   runId: run.id,

@@ -620,10 +620,7 @@ export const layerWithOptions = (
         const events = yield* Effect.forEach(input.threadIds, (threadId) =>
           Effect.gen(function* () {
             return {
-              id: yield* idAllocator.allocate.event({
-                threadId,
-                providerSessionId: input.runtime.providerSessionId,
-              }),
+              id: yield* idAllocator.allocate.event(),
               type: input.type,
               threadId,
               driver: input.runtime.driver,
@@ -695,10 +692,7 @@ export const layerWithOptions = (
 
           for (const request of releasedRequests) {
             events.push({
-              id: yield* idAllocator.allocate.event({
-                threadId,
-                providerSessionId,
-              }),
+              id: yield* idAllocator.allocate.event(),
               type: "runtime-request.updated",
               threadId,
               nodeId: request.nodeId,
@@ -718,10 +712,7 @@ export const layerWithOptions = (
             const requestNode = projection.nodes.find((node) => node.id === request.nodeId);
             if (requestNode !== undefined) {
               events.push({
-                id: yield* idAllocator.allocate.event({
-                  threadId,
-                  providerSessionId,
-                }),
+                id: yield* idAllocator.allocate.event(),
                 type: "node.updated",
                 threadId,
                 ...(requestNode.runId === null ? {} : { runId: requestNode.runId }),
@@ -743,10 +734,7 @@ export const layerWithOptions = (
             );
             if (turnItem !== undefined) {
               events.push({
-                id: yield* idAllocator.allocate.event({
-                  threadId,
-                  providerSessionId,
-                }),
+                id: yield* idAllocator.allocate.event(),
                 type: "turn-item.updated",
                 threadId,
                 ...(turnItem.runId === null ? {} : { runId: turnItem.runId }),
@@ -883,7 +871,7 @@ export const layerWithOptions = (
           providerInstanceId: run.providerInstanceId,
           occurredAt: input.now,
         };
-        const allocateEventId = idAllocator.allocate.event(input);
+        const allocateEventId = idAllocator.allocate.event();
         const record =
           unrecorded.length === 0
             ? undefined
@@ -1025,11 +1013,7 @@ export const layerWithOptions = (
               status: "cancelled",
               now: input.now,
               emitted: events,
-              allocateEventId: () =>
-                idAllocator.allocate.event({
-                  threadId: input.threadId,
-                  providerSessionId: input.providerSessionId,
-                }),
+              allocateEventId: () => idAllocator.allocate.event(),
               readChildThread: (childThreadId) =>
                 projectionStore
                   .getThreadRecords(
@@ -1098,10 +1082,7 @@ export const layerWithOptions = (
                         ? []
                         : [
                             {
-                              id: yield* idAllocator.allocate.event({
-                                threadId,
-                                providerSessionId,
-                              }),
+                              id: yield* idAllocator.allocate.event(),
                               type: "provider-thread.updated",
                               threadId,
                               driver: providerThread.driver,

@@ -1,3 +1,7 @@
+## 2026-11-14 — The database stores event ids in a fraction of the space
+
+- Every stored event carried an id of about 320 characters, because it spelled out the chat and provider session it belonged to, and each id is indexed. A new event now gets a short id, and an update rewrites the ids already stored, taking the event id column from 573 MB to 74 MB on a 14 GB database. Run, step and turn ids no longer re-escape the ids they contain, so those ids and the data that repeats them stay shorter too. The space returns to disk gradually as the database reuses it.
+
 ## 2026-11-14 — `t3 doctor` also removes old tool output and Settings sees fragmented space
 
 - `t3 doctor` now removes command and tool output from idle chats with the same rule and **Remove old tool output** setting the server uses before it rebuilds the database, so a doctor run no longer keeps output the server would have removed.

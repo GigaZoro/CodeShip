@@ -70,6 +70,7 @@ describe("V2 preview upgrade", () => {
         [88, "ScheduledTaskLastRunOccurrence"],
         [89, "ScheduledTaskRunFailoverReason"],
         [90, "ThreadToolOutputRetention"],
+        [91, "CompactOrchestrationIds"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -183,6 +184,7 @@ describe("V2 preview upgrade", () => {
         [88, "ScheduledTaskLastRunOccurrence"],
         [89, "ScheduledTaskRunFailoverReason"],
         [90, "ThreadToolOutputRetention"],
+        [91, "CompactOrchestrationIds"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
