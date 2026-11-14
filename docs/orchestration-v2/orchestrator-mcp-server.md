@@ -360,7 +360,9 @@ thread's command either.
 Claude's settings files and its `--settings` launch argument go through the SDK's
 `resolveSettings`, `--settings` as the project settings of a scratch folder only the server's
 user can open, since `resolveSettings` takes no flag tier; so settings Claude Code rejects for
-one invalid field add nothing, as in Claude Code. `--settings` is judged as the object Claude
+one invalid field add nothing, as in Claude Code. Full access restrictions, tool search and the
+subagent prompt cache TTL read this same result, never a raw file, so none of them counts a
+setting Claude Code drops. `--settings` is judged as the object Claude
 Code receives in the calling thread's active run (`claudeFlagSettings`): the launch argument's
 in the SDK's shape, with the run's model selection, the compact window and the thinking
 summaries switch replacing their fields. A launch leaves `fastMode` as a live switch to the

@@ -67,7 +67,6 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
-import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -153,13 +152,11 @@ import {
   linkClaudeSharedSkills,
 } from "../../provider/Drivers/ClaudeSkills.ts";
 import {
-  ClaudeBypassSettings,
   claudeProjectConfigRoot,
   claudeSdkShapedSettings,
   claudeSettingSources,
   claudeSettingsEnvironment,
   type ClaudeSettingsCascade,
-  ClaudeSettingsResolveError,
   readClaudeLaunchArgSettings,
   readClaudeSettingsCascade,
 } from "../../provider/Drivers/ClaudeSettingsCascade.ts";
@@ -2613,11 +2610,6 @@ export function claudeRuntimeQueryPolicyForRuntimePolicy(
   };
 }
 
-const decodeClaudeBypassSettings = Schema.decodeUnknownEffect(
-  fromLenientJson(ClaudeBypassSettings),
-);
-const decodeClaudeLaunchArgBypassSettings = Schema.decodeUnknownEffect(ClaudeBypassSettings);
-
 function claudeRequestsThinkingSummaries(
   selection: CompiledClaudeModelSelection,
   settings: ClaudeSettings | undefined,
@@ -2678,13 +2670,17 @@ function claudeSubagentPromptCacheTtl(
     .findLast((ttl) => ttl !== undefined);
 }
 
-function claudeBypassAvailability(
-  settings: typeof ClaudeBypassSettings.Type,
-): ClaudeBypassAvailability {
+// Only the tiers Claude Code keeps count: it drops a whole file, --settings included, for one
+// invalid field, so a switch in such a file turns nothing off there either.
+function claudeBypassAvailability({ tiers }: ClaudeSettingsCascade): ClaudeBypassAvailability {
   return {
-    bypassDisabled: settings.permissions?.disableBypassPermissionsMode === "disable",
-    autoDisabled:
-      settings.disableAutoMode === "disable" || settings.permissions?.disableAutoMode === "disable",
+    bypassDisabled: tiers.some(
+      (tier) => tier.permissions?.disableBypassPermissionsMode === "disable",
+    ),
+    autoDisabled: tiers.some(
+      (tier) =>
+        tier.disableAutoMode === "disable" || tier.permissions?.disableAutoMode === "disable",
+    ),
   };
 }
 
@@ -4234,6 +4230,8 @@ interface ActiveClaudeSubagent {
 
 interface ClaudeLiveQueryContext {
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
+  // The --settings this process launched with; it keeps them even if the file changes later.
+  readonly launchArgSettings: ClaudeSdkSettings | undefined;
   readonly nativeThreadId: string;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
@@ -4699,79 +4697,28 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     adapterOptions.settings,
     adapterOptions.environment,
   ).pipe(Effect.provideService(Path.Path, path));
-  const hostEnvironment = yield* HostProcess.Environment;
   const hostPlatform = yield* HostProcess.Platform;
-  const customHome =
-    adapterOptions.settings.homePath.trim().length > 0 ||
-    adapterOptions.environment.CLAUDE_CONFIG_DIR !== hostEnvironment.CLAUDE_CONFIG_DIR;
   const settingSources = claudeSettingSources(adapterOptions.settings);
-  const readsHomeSettings = customHome && settingSources.includes("user");
-  const readSettingsCascade = (
-    cwd: string | null,
-    flagSettings: ClaudeSdkSettings | undefined,
-    sources = settingSources,
-  ) =>
+  const readSettingsCascade = (cwd: string | null, flagSettings: ClaudeSdkSettings | undefined) =>
     readClaudeSettingsCascade({
       homePath,
       environment: adapterOptions.environment,
       cwd,
-      settingSources: sources,
+      settingSources,
       projectConfigRoot: claudeProjectConfigRoot(adapterOptions.settings),
       flagSettings,
       fileSystem,
       path,
     }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
   const announcedBypassDowngrades = new Set<ThreadId>();
-  const readBypassSettings = (filePath: string) =>
-    fileSystem.readFileString(filePath).pipe(
-      Effect.flatMap(decodeClaudeBypassSettings),
-      Effect.catchReason("PlatformError", "NotFound", () =>
-        Effect.succeed({} as typeof ClaudeBypassSettings.Type),
-      ),
-    );
-  // The raw files count too: a switch in a file Claude Code would drop still keeps Full access off.
-  const resolveBypassAvailability = Effect.fn("ClaudeAdapterV2.resolveBypassAvailability")(
-    function* (cwd: string | null) {
-      const remote = yield* readBypassSettings(path.join(homePath, "remote-settings.json"));
-      const home = readsHomeSettings
-        ? yield* readBypassSettings(path.join(homePath, "settings.json"))
-        : {};
-      // The raw home file already counts, so another account's user tier would only add a worker.
-      const cascade = yield* readSettingsCascade(
-        cwd,
-        undefined,
-        readsHomeSettings ? settingSources.filter((source) => source !== "user") : settingSources,
-      );
-      // Policy T3.CodeShip cannot read can turn bypass off.
-      if (cascade.unreadablePolicy !== undefined) return yield* new ClaudeSettingsResolveError({});
-      const launchArgSettings = yield* readClaudeLaunchArgSettings({
-        settings: adapterOptions.settings,
-        cwd,
-        fileSystem,
-        path,
-      });
-      const launch = yield* decodeClaudeLaunchArgBypassSettings(launchArgSettings ?? {});
-      const sources = [...cascade.tiers, home, remote, launch].map(claudeBypassAvailability);
-      return {
-        bypassDisabled: sources.some((source) => source.bypassDisabled),
-        autoDisabled: sources.some((source) => source.autoDisabled),
-      };
-    },
-  );
 
   const signedOutMessage = (context: ActiveClaudeTurnContext) =>
     claudeSignedOutMessage({
       configDir: adapterOptions.environment.CLAUDE_CONFIG_DIR,
       cwd: path.resolve(context.input.runtimePolicy.cwd ?? "."),
     });
-  // One read per query: tool search, and a delegated chat's cache lifetime. Settings env beats
-  // the process env.
-  const resolveQuerySettings = Effect.fn("ClaudeAdapterV2.resolveQuerySettings")(function* (
-    cwd: string | null,
-    flagSettings: ClaudeSdkSettings | undefined,
-    subagent: boolean,
-  ) {
-    const cascade = yield* readSettingsCascade(cwd, flagSettings);
+  // Tool search, and a delegated chat's cache lifetime. Settings env beats the process env.
+  const querySettings = (cascade: ClaudeSettingsCascade, subagent: boolean) => {
     const environment = {
       ...adapterOptions.environment,
       ...claudeSettingsEnvironment(cascade.tiers),
@@ -4782,7 +4729,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         ? claudeSubagentPromptCacheTtl(cascade, environment)
         : undefined,
     };
-  });
+  };
 
   // Checked every turn so a shared folder created later reaches running threads.
   const sharedSkillsLock = yield* Semaphore.make(1);
@@ -4910,10 +4857,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Wake buffers replay result frames, so ledger growth is measured once on arrival.
         const resultLedgerUsage = new WeakMap<SDKMessage, ClaudeLedgerUsage>();
         // A worktree handoff changes the project settings even within one session.
-        let bypassCache: { cwd: string | null; availability: ClaudeBypassAvailability } | null =
-          null;
+        let bypassCache: {
+          cwd: string | null;
+          flagKey: string;
+          availability: ClaudeBypassAvailability;
+        } | null = null;
         const queryPolicyForTurn = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
+          flagKey: string,
+          turnCascade: ReturnType<typeof readSettingsCascade>,
         ) {
           if (
             permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) !== "bypassPermissions"
@@ -4921,15 +4873,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
           }
           const cwd = turnInput.runtimePolicy.cwd;
-          if (bypassCache === null || bypassCache.cwd !== cwd) {
-            const resolved = yield* resolveBypassAvailability(cwd).pipe(Effect.option);
-            if (Option.isNone(resolved)) {
+          if (bypassCache === null || bypassCache.cwd !== cwd || bypassCache.flagKey !== flagKey) {
+            const cascade = yield* turnCascade.pipe(Effect.option);
+            // Policy T3.CodeShip cannot read can turn bypass off.
+            if (Option.isNone(cascade) || cascade.value.unreadablePolicy !== undefined) {
               return claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy, {
                 bypassDisabled: true,
                 autoDisabled: false,
               });
             }
-            bypassCache = { cwd, availability: resolved.value };
+            bypassCache = { cwd, flagKey, availability: claudeBypassAvailability(cascade.value) };
           }
           return claudeRuntimeQueryPolicyForRuntimePolicy(
             turnInput.runtimePolicy,
@@ -10583,42 +10536,89 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           nativeThreadId: string,
         ) {
-          const queryPolicy = yield* queryPolicyForTurn(turnInput);
+          const opened = yield* Ref.get(queryContext);
+          const reusable =
+            opened !== null && opened.nativeThreadId === nativeThreadId && !opened.stopping
+              ? opened
+              : null;
+          // Continuations drain existing output without prompting; retain the live process regardless of selection.
+          if (reusable !== null && isClaudeProviderContinuationTurn(turnInput)) return reusable;
           const mcpSession = yield* mcpSessions.read(turnInput.threadId);
-          const mcpOverrides = claudeMcpQueryOverrides({
-            mcpSession,
-            readOnlySandbox:
-              sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "readOnly",
-            ...(queryPolicy.allowedTools === undefined
-              ? {}
-              : { allowedTools: queryPolicy.allowedTools }),
+          // Full access, tool search and the subagent cache TTL share the first read that succeeds.
+          let readCascade:
+            | { readonly flagKey: string; readonly cascade: ClaudeSettingsCascade }
+            | undefined;
+          // Full access is decided once for each --settings, so a retry after a failed read cannot
+          // flip the decision that replaced the live process.
+          const decidedPolicies = new Map<string, ClaudeRuntimeQueryPolicy>();
+          const policyFor = Effect.fnUntraced(function* (
+            launchArgSettings: ClaudeSdkSettings | undefined,
+          ) {
+            const flagSettings = claudeFlagSettings({
+              launchArgSettings,
+              modelSelection: turnInput.modelSelection,
+              settings: adapterOptions.settings,
+            });
+            const flagKey = encodeClaudeJson(flagSettings ?? {});
+            const turnCascade = Effect.suspend(() => {
+              const cached = readCascade;
+              return cached?.flagKey === flagKey
+                ? Effect.succeed(cached.cascade)
+                : readSettingsCascade(turnInput.runtimePolicy.cwd, flagSettings).pipe(
+                    Effect.tap((cascade) =>
+                      Effect.sync(() => {
+                        readCascade = { flagKey, cascade };
+                      }),
+                    ),
+                  );
+            });
+            const queryPolicy =
+              decidedPolicies.get(flagKey) ??
+              (yield* queryPolicyForTurn(turnInput, flagKey, turnCascade));
+            decidedPolicies.set(flagKey, queryPolicy);
+            const mcpOverrides = claudeMcpQueryOverrides({
+              mcpSession,
+              readOnlySandbox:
+                sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "readOnly",
+              ...(queryPolicy.allowedTools === undefined
+                ? {}
+                : { allowedTools: queryPolicy.allowedTools }),
+            });
+            return {
+              launchArgSettings,
+              turnCascade,
+              queryPolicy,
+              mcpOverrides,
+              queryPolicyKey: claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides),
+            };
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const readLaunchArgSettings = readClaudeLaunchArgSettings({
+            settings: adapterOptions.settings,
+            cwd: turnInput.runtimePolicy.cwd,
+            fileSystem,
+            path,
+          });
+          // A live process keeps the --settings it opened with, so only a replacement rereads them.
+          const livePolicy = yield* policyFor(
+            reusable === null ? yield* readLaunchArgSettings : reusable.launchArgSettings,
+          );
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
+          // The live process can end while its settings are read.
           let existing = yield* Ref.get(queryContext);
-          // Continuations drain existing output without prompting; retain the live process regardless of selection.
           if (
-            existing !== null &&
-            existing.nativeThreadId === nativeThreadId &&
-            !existing.stopping &&
-            isClaudeProviderContinuationTurn(turnInput)
+            reusable !== null &&
+            existing === reusable &&
+            !reusable.stopping &&
+            reusable.queryPolicyKey === livePolicy.queryPolicyKey
           ) {
-            return existing;
-          }
-          if (
-            existing !== null &&
-            existing.nativeThreadId === nativeThreadId &&
-            existing.queryPolicyKey === queryPolicyKey &&
-            !existing.stopping
-          ) {
-            const live = existing;
+            const live = reusable;
             const reused = yield* Effect.gen(function* () {
               if (
                 live.selection.queryIdentity !== compiledSelection.queryIdentity &&
                 canApplyClaudeSelectionLive(live.selection, compiledSelection) &&
                 (live.selection.apiModelId === compiledSelection.apiModelId ||
-                  live.openedPermissionMode === queryPolicy.permissionMode)
+                  live.openedPermissionMode === livePolicy.queryPolicy.permissionMode)
               ) {
                 // Preserve launcher-selected models unless the model changed or a failed update left it unknown.
                 yield* (
@@ -10686,13 +10686,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           // Read before closing the live process so a bad path leaves it running.
+          const { launchArgSettings, turnCascade, queryPolicy, mcpOverrides, queryPolicyKey } =
+            reusable === null ? livePolicy : yield* policyFor(yield* readLaunchArgSettings);
+          const cascade = yield* turnCascade;
+          const { toolSearchOverride, subagentPromptCacheTtl } = querySettings(
+            cascade,
+            turnInput.appThread.lineage.relationshipToParent === "subagent",
+          );
           const appendSystemPromptFileText = yield* readClaudeAppendSystemPromptFile({
-            settings: adapterOptions.settings,
-            cwd: turnInput.runtimePolicy.cwd,
-            fileSystem,
-            path,
-          });
-          const launchArgSettings = yield* readClaudeLaunchArgSettings({
             settings: adapterOptions.settings,
             cwd: turnInput.runtimePolicy.cwd,
             fileSystem,
@@ -10716,15 +10717,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
-          const { toolSearchOverride, subagentPromptCacheTtl } = yield* resolveQuerySettings(
-            turnInput.runtimePolicy.cwd,
-            claudeFlagSettings({
-              launchArgSettings,
-              modelSelection: turnInput.modelSelection,
-              settings: adapterOptions.settings,
-            }),
-            turnInput.appThread.lineage.relationshipToParent === "subagent",
-          );
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -10734,7 +10726,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             attachmentsDir,
             sharedSkillsDirectory: yield* linkSharedSkills,
             settings: adapterOptions.settings,
-            ...(launchArgSettings === undefined ? {} : { launchArgSettings }),
+            // Claude Code would drop the turn's own fields with --settings it rejects, and keep
+            // a restriction the tool search switch had made valid.
+            ...(launchArgSettings === undefined || cascade.flagRejected
+              ? {}
+              : { launchArgSettings }),
             environment: claudeQueryEnvironment(
               adapterOptions.environment,
               turnInput.appThread,
@@ -10816,6 +10812,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const closed = yield* Deferred.make<void, never>();
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
+            launchArgSettings,
             nativeThreadId,
             query: querySession,
             queryPolicyKey,

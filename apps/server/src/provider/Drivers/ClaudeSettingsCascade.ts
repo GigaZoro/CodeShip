@@ -108,7 +108,7 @@ export const claudeProjectConfigRoot = (settings: ClaudeLaunchArgs) => {
   return value === undefined ? undefined : (value ?? "");
 };
 
-export const ClaudeBypassSettings = Schema.StructWithRest(
+const ClaudeBypassSettings = Schema.StructWithRest(
   Schema.Struct({
     disableAutoMode: Schema.optionalKey(Schema.Literals(["disable", false])),
     permissions: Schema.optionalKey(
@@ -147,8 +147,7 @@ function claudeSdkBypassSettings(settings: typeof ClaudeBypassSettings.Type) {
 }
 
 // The SDK's settings type only allows "disable" for these switches, where false means unset.
-// Shapes the schema rejects keep their current pass-through; resolveBypassAvailability
-// already treats them as a bypass failure.
+// Shapes the schema rejects pass through unchanged, so Claude Code's validation drops them.
 const decodeClaudeBypassSettingsOption = Schema.decodeUnknownOption(ClaudeBypassSettings);
 export function claudeSdkShapedSettings(settings: ClaudeSdkSettings): ClaudeSdkSettings {
   const decoded = decodeClaudeBypassSettingsOption(settings);
@@ -400,6 +399,8 @@ export interface ClaudeSettingsCascade {
    * organization's cache cannot be read, so Claude Code fetches what it holds.
    */
   readonly unreadablePolicy: string | undefined;
+  /** Claude Code drops --settings whole for an invalid field, so `tiers` leaves it out. */
+  readonly flagRejected: boolean;
 }
 
 /**
@@ -457,6 +458,7 @@ export const readClaudeSettingsCascade = Effect.fn("ClaudeSettingsCascade.read")
       : Option.isNone(remote)
         ? POLICY_CACHE_REASON
         : undefined,
+    flagRejected: input.flagSettings !== undefined && flag === undefined,
   } satisfies ClaudeSettingsCascade;
 });
 
