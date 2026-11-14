@@ -1,6 +1,6 @@
-## 2026-11-14 — Stopping a command on Windows also stops what it left running
+## 2026-11-15 — Releases publish again after notes landed out of date order
 
-- On Windows, stopping a command (cancelling its task, stopping the chat, a timeout) ended it only while its wrapper was still running. When the wrapper had ended, or a restart cut the stop, what the command had started kept running although the task was reported stopped or lost. A stop now also ends every process that descends from the wrapper's pid and started after the command did, including after a restart.
+- A shipment whose release-notes entry landed above newer ones stopped every later release, since each release checks its notes against the one before. The entry is back in date order, the check now lets a shipment move an earlier entry back into place, and pushing to `main` from a T3.CodeShip checkout runs the same check first.
 
 ## 2026-11-15 — `t3_command_run` commands get the agent's shell environment
 
@@ -11,6 +11,10 @@
 
 - When a Claude subagent or background command finished while the agent was still working, and you sent a message right then, Claude answered both in one go. T3.CodeShip still waited for a separate answer to the task's report, so the chat showed as working for hours and every message sent after that waited in the queue. That wait now ends as soon as Claude has answered, and it also ends when Claude is not working on the report two minutes later.
 - When Claude's session closed while a message was being sent, the run could show as running with nothing sent to Claude. A message sent while the session restarts now goes to a new session, and a session that closes once the message is on its way ends the run instead of leaving it running.
+
+## 2026-11-14 — Stopping a command on Windows also stops what it left running
+
+- On Windows, stopping a command (cancelling its task, stopping the chat, a timeout) ended it only while its wrapper was still running. When the wrapper had ended, or a restart cut the stop, what the command had started kept running although the task was reported stopped or lost. A stop now also ends every process that descends from the wrapper's pid and started after the command did, including after a restart.
 
 ## 2026-11-14 — Auto no longer starts on a signed-out account when every account is limited
 

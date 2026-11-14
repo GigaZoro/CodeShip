@@ -4,9 +4,16 @@ const path = require("node:path");
 
 const NOTES_PATH = "docs/release-notes.md";
 
+function splitEntries(text) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .split(/(?=^## )/m)
+    .map((entry) => entry.trim());
+}
+
 function parseReleaseNotes(text) {
-  const source = text.replace(/\r\n/g, "\n").trim();
-  const entries = source.split(/(?=^## )/m);
+  const entries = splitEntries(text);
   const headings = new Set();
   let previousDate = "9999-12-31";
   for (const entry of entries) {
@@ -28,21 +35,19 @@ function parseReleaseNotes(text) {
     previousDate = date;
     headings.add(heading);
   }
-  return entries.map((entry) => entry.trim());
+  return entries;
 }
 
 function addedReleaseNotes(current, previous) {
   const entries = parseReleaseNotes(current);
   if (previous === null) return entries;
-  const oldEntries = parseReleaseNotes(previous);
-  const addedCount = entries.length - oldEntries.length;
-  if (
-    addedCount < 0 ||
-    entries.slice(addedCount).some((entry, index) => entry !== oldEntries[index])
-  ) {
+  // Matched by content, not position, so a shipment can move an entry back into date order.
+  const oldEntries = new Set(splitEntries(previous));
+  const added = entries.filter((entry) => !oldEntries.has(entry));
+  if (entries.length - added.length !== oldEntries.size) {
     throw new Error(`${NOTES_PATH}: preserve existing entries and prepend new notes.`);
   }
-  return entries.slice(0, addedCount);
+  return added;
 }
 
 function requireNewReleaseNotes(current, previous) {
@@ -53,23 +58,27 @@ function requireNewReleaseNotes(current, previous) {
   return added;
 }
 
-function readPrevious(root, base) {
-  if (!base) return null;
+function readNotesAt(root, ref) {
+  if (!ref) return null;
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
-  const commit = git("rev-parse", "--verify", "--end-of-options", `${base}^{commit}`);
+  const commit = git("rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`);
   if (!git("ls-tree", "--name-only", commit, "--", NOTES_PATH)) return null;
   return git("show", `${commit}:${NOTES_PATH}`);
 }
 
 if (require.main === module) {
   try {
-    const [command, base, ...rest] = process.argv.slice(2);
+    const [command, base, head, ...rest] = process.argv.slice(2);
     if (!["check", "render"].includes(command) || rest.length > 0) {
-      throw new Error("Usage: node .github/scripts/release-notes.cjs check|render [base-ref]");
+      throw new Error(
+        "Usage: node .github/scripts/release-notes.cjs check|render [base-ref] [head-ref]",
+      );
     }
     const root = path.resolve(__dirname, "../..");
-    const current = fs.readFileSync(path.join(root, NOTES_PATH), "utf8");
-    const previous = readPrevious(root, base);
+    const current = head
+      ? (readNotesAt(root, head) ?? "")
+      : fs.readFileSync(path.join(root, NOTES_PATH), "utf8");
+    const previous = readNotesAt(root, base);
     if (command === "check") {
       requireNewReleaseNotes(current, previous);
       process.stdout.write("Release notes: valid new entry.\n");

@@ -51,6 +51,9 @@ test("checks actual git history and fails closed when the base cannot be read", 
     assert.equal(run("check", "missing-base").status, 1);
     commit();
     assert.equal(run("render", "HEAD").stdout, latest);
+    fs.writeFileSync(path.join(root, "docs/release-notes.md"), old);
+    assert.equal(run("check", "HEAD~1", "HEAD").status, 0);
+    assert.equal(run("check", "HEAD", "HEAD").status, 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -66,6 +69,15 @@ test("requires new notes, including on the first shipment and multiple shipments
   ]);
   assert.deepEqual(requireNewReleaseNotes(combined.replace(/\n/g, "\r\n"), old), [latest.trim()]);
   assert.throws(() => requireNewReleaseNotes(old, old), /prepend a dated summary/);
+  // A base a rebase left out of date order can be repaired, and an unreleased entry moved down still counts.
+  assert.deepEqual(requireNewReleaseNotes(`${next}\n${combined}`, `${old}\n${latest}`), [
+    next.trim(),
+  ]);
+  const sameDay = old.replace("Earlier change", "Same-day change");
+  assert.deepEqual(addedReleaseNotes(`${latest}\n${sameDay}\n${old}`, old), [
+    latest.trim(),
+    sameDay.trim(),
+  ]);
 });
 
 test("preserves history and rejects rewritten, removed, duplicated or reordered entries", () => {

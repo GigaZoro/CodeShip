@@ -147,12 +147,15 @@ Before shipping any change to `main`, prepend an entry to
 [`docs/release-notes.md`](../release-notes.md) in the same commit or delivery. Use
 `## YYYY-MM-DD — Short title`, followed by concise bullets describing what changed
 for users. Include fixes, maintenance, and documentation-only shipments; use a new
-title when shipping several times on one day. Preserve previous entries unchanged.
+title when shipping several times on one day. Preserve previous entries unchanged. Entries
+stay newest first by date, so after a rebase put yours below a newer one, re-date it; the check
+matches earlier entries by content, so a shipment may also move one back into date order.
 
 The web and desktop header's Release notes dialog bundles this history with the
 client, so an older install never presents newer changes as already installed.
-`vp run check:changed` compares notes against the branch base, and fork release
-preflight rejects a push without new notes before building installers. The GitHub
+`vp run check:changed` compares notes against the branch base, a push to `main` runs the same
+check against the remote's `main` (`.vite-hooks/pre-push`), and fork release preflight rejects a
+push without new notes before building installers. The GitHub
 release uses the same notes, adding all entries since the previous published release
 when several pushes were combined. Rebuilding the same source uses its latest entry.
 
