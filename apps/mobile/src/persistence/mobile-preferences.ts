@@ -117,7 +117,7 @@ export interface Preferences {
   readonly crashReportsEnabled?: boolean;
   readonly connectOnboardingOptOutAccounts?: ReadonlyArray<string>;
   readonly collapsedProjectGroups?: readonly string[];
-  /** Scheduled-task groups the user closed, by `scheduledTaskGroupKey`; absent ones start open. */
+  /** Scheduled-task groups the user closed, by `threadFolderKey`; absent ones start open. */
   readonly collapsedScheduledTaskGroups?: readonly string[];
   readonly dismissedDatabaseStorageNotices?: readonly string[];
   /** Hardware Return behavior is iOS-only. */

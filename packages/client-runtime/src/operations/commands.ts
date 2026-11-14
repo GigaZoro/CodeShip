@@ -512,6 +512,21 @@ export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (
   });
 });
 
+export interface SetThreadFolderInput extends ThreadCommandInput {
+  /** Null takes the thread out of its folder. */
+  readonly folder: string | null;
+}
+export const setThreadFolder = Effect.fn("EnvironmentCommands.setThreadFolder")(function* (
+  input: SetThreadFolderInput,
+) {
+  return yield* dispatch({
+    type: "thread.folder.set",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    folder: input.folder,
+  });
+});
+
 export interface SetThreadAutoSettleInput extends ThreadCommandInput {
   readonly enabled: boolean;
 }

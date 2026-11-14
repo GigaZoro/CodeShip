@@ -1,3 +1,4 @@
+import { resolveThreadFolders } from "@t3tools/client-runtime/thread-folders";
 import {
   buildProjectGroups,
   tierProjectGroups,
@@ -7,17 +8,22 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import type {
-  EnvironmentId,
-  ScopedProjectRef,
-  SidebarProjectGroupingMode,
+import {
+  threadFolderKeyOf,
+  type EnvironmentId,
+  type ScopedProjectRef,
+  type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
 import type { SidebarGrouping } from "@t3tools/contracts/settings";
 
 import { t } from "../../lib/i18n";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { WorkspaceState } from "../../state/workspaceModel";
-import type { ThreadListV2Folder, ThreadListV2Grouping } from "../threads/threadListV2";
+import type {
+  ThreadListV2ChatFolders,
+  ThreadListV2Folder,
+  ThreadListV2Grouping,
+} from "../threads/threadListV2";
 
 export interface HomeProjectScope {
   readonly key: string;
@@ -177,6 +183,41 @@ export function buildHomeThreadListGrouping(input: {
   };
 }
 
+/** Chat folders share the open-state map with project and machine folders, outside their keys. */
+function homeChatFolderKey(key: string): string {
+  return `chat-folder:${key}`;
+}
+
+/**
+ * Folders the user named, saved ones first, listed before the other active threads. Null with
+ * none, so a list without folders is built as before.
+ */
+export function buildHomeChatFolders(input: {
+  readonly saved: ReadonlyArray<string>;
+  readonly names: ReadonlyArray<string>;
+  readonly folderExpanded: Readonly<Record<string, boolean>> | undefined;
+}): ThreadListV2ChatFolders | null {
+  const entries = resolveThreadFolders(input.saved, input.names);
+  if (entries.length === 0) return null;
+  return {
+    folders: entries.map((entry): ThreadListV2Folder => {
+      const key = homeChatFolderKey(entry.key);
+      return {
+        kind: "chats",
+        key,
+        label: entry.name,
+        saved: entry.saved,
+        expandedByDefault: true,
+        expanded: input.folderExpanded?.[key] ?? true,
+      };
+    }),
+    folderKeyOf: (thread) => {
+      const key = threadFolderKeyOf(thread.folder);
+      return key === null ? null : homeChatFolderKey(key);
+    },
+  };
+}
+
 /** A project folder inside a machine folder keeps its own open state. */
 function homeMachineProjectFolderKey(environmentId: EnvironmentId, scopeKey: string): string {
   return `${homeMachineFolderKey(environmentId)}:project:${scopeKey}`;
@@ -207,7 +248,7 @@ export function homeFolderNewThreadTargets(
     }
     return [];
   }
-  if (folder.offline) return [];
+  if (folder.kind === "chats" || folder.offline) return [];
   return projectScopes.flatMap((scope) => {
     const onMachine = scope.projects.filter(
       (project) => project.environmentId === folder.environmentId,

@@ -38,10 +38,12 @@ import {
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { providerDriverDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
-  MAX_SCHEDULED_TASK_GROUP_LENGTH,
+  MAX_THREAD_FOLDER_LENGTH,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
   resolveEnvironmentMachineKind,
+  threadFolderKey,
+  threadFolderKeyOf,
 } from "@t3tools/contracts";
 import type { MenuAction } from "@react-native-menu/menu";
 import { DateTimePicker } from "@expo/ui/community/datetime-picker";
@@ -106,7 +108,6 @@ import {
 } from "@t3tools/client-runtime/scheduled-task-sharing";
 import {
   scheduledTaskGroupAction,
-  scheduledTaskGroupKey,
   scheduledTaskGroupLabels,
   scheduledTaskGroupPausePlan,
   scheduledTaskGroupUpsertField,
@@ -335,21 +336,21 @@ function GroupField(props: {
   readonly disabled: boolean;
   readonly onChange: (value: string) => void;
 }) {
-  const chosen = scheduledTaskGroupKey(props.value);
-  const suggestions = props.suggestions.filter((label) => scheduledTaskGroupKey(label) !== chosen);
+  const chosen = threadFolderKey(props.value);
+  const suggestions = props.suggestions.filter((label) => threadFolderKey(label) !== chosen);
   return (
     <View className="gap-2 border-t border-border-subtle px-4 py-3">
       <View className="flex-row items-center justify-between gap-3">
         <Text className="text-sm text-foreground-muted">{t("Group")}</Text>
         <Text className="text-sm text-foreground-muted">
-          {`${props.value.length} / ${MAX_SCHEDULED_TASK_GROUP_LENGTH}`}
+          {`${props.value.length} / ${MAX_THREAD_FOLDER_LENGTH}`}
         </Text>
       </View>
       <RNTextInput
         accessibilityLabel={t("Group")}
         value={props.value}
         readOnly={props.disabled}
-        maxLength={MAX_SCHEDULED_TASK_GROUP_LENGTH}
+        maxLength={MAX_THREAD_FOLDER_LENGTH}
         onChangeText={props.onChange}
         textAlignVertical="center"
         placeholder={t("No group")}
@@ -376,6 +377,9 @@ function GroupField(props: {
       ) : null}
       <Text className="text-sm text-foreground-muted">
         {t("Tasks with the same group are listed and paused together.")}
+      </Text>
+      <Text className="text-sm text-foreground-muted">
+        {t("This task's chats go in a sidebar folder with this name.")}
       </Text>
     </View>
   );
@@ -2829,8 +2833,7 @@ function EnvironmentTasks({
     (task) =>
       !task.shared &&
       (projectIds === null || projectIds.includes(task.projectId)) &&
-      (grouping?.kind !== "group" ||
-        (task.group?.trim() ? scheduledTaskGroupKey(task.group) : null) === grouping.key),
+      (grouping?.kind !== "group" || threadFolderKeyOf(task.group) === grouping.key),
   );
   const inGroup = grouping?.kind === "group";
   const canOperate = useAtomValue(

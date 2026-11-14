@@ -8,6 +8,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import {
   computeThreadMoveAvailability,
   createThreadMovePlanner,
+  listedThreadMove,
   type OrderRow,
 } from "./threadOrder";
 
@@ -245,5 +246,20 @@ describe("computeThreadMoveAvailability matches the reference planner", () => {
     });
     const reference = referenceAvailability(ordered, allThreads, WRITABLE);
     expect(Object.fromEntries(batch)).toEqual(Object.fromEntries(reference));
+  });
+});
+
+describe("listedThreadMove", () => {
+  const ordered = ["a", "filed-1", "b", "filed-2"];
+  const listed = (id: string) => !id.startsWith("filed");
+
+  it.each([
+    ["b", "up", { targetId: "a", placement: "before" }],
+    ["a", "down", { targetId: "b", placement: "after" }],
+    ["b", "down", null],
+    ["a", "up", null],
+    ["missing", "up", null],
+  ] as const)("moves %s %s past rows listed elsewhere", (id, direction, expected) => {
+    expect(listedThreadMove(ordered, id, direction, listed)).toEqual(expected);
   });
 });

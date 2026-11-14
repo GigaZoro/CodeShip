@@ -44,6 +44,7 @@ import {
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
+import { StoredThreadFolder, ThreadFolder, threadFolderKeyOf } from "./threadFolders.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
 import {
   OrchestrationSearchThreadsInput,
@@ -508,6 +509,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Absent on threads written before tags existed; read as empty. */
   tags: Schema.optional(StoredThreadTags),
+  /** The sidebar folder; absent or null is none. Names match by `threadFolderKey`. */
+  folder: Schema.optional(StoredThreadFolder),
   /** Pages (by html_render attachment id) removed from the Artifacts gallery; the thread keeps rendering them inline. */
   hiddenArtifacts: Schema.optional(StoredHiddenArtifacts),
   lastVisitedAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
@@ -1988,6 +1991,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.folder-updated",
       "thread.artifacts-updated",
       "thread.visited",
       "thread.marked-unread",
@@ -2247,6 +2251,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   /** Absent on threads written before tags existed; read as empty. */
   tags: Schema.optional(StoredThreadTags),
+  /** The sidebar folder; absent or null is none. Names match by `threadFolderKey`. */
+  folder: Schema.optional(StoredThreadFolder),
   lastVisitedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   opens: Schema.optional(LenientThreadOpens),
   titleRegeneration: Schema.optional(
@@ -2310,6 +2316,39 @@ export const OrchestrationV2OlderSettledCount = Schema.Struct({
 });
 export type OrchestrationV2OlderSettledCount = typeof OrchestrationV2OlderSettledCount.Type;
 
+/** The filed ones among a project's older settled threads, one entry per folder. */
+export const OrchestrationV2OlderSettledFolderCount = Schema.Struct({
+  projectId: ProjectId,
+  /** One spelling of the folder; spellings with the same `threadFolderKey` are one folder. */
+  folder: Schema.String,
+  count: NonNegativeInt,
+});
+export type OrchestrationV2OlderSettledFolderCount =
+  typeof OrchestrationV2OlderSettledFolderCount.Type;
+
+/** Counts of threads by project and folder spelling, merged into one entry per folder. */
+export function countOlderSettledFolders(
+  rows: Iterable<{
+    readonly projectId: ProjectId;
+    readonly folder: string | null | undefined;
+    readonly count: number;
+  }>,
+): Array<OrchestrationV2OlderSettledFolderCount> {
+  const merged = new Map<string, { projectId: ProjectId; folder: string; count: number }>();
+  for (const row of rows) {
+    const key = threadFolderKeyOf(row.folder);
+    if (key === null || row.folder == null) continue;
+    const id = JSON.stringify([row.projectId, key]);
+    const entry = merged.get(id);
+    if (entry === undefined) {
+      merged.set(id, { projectId: row.projectId, folder: row.folder.trim(), count: row.count });
+    } else {
+      entry.count += row.count;
+    }
+  }
+  return [...merged.values()];
+}
+
 /**
  * Snapshots that leave out older settled threads (`omitOlderSettled`) name the cut and count, per
  * project, every thread `isOlderSettledThreadShell` matches, sent or not. `asOfSequence` is the
@@ -2319,6 +2358,8 @@ export const OrchestrationV2OlderSettledThreads = Schema.Struct({
   before: IsoDateTime,
   asOfSequence: NonNegativeInt,
   counts: Schema.Array(OrchestrationV2OlderSettledCount),
+  /** Servers that send it page by folder (`folder` on `getOlderSettledThreads`). */
+  folderCounts: Schema.optionalKey(Schema.Array(OrchestrationV2OlderSettledFolderCount)),
 });
 export type OrchestrationV2OlderSettledThreads = typeof OrchestrationV2OlderSettledThreads.Type;
 
@@ -2880,6 +2921,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.pin-reordered",
       "thread.active-reordered",
       "thread.tags-updated",
+      "thread.folder-updated",
       "thread.artifacts-updated",
       "thread.visited",
       "thread.marked-unread",
@@ -3030,6 +3072,7 @@ export const OrchestrationV2Command = Schema.Union([
     interactionMode: ProviderInteractionMode,
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+    folder: Schema.optional(ThreadFolder),
     /** Only the server sets this; a client's thread.create never carries one. */
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
@@ -3136,6 +3179,18 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     tag: ThreadTag,
     tagged: Schema.Boolean,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.folder.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    /** Null takes the thread out of its folder. */
+    folder: Schema.NullOr(ThreadFolder),
+    /**
+     * Applies only while the thread is still in this folder (null: in none), matched by
+     * `threadFolderKey`; otherwise it fails as stale, so a move made meanwhile wins.
+     */
+    from: Schema.optional(Schema.NullOr(ThreadFolder)),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.artifact.hide"),
@@ -3992,6 +4047,11 @@ export const OrchestrationV2GetOlderSettledThreadsInput = Schema.Struct({
   before: OrchestrationV2OlderSettledCursor,
   /** Every project when absent. */
   projectIds: Schema.optionalKey(Schema.Array(ProjectId)),
+  /**
+   * Threads in this folder (any spelling of it), or in none when null; every thread when absent.
+   * Only servers whose `olderSettled` has `folderCounts` read it.
+   */
+  folder: Schema.optionalKey(Schema.NullOr(Schema.String)),
   /** 0 reads only the counts. */
   limit: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 50 })),
 });
@@ -4000,13 +4060,14 @@ export type OrchestrationV2GetOlderSettledThreadsInput =
 
 /**
  * Older settled threads below the cursor, newest settle first (`settledAt` desc, then id asc). A
- * `limit: 0` read fills `counts` instead: the older settled threads below the cursor per project,
- * as `OrchestrationV2OlderSettledThreads.counts` count them. A cursor without an id is strict.
+ * `limit: 0` read fills `counts` and `folderCounts` instead: the older settled threads below the
+ * cursor, as `OrchestrationV2OlderSettledThreads` counts them. A cursor without an id is strict.
  */
 export const OrchestrationV2OlderSettledThreadsPage = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   threads: Schema.Array(OrchestrationV2ThreadShell),
   counts: Schema.Array(OrchestrationV2OlderSettledCount),
+  folderCounts: Schema.optionalKey(Schema.Array(OrchestrationV2OlderSettledFolderCount)),
 });
 export type OrchestrationV2OlderSettledThreadsPage =
   typeof OrchestrationV2OlderSettledThreadsPage.Type;

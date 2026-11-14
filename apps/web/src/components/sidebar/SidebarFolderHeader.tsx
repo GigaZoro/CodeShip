@@ -5,7 +5,8 @@ import {
 } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ChevronDownIcon, SquarePenIcon } from "lucide-react";
+import type { ThreadFolderEntry } from "@t3tools/client-runtime/thread-folders";
+import { ChevronDownIcon, FolderIcon, FolderOpenIcon, SquarePenIcon } from "lucide-react";
 import { memo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
@@ -158,6 +159,48 @@ export const SidebarMachineFolderHeader = memo(function SidebarMachineFolderHead
   );
 });
 
+/** A folder the user filed chats in; it has no new-thread button, since a chat joins it by moving. */
+export const SidebarUserFolderHeader = memo(function SidebarUserFolderHeader(props: {
+  entry: ThreadFolderEntry;
+  folderKey: string;
+  collapsed: boolean;
+  hiddenThreads: readonly EnvironmentThreadShell[];
+  olderCount: number;
+  onToggle: (folderKey: string, siblings: boolean) => void;
+  onContextMenu: (entry: ThreadFolderEntry, position: { x: number; y: number }) => void;
+}) {
+  const { entry, folderKey } = props;
+  const Icon = props.collapsed ? FolderIcon : FolderOpenIcon;
+  return (
+    <SidebarFolderHeader
+      rowId={sidebarFolderRowId(folderKey)}
+      icon={<Icon aria-hidden className="size-4 shrink-0 text-sidebar-muted-foreground" />}
+      label={entry.name}
+      collapsed={props.collapsed}
+      hiddenThreads={props.hiddenThreads}
+      olderCount={props.olderCount}
+      onToggle={(siblings) => props.onToggle(folderKey, siblings)}
+      onContextMenu={(position) => props.onContextMenu(entry, position)}
+      newThread={null}
+    />
+  );
+});
+
+/** The muted row an open folder shows while it has no chats. */
+export const SidebarUserFolderEmptyRow = memo(function SidebarUserFolderEmptyRow(props: {
+  folderKey: string;
+}) {
+  return (
+    <li
+      role="none"
+      className="list-none px-(--sidebar-row-content-inset) py-1.5 ps-9 text-xs text-sidebar-muted-foreground"
+      data-sidebar-parent={sidebarFolderRowId(props.folderKey)}
+    >
+      {t("No chats")}
+    </li>
+  );
+});
+
 /**
  * A sidebar folder. It reads like a shelf header: a trailing count and chevron,
  * with the count and a status dot only while it is closed, so a closed folder
@@ -173,6 +216,8 @@ function SidebarFolderHeader(props: {
   newThread: { readonly label: string; readonly onClick: () => void } | null;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
+  /** Older threads the folder holds that are not loaded, counted with the hidden ones. */
+  olderCount?: number;
   dragging?: boolean;
   dropLineOffset?: number | null;
   onToggle: (siblings: boolean) => void;
@@ -181,6 +226,7 @@ function SidebarFolderHeader(props: {
 }) {
   const { onContextMenu, onDragStart, newThread } = props;
   const { rowId, parentRowId, collapsed, hiddenThreads } = props;
+  const closedCount = hiddenThreads.length + (props.olderCount ?? 0);
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
     ? resolveSidebarFolderDot(
@@ -250,9 +296,9 @@ function SidebarFolderHeader(props: {
             <span className="sr-only">{FOLDER_DOT_LABEL[dot]}</span>
           </span>
         ) : null}
-        {collapsed && hiddenThreads.length > 0 ? (
+        {collapsed && closedCount > 0 ? (
           <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible pointer-coarse:invisible">
-            {hiddenThreads.length}
+            {closedCount}
           </span>
         ) : null}
         <ChevronDownIcon
@@ -288,16 +334,19 @@ function SidebarFolderHeader(props: {
   );
 }
 
+/** What the row under an open folder does: list `count` more, fold, or retry a failed read. */
+export type SidebarFolderMoreState = "show" | "less" | "loading" | "retry";
+
 /** The row under an open folder that lists the threads past its preview, or folds them again. */
 export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
   folderKey: string;
   /** Set when the folder sits in a machine folder, so the label lines up with nested titles. */
   nested: boolean;
-  overflowCount: number;
-  showingAll: boolean;
+  state: SidebarFolderMoreState;
+  count: number;
   onToggle: (folderKey: string) => void;
 }) {
-  const { folderKey } = props;
+  const { folderKey, state } = props;
   return (
     <li className="list-none">
       <button
@@ -306,13 +355,20 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
         tabIndex={-1}
         data-sidebar-row={sidebarFolderMoreRowId(folderKey)}
         data-sidebar-parent={sidebarFolderRowId(folderKey)}
+        disabled={state === "loading"}
         onClick={() => props.onToggle(folderKey)}
         className={cn(
-          "flex h-8 w-full cursor-pointer items-center rounded-md pe-2.5 text-left text-xs text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          "flex h-8 w-full cursor-pointer items-center rounded-md pe-2.5 text-left text-xs text-sidebar-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default",
           props.nested ? "ps-15.5" : "ps-9",
         )}
       >
-        {props.showingAll ? t("Show less") : t("Show {count} more", { count: props.overflowCount })}
+        {state === "loading"
+          ? t("Loading")
+          : state === "retry"
+            ? t("Could not load older threads. Retry")
+            : state === "less"
+              ? t("Show less")
+              : t("Show {count} more", { count: props.count })}
       </button>
     </li>
   );

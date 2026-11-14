@@ -1,4 +1,8 @@
-import { pendingGuestMessageCount } from "@t3tools/contracts";
+import {
+  countOlderSettledFolders,
+  pendingGuestMessageCount,
+  threadFolderKeyOf,
+} from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { projectTurnItemForWire } from "./WireProjection.ts";
@@ -29,6 +33,7 @@ import type {
   OrchestrationV2ConversationMessage,
   OrchestrationV2DomainEvent,
   OrchestrationV2OlderSettledCount,
+  OrchestrationV2OlderSettledFolderCount,
   OrchestrationV2OlderSettledCursor,
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ProviderThread,
@@ -454,7 +459,14 @@ export interface ShellSnapshotOptions {
 /** What a shell subscriber's trims read from an active thread, without building its shell. */
 export interface ActiveShellIndexEntry extends Pick<
   OrchestrationV2ThreadShell,
-  "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "pinnedAt" | "snoozedUntil"
+  | "id"
+  | "projectId"
+  | "lineage"
+  | "settledOverride"
+  | "settledAt"
+  | "pinnedAt"
+  | "snoozedUntil"
+  | "folder"
 > {
   /** False only when no run, request, work item, or watch can make the shell live. */
   readonly mayBeLive: boolean;
@@ -470,6 +482,8 @@ export interface ActiveTurnWorkspace {
 export interface OlderSettledThreadsQuery {
   readonly before: OrchestrationV2OlderSettledCursor;
   readonly projectIds?: ReadonlyArray<ProjectId> | undefined;
+  /** A folder name or key, or null for threads in no folder; every thread when absent. */
+  readonly folder?: string | null | undefined;
   readonly limit: number;
 }
 
@@ -477,6 +491,8 @@ export interface OlderSettledThreadsListing {
   readonly threadIds: ReadonlyArray<ThreadId>;
   /** Only for `limit: 0`. */
   readonly counts: ReadonlyArray<OrchestrationV2OlderSettledCount>;
+  /** Only for `limit: 0`. */
+  readonly folderCounts: ReadonlyArray<OrchestrationV2OlderSettledFolderCount>;
 }
 
 export interface ProjectionStoreV2Shape {
@@ -969,6 +985,7 @@ export function applyToProjection(
     case "thread.active-reordered":
     case "thread.later-set":
     case "thread.tags-updated":
+    case "thread.folder-updated":
     case "thread.artifacts-updated":
     case "thread.pull-request-synced":
       return {
@@ -1760,6 +1777,9 @@ export function threadShellFromProjection(
     laterAt: projection.thread.laterAt ?? null,
     pinOrderKey: projection.thread.pinOrderKey ?? null,
     ...(projection.thread.tags?.length ? { tags: projection.thread.tags } : {}),
+    ...(threadFolderKeyOf(projection.thread.folder) === null
+      ? {}
+      : { folder: projection.thread.folder }),
     lastVisitedAt: projection.thread.lastVisitedAt,
     opens: projection.thread.opens ?? null,
     titleRegeneration: projection.thread.titleRegeneration ?? null,
@@ -2027,6 +2047,9 @@ function shellFromState(input: {
     laterAt: input.state.thread.laterAt ?? null,
     pinOrderKey: input.state.thread.pinOrderKey ?? null,
     ...(input.state.thread.tags?.length ? { tags: input.state.thread.tags } : {}),
+    ...(threadFolderKeyOf(input.state.thread.folder) === null
+      ? {}
+      : { folder: input.state.thread.folder }),
     lastVisitedAt: input.state.thread.lastVisitedAt,
     opens: input.state.thread.opens ?? null,
     titleRegeneration: input.state.thread.titleRegeneration ?? null,
@@ -2100,6 +2123,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.pin-reordered":
             case "thread.active-reordered":
             case "thread.tags-updated":
+            case "thread.folder-updated":
             case "thread.artifacts-updated":
             case "thread.visited":
             case "thread.marked-unread":
@@ -2916,6 +2940,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             event.type !== "thread.pin-reordered" &&
             event.type !== "thread.active-reordered" &&
             event.type !== "thread.tags-updated" &&
+            event.type !== "thread.folder-updated" &&
             event.type !== "thread.artifacts-updated" &&
             event.type !== "thread.visited" &&
             event.type !== "thread.marked-unread" &&
@@ -7612,6 +7637,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         readonly settled_at: string | null;
         readonly pinned_at: string | null;
         readonly snoozed_until: string | null;
+        readonly folder: string | null;
         readonly may_be_live: number;
       }>`
         SELECT
@@ -7625,6 +7651,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           json_extract(t.payload_json, '$.settledAt') AS settled_at,
           json_extract(t.payload_json, '$.pinnedAt') AS pinned_at,
           json_extract(t.payload_json, '$.snoozedUntil') AS snoozed_until,
+          json_extract(t.payload_json, '$.folder') AS folder,
           -- A superset of isLiveSubagentShell: the sources of its run status, pending request,
           -- and pending background work.
           (
@@ -7684,6 +7711,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         settledAt: row.settled_at === null ? null : DateTime.makeUnsafe(row.settled_at),
         pinnedAt: row.pinned_at === null ? null : DateTime.makeUnsafe(row.pinned_at),
         snoozedUntil: row.snoozed_until === null ? null : DateTime.makeUnsafe(row.snoozed_until),
+        folder: row.folder,
         mayBeLive: row.may_be_live === 1,
       }));
     }, Effect.mapError(shellSnapshotReadError));
@@ -7702,11 +7730,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
     const listOlderSettledThreads: ProjectionStoreV2Shape["listOlderSettledThreads"] = Effect.fn(
       "ProjectionStore.listOlderSettledThreads",
-    )(function* ({ before, projectIds, limit }) {
+    )(function* ({ before, projectIds, folder, limit }) {
       // ISO strings in one format, so string order is time order.
       const older = sql`
         SELECT t.thread_id, t.project_id,
-          json_extract(t.payload_json, '$.settledAt') AS settled_at
+          json_extract(t.payload_json, '$.settledAt') AS settled_at,
+          json_extract(t.payload_json, '$.folder') AS folder
         FROM orchestration_v2_projection_threads t
         WHERE t.deleted_at IS NULL
           AND json_extract(t.payload_json, '$.archivedAt') IS NULL
@@ -7722,31 +7751,67 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ? sql`older.settled_at < ${before.settledAt}`
           : sql`(older.settled_at < ${before.settledAt}
               OR (older.settled_at = ${before.settledAt} AND older.thread_id > ${before.threadId}))`;
+      // Folder names match by threadFolderKey, which SQLite's ASCII-only lower() cannot compute, so
+      // the spellings in use are matched here and the queries filter by them.
+      let inFolder = sql``;
+      if (folder !== undefined) {
+        const key = folder === null ? null : threadFolderKeyOf(folder);
+        const spellings = yield* sql<{ readonly folder: string }>`
+          WITH older AS (${older})
+          SELECT DISTINCT older.folder FROM older WHERE older.folder IS NOT NULL
+        `;
+        const matching = spellings.flatMap((row) =>
+          threadFolderKeyOf(row.folder) === key ? [row.folder] : [],
+        );
+        if (key === null) {
+          inFolder =
+            matching.length === 0
+              ? sql` AND older.folder IS NULL`
+              : sql` AND (older.folder IS NULL OR older.folder IN ${sql.in(matching)})`;
+        } else if (matching.length === 0) {
+          return { threadIds: [], counts: [], folderCounts: [] };
+        } else {
+          inFolder = sql` AND older.folder IN ${sql.in(matching)}`;
+        }
+      }
       const pageRows =
         limit === 0
           ? []
           : yield* sql<{ readonly thread_id: string }>`
               WITH older AS (${older})
               SELECT older.thread_id FROM older
-              WHERE ${belowCursor}
+              WHERE ${belowCursor}${inFolder}
               ORDER BY older.settled_at DESC, older.thread_id ASC
               LIMIT ${limit}
             `;
       const countRows =
         limit !== 0
           ? []
-          : yield* sql<{ readonly project_id: string; readonly count: number }>`
+          : yield* sql<{
+              readonly project_id: string;
+              readonly folder: string | null;
+              readonly count: number;
+            }>`
               WITH older AS (${older})
-              SELECT older.project_id, COUNT(*) AS count FROM older
-              WHERE ${belowCursor}
-              GROUP BY older.project_id
+              SELECT older.project_id, older.folder, COUNT(*) AS count FROM older
+              WHERE ${belowCursor}${inFolder}
+              GROUP BY older.project_id, older.folder
             `;
+      const counts = new Map<ProjectId, number>();
+      for (const row of countRows) {
+        const projectId = ProjectId.make(row.project_id);
+        counts.set(projectId, (counts.get(projectId) ?? 0) + row.count);
+      }
       return {
         threadIds: pageRows.map((row) => ThreadId.make(row.thread_id)),
-        counts: countRows.map((row) => ({
-          projectId: ProjectId.make(row.project_id),
-          count: row.count,
-        })),
+        counts: Array.from(counts, ([projectId, count]) => ({ projectId, count })),
+        folderCounts: countOlderSettledFolders(
+          countRows.map((row) => ({
+            projectId: ProjectId.make(row.project_id),
+            folder: row.folder,
+            count: row.count,
+          })),
+        ),
       };
     }, Effect.mapError(shellSnapshotReadError));
 

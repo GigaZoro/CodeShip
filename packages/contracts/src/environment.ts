@@ -151,6 +151,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTaskPromptFiles: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `group`, serves `scheduledTasks.setGroupPaused` and `scheduledTasks.stats`; hide groups where absent. */
   scheduledTaskGroups: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Stores a thread's `folder` (`thread.folder.set`), files a scheduled task's
+   * chats in its group's folder, and serves `threadFolders.rename`; hide folder actions where absent.
+   */
+  threadFolders: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `delegateProviders` and skips its runs while one is out of usage; hide that choice where absent. */
   scheduledTaskDelegateProviders: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `maxLiveRuns` and skips its runs while that many still work; hide that choice where absent. */

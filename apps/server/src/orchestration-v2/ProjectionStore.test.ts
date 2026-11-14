@@ -30,6 +30,7 @@ import {
   TurnItemId,
   type ThreadPullRequestLink,
   isLiveSubagentShell,
+  threadFolderKey,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -93,7 +94,14 @@ const assertShellIndexCoversShells = Effect.fnUntraced(function* () {
   const trimmed = (
     row: Pick<
       ProjectionStore.ActiveShellIndexEntry,
-      "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "pinnedAt" | "snoozedUntil"
+      | "id"
+      | "projectId"
+      | "lineage"
+      | "settledOverride"
+      | "settledAt"
+      | "pinnedAt"
+      | "snoozedUntil"
+      | "folder"
     >,
   ) => ({
     id: row.id,
@@ -103,6 +111,7 @@ const assertShellIndexCoversShells = Effect.fnUntraced(function* () {
     settledAt: iso(row.settledAt),
     pinnedAt: iso(row.pinnedAt),
     snoozedUntil: iso(row.snoozedUntil),
+    folder: row.folder ?? null,
   });
   assert.deepEqual(index.map(trimmed), shells.map(trimmed));
   shells.forEach((shell, position) => {
@@ -1632,6 +1641,7 @@ it.effect("SQL list older settled threads below a cursor", () =>
       readonly subagent?: boolean;
       readonly archived?: boolean;
       readonly snoozedUntilDay?: number;
+      readonly folder?: string;
     }) =>
       store.apply({
         id: EventId.make(`event:older:${input.name}`),
@@ -1665,12 +1675,14 @@ it.effect("SQL list older settled threads below a cursor", () =>
           snoozedUntil: input.snoozedUntilDay === undefined ? null : at(input.snoozedUntilDay),
           lastVisitedAt: null,
           deletedAt: null,
+          ...(input.folder === undefined ? {} : { folder: input.folder }),
         },
       });
     yield* createThread({ name: "a", settledDay: 5 });
-    yield* createThread({ name: "b", settledDay: 4 });
-    yield* createThread({ name: "c", settledDay: 4 });
-    yield* createThread({ name: "d", settledDay: 3, project: "project:b" });
+    // Two spellings of one folder, which SQLite's lower() cannot match.
+    yield* createThread({ name: "b", settledDay: 4, folder: "Машини" });
+    yield* createThread({ name: "c", settledDay: 4, folder: "машини " });
+    yield* createThread({ name: "d", settledDay: 3, project: "project:b", folder: "Other" });
     yield* createThread({ name: "snoozed", settledDay: 2, snoozedUntilDay: 30 });
     yield* createThread({ name: "recent", settledDay: 20 });
     yield* createThread({ name: "unsettled", settledDay: null });
@@ -1681,17 +1693,43 @@ it.effect("SQL list older settled threads below a cursor", () =>
       before: { readonly settledAt: string; readonly threadId?: ThreadId },
       limit: number,
       projectIds?: ReadonlyArray<ProjectId>,
-    ) => store.listOlderSettledThreads({ before, projectIds, limit });
+      folder?: string | null,
+    ) => store.listOlderSettledThreads({ before, projectIds, folder, limit });
     const before = { settledAt: DateTime.formatIso(at(10)) };
     const first = yield* list(before, 2);
-    assert.deepEqual(first, { threadIds: [id("a"), id("b")], counts: [] });
+    assert.deepEqual(first, { threadIds: [id("a"), id("b")], counts: [], folderCounts: [] });
+    const counted = yield* list(before, 0);
     assert.sameDeepMembers(
-      [...(yield* list(before, 0)).counts],
+      [...counted.counts],
       [
         { projectId: ProjectId.make("project:a"), count: 4 },
         { projectId: ProjectId.make("project:b"), count: 1 },
       ],
     );
+    assert.sameDeepMembers(
+      counted.folderCounts.map(({ projectId, folder, count }) => ({
+        projectId,
+        key: threadFolderKey(folder),
+        count,
+      })),
+      [
+        { projectId: ProjectId.make("project:a"), key: "машини", count: 2 },
+        { projectId: ProjectId.make("project:b"), key: "other", count: 1 },
+      ],
+    );
+    assert.deepEqual((yield* list(before, 10, undefined, "МАШИНИ")).threadIds, [id("b"), id("c")]);
+    assert.deepEqual((yield* list(before, 10, undefined, null)).threadIds, [
+      id("a"),
+      id("snoozed"),
+    ]);
+    assert.deepEqual((yield* list(before, 0, undefined, null)).counts, [
+      { projectId: ProjectId.make("project:a"), count: 2 },
+    ]);
+    assert.deepEqual(yield* list(before, 10, undefined, "Missing"), {
+      threadIds: [],
+      counts: [],
+      folderCounts: [],
+    });
     // A cursor without an id is strict, as the snapshot's cut is: the day-4 tie is not counted.
     assert.sameDeepMembers(
       [...(yield* list({ settledAt: DateTime.formatIso(at(4)) }, 0)).counts],
@@ -1703,12 +1741,13 @@ it.effect("SQL list older settled threads below a cursor", () =>
     // The cursor is the last row: the tie on day 4 continues by id.
     const next = yield* list({ settledAt: DateTime.formatIso(at(4)), threadId: id("b") }, 10);
     assert.deepEqual(next.threadIds, [id("c"), id("d"), id("snoozed")]);
-    assert.deepEqual(yield* list(before, 25, []), { threadIds: [], counts: [] });
+    assert.deepEqual(yield* list(before, 25, []), { threadIds: [], counts: [], folderCounts: [] });
     yield* assertShellIndexCoversShells();
     const scoped = yield* list(before, 0, [ProjectId.make("project:b")]);
     assert.deepEqual(scoped, {
       threadIds: [],
       counts: [{ projectId: ProjectId.make("project:b"), count: 1 }],
+      folderCounts: [{ projectId: ProjectId.make("project:b"), folder: "Other", count: 1 }],
     });
   }).pipe(Effect.provide(layerTest)),
 );

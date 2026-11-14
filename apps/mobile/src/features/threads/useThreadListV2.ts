@@ -1,9 +1,13 @@
 import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId } from "@t3tools/contracts";
-import { useMemo, useSyncExternalStore } from "react";
+import { threadFolderKey, type EnvironmentId } from "@t3tools/contracts";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
-import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
+import {
+  useOlderSettledShelf,
+  useOlderSettledShelfGrowth,
+  useOlderSettledShelves,
+} from "../../state/olderSettledShelf";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildThreadListV2Items,
@@ -11,6 +15,10 @@ import {
   getThreadListV2OrderedSection,
   threadListInboxReturns,
   threadListV2LayoutTime,
+  THREAD_LIST_V2_SETTLED_PAGE_COUNT,
+  type ThreadListV2ChatFolderOlder,
+  type ThreadListV2ChatFolders,
+  type ThreadListV2Folder,
   type ThreadListV2Grouping,
 } from "./threadListV2";
 import { computeThreadMoveAvailability } from "./threadOrder";
@@ -28,6 +36,9 @@ function useKeySet(newlineSeparatedKeys: string): ReadonlySet<string> {
 }
 
 type LayoutInput = Parameters<typeof buildThreadListV2Items>[0];
+
+const NO_FOLDERS: ReadonlyArray<ThreadListV2Folder> = [];
+const NO_FOLDER_TARGETS: ReadonlyMap<string, number> = new Map();
 
 /**
  * The React Compiler drops unread dependencies, so pass the expired-grace version through
@@ -68,8 +79,9 @@ export function useThreadListV2(input: {
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
   readonly grouping: ThreadListV2Grouping | null;
+  readonly chatFolders: ThreadListV2ChatFolders | null;
 }) {
-  const { threads, workingShelfEnabled, grouping } = input;
+  const { threads, workingShelfEnabled, grouping, chatFolders } = input;
   const layoutTime = useMemo(
     () => threadListV2LayoutTime({ threads, now: input.now, searchQuery: input.searchQuery }),
     [threads, input.now, input.searchQuery],
@@ -100,7 +112,13 @@ export function useThreadListV2(input: {
           settlementEnvironmentIds: input.settlementEnvironmentIds,
           snoozeEnvironmentIds: input.snoozeEnvironmentIds,
           queuedThreadKeys: input.queuedThreadKeys,
-        }),
+        }).filter(
+          // Filed chats list in their folders; the Active list's moves step over them.
+          (thread) =>
+            section === "pinned" ||
+            chatFolders === null ||
+            chatFolders.folderKeyOf(thread) === null,
+        ),
       });
     return new Map([
       ...sectionAvailability("pinned"),
@@ -117,6 +135,7 @@ export function useThreadListV2(input: {
     input.queuedThreadKeys,
     workingShelfEnabled,
     grouping,
+    chatFolders,
   ]);
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const scopes = useMemo(
@@ -128,13 +147,62 @@ export function useThreadListV2(input: {
       }),
     [input.environmentId, input.projectRefs, input.settlementEnvironmentIds],
   );
+  // A search lists only matches, so a shelf would page forever; loaded pages stay.
+  const searching = input.searchQuery.trim().length > 0;
+  // Filed chats list in their folders, which page their own older chats.
+  const settledScopes = useMemo(
+    () => scopes.map((scope) => ({ ...scope, folder: null })),
+    [scopes],
+  );
   const olderSettledShelf = useOlderSettledShelf({
-    scopes,
+    scopes: settledScopes,
     expanded: input.settledShelfExpanded,
-    // A search lists only matches, so the shelf would page forever; loaded pages stay.
-    visibleCount: input.searchQuery.trim().length === 0 ? input.settledLimit : 0,
+    visibleCount: searching ? 0 : input.settledLimit,
   });
   const { isListed, unloadedCount } = olderSettledShelf;
+  const scopedThreads = useMemo(
+    () =>
+      threads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          scopes.some(
+            (scope) =>
+              scope.environmentId === thread.environmentId &&
+              (scope.projectIds === null || scope.projectIds.includes(thread.projectId)),
+          ),
+      ),
+    [threads, scopes],
+  );
+  // Settled chats each folder shows, once the user asks it for older ones.
+  const [folderTargets, setFolderTargets] = useState(NO_FOLDER_TARGETS);
+  const folders = chatFolders?.folders ?? NO_FOLDERS;
+  const folderShelves = useOlderSettledShelves(
+    folders.map((folder) => {
+      const target = folderTargets.get(folder.key);
+      return {
+        id: folder.key,
+        scopes: scopes.map((scope) => ({ ...scope, folder: threadFolderKey(folder.label) })),
+        expanded: folder.expanded && target !== undefined,
+        visibleCount: searching ? 0 : (target ?? 0),
+      };
+    }),
+  );
+  const chatFolderOlder = useMemo(
+    () =>
+      new Map(
+        folders.flatMap((folder, index) => {
+          const shelf = folderShelves[index];
+          if (shelf === undefined) return [];
+          const older: ThreadListV2ChatFolderOlder = {
+            isListed: shelf.isListed,
+            unloadedCount: shelf.unloadedCount(scopedThreads),
+            state: shelf.loading ? "loading" : shelf.failed ? "failed" : null,
+          };
+          return [[folder.key, older] as const];
+        }),
+      ),
+    [folders, folderShelves, scopedThreads],
+  );
   const layout = useMemo(
     () =>
       buildThreadListV2Items({
@@ -158,18 +226,10 @@ export function useThreadListV2(input: {
         settledShelfExpanded: input.settledShelfExpanded,
         selectedThreadKey: input.selectedThreadKey,
         grouping,
+        chatFolders,
+        chatFolderOlder,
         isListedSettled: isListed,
-        unloadedSettledCount: unloadedCount(
-          threads.filter(
-            (thread) =>
-              thread.archivedAt === null &&
-              scopes.some(
-                (scope) =>
-                  scope.environmentId === thread.environmentId &&
-                  (scope.projectIds === null || scope.projectIds.includes(thread.projectId)),
-              ),
-          ),
-        ),
+        unloadedSettledCount: unloadedCount(scopedThreads),
       }),
     [
       input.pendingOrder,
@@ -192,12 +252,32 @@ export function useThreadListV2(input: {
       input.settledShelfExpanded,
       input.selectedThreadKey,
       grouping,
+      chatFolders,
+      chatFolderOlder,
       isListed,
       unloadedCount,
-      scopes,
+      scopedThreads,
     ],
   );
-  useOlderSettledShelfGrowth(olderSettledShelf, layout.listedSettledThreads);
+  useOlderSettledShelfGrowth([
+    { shelf: olderSettledShelf, listedCount: layout.listedSettledThreads.length },
+    ...folders.flatMap((folder, index) => {
+      const shelf = folderShelves[index];
+      return shelf === undefined
+        ? []
+        : [{ shelf, listedCount: layout.listedFolderSettledCounts.get(folder.key) ?? 0 }];
+    }),
+  ]);
+  /** Lists a page more of a chat folder's older chats, and reads again what failed. */
+  const showMoreInFolder = (folderKey: string, listedCount: number) => {
+    folderShelves[folders.findIndex((folder) => folder.key === folderKey)]?.retry();
+    setFolderTargets((current) =>
+      new Map([...current].filter(([key]) => folders.some((folder) => folder.key === key))).set(
+        folderKey,
+        listedCount + THREAD_LIST_V2_SETTLED_PAGE_COUNT,
+      ),
+    );
+  };
   const contentOnlyThreadKeys = useKeySet([...layout.contentOnlyThreadKeys].sort().join("\n"));
   const pendingTasks = useMemo(() => {
     const scopedProjectKeys =
@@ -223,6 +303,7 @@ export function useThreadListV2(input: {
         items: layout.items,
         pendingTasks,
         folderHeaders: layout.folderHeaders,
+        folderFooters: layout.folderFooters,
         needsYouCount: layout.needsYouCount,
         needsYouLaterCount: layout.needsYouLaterCount,
         workingCount: layout.workingCount,
@@ -253,7 +334,7 @@ export function useThreadListV2(input: {
       input.shelfPreferencesLoaded,
     ],
   );
-  return { layout, items, contentOnlyThreadKeys, olderSettledShelf };
+  return { layout, items, contentOnlyThreadKeys, olderSettledShelf, showMoreInFolder };
 }
 
 /** The list's scope per environment: its projects there, or every project. */

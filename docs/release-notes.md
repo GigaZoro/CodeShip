@@ -1,3 +1,9 @@
+## 2026-11-14 — Chat folders
+
+- You can now put chats in folders of your own, such as "Autopilot" or "Optimization". Create one with **New folder…** in the sidebar filter menu or the command palette, and move chats in with **Move to folder** in a chat's right-click menu, its header menu, the command palette, or the mobile chat menu. Folders sit at the top of the sidebar; right-click one to rename, delete or reorder it. Each machine keeps its folders, empty ones and their order included, so your desktop, browser and phone show the same list.
+- A folder holds its settled chats too, also ones settled long ago: **Show N more** below a folder loads them, and **Settled** leaves out chats that are in a folder.
+- A scheduled task's **Group** is now the folder of its chats: every chat a task starts lands in the folder named after its group, and changing the group moves the chats it already started. Agents can file chats with `t3_thread_organize`, and `t3_thread_list` shows each chat's folder.
+
 ## 2026-11-14 — The database stores event ids in a fraction of the space
 
 - Every stored event carried an id of about 320 characters, because it spelled out the chat and provider session it belonged to, and each id is indexed. A new event now gets a short id, and an update rewrites the ids already stored, taking the event id column from 573 MB to 74 MB on a 14 GB database. Run, step and turn ids no longer re-escape the ids they contain, so those ids and the data that repeats them stay shorter too. The space returns to disk gradually as the database reuses it.

@@ -270,6 +270,8 @@ export const layer: Layer.Layer<
     const READ_STATE_THREAD_EVENT_TYPES = ["thread.visited", "thread.marked-unread"];
     // Older clients skip tag events, so these supersede only each other.
     const TAG_THREAD_EVENT_TYPE = "thread.tags-updated";
+    // Older clients skip folder events too, so they supersede only each other.
+    const FOLDER_THREAD_EVENT_TYPE = "thread.folder-updated";
 
     const supersedableThreadEventTypes = new Set(SUPERSEDABLE_THREAD_EVENT_TYPES);
     const readStateThreadEventTypes = new Set(READ_STATE_THREAD_EVENT_TYPES);
@@ -295,6 +297,7 @@ export const layer: Layer.Layer<
       const retainedThreadIds = new Set<string>();
       const retainedReadStateThreadIds = new Set<string>();
       const retainedTagThreadIds = new Set<string>();
+      const retainedFolderThreadIds = new Set<string>();
       // Retain each key's oldest candidate, deleting it only when an older event appears.
       const oldestCandidateByEntityKey = new Map<string, number | null>();
       let deletedEventCount = 0;
@@ -375,6 +378,16 @@ export const layer: Layer.Layer<
               if (retainedThreadIds.has(row.stream_id) || retainedTagThreadIds.has(row.stream_id)) {
                 obsolete.push(row.sequence);
               } else retainedTagThreadIds.add(row.stream_id);
+            } else if (
+              row.aggregate_kind === "thread" &&
+              row.event_type === FOLDER_THREAD_EVENT_TYPE
+            ) {
+              if (
+                retainedThreadIds.has(row.stream_id) ||
+                retainedFolderThreadIds.has(row.stream_id)
+              ) {
+                obsolete.push(row.sequence);
+              } else retainedFolderThreadIds.add(row.stream_id);
             } else if (
               row.event_type === "thread.pull-request-link-updated" &&
               retainedThreadIds.has(row.stream_id)

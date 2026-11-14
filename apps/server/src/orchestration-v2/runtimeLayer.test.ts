@@ -2568,6 +2568,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         threadId,
         projectId,
         title: "Lifecycle thread",
+        folder: "Autopilot",
         modelSelection,
         runtimeMode: "full-access" as const,
         interactionMode: "default" as const,
@@ -2733,6 +2734,36 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         DateTime.toEpochMillis(taggedShell.updatedAt),
         DateTime.toEpochMillis(untaggedShell.updatedAt),
       );
+
+      // A thread created with a folder starts in it.
+      assert.equal(untaggedShell.folder, "Autopilot");
+      for (const [step, folder, from, expected] of [
+        ["rename", "Optimization", undefined, "Optimization"],
+        // `from` no longer names the thread's folder, so the move made meanwhile stays.
+        ["stale", "Elsewhere", "Autopilot", "Optimization"],
+        ["clear", null, " optimization", undefined],
+      ] as const) {
+        const moved = yield* orchestrator
+          .dispatch({
+            type: "thread.folder.set",
+            commandId: CommandId.make(`runtime-layer-lifecycle-folder-${step}`),
+            threadId,
+            folder,
+            ...(from === undefined ? {} : { from }),
+          })
+          .pipe(
+            Effect.as(true),
+            Effect.catchIf(Orchestrator.isStaleDispatchError, () => Effect.succeed(false)),
+          );
+        assert.equal(moved, step !== "stale", step);
+        const folderShell = shellOf(yield* orchestrator.getShellSnapshot());
+        assert.equal(folderShell.folder, expected, step);
+        assert.equal(
+          DateTime.toEpochMillis(folderShell.updatedAt),
+          DateTime.toEpochMillis(untaggedShell.updatedAt),
+          `${step}: a folder is not activity`,
+        );
+      }
 
       yield* orchestrator.dispatch({
         type: "thread.later.set",

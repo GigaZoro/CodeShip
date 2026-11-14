@@ -43,6 +43,7 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useProjects, useNavigationThreadShells } from "../../state/entities";
+import { useSavedThreadFolders, useThreadFolderNames } from "../../state/thread-folders";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { useThreadListNow } from "./use-thread-list-now";
@@ -72,6 +73,7 @@ import {
 } from "../home/home-list-filter-menu";
 import {
   buildHomeProjectScopes,
+  buildHomeChatFolders,
   buildHomeThreadListGrouping,
   homeFolderNewThreadTargets,
   sortHomeProjectScopes,
@@ -356,6 +358,11 @@ function ThreadNavigationSidebarPane(
         };
       }),
   });
+  const chatFolders = buildHomeChatFolders({
+    saved: useSavedThreadFolders(),
+    names: useThreadFolderNames(),
+    folderExpanded,
+  });
   const toggleThreadListFolder = (folder: ThreadListV2Folder) =>
     toggleFolder(folder.key, folder.expandedByDefault);
   const now = useThreadListNow(threads);
@@ -382,6 +389,7 @@ function ThreadNavigationSidebarPane(
     items: threadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
+    showMoreInFolder,
   } = useThreadListV2({
     threads,
     pendingTasks,
@@ -405,6 +413,7 @@ function ThreadNavigationSidebarPane(
     settledShelfExpanded,
     selectedThreadKey: props.selectedThreadKey ?? null,
     grouping,
+    chatFolders,
   });
   const listItems: readonly SidebarListItem[] =
     settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
@@ -768,6 +777,15 @@ function ThreadNavigationSidebarPane(
             newThreadTargets={homeFolderNewThreadTargets(item.folder, projectScopes)}
             onToggle={toggleThreadListFolder}
             onNewThreadInProject={props.onNewThreadInProject}
+          />
+        );
+      case "v2-folder-more":
+        return (
+          <ThreadListV2ShowMoreRow
+            pane="sidebar"
+            hiddenCount={item.hiddenCount}
+            state={item.state}
+            onPress={() => showMoreInFolder(item.folderKey, item.listedCount)}
           />
         );
       case "v2-needs-you":

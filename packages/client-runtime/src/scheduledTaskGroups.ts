@@ -4,16 +4,12 @@ import {
   type ScheduledTask,
   type ScheduledTaskId,
   type ScheduledTaskRunStats,
+  threadFolderKey,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import type { ScheduledTaskCopy, SharedScheduledTaskGroup } from "./scheduledTaskSharing.ts";
-
-/** Labels match ignoring case and repeated spaces, so "Machine care" and "machine  Care" are one group. */
-export function scheduledTaskGroupKey(label: string): string {
-  return label.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
-}
 
 export interface ScheduledTaskGroupSection<T> {
   /** Null for the tasks without a group. */
@@ -47,7 +43,7 @@ export function groupScheduledTaskItems<T>(
       ungrouped.push(item);
       continue;
     }
-    const key = scheduledTaskGroupKey(label);
+    const key = threadFolderKey(label);
     const group = groups.get(key);
     if (group === undefined) groups.set(key, { label, items: [item] });
     else group.items.push(item);
@@ -123,7 +119,7 @@ export function scheduledTaskGroupLabels(
   for (const value of labels) {
     const label = groupLabel(value);
     if (label === null) continue;
-    const key = scheduledTaskGroupKey(label);
+    const key = threadFolderKey(label);
     if (!byKey.has(key)) byKey.set(key, label);
   }
   return [...byKey.values()].sort(byLabel);

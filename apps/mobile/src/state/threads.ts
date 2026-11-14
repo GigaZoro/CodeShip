@@ -1,4 +1,5 @@
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
+import { createAllSavedThreadFoldersAtom } from "@t3tools/client-runtime/state/saved-thread-folders";
 import { useAtomValue } from "@effect/atom-react";
 import {
   createEnvironmentThreadDetailAtoms,
@@ -21,7 +22,7 @@ import {
   pendingThreadCreationOutcomesAtom,
   selectThreadCreationDetail,
 } from "./pending-thread-creation";
-import { serverEnvironment } from "./server";
+import { environmentServerConfigsAtom, serverEnvironment } from "./server";
 import { environmentShell } from "./shell";
 import { threadOutboxManager } from "./thread-outbox";
 
@@ -36,7 +37,13 @@ export const olderSettledThreads = createOlderSettledThreadAtoms(
 export const threadEnvironment = createThreadEnvironmentAtoms(
   connectionAtomRuntime,
   threadFamilies.snapshotAtom,
+  serverEnvironment.settingsValueAtom,
 );
+/** The folders saved on every machine, in sidebar order. */
+export const savedThreadFoldersAtom = createAllSavedThreadFoldersAtom({
+  environmentIdsAtom: environmentServerConfigsAtom,
+  foldersAtom: threadEnvironment.savedFoldersAtom,
+});
 export const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
   environmentThreads.stateAtom,

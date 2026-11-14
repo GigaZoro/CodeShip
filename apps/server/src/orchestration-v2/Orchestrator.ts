@@ -79,6 +79,7 @@ import {
   TurnItemId,
   TrimmedNonEmptyString,
   managedRuntimeModeCeilingMessage,
+  sameThreadFolder,
 } from "@t3tools/contracts";
 import { modelPicksEqual, modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
@@ -658,6 +659,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pin.reorder":
     case "thread.active.reorder":
     case "thread.tag.set":
+    case "thread.folder.set":
     case "thread.artifact.hide":
     case "thread.visit":
     case "thread.mark-unread":
@@ -3099,6 +3101,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       activeProviderThreadId: null,
       pullRequests: [],
       ...(command.linkOrigin === undefined ? {} : { linkOrigin: command.linkOrigin }),
+      ...(command.folder === undefined ? {} : { folder: command.folder }),
       // Only stamped work names a remote parent, so a client cannot claim one.
       ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
         ? {}
@@ -3383,6 +3386,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.unpin"
           | "thread.pin.reorder"
           | "thread.tag.set"
+          | "thread.folder.set"
           | "thread.artifact.hide"
           | "thread.active.reorder"
           | "thread.mark-unread"
@@ -3511,6 +3515,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           stale: true,
           cause: `Thread ${command.threadId} is no longer empty.`,
         });
+    }
+    if (
+      command.type === "thread.folder.set" &&
+      command.from !== undefined &&
+      !sameThreadFolder(thread.folder, command.from)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        stale: true,
+        cause: `Thread ${command.threadId} is no longer in the folder.`,
+      });
     }
     // A page belongs to the thread that published it; a forged id must not poison another thread's list.
     if (
@@ -3944,6 +3960,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : current.filter((tag) => tag !== command.tag),
           };
         }
+        case "thread.folder.set": {
+          const { folder: _previous, ...rest } = thread;
+          return command.folder === null ? rest : { ...rest, folder: command.folder };
+        }
         case "thread.artifact.hide": {
           const current = thread.hiddenArtifacts ?? [];
           return {
@@ -4305,6 +4325,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.active-reordered" as const;
         case "thread.tag.set":
           return "thread.tags-updated" as const;
+        case "thread.folder.set":
+          return "thread.folder-updated" as const;
         case "thread.artifact.hide":
           return "thread.artifacts-updated" as const;
         case "thread.mark-unread":
@@ -14167,6 +14189,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pin.reorder":
       case "thread.active.reorder":
       case "thread.tag.set":
+      case "thread.folder.set":
       case "thread.artifact.hide":
       case "thread.mark-unread":
       case "thread.metadata.update":

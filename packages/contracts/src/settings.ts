@@ -57,6 +57,7 @@ import {
 } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 import { ScheduledTaskPlacement } from "./scheduledTask.ts";
+import { StoredSavedThreadFolders } from "./threadFolders.ts";
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
@@ -1536,6 +1537,12 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
   sidebarAutoSettleOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * The folders the user made, in sidebar order. They stay while empty; a folder that only a
+   * thread names, such as a scheduled task's group, follows them and goes when it empties. Only
+   * `threadFolders.save` and `threadFolders.rename` change it, so it is not in the patch.
+   */
+  threadFolders: StoredSavedThreadFolders.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   backgroundActivity: BackgroundActivitySettings,
 
   automaticGitFetchInterval: Schema.DurationFromMillis.pipe(

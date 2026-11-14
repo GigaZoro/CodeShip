@@ -30,6 +30,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { makeRawThreadShell, makeThreadShellFixture } from "../../test-fixtures";
+import { buildHomeChatFolders } from "../home/homeThreadList";
 import { threadJumpTarget } from "../keyboard/threadKeyboardShortcuts";
 import {
   buildThreadListV2Items,
@@ -1986,5 +1987,193 @@ describe("Working section beta", () => {
       "v2-settled-shelf",
       "settled",
     ]);
+  });
+});
+
+describe("chat folders", () => {
+  const chatFolders = buildHomeChatFolders({
+    saved: ["Optimization"],
+    names: ["Optimization", "autopilot", "  Autopilot "],
+    folderExpanded: undefined,
+  });
+  const build = (threads: ReadonlyArray<EnvironmentThreadShell>) =>
+    buildThreadListV2Items({
+      threads,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      chatFolders,
+    });
+
+  it("lists saved folders first before the other chats, active before settled, matching names loosely", () => {
+    const layout = build([
+      makeThread({ id: ThreadId.make("plain"), title: "Plain" }),
+      makeThread({
+        id: ThreadId.make("settled-auto"),
+        title: "Settled",
+        folder: "autopilot",
+        settledOverride: "settled",
+        settledAt: NOW,
+      }),
+      makeThread({
+        id: ThreadId.make("opt"),
+        title: "Opt",
+        folder: "Optimization",
+        createdAt: "2026-06-01T01:00:00.000Z",
+      }),
+      makeThread({
+        id: ThreadId.make("auto"),
+        title: "Auto",
+        folder: "AUTOPILOT",
+        createdAt: "2026-06-01T02:00:00.000Z",
+      }),
+    ]);
+
+    expect(layout.folderHeaders.map((header) => [header.folder.label, header.index])).toEqual([
+      ["Optimization", 0],
+      ["autopilot", 1],
+    ]);
+    expect(layout.items.map((item) => item.thread.id)).toEqual([
+      "opt",
+      "auto",
+      "settled-auto",
+      "plain",
+    ]);
+    expect(layout.hiddenSettledCount).toBe(0);
+  });
+
+  it("shows an empty saved folder in the full list only", () => {
+    const withEmpty = buildHomeChatFolders({
+      saved: ["Empty"],
+      names: ["Optimization", "Unsaved"],
+      folderExpanded: undefined,
+    });
+    const threads = [
+      makeThread({ id: ThreadId.make("opt"), title: "Opt", folder: "Optimization" }),
+    ];
+    const headers = (environmentId: EnvironmentId | null) =>
+      buildThreadListV2Items({
+        threads,
+        environmentId,
+        searchQuery: "",
+        now: NOW,
+        chatFolders: withEmpty,
+      }).folderHeaders.map((header) => [header.folder.label, header.index]);
+
+    expect({ full: headers(null), oneMachine: headers(threads[0]!.environmentId) }).toEqual({
+      full: [
+        ["Empty", 0],
+        ["Optimization", 0],
+      ],
+      oneMachine: [["Optimization", 0]],
+    });
+  });
+
+  it("lists a folder's settled chats as far as its older ones are loaded, with a row for the rest", () => {
+    const threads = [
+      makeThread({ id: ThreadId.make("plain"), title: "Plain" }),
+      makeThread({ id: ThreadId.make("auto"), title: "Auto", folder: "Autopilot" }),
+      makeThread({
+        id: ThreadId.make("recent"),
+        title: "Recent",
+        folder: "Autopilot",
+        settledOverride: "settled",
+        settledAt: NOW,
+      }),
+      makeThread({
+        id: ThreadId.make("below"),
+        title: "Below the loaded pages",
+        folder: "Autopilot",
+        settledOverride: "settled",
+        settledAt: "2026-05-01T00:00:00.000Z",
+      }),
+    ];
+    // "Archive" is named only by older chats that are not loaded.
+    const chatFolderOlder = new Map([
+      [
+        "chat-folder:autopilot",
+        {
+          isListed: (thread: EnvironmentThreadShell) => thread.id !== "below",
+          unloadedCount: 3,
+          state: null,
+        },
+      ],
+      [
+        "chat-folder:archive",
+        { isListed: () => true, unloadedCount: 2, state: "loading" as const },
+      ],
+    ]);
+    const layout = (folderExpanded: Readonly<Record<string, boolean>> | undefined) =>
+      buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        chatFolders: buildHomeChatFolders({
+          saved: [],
+          names: ["Autopilot", "Archive"],
+          folderExpanded,
+        }),
+        chatFolderOlder,
+      });
+    const open = layout(undefined);
+    const items = buildThreadListV2ListItems({
+      items: open.items,
+      pendingTasks: [],
+      folderHeaders: open.folderHeaders,
+      folderFooters: open.folderFooters,
+    });
+    const closed = layout({ "chat-folder:autopilot": false });
+
+    expect({
+      rows: items.map((item) =>
+        item.type === "v2-thread"
+          ? item.item.thread.id
+          : item.type === "v2-folder-more"
+            ? `${item.folderKey} +${item.hiddenCount} (${item.listedCount} listed, ${item.state})`
+            : item.key,
+      ),
+      listed: Object.fromEntries(open.listedFolderSettledCounts),
+      closedHidden: closed.folderHeaders.map((header) => [header.folder.label, header.hiddenCount]),
+    }).toEqual({
+      rows: [
+        "v2-folder:chat-folder:archive",
+        "chat-folder:archive +2 (0 listed, loading)",
+        "v2-folder:chat-folder:autopilot",
+        "auto",
+        "recent",
+        "chat-folder:autopilot +4 (1 listed, null)",
+        "plain",
+      ],
+      listed: { "chat-folder:archive": 0, "chat-folder:autopilot": 1 },
+      closedHidden: [
+        ["Archive", 0],
+        ["Autopilot", 6],
+      ],
+    });
+  });
+
+  it("leaves pinned and snoozed chats where they are", () => {
+    const layout = build([
+      makeThread({
+        id: ThreadId.make("pinned"),
+        title: "Pinned",
+        folder: "Optimization",
+        pinnedAt: NOW,
+      }),
+      makeThread({
+        id: ThreadId.make("snoozed"),
+        title: "Snoozed",
+        folder: "Optimization",
+        snoozedUntil: "2026-06-03T00:00:00.000Z",
+      }),
+    ]);
+
+    // The saved folder still shows, empty, after the pinned row.
+    expect(layout.folderHeaders.map((header) => [header.folder.label, header.index])).toEqual([
+      ["Optimization", 1],
+    ]);
+    expect(layout.items.map((item) => item.thread.id)).toEqual(["pinned"]);
+    expect(layout.snoozedCount).toBe(1);
   });
 });

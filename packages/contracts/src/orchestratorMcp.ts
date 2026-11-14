@@ -377,6 +377,8 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   model: Schema.String,
   updatedAt: IsoDateTime,
   parentThreadId: Schema.NullOr(ThreadId),
+  /** The sidebar folder, only when the thread is in one. */
+  folder: Schema.optional(Schema.String),
   /** With `allProjects` or `fields: "full"`. */
   projectId: Schema.optional(ProjectId),
   // The rest comes with `fields: "full"`.
@@ -783,7 +785,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   catchUpMissedRun: Schema.optional(OrchestratorMcpCatchUpMissedRun),
   group: Schema.optional(Schema.NullOr(ScheduledTaskGroupLabel)).annotate({
     description:
-      'Group label the user\'s task list sorts it under, e.g. "Machine care". Reuse an existing label (list_scheduled_tasks). Null clears; omit to keep.',
+      'Group label, e.g. "Machine care". The user\'s task list sorts the task under it, and the chats it starts go in a sidebar folder with that name. Reuse an existing label (list_scheduled_tasks). Null clears; omit to keep.',
   }),
   delegateProviders: Schema.optional(OrchestratorMcpDelegateProviders),
   maxLiveRuns: Schema.optional(OrchestratorMcpMaxLiveRuns),

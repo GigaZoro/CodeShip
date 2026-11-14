@@ -133,7 +133,8 @@ task has a group, the **Scheduled tasks** page lists tasks under a header per gr
 without one under **No group** at the end. Each header shows how many tasks the group has, its
 next run, and its runs, failures and usage-limited runs in the last 24 hours. Click a header to
 collapse it; each device remembers which groups you collapsed. The machine and project filter
-still applies inside groups.
+still applies inside groups. The chats each task starts go in a sidebar folder with the group's
+name; see [Put chats in folders](#put-chats-in-folders).
 
 **Pause group** turns off every task of the group that is on, and **Resume group** turns back on
 only those, so a task you had already paused stays paused. Switching a task on or off yourself
@@ -324,6 +325,34 @@ shift-click to add more. Machines appear when you have more than one. Choosing b
 and a project shows that project's threads on that machine. Archived projects are not listed. A
 project or machine you filter to keeps its folder even with no active threads, so you can start
 one there.
+
+### Put chats in folders
+
+Folders hold the chats you want together, such as "Autopilot" or "Optimization". On web and
+desktop, choose **New folder…** in the filter menu next to the sidebar search or in the command
+palette, or right-click a chat and choose **Move to folder → New folder…**. Move a chat in with
+**Move to folder** in its right-click menu, the chat's header menu, or the command palette, and out
+with **Remove from folder**. With several chats selected, the right-click menu moves them all. On
+mobile, open a chat's menu and choose **Move to folder**.
+
+Folders sit at the top of the active list, above project and machine folders, and hold their
+chats' active threads first and their settled ones after, so **Settled** leaves out chats that are
+in a folder. **Show N more** below a folder lists the rest of its chats, loading ones settled long
+ago from their machine. Pinned and snoozed chats stay in
+**Pinned** and **Snoozed**, and a chat that needs you or is working also shows in those sections,
+as with project folders. Folder names match regardless of case.
+
+Right-click a folder to rename it, delete it, or move it up or down; on mobile, its **…** button
+renames or deletes it. Renaming or deleting a folder
+changes every connected machine: deleting it takes its chats out of it, and scheduled tasks in the
+group of the same name lose their group. A folder you make stays while empty. Each machine keeps
+its folders and their order, so every device connected to it shows the same list. Agents can file a chat with
+`t3_thread_organize`, using `move_to_folder` or `remove_from_folder`.
+
+A scheduled task's **Group** is the folder its chats go in, so every chat a task in the
+"Autopilot" group starts lands in the **Autopilot** folder. Changing a task's group moves the chats
+it already started and the chat it sends to, except those you moved to another folder yourself. See
+[Group scheduled tasks](#group-scheduled-tasks).
 
 ## When a machine is offline
 

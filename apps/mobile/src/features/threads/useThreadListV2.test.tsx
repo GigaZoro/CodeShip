@@ -13,7 +13,7 @@ import { makeRawThreadShell } from "../../test-fixtures";
 import { useThreadListV2 } from "./useThreadListV2";
 
 vi.mock("../../state/threads", () => ({
-  olderSettledThreads: { shelfAtom: vi.fn() },
+  olderSettledThreads: { shelvesAtom: vi.fn() },
   threadFamilies: { mountRows: () => () => {} },
 }));
 vi.mock("../../state/atom-registry", () => ({ appAtomRegistry: undefined }));
@@ -22,7 +22,14 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   using _globals = { [Symbol.dispose]: () => vi.unstubAllGlobals() };
   const shelfAtom = Atom.make<ReadonlyMap<EnvironmentId, OlderSettledShelfEnvironment>>(new Map());
-  vi.mocked(olderSettledThreads.shelfAtom).mockReturnValue(shelfAtom);
+  // The Settled shelf reads `shelfAtom`; the list has no chat folders, whose shelves read none.
+  const settledShelves = Atom.make((get) => [get(shelfAtom)]);
+  const noShelves = Atom.make<
+    ReadonlyArray<ReadonlyMap<EnvironmentId, OlderSettledShelfEnvironment>>
+  >([]);
+  vi.mocked(olderSettledThreads.shelvesAtom).mockImplementation((shelves) =>
+    shelves.length === 0 ? noShelves : settledShelves,
+  );
   const registry = AtomRegistry.make();
   using _registry = { [Symbol.dispose]: () => registry.dispose() };
   const environmentId = EnvironmentId.make("environment-1");
@@ -62,6 +69,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     settledShelfExpanded: true,
     selectedThreadKey: null,
     grouping: null,
+    chatFolders: null,
   };
   const seen: Array<ReturnType<typeof useThreadListV2>> = [];
   function Probe(props: { input: typeof input; tab: string }) {
@@ -103,6 +111,31 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   expect(seen.at(-1)!.items.find((item) => item.type === "v2-thread")).toMatchObject({
     snoozePresetMinute: nextMinute.now,
   });
+
+  // Each chat folder has a shelf of its own older chats, which must keep the list stable too.
+  const chatFolders: (typeof input)["chatFolders"] = {
+    folders: [
+      {
+        kind: "chats",
+        key: "chat-folder:autopilot",
+        label: "Autopilot",
+        saved: true,
+        expandedByDefault: true,
+        expanded: true,
+      },
+    ],
+    folderKeyOf: (thread) => (thread.id === "thread-0" ? "chat-folder:autopilot" : null),
+  };
+  await act(async () => root.render(<Probe input={{ ...input, chatFolders }} tab="chats" />));
+  const filed = seen.at(-1)!;
+  expect(filed.items.find((item) => item.type === "v2-folder")).toMatchObject({
+    key: "v2-folder:chat-folder:autopilot",
+  });
+  for (const tab of ["settings", "chats"]) {
+    await act(async () => root.render(<Probe input={{ ...input, chatFolders }} tab={tab} />));
+    expect(seen.at(-1)!.layout).toBe(filed.layout);
+    expect(seen.at(-1)!.items).toBe(filed.items);
+  }
 
   await act(async () => root.render(<Probe input={{ ...input, environmentId }} tab="chats" />));
   expect(seen.at(-1)!.layout.items).toHaveLength(85);
@@ -201,6 +234,7 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
     before,
     beforeMs: Date.parse(before),
     counts: new Map([[ProjectId.make("project-test"), 575]]),
+    folders: new Map(),
   };
   await act(async () => {
     registry.set(

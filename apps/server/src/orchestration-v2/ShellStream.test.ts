@@ -234,7 +234,7 @@ describe("omitOlderSettledShells", () => {
   const omit = (threads: ReadonlyArray<OrchestrationV2ThreadShell>) =>
     omitOlderSettledShells({ threads, snapshotSequence: 7, now });
 
-  it("keeps the 25 newest settled threads and counts the rest per project", () => {
+  it("keeps the 25 newest settled threads and counts the rest per project and folder", () => {
     const sideChat = row("side-chat", 0, {
       lineage: {
         parentThreadId: ThreadId.make("new-0"),
@@ -247,6 +247,8 @@ describe("omitOlderSettledShells", () => {
       ...newest,
       sideChat,
       row("old", 30),
+      row("filed", 31, { folder: "Autopilot" }),
+      row("filed-too", 32, { folder: " autopilot" }),
       row("b-old", 40),
       row("unsettled", null),
     ]);
@@ -259,9 +261,10 @@ describe("omitOlderSettledShells", () => {
       before: DateTime.formatIso(DateTime.makeUnsafe(100 * DAY - 2.4 * DAY)),
       asOfSequence: 7,
       counts: [
-        { projectId: "project-a", count: 1 },
+        { projectId: "project-a", count: 3 },
         { projectId: "project-b", count: 1 },
       ],
+      folderCounts: [{ projectId: "project-a", folder: "Autopilot", count: 2 }],
     });
   });
 

@@ -842,7 +842,11 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       const messageId = MessageId.make("message:foundation-compact");
       const threadStateEvent = (
         suffix: string,
-        type: "thread.visited" | "thread.metadata-updated" | "thread.tags-updated",
+        type:
+          | "thread.visited"
+          | "thread.metadata-updated"
+          | "thread.tags-updated"
+          | "thread.folder-updated",
       ): OrchestrationV2DomainEvent => ({
         id: EventId.make(`event:foundation-compact:${suffix}`),
         type,
@@ -938,12 +942,14 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             threadStateEvent(`history-${index}`, "thread.visited"),
           ),
           threadStateEvent("tags-1", "thread.tags-updated"),
+          threadStateEvent("folder-1", "thread.folder-updated"),
           threadStateEvent("visit-2", "thread.visited"),
           messageEvent("message-2", "final"),
           nodeEvent("node-2", "completed"),
           itemEvent("item-2", "final"),
           // Older clients skip tag events, so these must not remove the rename above.
           threadStateEvent("tags-2", "thread.tags-updated"),
+          threadStateEvent("folder-2", "thread.folder-updated"),
         ],
       });
       const beforeCompaction = yield* projections.getThreadProjection(threadId);
@@ -1007,6 +1013,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           "event:foundation-compact:node-2",
           "event:foundation-compact:item-2",
           "event:foundation-compact:tags-2",
+          "event:foundation-compact:folder-2",
         ],
       );
 

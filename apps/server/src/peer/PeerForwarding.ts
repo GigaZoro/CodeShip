@@ -1,5 +1,7 @@
 import {
   type EnvironmentId,
+  OrchestratorMcpCapabilitiesInput,
+  OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpFailure,
   type OrchestratorMcpEnvironmentLinksResult,
   OrchestratorMcpThreadInterruptInput,
@@ -58,6 +60,11 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
+    /** `orchestrator_capabilities` there. */
+    readonly readCapabilities: (
+      scope: Scope,
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<OrchestratorMcpCapabilitiesResult, OrchestratorMcpFailure>;
     /** `t3_thread_read` there. */
     readonly readThread: (
       scope: Scope,
@@ -256,6 +263,19 @@ const make = Effect.gen(function* () {
     return Effect.andThen(requireEnabled, forwarded);
   };
 
+  const readCapabilities: PeerForwarding["Service"]["readCapabilities"] = (scope, environmentId) =>
+    Effect.andThen(
+      requireEnabled,
+      forward<OrchestratorMcpCapabilitiesResult>(
+        scope,
+        "orchestrator_capabilities",
+        OrchestratorMcpCapabilitiesInput,
+        OrchestratorMcpCapabilitiesResult,
+        environmentId,
+        {},
+      ),
+    );
+
   /**
    * The next step for an agent whose machine is not linked: without it, an
    * empty list reads as a dead end and agents go looking elsewhere.
@@ -291,6 +311,7 @@ const make = Effect.gen(function* () {
 
   return PeerForwarding.of({
     call,
+    readCapabilities,
     readThread,
     interruptThread,
     waitForThread,

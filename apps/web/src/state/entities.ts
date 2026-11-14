@@ -27,6 +27,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
+import { environmentSupportsThreadFolders } from "@t3tools/client-runtime/thread-folders";
 import { Atom } from "effect/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
@@ -369,6 +370,12 @@ export function readEnvironmentSupportsThreadLater(environmentId: EnvironmentId)
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
       .threadLater === true
+  );
+}
+
+export function readEnvironmentSupportsThreadFolders(environmentId: EnvironmentId): boolean {
+  return environmentSupportsThreadFolders(
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId),
   );
 }
 

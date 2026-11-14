@@ -2,6 +2,7 @@ import type {
   ApplicationStoredEvent,
   OrchestrationProjectShell,
   OrchestrationV2OlderSettledCount,
+  OrchestrationV2OlderSettledFolderCount,
   OrchestrationV2OlderSettledThreads,
   OrchestrationV2ShellSnapshot,
   OrchestrationV2ThreadShell,
@@ -12,6 +13,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import {
+  countOlderSettledFolders,
   isListedThreadLineage,
   isLiveSubagentShell,
   isOlderSettledThreadShell,
@@ -74,7 +76,7 @@ function buildActiveShellSnapshot(input: {
 
 type ShellTrimRow = Pick<
   OrchestrationV2ThreadShell,
-  "id" | "projectId" | "lineage" | "settledOverride" | "settledAt"
+  "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "folder"
 >;
 
 /**
@@ -87,6 +89,7 @@ interface ShellTrimFacts {
   /** Undefined when no thread is settled, so none is older. */
   readonly olderSettledBeforeMs: number | undefined;
   readonly olderSettledCounts: ReadonlyArray<OrchestrationV2OlderSettledCount>;
+  readonly olderSettledFolderCounts: ReadonlyArray<OrchestrationV2OlderSettledFolderCount>;
 }
 
 const NEWEST_SETTLED_KEPT = 25;
@@ -111,10 +114,13 @@ function shellTrimFacts(rows: ReadonlyArray<ShellTrimRow>): ShellTrimFacts {
   // With fewer than 25, the oldest one is the cut, so nothing is older.
   const olderSettledBeforeMs = settledTimes[NEWEST_SETTLED_KEPT - 1] ?? settledTimes.at(-1);
   const counts = new Map<ProjectId, number>();
+  const filed: Array<{ projectId: ProjectId; folder: string; count: number }> = [];
   if (olderSettledBeforeMs !== undefined) {
     for (const row of rows) {
       if (isOlderSettledThreadShell(row, olderSettledBeforeMs)) {
         counts.set(row.projectId, (counts.get(row.projectId) ?? 0) + 1);
+        if (row.folder != null)
+          filed.push({ projectId: row.projectId, folder: row.folder, count: 1 });
       }
     }
   }
@@ -123,6 +129,7 @@ function shellTrimFacts(rows: ReadonlyArray<ShellTrimRow>): ShellTrimFacts {
     subagentThreadIds,
     olderSettledBeforeMs,
     olderSettledCounts: Array.from(counts, ([projectId, count]) => ({ projectId, count })),
+    olderSettledFolderCounts: countOlderSettledFolders(filed),
   };
 }
 
@@ -156,7 +163,10 @@ function omitOlderSettledShellsWith(
     readonly snapshotSequence: number;
     readonly now: DateTime.Utc;
   },
-  facts: Pick<ShellTrimFacts, "olderSettledBeforeMs" | "olderSettledCounts">,
+  facts: Pick<
+    ShellTrimFacts,
+    "olderSettledBeforeMs" | "olderSettledCounts" | "olderSettledFolderCounts"
+  >,
 ): {
   readonly threads: ReadonlyArray<OrchestrationV2ThreadShell>;
   readonly olderSettled: OrchestrationV2OlderSettledThreads;
@@ -178,6 +188,7 @@ function omitOlderSettledShellsWith(
       before: DateTime.formatIso(DateTime.makeUnsafe(beforeMs)),
       asOfSequence: input.snapshotSequence,
       counts: facts.olderSettledCounts,
+      folderCounts: facts.olderSettledFolderCounts,
     },
   };
 }
@@ -370,6 +381,7 @@ export const loadOlderSettledThreadsPage = Effect.fn("ShellStream.loadOlderSettl
       {
         readonly threadIds: ReadonlyArray<ThreadId>;
         readonly counts: ReadonlyArray<OrchestrationV2OlderSettledCount>;
+        readonly folderCounts: ReadonlyArray<OrchestrationV2OlderSettledFolderCount>;
       },
       E1
     >;
@@ -397,6 +409,7 @@ export const loadOlderSettledThreadsPage = Effect.fn("ShellStream.loadOlderSettl
       snapshotSequence: read.snapshotSequence,
       threads: threads.toSorted((left, right) => order.get(left.id)! - order.get(right.id)!),
       counts: read.listed.counts,
+      folderCounts: read.listed.folderCounts,
     };
   },
 );

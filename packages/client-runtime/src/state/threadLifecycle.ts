@@ -10,10 +10,20 @@ import { Atom } from "effect/reactivity";
 import type { AtomCommand } from "./runtime.ts";
 
 interface PendingThreadUpdate {
-  readonly threadId: ThreadId;
+  /** Undefined applies the update to every thread, as a folder rename does. */
+  readonly threadId: ThreadId | undefined;
   readonly apply: (thread: OrchestrationV2ThreadShell) => OrchestrationV2ThreadShell;
   sequence?: number;
 }
+
+type SequencedCommand<Input, E> = AtomCommand<
+  { readonly environmentId: EnvironmentId; readonly input: Input },
+  { readonly sequence: number },
+  E
+>;
+
+/** `C & SequencedCommand` infers the input from the command and still returns it whole. */
+type Wrappable<C, Input, E> = C & SequencedCommand<Input, E>;
 
 export function createOptimisticThreadLifecycle(
   sourceSnapshotAtom: (
@@ -28,19 +38,18 @@ export function createOptimisticThreadLifecycle(
       const snapshot = get(sourceSnapshotAtom(environmentId));
       const pending = get(pendingAtom(environmentId));
       if (snapshot === null || pending.length === 0) return snapshot;
-      const byThread = new Map<ThreadId, PendingThreadUpdate[]>();
-      for (const update of pending) {
-        if (update.sequence !== undefined && update.sequence <= snapshot.snapshotSequence) continue;
-        const updates = byThread.get(update.threadId) ?? [];
-        updates.push(update);
-        byThread.set(update.threadId, updates);
-      }
-      if (byThread.size === 0) return snapshot;
+      const live = pending.filter(
+        (update) => update.sequence === undefined || update.sequence > snapshot.snapshotSequence,
+      );
+      if (live.length === 0) return snapshot;
       return {
         ...snapshot,
         threads: snapshot.threads.map((thread) =>
-          (byThread.get(thread.id) ?? []).reduce(
-            (current, update) => update.apply(current),
+          live.reduce(
+            (current, update) =>
+              update.threadId === undefined || update.threadId === thread.id
+                ? update.apply(current)
+                : current,
             thread,
           ),
         ),
@@ -48,27 +57,25 @@ export function createOptimisticThreadLifecycle(
     }),
   );
 
-  function wrap<Input extends { readonly threadId: ThreadId }, E>(
-    command: AtomCommand<
-      { readonly environmentId: EnvironmentId; readonly input: Input },
-      { readonly sequence: number },
-      E
-    >,
+  /** Shows the update until the snapshot reaches the command's sequence; a failure drops it. */
+  function track<Input, E, C extends SequencedCommand<Input, E>>(
+    command: Wrappable<C, Input, E>,
+    threadIdOf: (input: Input) => ThreadId | undefined,
     apply: (
       thread: OrchestrationV2ThreadShell,
       input: Input,
       now: DateTime.Utc,
       accepted: boolean,
     ) => OrchestrationV2ThreadShell,
-  ): typeof command {
+  ): C {
     return {
-      label: command.label,
+      ...command,
       run: async (registry, target) => {
         const now = DateTime.nowUnsafe();
         const pending = pendingAtom(target.environmentId);
         const source = sourceSnapshotAtom(target.environmentId);
         const update: PendingThreadUpdate = {
-          threadId: target.input.threadId,
+          threadId: threadIdOf(target.input),
           apply: (thread) => apply(thread, target.input, now, update.sequence !== undefined),
         };
         const remove = () =>
@@ -98,5 +105,30 @@ export function createOptimisticThreadLifecycle(
     };
   }
 
-  return { snapshotAtom, wrap };
+  /** A command on one thread. */
+  function wrap<
+    Input extends { readonly threadId: ThreadId },
+    E,
+    C extends SequencedCommand<Input, E>,
+  >(
+    command: Wrappable<C, Input, E>,
+    apply: (
+      thread: OrchestrationV2ThreadShell,
+      input: Input,
+      now: DateTime.Utc,
+      accepted: boolean,
+    ) => OrchestrationV2ThreadShell,
+  ): C {
+    return track(command, (input) => input.threadId, apply);
+  }
+
+  /** A command that may change any thread of the environment; `apply` leaves the others as they are. */
+  function wrapEveryThread<Input, E, C extends SequencedCommand<Input, E>>(
+    command: Wrappable<C, Input, E>,
+    apply: (thread: OrchestrationV2ThreadShell, input: Input) => OrchestrationV2ThreadShell,
+  ): C {
+    return track(command, () => undefined, apply);
+  }
+
+  return { snapshotAtom, wrap, wrapEveryThread };
 }

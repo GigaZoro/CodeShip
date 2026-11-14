@@ -4107,6 +4107,7 @@ const catalog: MessageCatalog = {
   "Could not delete ACP session": "Не вдалося видалити сеанс ACP",
   "Could not delete action": "Не вдалося видалити дію",
   "Could not delete artifact": "Не вдалося видалити артефакт",
+  "Could not delete folder": "Не вдалося видалити папку",
   "Could not delete pending task": "Не вдалося видалити завдання в очікуванні",
   "Could not delete provider instance": "Не вдалося видалити екземпляр провайдера",
   "Could not delete task": "Не вдалося видалити завдання",
@@ -4349,6 +4350,7 @@ const catalog: MessageCatalog = {
   "Could not remove t3": "Не вдалося видалити t3",
   "Could not remove the snapshot.": "Не вдалося видалити знімок.",
   "Could not remove this server. Try again.": "Не вдалося видалити цей сервер. Спробуйте ще раз.",
+  "Could not rename folder": "Не вдалося перейменувати папку",
   "Could not rename thread": "Не вдалося перейменувати чат",
   "Could not render this Office document.": "Не вдалося відобразити цей документ Office.",
   "Could not reopen this {term}": "Не вдалося відкрити знову: {term}",
@@ -4378,6 +4380,7 @@ const catalog: MessageCatalog = {
   "Could not run cleanup on {machine}": "Не вдалося запустити очищення на {machine}",
   "Could not run task": "Не вдалося запустити завдання",
   "Could not save file": "Не вдалося зберегти файл",
+  "Could not save folder": "Не вдалося зберегти папку",
   "Could not save image": "Не вдалося зберегти зображення",
   "Could not save maintainer access": "Не вдалося зберегти доступ для мейнтейнерів",
   "Could not save on {label}: {error}": "Не вдалося зберегти для {label}: {error}",
@@ -4629,6 +4632,7 @@ const catalog: MessageCatalog = {
   "Create a token": "Створити токен",
   "Create and checkout a ref before pushing or opening a {kind}.":
     "Створіть посилання та перейдіть на нього, перш ніж надсилати або відкривати {kind}.",
+  "Create folder": "Створити папку",
   "Create labels on the provider to use them here.":
     "Створіть мітки у провайдера, щоб користуватися ними тут.",
   "Create link": "Створити посилання",
@@ -4815,6 +4819,8 @@ const catalog: MessageCatalog = {
   "delete confirmation": "підтвердження видалення",
   "Delete confirmation": "Підтвердження видалення",
   "Delete draft": "Видалити чернетку",
+  "Delete folder “{name}”?": "Видалити папку «{name}»?",
+  "Delete folder…": "Видалити папку…",
   "Delete inactive rotated log files after this many days. Current logs are kept.":
     "Видаляти неактивні ротовані файли журналів через вказану кількість днів. Поточні журнали зберігаються.",
   "Delete inactive worktrees": "Видаляти неактивні worktree",
@@ -5610,6 +5616,7 @@ const catalog: MessageCatalog = {
   "Failed to copy thread ID": "Не вдалося скопіювати ID чату",
   "Failed to create and switch ref.": "Не вдалося створити посилання й перемкнутися.",
   "Failed to create pairing URL.": "Не вдалося створити URL сполучення.",
+  "Failed to delete folder": "Не вдалося видалити папку",
   "Failed to delete terminal input": "Не вдалося видалити ввід у терміналі",
   "Failed to delete thread": "Не вдалося видалити чат",
   "Failed to delete threads": "Не вдалося видалити чати",
@@ -5628,6 +5635,7 @@ const catalog: MessageCatalog = {
   "Failed to load refs.": "Не вдалося завантажити посилання.",
   "Failed to load the t3 command state.": "Не вдалося завантажити стан команди t3.",
   "Failed to load WSL state.": "Не вдалося завантажити стан WSL.",
+  "Failed to move chat to folder": "Не вдалося перемістити чат у папку",
   "Failed to move cursor": "Не вдалося перемістити курсор",
   "Failed to move project": "Не вдалося перемістити проєкт",
   "Failed to open project": "Не вдалося відкрити проєкт",
@@ -5656,6 +5664,7 @@ const catalog: MessageCatalog = {
   'Failed to remove "{title}"': "Не вдалося видалити «{title}»",
   "Failed to remove backend.": "Не вдалося видалити бекенд.",
   "Failed to remove project": "Не вдалося видалити проєкт",
+  "Failed to rename folder": "Не вдалося перейменувати папку",
   "Failed to rename project": "Не вдалося перейменувати проєкт",
   "Failed to rename thread": "Не вдалося перейменувати чат",
   "Failed to reorder active threads": "Не вдалося змінити порядок активних чатів",
@@ -5670,6 +5679,7 @@ const catalog: MessageCatalog = {
   "Failed to revoke pairing link.": "Не вдалося відкликати посилання сполучення.",
   'Failed to run "{name}".': "Не вдалося запустити «{name}».",
   "Failed to save action.": "Не вдалося зберегти дію.",
+  "Failed to save folders": "Не вдалося зберегти папки",
   "Failed to save project actions": "Не вдалося зберегти дії проєкту",
   "Failed to save the queued message.": "Не вдалося зберегти повідомлення в черзі.",
   "Failed to send {signal} to process {pid}.": "Не вдалося надіслати {signal} процесу {pid}.",
@@ -5871,6 +5881,8 @@ const catalog: MessageCatalog = {
   "Fold working and monitoring threads into a Working section. They return to the top of the list when they need you. While this is on, active threads are ordered by time and cannot be moved.":
     "Згортати чати в роботі та чати під наглядом у розділ «У роботі». Вони повертаються на початок списку, коли потрібні вам. Поки це ввімкнено, активні чати впорядковано за часом, і їх не можна переміщувати.",
   Folder: "Тека",
+  "Folder actions for {name}": "Дії з папкою {name}",
+  "Folder name": "Назва папки",
   "Folder on {machine}": "Папка на {machine}",
   folders: "папки",
   Folders: "Папки",
@@ -6573,6 +6585,8 @@ const catalog: MessageCatalog = {
   "It’s now active.": "Тепер вона активна.",
   "It’s now your dark theme.": "Тепер це ваша темна тема.",
   "It’s now your light theme.": "Тепер це ваша світла тема.",
+  "Its chats move out of the folder. Scheduled tasks in this group lose their group.":
+    "Її чати вийдуть із папки. Заплановані завдання цієї групи втратять групу.",
   "Its cookies and logins are deleted. Desktop tabs already open in this profile stay open until you close them; server browser tabs close now.":
     "Його cookie та входи буде видалено. Вкладки на комп’ютері, вже відкриті в цьому профілі, залишаться відкритими, доки ви їх не закриєте; вкладки браузера на сервері закриються одразу.",
   "Its CPU is overloaded (load {load} on {cpuCount} cores).":
@@ -7369,6 +7383,9 @@ const catalog: MessageCatalog = {
   "Move draft to this line": "Перенести чернетку на цей рядок",
   "Move task": "Перенести завдання",
   "Move to another machine": "Перенести на інший комп’ютер",
+  "Move to folder": "Перемістити в папку",
+  "Move to folder: {name}": "Перемістити в папку: {name}",
+  "Move to new folder…": "Перемістити в нову папку…",
   "Move up": "Перемістити вгору",
   "Move up and Move down reorder within this section. Other actions move between sections.":
     "«Вгору» та «Вниз» змінюють порядок усередині цього розділу. Інші дії переміщують між розділами.",
@@ -7438,6 +7455,8 @@ const catalog: MessageCatalog = {
   "New changes since this guide": "Нові зміни після цього посібника",
   "New chat": "Новий чат",
   "New file has no newline at end of file.": "У новому файлі немає нового рядка в кінці.",
+  "New folder": "Нова папка",
+  "New folder…": "Нова папка…",
   "new keybinding": "нова комбінація клавіш",
   "New keybinding": "Нова комбінація клавіш",
   "new line": "новий рядок",
@@ -7580,6 +7599,7 @@ const catalog: MessageCatalog = {
   "No changed files to commit.": "Немає змінених файлів для коміту.",
   "No changes": "Немає змін",
   "No changes to commit": "Немає змін для коміту",
+  "No chats": "Немає чатів",
   "No checks reported": "Перевірок немає",
   "No checks reported.": "Перевірок немає.",
   "No Codex CLI was found in this environment. T3.CodeShip can download its own copy.":
@@ -9449,6 +9469,7 @@ const catalog: MessageCatalog = {
   "Remove from draft": "Прибрати з чернетки",
   "Remove from favorites": "Видалити з обраного",
   "Remove from favorites: {provider}, {model}": "Прибрати з обраного: {provider}, {model}",
+  "Remove from folder": "Прибрати з папки",
   "Remove from queue": "Видалити з черги",
   "Remove from this device": "Видалити з цього пристрою",
   "Remove from this device?": "Видалити з цього пристрою?",
@@ -9535,6 +9556,8 @@ const catalog: MessageCatalog = {
   "Removing…": "Видалення…",
   Rename: "Перейменувати",
   "Rename {name}": "Перейменувати {name}",
+  "Rename folder": "Перейменувати папку",
+  "Rename folder…": "Перейменувати папку…",
   "Rename thread": "Перейменувати чат",
   "Renamed from {path}": "Перейменовано з {path}",
   render: "відрендерити",
@@ -12781,6 +12804,8 @@ const catalog: MessageCatalog = {
     "Це завдання використовує застарілий інтервал менше однієї хвилини. Після збереження він стане не меншим за одну хвилину.",
   "This task was deleted or belongs to a different project. Check your project filter.":
     "Це завдання видалено, або воно належить до іншого проєкту. Перевірте фільтр проєктів.",
+  "This task's chats go in a sidebar folder with this name.":
+    "Чати цього завдання потрапляють у папку бічної панелі з цією назвою.",
   "This terminal route needs an active thread and workspace.":
     "Для цього маршруту термінала потрібні активний чат і робочий простір.",
   "This theme file uses an unsupported version. Expected {version}.":

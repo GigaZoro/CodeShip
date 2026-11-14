@@ -67,7 +67,7 @@ import {
 import {
   defaultCatchUpMissedRun,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
-  MAX_SCHEDULED_TASK_GROUP_LENGTH,
+  MAX_THREAD_FOLDER_LENGTH,
   MAX_WEBHOOK_FILTERS,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
   ProviderInstanceId,
@@ -3347,7 +3347,7 @@ function ScheduledTaskEditorForm({
                 <AutocompleteInput
                   id="scheduled-task-group"
                   aria-describedby="scheduled-task-group-description"
-                  maxLength={MAX_SCHEDULED_TASK_GROUP_LENGTH}
+                  maxLength={MAX_THREAD_FOLDER_LENGTH}
                   placeholder={t("No group")}
                   spellCheck={false}
                 />
@@ -3364,11 +3364,12 @@ function ScheduledTaskEditorForm({
                 ) : null}
               </Autocomplete>
               <div className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
-                <p id="scheduled-task-group-description">
-                  {t("Tasks with the same group are listed and paused together.")}
-                </p>
+                <div id="scheduled-task-group-description" className="space-y-0.5">
+                  <p>{t("Tasks with the same group are listed and paused together.")}</p>
+                  <p>{t("This task's chats go in a sidebar folder with this name.")}</p>
+                </div>
                 <span className="shrink-0 tabular-nums">
-                  {`${draft.group.length} / ${MAX_SCHEDULED_TASK_GROUP_LENGTH}`}
+                  {`${draft.group.length} / ${MAX_THREAD_FOLDER_LENGTH}`}
                 </span>
               </div>
             </Field>

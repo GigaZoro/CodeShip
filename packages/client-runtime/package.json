@@ -103,6 +103,10 @@
       "types": "./src/scheduledTaskGroups.ts",
       "default": "./src/scheduledTaskGroups.ts"
     },
+    "./thread-folders": {
+      "types": "./src/threadFolders.ts",
+      "default": "./src/threadFolders.ts"
+    },
     "./scheduled-task-sharing": {
       "types": "./src/scheduledTaskSharing.ts",
       "default": "./src/scheduledTaskSharing.ts"
@@ -410,6 +414,10 @@
     "./state/thread-status": {
       "types": "./src/state/threadStatus.ts",
       "default": "./src/state/threadStatus.ts"
+    },
+    "./state/saved-thread-folders": {
+      "types": "./src/state/savedThreadFolders.ts",
+      "default": "./src/state/savedThreadFolders.ts"
     },
     "./state/thread-relationships": {
       "types": "./src/state/threadRelationships.ts",

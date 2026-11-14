@@ -9,9 +9,11 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  saveThreadFolders,
   type OrchestrationV2Command,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -23,12 +25,16 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { RpcSession } from "../rpc/session.ts";
+import { renameThreadFolderOf } from "../threadFolders.ts";
+import type { AtomCommandResult } from "./runtime.ts";
+import { createSavedThreadFolders } from "./savedThreadFolders.ts";
 import { createThreadEnvironmentAtoms } from "./threadCommands.ts";
+import { createOptimisticThreadLifecycle } from "./threadLifecycle.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("remote");
@@ -136,7 +142,7 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
     ),
   );
   const snapshotAtom = Atom.family((_environmentId: EnvironmentId) => Atom.make(SNAPSHOT));
-  const commands = createThreadEnvironmentAtoms(runtime, snapshotAtom);
+  const commands = createThreadEnvironmentAtoms(runtime, snapshotAtom, () => Atom.make(null));
   const registry = AtomRegistry.make();
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
   const visibleAtom = commands.snapshotAtom(ENVIRONMENT_ID);
@@ -264,6 +270,7 @@ describe("remote thread lifecycle commands", () => {
     ["setAutoSettle", { enabled: false }, { autoSettleDisabledAt: expect.any(Object) }],
     ["reorderPin", { orderKey: "b" }, { pinOrderKey: "b" }],
     ["reorderActive", { orderKey: "b" }, { activeOrderKey: "b" }],
+    ["setFolder", { folder: "Autopilot" }, { folder: "Autopilot" }],
   ] as const;
 
   it.effect.each(actions)(
@@ -299,6 +306,7 @@ describe("remote thread lifecycle commands", () => {
             enabled: false,
             orderKey: "a",
             snoozedUntil: "2099-01-01T00:00:00.000Z",
+            folder: null,
             ...input,
           },
         });
@@ -309,6 +317,136 @@ describe("remote thread lifecycle commands", () => {
         expect((yield* Effect.promise(() => result))._tag).toBe("Failure");
         expect(h.registry.get(h.visibleAtom)).toBe(initial);
       }),
+  );
+
+  it.effect("shows a folder rename on every thread in it until the shell reaches it", () =>
+    Effect.gen(function* () {
+      const other = { ...SNAPSHOT.threads[0]!, id: ThreadId.make("other"), folder: "Other" };
+      const initial = {
+        ...SNAPSHOT,
+        threads: [{ ...SNAPSHOT.threads[0]!, folder: "autopilot" }, other],
+      };
+      const source = Atom.family((_environmentId: EnvironmentId) =>
+        Atom.make<OrchestrationV2ShellSnapshot | null>(initial),
+      );
+      const lifecycle = createOptimisticThreadLifecycle(source);
+      const replies: Array<(result: AtomCommandResult<{ sequence: number }, Error>) => void> = [];
+      const rename = lifecycle.wrapEveryThread(
+        {
+          label: "rename",
+          run: (
+            _registry: AtomRegistry.AtomRegistry,
+            _target: {
+              readonly environmentId: EnvironmentId;
+              readonly input: { readonly from: string; readonly to: string | null };
+            },
+          ) =>
+            new Promise<AtomCommandResult<{ sequence: number }, Error>>((resolve) => {
+              replies.push(resolve);
+            }),
+        },
+        renameThreadFolderOf,
+      );
+      const registry = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+      const visible = lifecycle.snapshotAtom(ENVIRONMENT_ID);
+      registry.mount(visible);
+      const folders = () => registry.get(visible)?.threads.map((thread) => thread.folder);
+
+      const accepted = rename.run(registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { from: "Autopilot", to: "Agents" },
+      });
+      expect(folders()).toEqual(["Agents", "Other"]);
+      replies[0]!(AsyncResult.success({ sequence: 3 }));
+      yield* Effect.promise(() => accepted);
+      registry.set(source(ENVIRONMENT_ID), { ...initial, snapshotSequence: 2 });
+      expect(folders()).toEqual(["Agents", "Other"]);
+      const caughtUp = {
+        ...initial,
+        snapshotSequence: 3,
+        threads: [{ ...initial.threads[0]!, folder: "Agents" }, other],
+      };
+      registry.set(source(ENVIRONMENT_ID), caughtUp);
+      expect(registry.get(visible)).toBe(caughtUp);
+
+      const refused = rename.run(registry, {
+        environmentId: ENVIRONMENT_ID,
+        input: { from: "Other", to: null },
+      });
+      expect(folders()).toEqual(["Agents", null]);
+      replies[1]!(AsyncResult.failure(Cause.fail(new Error("Remote refused the rename"))));
+      yield* Effect.promise(() => refused);
+      expect(registry.get(visible)).toBe(caughtUp);
+    }),
+  );
+
+  it.effect("shows a saved folder change until the settings show it, whichever arrives first", () =>
+    Effect.gen(function* () {
+      const settings = Atom.family((_environmentId: EnvironmentId) =>
+        Atom.make<{ readonly threadFolders: ReadonlyArray<string> } | null>({
+          threadFolders: ["A"],
+        }),
+      );
+      const saved = createSavedThreadFolders(settings);
+      type Saved = { readonly folders: ReadonlyArray<string> };
+      const replies: Array<(result: AtomCommandResult<Saved, Error>) => void> = [];
+      const save = saved.wrap(
+        {
+          label: "save",
+          run: (
+            _registry: AtomRegistry.AtomRegistry,
+            _target: { readonly environmentId: EnvironmentId; readonly input: Saved },
+          ) =>
+            new Promise<AtomCommandResult<Saved, Error>>((resolve) => {
+              replies.push(resolve);
+            }),
+        },
+        (folders, input) => saveThreadFolders(folders, input.folders),
+      );
+      const registry = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+      const visible = saved.foldersAtom(ENVIRONMENT_ID);
+      registry.mount(visible);
+      const stored = (threadFolders: ReadonlyArray<string>) =>
+        registry.set(settings(ENVIRONMENT_ID), { threadFolders });
+      const run = (folders: ReadonlyArray<string>) =>
+        save.run(registry, { environmentId: ENVIRONMENT_ID, input: { folders } });
+
+      // Another client's earlier save arrives first, then the reply, then this save's settings.
+      const first = run(["B"]);
+      stored(["Z", "A"]);
+      replies[0]!(AsyncResult.success({ folders: ["B", "Z", "A"] }));
+      yield* Effect.promise(() => first);
+      const afterReply = registry.get(visible);
+      stored(["B", "Z", "A"]);
+
+      // This save's settings, then another client's later reorder, arrive before the reply.
+      const second = run(["C"]);
+      stored(["C", "B", "Z", "A"]);
+      stored(["A", "C", "B", "Z"]);
+      replies[1]!(AsyncResult.success({ folders: ["C", "B", "Z", "A"] }));
+      yield* Effect.promise(() => second);
+      const afterLaterReorder = registry.get(visible);
+
+      const refused = run(["D"]);
+      const whileRefusing = registry.get(visible);
+      replies[2]!(AsyncResult.failure(Cause.fail(new Error("Remote refused the save"))));
+      yield* Effect.promise(() => refused);
+      stored(["A"]);
+
+      expect({
+        afterReply,
+        afterLaterReorder,
+        whileRefusing,
+        settled: registry.get(visible),
+      }).toEqual({
+        afterReply: ["B", "Z", "A"],
+        afterLaterReorder: ["A", "C", "B", "Z"],
+        whileRefusing: ["D", "A", "C", "B", "Z"],
+        settled: ["A"],
+      });
+    }),
   );
 
   it.effect("restamps snoozedAt when re-snoozing to the same wake time", () =>

@@ -371,6 +371,18 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         case "mark_unread":
           command = { ...common, type: "thread.mark-unread" };
           break;
+        case "move_to_folder":
+          if (input.folder === undefined) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "move_to_folder requires folder.",
+            });
+          }
+          command = { ...common, type: "thread.folder.set", folder: input.folder };
+          break;
+        case "remove_from_folder":
+          command = { ...common, type: "thread.folder.set", folder: null };
+          break;
         default:
           command = { ...common, type: `thread.${input.action}` };
       }

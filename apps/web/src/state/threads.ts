@@ -2,6 +2,7 @@ import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/th
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
 import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
+import { createAllSavedThreadFoldersAtom } from "@t3tools/client-runtime/state/saved-thread-folders";
 import {
   createEnvironmentThreadDetailAtoms,
   createEnvironmentThreadShellAtoms,
@@ -18,7 +19,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
-import { serverEnvironment } from "./server";
+import { environmentServerConfigsAtom, serverEnvironment } from "./server";
 import { environmentShell } from "./shell";
 
 export const threadFamilies = createThreadFamilyAtoms(
@@ -32,7 +33,13 @@ export const olderSettledThreads = createOlderSettledThreadAtoms(
 export const threadEnvironment = createThreadEnvironmentAtoms(
   connectionAtomRuntime,
   threadFamilies.snapshotAtom,
+  serverEnvironment.settingsValueAtom,
 );
+/** The folders saved on every machine, in sidebar order. */
+export const savedThreadFoldersAtom = createAllSavedThreadFoldersAtom({
+  environmentIdsAtom: environmentServerConfigsAtom,
+  foldersAtom: threadEnvironment.savedFoldersAtom,
+});
 const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
   environmentThreads.stateAtom,

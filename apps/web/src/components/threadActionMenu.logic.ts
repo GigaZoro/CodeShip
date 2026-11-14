@@ -1,6 +1,24 @@
 import { t } from "~/i18n";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
+import type { ThreadFolderEntry } from "@t3tools/client-runtime/thread-folders";
+
+export const THREAD_FOLDER_SET_PREFIX = "folder:set:";
+export const THREAD_FOLDER_NEW_ID = "folder:new";
+export const THREAD_FOLDER_REMOVE_ID = "folder:remove";
+
+export type ThreadFolderMenuAction =
+  | typeof THREAD_FOLDER_NEW_ID
+  | typeof THREAD_FOLDER_REMOVE_ID
+  | `${typeof THREAD_FOLDER_SET_PREFIX}${string}`;
+
+export function isThreadFolderMenuAction(action: string): action is ThreadFolderMenuAction {
+  return (
+    action === THREAD_FOLDER_NEW_ID ||
+    action === THREAD_FOLDER_REMOVE_ID ||
+    action.startsWith(THREAD_FOLDER_SET_PREFIX)
+  );
+}
 
 export type ThreadActionMenuId =
   | "find"
@@ -27,6 +45,8 @@ export type ThreadActionMenuId =
   | "regenerate-title"
   | "mark-unread"
   | "share-guest"
+  | "folder"
+  | ThreadFolderMenuAction
   | "copy"
   | "copy-path"
   | "copy-branch"
@@ -109,6 +129,46 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Absent where the server cannot file chats in sidebar folders. */
+  readonly folders?: ThreadFolderMenuState | null;
+}
+
+export interface ThreadFolderMenuState {
+  readonly entries: ReadonlyArray<ThreadFolderEntry>;
+  /** The folder every chosen thread shares, if any. */
+  readonly currentKey: string | null;
+  readonly inFolder: boolean;
+}
+
+export function buildThreadFolderMenuItem(
+  folders: ThreadFolderMenuState,
+): ContextMenuItem<ThreadActionMenuId> {
+  return {
+    id: "folder",
+    label: t("Move to folder"),
+    icon: "folder",
+    children: [
+      ...folders.entries.map((entry) => ({
+        id: `${THREAD_FOLDER_SET_PREFIX}${entry.name}` as const,
+        label: entry.name,
+        checked: entry.key === folders.currentKey,
+        disabled: entry.key === folders.currentKey,
+      })),
+      {
+        id: THREAD_FOLDER_NEW_ID,
+        label: t("New folder…"),
+        separatorBefore: folders.entries.length > 0,
+      },
+      ...(folders.inFolder
+        ? [
+            {
+              id: THREAD_FOLDER_REMOVE_ID as ThreadFolderMenuAction,
+              label: t("Remove from folder"),
+            },
+          ]
+        : []),
+    ],
+  };
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -202,6 +262,7 @@ export function buildThreadActionMenuItems(
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: t("Share with guest"), icon: "user-plus" }]
       : []),
+    ...(state.folders ? [buildThreadFolderMenuItem(state.folders)] : []),
     ...(state.projectFilter
       ? [
           {

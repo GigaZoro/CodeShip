@@ -20,6 +20,7 @@ import {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
 } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import { ThreadFolder } from "./threadFolders.ts";
 
 const TimeOfDay = TrimmedNonEmptyString.check(
   Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/),
@@ -28,12 +29,8 @@ const TimeOfDay = TrimmedNonEmptyString.check(
 export const ScheduledTaskPlacement = Schema.Literals(["none", "chat", "pinned"]);
 export type ScheduledTaskPlacement = typeof ScheduledTaskPlacement.Type;
 
-export const MAX_SCHEDULED_TASK_GROUP_LENGTH = 60;
-
-/** Free text such as "Machine care"; tasks whose labels match, ignoring case, form one group. */
-export const ScheduledTaskGroupLabel = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(MAX_SCHEDULED_TASK_GROUP_LENGTH),
-);
+/** Free text such as "Machine care"; tasks whose labels match form one group, the folder of their chats. */
+export const ScheduledTaskGroupLabel = ThreadFolder;
 
 export const MIN_SCHEDULED_TASK_INTERVAL_MS = 60_000;
 

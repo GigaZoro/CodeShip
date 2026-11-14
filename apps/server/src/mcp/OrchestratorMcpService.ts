@@ -1061,6 +1061,7 @@ function listItemFromShell(
     model: shell.modelSelection.model,
     updatedAt: DateTime.formatIso(shell.updatedAt),
     parentThreadId: shell.lineage.parentThreadId,
+    ...(shell.folder ? { folder: shell.folder } : {}),
     ...(shape.full || shape.withProject ? { projectId: shell.projectId } : {}),
   } satisfies OrchestratorMcpThreadListItem;
   if (!shape.full) return compact;

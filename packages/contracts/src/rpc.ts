@@ -7,6 +7,13 @@ import {
 } from "./orchestrationV2.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
+  ThreadFolderError,
+  ThreadFolderRenameInput,
+  ThreadFolderRenameResult,
+  ThreadFolderSaveInput,
+  ThreadFolderSaveResult,
+} from "./threadFolders.ts";
+import {
   McpAppCallToolInput,
   McpAppCallToolResult,
   McpAppReadResourceInput,
@@ -651,6 +658,8 @@ export const WS_METHODS = {
   scheduledTasksListRuns: "scheduledTasks.listRuns",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   scheduledTasksApplyShared: "scheduledTasks.applyShared",
+  threadFoldersRename: "threadFolders.rename",
+  threadFoldersSave: "threadFolders.save",
   secretsAnswerRequest: "secrets.answerRequest",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
@@ -2288,6 +2297,18 @@ const WsScheduledTasksRunNowRpc = Rpc.make(WS_METHODS.scheduledTasksRunNow, {
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
+const WsThreadFoldersRenameRpc = Rpc.make(WS_METHODS.threadFoldersRename, {
+  payload: ThreadFolderRenameInput,
+  success: ThreadFolderRenameResult,
+  error: Schema.Union([ThreadFolderError, EnvironmentAuthorizationError]),
+});
+
+const WsThreadFoldersSaveRpc = Rpc.make(WS_METHODS.threadFoldersSave, {
+  payload: ThreadFolderSaveInput,
+  success: ThreadFolderSaveResult,
+  error: Schema.Union([ThreadFolderError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksRotateWebhookTokenRpc = Rpc.make(
   WS_METHODS.scheduledTasksRotateWebhookToken,
   {
@@ -2452,6 +2473,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksSetFollowsDefaultModelRpc,
   WsScheduledTasksDeleteRpc,
   WsScheduledTasksRunNowRpc,
+  WsThreadFoldersRenameRpc,
+  WsThreadFoldersSaveRpc,
   WsScheduledTasksListRunsRpc,
   WsScheduledTasksRotateWebhookTokenRpc,
   WsScheduledTasksApplySharedRpc,

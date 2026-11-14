@@ -259,11 +259,14 @@ it.effect(
         );
         expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.002Z");
 
+        yield* service.setGroup({ id: saved.id, group: "Autopilot" }, agent);
+        expect((yield* taskOf(service))?.shared?.revision.at).toBe("2031-01-01T00:00:00.003Z");
+
         // Where a task sits is this machine's own business: no revision, and the author stays.
         yield* service.setPlacement({ ids: [saved.id], placement: "pinned" });
         const placed = yield* taskOf(service);
         expect([placed?.shared?.revision.at, placed?.changedBy]).toEqual([
-          "2031-01-01T00:00:00.002Z",
+          "2031-01-01T00:00:00.003Z",
           { ...agent, at: "2026-09-09T12:00:00.000Z" },
         ]);
       }),

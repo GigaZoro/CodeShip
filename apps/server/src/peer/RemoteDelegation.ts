@@ -27,7 +27,6 @@ import * as Stream from "effect/Stream";
 import type * as Tool from "effect/ai/Tool";
 
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
   resolveInteractionMode,
@@ -203,12 +202,7 @@ const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
     driverKind: ProviderDriverKind,
   ) {
-    const there = yield* forwarding.call(
-      scope,
-      OrchestratorToolkit.tools.orchestrator_capabilities,
-      environmentId,
-      {},
-    );
+    const there = yield* forwarding.readCapabilities(scope, environmentId);
     const ofDriver = there.providers.filter((provider) => provider.driverKind === driverKind);
     const usable =
       ofDriver.find(

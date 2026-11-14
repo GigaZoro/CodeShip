@@ -8,6 +8,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import {
   capSidebarFolderThreads,
+  partitionSidebarUserFolders,
   newThreadAsksForProject,
   deleteSelectedThreadEntries,
   getFallbackThreadIdAfterDelete,
@@ -1518,6 +1519,71 @@ describe("groupSidebarThreadsByProject", () => {
       { projectKey: "t3code", threads: ["a", "b"] },
       { projectKey: "fleet", threads: [] },
     ]);
+  });
+});
+
+describe("partitionSidebarUserFolders", () => {
+  const thread = (id: string, folder?: string | null) => ({ id, folder });
+
+  it("takes a folder's threads out of Active and Settled, matching names by case", () => {
+    const active = [thread("a1", "Autopilot"), thread("a2"), thread("a3", "autopilot ")];
+    const working = thread("w1", "AUTOPILOT");
+    const settled = [thread("s1", "Autopilot"), thread("s2", "Other"), thread("s3")];
+    const result = partitionSidebarUserFolders({
+      saved: [],
+      // Named only by an older thread not loaded, in another spelling of a folder too.
+      older: ["Archive", "OTHER"],
+      active,
+      folderActive: [active[0]!, active[1]!, working, active[2]!],
+      settled,
+    });
+    const ids = (entries: ReadonlyArray<{ readonly id: string }>) => entries.map(({ id }) => id);
+    expect(
+      result.folders.map((folder) => [folder.entry.name, ids(folder.threads), ids(folder.settled)]),
+    ).toEqual([
+      ["Archive", [], []],
+      ["Autopilot", ["a1", "w1", "a3"], ["s1"]],
+      ["Other", [], ["s2"]],
+    ]);
+    expect(ids(result.active)).toEqual(["a2"]);
+    expect(ids(result.settled)).toEqual(["s3"]);
+  });
+
+  it("keeps a saved folder while empty and orders saved folders first", () => {
+    const active = [thread("a1", "Zed")];
+    const result = partitionSidebarUserFolders({
+      saved: ["Empty", "zed"],
+      older: [],
+      active,
+      folderActive: active,
+      settled: [],
+    });
+    expect(result.folders.map((folder) => [folder.entry.name, folder.threads.length])).toEqual([
+      ["Empty", 0],
+      ["zed", 1],
+    ]);
+    expect(
+      partitionSidebarUserFolders({
+        saved: [],
+        older: [],
+        active: [],
+        folderActive: [],
+        settled: [],
+      }).folders,
+    ).toEqual([]);
+  });
+
+  it("lists no folder for a thread outside Active and Settled", () => {
+    // Pinned and snoozed threads sit in neither list, so they name no folder here.
+    const result = partitionSidebarUserFolders({
+      saved: [],
+      older: [],
+      active: [thread("a1")],
+      folderActive: [thread("a1")],
+      settled: [],
+    });
+    expect(result.folders).toEqual([]);
+    expect(result.active.map((entry) => entry.id)).toEqual(["a1"]);
   });
 });
 

@@ -15,6 +15,9 @@ import {
   AlarmClockOffIcon,
   ArchiveIcon,
   CheckCircle2Icon,
+  FolderIcon,
+  FolderMinusIcon,
+  FolderPlusIcon,
   PencilIcon,
   PinIcon,
   PinOffIcon,
@@ -23,6 +26,7 @@ import {
 import { useClientSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useThreadActions } from "../hooks/useThreadActions";
+import { readThreadFolderMenuState, useThreadFolderActions } from "../hooks/useThreadFolderActions";
 import { archiveThreadWithConfirm } from "../lib/archiveThreadWithConfirm";
 import { environmentServerConfigsAtom } from "../state/server";
 import { useEnvironmentScope } from "../state/session";
@@ -64,6 +68,7 @@ export function useActiveThreadPaletteItems(
     confirmAndUnpinThread,
     archiveThread,
   } = useThreadActions();
+  const folderActions = useThreadFolderActions();
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const confirmThreadArchive = useClientSettings((settings) => settings.confirmThreadArchive);
   // The clock read in render would freeze in the compiler's cache, so presets follow the minute tick.
@@ -164,6 +169,39 @@ export function useActiveThreadPaletteItems(
           const choice = await requestCustomSnooze();
           if (choice) await snoozeWith(choice.snoozedUntil);
         },
+      });
+    }
+  }
+
+  const folderState = readThreadFolderMenuState([threadRef]);
+  if (folderState !== null) {
+    for (const entry of folderState.entries) {
+      if (entry.key === folderState.currentKey) continue;
+      items.push({
+        kind: "action",
+        value: `action:thread-folder:${entry.key}`,
+        searchTerms: ["folder", "move", "file", "thread", entry.name],
+        title: t("Move to folder: {name}", { name: entry.name }),
+        icon: <FolderIcon className={ITEM_ICON_CLASS} />,
+        run: () => folderActions.setFolder([threadRef], entry.name),
+      });
+    }
+    items.push({
+      kind: "action",
+      value: "action:thread-folder-new",
+      searchTerms: ["folder", "new", "create", "move", "thread"],
+      title: t("Move to new folder…"),
+      icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+      run: () => folderActions.createFolder([threadRef]),
+    });
+    if (folderState.inFolder) {
+      items.push({
+        kind: "action",
+        value: "action:thread-folder-remove",
+        searchTerms: ["folder", "remove", "unfile", "thread"],
+        title: t("Remove from folder"),
+        icon: <FolderMinusIcon className={ITEM_ICON_CLASS} />,
+        run: () => folderActions.setFolder([threadRef], null),
       });
     }
   }

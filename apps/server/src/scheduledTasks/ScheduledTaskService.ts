@@ -65,6 +65,8 @@ import {
   managedPolicyDeniedMessage,
   resolveProjectProviderInstanceEnabled,
   managedRuntimeModeDenial,
+  sameThreadFolder,
+  type ThreadFolder,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -479,6 +481,14 @@ export class ScheduledTaskService extends Context.Service<
       input: ScheduledTaskSetGroupPausedInput,
       by: ScheduledTaskChanger,
     ) => Effect.Effect<ScheduledTaskSetGroupPausedResult, ScheduledTaskError>;
+    /**
+     * Changes only a task's group (null clears it) and takes its chats in the old group along.
+     * It never turns a task on or off or runs it.
+     */
+    readonly setGroup: (
+      input: { readonly id: ScheduledTaskId; readonly group: ThreadFolder | null },
+      by: ScheduledTaskChanger,
+    ) => Effect.Effect<void, ScheduledTaskError>;
     readonly reorderPinned: (
       input: ScheduledTaskReorderPinnedInput,
     ) => Effect.Effect<ScheduledTaskReorderPinnedResult, ScheduledTaskError>;
@@ -1058,6 +1068,35 @@ export const layer = Layer.effect(
         paused_with_group INTEGER NOT NULL DEFAULT 0
       )
     `;
+    // A row is a chat one of the task's runs used, kept after run history drops it. filed_folder is
+    // the group the task last put it in; detached marks one the user moved, which groups never move.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const existed = yield* sql`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_task_threads'
+        `;
+        if (existed.length > 0) return;
+        yield* sql`
+          CREATE TABLE scheduled_task_threads (
+            task_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            filed_folder TEXT,
+            detached INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (task_id, thread_id)
+          )
+        `;
+        // Chats from before the table start in no folder, so their task's group files them.
+        yield* sql`
+          INSERT OR IGNORE INTO scheduled_task_threads (task_id, thread_id)
+          SELECT task_id, thread_id FROM scheduled_task_runs WHERE thread_id IS NOT NULL
+          UNION
+          SELECT task_id, thread_id FROM scheduled_tasks WHERE thread_id IS NOT NULL
+          UNION
+          SELECT task_id, last_run_thread_id FROM scheduled_task_sidebar
+          WHERE last_run_thread_id IS NOT NULL
+        `;
+      }),
+    );
     // Stats read every task's runs in a time window, and history keeps 90 days of them.
     yield* sql`
       CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_started
@@ -1631,6 +1670,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_live_run_limit WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_changed_by WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_runs WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_threads WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_tasks WHERE task_id = ${id}`),
       );
 
@@ -1719,6 +1759,18 @@ export const layer = Layer.effect(
       `.pipe(
         Effect.catch((cause) =>
           Effect.logWarning("Could not record schedule task run thread", { taskId: id, cause }),
+        ),
+      );
+
+    // `filed` is the folder the run started the chat in; a chat it only wrote to was filed in none.
+    const recordTaskThread = (id: ScheduledTaskId, threadId: ThreadId, filed: string | null) =>
+      sql`
+        INSERT OR IGNORE INTO scheduled_task_threads (task_id, thread_id, filed_folder)
+        SELECT ${id}, ${threadId}, ${filed}
+        WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${id})
+      `.pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not record schedule task chat", { taskId: id, cause }),
         ),
       );
 
@@ -2158,6 +2210,7 @@ export const layer = Layer.effect(
                     },
                     createdBy: active.createdBy,
                     creationSource: active.creationSource,
+                    ...(active.group == null ? {} : { folder: active.group }),
                   })
                   .pipe(Effect.map((launched) => launched.threadId)),
               )
@@ -2202,7 +2255,14 @@ export const layer = Layer.effect(
             ...(threadId === null ? {} : { lastRunThreadId: threadId }),
           };
           if (current === null) return { recorded: completed, written: false };
-          if (threadId !== null) yield* recordRunThread(task.id, threadId, startedAtIso);
+          if (threadId !== null) {
+            yield* recordRunThread(task.id, threadId, startedAtIso);
+            yield* recordTaskThread(
+              task.id,
+              threadId,
+              target.type === "launch" ? (active.group ?? null) : null,
+            );
+          }
           yield* finishRunRecord(task.id, runRecordId, {
             completedAt: completed.updatedAt,
             outcome: lastRunStatus,
@@ -2252,6 +2312,8 @@ export const layer = Layer.effect(
             ),
           );
         if (written) yield* notifyChanged;
+        // A group change that landed while this run launched could not see its new chat yet.
+        if (written && threadId !== null) yield* fileTaskChats(task.id);
         // The stored row can belong to a replacement, so report this dispatch separately.
         return { task: recorded, threadId, dispatchFailed: !runSucceeded };
       }).pipe(
@@ -2970,6 +3032,78 @@ export const layer = Layer.effect(
                   ELSE excluded.paused_with_group END
             `;
 
+    // The group is the folder of the task's chats: a new group or spelling takes along each chat still
+    // where the task filed it, and one the user moved stays where they put it. One pass at a time, so
+    // passes for quick successive changes cannot interleave. A failed move never fails the change
+    // behind it, and the next pass retries it.
+    const fileTaskChatsPermit = yield* Semaphore.make(1);
+    const fileTaskChats = Effect.fn("ScheduledTaskService.fileTaskChats")(function* (
+      taskId: ScheduledTaskId,
+    ) {
+      yield* Effect.annotateCurrentSpan({ "scheduled_task.id": taskId });
+      const rows = yield* sql<{
+        readonly thread_id: string;
+        readonly filed_folder: string | null;
+        readonly group_label: string | null;
+      }>`
+          SELECT c.thread_id, c.filed_folder, g.label AS group_label
+          FROM scheduled_task_threads c
+          LEFT JOIN scheduled_task_group g ON g.task_id = c.task_id
+          WHERE c.task_id = ${taskId} AND c.detached = 0 AND c.filed_folder IS NOT g.label
+        `.pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not list the chats of a scheduled task to move", {
+            taskId,
+            cause,
+          }).pipe(Effect.as([])),
+        ),
+      );
+      for (const row of rows) {
+        const threadId = ThreadId.make(row.thread_id);
+        const to = row.group_label;
+        const filed = (folder: string | null) => sql`
+            UPDATE scheduled_task_threads SET filed_folder = ${folder}
+            WHERE task_id = ${taskId} AND thread_id = ${threadId}
+          `;
+        const detach = sql`
+            UPDATE scheduled_task_threads SET detached = 1
+            WHERE task_id = ${taskId} AND thread_id = ${threadId}
+          `;
+        yield* Effect.gen(function* () {
+          const shell = yield* threadManagement.getThreadShell(threadId);
+          if (shell === null || shell.deletedAt !== null) {
+            return yield* sql`
+                DELETE FROM scheduled_task_threads WHERE task_id = ${taskId} AND thread_id = ${threadId}
+              `;
+          }
+          if ((shell.folder ?? null) === to) return yield* filed(to);
+          if (!sameThreadFolder(shell.folder, row.filed_folder)) return yield* detach;
+          const uuid = yield* crypto.randomUUIDv4();
+          const moved = yield* threadManagement
+            .dispatch({
+              type: "thread.folder.set",
+              commandId: CommandId.make(`scheduled-task-folder:${taskId}:${uuid}`),
+              threadId,
+              folder: to,
+              from: row.filed_folder,
+            })
+            .pipe(
+              Effect.as(true),
+              Effect.catchIf(Orchestrator.isStaleDispatchError, () => Effect.succeed(false)),
+            );
+          yield* moved ? filed(to) : detach;
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not move a scheduled task chat to its folder", {
+              taskId,
+              threadId,
+              cause,
+            }),
+          ),
+        );
+      }
+    }, fileTaskChatsPermit.withPermits(1));
+
     const recordOneMachineDecision = (
       taskId: ScheduledTaskId,
       decision: ScheduledTaskOneMachineDecision,
@@ -3596,6 +3730,24 @@ export const layer = Layer.effect(
 
     yield* scheduler.register("scheduled-tasks", runDueTasks());
 
+    // Once, after startup recovery: files the chats of groups set before chats were tracked, and
+    // retries moves an earlier pass could not finish.
+    const filedAfterStartup = yield* Ref.make(false);
+    yield* scheduler.register(
+      "scheduled-task-chat-folders",
+      Effect.gen(function* () {
+        if (yield* Ref.get(filedAfterStartup)) return;
+        const tasks = yield* sql<{ readonly task_id: ScheduledTaskId }>`
+          SELECT DISTINCT c.task_id
+          FROM scheduled_task_threads c
+          LEFT JOIN scheduled_task_group g ON g.task_id = c.task_id
+          WHERE c.detached = 0 AND c.filed_folder IS NOT g.label
+        `;
+        yield* Effect.forEach(tasks, ({ task_id }) => fileTaskChats(task_id), { discard: true });
+        yield* Ref.set(filedAfterStartup, true);
+      }),
+    );
+
     const readSharedDeletions = sql<SharedRevisionRow & { readonly task_id: string }>`
       SELECT task_id, revision_at, revision_environment_id
       FROM scheduled_task_shared_deletions ORDER BY task_id ASC
@@ -4141,6 +4293,7 @@ export const layer = Layer.effect(
           ),
         );
       yield* notifyChanged;
+      if (input.group !== undefined) yield* fileTaskChats(id);
       return { task: (yield* findTask(id)) ?? { ...task, followsDefaultModel } };
     });
 
@@ -4386,7 +4539,7 @@ export const layer = Layer.effect(
               ),
             )).scheduledTaskDefaultPlacement
           : undefined;
-      return yield* commit(
+      const applied = yield* commit(
         Effect.gen(function* () {
           const created = existingTask === null && !(yield* hasTask(id));
           const keptText = keepsOwnRead ? yield* storedPrompt(id) : undefined;
@@ -4417,6 +4570,28 @@ export const layer = Layer.effect(
         }),
         "applied",
       );
+      if (applied.outcome === "applied" && task.group !== undefined) yield* fileTaskChats(id);
+      return applied;
+    });
+
+    const setGroup: ScheduledTaskService["Service"]["setGroup"] = Effect.fn(
+      "ScheduledTaskService.setGroup",
+    )(function* (input, by) {
+      const existing = yield* loadTask(input.id);
+      if ((existing.group ?? null) === input.group) return;
+      yield* sql
+        .withTransaction(
+          writeGroup(input.id, input.group, "keep").pipe(
+            Effect.andThen(recordChange(input.id, by)),
+          ),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not update schedule task.", { taskId: input.id, cause }),
+          ),
+        );
+      yield* notifyChanged;
+      yield* fileTaskChats(input.id);
     });
 
     // Why a task may not be turned on, whether by hand or by resuming its group.
@@ -5708,6 +5883,7 @@ export const layer = Layer.effect(
       setEnabled,
       setPlacement,
       setGroupPaused,
+      setGroup,
       reorderPinned,
       setFollowsDefaultModel,
       delete: deleteTask,

@@ -58,6 +58,7 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as RestartContinuation from "./RestartContinuation.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
+import * as ThreadFolderService from "./ThreadFolderService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -315,6 +316,9 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
     ),
   ),
 );
+const layerThreadFolderProvided = ThreadFolderService.layer.pipe(
+  Layer.provide(Layer.merge(layerThreadManagementProvided, layerScheduledTaskProvided)),
+);
 const layerScratchThreadPromotionProvided = ScratchThreadPromotion.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -404,6 +408,7 @@ export const layerProduction = Layer.mergeAll(
   layerManagedProjectFoldersProvided,
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
+  layerThreadFolderProvided,
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(

@@ -17,6 +17,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerSettings as ServerSettingsValue,
   ThreadId,
+  sameThreadFolder,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -2092,6 +2093,190 @@ it.effect("a group pause turns off the group's running tasks and resume turns on
         { task_id: "task:paused-again" },
         { task_id: "task:toggled" },
       ]);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a run that starts a chat puts it in the task's group folder", () =>
+  withRunConditions(
+    () => Effect.succeed(NO_WORK),
+    ({ service, launches }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          conditionTask({ group: "Autopilot" }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        yield* service.runNow({ id: task.id });
+        assert.equal((yield* Queue.take(launches)).folder, "Autopilot");
+      }),
+  ),
+);
+
+it.effect(
+  "a task's group files its chats from before they were tracked and after their runs are pruned, and leaves the ones the user moved",
+  () =>
+    Effect.gen(function* () {
+      const folders = new Map<string, string | undefined>([
+        ["thread:legacy", undefined],
+        ["thread:moved", "Elsewhere"],
+        ["thread:raced", undefined],
+      ]);
+      const moves: Array<readonly [string, string | null, string | null | undefined]> = [];
+      const workers = new Map<string, Effect.Effect<void>>();
+      const makeLayer = () =>
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              ManagedPolicy.layerTest(),
+              ServerSettings.layerTest(),
+              Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getThreadShell: (threadId) =>
+                  Effect.succeed({ deletedAt: null, folder: folders.get(threadId) } as never),
+                dispatch: (command) => {
+                  if (command.type !== "thread.folder.set") return Effect.succeed({} as never);
+                  // The user files this chat between the pass's read and its move.
+                  if (command.threadId === "thread:raced") folders.set(command.threadId, "Mine");
+                  moves.push([command.threadId, command.folder, command.from]);
+                  if (
+                    command.from !== undefined &&
+                    !sameThreadFolder(folders.get(command.threadId), command.from)
+                  ) {
+                    return Effect.fail(
+                      new Orchestrator.OrchestratorDispatchError({
+                        commandId: command.commandId,
+                        commandType: command.type,
+                        stale: true,
+                      }),
+                    );
+                  }
+                  folders.set(command.threadId, command.folder ?? undefined);
+                  return Effect.succeed({} as never);
+                },
+              }),
+              layerSharedTaskDependencies(),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+                namedProjectsRoot: "/projects",
+                isScratchProject: () => Effect.succeed(false),
+              }),
+              NodeCrypto.layer,
+              Layer.succeed(Scheduler.Scheduler, {
+                register: <E2, R>(name: string, work: Effect.Effect<void, E2, R>) =>
+                  Effect.gen(function* () {
+                    const context = yield* Effect.context<R>();
+                    workers.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+                  }),
+              }),
+            ),
+          ),
+        );
+      const sql = yield* SqlClient.SqlClient;
+      const { task } = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        return yield* service.upsert(
+          conditionTask({ group: "Autopilot" }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+      }).pipe(Effect.provide(makeLayer()));
+      // As before chats were tracked: only run history names them, and none is in the group yet.
+      yield* sql`DROP TABLE scheduled_task_threads`;
+      const at = "2026-11-10T12:00:00.000Z";
+      for (const threadId of folders.keys()) {
+        yield* sql`
+          INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at,
+            completed_at, outcome, thread_id)
+          VALUES (${`run-${threadId}`}, ${task.id}, 'manual', ${at}, ${at}, ${at}, 'started',
+            ${threadId})
+        `;
+      }
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        yield* workers.get("scheduled-task-chat-folders") ?? Effect.die("not registered");
+        const afterStartup = Object.fromEntries(folders);
+        yield* sql`DELETE FROM scheduled_task_runs WHERE task_id = ${task.id}`;
+        yield* service.setGroup(
+          { id: task.id, group: "Machine care" },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        assert.deepEqual(
+          { afterStartup, afterChange: Object.fromEntries(folders), moves },
+          {
+            afterStartup: {
+              "thread:legacy": "Autopilot",
+              "thread:moved": "Elsewhere",
+              "thread:raced": "Mine",
+            },
+            afterChange: {
+              "thread:legacy": "Machine care",
+              "thread:moved": "Elsewhere",
+              "thread:raced": "Mine",
+            },
+            moves: [
+              ["thread:legacy", "Autopilot", null],
+              ["thread:raced", "Autopilot", null],
+              ["thread:legacy", "Machine care", "Autopilot"],
+            ],
+          },
+        );
+      }).pipe(Effect.provide(makeLayer()));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a group change during a launch moves the chat it starts", () =>
+  Effect.gen(function* () {
+    const folders = new Map<string, string | null | undefined>();
+    const duringLaunch = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ManagedPolicy.layerTest(),
+          ServerSettings.layerTest(),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            launch: (input) =>
+              Effect.flatten(Ref.get(duringLaunch)).pipe(
+                Effect.andThen(Effect.sync(() => folders.set("thread:new", input.folder))),
+                Effect.as({ threadId: ThreadId.make("thread:new"), resumed: false } as never),
+              ),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadShell: (threadId) =>
+              Effect.succeed({ deletedAt: null, folder: folders.get(threadId) } as never),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                if (command.type === "thread.folder.set") {
+                  folders.set(command.threadId, command.folder);
+                }
+                return {} as never;
+              }),
+          }),
+          layerSharedTaskDependencies([
+            { id: "project:test", title: "Test", workspaceRoot: PROJECT_ROOT, canonicalKey: null },
+          ]),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+            namedProjectsRoot: "/projects",
+            isScratchProject: () => Effect.succeed(false),
+          }),
+          NodeCrypto.layer,
+          Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const { task } = yield* service.upsert(
+        conditionTask({ group: "Autopilot", runCondition: null }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      yield* Ref.set(
+        duringLaunch,
+        service
+          .setGroup({ id: task.id, group: "Machine care" }, ScheduledTaskService.CHANGED_IN_APP)
+          .pipe(Effect.asVoid, Effect.orDie),
+      );
+      yield* service.runNow({ id: task.id });
+      assert.equal(folders.get("thread:new"), "Machine care");
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

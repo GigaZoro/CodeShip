@@ -24,6 +24,7 @@ import { RegistryContext } from "@effect/atom-react";
 import { ProjectChipIconRasterizer } from "./native/ProjectChipIconImages";
 import { ThreadArrangementHost } from "./features/threads/ThreadArrangementSheet";
 import * as Dialog from "./components/ui/Dialog";
+import { ThreadFolderNamePromptHost } from "./features/threads/ThreadFolderNamePrompt";
 import { CloudAuthProvider } from "./features/cloud/CloudAuthProvider";
 import { prepareNativeShowcaseCapture } from "./features/showcase/nativeShowcaseScene";
 import { installShowcaseCapture } from "./features/showcase/ShowcaseCaptureCoordinator";
@@ -262,6 +263,7 @@ function AppContent() {
                     initialState={navigationStateToRestore}
                   />
                   <Dialog.Host />
+                  <ThreadFolderNamePromptHost />
                   <ThreadArrangementHost />
                   <ProjectChipIconRasterizer />
                 </NativeLayoutMetricsProvider>

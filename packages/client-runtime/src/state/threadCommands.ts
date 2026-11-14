@@ -1,4 +1,9 @@
-import type { ThreadId } from "@t3tools/contracts";
+import {
+  renameSavedThreadFolder,
+  saveThreadFolders,
+  type ServerSettings,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -9,6 +14,8 @@ import {
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
 
+import { renameThreadFolderOf } from "../threadFolders.ts";
+import { createSavedThreadFolders } from "./savedThreadFolders.ts";
 import { createOptimisticThreadLifecycle } from "./threadLifecycle.ts";
 import * as DateTime from "effect/DateTime";
 
@@ -46,6 +53,7 @@ import {
   reorderPinnedThread,
   reorderActiveThread,
   setThreadAutoSettle,
+  setThreadFolder,
   setThreadLater,
   settleThread,
   snoozeThread,
@@ -73,8 +81,14 @@ export type LoadEarlierThreadHistoryInput = {
 export function createThreadEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
   snapshotAtom: (environmentId: EnvironmentId) => Atom.Atom<OrchestrationV2ShellSnapshot | null>,
+  settingsAtom: (environmentId: EnvironmentId) => Atom.Atom<ServerSettings | null>,
 ) {
   const scheduler = createAtomCommandScheduler();
+  // Folder renames and saves read the saved list the one before left, so they take turns.
+  const foldersConcurrency = {
+    mode: "serial" as const,
+    key: ({ environmentId }: { environmentId: string }) => `folders:${environmentId}`,
+  };
   const concurrency = {
     mode: "serial" as const,
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
@@ -202,6 +216,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderPin: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:reorder-pin",
       execute: reorderPinnedThread,
+      scheduler,
+      concurrency,
+    }),
+    setFolder: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:set-folder",
+      execute: setThreadFolder,
       scheduler,
       concurrency,
     }),
@@ -387,10 +407,35 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    renameFolder: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:rename-folder",
+      tag: WS_METHODS.threadFoldersRename,
+      scheduler,
+      concurrency: foldersConcurrency,
+    }),
+    saveFolders: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:save-folders",
+      tag: WS_METHODS.threadFoldersSave,
+      scheduler,
+      concurrency: foldersConcurrency,
+    }),
   };
   const optimistic = createOptimisticThreadLifecycle(snapshotAtom);
+  const savedFolders = createSavedThreadFolders(settingsAtom);
   return {
     ...commands,
+    setFolder: optimistic.wrap(commands.setFolder, (thread, input) => ({
+      ...thread,
+      folder: input.folder,
+    })),
+    renameFolder: savedFolders.wrap(
+      optimistic.wrapEveryThread(commands.renameFolder, renameThreadFolderOf),
+      (folders, input) => renameSavedThreadFolder(folders, input.from, input.to),
+    ),
+    saveFolders: savedFolders.wrap(commands.saveFolders, (folders, input) =>
+      saveThreadFolders(folders, input.folders),
+    ),
+    savedFoldersAtom: savedFolders.foldersAtom,
     snapshotAtom: optimistic.snapshotAtom,
     settle: optimistic.wrap(commands.settle, (thread, _input, now, accepted) =>
       !accepted &&

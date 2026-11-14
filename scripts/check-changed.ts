@@ -732,6 +732,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ...graphql.map((dir) =>
       command(`graphql (${dir})`, ["run", "--filter", `./${dir}`, "generate", "--check"]),
     ),
+    // Vitest's module runner lets an import cycle read a binding before it is set; Node throws.
+    ...(files.some((file) => file.startsWith("apps/server/") || file.startsWith("packages/"))
+      ? [command("server loads", ["exec", "node", "apps/server/src/bin.ts", "--version"])]
+      : []),
     // `tsc --noEmit` writes nothing another package reads, so each package checks
     // on its own and takes a budget slot as one frees, in this run or another.
     ...affected.map((name) =>

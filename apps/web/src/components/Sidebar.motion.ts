@@ -5,6 +5,13 @@ const MAX_FADED_ROWS_PER_UPDATE = 40;
 
 type RowPosition = { top: number; left: number; width: number; height: number };
 
+function sameRows(rows: readonly HTMLElement[], positions: ReadonlyMap<HTMLElement, RowPosition>) {
+  if (rows.length !== positions.size) return false;
+  let index = 0;
+  for (const node of positions.keys()) if (rows[index++] !== node) return false;
+  return true;
+}
+
 function progress(animation: Animation) {
   return animation.playState === "finished"
     ? 1
@@ -14,6 +21,7 @@ function progress(animation: Animation) {
 /** Position the list so all direct children's offsetTop share an origin. */
 export function createSidebarListMotion(parent: HTMLUListElement) {
   let positions: Map<HTMLElement, RowPosition> | null = null;
+  let measuredSizeKey = "";
   let disposed = false;
   const reducedMotion = parent.ownerDocument.defaultView?.matchMedia(
     "(prefers-reduced-motion: reduce)",
@@ -118,20 +126,32 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
   };
 
   return {
-    update(animate: boolean) {
+    /**
+     * Call after every commit: a missed one leaves a removed row to fade, stale, on the next.
+     * `sizeKey` changes when a row grows or shrinks without being added, removed or moved.
+     */
+    update(animate: boolean, sizeKey: string) {
       if (disposed) return;
+      const rows = Array.from(parent.children).filter(
+        (node): node is HTMLElement => node instanceof HTMLElement && !exiting.has(node),
+      );
+      const unchanged =
+        positions !== null &&
+        released === null &&
+        sizeKey === measuredSizeKey &&
+        sameRows(rows, positions);
+      measuredSizeKey = sizeKey;
+      if (unchanged) return;
       const next = new Map(
-        Array.from(parent.children)
-          .filter((node): node is HTMLElement => node instanceof HTMLElement && !exiting.has(node))
-          .map((node) => [
-            node,
-            {
-              top: node.offsetTop,
-              left: node.offsetLeft,
-              width: node.offsetWidth,
-              height: node.offsetHeight,
-            },
-          ]),
+        rows.map((node) => [
+          node,
+          {
+            top: node.offsetTop,
+            left: node.offsetLeft,
+            width: node.offsetWidth,
+            height: node.offsetHeight,
+          },
+        ]),
       );
       let fadeCount = 0;
       if (positions !== null) {

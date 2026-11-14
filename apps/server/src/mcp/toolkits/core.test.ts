@@ -446,6 +446,53 @@ it.effect("records only failed calls of tools that hand off no work", () => {
   );
 });
 
+it.effect(
+  "organize moves a thread into a folder, takes it out, and refuses a move without one",
+  () => {
+    const dispatched: Array<unknown> = [];
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const organize = (args: Record<string, unknown>) =>
+        server
+          .callTool({ name: "t3_thread_organize", arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+      yield* organize({ action: "move_to_folder", folder: "Autopilot" });
+      yield* organize({ action: "remove_from_folder" });
+      const refused = yield* organize({ action: "move_to_folder" });
+      expect(dispatched).toMatchObject([
+        { type: "thread.folder.set", folder: "Autopilot" },
+        { type: "thread.folder.set", folder: null },
+      ]);
+      expect(declaredFailure(refused)).toMatchObject({ code: "invalid_request" });
+    }).pipe(
+      Effect.provide(
+        layerThreadToolkit.pipe(
+          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+              getProjectThreadRecords: ({ threadId: id }) =>
+                Effect.succeed(
+                  McpToolAccessTestkit.idleThreadProjection(
+                    McpToolAccessTestkit.liveThreadShell(id),
+                  ),
+                ),
+              dispatch: (command) => {
+                dispatched.push(command);
+                return Effect.succeed({ sequence: 1 } as never);
+              },
+            }),
+          ),
+        ),
+      ),
+    );
+  },
+);
+
 it.effect("rejects an unknown organize target instead of archiving the calling thread", () => {
   const dispatched: Array<unknown> = [];
   return Effect.gen(function* () {

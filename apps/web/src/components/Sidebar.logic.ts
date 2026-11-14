@@ -7,6 +7,10 @@ import {
   type ThreadStatusTone,
 } from "@t3tools/client-runtime/state/thread-status";
 import { t, type Message } from "~/i18n";
+import {
+  resolveThreadFolders,
+  type ThreadFolderEntry,
+} from "@t3tools/client-runtime/thread-folders";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
@@ -28,6 +32,7 @@ import { foldSearchQuery, rankSearchItems, scoreThreadSearch } from "@t3tools/sh
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
   isListedThreadLineage,
+  threadFolderKeyOf,
   type ContextMenuItem,
   type EnvironmentId,
   type ThreadId,
@@ -1040,6 +1045,58 @@ export function groupSidebarThreadsByProject<
     folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
   }
   return folders.filter((folder) => folder.threads.length > 0 || keepEmpty(folder.group));
+}
+
+/** A user folder's key in the folder open-state map, outside the project and machine key spaces. */
+export function sidebarUserFolderKey(folderKey: string): string {
+  return `folder:${folderKey}`;
+}
+
+/**
+ * User folders. `folderActive` lists the open threads a folder may take (working ones too, as
+ * project folders hold them) and `active` the Active list they leave. A folder keeps its settled
+ * threads apart, as it lists them only as far as its older ones are loaded. A saved folder stays
+ * while empty; the others exist only while a thread, or an older one not loaded, names them.
+ */
+export function partitionSidebarUserFolders<
+  T extends { readonly folder?: string | null | undefined },
+>(input: {
+  readonly saved: ReadonlyArray<string>;
+  /** Folders that older threads, not loaded, name. */
+  readonly older: ReadonlyArray<string>;
+  readonly active: readonly T[];
+  readonly folderActive: readonly T[];
+  readonly settled: readonly T[];
+}): {
+  readonly folders: ReadonlyArray<{
+    readonly entry: ThreadFolderEntry;
+    readonly threads: T[];
+    readonly settled: T[];
+  }>;
+  readonly active: readonly T[];
+  readonly settled: readonly T[];
+} {
+  const entries = resolveThreadFolders(input.saved, [
+    ...[...input.folderActive, ...input.settled].map((thread) => thread.folder),
+    ...input.older,
+  ]);
+  if (entries.length === 0) {
+    return { folders: [], active: input.active, settled: input.settled };
+  }
+  const folders = entries.map((entry) => ({ entry, threads: [] as T[], settled: [] as T[] }));
+  const byKey = new Map(folders.map((folder) => [folder.entry.key, folder] as const));
+  const folderOf = (thread: T) => {
+    const key = threadFolderKeyOf(thread.folder);
+    return key === null ? undefined : byKey.get(key);
+  };
+  for (const thread of input.folderActive) folderOf(thread)?.threads.push(thread);
+  const settled = input.settled.filter((thread) => {
+    const folder = folderOf(thread);
+    folder?.settled.push(thread);
+    return folder === undefined;
+  });
+  const active = input.active.filter((thread) => folderOf(thread) === undefined);
+  return { folders, active, settled };
 }
 
 /** Shares the folder open-state map with project folders, outside their key space. */

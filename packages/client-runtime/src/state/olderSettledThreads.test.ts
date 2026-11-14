@@ -4,6 +4,7 @@ import {
   OrchestrationV2GetShellSnapshotError,
   ProjectId,
   ThreadId,
+  type OrchestrationV2OlderSettledFolderCount,
   type OrchestrationV2OlderSettledThreadsPage,
   type OrchestrationV2SearchThreadsResult,
   type OrchestrationV2ShellSnapshot,
@@ -37,6 +38,7 @@ import {
   createOlderSettledThreadAtoms,
   isListedSettledThread,
   olderSettledCountKey,
+  olderSettledFolderNames,
   settledShelfFrontier,
   unloadedOlderSettledCount,
   wantedOlderSettledPages,
@@ -52,6 +54,7 @@ const older: OlderSettled = {
   before,
   beforeMs: 50 * DAY,
   counts: new Map([[project, 3]]),
+  folders: null,
 };
 
 const row = (
@@ -60,6 +63,7 @@ const row = (
     readonly settledDay?: number;
     readonly createdDay?: number;
     readonly subagent?: boolean;
+    readonly folder?: string;
   },
 ) =>
   ({
@@ -73,6 +77,7 @@ const row = (
     settledOverride: input.settledDay === undefined ? null : "settled",
     settledAt: input.settledDay === undefined ? null : DateTime.makeUnsafe(input.settledDay * DAY),
     createdAt: DateTime.makeUnsafe((input.createdDay ?? 1) * DAY),
+    folder: input.folder ?? null,
   }) as unknown as OrchestrationV2ThreadShell;
 
 describe("olderSettledCountKey", () => {
@@ -93,6 +98,10 @@ describe("olderSettledCountKey", () => {
     expect(key([...base, row("woken", { createdDay: 5 })])).not.toBe(start);
     // A local row that turns older (a backdated auto-settle).
     expect(key([base[0]!, row("open", { createdDay: 60, settledDay: 20 })])).not.toBe(start);
+    // An older row filed in a folder, which moves it between folder counts.
+    expect(key([row("kept-old", { settledDay: 10, folder: "Autopilot" }), base[1]!])).not.toBe(
+      start,
+    );
   });
 
   it("stays put for new threads and subagents", () => {
@@ -200,6 +209,41 @@ it("counts older threads the client does not hold, once", () => {
       ],
     }),
   ).toBe(18);
+});
+
+it("counts older threads by folder, where the server can read them by folder", () => {
+  const filed = (): OlderSettled => ({
+    ...older,
+    counts: new Map([[project, 5]]),
+    folders: new Map([["autopilot", { name: "Autopilot", counts: new Map([[project, 3]]) }]]),
+  });
+  const local = [
+    { source: row("loose-old", { settledDay: 10 }), environmentId },
+    { source: row("filed-old", { settledDay: 10, folder: " AUTOPILOT" }), environmentId },
+  ];
+  const unloaded = (olderSettled: () => OlderSettled, folder: string | null) =>
+    unloadedOlderSettledCount({
+      olderSettled,
+      scopes: [{ environmentId, projectIds: null, folder }],
+      threads: local,
+    });
+  // The shelf in no folder counts the unfiled ones; a folder counts its own.
+  expect(unloaded(filed, null)).toBe(1);
+  expect(unloaded(filed, "autopilot")).toBe(2);
+  expect(unloaded(filed, "missing")).toBe(0);
+  // A server that cannot read by folder pages them all through the shelf in no folder.
+  expect(unloaded(() => older, null)).toBe(1);
+  expect(unloaded(() => older, "autopilot")).toBe(0);
+  // Folders named only by older threads still list, in the scope's projects.
+  expect(
+    olderSettledFolderNames({ olderSettled: filed, scopes: [{ environmentId, projectIds: null }] }),
+  ).toEqual(["Autopilot"]);
+  expect(
+    olderSettledFolderNames({
+      olderSettled: filed,
+      scopes: [{ environmentId, projectIds: [ProjectId.make("other")] }],
+    }),
+  ).toEqual([]);
 });
 
 describe("wantedOlderSettledPages", () => {
@@ -367,6 +411,7 @@ const shellSnapshot = (input: {
   readonly sequence: number;
   readonly asOfSequence: number;
   readonly count: number;
+  readonly folderCounts?: ReadonlyArray<OrchestrationV2OlderSettledFolderCount>;
 }) =>
   Option.some({
     schemaVersion: 1,
@@ -378,6 +423,7 @@ const shellSnapshot = (input: {
       before,
       asOfSequence: input.asOfSequence,
       counts: [{ projectId: project, count: input.count }],
+      ...(input.folderCounts === undefined ? {} : { folderCounts: input.folderCounts }),
     },
   } as unknown as OrchestrationV2ShellSnapshot);
 
@@ -399,6 +445,8 @@ describe("createOlderSettledThreadAtoms", () => {
       });
       expect(count(registry.get(olderAtom))).toBe(5);
 
+      expect(registry.get(olderAtom)?.folders).toBeNull();
+
       // A removal can change the count: one read once changes stop for a moment.
       yield* Queue.offer(
         replies,
@@ -406,6 +454,11 @@ describe("createOlderSettledThreadAtoms", () => {
           snapshotSequence: 4,
           threads: [],
           counts: [{ projectId: project, count: 4 }],
+          // Two spellings of one folder, as two projects may write it.
+          folderCounts: [
+            { projectId: project, folder: "Autopilot", count: 2 },
+            { projectId: project, folder: "autopilot ", count: 1 },
+          ],
         }),
       );
       setShell({
@@ -415,7 +468,10 @@ describe("createOlderSettledThreadAtoms", () => {
       });
       expect(count(registry.get(olderAtom))).toBe(5);
       yield* TestClock.adjust("500 millis");
-      expect(count(yield* until(olderAtom, (value) => count(value) === 4))).toBe(4);
+      const read = yield* until(olderAtom, (value) => count(value) === 4);
+      expect([...(read?.folders ?? [])]).toEqual([
+        ["autopilot", { name: "Autopilot", counts: new Map([[project, 3]]) }],
+      ]);
       expect(requests).toEqual([{ before: { settledAt: before }, limit: 0 }]);
 
       // A new snapshot brings its own counts and drops the read.
@@ -494,6 +550,45 @@ describe("createOlderSettledThreadAtoms", () => {
       const retried = yield* until(onePage, (pages) => pages.status === "ready");
       expect(retried.reads).toHaveLength(1);
       expect(retried.frontier).toBeNull();
+    }),
+  );
+
+  it.effect("reads one folder's pages from a server that reads by folder, and none otherwise", () =>
+    Effect.gen(function* () {
+      const { replies, requests, atoms, registry, setShell, until } = yield* makeAtoms();
+      const folderScope = { environmentId, projectIds: null, folder: "autopilot" };
+      const looseScope = { environmentId, projectIds: null, folder: null };
+      const empty = { threads: [], counts: [] };
+
+      // A server without folder reads: the folder reads nothing, the loose shelf every thread.
+      setShell({
+        snapshot: shellSnapshot({ sequence: 3, asOfSequence: 3, count: 30 }),
+        generation: 1,
+      });
+      expect(registry.get(atoms.pagesAtom(folderScope, 1))).toEqual({
+        reads: [],
+        frontier: null,
+        status: "ready",
+      });
+      const loose = atoms.pagesAtom(looseScope, 1);
+      const unmountLoose = registry.mount(loose);
+      yield* Queue.offer(replies, Effect.succeed({ snapshotSequence: 3, ...empty }));
+      yield* until(loose, (pages) => pages.reads.length === 1);
+      unmountLoose();
+
+      // A server that reads by folder gets the folder with each page read.
+      setShell({
+        snapshot: shellSnapshot({ sequence: 4, asOfSequence: 4, count: 30, folderCounts: [] }),
+        generation: 2,
+      });
+      const filed = atoms.pagesAtom(folderScope, 1);
+      registry.mount(filed);
+      yield* Queue.offer(replies, Effect.succeed({ snapshotSequence: 4, ...empty }));
+      yield* until(filed, (pages) => pages.reads.length === 1);
+      expect(requests).toEqual([
+        { before: { settledAt: before }, limit: 25 },
+        { before: { settledAt: before }, folder: "autopilot", limit: 25 },
+      ]);
     }),
   );
 

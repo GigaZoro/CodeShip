@@ -233,6 +233,7 @@ import * as ProjectService from "./project/ProjectService.ts";
 import { threadWorkspaceRoot } from "./project/threadWorkspaceRoot.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import * as ScratchThreadPromotion from "./project/ScratchThreadPromotion.ts";
+import * as ThreadFolderService from "./orchestration-v2/ThreadFolderService.ts";
 import { mutateProjectWithClone } from "./project/ProjectMutation.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
@@ -1309,6 +1310,7 @@ export const layerWsRpc = (
       const projectService = yield* ProjectService.ProjectService;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
+      const threadFolders = yield* ThreadFolderService.ThreadFolderService;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
       const htmlRenderLibrary = yield* HtmlRenderLibrary.HtmlRenderLibrary;
@@ -2246,6 +2248,9 @@ export const layerWsRpc = (
         [WS_METHODS.scheduledTasksSetPlacement]: (input) => scheduledTasks.setPlacement(input),
         [WS_METHODS.scheduledTasksSetGroupPaused]: (input) =>
           scheduledTasks.setGroupPaused(input, ScheduledTasks.CHANGED_IN_APP),
+        [WS_METHODS.threadFoldersRename]: (input) =>
+          threadFolders.rename(input, ScheduledTasks.CHANGED_IN_APP),
+        [WS_METHODS.threadFoldersSave]: (input) => threadFolders.save(input),
         [WS_METHODS.scheduledTasksReorderPinned]: (input) => scheduledTasks.reorderPinned(input),
         [WS_METHODS.scheduledTasksSetFollowsDefaultModel]: (input) =>
           scheduledTasks.setFollowsDefaultModel(input, ScheduledTasks.CHANGED_IN_APP),

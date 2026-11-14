@@ -46,6 +46,23 @@ export function threadOrderAfterMove(
   return result;
 }
 
+/** Up and down step past rows the list shows elsewhere, such as chats in folders. */
+export function listedThreadMove(
+  orderedIds: readonly string[],
+  movedId: string,
+  direction: "up" | "down",
+  listed: (id: string) => boolean,
+): ThreadMoveDestination | null {
+  const from = orderedIds.indexOf(movedId);
+  if (from < 0) return null;
+  const step = direction === "up" ? -1 : 1;
+  for (let index = from + step; index >= 0 && index < orderedIds.length; index += step) {
+    const id = orderedIds[index]!;
+    if (listed(id)) return { targetId: id, placement: direction === "up" ? "before" : "after" };
+  }
+  return null;
+}
+
 export type OrderRow = Pick<
   EnvironmentThreadShell,
   | "id"

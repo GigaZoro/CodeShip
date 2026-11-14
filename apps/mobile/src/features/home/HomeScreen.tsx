@@ -48,6 +48,7 @@ import {
 } from "../../native/native-layout-metrics";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useThreadSearch } from "../../state/queries";
+import { useSavedThreadFolders, useThreadFolderNames } from "../../state/thread-folders";
 import { requestThreadMessageJump } from "../threads/threadMessageJump";
 import { useThreadListSearchMatches } from "../threads/useThreadListSearchMatches";
 import { useThreadListV2 } from "../threads/useThreadListV2";
@@ -89,6 +90,7 @@ import { ThreadListManualSteps } from "../threads/ThreadListManualSteps";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeProjectScopes,
+  buildHomeChatFolders,
   buildHomeThreadListGrouping,
   deriveHomeEmptyState,
   findHomeProjectScope,
@@ -409,6 +411,11 @@ export function HomeScreen(props: HomeScreenProps) {
           environment.connectionState !== "connecting",
       })),
   });
+  const chatFolders = buildHomeChatFolders({
+    saved: useSavedThreadFolders(),
+    names: useThreadFolderNames(),
+    folderExpanded,
+  });
   const toggleThreadListFolder = (folder: ThreadListV2Folder) =>
     toggleFolder(folder.key, folder.expandedByDefault);
   const now = useThreadListNow(props.threads);
@@ -435,6 +442,7 @@ export function HomeScreen(props: HomeScreenProps) {
     items: threadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
+    showMoreInFolder,
   } = useThreadListV2({
     threads: props.threads,
     pendingTasks: props.pendingTasks,
@@ -458,6 +466,7 @@ export function HomeScreen(props: HomeScreenProps) {
     settledShelfExpanded,
     selectedThreadKey,
     grouping,
+    chatFolders,
   });
   // Called as `props.onSelectThread(...)`, the compiler would cache this handler on the whole
   // props object, which is new on every render of Home's parent.
@@ -530,6 +539,16 @@ export function HomeScreen(props: HomeScreenProps) {
           newThreadTargets={homeFolderNewThreadTargets(item.folder, projectScopes)}
           onToggle={toggleThreadListFolder}
           onNewThreadInProject={props.onNewThreadInProject}
+        />
+      );
+    }
+    if (item.type === "v2-folder-more") {
+      return (
+        <ThreadListV2ShowMoreRow
+          pane={primaryColumn ? "sidebar" : "screen"}
+          hiddenCount={item.hiddenCount}
+          state={item.state}
+          onPress={() => showMoreInFolder(item.folderKey, item.listedCount)}
         />
       );
     }

@@ -2,8 +2,12 @@ import {
   isListedThreadLineage,
   isOlderSettledThreadShell,
   ORCHESTRATION_V2_WS_METHODS,
+  threadFolderKey,
+  threadFolderKeyOf,
   type EnvironmentId,
   type OrchestrationV2OlderSettledCursor,
+  type OrchestrationV2OlderSettledFolderCount,
+  type OrchestrationV2OlderSettledThreads,
   type OrchestrationV2OlderSettledThreadsPage,
   type OrchestrationV2SearchThreadsInput,
   type OrchestrationV2ThreadFamily,
@@ -27,17 +31,27 @@ const OLDER_SETTLED_PAGE_SIZE = 25;
 // A burst of changes (a PR sync touching many old threads) costs one count read.
 const COUNT_REREAD_DELAY = "500 millis";
 
+/** A folder's older settled threads per project, and one spelling of its name. */
+export interface OlderSettledFolder {
+  readonly name: string;
+  readonly counts: ReadonlyMap<ProjectId, number>;
+}
+
 /** Where an environment's shell cut settled threads, and how many are older per project. */
 export interface OlderSettled {
   readonly before: string;
   readonly beforeMs: number;
   readonly counts: ReadonlyMap<ProjectId, number>;
+  /** The filed ones by folder key, or null when the server cannot read older threads by folder. */
+  readonly folders: ReadonlyMap<string, OlderSettledFolder> | null;
 }
 
 /** The scope's projects in one environment, or null for all of them. */
 export interface OlderSettledScope {
   readonly environmentId: EnvironmentId;
   readonly projectIds: ReadonlyArray<ProjectId> | null;
+  /** Threads in this folder (its key), or in none when null; threads in any folder when absent. */
+  readonly folder?: string | null;
 }
 
 /**
@@ -55,7 +69,7 @@ const NO_PAGES: OlderSettledPages = { reads: [], frontier: null, status: "ready"
 
 type OlderSettledRow = Pick<
   OrchestrationV2ThreadShell,
-  "id" | "projectId" | "lineage" | "settledOverride" | "settledAt"
+  "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "folder"
 >;
 
 export interface OlderSettledShelfEnvironment {
@@ -74,15 +88,15 @@ export function sortOlderSettledScopes(
     .map((scope) => ({
       environmentId: scope.environmentId,
       projectIds: scope.projectIds === null ? null : [...scope.projectIds].sort(),
+      ...(scope.folder === undefined ? {} : { folder: scope.folder }),
     }))
     .sort((left, right) => left.environmentId.localeCompare(right.environmentId));
 }
 
 /**
- * Changes whenever the older count can: any removal (by largest sequence, so a repeat counts), an
- * older row that arrives or changes, or an old row arriving outside the set (unsettled). Threads
- * created after the cut never enter it, as threads settle after creation. Archived-thread events
- * arrive as removals too, each costing one count read.
+ * Changes whenever the older counts can: any removal (by largest sequence, so a repeat counts), an
+ * older row that arrives, unsettles or moves to another folder. Threads created after the cut never
+ * enter it, as threads settle after creation; archiving arrives as a removal.
  */
 export function olderSettledCountKey(
   threads: ReadonlyArray<OrchestrationV2ThreadShell>,
@@ -96,7 +110,7 @@ export function olderSettledCountKey(
     if (!isListedThreadLineage(thread.lineage)) continue;
     const older = isOlderSettledThreadShell(thread, beforeMs);
     if (older || DateTime.toEpochMillis(thread.createdAt) < beforeMs) {
-      rows.push(`${thread.id}:${older ? 1 : 0}`);
+      rows.push(`${thread.id}:${older ? `1:${threadFolderKeyOf(thread.folder) ?? ""}` : 0}`);
     }
   }
   return `${lastRemoval}|${rows.sort().join(",")}`;
@@ -171,15 +185,33 @@ export function unloadedOlderSettledCount(input: {
   for (const scope of input.scopes) {
     const older = input.olderSettled(scope.environmentId);
     if (older === null) continue;
-    if (scope.projectIds === null) {
-      for (const count of older.counts.values()) unloaded += count;
+    const inScope = (counts: ReadonlyMap<ProjectId, number>) => {
+      let total = 0;
+      if (scope.projectIds === null) {
+        for (const count of counts.values()) total += count;
+      } else {
+        for (const projectId of scope.projectIds) total += counts.get(projectId) ?? 0;
+      }
+      return total;
+    };
+    const { folders } = older;
+    const folder = folders === null ? undefined : scope.folder;
+    if (folders === null || folder === undefined) {
+      // A server that cannot read by folder pages every older thread through the shelf in none.
+      if (scope.folder != null) continue;
+      unloaded += inScope(older.counts);
+    } else if (folder === null) {
+      unloaded += inScope(older.counts);
+      for (const filed of folders.values()) unloaded -= inScope(filed.counts);
     } else {
-      for (const projectId of scope.projectIds) unloaded += older.counts.get(projectId) ?? 0;
+      const filed = folders.get(folder);
+      unloaded += filed === undefined ? 0 : inScope(filed.counts);
     }
     for (const thread of input.threads) {
       if (
         thread.environmentId === scope.environmentId &&
         (scope.projectIds === null || scope.projectIds.includes(thread.source.projectId)) &&
+        (folder === undefined || threadFolderKeyOf(thread.source.folder) === folder) &&
         isOlderSettledThreadShell(thread.source, older.beforeMs)
       ) {
         unloaded -= 1;
@@ -187,6 +219,54 @@ export function unloadedOlderSettledCount(input: {
     }
   }
   return Math.max(0, unloaded);
+}
+
+/** Folders that hold older settled threads in scope, by one spelling each, for the folder list. */
+export function olderSettledFolderNames(input: {
+  readonly olderSettled: (environmentId: EnvironmentId) => OlderSettled | null;
+  readonly scopes: ReadonlyArray<OlderSettledScope>;
+}): ReadonlyArray<string> {
+  const names = new Map<string, string>();
+  for (const scope of input.scopes) {
+    for (const [key, folder] of input.olderSettled(scope.environmentId)?.folders ?? []) {
+      if (names.has(key)) continue;
+      const filed =
+        scope.projectIds === null
+          ? folder.counts.size > 0
+          : scope.projectIds.some((projectId) => (folder.counts.get(projectId) ?? 0) > 0);
+      if (filed) names.set(key, folder.name);
+    }
+  }
+  return [...names.values()];
+}
+
+/**
+ * The `folder` a page read sends, or null when the server cannot read this scope: it ignores
+ * `folder`, so the shelf in no folder reads every older thread there, and a folder reads none.
+ */
+function pageFolderInput(
+  cut: OrchestrationV2OlderSettledThreads,
+  folder: string | null | undefined,
+): { readonly folder?: string | null } | null {
+  if (folder === undefined) return {};
+  if (cut.folderCounts !== undefined) return { folder };
+  return folder === null ? {} : null;
+}
+
+function olderCountsOf(source: {
+  readonly counts: OrchestrationV2OlderSettledThreadsPage["counts"];
+  readonly folderCounts?: ReadonlyArray<OrchestrationV2OlderSettledFolderCount>;
+}): Pick<OlderSettled, "counts" | "folders"> {
+  const counts = new Map(source.counts.map(({ projectId, count }) => [projectId, count] as const));
+  if (source.folderCounts === undefined) return { counts, folders: null };
+  const folders = new Map<string, { name: string; counts: Map<ProjectId, number> }>();
+  for (const { projectId, folder, count } of source.folderCounts) {
+    const key = threadFolderKey(folder);
+    const entry = folders.get(key) ?? { name: folder, counts: new Map() };
+    entry.counts.set(projectId, (entry.counts.get(projectId) ?? 0) + count);
+    folders.set(key, entry);
+  }
+  return { counts, folders };
 }
 
 /**
@@ -258,19 +338,17 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
     execute: Effect.fn("OlderSettledThreads.readPage")(function* (input: {
       readonly generation: number;
       readonly projectIds: ReadonlyArray<ProjectId> | null;
+      readonly folder?: string | null;
       readonly before: OrchestrationV2OlderSettledCursor;
     }) {
       return yield* request(ORCHESTRATION_V2_WS_METHODS.getOlderSettledThreads, {
         before: input.before,
         ...(input.projectIds === null ? {} : { projectIds: input.projectIds }),
+        ...(input.folder === undefined ? {} : { folder: input.folder }),
         limit: OLDER_SETTLED_PAGE_SIZE,
       });
     }),
   });
-
-  const countsOf = (source: {
-    readonly counts: OrchestrationV2OlderSettledThreadsPage["counts"];
-  }) => new Map(source.counts.map(({ projectId, count }) => [projectId, count] as const));
 
   const olderSettledAtom = Atom.family((environmentId: EnvironmentId) => {
     let generation = -1;
@@ -290,7 +368,7 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
         fromSnapshot = {
           before: cut.before,
           beforeMs: DateTime.toEpochMillis(DateTime.makeUnsafe(cut.before)),
-          counts: countsOf(cut),
+          ...olderCountsOf(cut),
         };
       }
       // Most shell updates move only the cursor; the key needs new rows or removals.
@@ -315,23 +393,26 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
       );
       if (read !== null && read !== lastReadPage) {
         lastReadPage = read;
-        lastRead = { ...fromSnapshot, counts: countsOf(read) };
+        lastRead = { ...fromSnapshot, ...olderCountsOf(read) };
       }
       return lastRead ?? fromSnapshot;
     }).pipe(Atom.withLabel(`environment-older-settled:${environmentId}`));
   });
 
+  // JSON has no undefined, so the folder goes in a list that is empty when the scope has none.
   const pagesKey = (scope: OlderSettledScope, pages: number) =>
     JSON.stringify([
       scope.environmentId,
       scope.projectIds === null ? null : [...scope.projectIds].sort(),
+      scope.folder === undefined ? [] : [scope.folder],
       pages,
     ]);
 
   const pagesAtom = Atom.family((key: string) => {
-    const [environmentId, projectIds, pages] = JSON.parse(key) as [
+    const [environmentId, projectIds, [folder], pages] = JSON.parse(key) as [
       EnvironmentId,
       ReadonlyArray<ProjectId> | null,
+      [] | [string | null],
       number,
     ];
     let previous = NO_PAGES;
@@ -352,6 +433,8 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
       // A cached shell (an environment not connected yet, or offline) must not hold the shelf
       // back for other environments, so it lists what it holds until its first snapshot.
       if (state === null || cut === undefined || state.generation === 0) return keep(NO_PAGES);
+      const folderInput = pageFolderInput(cut, folder);
+      if (folderInput === null) return keep(NO_PAGES);
       let frontier: OrchestrationV2OlderSettledCursor = { settledAt: cut.before };
       if (pages === 0) return keep({ reads: [], frontier, status: "ready" });
       const reads: OrchestrationV2ThreadFamily[] = [];
@@ -359,7 +442,7 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
         const result = get(
           pageReadAtom({
             environmentId,
-            input: { generation: state.generation, projectIds, before: frontier },
+            input: { generation: state.generation, projectIds, ...folderInput, before: frontier },
           }),
         );
         const page = selectEnvironmentQueryData(result);
@@ -421,6 +504,13 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
     }).pipe(Atom.withLabel(`environment-older-settled-search:${key}`));
   });
 
+  const shelfKey = (
+    scopes: ReadonlyArray<{ readonly scope: OlderSettledScope; readonly pages: number }>,
+  ) =>
+    JSON.stringify(
+      scopes.map(({ scope, pages }) => [scope.environmentId, pagesKey(scope, pages)] as const),
+    );
+
   // One read for a shelf that spans environments: each one's cut, counts and pages.
   const shelfAtom = Atom.family((key: string) => {
     const entries = JSON.parse(key) as ReadonlyArray<readonly [string, string]>;
@@ -440,6 +530,22 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
     }).pipe(Atom.withLabel(`environment-older-settled-shelf:${key}`));
   });
 
+  // Shelves a list draws as many of as it has folders, in one read.
+  const shelvesAtom = Atom.family((key: string) => {
+    const keys = JSON.parse(key) as ReadonlyArray<string>;
+    let previous: ReadonlyArray<ReadonlyMap<EnvironmentId, OlderSettledShelfEnvironment>> = [];
+    return Atom.make((get) => {
+      const shelves = keys.map((shelf) => get(shelfAtom(shelf)));
+      if (
+        shelves.length !== previous.length ||
+        shelves.some((shelf, index) => shelf !== previous[index])
+      ) {
+        previous = shelves;
+      }
+      return previous;
+    }).pipe(Atom.withLabel(`environment-older-settled-shelves:${key}`));
+  });
+
   /** Reads a failed page again (a no-op when none failed); the pages after it follow. */
   const retryPages = (
     registry: AtomRegistry.AtomRegistry,
@@ -447,14 +553,18 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
     pages: number,
   ) => {
     const state = shellStateValue(registry.get(shellStateAtom(scope.environmentId)));
+    const cut = state === null ? undefined : Option.getOrNull(state.snapshot)?.olderSettled;
     const result = registry.get(pagesAtom(pagesKey(scope, pages)));
-    if (state === null || result.status !== "failed" || result.frontier === null) return;
+    if (state === null || cut === undefined || result.status !== "failed") return;
+    const folderInput = pageFolderInput(cut, scope.folder);
+    if (folderInput === null || result.frontier === null) return;
     registry.refresh(
       pageReadAtom({
         environmentId: scope.environmentId,
         input: {
           generation: state.generation,
           projectIds: scope.projectIds === null ? null : [...scope.projectIds].sort(),
+          ...folderInput,
           before: result.frontier,
         },
       }),
@@ -467,12 +577,13 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
     /** Each scope's cut, counts and first `pages` pages. */
     shelfAtom: (
       scopes: ReadonlyArray<{ readonly scope: OlderSettledScope; readonly pages: number }>,
-    ) =>
-      shelfAtom(
-        JSON.stringify(
-          scopes.map(({ scope, pages }) => [scope.environmentId, pagesKey(scope, pages)] as const),
-        ),
-      ),
+    ) => shelfAtom(shelfKey(scopes)),
+    /** Several shelves at once, in order, such as one per folder. */
+    shelvesAtom: (
+      shelves: ReadonlyArray<
+        ReadonlyArray<{ readonly scope: OlderSettledScope; readonly pages: number }>
+      >,
+    ) => shelvesAtom(JSON.stringify(shelves.map(shelfKey))),
     retryPages,
     /** The first `pages` pages below the cut for one scope, read in order. */
     pagesAtom: (scope: OlderSettledScope, pages: number) => pagesAtom(pagesKey(scope, pages)),

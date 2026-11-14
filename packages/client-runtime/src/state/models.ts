@@ -188,6 +188,8 @@ export interface EnvironmentThreadShell {
   readonly finalReview?: boolean;
   readonly pinOrderKey: string | null;
   readonly activeOrderKey: string | null;
+  /** The sidebar folder; absent or null is none. */
+  readonly folder?: string | null;
   readonly pullRequests: ReadonlyArray<import("@t3tools/contracts").ThreadPullRequestLink>;
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
   readonly branchPullRequest?: ThreadLinkedPullRequest | null;
@@ -342,6 +344,7 @@ export function presentThreadShell(
     ...(thread.finalReview === undefined ? {} : { finalReview: thread.finalReview }),
     pinOrderKey: thread.pinOrderKey ?? null,
     activeOrderKey: thread.activeOrderKey ?? null,
+    folder: thread.folder ?? null,
     ...(thread.lastVisitedAt === undefined
       ? {}
       : { lastVisitedAt: nullableIso(thread.lastVisitedAt) }),

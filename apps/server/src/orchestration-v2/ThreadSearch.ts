@@ -791,7 +791,7 @@ export const searchThreadsWithOlderSettledRows = Effect.fn(
   });
   const older = yield* loadOlderSettledThreadsPage({
     sql: input.sql,
-    listThreads: Effect.succeed({ threadIds, counts: [] }),
+    listThreads: Effect.succeed({ threadIds, counts: [], folderCounts: [] }),
     readThreads: input.readThreads,
     latestSequence: input.latestSequence,
   });

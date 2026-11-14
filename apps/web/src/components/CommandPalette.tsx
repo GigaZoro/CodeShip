@@ -135,6 +135,7 @@ import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
 import { environmentThreadShells, threadEnvironment } from "../state/threads";
 import { nextNeedsYouThread } from "@t3tools/client-runtime/state/thread-inbox";
+import { anyEnvironmentSupportsThreadFolders } from "@t3tools/client-runtime/thread-folders";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -285,6 +286,7 @@ import { buildSidebarProjectPickerEntries } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
+import { useThreadFolderActions } from "../hooks/useThreadFolderActions";
 import { useSideChat } from "./chat/useSideChat";
 import { availableAgentActions, useAgentActionsTarget } from "./chat/agentActions";
 import { useSidebarFolderControls } from "./sidebar/sidebarFolderControls";
@@ -521,7 +523,9 @@ function OpenCommandPaletteDialog(props: {
   const agentActionsTarget = useAgentActionsTarget();
   const customAgentActions = useClientSettings((settings) => settings.customAgentActions);
   const sidebarFolderControls = useSidebarFolderControls();
-  const activeThreadServerConfig = useServerConfigs().get(
+  const folderActions = useThreadFolderActions();
+  const serverConfigs = useServerConfigs();
+  const activeThreadServerConfig = serverConfigs.get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
   // Same offer as ChatView: side chats do not nest or start from subagents.
@@ -1871,6 +1875,17 @@ function OpenCommandPaletteDialog(props: {
       openSetupWizard();
     },
   });
+
+  if (anyEnvironmentSupportsThreadFolders(serverConfigs)) {
+    actionItems.push({
+      kind: "action",
+      value: "action:new-thread-folder",
+      searchTerms: ["folder", "new", "create", "sidebar", "group", "chats"],
+      title: t("New folder…"),
+      icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+      run: () => folderActions.createFolder([]),
+    });
+  }
 
   if (sidebarFolderControls !== null) {
     const controls = sidebarFolderControls;

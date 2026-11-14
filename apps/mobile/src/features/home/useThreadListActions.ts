@@ -7,7 +7,7 @@ import {
   unmergedWorkFromStatus,
   unmergedWorkSettleConfirmation,
 } from "@t3tools/client-runtime/state/thread-settled";
-import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, threadFolderKeyOf } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useRef } from "react";
@@ -33,6 +33,7 @@ import {
 import {
   createPendingThreadOrder,
   createThreadMovePlanner,
+  listedThreadMove,
   threadDropLifecycle,
 } from "../threads/threadOrder";
 import { getThreadListV2OrderedSection } from "../threads/threadListV2";
@@ -717,6 +718,23 @@ export function useThreadListActions(): {
       settlementEnvironmentIds: new Set(configs.keys()),
       snoozeEnvironmentIds: new Set(configs.keys()),
     });
+    const shellByKey = new Map(
+      shells.map((shell) => [scopedThreadKey(shell.environmentId, shell.id), shell]),
+    );
+    const movedKey = scopedThreadKey(thread.environmentId, thread.id);
+    // Filed chats list in their folders, so an unfiled chat steps over them in the Active list.
+    const destination =
+      section === "active" &&
+      typeof direction === "string" &&
+      threadFolderKeyOf(thread.folder) === null
+        ? listedThreadMove(
+            ordered.map((row) => scopedThreadKey(row.environmentId, row.id)),
+            movedKey,
+            direction,
+            (id) => threadFolderKeyOf(shellByKey.get(id)?.folder) === null,
+          )
+        : direction;
+    if (destination === null) return false;
     const assignments = createThreadMovePlanner({
       allThreads: shells,
       ordered,
@@ -724,14 +742,11 @@ export function useThreadListActions(): {
       reorderableEnvironmentIds: new Set(
         [...configs.keys()].filter((environmentId) => connectedEnvironmentIds.has(environmentId)),
       ),
-    })(scopedThreadKey(thread.environmentId, thread.id), direction);
+    })(movedKey, destination);
     if (assignments === null) return false;
     const lifecycle = threadDropLifecycle(thread, section, new Date().toISOString());
     const crossSection = !ordered.some(
       (row) => row.id === thread.id && row.environmentId === thread.environmentId,
-    );
-    const shellByKey = new Map(
-      shells.map((shell) => [scopedThreadKey(shell.environmentId, shell.id), shell]),
     );
     for (const assignment of assignments) {
       const target = shellByKey.get(assignment.id);
@@ -746,8 +761,8 @@ export function useThreadListActions(): {
           createPendingThreadOrder({
             section,
             ordered,
-            movedId: scopedThreadKey(thread.environmentId, thread.id),
-            direction,
+            movedId: movedKey,
+            direction: destination,
             assignments,
           }),
         );

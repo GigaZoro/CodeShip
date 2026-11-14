@@ -229,7 +229,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
     };
   }, [threads, configs, now, queuedThreadKeys, pendingOrder, workingShelfEnabled, grouped]);
   const listedSettled = sections.settled.filter(olderSettledShelf.isListed);
-  useOlderSettledShelfGrowth(olderSettledShelf, listedSettled);
+  useOlderSettledShelfGrowth([{ shelf: olderSettledShelf, listedCount: listedSettled.length }]);
   const visibleSettled = listedSettled.slice(0, settledVisibleCount);
   const settledCount = sections.settled.length + olderSettledShelf.unloadedCount(threads);
   const planners = useMemo(() => {
