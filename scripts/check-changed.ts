@@ -462,6 +462,35 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }
   yield* Console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)} (${ref})`);
 
+  // Output is piped, so keep the colors a terminal would get.
+  const env = process.stdout.isTTY ? { FORCE_COLOR: "1" } : {};
+  const vp = (args: ReadonlyArray<string>, cwd = root) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const [command, commandArgs] = vitePlusCommand(args, platform);
+        const handle = yield* spawner.spawn(
+          ChildProcess.make(command, commandArgs, {
+            cwd,
+            env,
+            extendEnv: true,
+            forceKillAfter: "5 seconds",
+          }),
+        );
+        const [output, exitCode] = yield* Effect.all(
+          [Stream.mkString(Stream.decodeText(handle.all)), handle.exitCode],
+          { concurrency: 2 },
+        );
+        return { ok: exitCode === 0, output };
+      }),
+    ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
+
+  // A rebase or pull can change pnpm-lock.yaml under an older install, so check against the
+  // dependencies CI installs from it. Up to date, this takes about a second.
+  const install = yield* vp(["install", "--frozen-lockfile", "--prefer-offline"]);
+  if (!install.ok) {
+    return yield* Effect.fail(`check:changed could not install pnpm-lock.yaml:\n${install.output}`);
+  }
+
   // `source` hashes the change's own files. `inputs` adds the ignored generated sources,
   // declarations, env files, and install state that affect results but that no large
   // ignored folder holds. The checks write some of those (typecheck writes
@@ -638,28 +667,6 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       file.startsWith("apps/mobile/deps/") ||
       path.basename(file) === "package.json",
   );
-
-  // Output is piped, so keep the colors a terminal would get.
-  const env = process.stdout.isTTY ? { FORCE_COLOR: "1" } : {};
-  const vp = (args: ReadonlyArray<string>, cwd = root) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const [command, commandArgs] = vitePlusCommand(args, platform);
-        const handle = yield* spawner.spawn(
-          ChildProcess.make(command, commandArgs, {
-            cwd,
-            env,
-            extendEnv: true,
-            forceKillAfter: "5 seconds",
-          }),
-        );
-        const [output, exitCode] = yield* Effect.all(
-          [Stream.mkString(Stream.decodeText(handle.all)), handle.exitCode],
-          { concurrency: 2 },
-        );
-        return { ok: exitCode === 0, output };
-      }),
-    ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
 
   // Resolve without the lockfile in a temp copy to preserve the working tree and lockfile.
   // Copy mobile modules too: they are file: dependencies, not workspace packages.

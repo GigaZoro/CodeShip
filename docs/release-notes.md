@@ -1,3 +1,7 @@
+## 2026-11-14 — `check:changed` checks against the dependencies the branch locks
+
+- For contributors: after a rebase or pull onto a commit that added a dependency, `vp run check:changed` ran every step against the older install and failed late, on a module it could not find. It now installs `pnpm-lock.yaml` with `--frozen-lockfile` before any check, as CI does. When nothing changed this takes about a second, and a `package.json` the lockfile does not match fails at once.
+
 ## 2026-11-14 — A provider turned off for a project no longer keeps working on its own background work
 
 - A notice from the agent's own background work, such as Claude's background task finishing, is a turn the agent has already started by itself. When its provider was turned off for the project, that notice was refused or waited with your queued messages, and the agent went on acting on it with no turn in the chat, so every T3.CodeShip tool refused it. T3.CodeShip now cancels the notice and closes that provider's session, so no turn runs on a provider the project turned off. A notice from a provider that is still on runs even when a message queued ahead of it waits on a provider turned off. Your own queued messages still wait for you to press **Resume**.

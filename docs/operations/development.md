@@ -226,7 +226,9 @@ It also runs the checks that read other files: the agent context budget when the
 affected, and React Compiler coverage for only the changed web and mobile files. It maps
 files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
 compares against the closest merge base with any remote's `main`, so a fork whose `main` lags
-upstream still compares against upstream, or with a ref you pass. Upstream CI still runs the full
+upstream still compares against upstream, or with a ref you pass. Before any check it installs
+`pnpm-lock.yaml` with `--frozen-lockfile`, as CI does, so a branch rebased onto new dependencies
+is checked against them, and a `package.json` the lockfile does not match fails at once. Upstream CI still runs the full
 test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
 
 The steps run side by side, as many at once as the machine allows: one per two cores and per 6 GiB

@@ -429,7 +429,8 @@ function launcherFixture() {
     console.log('fixture stdout: ' + args[0]);
     console.error('fixture stderr: ' + args[0]);
     if (args[0] === process.env.EDIT_STEP) fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
-    process.exit(args[0] === process.env.FAIL_STEP ? 23 : 0);
+    const failing = process.env.FAIL_STEP !== '' && args.join(' ').startsWith(process.env.FAIL_STEP);
+    process.exit(failing ? 23 : 0);
   `,
   );
   // Select the Windows launcher without changing the Effect runtime's host platform.
@@ -508,7 +509,9 @@ it("checks changed source paths through the Windows launcher", () => {
   });
   expect(calls.some(({ args }) => args[0] === "fmt" && args.includes(project.source))).toBe(true);
   expect(calls.some(({ args }) => args[0] === "run" && args.includes("typecheck"))).toBe(true);
-  expect(calls.some(({ args }) => args[0] === "install")).toBe(false);
+  expect(calls.filter(({ args }) => args[0] === "install")).toEqual([
+    { args: ["install", "--frozen-lockfile", "--prefer-offline"], cwd: project.root },
+  ]);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
 });
@@ -545,16 +548,28 @@ it("passes uncached when a check rewrites a generated file", () => {
   expect(result.stdout).toContain("pass not cached: generated files changed during the run");
 });
 
-it.each(["install", "lint"])("reports a failing %s step with its output", (step) => {
+it("stops before any check when the lockfile does not install", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run("install --frozen-lockfile");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout + result.stderr).toContain("check:changed could not install pnpm-lock.yaml");
+  expect(project.calls().map(({ args }) => args[0])).toEqual(["install"]);
+});
+
+it.each([
+  ["install", "install --lockfile-only"],
+  ["lint", "lint"],
+])("reports a failing %s step with its output", (step, failing) => {
   using project = launcherFixture();
   project.write(project.source, "export const value = 2;\n");
   project.write(
     "packages/example/package.json",
     JSON.stringify({ name: "example", version: "1.0.1" }),
   );
-  const result = project.run(step);
+  const result = project.run(failing);
   expect(result.status, result.stdout + result.stderr).toBe(1);
-  const install = project.calls().find(({ args }) => args[0] === "install");
+  const install = project.calls().find(({ args }) => args[1] === "--lockfile-only");
   expect(install?.args, result.stdout + result.stderr).toEqual([
     "install",
     "--lockfile-only",
