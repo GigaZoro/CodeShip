@@ -337,8 +337,8 @@ export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROV
 const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK has no control-request deadline; the CLI waits up to 30 s per MCP server.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT = "90 seconds";
-// Claude can consume a subagent result before the launching turn ends, leaving
-// its notification with no native wake turn to answer the continuation.
+// A wake continuation sends no prompt. Claude can consume a subagent result before the launching
+// turn ends, or merge a user prompt into the wake turn, so no native turn may be left to answer it.
 const CLAUDE_WAKE_TURN_START_DEADLINE = "2 minutes";
 // Claude Code flushes transcript writes every 100 ms, so a workflow member's
 // reply can land after the progress frame that settles it. Its transcript
@@ -546,7 +546,7 @@ export interface ClaudeAgentSdkQuerySession {
   readonly offer: (
     message: SDKUserMessage,
     onQueued?: () => void,
-  ) => Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
+  ) => Effect.Effect<void, ClaudeAgentSdkQueryRunnerError | ClaudePromptQueueClosedError>;
   readonly setModel: (model: string) => Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
   readonly applyFlagSettings: (
     settings: ClaudeFlagSettings,
@@ -573,6 +573,16 @@ export class ClaudeAgentSdkQueryRunnerError extends Schema.TaggedError<ClaudeAge
 ) {
   override get message(): string {
     return "Claude Agent SDK query failed.";
+  }
+}
+
+// The query was closed, so its CLI reads no more prompts: the message never reached Claude.
+export class ClaudePromptQueueClosedError extends Schema.TaggedError<ClaudePromptQueueClosedError>()(
+  "ClaudePromptQueueClosedError",
+  {},
+) {
+  override get message(): string {
+    return "Claude's session closed before it took the message. Send the message again.";
   }
 }
 
@@ -1216,7 +1226,11 @@ export const layerQueryRunner: Layer.Layer<
             offer: (message, onQueued) =>
               Effect.uninterruptibleMask((restore) =>
                 restore(Queue.offer(promptQueue, message)).pipe(
-                  Effect.tap(() => Effect.sync(() => onQueued?.())),
+                  Effect.flatMap((queued) =>
+                    queued
+                      ? Effect.sync(() => onQueued?.())
+                      : Effect.fail(new ClaudePromptQueueClosedError()),
+                  ),
                 ),
               ).pipe(
                 Effect.asVoid,
@@ -4340,6 +4354,9 @@ interface ClaudeLiveQueryContext {
   // The CLI may fall back from the requested mode on its first init frame.
   openedPermissionMode: PermissionMode;
   receivedInit: boolean;
+  // Whether the CLI runs a native turn now (a live root frame to a live result): a replayed wake
+  // buffer can hold the start of a turn whose result already settled another run.
+  nativeTurnOpen: boolean;
   permissionMode: PermissionMode;
   stopping: boolean;
   // The adapter closed this query itself, so its exit is not the process ending on its own.
@@ -5051,6 +5068,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const interruptedTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const steeredTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
+        const isLiveQuery = (session: ClaudeLiveQueryContext) =>
+          Ref.getUnsafe(queryContext) === session && !session.stopping;
         // Wake buffers replay result frames, so ledger growth is measured once on arrival.
         const resultLedgerUsage = new WeakMap<SDKMessage, ClaudeLedgerUsage>();
         // A worktree handoff changes the project settings even within one session.
@@ -10740,7 +10759,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
-          const existing = yield* Ref.get(queryContext);
+          let existing = yield* Ref.get(queryContext);
           // Continuations drain existing output without prompting; retain the live process regardless of selection.
           if (
             existing !== null &&
@@ -10754,56 +10773,68 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
             existing.queryPolicyKey === queryPolicyKey &&
-            !existing.stopping &&
-            existing.selection.queryIdentity !== compiledSelection.queryIdentity &&
-            canApplyClaudeSelectionLive(existing.selection, compiledSelection) &&
-            (existing.selection.apiModelId === compiledSelection.apiModelId ||
-              existing.openedPermissionMode === queryPolicy.permissionMode)
+            !existing.stopping
           ) {
             const live = existing;
-            // Preserve launcher-selected models unless the model changed or a failed update left it unknown.
-            yield* (
-              live.selection.queryIdentity === "" ||
-              live.selection.apiModelId !== compiledSelection.apiModelId
-                ? live.query.setModel(compiledSelection.apiModelId)
-                : Effect.void
-            ).pipe(
-              Effect.andThen(
-                live.query.applyFlagSettings(claudeLiveSelectionFlagSettings(compiledSelection)),
-              ),
-              Effect.tapError(() =>
-                Effect.sync(() => {
-                  live.selection = { ...live.selection, queryIdentity: "" };
-                }),
-              ),
-            );
-            live.selection = compiledSelection;
-          }
-          if (
-            existing !== null &&
-            existing.nativeThreadId === nativeThreadId &&
-            existing.queryPolicyKey === queryPolicyKey &&
-            !existing.stopping &&
-            existing.selection.queryIdentity === compiledSelection.queryIdentity
-          ) {
-            // A denied ExitPlanMode leaves Claude in plan mode. Restore only from plan:
-            // Auto/default may reflect a policy restriction that forbids restoring bypass.
-            if (existing.permissionMode === "plan" && existing.openedPermissionMode !== "plan") {
-              existing.permissionMode = yield* existing.query
-                .setPermissionMode(existing.openedPermissionMode)
-                .pipe(
-                  Effect.as(existing.openedPermissionMode),
-                  Effect.catchTags({
-                    ClaudeAgentSdkQueryRunnerError: (error) =>
-                      existing.openedPermissionMode === "bypassPermissions"
-                        ? existing.query
-                            .setPermissionMode("default")
-                            .pipe(Effect.as("default" as const))
-                        : Effect.fail(error),
-                  }),
+            const reused = yield* Effect.gen(function* () {
+              if (
+                live.selection.queryIdentity !== compiledSelection.queryIdentity &&
+                canApplyClaudeSelectionLive(live.selection, compiledSelection) &&
+                (live.selection.apiModelId === compiledSelection.apiModelId ||
+                  live.openedPermissionMode === queryPolicy.permissionMode)
+              ) {
+                // Preserve launcher-selected models unless the model changed or a failed update left it unknown.
+                yield* (
+                  live.selection.queryIdentity === "" ||
+                  live.selection.apiModelId !== compiledSelection.apiModelId
+                    ? live.query.setModel(compiledSelection.apiModelId)
+                    : Effect.void
+                ).pipe(
+                  Effect.andThen(
+                    live.query.applyFlagSettings(
+                      claudeLiveSelectionFlagSettings(compiledSelection),
+                    ),
+                  ),
+                  Effect.tapError(() =>
+                    Effect.sync(() => {
+                      live.selection = { ...live.selection, queryIdentity: "" };
+                    }),
+                  ),
                 );
+                live.selection = compiledSelection;
+              }
+              if (live.selection.queryIdentity !== compiledSelection.queryIdentity) return false;
+              // A denied ExitPlanMode leaves Claude in plan mode. Restore only from plan:
+              // Auto/default may reflect a policy restriction that forbids restoring bypass.
+              if (live.permissionMode === "plan" && live.openedPermissionMode !== "plan") {
+                live.permissionMode = yield* live.query
+                  .setPermissionMode(live.openedPermissionMode)
+                  .pipe(
+                    Effect.as(live.openedPermissionMode),
+                    Effect.catchTags({
+                      ClaudeAgentSdkQueryRunnerError: (error) =>
+                        live.openedPermissionMode === "bypassPermissions"
+                          ? live.query
+                              .setPermissionMode("default")
+                              .pipe(Effect.as("default" as const))
+                          : Effect.fail(error),
+                    }),
+                  );
+              }
+              return true;
+            }).pipe(
+              // The CLI can exit during these control round trips; its exit handler clears
+              // queryContext, so the turn opens a fresh process instead of using the ended one.
+              Effect.catchTags({
+                ClaudeAgentSdkQueryRunnerError: (error) =>
+                  isLiveQuery(live) ? Effect.fail(error) : Effect.succeed(false),
+              }),
+            );
+            if (isLiveQuery(live)) {
+              if (reused) return live;
+            } else {
+              existing = yield* Ref.get(queryContext);
             }
-            return existing;
           }
 
           // Replacing this thread's process kills its background work, even with a new native identity.
@@ -10956,6 +10987,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             promptEchoMode: "unknown",
             openedPermissionMode: queryOptions.permissionMode,
             receivedInit: false,
+            nativeTurnOpen: false,
             permissionMode: queryOptions.permissionMode,
             stopping: false,
             closeRequested: false,
@@ -11000,6 +11032,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ) {
                     context.permissionMode = message.permissionMode;
                   }
+                  if (message.type === "result") context.nativeTurnOpen = false;
+                  else if (isClaudeRootTurnFrame(message)) context.nativeTurnOpen = true;
                   if (message.type === "result") {
                     const ledger = claudeModelLedger(message.modelUsage);
                     const growth = claudeLedgerDelta(context.modelLedger, ledger);
@@ -11181,8 +11215,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               heldRootFrames: [],
             };
             const attachTurn = Effect.gen(function* () {
-              querySession.lastTurn = context;
-              yield* Ref.set(activeTurn, context);
+              // One step, so a query's exit handler either claims it after this and settles the
+              // turn, or claimed it before and the turn never attaches to the ended query.
+              const attached = yield* Ref.modify(activeTurn, (previous) => {
+                if (!isLiveQuery(querySession)) return [false, previous];
+                querySession.lastTurn = context;
+                return [true, context];
+              });
+              if (!attached) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "Claude provider query ended before the turn could start.",
+                });
+              }
               if (
                 !isClaudeProviderContinuationTurn(turnInput) &&
                 permissionModeForClaudeRuntimePolicy(turnInput.runtimePolicy) ===
@@ -11253,6 +11298,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     }),
                   ),
                 ),
+              ).pipe(
+                // Only a close shuts the prompt queue, and whoever closed the query settles this turn.
+                Effect.catchTags({
+                  ClaudePromptQueueClosedError: () =>
+                    Effect.logWarning("orchestration-v2.claude-prompt-refused-by-closed-query", {
+                      providerTurnId: context.providerTurnId,
+                      nativeThreadId,
+                    }),
+                }),
               );
               return;
             }
@@ -11260,15 +11314,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* withSdkMessageLock(
               { holder: "wake-replay", nativeThreadId },
               Effect.gen(function* () {
-                if (
-                  (yield* Ref.get(queryContext))?.query !== querySession.query ||
-                  querySession.stopping
-                ) {
-                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                    driver: CLAUDE_PROVIDER,
-                    detail: "Claude provider query ended before the continuation could start.",
-                  });
-                }
                 yield* attachTurn;
                 const drained = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
                 yield* Ref.update(requestedContinuations, (current) => {
@@ -11344,38 +11389,56 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   yield* handleSdkMessage({ query: querySession.query, message: lastResult });
                   return;
                 }
+                if (context.nativeWakeStarted && !querySession.nativeTurnOpen) {
+                  // A prompt offered while the wake turn ran was merged into it, and that turn's
+                  // result already settled the prompt's run: no result is left for this one.
+                  yield* Effect.logInfo("orchestration-v2.claude-wake-turn-already-ended", {
+                    providerTurnId: context.providerTurnId,
+                    nativeThreadId,
+                  });
+                  const completedAt = yield* DateTime.now;
+                  yield* finalizeActiveTurn({ context, status: "completed", completedAt });
+                  return;
+                }
                 if (hasOpaqueTaskNotification && !context.nativeWakeStarted) {
                   const completedAt = yield* DateTime.now;
                   yield* finalizeActiveTurn({ context, status: "completed", completedAt });
-                } else if (!context.nativeWakeStarted) {
-                  yield* sleepAwake(CLAUDE_WAKE_TURN_START_DEADLINE).pipe(
-                    Effect.andThen(
-                      withSdkMessageLock(
-                        { holder: "wake-start-deadline", nativeThreadId },
-                        Effect.gen(function* () {
-                          if (
-                            (yield* Ref.get(activeTurn)) !== context ||
-                            (yield* Ref.get(queryContext)) !== querySession ||
-                            querySession.stopping ||
-                            context.nativeWakeStarted ||
-                            (yield* Ref.get(interruptedTurns)).has(context.providerTurnId)
-                          )
-                            return;
-                          yield* Effect.logWarning(
-                            "orchestration-v2.claude-wake-turn-never-opened",
-                            {
-                              providerTurnId: context.providerTurnId,
-                              nativeThreadId,
-                            },
-                          );
-                          const completedAt = yield* DateTime.now;
-                          yield* finalizeActiveTurn({ context, status: "completed", completedAt });
-                        }),
-                      ),
-                    ),
-                    Effect.forkIn(sessionScope),
-                  );
+                  return;
                 }
+                // The continuation sends no prompt, so only an open native turn can still answer it.
+                const nativeTurnStillAnswering = sleepAwake(CLAUDE_WAKE_TURN_START_DEADLINE).pipe(
+                  Effect.andThen(
+                    withSdkMessageLock(
+                      { holder: "wake-start-deadline", nativeThreadId },
+                      Effect.gen(function* () {
+                        if (
+                          (yield* Ref.get(activeTurn)) !== context ||
+                          !isLiveQuery(querySession) ||
+                          (yield* Ref.get(interruptedTurns)).has(context.providerTurnId)
+                        )
+                          return false;
+                        // A steer's abort result ends the native segment while Claude reads the steer.
+                        if (
+                          querySession.nativeTurnOpen ||
+                          (yield* Ref.get(steeredTurns)).has(context.providerTurnId)
+                        )
+                          return true;
+                        yield* Effect.logWarning("orchestration-v2.claude-wake-turn-never-opened", {
+                          providerTurnId: context.providerTurnId,
+                          nativeThreadId,
+                          turnOpened: context.nativeWakeStarted,
+                        });
+                        const completedAt = yield* DateTime.now;
+                        yield* finalizeActiveTurn({ context, status: "completed", completedAt });
+                        return false;
+                      }),
+                    ),
+                  ),
+                );
+                yield* nativeTurnStillAnswering.pipe(
+                  Effect.repeat({ while: (open) => open }),
+                  Effect.forkIn(sessionScope),
+                );
               }),
             );
           },

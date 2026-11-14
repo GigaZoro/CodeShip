@@ -1,3 +1,8 @@
+## 2026-11-15 — Claude chats no longer stay working after a background task reports back
+
+- When a Claude subagent or background command finished while the agent was still working, and you sent a message right then, Claude answered both in one go. T3.CodeShip still waited for a separate answer to the task's report, so the chat showed as working for hours and every message sent after that waited in the queue. That wait now ends as soon as Claude has answered, and it also ends when Claude is not working on the report two minutes later.
+- When Claude's session closed while a message was being sent, the run could show as running with nothing sent to Claude. A message sent while the session restarts now goes to a new session, and a session that closes once the message is on its way ends the run instead of leaving it running.
+
 ## 2026-11-14 — Auto no longer starts on a signed-out account when every account is limited
 
 - With account switching on, Auto already took the first account with usage left, but when none had any it started a new chat on the first account in the order, even one whose login had failed, and kept a chat on a signed-out account. It now waits on a signed-in account instead: a chat stays on its own account while that account can still run, and otherwise starts on the signed-in account whose limit ends first. See [Auto](user/thread-sidebar.md).

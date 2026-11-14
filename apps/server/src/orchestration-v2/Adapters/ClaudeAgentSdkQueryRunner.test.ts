@@ -32,6 +32,7 @@ import { sleepingTestClock } from "../testkit/DeterministicRuntime.ts";
 import {
   ClaudeAgentSdkQueryRunner,
   type ClaudeAgentSdkQueryOpenInput,
+  ClaudePromptQueueClosedError,
   layerQueryRunner,
   spawnClaudeProcessGroup,
 } from "./ClaudeAdapterV2.ts";
@@ -206,6 +207,42 @@ it.effect("reopens a stalled MCP registration before delivering the resumed prom
       const delivered = yield* Effect.promise(() => prompts[1]![Symbol.asyncIterator]().next());
       assert.deepEqual(delivered.value, message);
       assert.isFalse(delivered.done);
+    }).pipe(Effect.provide(realQueryRunner)),
+  ),
+);
+
+it.effect("refuses a prompt once the session has closed", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
+        () =>
+          ({
+            setMcpServers: async () => ({ added: ["t3-code"], removed: [], errors: {} }),
+            close: vi.fn(),
+            [Symbol.asyncDispose]: async () => {},
+          }) as unknown as ClaudeSdk.Query,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+      const runner = yield* ClaudeAgentSdkQueryRunner;
+      const session = yield* runner.open(resumedMcpQueryInput);
+      yield* session.close;
+      let queued = false;
+      const refused = yield* session
+        .offer(
+          {
+            type: "user",
+            message: { role: "user", content: "Continue where you left off." },
+            parent_tool_use_id: null,
+            session_id: FORK_SESSION_ID,
+          },
+          () => {
+            queued = true;
+          },
+        )
+        .pipe(Effect.flip);
+
+      assert.instanceOf(refused, ClaudePromptQueueClosedError);
+      assert.isFalse(queued);
     }).pipe(Effect.provide(realQueryRunner)),
   ),
 );
