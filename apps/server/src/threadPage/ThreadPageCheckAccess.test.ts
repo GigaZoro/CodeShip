@@ -19,15 +19,37 @@ import * as ThreadPageCheckAccessHttp from "./checkAccessHttp.ts";
 import * as ThreadPageCheckAccess from "./ThreadPageCheckAccess.ts";
 
 const OPERATION_ID = "5b0c1f8e-3f4a-4d55-9a7e-2f1d6c8b9a01";
-const thread = (id: string, description?: string) => ({
+const THREAD_ID = "8a9599c3-b928-5940-843e-b6cefd568115";
+const thread = (id: string, description?: string, revision = 3) => ({
   id,
   title: `Thread ${id}`,
   ...(description === undefined ? {} : { description }),
   status: "waiting",
   status_name: "Waiting",
+  revision,
   last_activity_at: "2026-11-12T08:00:00.000Z",
   url: `https://thread.page/app/threads/${id}`,
   archived: false,
+});
+const checkThread = (id: string, revision = 3) => ({
+  id,
+  title: `Thread ${id}`,
+  description: "",
+  status: "waiting",
+  status_name: "Waiting",
+  revision,
+  last_activity_at: "2026-11-12T08:00:00.000Z",
+  url: `https://thread.page/app/threads/${id}`,
+});
+const changeReceipt = (fields: Record<string, unknown> = {}) => ({
+  operation_id: OPERATION_ID,
+  status: "accepted",
+  kind: "thread.update",
+  target: { type: "thread", id: THREAD_ID },
+  revision: 8,
+  thread_status: "active",
+  accepted_at: "2026-11-14T10:00:00.000Z",
+  ...fields,
 });
 
 interface SeenRequest {
@@ -120,24 +142,8 @@ describe("ThreadPageCheckAccess", () => {
       );
       const threads = yield* withAccess(http, (access) => access.listThreads("folder-1"));
       expect(threads).toEqual([
-        {
-          id: "a",
-          title: "Thread a",
-          description: "Hands-on: sign in",
-          status: "waiting",
-          status_name: "Waiting",
-          last_activity_at: "2026-11-12T08:00:00.000Z",
-          url: "https://thread.page/app/threads/a",
-        },
-        {
-          id: "b",
-          title: "Thread b",
-          description: "",
-          status: "waiting",
-          status_name: "Waiting",
-          last_activity_at: "2026-11-12T08:00:00.000Z",
-          url: "https://thread.page/app/threads/b",
-        },
+        { ...checkThread("a"), description: "Hands-on: sign in" },
+        checkThread("b"),
       ]);
       expect(requests.map(({ method, path, params }) => `${method} ${path}?${params}`)).toEqual([
         "GET /threads?folder_id=folder-1&state=active&limit=50",
@@ -200,6 +206,97 @@ describe("ThreadPageCheckAccess", () => {
     }),
   );
 
+  it.effect("changes a thread only while it is at the revision the check read", () =>
+    Effect.gen(function* () {
+      const { http, requests } = fakeThreadPage((request) =>
+        request.method === "GET"
+          ? Response.json(thread(THREAD_ID, "Healthy at 09:30", 7))
+          : Response.json(changeReceipt({ operation_id: request.headers["operation-id"] })),
+      );
+      const [updated, stale] = yield* withAccess(http, (access) =>
+        Effect.all([
+          access.updateThread({
+            threadId: THREAD_ID,
+            expectedRevision: 7,
+            description: "Healthy at 10:00",
+            status: "active",
+            operationId: OPERATION_ID,
+          }),
+          access
+            .updateThread({ threadId: THREAD_ID, expectedRevision: 6, description: "Healthy" })
+            .pipe(Effect.flip),
+        ]),
+      );
+      expect(updated).toEqual({ revision: 8, status: "active", operation_id: OPERATION_ID });
+      assert.instanceOf(stale, ThreadPageCheckAccess.ThreadPageStaleRevisionError);
+      expect(stale.thread).toEqual({
+        ...checkThread(THREAD_ID, 7),
+        description: "Healthy at 09:30",
+      });
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        `GET /threads/${THREAD_ID}`,
+        `PATCH /threads/${THREAD_ID}`,
+        `GET /threads/${THREAD_ID}`,
+      ]);
+      assert.equal(requests[1]?.headers["operation-id"], OPERATION_ID);
+      expect(requests[1]?.body).toEqual({ description: "Healthy at 10:00", status: "active" });
+    }),
+  );
+
+  it.effect("returns a retried change that already landed, and refuses one that did not", () =>
+    Effect.gen(function* () {
+      // The first attempt moved the thread from 7 to 8 but its answer was lost.
+      const landed = Response.json(changeReceipt());
+      const reused = Response.json({ code: "operation_id_reused" }, { status: 409 });
+      const rows = [
+        [landed, landed, { _tag: "Success", success: { revision: 8, status: "active" } }],
+        [
+          landed,
+          reused,
+          {
+            _tag: "Failure",
+            failure: { _tag: "ThreadPageCheckAccessError", code: "operation_id_reused" },
+          },
+        ],
+        [Response.json({ code: "not_found" }, { status: 404 }), null, "stale"],
+        [Response.json(changeReceipt({ target: { type: "thread", id: "other" } })), null, "stale"],
+      ] as const;
+      for (const [operation, replay, outcome] of rows) {
+        const { http, requests } = fakeThreadPage((request) =>
+          request.path.startsWith("/operations/")
+            ? operation.clone()
+            : request.method === "PATCH" && replay !== null
+              ? replay.clone()
+              : Response.json(thread(THREAD_ID, "Healthy", 8)),
+        );
+        const result = yield* withAccess(http, (access) =>
+          access
+            .updateThread({
+              threadId: THREAD_ID,
+              expectedRevision: 7,
+              status: "active",
+              operationId: OPERATION_ID,
+            })
+            .pipe(Effect.result),
+        );
+        expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+          `GET /threads/${THREAD_ID}`,
+          `GET /operations/${OPERATION_ID}`,
+          ...(replay === null ? [] : [`PATCH /threads/${THREAD_ID}`]),
+        ]);
+        if (replay !== null) {
+          assert.equal(requests[2]?.headers["operation-id"], OPERATION_ID);
+          expect(requests[2]?.body).toEqual({ status: "active" });
+        }
+        expect(result).toMatchObject(
+          outcome === "stale"
+            ? { _tag: "Failure", failure: { _tag: "ThreadPageStaleRevisionError" } }
+            : outcome,
+        );
+      }
+    }),
+  );
+
   it.effect("says why ThreadPage did not list or add, without passing on its text", () =>
     Effect.gen(function* () {
       const rows: ReadonlyArray<
@@ -242,6 +339,33 @@ describe("ThreadPageCheckAccess", () => {
         assert.equal(error.reason, "threadpage_failed");
         expect(error).toMatchObject(expected);
       }
+
+      // A token that may read the thread but not change it, and a receipt that changed nothing.
+      const updateRows = [
+        [
+          Response.json({ code: "organize_not_allowed" }, { status: 403 }),
+          { status: 403, code: "organize_not_allowed" },
+        ],
+        [
+          Response.json(changeReceipt({ status: "conflict", code: "request_open" })),
+          {
+            status: 200,
+            code: "request_open",
+            detail: "ThreadPage did not change the thread (conflict).",
+          },
+        ],
+      ] as const;
+      for (const [response, expected] of updateRows) {
+        const { http } = fakeThreadPage((request) =>
+          request.method === "GET" ? Response.json(thread(THREAD_ID)) : response.clone(),
+        );
+        const error = yield* withAccess(http, (access) =>
+          access
+            .updateThread({ threadId: THREAD_ID, expectedRevision: 3, status: "done" })
+            .pipe(Effect.flip),
+        );
+        expect(error).toMatchObject({ reason: "threadpage_failed", ...expected });
+      }
     }),
   );
 
@@ -279,6 +403,10 @@ const serveRoutes = (service: Partial<ThreadPageCheckAccess.ThreadPageCheckAcces
             addNote: (input) =>
               Effect.sync(() => calls.push(input)).pipe(
                 Effect.andThen(service.addNote?.(input) ?? Effect.die("unused")),
+              ),
+            updateThread: (input) =>
+              Effect.sync(() => calls.push(input)).pipe(
+                Effect.andThen(service.updateThread?.(input) ?? Effect.die("unused")),
               ),
           }),
         ),
@@ -318,8 +446,11 @@ describe("ThreadPage check routes", () => {
       const add = HttpClientRequest.post("/api/threadpage/notes").pipe(
         HttpClientRequest.bodyJsonUnsafe({ thread_id: "t", markdown: "x" }),
       );
+      const update = HttpClientRequest.patch(`/api/threadpage/threads/${THREAD_ID}`).pipe(
+        HttpClientRequest.bodyJsonUnsafe({ expected_revision: 3, status: "done" }),
+      );
       for (const token of [null, "session-token"]) {
-        for (const request of [list, add]) {
+        for (const request of [list, add, update]) {
           const response = yield* send(request, token);
           assert.equal(response.status, 401);
           expect(response.body).toMatchObject({ error: "unauthorized" });
@@ -332,18 +463,7 @@ describe("ThreadPage check routes", () => {
   it.effect("list a folder's threads and report why ThreadPage did not answer", () =>
     Effect.gen(function* () {
       const listed = yield* serveRoutes({
-        listThreads: () =>
-          Effect.succeed([
-            {
-              id: "a",
-              title: "Thread a",
-              description: "",
-              status: "waiting",
-              status_name: "Waiting",
-              last_activity_at: "2026-11-12T08:00:00.000Z",
-              url: "https://thread.page/app/threads/a",
-            },
-          ]),
+        listThreads: () => Effect.succeed([checkThread("a")]),
       });
       const missing = yield* listed.send(HttpClientRequest.get("/api/threadpage/threads"));
       assert.equal(missing.status, 400);
@@ -418,6 +538,77 @@ describe("ThreadPage check routes", () => {
       assert.equal(added.status, 201);
       expect(added.body).toEqual({ note_id: "note-1", url: null, operation_id: OPERATION_ID });
       expect(calls).toEqual([{ threadId: "t", markdown: "Healthy", operationId: OPERATION_ID }]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("update a thread from a valid body, and refuse a stale revision", () =>
+    Effect.gen(function* () {
+      const { send, calls } = yield* serveRoutes({
+        updateThread: (input) =>
+          input.expectedRevision === 3
+            ? Effect.succeed({ revision: 4, status: "done", operation_id: OPERATION_ID })
+            : input.expectedRevision === 2
+              ? Effect.fail(
+                  new ThreadPageCheckAccess.ThreadPageStaleRevisionError({
+                    thread: checkThread(THREAD_ID),
+                  }),
+                )
+              : Effect.fail(failure({ status: 403, code: "organize_not_allowed" })),
+      });
+      const patch = (body: unknown, threadId = THREAD_ID) =>
+        send(
+          HttpClientRequest.patch(`/api/threadpage/threads/${threadId}`).pipe(
+            HttpClientRequest.bodyJsonUnsafe(body),
+          ),
+        );
+      for (const [body, threadId] of [
+        [{ status: "done" }, THREAD_ID],
+        [{ expected_revision: -1, status: "done" }, THREAD_ID],
+        [{ expected_revision: 1.5, status: "done" }, THREAD_ID],
+        [{ expected_revision: 3 }, THREAD_ID],
+        [{ expected_revision: 3, status: "" }, THREAD_ID],
+        [{ expected_revision: 3, status: "done", operation_id: "not-a-uuid" }, THREAD_ID],
+        [{ expected_revision: 3, description: "x".repeat(70 * 1024) }, THREAD_ID],
+        [{ expected_revision: 3, status: "done" }, "not-a-thread-id"],
+      ] as const) {
+        const response = yield* patch(body, threadId);
+        assert.equal(response.status, 400);
+        expect(response.body).toMatchObject({ error: "invalid_request" });
+      }
+      assert.lengthOf(calls, 0);
+
+      const updated = yield* patch({
+        expected_revision: 3,
+        description: "",
+        status: "done",
+        operation_id: OPERATION_ID,
+      });
+      assert.equal(updated.status, 200);
+      expect(updated.body).toEqual({ revision: 4, status: "done", operation_id: OPERATION_ID });
+      expect(calls).toEqual([
+        {
+          threadId: THREAD_ID,
+          expectedRevision: 3,
+          description: "",
+          status: "done",
+          operationId: OPERATION_ID,
+        },
+      ]);
+
+      const stale = yield* patch({ expected_revision: 2, status: "done" });
+      assert.equal(stale.status, 409);
+      expect(stale.body).toMatchObject({
+        error: "stale_revision",
+        thread: { id: THREAD_ID, revision: 3 },
+      });
+
+      const refused = yield* patch({ expected_revision: 1, status: "done" });
+      assert.equal(refused.status, 502);
+      expect(refused.body).toMatchObject({
+        error: "threadpage_failed",
+        status: 403,
+        code: "organize_not_allowed",
+      });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

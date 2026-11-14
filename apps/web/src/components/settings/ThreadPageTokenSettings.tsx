@@ -56,7 +56,7 @@ function ThreadPageTokenForm(props: {
       <fieldset disabled={saving} className="contents">
         <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
           {tx(
-            "{manualSteps} lists the steps only you can do, which agents keep in ThreadPage's Machine inbox folder. Scheduled-task checks on this machine can also list threads and add notes through it. This server keeps the token and never shows it to apps or checks. In ThreadPage, open Settings, Connections, then Connect an automation, Script or API: choose Read only, or Can add notes when a check adds notes, and Work or All threads.",
+            "{manualSteps} lists the steps only you can do, which agents keep in ThreadPage's Machine inbox folder. Scheduled-task checks on this machine can also list threads, add notes and change a thread's description or status through it. This server keeps the token and never shows it to apps or checks. In ThreadPage, open Settings, Connections, then Connect an automation, Script or API: choose Read only, Can add notes when a check adds notes, or Can edit and organize when it changes threads, and Work or All threads.",
             {
               manualSteps: (
                 <InlineButton render={<Link to="/manual-steps" />}>

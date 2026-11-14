@@ -238,17 +238,31 @@ seeing its token. While the check runs, it has two environment variables:
 `T3CODE_THREADPAGE_TOKEN`, which works only until the check ends. Send the token
 as `Authorization: Bearer <token>`.
 
-| Request                                                                        | Answer                                                                                                                                             |
-| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET $T3CODE_THREADPAGE_URL/threads?folder_id=<folder id>`                     | 200 `{"threads": [...]}`: the folder's active threads, each with `id`, `title`, `description`, `status`, `status_name`, `last_activity_at`, `url`. |
-| `POST $T3CODE_THREADPAGE_URL/notes` with `{"thread_id": "…", "markdown": "…"}` | 201 `{"note_id": "…", "url": "…", "operation_id": "…"}`.                                                                                           |
+| Request                                                                                                                        | Answer                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET $T3CODE_THREADPAGE_URL/threads?folder_id=<folder id>`                                                                     | 200 `{"threads": [...]}`: the folder's active threads, each with `id`, `title`, `description`, `status`, `status_name`, `revision`, `last_activity_at`, `url`. |
+| `POST $T3CODE_THREADPAGE_URL/notes` with `{"thread_id": "…", "markdown": "…"}`                                                 | 201 `{"note_id": "…", "url": "…", "operation_id": "…"}`.                                                                                                       |
+| `PATCH $T3CODE_THREADPAGE_URL/threads/<thread id>` with `{"expected_revision": <revision>, "description": "…", "status": "…"}` | 200 `{"revision": …, "status": "…", "operation_id": "…"}`: the thread's revision and status after the change.                                                  |
 
-Add `"operation_id"`, a UUID, to a note to retry it safely: ThreadPage adds a
-note once per id. Adding a note to a thread needs ThreadPage Pro; on other plans
-ThreadPage refuses it with `pro_required`. Other answers:
+Add `"operation_id"`, a UUID, to a note or a thread change to retry it safely:
+ThreadPage makes each change once per id. Adding a note to a thread needs
+ThreadPage Pro; on other plans ThreadPage refuses it with `pro_required`.
 
-- 400 `invalid_request`: no folder, or a note body that is not that JSON or is
-  over 64 KiB.
+A thread change sets its description (`""` clears it), its status (`active`,
+`waiting`, `done` or another status key a listed thread shows), or both.
+CodeShip reads the thread right before changing it and sends the change only
+while it is still at `expected_revision`, the `revision` the check read from the
+folder list; otherwise it answers 409 `stale_revision` with the thread as it is
+now in `thread`. ThreadPage itself takes no revision, so a change made between
+that read and the write can still be overwritten. A retry with the same `operation_id`
+and body whose first try already landed answers 200 instead; a different body
+under that id is refused with `operation_id_reused`. Changing a thread needs
+**Can edit and organize** access.
+Other answers:
+
+- 400 `invalid_request`: no folder, a note body that is not that JSON or is over
+  64 KiB, or a thread change without a thread id, `expected_revision`, or a
+  description or status.
 - 401 `unauthorized`: the token is missing, wrong, or its check has ended.
 - 503 `not_connected`: this machine has no ThreadPage token. Save one in
   **Settings → Threads → ThreadPage**; adding notes needs **Can add notes**

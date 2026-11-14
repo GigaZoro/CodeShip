@@ -33,14 +33,24 @@ const MAX_THREADS = 500;
 const MAX_THREAD_PAGES = MAX_THREADS / Number(THREADPAGE_PAGE_SIZE) + 1;
 const ERROR_CODE = /^[a-z_]{1,64}$/u;
 
-const Thread = Schema.Struct({
+/** A thread as a check sees it: ThreadPage's own field names. */
+const CheckThreadSchema = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
-  description: Schema.optional(Schema.String),
+  description: Schema.String,
   status: Schema.String,
   status_name: Schema.String,
+  /** Moves on with every change to the thread; a check's update names the one it read. */
+  revision: Schema.Int,
   last_activity_at: Schema.String,
   url: Schema.String,
+});
+export type CheckThread = typeof CheckThreadSchema.Type;
+
+// ThreadPage leaves out the description for a connection that only adds notes.
+const Thread = Schema.Struct({
+  ...CheckThreadSchema.fields,
+  description: Schema.optional(Schema.String),
 });
 const NoteReceipt = Schema.Struct({
   operation_id: Schema.String,
@@ -49,23 +59,35 @@ const NoteReceipt = Schema.Struct({
   url: Schema.optional(Schema.NullOr(Schema.String)),
   code: Schema.optional(Schema.NullOr(Schema.String)),
 });
+const ChangeReceipt = Schema.Struct({
+  status: Schema.String,
+  kind: Schema.optional(Schema.String),
+  target: Schema.optional(Schema.Struct({ id: Schema.String })),
+  revision: Schema.optional(Schema.NullOr(Schema.Int)),
+  thread_status: Schema.optional(Schema.String),
+  code: Schema.optional(Schema.NullOr(Schema.String)),
+});
 const decodeThreadPage = Schema.decodeUnknownEffect(threadPageListPage(Thread));
+const decodeThread = Schema.decodeUnknownEffect(Thread);
 const decodeNoteReceipt = Schema.decodeUnknownEffect(NoteReceipt);
+const decodeChangeReceipt = Schema.decodeUnknownEffect(ChangeReceipt);
 
-/** A thread as a check sees it: ThreadPage's own field names. */
-export interface CheckThread {
-  readonly id: string;
-  readonly title: string;
-  readonly description: string;
-  readonly status: string;
-  readonly status_name: string;
-  readonly last_activity_at: string;
-  readonly url: string;
-}
+const toCheckThread = (thread: typeof Thread.Type): CheckThread => ({
+  ...thread,
+  description: thread.description ?? "",
+});
 
 export interface CheckNote {
   readonly note_id: string;
   readonly url: string | null;
+  readonly operation_id: string;
+}
+
+export interface CheckThreadUpdate {
+  /** The thread's revision after the change, when ThreadPage reports it. */
+  readonly revision: number | null;
+  /** The thread's status after the change: a deleted status lands on its replacement. */
+  readonly status: string;
   readonly operation_id: string;
 }
 
@@ -84,6 +106,16 @@ export class ThreadPageCheckAccessError extends Schema.TaggedError<ThreadPageChe
 ) {
   override get message(): string {
     return this.detail;
+  }
+}
+
+/** The thread changed since the check read it, so the check's update was not sent. */
+export class ThreadPageStaleRevisionError extends Schema.TaggedError<ThreadPageStaleRevisionError>()(
+  "ThreadPageStaleRevisionError",
+  { thread: CheckThreadSchema },
+) {
+  override get message(): string {
+    return `The thread is at revision ${this.thread.revision} now; read it again before changing it.`;
   }
 }
 
@@ -154,6 +186,18 @@ export class ThreadPageCheckAccess extends Context.Service<
       /** The same id on a retry returns the first receipt instead of adding a second note. */
       readonly operationId?: string | undefined;
     }) => Effect.Effect<CheckNote, ThreadPageCheckAccessError>;
+    /** Sets a thread's description or status, only while it is still at `expectedRevision`. */
+    readonly updateThread: (input: {
+      readonly threadId: string;
+      readonly expectedRevision: number;
+      readonly description?: string | undefined;
+      readonly status?: string | undefined;
+      /** The same id on a retry returns the first change instead of refusing it as stale. */
+      readonly operationId?: string | undefined;
+    }) => Effect.Effect<
+      CheckThreadUpdate,
+      ThreadPageCheckAccessError | ThreadPageStaleRevisionError
+    >;
   }
 >()("t3/threadPage/ThreadPageCheckAccess") {}
 
@@ -265,15 +309,7 @@ const make = Effect.gen(function* () {
         `The folder has more than ${MAX_THREADS} active threads, more than a check can list.`,
       );
     }
-    return threads.map((thread): CheckThread => ({
-      id: thread.id,
-      title: thread.title,
-      description: thread.description ?? "",
-      status: thread.status,
-      status_name: thread.status_name,
-      last_activity_at: thread.last_activity_at,
-      url: thread.url,
-    }));
+    return threads.map(toCheckThread);
   });
 
   const addNote: ThreadPageCheckAccess["Service"]["addNote"] = Effect.fn(
@@ -301,7 +337,68 @@ const make = Effect.gen(function* () {
     return { note_id: receipt.note_id, url: receipt.url ?? null, operation_id: operationId };
   });
 
-  return ThreadPageCheckAccess.of({ grant, isGranted, listThreads, addNote });
+  const updateThread: ThreadPageCheckAccess["Service"]["updateThread"] = Effect.fn(
+    "ThreadPageCheckAccess.updateThread",
+  )(function* (input) {
+    const token = yield* connectionToken;
+    const threadUrl = `${THREADPAGE_API_URL}/threads/${encodeURIComponent(input.threadId)}`;
+    const operationId = input.operationId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+    // ThreadPage's thread update takes no revision, so it is compared here just before the update;
+    // only a change landing between these two calls goes unseen.
+    const { value: current } = yield* send(token, HttpClientRequest.get(threadUrl), decodeThread);
+    if (current.revision !== input.expectedRevision) {
+      // A retry after a lost answer finds the thread moved on by its own first attempt.
+      const earlier =
+        input.operationId === undefined
+          ? null
+          : yield* send(
+              token,
+              HttpClientRequest.get(
+                `${THREADPAGE_API_URL}/operations/${encodeURIComponent(operationId)}`,
+              ),
+              decodeChangeReceipt,
+            ).pipe(
+              Effect.map(({ value }) => value),
+              Effect.catchIf(
+                (error) => error.status === 404,
+                () => Effect.succeed(null),
+              ),
+            );
+      const landed =
+        earlier?.kind === "thread.update" &&
+        earlier.target?.id === current.id &&
+        earlier.status === "accepted";
+      if (!landed) {
+        return yield* new ThreadPageStaleRevisionError({ thread: toCheckThread(current) });
+      }
+      // Sent again under the same id, ThreadPage answers the first change, or refuses a different body.
+    }
+
+    const { status, value: receipt } = yield* send(
+      token,
+      HttpClientRequest.patch(threadUrl).pipe(
+        HttpClientRequest.setHeader("Operation-Id", operationId),
+        HttpClientRequest.bodyJsonUnsafe({
+          ...(input.description === undefined ? {} : { description: input.description }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+        }),
+      ),
+      decodeChangeReceipt,
+    );
+    if (receipt.status !== "accepted") {
+      return yield* threadPageFailed(`ThreadPage did not change the thread (${receipt.status}).`, {
+        status,
+        code: receipt.code != null && ERROR_CODE.test(receipt.code) ? receipt.code : null,
+      });
+    }
+    return {
+      revision: receipt.revision ?? null,
+      status: receipt.thread_status ?? input.status ?? current.status,
+      operation_id: operationId,
+    };
+  });
+
+  return ThreadPageCheckAccess.of({ grant, isGranted, listThreads, addNote, updateThread });
 });
 
 export const layer = Layer.effect(ThreadPageCheckAccess, make);

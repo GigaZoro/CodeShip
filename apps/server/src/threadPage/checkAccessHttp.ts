@@ -23,10 +23,33 @@ const AddNoteBody = Schema.Struct({
 });
 const decodeAddNoteBody = Schema.decodeUnknownEffect(AddNoteBody);
 
+const UpdateThreadBody = Schema.Struct({
+  expected_revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  description: Schema.optional(Schema.String),
+  status: Schema.optional(Schema.NonEmptyString),
+  operation_id: Schema.optional(Schema.String.check(Schema.isUUID())),
+}).check(Schema.makeFilter((body) => body.description !== undefined || body.status !== undefined));
+const decodeUpdateThreadBody = Schema.decodeUnknownEffect(UpdateThreadBody);
+const isThreadId = Schema.is(Schema.String.check(Schema.isUUID()));
+
 const respond = (status: number, body: object) =>
   HttpServerResponse.jsonUnsafe(body, { status, headers: NO_STORE });
 
 const invalidRequest = (message: string) => respond(400, { error: "invalid_request", message });
+
+/** Parses a JSON body of at most 64 KiB, or answers null. */
+const readJsonBody = Effect.fn("ThreadPageCheckRoutes.readJsonBody")(function* <A, E>(
+  decode: (body: unknown) => Effect.Effect<A, E>,
+) {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  // A declared length over the cap is refused before reading; chunked bodies hit the reader cap.
+  if (Number(request.headers["content-length"] ?? "0") > MAX_BODY_BYTES) return null;
+  return yield* request.json.pipe(
+    Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(MAX_BODY_BYTES)),
+    Effect.flatMap(decode),
+    Effect.orElseSucceed(() => null),
+  );
+});
 
 const failureResponse = (error: ThreadPageCheckAccessError) =>
   error.reason === "not_connected"
@@ -77,16 +100,7 @@ const addNoteRoute = HttpRouter.add(
   `${THREADPAGE_CHECK_ROUTE_PREFIX}/notes`,
   Effect.gen(function* () {
     if (!(yield* isCheckRequest)) return unauthorized;
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    // A declared length over the cap is refused before reading; chunked bodies hit the reader cap.
-    const body =
-      Number(request.headers["content-length"] ?? "0") > MAX_BODY_BYTES
-        ? null
-        : yield* request.json.pipe(
-            Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(MAX_BODY_BYTES)),
-            Effect.flatMap(decodeAddNoteBody),
-            Effect.orElseSucceed(() => null),
-          );
+    const body = yield* readJsonBody(decodeAddNoteBody);
     if (body === null) {
       return invalidRequest(
         'Send JSON of at most 64 KiB: {"thread_id": "…", "markdown": "…", "operation_id": "<optional UUID>"}.',
@@ -108,4 +122,42 @@ const addNoteRoute = HttpRouter.add(
   }),
 );
 
-export const layer = Layer.mergeAll(listThreadsRoute, addNoteRoute);
+const updateThreadRoute = HttpRouter.add(
+  "PATCH",
+  `${THREADPAGE_CHECK_ROUTE_PREFIX}/threads/:threadId`,
+  Effect.gen(function* () {
+    if (!(yield* isCheckRequest)) return unauthorized;
+    const { threadId } = yield* HttpRouter.params;
+    const body = yield* readJsonBody(decodeUpdateThreadBody);
+    if (threadId === undefined || !isThreadId(threadId) || body === null) {
+      return invalidRequest(
+        'Name the thread by its id in the path and send JSON of at most 64 KiB: {"expected_revision": <its revision>, "description": "…", "status": "…", "operation_id": "<optional UUID>"}, with a description, a status or both.',
+      );
+    }
+    const access = yield* ThreadPageCheckAccess;
+    return yield* access
+      .updateThread({
+        threadId,
+        expectedRevision: body.expected_revision,
+        description: body.description,
+        status: body.status,
+        operationId: body.operation_id,
+      })
+      .pipe(
+        Effect.map((update) => respond(200, update)),
+        Effect.catchTags({
+          ThreadPageCheckAccessError: (error) => Effect.succeed(failureResponse(error)),
+          ThreadPageStaleRevisionError: (error) =>
+            Effect.succeed(
+              respond(409, {
+                error: "stale_revision",
+                message: error.message,
+                thread: error.thread,
+              }),
+            ),
+        }),
+      );
+  }),
+);
+
+export const layer = Layer.mergeAll(listThreadsRoute, addNoteRoute, updateThreadRoute);

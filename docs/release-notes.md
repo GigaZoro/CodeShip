@@ -1,3 +1,7 @@
+## 2026-11-14 — A scheduled-task check can change a ThreadPage thread's description and status
+
+- A run condition can now set a thread's description, status or both with `PATCH $T3CODE_THREADPAGE_URL/threads/<thread id>`, through the machine's saved ThreadPage token, so a check can write a heartbeat itself instead of starting a chat for it. The change names the `revision` the check read, which the folder list now shows for each thread: CodeShip reads the thread right before changing it, and when it has changed since, the check gets 409 `stale_revision` with the thread as it is now instead of overwriting it. It needs **Can edit and organize** access and answers ThreadPage's refusals the same way as listing threads and adding notes. See [Read and write ThreadPage from a check](user/project-settings.md#read-and-write-threadpage-from-a-check).
+
 ## 2026-11-14 — New worktrees run the repository's `t3.json` setup action
 
 - A worktree made for a chat that an agent, a scheduled task or an MCP launch starts could open with no `node_modules` and no `.t3/setup-*` marker, because the setup action only ran after someone imported it from `t3.json` in Settings. A project with no action list of its own now runs the setup action its `t3.json` declares. A project that edited its own actions keeps them as saved, including a list with no setup action.
