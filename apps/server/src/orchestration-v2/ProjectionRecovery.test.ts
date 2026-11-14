@@ -204,9 +204,15 @@ it.effect.each(["startup", "shutdown"] as const)(
       for (const threadId of durableThreads) {
         const projection = yield* projections.getThreadProjection(threadId);
         assert.equal(projection.runs[0]?.status, "queued");
-        assert.isTrue(projection.runs[0]?.queueHeld);
+        // Nothing resumes a cut run here, so at startup only what a person queued waits for them.
+        const releasedAtStartup = trigger === "startup" && !threadId.endsWith(":user");
+        assert.equal(projection.runs[0]?.queueHeld === true, !releasedAtStartup);
       }
-      assert.deepEqual(yield* projections.getRecoveryThreadIds("runtime"), []);
+      // A released message is still queued work, so recovery keeps listing it until it starts.
+      assert.deepEqual(
+        new Set(yield* projections.getRecoveryThreadIds("runtime")),
+        new Set(trigger === "startup" ? durableThreads.filter((id) => !id.endsWith(":user")) : []),
+      );
     }).pipe(Effect.provide(layerRecoveryTest)),
 );
 
