@@ -37,6 +37,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as TerminalManager from "./Manager.ts";
 import { terminalOutputStream } from "./OutputProtocol.ts";
@@ -1789,6 +1790,9 @@ it.layer(
             Layer.mergeAll(
               Layer.succeed(TerminalManager.TerminalManager, terminals),
               Layer.mock(ProjectService.ProjectService)({}),
+              Layer.mock(T3ProjectFileLoader.T3ProjectFileLoader)({
+                load: () => Effect.succeed(Option.none()),
+              }),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getThreadShell: () => Effect.succeed(null),
               }),
@@ -1938,6 +1942,9 @@ it.layer(
           Layer.mergeAll(
             Layer.succeed(TerminalManager.TerminalManager, manager),
             Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(T3ProjectFileLoader.T3ProjectFileLoader)({
+              load: () => Effect.succeed(Option.none()),
+            }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThreadShell: () => Effect.succeed(null),
             }),

@@ -1,5 +1,8 @@
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import {
+  buildProjectScript,
+  nextProjectScriptId,
+  projectScriptInputFromT3File,
   projectScriptRuntimeEnv,
   projectScriptTerminalInput,
   resolveProjectScripts,
@@ -21,6 +24,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import { BRACKETED_PASTE_ON, lineEditorReading } from "../terminal/lineEditor.ts";
 import * as ProjectService from "./ProjectService.ts";
+import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
 
 export interface ProjectSetupScriptRunnerResultNoScript {
   readonly status: "no-script";
@@ -236,6 +240,7 @@ export const make = Effect.gen(function* () {
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const terminalManager = yield* TerminalManager.TerminalManager;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const projectFileLoader = yield* T3ProjectFileLoader.T3ProjectFileLoader;
   const crypto = yield* Crypto.Crypto;
   const serviceScope = yield* Effect.scope;
 
@@ -456,8 +461,29 @@ export const make = Effect.gen(function* () {
     );
     const trigger = input.trigger ?? "setup";
     const scripts = resolveProjectScripts(settings, project);
+    // Agent, scheduled and MCP launches have no one to import t3.json's setup action, so a
+    // project with no action list of its own runs the repository's declared setup.
+    const fileSetup = Effect.gen(function* () {
+      if (settings.projectSettingsOverrides[project.id]?.defaultProjectScripts !== undefined)
+        return undefined;
+      const file = yield* projectFileLoader.load(project.workspaceRoot);
+      const declared = Option.getOrUndefined(file)?.scripts?.find(
+        (candidate) => candidate.runOnWorktreeCreate === true,
+      );
+      return declared === undefined
+        ? undefined
+        : buildProjectScript(
+            nextProjectScriptId(
+              declared.name,
+              scripts.map((existing) => existing.id),
+            ),
+            projectScriptInputFromT3File(declared),
+          );
+    });
     const script =
-      trigger === "settle" ? settleProjectScript(scripts) : setupProjectScript(scripts);
+      trigger === "settle"
+        ? settleProjectScript(scripts)
+        : (setupProjectScript(scripts) ?? (yield* fileSetup));
     if (!script) {
       return {
         status: "no-script",

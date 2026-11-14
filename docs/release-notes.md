@@ -1,3 +1,7 @@
+## 2026-11-14 — New worktrees run the repository's `t3.json` setup action
+
+- A worktree made for a chat that an agent, a scheduled task or an MCP launch starts could open with no `node_modules` and no `.t3/setup-*` marker, because the setup action only ran after someone imported it from `t3.json` in Settings. A project with no action list of its own now runs the setup action its `t3.json` declares. A project that edited its own actions keeps them as saved, including a list with no setup action.
+
 ## 2026-11-14 — Agents release a background wait with `clear: true`
 
 - `t3_background_wait` keeps a Claude chat in Working until the tasks it names end. To release that hold early, an agent now passes `clear: true`. The old `waiting` flag read like a field for what the agent was waiting on, so agents filled it with text such as "integration lock" and the call failed. Leaving out `clear` holds the chat in Working, as before.

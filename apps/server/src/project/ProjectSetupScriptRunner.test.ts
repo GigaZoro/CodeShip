@@ -3,6 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import {
   ProjectId,
+  type ProjectScript,
+  type T3ProjectFile,
   TerminalNotRunningError,
   type TerminalEvent,
   type TerminalSessionSnapshot,
@@ -12,6 +14,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -22,6 +25,7 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ProjectSetupScriptRunner from "./ProjectSetupScriptRunner.ts";
+import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
 
 const threadId = "thread-1";
 const terminalId = "setup-setup";
@@ -46,6 +50,9 @@ const makeHarness = Effect.fn(function* (options: {
   readonly history?: string;
   readonly opening?: Deferred.Deferred<void>;
   readonly shell?: string | null;
+  readonly projectScripts?: ReadonlyArray<ProjectScript>;
+  readonly projectFile?: T3ProjectFile;
+  readonly projectOverrideScripts?: ReadonlyArray<ProjectScript>;
 }) {
   const listeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
   const writes = yield* Queue.unbounded<string>();
@@ -76,7 +83,18 @@ const makeHarness = Effect.fn(function* (options: {
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadShell: () => Effect.succeed(null),
         }),
-        ServerSettings.layerTest(),
+        Layer.mock(T3ProjectFileLoader.T3ProjectFileLoader)({
+          load: () => Effect.succeed(Option.fromUndefinedOr(options.projectFile)),
+        }),
+        ServerSettings.layerTest(
+          options.projectOverrideScripts === undefined
+            ? {}
+            : {
+                projectSettingsOverrides: {
+                  "project-1": { defaultProjectScripts: [...options.projectOverrideScripts] },
+                },
+              },
+        ),
         NodeCrypto.layer,
       ),
     ),
@@ -88,7 +106,7 @@ const makeHarness = Effect.fn(function* (options: {
     project: {
       id: ProjectId.make("project-1"),
       workspaceRoot: "/repo",
-      scripts: [
+      scripts: options.projectScripts ?? [
         {
           id: "setup",
           name: "Setup",
@@ -118,7 +136,46 @@ const setup = Effect.fn(function* (
   return { ...harness, result, completion };
 });
 
+const repoSetupFile: T3ProjectFile = {
+  scripts: [
+    {
+      name: "Setup Worktree",
+      command: "node scripts/setup-worktree.ts",
+      runOnWorktreeCreate: true,
+    },
+  ],
+};
+
 describe("ProjectSetupScriptRunner", () => {
+  it.effect("runs the repository's t3.json setup action when the project has no action list", () =>
+    Effect.gen(function* () {
+      const { start } = yield* makeHarness({ projectScripts: [], projectFile: repoSetupFile });
+      expect(yield* start).toMatchObject({
+        status: "started",
+        scriptName: "Setup Worktree",
+        scriptCommand: "node scripts/setup-worktree.ts",
+      });
+    }),
+  );
+
+  it.effect("runs no setup when the project's own action list has none, even if t3.json does", () =>
+    Effect.gen(function* () {
+      const { start } = yield* makeHarness({
+        projectScripts: [],
+        projectFile: repoSetupFile,
+        projectOverrideScripts: [],
+      });
+      expect(yield* start).toEqual({ status: "no-script" });
+    }),
+  );
+
+  it.effect("runs no setup when neither the project nor t3.json declares one", () =>
+    Effect.gen(function* () {
+      const { start } = yield* makeHarness({ projectScripts: [] });
+      expect(yield* start).toEqual({ status: "no-script" });
+    }),
+  );
+
   it.effect("writes immediately when the spawned fallback is PowerShell", () =>
     Effect.gen(function* () {
       const { writes } = yield* setup({

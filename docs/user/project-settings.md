@@ -486,7 +486,9 @@ project crumb.
 The Projects category, under Code, holds the project's name, icon, actions,
 checkouts and removal. Actions belong to a project: editing them creates the project's own list
 on each selected environment, and reset returns to the environment's shared list. A project's
-`t3.json` actions can be imported there. On mobile, the same list is in **Settings → Projects →
+`t3.json` actions can be imported there. A project that has no action list of its own still runs the
+`runOnWorktreeCreate` action its `t3.json` declares when a worktree is created, so chats started by
+agents or scheduled tasks get their setup too. On mobile, the same list is in **Settings → Projects →
 Actions**, and a thread's terminal menu offers **Add action** while the project has none. Action
 shortcuts are set on desktop.
 
