@@ -50,10 +50,19 @@ treated as migrating.
 
 For a migrating update, the launcher refuses before stopping the old child when
 the snapshot will not fit on disk, so a full disk does not cause an outage. After
-the old child exits, it snapshots SQLite's main file, WAL, and shared-memory file.
-This makes trial migrations reversible without down migrations. The snapshot is
+the old child exits, a WAL database is pinned rather than copied: the launcher
+checkpoints it empty and a helper process holds a read transaction, so SQLite
+cannot checkpoint the trial's frames into the main file and every trial write
+stays in the WAL. Rollback kills the helper (a clean close would checkpoint),
+deletes the WAL and its index, and checks that the main file's size and mtime are
+unchanged. The snapshot costs the WAL's growth, not the database's size, which a
+filesystem without reflink would otherwise copy in full. A database that is not
+in WAL mode, or whose checkpoint is busy, falls back to copying SQLite's main
+file, WAL, and shared-memory file. Either way trial migrations are reversible
+without down migrations. The snapshot is
 made once per update and survives launcher restarts; replacing it during a retry
-could capture changes from the failed trial. An update that skips the snapshot
+could capture changes from the failed trial. A pin dies with the launcher, so a
+launcher that restarts mid-trial undoes the trial's WAL first and pins again. An update that skips the snapshot
 records that on its pending state, so the space check and the copy are both skipped.
 An older launcher ignores the field and snapshots every update, so the launcher
 needs a local service update to benefit.

@@ -198,7 +198,7 @@ async function copyDatabaseFile(source: string, destination: string): Promise<vo
 }
 
 const GIB = 1024 ** 3;
-// Cloned backups still need headroom for trial writes and migrations to diverge.
+// Pinned and cloned snapshots still need headroom for the trial's writes and migrations to land.
 const CLONED_BACKUP_MIN_HEADROOM_BYTES = GIB;
 const CLONED_BACKUP_HEADROOM_FRACTION = 0.1;
 
@@ -247,7 +247,8 @@ async function backupCanClone(dbPath: string, backupRoot: string): Promise<boole
 
 export interface BackupSpaceProbe {
   readonly readFreeBytes: (directory: string) => Promise<number>;
-  readonly canClone: (dbPath: string, backupRoot: string) => Promise<boolean>;
+  /** True when the snapshot costs headroom rather than a full copy: a WAL pin or a reflink clone. */
+  readonly avoidsFullCopy: (dbPath: string, backupRoot: string) => Promise<boolean>;
 }
 
 const filesystemBackupSpaceProbe: BackupSpaceProbe = {
@@ -255,7 +256,8 @@ const filesystemBackupSpaceProbe: BackupSpaceProbe = {
     const stats = await NodeFSP.statfs(directory);
     return stats.bavail * stats.bsize;
   },
-  canClone: backupCanClone,
+  avoidsFullCopy: async (dbPath, backupRoot) =>
+    (await isWalDatabase(dbPath)) || (await backupCanClone(dbPath, backupRoot)),
 };
 
 /** Check before stopping the server so full disks refuse updates without an outage. */
@@ -264,7 +266,7 @@ export async function databaseBackupBlocker(
   dbPath: string,
   probe: Partial<BackupSpaceProbe> = {},
 ): Promise<string | undefined> {
-  const { readFreeBytes, canClone } = { ...filesystemBackupSpaceProbe, ...probe };
+  const { readFreeBytes, avoidsFullCopy } = { ...filesystemBackupSpaceProbe, ...probe };
   const backupRoot = NodePath.join(baseDir, "runtime", "db-backup");
   await NodeFSP.mkdir(backupRoot, { recursive: true, mode: 0o700 });
   const [files, free] = await Promise.all([statDatabaseFiles(dbPath), readFreeBytes(backupRoot)]);
@@ -275,33 +277,193 @@ export async function databaseBackupBlocker(
     CLONED_BACKUP_MIN_HEADROOM_BYTES,
     size * CLONED_BACKUP_HEADROOM_FRACTION,
   );
-  const needed = (await canClone(dbPath, backupRoot)) ? clonedBytes : fullCopyBytes;
+  const needed = (await avoidsFullCopy(dbPath, backupRoot)) ? clonedBytes : fullCopyBytes;
   if (free >= needed) return undefined;
   const gb = (bytes: number) => (bytes / GIB).toFixed(1);
   return `Not enough free disk space to back up the database before updating: ${gb(needed)} GB needed, ${gb(free)} GB free. Free up disk space and try again. The server was not stopped.`;
 }
 
+const WAL_PIN_RECORD = "wal-pin.json";
+const WAL_PIN_START_TIMEOUT_MS = 60_000;
+const WAL_PIN_RELEASE_TIMEOUT_MS = 5_000;
+
+// A checkpoint cannot copy WAL frames past an open reader's snapshot into the main file, so this
+// read transaction keeps the trial's writes in the WAL. It is a separate process because closing a
+// SQLite connection checkpoints: rolling back kills it, and a killed process writes nothing.
+const WAL_PIN_SOURCE = `
+import { DatabaseSync } from "node:sqlite";
+import { statSync } from "node:fs";
+const dbPath = process.argv[1];
+const say = (line) => process.stdout.write(line + "\\n");
+const db = new DatabaseSync(dbPath);
+if (db.prepare("PRAGMA journal_mode").get().journal_mode !== "wal") { say("unpinnable:not-wal"); process.exit(0); }
+if (db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get().busy !== 0) { say("unpinnable:busy"); process.exit(0); }
+db.exec("BEGIN");
+db.prepare("SELECT count(*) FROM sqlite_master").get();
+const { size, mtimeMs } = statSync(dbPath);
+say("pinned:" + JSON.stringify({ size, mtimeMs }));
+process.stdin.on("data", (chunk) => { if (String(chunk).includes("release")) { db.close(); process.exit(0); } });
+process.stdin.on("end", () => process.exit(0));
+`;
+
+interface WalPinRecord {
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+const dbPins = new Map<string, NodeChildProcess.ChildProcess>();
+
+async function isWalDatabase(dbPath: string): Promise<boolean> {
+  let handle: NodeFSP.FileHandle | undefined;
+  try {
+    handle = await NodeFSP.open(dbPath, "r");
+    const header = Buffer.alloc(20);
+    const { bytesRead } = await handle.read(header, 0, 20, 0);
+    // Bytes 18 and 19 of the SQLite header are 2 when the file is in WAL mode.
+    return bytesRead === 20 && header[18] === 2 && header[19] === 2;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function startDatabasePin(updateId: string, dbPath: string): Promise<WalPinRecord | undefined> {
+  return new Promise((resolve) => {
+    const helper = NodeChildProcess.spawn(
+      process.execPath,
+      ["--no-warnings", "--input-type=module", "-e", WAL_PIN_SOURCE, dbPath],
+      { stdio: ["pipe", "pipe", "inherit"] },
+    );
+    let settled = false;
+    let output = "";
+    const settle = (record: WalPinRecord | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (record === undefined) helper.kill("SIGKILL");
+      else dbPins.set(updateId, helper);
+      resolve(record);
+    };
+    const timer = setTimeout(() => settle(undefined), WAL_PIN_START_TIMEOUT_MS);
+    helper.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      const lineEnd = output.indexOf("\n");
+      if (lineEnd === -1) return;
+      const line = output.slice(0, lineEnd);
+      if (!line.startsWith("pinned:")) return settle(undefined);
+      try {
+        settle(JSON.parse(line.slice("pinned:".length)) as WalPinRecord);
+      } catch {
+        settle(undefined);
+      }
+    });
+    helper.once("error", () => settle(undefined));
+    helper.once("exit", () => settle(undefined));
+  });
+}
+
+const pinHasExited = (helper: NodeChildProcess.ChildProcess) =>
+  helper.exitCode !== null || helper.signalCode !== null;
+
+// Keeps whatever the trial wrote: the update committed, or nobody may roll the database back.
+async function releaseDatabasePin(updateId: string): Promise<void> {
+  const helper = dbPins.get(updateId);
+  if (helper === undefined) return;
+  dbPins.delete(updateId);
+  if (pinHasExited(helper)) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      helper.kill("SIGKILL");
+      resolve();
+    }, WAL_PIN_RELEASE_TIMEOUT_MS);
+    helper.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    helper.stdin?.end("release\n");
+  });
+}
+
+async function killDatabasePin(updateId: string): Promise<void> {
+  const helper = dbPins.get(updateId);
+  if (helper === undefined) return;
+  dbPins.delete(updateId);
+  if (pinHasExited(helper)) return;
+  await new Promise<void>((resolve) => {
+    helper.once("exit", () => resolve());
+    helper.kill("SIGKILL");
+  });
+}
+
+async function readWalPinRecord(backupDir: string): Promise<WalPinRecord | undefined> {
+  try {
+    return JSON.parse(
+      await NodeFSP.readFile(NodePath.join(backupDir, WAL_PIN_RECORD), "utf8"),
+    ) as WalPinRecord;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw cause;
+  }
+}
+
+// The pin kept the main file as the update found it, so a changed size or mtime means something
+// wrote to it and there is no safe database to boot.
+async function undoPinnedTrial(dbPath: string, record: WalPinRecord): Promise<void> {
+  const target = await restoreTarget(dbPath);
+  const stat = await NodeFSP.stat(target);
+  if (stat.size !== record.size || stat.mtimeMs !== record.mtimeMs) {
+    throw new Error("The database file changed during the update trial; it cannot be rolled back.");
+  }
+  const directories = new Set<string>();
+  for (const base of new Set([dbPath, target])) {
+    for (const suffix of ["-wal", "-shm"] as const) {
+      await NodeFSP.rm(`${base}${suffix}`, { force: true });
+    }
+    directories.add(NodePath.dirname(base));
+  }
+  for (const directory of directories) await syncDirectory(directory);
+}
+
 // Preserve completed backups; restarted trials may already have changed the live database.
 // A target that applies no migration leaves the schema as it was, so there is nothing to undo.
+// A WAL database is pinned, not copied: the trial's writes stay in the WAL, which rolling back
+// deletes, so the snapshot costs the WAL's size and not the database's.
 async function backupDatabaseOnce(baseDir: string, pending: PendingServiceUpdate): Promise<void> {
   if (pending.migratesDatabase === false) return;
   const backupDir = databaseBackupDir(baseDir, pending.id);
-  if (await pathExists(backupDir)) return;
+  if (await pathExists(backupDir)) {
+    const record = await readWalPinRecord(backupDir);
+    if (record === undefined || dbPins.has(pending.id)) return;
+    // The launcher restarted mid-trial and lost its pin: undo that trial, then pin again.
+    await undoPinnedTrial(pending.dbPath, record);
+    await NodeFSP.rm(backupDir, { recursive: true, force: true });
+  }
 
   const stagingDir = `${backupDir}.staging`;
   await NodeFSP.rm(stagingDir, { recursive: true, force: true });
   await NodeFSP.mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
-    for (const suffix of DB_FILE_SUFFIXES) {
-      const source = `${pending.dbPath}${suffix}`;
-      if (suffix !== "" && !(await pathExists(source))) continue;
-      const destination = databaseBackupFile(stagingDir, suffix);
-      await copyDatabaseFile(source, destination);
-      await syncFile(destination);
+    const pin = (await isWalDatabase(pending.dbPath))
+      ? await startDatabasePin(pending.id, pending.dbPath)
+      : undefined;
+    if (pin === undefined) {
+      for (const suffix of DB_FILE_SUFFIXES) {
+        const source = `${pending.dbPath}${suffix}`;
+        if (suffix !== "" && !(await pathExists(source))) continue;
+        const destination = databaseBackupFile(stagingDir, suffix);
+        await copyDatabaseFile(source, destination);
+        await syncFile(destination);
+      }
+    } else {
+      const recordPath = NodePath.join(stagingDir, WAL_PIN_RECORD);
+      await NodeFSP.writeFile(recordPath, JSON.stringify(pin), { mode: 0o600 });
+      await syncFile(recordPath);
     }
     await NodeFSP.rename(stagingDir, backupDir);
     await syncDirectory(NodePath.dirname(backupDir));
   } catch (cause) {
+    await releaseDatabasePin(pending.id).catch(() => undefined);
     await NodeFSP.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     throw cause;
   }
@@ -358,6 +520,12 @@ async function restoreDatabaseBackup(
   if (!(await pathExists(backupDir))) return;
 
   await markDatabaseRestorePending(backupDir);
+  const pinRecord = await readWalPinRecord(backupDir);
+  if (pinRecord !== undefined) {
+    await killDatabasePin(pending.id);
+    await undoPinnedTrial(pending.dbPath, pinRecord);
+    return;
+  }
   const directories = new Set([NodePath.dirname(pending.dbPath)]);
   for (const suffix of DB_FILE_SUFFIXES) {
     const livePath = `${pending.dbPath}${suffix}`;
@@ -376,6 +544,7 @@ async function restoreDatabaseBackup(
 }
 
 async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
+  await releaseDatabasePin(updateId);
   const backupDir = databaseBackupDir(baseDir, updateId);
   if (!(await pathExists(backupDir))) return;
   await NodeFSP.rm(backupDir, { recursive: true, force: true });

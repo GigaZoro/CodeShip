@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - observes the children the launcher spawns with Node built-ins.
 import type * as NodeChildProcess from "node:child_process";
+import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -732,6 +733,92 @@ if (context.update?.status === "pending") {
       }),
   );
 
+  it.effect("rolls a migrating trial back without copying a WAL database", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-walpin-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const databasePath = path.join(root, "userdata", "state.sqlite");
+      const listingPath = path.join(root, "backup-listing.txt");
+      yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+      const seed = new NodeSqlite.DatabaseSync(databasePath);
+      seed.exec("PRAGMA journal_mode = WAL; CREATE TABLE t (x); INSERT INTO t VALUES (1), (2);");
+      seed.close();
+      const encoded = JSON.stringify({ databasePath, listingPath });
+      const childSource = `
+import { readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+const paths = ${encoded};
+const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+if (context.update?.status === "pending") {
+  const backupDir = join(paths.databasePath, "..", "..", "runtime", "db-backup", context.update.id);
+  writeFileSync(paths.listingPath, readdirSync(backupDir).join(","));
+  const db = new DatabaseSync(paths.databasePath);
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 1; PRAGMA busy_timeout = 0");
+  db.exec("CREATE TABLE u (y); INSERT INTO t VALUES (3)");
+  for (let i = 0; i < 500; i++) db.exec("INSERT INTO u VALUES (" + i + ")");
+  db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").all();
+  db.close();
+  process.exit(1);
+} else if (context.update === undefined) {
+  process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: paths.databasePath });
+  setInterval(() => {}, 1_000);
+} else {
+  process.exit(0);
+}
+`;
+      for (const version of ["1.0.0", "1.1.0"]) {
+        yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "runtime", "versions", version),
+          childSource,
+        );
+      }
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      assert.equal(yield* fs.readFileString(listingPath), "wal-pin.json");
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.update?.status, "rolled-back");
+      assert.isFalse(yield* fs.exists(`${databasePath}-wal`));
+      assert.isFalse(yield* fs.exists(`${databasePath}-shm`));
+      const restored = new NodeSqlite.DatabaseSync(databasePath);
+      try {
+        assert.deepEqual(
+          restored
+            .prepare("SELECT x FROM t ORDER BY x")
+            .all()
+            .map((row) => row.x),
+          [1, 2],
+        );
+        assert.deepEqual(
+          restored
+            .prepare("SELECT name FROM sqlite_master")
+            .all()
+            .map((row) => row.name),
+          ["t"],
+        );
+      } finally {
+        restored.close();
+      }
+    }),
+  );
+
   const requestRejectedUpdate = (backupSpaceProbe: Partial<BackupSpaceProbe>) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -802,7 +889,7 @@ if (context.update?.status === "pending") {
     Effect.gen(function* () {
       const { reason, trialStarted, state } = yield* requestRejectedUpdate({
         readFreeBytes: () => Promise.resolve(0),
-        canClone: () => Promise.resolve(true),
+        avoidsFullCopy: () => Promise.resolve(true),
       });
 
       assert.include(reason, "Not enough free disk space");
@@ -900,7 +987,7 @@ setInterval(() => {}, 1_000);
         Effect.promise(() =>
           databaseBackupBlocker(root, databasePath, {
             readFreeBytes: () => Promise.resolve(free),
-            canClone: () => Promise.resolve(cloneable),
+            avoidsFullCopy: () => Promise.resolve(cloneable),
           }),
         );
 

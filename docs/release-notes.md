@@ -1,3 +1,7 @@
+## 2026-11-14 — Server updates that migrate the database no longer copy it
+
+- An update that changes the database schema copied the whole database file for its rollback, which on a disk without copy-on-write (ext4) took minutes and could stall a busy disk. When the database is in WAL mode, as it always is here, the launcher now holds the database as it was and keeps the new version's changes in the write-ahead log, which a failed update deletes. The rollback needs free space only for what the migrations change. A failed update still restores the database before either version starts. The launcher picks this up after a local `t3 service update`.
+
 ## 2026-11-14 — A server update brings the background service its new launcher
 
 - The launcher that runs the background service stayed on the release that installed it, so a launcher fix reached a machine only after someone ran `t3 service install` there. After an update commits, and whenever the service starts, the old launcher now checks that the newer release's launcher loads the service state and then hands the service to it. If that launcher fails the check or exits with an error, the old one keeps running the service. The one-time `t3 service install` is needed only once more, to put a service on a launcher that has this hand-off.
