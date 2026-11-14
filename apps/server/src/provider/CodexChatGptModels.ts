@@ -11,6 +11,7 @@ import {
   traceableErrorCode,
   type CodexChatGptCredentials,
 } from "./CodexChatGptAuth.ts";
+import { CHATGPT_TOKEN_REVOKED, CHATGPT_TOKEN_REVOKED_DETAIL } from "./CodexLoginRejected.ts";
 import { CODEX_ORIGINATOR, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
 export class ChatGptCatalogError extends Schema.TaggedError<ChatGptCatalogError>()(
@@ -51,31 +52,42 @@ const isRefusedToken = (error: unknown) =>
 /**
  * Runs `load` with the connection's token. ChatGPT can revoke a session before its token
  * expires, so a refused token gets one forced renewal and one retry before it means sign in again.
+ * The auth saves that outcome with the sign-in until one of its tokens works again.
  */
 export const withChatGptToken = Effect.fn("withChatGptToken")(function* <A, E, R>(
   auth: {
     readonly renew: (
       rejected: CodexChatGptCredentials,
     ) => Effect.Effect<CodexChatGptCredentials, ProviderSetupError>;
+    readonly markRefused: (credentials: CodexChatGptCredentials) => Effect.Effect<void>;
+    readonly markAccepted: (credentials: CodexChatGptCredentials) => Effect.Effect<void>;
   },
   instanceId: ProviderInstanceId,
   credentials: CodexChatGptCredentials,
   load: (accessToken: string) => Effect.Effect<A, E, R>,
 ) {
   const first = yield* Effect.result(load(credentials.accessToken));
-  if (first._tag === "Success") return { credentials, value: first.success };
+  if (first._tag === "Success") {
+    yield* auth.markAccepted(credentials);
+    return { credentials, value: first.success };
+  }
   if (!isRefusedToken(first.failure)) return yield* Effect.fail(first.failure);
   const revoked = new ProviderSetupError({
     instanceId,
-    operation: "models",
-    detail: "Your ChatGPT connection was revoked. Sign in again.",
+    operation: CHATGPT_TOKEN_REVOKED,
+    detail: CHATGPT_TOKEN_REVOKED_DETAIL,
   });
   const renewed = yield* auth
     .renew(credentials)
     .pipe(Effect.mapError((error) => (error.operation === CHATGPT_SIGNED_OUT ? revoked : error)));
   const second = yield* Effect.result(load(renewed.accessToken));
-  if (second._tag === "Success") return { credentials: renewed, value: second.success };
-  return yield* Effect.fail(isRefusedToken(second.failure) ? revoked : second.failure);
+  if (second._tag === "Success") {
+    yield* auth.markAccepted(renewed);
+    return { credentials: renewed, value: second.success };
+  }
+  if (!isRefusedToken(second.failure)) return yield* Effect.fail(second.failure);
+  yield* auth.markRefused(renewed);
+  return yield* revoked;
 });
 
 const CodexCatalog = Schema.Struct({

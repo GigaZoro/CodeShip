@@ -296,6 +296,10 @@ export const CodexDriver: ProviderDriver<
       },
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        // The probe reads a rejected login as signed out, which moves the run to another account.
+        onAuthenticationFailed: Effect.suspend(() => snapshot.refresh).pipe(
+          Effect.ignoreCause({ log: true }),
+        ),
         compatibility: installation.compatibility,
         resolveBinaryPath: acquireBinaryPath,
       },

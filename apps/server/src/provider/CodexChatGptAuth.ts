@@ -41,7 +41,7 @@ const TRACEABLE_CODE = /^[a-z0-9_.-]{1,64}$/iu;
 export const traceableErrorCode = (code: string | null | undefined) =>
   code && TRACEABLE_CODE.test(code) ? code : undefined;
 const RESOURCE = "https://api.openai.com/v1";
-const REQUIRED_SCOPE = "chatgpt.tokens.use.direct";
+export const CHATGPT_SHARING_SCOPE = "chatgpt.tokens.use.direct";
 const DISCOVERY = "https://auth.openai.com/.well-known/openid-configuration";
 const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
@@ -63,6 +63,9 @@ const Record = Schema.Struct({
   email: Schema.NullOr(Schema.String),
   idToken: Schema.optionalKey(Schema.String),
   issuer: Schema.optionalKey(Schema.String),
+  // ChatGPT refused this sign-in even after renewing its token. Saved with the sign-in, so after
+  // a restart and on every server sharing the store it stays signed out until a token works.
+  refused: Schema.optionalKey(Schema.Literal(true)),
 });
 export type CodexChatGptCredentials = typeof Record.Type;
 const Sessions = Schema.Struct({
@@ -236,12 +239,14 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
           ),
     ),
   );
-  const read = readSessions.pipe(
+  const readActive = readSessions.pipe(
     Effect.map((saved) =>
       Option.fromUndefinedOr(
         saved.sessions.find((session) => session.clientId === saved.activeClientId),
       ),
     ),
+  );
+  const read = readActive.pipe(
     // The OpenAI account is the person, so it marks who owns this install.
     Effect.tap((credentials) => {
       const userId = Option.flatMap(credentials, (saved) =>
@@ -321,7 +326,8 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       if (Option.isNone(credentialBytes)) continue;
       const saved = yield* decodeSessions(new TextDecoder().decode(credentialBytes.value));
       for (const session of "sessions" in saved ? saved.sessions : [saved]) {
-        if (!session.scopes.includes(REQUIRED_SCOPE) || connections.has(session.clientId)) continue;
+        if (!session.scopes.includes(CHATGPT_SHARING_SCOPE) || connections.has(session.clientId))
+          continue;
         connections.add(session.clientId);
         // Client-scoped subjects need verified email for local counting only; never export email or merge profiles.
         const email = session.email?.trim().toLowerCase();
@@ -548,7 +554,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
             ...(savedRegistration?.email ? { login_hint: savedRegistration.email } : {}),
             ...(idTokenHint ? { id_token_hint: idTokenHint } : {}),
             ...(savedRegistration?.sharingEnabled === false ||
-            (selectedTokens && !selectedTokens.scopes.includes(REQUIRED_SCOPE))
+            (selectedTokens && !selectedTokens.scopes.includes(CHATGPT_SHARING_SCOPE))
               ? { prompt: "consent" }
               : {}),
           }
@@ -698,7 +704,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
           yield* saveRegistration({
             clientId,
             redirectUri,
-            sharingEnabled: scopes.includes(REQUIRED_SCOPE),
+            sharingEnabled: scopes.includes(CHATGPT_SHARING_SCOPE),
             ...identity,
           });
           yield* save(
@@ -713,11 +719,11 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
               scopes,
               ...identity,
             },
-            scopes.includes(REQUIRED_SCOPE) || Option.isNone(yield* read),
+            scopes.includes(CHATGPT_SHARING_SCOPE) || Option.isNone(yield* read),
           );
         }),
       );
-      if (!scopes.includes(REQUIRED_SCOPE))
+      if (!scopes.includes(CHATGPT_SHARING_SCOPE))
         return yield* failure(
           "sharing",
           previous && previous.clientId !== clientId
@@ -760,6 +766,33 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
         ),
       )
       .pipe(Effect.map(Hex.encode), Effect.orDie);
+  // ChatGPT's verdict on a token applies only while that token is the one saved: a late answer
+  // for a token renewal or a new sign-in replaced says nothing about the saved sign-in.
+  const savedWithOtherVerdict = (record: CodexChatGptCredentials, refused: boolean) =>
+    readActive.pipe(
+      Effect.map(
+        Option.filter(
+          (saved) =>
+            saved.accessToken === record.accessToken && (saved.refused === true) !== refused,
+        ),
+      ),
+    );
+  const recordVerdict = Effect.fn("CodexChatGptAuth.recordVerdict")(
+    function* (record: CodexChatGptCredentials, refused: boolean) {
+      // Most answers change nothing, so only a change takes the credential locks.
+      if (Option.isNone(yield* savedWithOtherVerdict(record, refused))) return;
+      yield* Effect.gen(function* () {
+        const saved = yield* savedWithOtherVerdict(record, refused);
+        if (Option.isNone(saved)) return;
+        const { refused: _refused, ...rest } = saved.value;
+        yield* save(refused ? { ...rest, refused: true } : rest);
+      }).pipe(Effect.uninterruptible, withSessionLock, lock.withPermit);
+    },
+    // The answer the caller got stands; only its record for later checks is lost.
+    Effect.catch((cause) =>
+      Effect.logError("Could not save ChatGPT's answer for the saved sign-in.", { cause }),
+    ),
+  );
   // `rejected` is a token the API refused: renew it whatever its expiry says, unless another
   // caller already replaced it.
   const authorize = Effect.fn("CodexChatGptAuth.authorize")(
@@ -775,7 +808,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
         return yield* failure("access", "The ChatGPT connection changed. Start a new session.");
       if (rejected && (yield* profileKey(record)) !== (yield* profileKey(rejected)))
         return yield* failure("access", "The ChatGPT connection changed. Retry.");
-      if (!record.scopes.includes(REQUIRED_SCOPE))
+      if (!record.scopes.includes(CHATGPT_SHARING_SCOPE))
         return yield* failure(
           "sharing",
           "Token sharing is disabled. Sign in with ChatGPT and enable token sharing.",
@@ -830,7 +863,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
         scopes: tokens.scope.split(/\s+/).filter(Boolean),
       };
       yield* save(record);
-      if (!record.scopes.includes(REQUIRED_SCOPE))
+      if (!record.scopes.includes(CHATGPT_SHARING_SCOPE))
         return yield* failure(
           "sharing",
           "ChatGPT token sharing is no longer enabled. Sign in again.",
@@ -984,7 +1017,7 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
       if (
         credentials.clientId !== profile.registration.clientId ||
         credentials.issuer !== endpoints.issuer ||
-        !credentials.scopes.includes(REQUIRED_SCOPE) ||
+        !credentials.scopes.includes(CHATGPT_SHARING_SCOPE) ||
         credentials.expiresAt <= (yield* Clock.currentTimeMillis)
       )
         return yield* failure(
@@ -1044,6 +1077,10 @@ export const makeCodexChatGptAuth = Effect.fn("makeCodexChatGptAuth")(function* 
     /** Emits when a refused renewal clears this connection, from any auth bound to it. */
     signedOut: Stream.fromPubSub(signedOut),
     profileKey,
+    /** Saves that ChatGPT refused this token even after renewal, if it is still the saved one. */
+    markRefused: (record: CodexChatGptCredentials) => recordVerdict(record, true),
+    /** Clears a saved refusal once this token, still the saved one, worked. */
+    markAccepted: (record: CodexChatGptCredentials) => recordVerdict(record, false),
     exportProfile,
     revoke: lock.withPermit(withSessionLock(remove)),
   };

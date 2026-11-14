@@ -7,6 +7,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
+  makeProviderFailure,
+} from "@t3tools/provider-core/server/failure";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -15,6 +19,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -41,6 +46,7 @@ import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderCredentialStore from "../ProviderCredentialStore.ts";
+import { codexAccountLimitsHomePath } from "../CodexLimitsLogin.ts";
 import * as ProviderHostLive from "../ProviderHostLive.ts";
 
 const layerDeps = ServerConfig.layerTest(process.cwd(), {
@@ -102,6 +108,7 @@ const noSpawn = ChildProcessSpawner.make(() =>
   Effect.die("Disabled Codex must not spawn a process"),
 );
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionError);
 
 it.layer(layerTest)("CodexDriver", (it) => {
   const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
@@ -342,6 +349,300 @@ it.layer(layerTest)("CodexDriver", (it) => {
     "managed catalog keeps its account label and token together: %s",
     checkManagedAccount,
   );
+
+  const checkSharingAccount = (
+    scenario:
+      | "recovers"
+      | "replaced"
+      | "refused-after-success"
+      | "refused-after-failure"
+      | "restarted"
+      | "sharing-disabled",
+  ) =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make(`sharing-${scenario}`);
+      const credentials = new Map<string, Uint8Array>();
+      const catalogTokens: Array<string> = [];
+      let catalog: "refused" | "unavailable" | "accepted" = "refused";
+      let renewals = 0;
+      const renewedRequestHeld = yield* Deferred.make<void>();
+      const releaseRenewedRequest = yield* Deferred.make<void>();
+      const limitsReadHeld = yield* Deferred.make<void>();
+      const releaseLimitsRead = yield* Deferred.make<void>();
+      const secondRefusalSaved = yield* Deferred.make<void>();
+      const secrets = ServerSecretStore.ServerSecretStore.of({
+        get: (key) => Effect.sync(() => Option.fromUndefinedOr(credentials.get(key))),
+        set: (key, value) =>
+          Effect.suspend(() => {
+            credentials.set(key, value);
+            const saved = new TextDecoder().decode(value);
+            return saved.includes('"renewed-access-2"') && saved.includes('"refused":true')
+              ? Deferred.succeed(secondRefusalSaved, undefined)
+              : Effect.void;
+          }),
+        remove: (key) =>
+          Effect.sync(() => {
+            credentials.delete(key);
+          }),
+        create: () => Effect.die("unused"),
+        getOrCreateRandom: () => Effect.die("unused"),
+      });
+      yield* Effect.gen(function* () {
+        const store = yield* ProviderCredentialStore.make("codex-chatgpt", instanceId);
+        const saved = yield* encodeCredentials({
+          clientId: "oaiapp_test",
+          accessToken: "dummy-refused-access",
+          refreshToken: "dummy-refresh",
+          expiresAt: Number.MAX_SAFE_INTEGER,
+          earliestRefreshAt: null,
+          scopes: scenario === "sharing-disabled" ? [] : ["chatgpt.tokens.use.direct"],
+          subject: "test-user",
+          email: "account@example.test",
+        });
+        yield* store.set(new TextEncoder().encode(saved));
+        const executable = {
+          executablePath: "/user/bin/codex",
+          managedVersionDirectory: null,
+          source: "local" as const,
+          version: "0.156.1",
+        };
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const limitsHome = codexAccountLimitsHomePath(
+          yield* Path.Path,
+          serverConfig.stateDir,
+          instanceId,
+        );
+        // Both startup checks stop before any catalog request, so each refresh below is the only
+        // check that reaches ChatGPT. A sign-in without token sharing never gets that far.
+        let startupChecks = scenario === "sharing-disabled" ? 0 : 2;
+        const startupChecksStopped = yield* Deferred.make<void>();
+        if (startupChecks === 0) yield* Deferred.succeed(startupChecksStopped, undefined);
+        const acquire = () =>
+          Effect.suspend(() => {
+            if (startupChecks === 0) return Effect.succeed(executable);
+            startupChecks -= 1;
+            return (
+              startupChecks === 0 ? Deferred.succeed(startupChecksStopped, undefined) : Effect.void
+            ).pipe(Effect.andThen(Effect.interrupt));
+          });
+        const start = CodexDriver.create({
+          instanceId,
+          displayName: "Sharing account",
+          enabled: true,
+          environment: [],
+          config: {
+            ...CodexDriver.defaultConfig(),
+            setupMode: "managed",
+            homePath: NodePath.join(serverConfig.stateDir, `${scenario}-codex-home`),
+          },
+        }).pipe(
+          Effect.provideService(
+            CodexInstallation.CodexInstallation,
+            CodexInstallation.CodexInstallation.of({
+              ...installation,
+              managedDirectory: "unused-managed-installation",
+              resolve: () => Effect.succeed(executable),
+              acquire,
+            }),
+          ),
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) =>
+              Effect.gen(function* () {
+                // The first limits probe waits, as a slow one does, while a refusal lands.
+                if (
+                  ChildProcess.isStandardCommand(command) &&
+                  command.options.env?.CODEX_HOME === limitsHome
+                ) {
+                  yield* Deferred.succeed(limitsReadHeld, undefined);
+                  yield* Deferred.await(releaseLimitsRead);
+                }
+                return yield* PlatformError.badArgument({
+                  module: "ChildProcessSpawner",
+                  method: "spawn",
+                  description: "The fixture app-server is unavailable",
+                });
+              }),
+            ),
+          ),
+        );
+        const instance = yield* start;
+        const openSession = instance.orchestrationAdapter
+          .openSession({
+            threadId: ThreadId.make(`${scenario}-thread`),
+            providerSessionId: ProviderSessionId.make(`${scenario}-session`),
+            modelSelection: { instanceId, model: "gpt-5.4" },
+            runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: serverConfig.stateDir,
+            }),
+          })
+          .pipe(Effect.scoped, Effect.flip);
+
+        yield* Deferred.await(startupChecksStopped);
+
+        if (scenario === "sharing-disabled") {
+          const started = yield* openSession;
+          // Only signing in again with token sharing fixes it, so the run moves to another account.
+          expect(isOpenSessionError(started) && started.requiresSignIn).toBe(true);
+          expect(makeProviderFailure({ cause: started }).code).toBe(
+            AUTHENTICATION_FAILED_FAILURE_CODE,
+          );
+          expect(catalogTokens).toEqual([]);
+          return;
+        }
+
+        const refused = yield* instance.snapshot.refresh;
+        expect(catalogTokens).toEqual(["Bearer dummy-refused-access", "Bearer renewed-access-1"]);
+        expect(refused.auth.status).toBe("unauthenticated");
+        expect(refused.message).toBe("Your ChatGPT connection was revoked. Sign in again.");
+        // The sign-in stays saved, so a refusal ChatGPT later lifts needs no new sign-in.
+        expect(Option.isSome(yield* store.get)).toBe(true);
+
+        if (scenario === "replaced") {
+          const replacement = yield* encodeCredentials({
+            clientId: "oaiapp_replacement",
+            subject: "replacement-user",
+            email: "replacement@example.test",
+            accessToken: "replacement-access",
+            refreshToken: "replacement-refresh",
+            expiresAt: Number.MAX_SAFE_INTEGER,
+            earliestRefreshAt: null,
+            scopes: ["chatgpt.tokens.use.direct"],
+          });
+          const check = yield* instance.snapshot.refresh.pipe(Effect.forkChild);
+          yield* Deferred.await(renewedRequestHeld);
+          yield* store.set(new TextEncoder().encode(replacement));
+          yield* Deferred.succeed(releaseRenewedRequest, undefined);
+          // ChatGPT refused the replaced sign-in, not the one saved now.
+          const checked = yield* Fiber.join(check);
+          expect(checked.auth.status).toBe("authenticated");
+          expect(checked.auth.profileId).toBe("oaiapp_replacement");
+          return;
+        }
+
+        if (scenario === "refused-after-success" || scenario === "refused-after-failure") {
+          catalog = "accepted";
+          if (scenario === "refused-after-failure") {
+            expect((yield* instance.snapshot.refresh).auth.status).toBe("authenticated");
+            catalog = "unavailable";
+          }
+          // A made-up Codex login, so the check also reads this account's limits through it.
+          const claims = {
+            email: "account@example.test",
+            "https://api.openai.com/auth": { chatgpt_account_id: "acct" },
+          };
+          const fileSystem = yield* FileSystem.FileSystem;
+          yield* fileSystem.makeDirectory(limitsHome, { recursive: true });
+          yield* fileSystem.writeFileString(
+            NodePath.join(limitsHome, "auth.json"),
+            JSON.stringify({
+              tokens: {
+                id_token: `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`,
+              },
+            }),
+          );
+          const check = yield* instance.snapshot.refresh.pipe(Effect.forkChild);
+          yield* Deferred.await(limitsReadHeld);
+          // A run starting meanwhile renews the token, and ChatGPT refuses the renewed one too.
+          catalog = "refused";
+          const started = yield* openSession.pipe(Effect.forkChild);
+          yield* Deferred.await(secondRefusalSaved);
+          yield* Deferred.succeed(releaseLimitsRead, undefined);
+          // What the check saw before its limits loaded says nothing about the refused sign-in.
+          const checked = yield* Fiber.join(check);
+          expect(checked.auth.status).toBe("unauthenticated");
+          expect(checked.message).toBe("Your ChatGPT connection was revoked. Sign in again.");
+          expect(isOpenSessionError(yield* Fiber.join(started))).toBe(true);
+          return;
+        }
+
+        // A failure that is not a refusal keeps the account signed out until its token works again.
+        catalog = "unavailable";
+        if (scenario === "restarted") {
+          // A new secret store service shares nothing in memory with the first server, as after a restart.
+          const restarted = yield* start.pipe(
+            Effect.provideService(ServerSecretStore.ServerSecretStore, { ...secrets }),
+          );
+          expect((yield* restarted.snapshot.refresh).auth.status).toBe("unauthenticated");
+          return;
+        }
+        expect((yield* instance.snapshot.refresh).auth.status).toBe("unauthenticated");
+        catalog = "accepted";
+        expect((yield* instance.snapshot.refresh).auth.status).toBe("authenticated");
+        catalog = "unavailable";
+        const recovered = yield* instance.snapshot.refresh;
+        expect(recovered.auth.status).toBe("authenticated");
+        expect(recovered.message).toBe(
+          "Could not check Codex right now. Retry, or reconnect in provider settings.",
+        );
+      }).pipe(
+        Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.gen(function* () {
+              if (request.url.endsWith("/v1/models")) {
+                const token = request.headers.authorization ?? "";
+                catalogTokens.push(token);
+                if (scenario === "replaced" && token === "Bearer renewed-access-2") {
+                  yield* Deferred.succeed(renewedRequestHeld, undefined);
+                  yield* Deferred.await(releaseRenewedRequest);
+                }
+                return HttpClientResponse.fromWeb(
+                  request,
+                  catalog === "accepted"
+                    ? Response.json({ models: [] })
+                    : Response.json(
+                        {
+                          error: { code: catalog === "refused" ? "token_revoked" : "unavailable" },
+                        },
+                        { status: catalog === "refused" ? 401 : 503 },
+                      ),
+                );
+              }
+              if (request.url.endsWith("/oauth/token")) {
+                renewals += 1;
+                return HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({
+                    access_token: `renewed-access-${renewals}`,
+                    refresh_token: `renewed-refresh-${renewals}`,
+                    token_type: "Bearer",
+                    expires_in: 3600,
+                    scope: "chatgpt.tokens.use.direct",
+                  }),
+                );
+              }
+              expect(request.url).toBe("https://auth.openai.com/.well-known/openid-configuration");
+              return HttpClientResponse.fromWeb(
+                request,
+                Response.json({
+                  issuer: "https://auth.openai.com",
+                  authorization_endpoint: "https://auth.openai.com/api/accounts/authorize",
+                  token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
+                  jwks_uri: "https://auth.openai.com/jwks",
+                  revocation_endpoint: "https://auth.openai.com/revoke",
+                }),
+              );
+            }),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped);
+  // regression: a token ChatGPT refused even after renewal, a refusal saved while a check read
+  // its limits, or a sign-in without token sharing kept the account signed in, so Auto kept
+  // choosing an account that could not run.
+  it.effect.each([
+    "recovers",
+    "replaced",
+    "refused-after-success",
+    "refused-after-failure",
+    "restarted",
+    "sharing-disabled",
+  ] as const)("shows a ChatGPT connection that cannot run as signed out: %s", checkSharingAccount);
 
   // regression: an existing-CLI account with the default path reported "Not found" on a machine
   // with no `codex` on PATH, although T3.CodeShip had a copy of its own.

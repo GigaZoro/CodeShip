@@ -24,7 +24,11 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProviderCredentialStore from "./ProviderCredentialStore.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
-import { chatGptCodexCatalog, withChatGptToken } from "./CodexChatGptModels.ts";
+import {
+  ChatGptCatalogError,
+  chatGptCodexCatalog,
+  withChatGptToken,
+} from "./CodexChatGptModels.ts";
 
 const assertSameCallback = (actual: string | null, expected: string | null) => {
   const left = new URL(actual!);
@@ -836,6 +840,32 @@ it.effect.each([
       const traced = JSON.stringify(spans.map((span) => [...span.attributes]));
       for (const secret of ["initial-access", "initial-refresh", "access-1", "refresh-1"])
         assert.notInclude(traced, secret);
+    }),
+  ),
+);
+
+// regression: a request that finished after its token was renewed decided for the renewed token,
+// so a late success signed an account back in after ChatGPT had refused its renewed token.
+it.effect("a late success for a renewed-away token keeps ChatGPT's refusal of the new one", () =>
+  provision(
+    Effect.gen(function* () {
+      const h = yield* makeHarness;
+      yield* h.signIn;
+      yield* h.phase("succeeded");
+      const first = Option.getOrThrow(yield* h.auth.read);
+      const answerLate = yield* Deferred.make<void>();
+      const late = yield* withChatGptToken(h.auth, instanceId, first, () =>
+        Deferred.await(answerLate),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* withChatGptToken(h.auth, instanceId, first, () =>
+        Effect.fail(new ChatGptCatalogError({ status: 401 })),
+      ).pipe(Effect.flip);
+      assert.strictEqual(Option.getOrThrow(yield* h.auth.read).accessToken, "access-1");
+
+      yield* Deferred.succeed(answerLate, undefined);
+      yield* Fiber.join(late);
+
+      assert.isTrue(Option.getOrThrow(yield* h.auth.read).refused);
     }),
   ),
 );

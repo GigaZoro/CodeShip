@@ -14,7 +14,9 @@ import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { CHATGPT_SHARING_SCOPE, type CodexChatGptCredentials } from "../CodexChatGptAuth.ts";
 import { chatGptModels, withChatGptToken } from "../CodexChatGptModels.ts";
+import { CHATGPT_TOKEN_REVOKED_DETAIL, isChatGptTokenRevoked } from "../CodexLoginRejected.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -65,6 +67,10 @@ const limitsToShow = (
     ? { ...failed, externalUsage: chatGptUsage.externalUsage, limitsSignIn: true }
     : chatGptUsage;
 };
+
+// A sign-in without token sharing, or one ChatGPT refused even after renewal, cannot run.
+const canRun = (saved: CodexChatGptCredentials) =>
+  saved.refused !== true && saved.scopes.includes(CHATGPT_SHARING_SCOPE);
 
 export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(function* (
   input: ProviderDriverCreateInput<CodexSettings>,
@@ -142,7 +148,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         auth: { status: "unauthenticated" as const },
       };
     const saved = yield* runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none()));
-    if (Option.isSome(saved) && !saved.value.scopes.includes("chatgpt.tokens.use.direct"))
+    if (Option.isSome(saved) && !saved.value.scopes.includes(CHATGPT_SHARING_SCOPE))
       return {
         ...base,
         installed: true,
@@ -194,18 +200,19 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
             effective.environment,
             managedAuth,
           );
-          const credentials = yield* runtime.auth.access;
-          // Another server can replace the saved profile while the native probe runs.
-          // Never send that account's token with the launch profile's catalog labels.
-          if (
-            (yield* runtime.auth.profileKey(credentials)) !== effective.revision ||
-            (yield* runtime.auth.profileKey(saved.value)) !== effective.revision
-          )
-            return yield* new ProviderSetupError({
+          const isLaunchProfile = (record: CodexChatGptCredentials) =>
+            runtime.auth.profileKey(record).pipe(Effect.map((key) => key === effective.revision));
+          const connectionChanged = () =>
+            new ProviderSetupError({
               instanceId,
               operation: "models",
               detail: "The ChatGPT connection changed while checking Codex. Retry.",
             });
+          const credentials = yield* runtime.auth.access;
+          // Another server can replace the saved profile while the native probe runs.
+          // Never send that account's token with the launch profile's catalog labels.
+          if (!(yield* isLaunchProfile(credentials)) || !(yield* isLaunchProfile(saved.value)))
+            return yield* connectionChanged();
           const { value: models } = yield* withChatGptToken(
             runtime.auth,
             instanceId,
@@ -215,10 +222,16 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                 Effect.provideService(HttpClient.HttpClient, http),
               ),
           );
-          return { ...draft, models };
+          const ownLimits = yield* limits.read;
+          // The sign-in saved after the slow limits probe decides: meanwhile ChatGPT may have
+          // refused it or another server replaced it, and the models answer may be for a token
+          // renewed away.
+          const current = Option.filter(yield* runtime.auth.read, canRun);
+          if (Option.isNone(current) || !(yield* isLaunchProfile(current.value)))
+            return yield* connectionChanged();
+          return [{ ...draft, models }, ownLimits] as const;
         }),
       ),
-      Effect.zip(limits.read),
       Effect.map(([draft, ownLimits]) =>
         stamp({
           ...draft,
@@ -247,36 +260,40 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
             : {}),
         }),
       ),
-      Effect.catch(() =>
-        Effect.all([
-          runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none())),
-          limits.read,
-        ]).pipe(
-          Effect.map(([current, ownLimits]) => ({
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          const ownLimits = yield* limits.read;
+          // The sign-in saved after the slow limits probe, not the failed attempt, decides: it may
+          // have replaced the refused one, or ChatGPT may have refused it meanwhile.
+          const current = yield* runtime.auth.read.pipe(Effect.orElseSucceed(() => Option.none()));
+          const connected = Option.filter(current, canRun);
+          const refused = Option.exists(current, (saved) => saved.refused === true);
+          return {
             ...base,
             installed: true,
             version: executable.value.version,
             models: [],
             auth: {
-              status:
-                Option.isSome(current) && current.value.scopes.includes("chatgpt.tokens.use.direct")
-                  ? ("authenticated" as const)
-                  : ("unauthenticated" as const),
+              status: Option.isSome(connected)
+                ? ("authenticated" as const)
+                : ("unauthenticated" as const),
               label: "ChatGPT",
-              ...(Option.isSome(current) &&
-              current.value.scopes.includes("chatgpt.tokens.use.direct")
-                ? { subscriptionSharing: true, profileId: current.value.clientId }
+              ...(Option.isSome(connected)
+                ? { subscriptionSharing: true, profileId: connected.value.clientId }
                 : {}),
               ...(Option.isSome(current) && current.value.email?.trim()
                 ? { email: current.value.email.trim() }
                 : {}),
             },
-            ...(Option.isSome(current) && current.value.scopes.includes("chatgpt.tokens.use.direct")
+            ...(Option.isSome(connected)
               ? { usageLimits: limitsToShow(ownLimits, undefined, chatGptUsageLimits) }
               : {}),
-            message: "Could not check Codex right now. Retry, or reconnect in provider settings.",
-          })),
-        ),
+            message:
+              Option.isNone(connected) && (refused || isChatGptTokenRevoked(error))
+                ? CHATGPT_TOKEN_REVOKED_DETAIL
+                : "Could not check Codex right now. Retry, or reconnect in provider settings.",
+          };
+        }),
       ),
       Effect.scoped,
     );
@@ -402,6 +419,15 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    // The check renews a rejected token once and signs the account out when ChatGPT refuses.
+    onAuthenticationFailed: snapshot.refresh.pipe(Effect.ignoreCause({ log: true })),
+    readSignedOut: runtime.auth.read.pipe(
+      Effect.map((saved) => !Option.exists(saved, canRun)),
+      // An unreadable store is no evidence of a sign-out.
+      Effect.catch((cause) =>
+        Effect.logError("Could not read the ChatGPT sign-in.", { cause }).pipe(Effect.as(false)),
+      ),
+    ),
     resolveRuntime: runtime.resolve,
     // Reading now also shows the stop on the Limits bar.
     chatGptSharingLimitReading: snapshot.refresh.pipe(

@@ -1,4 +1,7 @@
-import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
+  makeProviderFailure,
+} from "@t3tools/provider-core/server/failure";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { autoCoordinatorInstructions } from "@t3tools/provider-core/server/orchestrationInstructions";
 import {
@@ -72,6 +75,7 @@ import * as Orchestrator from "../Orchestrator.ts";
 import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { CHATGPT_TOKEN_REVOKED } from "../../provider/CodexLoginRejected.ts";
 import * as ModelManifest from "../../provider/ModelManifest.ts";
 import { resolveProviderCompatibility } from "../../provider/providerCompatibility.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
@@ -85,6 +89,7 @@ const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String
 const isProviderAdapterEventStreamError = Schema.is(
   ProviderAdapter.ProviderAdapterEventStreamError,
 );
+const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionError);
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 describe("CodexAdapterV2 context usage", () => {
@@ -894,6 +899,10 @@ describe("CodexAdapterV2 session initialize", () => {
     compatibility?: CodexAdapterV2.CodexAdapterV2Options["compatibility"],
     chatGptSharingLimitReading?: CodexAdapterV2.CodexAdapterV2Options["chatGptSharingLimitReading"],
     openError?: unknown,
+    signInHooks: Pick<
+      CodexAdapterV2.CodexAdapterV2Options,
+      "onAuthenticationFailed" | "readSignedOut"
+    > = {},
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -907,6 +916,7 @@ describe("CodexAdapterV2 session initialize", () => {
         environment: {},
         ...(compatibility === undefined ? {} : { compatibility }),
         ...(chatGptSharingLimitReading === undefined ? {} : { chatGptSharingLimitReading }),
+        ...signInHooks,
         clientFactory: {
           open: (openInput) =>
             openError !== undefined
@@ -1214,6 +1224,87 @@ describe("CodexAdapterV2 session initialize", () => {
 
   it.effect.each([
     {
+      name: "a rejected login",
+      openError: new CodexError.CodexAppServerRequestError({
+        code: -32603,
+        errorMessage: "workspace routing discovery unauthorized (401)",
+      }),
+      signedOut: false,
+      signIn: true,
+    },
+    {
+      name: "a removed ChatGPT connection",
+      openError: new ProviderSetupError({
+        instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+        operation: "models",
+        detail: "Could not load your ChatGPT models. Check your connection and retry.",
+      }),
+      signedOut: true,
+      signIn: true,
+    },
+    {
+      name: "a ChatGPT token refused after renewal",
+      openError: new ProviderSetupError({
+        instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+        operation: CHATGPT_TOKEN_REVOKED,
+        detail: "Your ChatGPT connection was revoked. Sign in again.",
+      }),
+      signedOut: false,
+      signIn: true,
+    },
+    {
+      name: "a required MCP server's own refusal",
+      openError: new CodexError.CodexAppServerRequestError({
+        code: -32603,
+        errorMessage:
+          "required MCP servers failed to initialize: github: unexpected status 401 Unauthorized",
+      }),
+      signedOut: false,
+      signIn: false,
+    },
+    {
+      name: "a required MCP server's transport refusal",
+      openError: new CodexError.CodexAppServerRequestError({
+        code: -32603,
+        errorMessage:
+          "required MCP servers failed to initialize: github: Transport error: unexpected server response: HTTP 401: Unauthorized",
+      }),
+      signedOut: false,
+      signIn: false,
+    },
+  ])(
+    "settles a session start refused by $name as a sign-out only when it is one",
+    ({ openError, signedOut, signIn }) =>
+      Effect.gen(function* () {
+        const rechecked = yield* Deferred.make<void>();
+        const failure = yield* openReplaySession(
+          makeCodexReplayTranscript({ scenario: "rejected-login", entries: [] }),
+          undefined,
+          undefined,
+          undefined,
+          openError,
+          {
+            onAuthenticationFailed: Deferred.succeed(rechecked, undefined).pipe(Effect.asVoid),
+            readSignedOut: Effect.succeed(signedOut),
+          },
+        ).pipe(Effect.flip);
+
+        assert.equal(
+          makeProviderFailure({ cause: failure }).code === AUTHENTICATION_FAILED_FAILURE_CODE,
+          signIn,
+        );
+        assert.equal(isOpenSessionError(failure) && failure.requiresSignIn === true, signIn);
+        assert.equal(yield* Deferred.isDone(rechecked), signIn);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each([
+    {
       name: "with room in the plan",
       reading: { resetAt: "2099-01-08T00:00:00.000Z", appCap: true, remainingPercent: 73 },
     },
@@ -1384,6 +1475,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     onUsageLimits?: CodexAdapterV2.CodexAdapterV2Options["onUsageLimits"],
     chatGptSharingLimitReading?: CodexAdapterV2.CodexAdapterV2Options["chatGptSharingLimitReading"],
+    signInHooks: Pick<
+      CodexAdapterV2.CodexAdapterV2Options,
+      "onAuthenticationFailed" | "readSignedOut"
+    > = {},
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1460,6 +1555,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         crypto: yield* Crypto.Crypto,
         ...(onUsageLimits ? { onUsageLimits } : {}),
         ...(chatGptSharingLimitReading ? { chatGptSharingLimitReading } : {}),
+        ...signInHooks,
         fileSystem,
         idAllocator,
         serverConfig,
@@ -5941,6 +6037,77 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       willRetry: true,
       expectedClass: "transport_error",
     },
+    // Codex app-server 0.156.1 with a fabricated auth.json reports its own login's refusal so.
+    {
+      name: "rejected-login",
+      code: "other",
+      message: "workspace routing discovery unauthorized (401)",
+      notification: true,
+      expectedClass: "provider_error",
+      expectedCode: AUTHENTICATION_FAILED_FAILURE_CODE,
+      expectedMessage: "sign-in was rejected",
+    },
+    {
+      name: "rejected-login-code",
+      code: "unauthorized",
+      notification: false,
+      expectedClass: "provider_error",
+      expectedCode: AUTHENTICATION_FAILED_FAILURE_CODE,
+      expectedMessage: "sign-in was rejected",
+    },
+    {
+      name: "rejected-sharing-token",
+      code: "other",
+      message: "unexpected status 401 Unauthorized: Incorrect API key provided: abc***xyz.",
+      notification: true,
+      expectedClass: "provider_error",
+      expectedCode: AUTHENTICATION_FAILED_FAILURE_CODE,
+      expectedMessage: "sign-in was rejected",
+    },
+    {
+      name: "rejected-login-retry",
+      code: "responseStreamDisconnected",
+      errorInfo: { responseStreamDisconnected: { httpStatusCode: 401 } },
+      message: "unexpected status 401 Unauthorized: Incorrect API key provided: abc***xyz.",
+      notification: true,
+      willRetry: true,
+      expectedClass: "transport_error",
+    },
+    {
+      name: "removed-sharing-login",
+      code: "other",
+      message: "provider auth command `/usr/bin/false` exited with status exit status: 1",
+      notification: true,
+      retriedFirst: true,
+      signedOut: true,
+      expectedClass: "provider_error",
+      expectedCode: AUTHENTICATION_FAILED_FAILURE_CODE,
+      expectedMessage: "sign-in was rejected",
+    },
+    {
+      name: "removed-sharing-login-retry",
+      code: "responseStreamDisconnected",
+      errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+      message: "provider auth command `/usr/bin/false` exited with status exit status: 1",
+      notification: true,
+      willRetry: true,
+      signedOut: true,
+      expectedClass: "transport_error",
+    },
+    {
+      name: "failing-auth-command",
+      code: "other",
+      message: "provider auth command `/usr/bin/false` exited with status exit status: 1",
+      notification: true,
+      expectedClass: "provider_error",
+    },
+    {
+      name: "incidental-401",
+      code: "other",
+      message: "The GitHub API answered 401 Unauthorized for this repository.",
+      notification: true,
+      expectedClass: "provider_error",
+    },
   ] as const)("classifies Codex terminal failures from $name evidence", (scenario) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -6018,6 +6185,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                           id: "limit-child-turn",
                           status: "inProgress",
                         }),
+                      },
+                    },
+                  },
+                ]
+              : []),
+            // Codex 0.156.1 retries a failing auth command five times before its final error.
+            ...("retriedFirst" in scenario
+              ? [
+                  {
+                    type: "emit_inbound" as const,
+                    label: "error/retry",
+                    frame: {
+                      method: "error",
+                      params: {
+                        threadId: nativeThreadId,
+                        turnId: nativeTurnId,
+                        willRetry: true,
+                        error: {
+                          message: "Reconnecting... 1/5",
+                          codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+                          additionalDetails: message,
+                        },
                       },
                     },
                   },
@@ -6109,6 +6298,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         });
         const resetReceipt = yield* Deferred.make<void>();
         const snapshotReceipt = yield* Deferred.make<void>();
+        const rechecked = yield* Deferred.make<void>();
         const harness = yield* makeCodexReplayHarness(
           transcript,
           (event) =>
@@ -6130,6 +6320,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 remainingPercent: null,
               })
             : undefined,
+          {
+            onAuthenticationFailed: Deferred.succeed(rechecked, undefined).pipe(Effect.asVoid),
+            readSignedOut: Effect.succeed("signedOut" in scenario),
+          },
         );
         yield* harness.runtime.startTurn(
           makeCodexTestTurnInput({
@@ -6172,6 +6366,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         }
         if (scenario.name === "retry" || "willRetry" in scenario)
           assert.equal(terminal.retry?.attempt, 1);
+        if (!("expectedCode" in scenario))
+          assert.notEqual(terminal.failure.code, AUTHENTICATION_FAILED_FAILURE_CODE);
         if ("expectedCode" in scenario && "expectedMessage" in scenario) {
           assert.equal(terminal.failure.code, scenario.expectedCode);
           assert.include(terminal.failure.message, scenario.expectedMessage);
@@ -6181,6 +6377,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             "sharingResetAt" in scenario ? scenario.sharingResetAt : null,
           );
         }
+        // The re-check marks the account signed out, which the failover and Auto act on.
+        if (
+          "expectedCode" in scenario &&
+          scenario.expectedCode === AUTHENTICATION_FAILED_FAILURE_CODE
+        )
+          yield* Deferred.await(rechecked);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

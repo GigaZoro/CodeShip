@@ -559,6 +559,28 @@ it.layer(
       }),
     );
 
+    it.effect("returns unauthenticated when Codex rejects the saved login", () =>
+      Effect.gen(function* () {
+        const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+          Effect.fail(
+            new CodexErrors.CodexAppServerRequestError({
+              code: -32603,
+              errorMessage: "workspace routing discovery unauthorized (401)",
+              method: "account/read",
+            }),
+          ),
+        ).pipe(
+          Effect.provide(
+            layerMockSpawner(() => ({ stdout: "codex-cli 0.156.1\n", stderr: "", code: 0 })),
+          ),
+        );
+
+        assert.strictEqual(status.status, "error");
+        assert.strictEqual(status.auth.status, "unauthenticated");
+        assert.match(status.message ?? "", /rejected this account's login/);
+      }),
+    );
+
     it.effect("returns ready with unknown auth when app-server does not require OpenAI auth", () =>
       Effect.gen(function* () {
         const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>

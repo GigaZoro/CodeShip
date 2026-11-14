@@ -18,6 +18,7 @@ import {
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import type { CodexEffectiveRuntime } from "../../provider/CodexManagedRuntime.ts";
 import { classifyCodexManagedError } from "../../provider/CodexManagedErrors.ts";
+import { isChatGptTokenRevoked, isCodexLoginRejected } from "../../provider/CodexLoginRejected.ts";
 import {
   buildCodexInitializeParams,
   codexAppServerEnvironment,
@@ -144,6 +145,7 @@ import {
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { backgroundWorkNotification } from "@t3tools/provider-core/server/notification";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   makeProviderFailure,
   makeProviderFailureTurnItem,
   makeProviderRetryTurnItem,
@@ -1163,6 +1165,14 @@ function withCodexManagedFailure(
       };
 }
 
+/** The account failover moves a run that stopped here before doing any work to another account. */
+const codexSignedOutFailure = () =>
+  makeProviderFailure({
+    message: "This account's sign-in was rejected. Sign in again in Settings → Providers & models.",
+    code: AUTHENTICATION_FAILED_FAILURE_CODE,
+    class: "provider_error",
+  });
+
 function codexTurnFailure(
   error: Partial<CodexSchema.ServerNotification__TurnError>,
   retryable?: true,
@@ -1170,16 +1180,19 @@ function codexTurnFailure(
 ): OrchestrationV2ProviderFailure {
   const code = codexErrorInfoCode(error.codexErrorInfo);
   return withCodexManagedFailure(
-    makeProviderFailure({
-      message: error.additionalDetails?.trim() || error.message,
-      code,
-      class: codexUsageLimitError(code, error.codexErrorInfo)
-        ? "usage_limit"
-        : retryable && (code?.startsWith("http") || code?.startsWith("responseStream"))
-          ? "transport_error"
-          : "provider_error",
-      ...(retryable === undefined ? {} : { retryable }),
-    }),
+    // Codex retries a refused login before giving up, so only the final failure is a sign-out.
+    retryable === undefined && isCodexLoginRejected(error)
+      ? codexSignedOutFailure()
+      : makeProviderFailure({
+          message: error.additionalDetails?.trim() || error.message,
+          code,
+          class: codexUsageLimitError(code, error.codexErrorInfo)
+            ? "usage_limit"
+            : retryable && (code?.startsWith("http") || code?.startsWith("responseStream"))
+              ? "transport_error"
+              : "provider_error",
+          ...(retryable === undefined ? {} : { retryable }),
+        }),
     nativeError,
   );
 }
@@ -1682,6 +1695,8 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
     | "resolveBinaryPath"
     | "compatibility"
     | "chatGptSharingLimitReading"
+    | "onAuthenticationFailed"
+    | "readSignedOut"
   > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
@@ -1735,6 +1750,10 @@ export interface CodexAdapterV2Options {
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   /** When a ChatGPT-shared account hits its usage limit: its reset, read now, or null if unknown. */
   readonly chatGptSharingLimitReading?: Effect.Effect<ChatGptSharingLimitReading | null>;
+  /** A run stopped because this account's sign-in was rejected; re-check the account so routing skips it. */
+  readonly onAuthenticationFailed?: Effect.Effect<void>;
+  /** True once this account's saved sign-in is gone, so a session or turn that fails then is a sign-out. */
+  readonly readSignedOut?: Effect.Effect<boolean>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   /** The program a session starts when no runtime is resolved; absent, `settings.binaryPath`. */
   readonly resolveBinaryPath?: Effect.Effect<string, ProviderSetupError, Scope.Scope>;
@@ -1785,12 +1804,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
       : { ...failure, resetAt: reading.resetAt };
   });
 
+  const onAuthenticationFailed = adapterOptions.onAuthenticationFailed ?? Effect.void;
+  const readSignedOut = adapterOptions.readSignedOut ?? Effect.succeed(false);
+
   const startupFailure = Effect.fn("CodexAdapterV2.startupFailure")(function* <E>(
     providerSessionId: OrchestrationV2ProviderSession["id"],
     cause: E,
     snapshot?: CodexRateLimitSnapshot,
   ) {
     if (isOpenSessionError(cause) && cause.failure !== undefined) return yield* cause;
+    const signedOut = Effect.gen(function* () {
+      yield* onAuthenticationFailed;
+      // Signing in again is the only fix, so the start settles instead of retrying.
+      return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+        driver: CODEX_PROVIDER,
+        providerSessionId,
+        cause,
+        failure: codexSignedOutFailure(),
+        requiresSignIn: true,
+      });
+    });
     let nested: unknown = cause;
     for (let depth = 0; depth < 16 && nested != null; depth++) {
       const record = typeof nested === "object" ? nested : undefined;
@@ -1827,8 +1860,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           failure: makeProviderFailure(yield* limitedFailure(failure, snapshot)),
         });
       }
+      if (failure.code === AUTHENTICATION_FAILED_FAILURE_CODE || isChatGptTokenRevoked(nested))
+        return yield* signedOut;
       nested = record && "cause" in record ? record.cause : undefined;
     }
+    if (yield* readSignedOut) return yield* signedOut;
     return yield* Effect.fail(cause);
   });
 
@@ -5916,7 +5952,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // completion repeats it. An explicit exhaustion status on the
               // completion still decides the class; a missing one is not evidence.
               const exhaustionStatus = codexExhaustionHttpStatus(input.failureErrorInfo);
-              const failure =
+              const reported =
                 previousFailure !== undefined &&
                 (input.failureMessage === undefined ||
                   input.failureMessage === previousFailure.nativeMessage) &&
@@ -5931,6 +5967,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ? {}
                         : { codexErrorInfo: input.failureErrorInfo }),
                     });
+              // A removed sign-in reaches Codex only as a failing auth command, never a 401.
+              // Codex retries it first, so a failure still being retried is not the sign-out.
+              const failure =
+                reported.retryable !== true &&
+                reported.class !== "usage_limit" &&
+                reported.code !== AUTHENTICATION_FAILED_FAILURE_CODE &&
+                (yield* readSignedOut)
+                  ? codexSignedOutFailure()
+                  : reported;
               return {
                 type: "turn.terminal",
                 driver: CODEX_PROVIDER,
@@ -5986,6 +6031,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }
               : event;
           yield* emitProviderEvent(current);
+          if (
+            current.status === "failed" &&
+            current.failure.code === AUTHENTICATION_FAILED_FAILURE_CODE
+          ) {
+            // The re-check starts a probe process; keep it off the notification reader.
+            yield* Effect.forkIn(onAuthenticationFailed, scope);
+          }
           const continued = continuedRuns.get(context.providerTurnId) ?? [context];
           if (current.status !== "completed") {
             yield* Ref.update(

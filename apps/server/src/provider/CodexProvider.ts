@@ -36,6 +36,7 @@ import {
 } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import { isCodexLoginRejected } from "./CodexLoginRejected.ts";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -901,6 +902,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
           environment: resolvedEnvironment,
         })
       : null;
+    // A rejected login fails the first account read, so this account must not take runs.
+    const loginRejected = installed && isCodexLoginRejected({ message: error.message });
     return buildServerProvider({
       presentation: CODEX_PRESENTATION,
       enabled: codexSettings.enabled,
@@ -911,20 +914,22 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         installed,
         version,
         status: "error",
-        auth: { status: "unknown" },
-        message: installed
-          ? withProviderFailureReason(
-              "Codex app-server provider probe failed",
-              providerOutputReason(
-                error.message,
-                yield* HostProcess.HomeDirectory,
-                resolvedEnvironment,
-              ),
-            )
-          : `Could not start Codex CLI (\`${codexSettings.binaryPath}\`). ` +
-            (codexSettings.binaryPath === "codex"
-              ? "The codex on the server's PATH could not be run. Reinstall it, or set Settings → Providers & models → Codex → Binary path."
-              : "Check Settings → Providers & models → Codex → Binary path on the server. Make sure the configured executable exists and can be run."),
+        auth: { status: loginRejected ? "unauthenticated" : "unknown" },
+        message: loginRejected
+          ? "Codex rejected this account's login. Sign in again in Settings → Providers & models → Codex, or run `codex login`."
+          : installed
+            ? withProviderFailureReason(
+                "Codex app-server provider probe failed",
+                providerOutputReason(
+                  error.message,
+                  yield* HostProcess.HomeDirectory,
+                  resolvedEnvironment,
+                ),
+              )
+            : `Could not start Codex CLI (\`${codexSettings.binaryPath}\`). ` +
+              (codexSettings.binaryPath === "codex"
+                ? "The codex on the server's PATH could not be run. Reinstall it, or set Settings → Providers & models → Codex → Binary path."
+                : "Check Settings → Providers & models → Codex → Binary path on the server. Make sure the configured executable exists and can be run."),
       },
     });
   }
