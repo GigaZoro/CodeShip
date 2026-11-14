@@ -1,3 +1,7 @@
+## 2026-11-14 — A restart no longer leaves a delegated chat uncontinued
+
+- A chat started by another chat (a delegated task) that a server restart cut while its parent was also running could stay idle forever, because the parent's recovery marked the child's provider thread idle first. Recovery now leaves a delegated chat's provider thread to that chat's own recovery, and a test covers the decision that resumes it.
+
 ## 2026-11-14 — A chat whose provider is slow to resume is retried instead of left queued
 
 - When a provider did not resume a chat in time, for example on a server starved of CPU, the run failed for good and the next message stayed queued for hours. The wait for a resume now also grows with the host load per CPU (up to 60 minutes), and a start that times out is retried automatically after 0, 1 and 5 minutes, each time with a longer wait, like a start cut by a lost connection. After the last retry the chat stays failed and Chat Doctor picks it up.

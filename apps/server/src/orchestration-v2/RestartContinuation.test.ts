@@ -108,6 +108,25 @@ function makeProjection() {
   } as unknown as OrchestrationV2ThreadProjection;
 }
 
+// A delegated chat on the VPS was cut mid-turn and never resumed: its parent's recovery ran first
+// and set the chat's provider thread idle (ProjectionStore.test.ts keeps the parent away from it).
+it("resumes a delegated chat's cut run only while its provider thread is still active", () => {
+  const projection = makeProjection();
+  const delegated = {
+    ...projection,
+    thread: {
+      ...projection.thread,
+      lineage: { parentThreadId: ThreadId.make("thread:parent"), relationshipToParent: "subagent" },
+    },
+  } as OrchestrationV2ThreadProjection;
+  const resetByParent = {
+    ...delegated,
+    providerThreads: [{ ...delegated.providerThreads[0]!, status: "idle" }],
+  } as OrchestrationV2ThreadProjection;
+  assert.equal(restartResumeRun(delegated, now)?.id, runId);
+  assert.isUndefined(restartResumeRun(resetByParent, now));
+});
+
 it("requires matching saved native state for an unfinished root run", () => {
   const projection = makeProjection();
   assert.equal(restartContinuationRun(projection, now)?.id, runId);
