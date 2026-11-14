@@ -462,6 +462,13 @@ export const make = Effect.gen(function* () {
       // Cut work stopped with the server, not when this pass noticed; scheduled recovery reads it.
       const stoppedAt = lastCommittedAt === null ? now : DateTime.min(lastCommittedAt, now);
       const runs = yield* cutRuns(projection);
+      const continuationRun =
+        continueAfterRestart && trigger === "startup"
+          ? restartResumeRun(
+              { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
+              now,
+            )
+          : undefined;
       const { questions, messageRequestNodeIds, requests } = pendingRequestRecovery(projection);
       const cancelledBackgroundWork = restartCancelledBackgroundWork(
         projection,
@@ -527,6 +534,19 @@ export const make = Effect.gen(function* () {
         }
         // A hold from before the restart (a Stop, a failure) stays the person's to release.
         if (run.queueHeld === true) continue;
+        // A person reviews what they queued, but nobody reviews a message an agent, the server or a
+        // scheduled task queued, and no continuation is scheduled to lift its hold: it just starts.
+        if (
+          trigger === "startup" &&
+          continueAfterRestart &&
+          continuationRun === undefined &&
+          queuedMessages.some(
+            (message) =>
+              message.id === run.userMessageId &&
+              (message.createdBy !== "user" || message.scheduledTaskId !== undefined),
+          )
+        )
+          continue;
         events.push({
           id: yield* allocateEventId(),
           type: "run.updated",
@@ -867,13 +887,6 @@ export const make = Effect.gen(function* () {
           payload: notice,
         });
       }
-      const continuationRun =
-        continueAfterRestart && trigger === "startup"
-          ? restartResumeRun(
-              { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
-              now,
-            )
-          : undefined;
       const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
         ? [
             EffectOutbox.restartContinuationEffect({

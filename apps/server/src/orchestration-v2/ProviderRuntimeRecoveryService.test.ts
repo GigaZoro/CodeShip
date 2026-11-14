@@ -637,122 +637,131 @@ it.effect("recovery closes a secret card's form but leaves a link card open", ()
 });
 
 it.effect.each([
-  ["queued", true],
-  ["queued", false],
-  ["preparing", true],
-] as const)("recovers %s work after restart (continuation on: %s)", ([status, continues]) => {
-  const threadId = ThreadId.make("thread_queued_restart");
-  const runId = RunId.make("run_queued_restart");
-  const attemptId = RunAttemptId.make("attempt_queued_restart");
-  const rootNodeId = NodeId.make("node_queued_restart");
-  let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
-    null;
-  const projection = {
-    thread: { id: threadId },
-    runtimeRequests: [],
-    providerSessions: [],
-    providerThreads: [],
-    providerTurns: [],
-    runs: [
-      {
-        id: runId,
-        status,
-        queuePosition: 1,
-        providerInstanceId: ProviderInstanceId.make("codex"),
-        ...(status === "preparing"
-          ? {
-              workspacePreparation: {
-                type: "worktree",
-                baseRef: "parent-local-commit",
-                startFromOrigin: false,
-              },
-            }
-          : {}),
-      },
-    ],
-    attempts: [
-      {
-        id: attemptId,
-        runId,
-        rootNodeId,
-        status: "pending",
-      },
-    ],
-    nodes: [
-      {
-        id: rootNodeId,
-        runId,
-        status: "pending",
-      },
-    ],
-    subagents: [],
-    messages: [],
-    turnItems: [],
-  } as unknown as OrchestrationV2ThreadProjection;
-  const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: continues })),
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getRecoveryThreadIds: () => Effect.succeed([threadId]),
-          getRuntimeRecoveryProjection: () => Effect.succeed(projection),
-          getThreadRecords: () => Effect.succeed(projection),
-        }),
-        Layer.mock(EventSink.EventSinkV2)({
-          lastCommittedAt: Effect.succeed(null),
-          commitCommand: (input) => {
-            committedInput = input;
-            return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
-          },
-        }),
-        IdAllocator.layer,
-        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
-          runRecoveryOnce: Effect.succeed(false),
-        }),
-        Layer.mock(EffectOutbox.EffectOutboxV2)({
-          reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
-        }),
+  ["queued", true, "user"],
+  ["queued", true, "agent"],
+  ["queued", false, "user"],
+  ["preparing", true, "user"],
+] as const)(
+  "recovers %s work after restart (continuation on: %s, queued by %s)",
+  ([status, continues, author]) => {
+    const threadId = ThreadId.make("thread_queued_restart");
+    const runId = RunId.make("run_queued_restart");
+    const attemptId = RunAttemptId.make("attempt_queued_restart");
+    const rootNodeId = NodeId.make("node_queued_restart");
+    let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
+      null;
+    const projection = {
+      thread: { id: threadId },
+      runtimeRequests: [],
+      providerSessions: [],
+      providerThreads: [],
+      providerTurns: [],
+      runs: [
+        {
+          id: runId,
+          status,
+          queuePosition: 1,
+          userMessageId: "message_queued_restart",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          ...(status === "preparing"
+            ? {
+                workspacePreparation: {
+                  type: "worktree",
+                  baseRef: "parent-local-commit",
+                  startFromOrigin: false,
+                },
+              }
+            : {}),
+        },
+      ],
+      attempts: [
+        {
+          id: attemptId,
+          runId,
+          rootNodeId,
+          status: "pending",
+        },
+      ],
+      nodes: [
+        {
+          id: rootNodeId,
+          runId,
+          status: "pending",
+        },
+      ],
+      subagents: [],
+      messages: [{ id: "message_queued_restart", createdBy: author }],
+      turnItems: [],
+    } as unknown as OrchestrationV2ThreadProjection;
+    const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: continues })),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+            getThreadRecords: () => Effect.succeed(projection),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
+            commitCommand: (input) => {
+              committedInput = input;
+              return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
+            },
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+            runRecoveryOnce: Effect.succeed(false),
+          }),
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            cancelUnsettled: () => Effect.succeed([]),
+            signalCancellations: () => Effect.void,
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          }),
+        ),
       ),
-    ),
-  );
-
-  return Effect.gen(function* () {
-    const summary =
-      yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
-    assert.equal(summary.terminalizedRuns, status === "preparing" ? 1 : 0);
-    const command = committedInput;
-    assert.isNotNull(command);
-    if (command === null) return;
-    const runEvent = command.events.find((event) => event.type === "run.updated");
-    const attemptEvent = command.events.find((event) => event.type === "run-attempt.updated");
-    const nodeEvent = command.events.find((event) => event.type === "node.updated");
-    assert.equal(
-      runEvent?.type === "run.updated" ? runEvent.payload.status : null,
-      status === "preparing" ? "cancelled" : "queued",
     );
-    assert.isEmpty(command.effects);
-    if (status === "preparing") {
+
+    return Effect.gen(function* () {
+      const summary =
+        yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
+      assert.equal(summary.terminalizedRuns, status === "preparing" ? 1 : 0);
+      const command = committedInput;
+      // No run was cut, so nothing is scheduled to lift a hold on a message nobody reviews.
+      if (author === "agent") return assert.isNull(command);
+      assert.isNotNull(command);
+      if (command === null) return;
+      const runEvent = command.events.find((event) => event.type === "run.updated");
+      const attemptEvent = command.events.find((event) => event.type === "run-attempt.updated");
+      const nodeEvent = command.events.find((event) => event.type === "node.updated");
       assert.equal(
-        attemptEvent?.type === "run-attempt.updated" ? attemptEvent.payload.status : null,
-        "cancelled",
+        runEvent?.type === "run.updated" ? runEvent.payload.status : null,
+        status === "preparing" ? "cancelled" : "queued",
       );
-      assert.equal(
-        nodeEvent?.type === "node.updated" ? nodeEvent.payload.status : null,
-        "cancelled",
-      );
-    } else {
-      assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queuePosition : null, 1);
-      assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queueHeld : false, true);
-      // Only a restart that continues the thread lets the queue follow without a person.
-      assert.equal(
-        runEvent?.type === "run.updated" ? runEvent.payload.queueHeldByRestart : undefined,
-        continues ? true : undefined,
-      );
-      assert.isUndefined(attemptEvent);
-      assert.isUndefined(nodeEvent);
-    }
-  }).pipe(Effect.provide(layer));
-});
+      assert.isEmpty(command.effects);
+      if (status === "preparing") {
+        assert.equal(
+          attemptEvent?.type === "run-attempt.updated" ? attemptEvent.payload.status : null,
+          "cancelled",
+        );
+        assert.equal(
+          nodeEvent?.type === "node.updated" ? nodeEvent.payload.status : null,
+          "cancelled",
+        );
+      } else {
+        assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queuePosition : null, 1);
+        assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queueHeld : false, true);
+        // Only a restart that continues the thread lets the queue follow without a person.
+        assert.equal(
+          runEvent?.type === "run.updated" ? runEvent.payload.queueHeldByRestart : undefined,
+          continues ? true : undefined,
+        );
+        assert.isUndefined(attemptEvent);
+        assert.isUndefined(nodeEvent);
+      }
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 it.effect(
   "cancels the complete in-flight subtree and stops its persisted session without reopening it",

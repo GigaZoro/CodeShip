@@ -1,3 +1,7 @@
+## 2026-11-14 — A restart no longer strands a chat waiting on a finished helper
+
+- When the server restarted while a chat had ended its turn to wait for a helper, the helper's result was held for a resume that never came, so the chat stayed queued and never ran again. A restart now holds a message that an agent, the server or a scheduled task queued only when it also resumes a cut run; otherwise it starts at once. Messages you queued are still held for you to resume.
+
 ## 2026-11-14 — The database stops growing with old tool output
 
 - Every command and tool result stayed in the database forever, so it grew by about a gigabyte a day on a busy machine, and most of that was output nobody would open again. The server now removes command and tool output from a settled, archived or deleted chat once it and every fork of it have had 7 days without activity. Every step stays in the chat, and expanding one shows "Output is no longer available." A chat keeps its output while it or any fork of it is open, pinned or recently active, and MCP app results always keep theirs. Change or turn this off with **Remove old tool output** in Settings → Maintenance & about → Storage & cleanup; the space returns to disk gradually while the server runs.
