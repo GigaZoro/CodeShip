@@ -178,6 +178,8 @@ export const layer = Layer.effect(
         ),
       onStartupFailure: (failure) =>
         SubscriptionRef.set(primaryBackendStartup, { _tag: "Failing", ...failure }),
+      onStartupProgress: (startup) =>
+        SubscriptionRef.set(primaryBackendStartup, { _tag: "Migrating", ...startup }),
       onShutdown: () => desktopWindow.handleBackendNotReady,
       onPreflightFailed: handlePrimaryPreflightFailure,
       onStateDirOwned: () =>

@@ -1481,6 +1481,7 @@ const catalog: MessageCatalog = {
     "{path}:{start}–{end} немає в завантажених змінах.",
   "{percent} of cost · {tokens} tokens": "{percent} вартості · токенів: {tokens}",
   "{percent} of tokens · {cost}": "{percent} токенів · {cost}",
+  "{percent}% done": "Виконано {percent}%",
   "{percent}% left": "Залишилось {percent}%",
   "{percent}% left · {elapsed}% of the window left":
     "Залишилось {percent}% · {elapsed}% вікна залишилось",
@@ -12880,6 +12881,8 @@ const catalog: MessageCatalog = {
     other:
       "Цей виклик інструмента змінив {count} файлу. У записаному патчі пропущено {omitted} з них.",
   },
+  "This version updates the database that holds your threads. With a lot of history this can take several minutes. T3.CodeShip opens when it is done.":
+    "Ця версія оновлює базу даних із вашими чатами. Якщо історії багато, це може тривати кілька хвилин. T3.CodeShip відкриється, коли все буде готово.",
   "This video couldn't be loaded or played. Check the connection, or touch and hold the video to save or share the original.":
     "Не вдалося завантажити або відтворити це відео. Перевірте підключення або натисніть і утримуйте відео, щоб зберегти чи поділитися оригіналом.",
   "This will move the thread out of your pinned section.":
@@ -13520,6 +13523,7 @@ const catalog: MessageCatalog = {
   "updating providers": "оновлення провайдерів",
   "Updating pull requests": "Оновлення пул-реквестів",
   "Updating queued message": "Оновлення повідомлення в черзі",
+  "Updating T3.CodeShip": "Оновлення T3.CodeShip",
   "Updating usage…": "Оновлення використання…",
   "Updating...": "Оновлення...",
   "Updating…": "Оновлення…",
@@ -13783,6 +13787,8 @@ const catalog: MessageCatalog = {
     "Доступна версія {version}. Вона може містити виправлення.",
   "Version {version} started correctly on this computer. Download it and install it to go back.":
     "Версія {version} коректно запустилася на цьому комп’ютері. Завантажте й встановіть її, щоб повернутися.",
+  "Version {version}. Step {migration}. Logs: {logDir}":
+    "Версія {version}. Крок {migration}. Журнали: {logDir}",
   "Version {version}. T3.CodeShip tries again in the background. Logs: {logDir}":
     "Версія {version}. T3.CodeShip повторить спробу у фоновому режимі. Журнали: {logDir}",
   "Version Control": "Контроль версій",
@@ -14198,6 +14204,8 @@ const catalog: MessageCatalog = {
     "Ви можете й далі читати цей посібник, поки агент пише оновлення.",
   "You can no longer submit line comments on this {term}. Your drafts are kept here.":
     "Коментарі до рядків для цього об’єкта ({term}) більше не можна надсилати. Чернетки збережено тут.",
+  "You can quit. The update continues where it stopped the next time T3.CodeShip starts.":
+    "Можна вийти. Оновлення продовжиться з того самого місця під час наступного запуску T3.CodeShip.",
   "You can read the previous guide, or rewrite it for the latest changes.":
     "Ви можете прочитати попередній посібник або переписати його під найновіші зміни.",
   "You can use either platform. Fixing a missing platform does not block the other one.":

@@ -3,6 +3,8 @@ import {
   DesktopBackendBootstrap,
   type DesktopBackendBootstrap as DesktopBackendBootstrapValue,
   DesktopTelemetryControlMessage,
+  type EnvironmentStartingResponse,
+  type EnvironmentStartup,
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -126,6 +128,7 @@ interface MakeInstanceInput {
   readonly onStartupFailure?: (
     failure: DesktopBackendManager.BackendStartupFailure,
   ) => Effect.Effect<void>;
+  readonly onStartupProgress?: (startup: EnvironmentStartup) => Effect.Effect<void>;
   readonly onPreflightFailed?: (
     failure: DesktopBackendManager.PreflightFailure,
   ) => Effect.Effect<boolean>;
@@ -186,6 +189,7 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onStateDirOwned ? { onStateDirOwned: () => input.onStateDirOwned! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
     ...(input.onStartupFailure ? { onStartupFailure: input.onStartupFailure } : {}),
+    ...(input.onStartupProgress ? { onStartupProgress: input.onStartupProgress } : {}),
   });
 
   return instance.pipe(Effect.provide(layerServices));
@@ -675,11 +679,19 @@ describe("DesktopBackendManager", () => {
     ),
   );
 
-  it.effect("waits out a slow startup and reports one that never becomes ready", () =>
+  it.effect("waits out a slow or migrating startup and reports one that never becomes ready", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
-        const startInstance = (status: Ref.Ref<number>, onReady?: Effect.Effect<void>) =>
+        const migration: EnvironmentStartup = {
+          migration: "91_CompactOrchestrationIds",
+          progress: 0.5,
+        };
+        const lastProgress = yield* Ref.make(Option.none<EnvironmentStartup>());
+        const startInstance = (
+          status: Ref.Ref<number | "migrating">,
+          onReady?: Effect.Effect<void>,
+        ) =>
           makeTestInstance({
             spawnerLayer: Layer.succeed(
               ChildProcessSpawner.ChildProcessSpawner,
@@ -688,13 +700,28 @@ describe("DesktopBackendManager", () => {
               ),
             ),
             httpClientLayer: layerHttpClient((request) =>
-              Ref.get(status).pipe(Effect.map((code) => responseForRequest(request, code))),
+              Ref.get(status).pipe(
+                Effect.map((code) =>
+                  code === "migrating"
+                    ? HttpClientResponse.fromWeb(
+                        request,
+                        new Response(
+                          JSON.stringify({
+                            startup: migration,
+                          } satisfies EnvironmentStartingResponse),
+                          { status: 503 },
+                        ),
+                      )
+                    : responseForRequest(request, code),
+                ),
+              ),
             ),
             onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
+            onStartupProgress: (startup) => Ref.set(lastProgress, Option.some(startup)),
             ...(onReady ? { onReady } : {}),
           }).pipe(Effect.tap((instance) => instance.start));
 
-        const slowStatus = yield* Ref.make(503);
+        const slowStatus = yield* Ref.make<number | "migrating">(503);
         const ready = yield* Deferred.make<void>();
         yield* startInstance(slowStatus, Deferred.succeed(ready, undefined).pipe(Effect.asVoid));
         yield* TestClock.adjust(Duration.seconds(66));
@@ -702,8 +729,22 @@ describe("DesktopBackendManager", () => {
         yield* TestClock.adjust(Duration.millis(100));
         yield* Deferred.await(ready);
         assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        assert.isTrue(Option.isNone(yield* Ref.get(lastProgress)));
 
-        yield* startInstance(yield* Ref.make(503));
+        const migratingStatus = yield* Ref.make<number | "migrating">("migrating");
+        const migrated = yield* Deferred.make<void>();
+        yield* startInstance(
+          migratingStatus,
+          Deferred.succeed(migrated, undefined).pipe(Effect.asVoid),
+        );
+        yield* TestClock.adjust(Duration.minutes(4));
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        assert.deepEqual(yield* Ref.get(lastProgress), Option.some(migration));
+        yield* Ref.set(migratingStatus, 200);
+        yield* TestClock.adjust(Duration.millis(100));
+        yield* Deferred.await(migrated);
+
+        yield* startInstance(yield* Ref.make<number | "migrating">(503));
         yield* TestClock.adjust(Duration.seconds(179));
         assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
         yield* TestClock.adjust(Duration.seconds(1));

@@ -24,6 +24,9 @@ import {
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   DesktopTelemetryControlMessage,
   type DesktopTelemetryControlMessage as DesktopTelemetryControlMessageValue,
+  ENVIRONMENT_DESCRIPTOR_PATH,
+  EnvironmentStartingResponse,
+  type EnvironmentStartup,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
 
@@ -42,7 +45,9 @@ const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
 // Match the service launcher's grace period so backends can stop provider sessions.
 const DEFAULT_BACKEND_TERMINATE_GRACE = Duration.seconds(5);
 const DEFAULT_BACKEND_OUTPUT_DRAIN_TIMEOUT = Duration.seconds(5);
-const BACKEND_READINESS_PATH = "/.well-known/t3/environment";
+const decodeStartingResponse = Schema.decodeUnknownOption(
+  Schema.fromJsonString(EnvironmentStartingResponse),
+);
 // Three restarts without readiness is about 2 s of backoff: past a blip, early enough to help.
 const STARTUP_FAILURE_RESTART_ATTEMPTS = 3;
 const STARTUP_FAILURE_OUTPUT_CHARS = 4_000;
@@ -200,6 +205,7 @@ interface RunBackendProcessOptions extends DesktopBackendStartConfig {
   readonly onExitObserved?: () => Effect.Effect<void>;
   readonly onReady?: () => Effect.Effect<void>;
   readonly onReadinessFailure?: (error: BackendReadinessTimeoutError) => Effect.Effect<void>;
+  readonly onStartupProgress?: (startup: EnvironmentStartup) => Effect.Effect<void>;
   readonly onOutput?: (
     streamName: BackendProcessOutputStream,
     chunk: Uint8Array,
@@ -249,6 +255,8 @@ export interface BackendInstanceSpec {
   readonly onStateDirOwned?: () => Effect.Effect<void>;
   /** Fires on each repeated crash or readiness timeout until the backend becomes ready. */
   readonly onStartupFailure?: (failure: BackendStartupFailure) => Effect.Effect<void>;
+  /** Fires on each answer of a backend that migrates its database before it serves. */
+  readonly onStartupProgress?: (startup: EnvironmentStartup) => Effect.Effect<void>;
 }
 
 interface ActiveBackendRun {
@@ -321,10 +329,10 @@ const closeRun = (
 const waitForHttpReady = (
   options: BackendProcessContext & { readonly timeout: Duration.Duration },
 ): Effect.Effect<void, BackendReadinessTimeoutError, HttpClient.HttpClient> => {
-  const readinessUrl = new URL(BACKEND_READINESS_PATH, options.httpBaseUrl);
+  const readinessUrl = new URL(ENVIRONMENT_DESCRIPTOR_PATH, options.httpBaseUrl);
   return waitForHttpReadyShared({
     baseUrl: options.httpBaseUrl.href,
-    path: BACKEND_READINESS_PATH,
+    path: ENVIRONMENT_DESCRIPTOR_PATH,
     timeoutMs: Duration.toMillis(options.timeout),
     intervalMs: Duration.toMillis(DEFAULT_BACKEND_READINESS_INTERVAL),
     probeTimeoutMs: Duration.toMillis(DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT),
@@ -545,22 +553,45 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     );
   }
   // Cold WSL boots across /mnt/c can exceed one probe budget; retry while the backend is alive.
-  const probeReadiness = Effect.fn("desktop.backendProcess.probeReadiness")(() =>
-    waitForHttpReady({
+  // A round that saw the backend migrating is not a failure: large databases take many rounds.
+  const probeReadiness = Effect.fn("desktop.backendProcess.probeReadiness")(function* () {
+    let migrating = false;
+    const client = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.tap((response) =>
+        response.status !== 503
+          ? Effect.void
+          : response.text.pipe(
+              Effect.flatMap((body) =>
+                Option.match(decodeStartingResponse(body), {
+                  onNone: () => Effect.void,
+                  onSome: ({ startup }) => {
+                    migrating = true;
+                    return options.onStartupProgress?.(startup) ?? Effect.void;
+                  },
+                }),
+              ),
+              Effect.ignore,
+            ),
+      ),
+    );
+    return yield* waitForHttpReady({
       executablePath: options.executablePath,
       entryPath: options.entryPath,
       cwd: options.cwd,
       httpBaseUrl: options.httpBaseUrl,
       timeout: options.readinessTimeout ?? DEFAULT_BACKEND_READINESS_TIMEOUT,
     }).pipe(
+      Effect.provideService(HttpClient.HttpClient, client),
       Effect.flatMap(() => options.onReady?.() ?? Effect.void),
       Effect.as(true),
       Effect.catchTags({
         BackendReadinessTimeoutError: (error) =>
-          (options.onReadinessFailure?.(error) ?? Effect.void).pipe(Effect.as(false)),
+          migrating
+            ? Effect.succeed(false)
+            : (options.onReadinessFailure?.(error) ?? Effect.void).pipe(Effect.as(false)),
       }),
-    ),
-  );
+    );
+  });
 
   yield* probeReadiness().pipe(Effect.repeat({ while: (ready) => !ready }), Effect.forkScoped);
 
@@ -954,6 +985,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
               );
             },
           ),
+          ...(spec.onStartupProgress ? { onStartupProgress: spec.onStartupProgress } : {}),
           onOutput: (streamName, chunk) =>
             Ref.update(outputTail, (tail) =>
               // A cut through a surrogate pair would make encodeURIComponent throw when rendering.

@@ -1,6 +1,7 @@
 import { CLI_RELEASES_PAGE_URL } from "@t3tools/shared/cliRelease";
 import { getActiveLanguage, t } from "@t3tools/shared/i18n";
-import type { DesktopUpdateState } from "@t3tools/contracts";
+import type { DesktopUpdateState, EnvironmentStartup } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -23,6 +24,8 @@ import * as DesktopState from "./DesktopState.ts";
 const LAST_STARTED_VERSION_FILE = "desktop-last-started-version";
 // Buttons are plain links to this host; will-navigate cancels them and runs the action.
 const ACTION_ORIGIN = "https://startup-recovery.invalid";
+// Most migrations finish within this, so their progress window never flashes open.
+const MIGRATION_WINDOW_DELAY = Duration.seconds(2);
 
 const { logInfo, logWarning } = DesktopObservability.makeComponentLogger(
   "desktop-startup-recovery",
@@ -118,15 +121,8 @@ function describeOffer(offer: StartupRecoveryOffer): { text: string; action: str
   }
 }
 
-function buildStartupRecoveryHtml(input: {
-  readonly appVersion: string;
-  readonly failure: BackendStartupFailure;
-  readonly offer: StartupRecoveryOffer;
-  readonly logDir: string;
-}): string {
-  const offer = describeOffer(input.offer);
-  const output = input.failure.output.trim();
-  return `<!doctype html><html lang="${getActiveLanguage()}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${t("T3.CodeShip could not start")}</title><style>
+const page = (title: string, body: string) =>
+  `<!doctype html><html lang="${getActiveLanguage()}"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>${escapeHtml(title)}</title><style>
 :root{color-scheme:light dark;--bg:#fff;--fg:#111;--muted:#666;--line:#ddd;--code:#f4f4f4}
 @media (prefers-color-scheme:dark){:root{--bg:#000;--fg:#fff;--muted:#999;--line:#333;--code:#111}}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg)}
@@ -135,23 +131,69 @@ h1{font-size:18px;margin:0}p{margin:0}.muted{color:var(--muted)}
 .actions{display:flex;gap:8px;flex-wrap:wrap}
 .button{color:var(--fg);text-decoration:none;border:1px solid var(--line);border-radius:6px;padding:6px 12px}
 .button.primary{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+progress{width:100%}
 pre{flex:1;min-height:60px;margin:0;overflow:auto;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:10px;font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 </style></head><body>
-<h1>${t("T3.CodeShip could not start")}</h1>
+${body}
+</body></html>`;
+
+function buildStartupRecoveryHtml(input: {
+  readonly appVersion: string;
+  readonly failure: BackendStartupFailure;
+  readonly offer: StartupRecoveryOffer;
+  readonly logDir: string;
+}): string {
+  const offer = describeOffer(input.offer);
+  const output = input.failure.output.trim();
+  return page(
+    t("T3.CodeShip could not start"),
+    `<h1>${escapeHtml(t("T3.CodeShip could not start"))}</h1>
 <p>${escapeHtml(input.failure.reason)}</p>
 <p>${escapeHtml(offer.text)}</p>
 <div class="actions">${offer.action}${actionLink("copy", t("Copy details"))}${actionLink("quit", t("Quit"))}</div>
 <pre>${escapeHtml(output.length > 0 ? output : t("The server wrote no output."))}</pre>
 <p class="muted">${escapeHtml(
-    t("Version {version}. T3.CodeShip tries again in the background. Logs: {logDir}", {
-      version: input.appVersion,
-      logDir: input.logDir,
-    }),
-  )}</p>
-</body></html>`;
+      t("Version {version}. T3.CodeShip tries again in the background. Logs: {logDir}", {
+        version: input.appVersion,
+        logDir: input.logDir,
+      }),
+    )}</p>`,
+  );
 }
 
-/** Shows a self-contained error window while the primary backend fails to start, so a broken release still opens. */
+function buildMigrationHtml(input: {
+  readonly appVersion: string;
+  readonly startup: EnvironmentStartup;
+  readonly logDir: string;
+}): string {
+  const percent =
+    input.startup.progress === undefined ? undefined : Math.floor(input.startup.progress * 100);
+  return page(
+    t("Updating T3.CodeShip"),
+    `<h1>${escapeHtml(t("Updating T3.CodeShip"))}</h1>
+<p>${escapeHtml(
+      t(
+        "This version updates the database that holds your threads. With a lot of history this can take several minutes. T3.CodeShip opens when it is done.",
+      ),
+    )}</p>
+${
+  percent === undefined
+    ? ""
+    : `<p>${escapeHtml(t("{percent}% done", { percent }))}</p><progress value="${percent}" max="100" aria-hidden="true"></progress>`
+}
+<p>${escapeHtml(t("You can quit. The update continues where it stopped the next time T3.CodeShip starts."))}</p>
+<div class="actions">${actionLink("quit", t("Quit"))}</div>
+<p class="muted">${escapeHtml(
+      t("Version {version}. Step {migration}. Logs: {logDir}", {
+        version: input.appVersion,
+        migration: input.startup.migration,
+        logDir: input.logDir,
+      }),
+    )}</p>`,
+  );
+}
+
+/** Shows a self-contained window while the primary backend fails to start, so a broken release still opens, or while it migrates its database. */
 export const listen: Effect.Effect<
   void,
   never,
@@ -187,6 +229,8 @@ export const listen: Effect.Effect<
   const windowRef = yield* Ref.make(Option.none<Electron.BrowserWindow>());
   // The failure that opened the window; later restarts do not reload its details.
   const failureRef = yield* Ref.make(Option.none<BackendStartupFailure>());
+  // A migrating backend is not failing; the window shows its progress instead.
+  const migrationRef = yield* Ref.make(Option.none<EnvironmentStartup>());
   const renderedHtmlRef = yield* Ref.make("");
   const checkedRef = yield* Ref.make(false);
   let backendHasStarted = false;
@@ -197,16 +241,35 @@ export const listen: Effect.Effect<
     Effect.map((state) => resolveStartupRecoveryOffer(state, lastStartedVersion)),
   );
 
+  const pageHtml = Effect.gen(function* () {
+    const migration = yield* Ref.get(migrationRef);
+    if (Option.isSome(migration)) {
+      return Option.some(
+        buildMigrationHtml({
+          appVersion: environment.appVersion,
+          startup: migration.value,
+          logDir: environment.logDir,
+        }),
+      );
+    }
+    const failure = yield* Ref.get(failureRef);
+    if (Option.isNone(failure)) return Option.none<string>();
+    return Option.some(
+      buildStartupRecoveryHtml({
+        appVersion: environment.appVersion,
+        failure: failure.value,
+        offer: yield* offer,
+        logDir: environment.logDir,
+      }),
+    );
+  });
+
   const render = Effect.gen(function* () {
     const window = yield* Ref.get(windowRef);
-    const failure = yield* Ref.get(failureRef);
-    if (Option.isNone(window) || Option.isNone(failure) || window.value.isDestroyed()) return;
-    const html = buildStartupRecoveryHtml({
-      appVersion: environment.appVersion,
-      failure: failure.value,
-      offer: yield* offer,
-      logDir: environment.logDir,
-    });
+    if (Option.isNone(window) || window.value.isDestroyed()) return;
+    const page = yield* pageHtml;
+    if (Option.isNone(page)) return;
+    const html = page.value;
     if ((yield* Ref.getAndSet(renderedHtmlRef, html)) === html) return;
     void window.value.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
   });
@@ -265,6 +328,7 @@ export const listen: Effect.Effect<
       const existing = yield* Ref.get(windowRef);
       if (Option.isSome(existing) && !existing.value.isDestroyed()) {
         yield* electronWindow.reveal(existing.value);
+        yield* render;
         return;
       }
       const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
@@ -275,7 +339,9 @@ export const listen: Effect.Effect<
           minWidth: 420,
           minHeight: 320,
           show: false,
-          title: t("T3.CodeShip could not start"),
+          title: Option.isSome(yield* Ref.get(migrationRef))
+            ? t("Updating T3.CodeShip")
+            : t("T3.CodeShip could not start"),
           autoHideMenuBar: true,
           backgroundColor: shouldUseDarkColors ? "#000000" : "#ffffff",
           webPreferences: {
@@ -315,6 +381,10 @@ export const listen: Effect.Effect<
     if (Option.isSome(window) && !window.value.isDestroyed()) window.value.close();
   });
 
+  const showWhileMigrating = Effect.gen(function* () {
+    if (Option.isSome(yield* Ref.get(migrationRef))) yield* show();
+  });
+
   const closeWhenMainReady = Effect.gen(function* () {
     if ((yield* SubscriptionRef.get(primaryBackendStartup))._tag !== "Ready") return;
     const main = yield* electronWindow.main;
@@ -348,12 +418,31 @@ export const listen: Effect.Effect<
         if (startup._tag === "Ready") {
           backendHasStarted = true;
           yield* Ref.set(failureRef, Option.none());
+          yield* Ref.set(migrationRef, Option.none());
           yield* closeWhenMainReady;
           yield* rememberStartedVersion;
           return;
         }
+        if (startup._tag === "Migrating") {
+          const wasMigrating = Option.isSome(
+            yield* Ref.getAndSet(migrationRef, Option.some(startup)),
+          );
+          if (Option.isSome(yield* Ref.get(windowRef))) {
+            yield* render;
+          } else if (!wasMigrating) {
+            yield* Effect.sleep(MIGRATION_WINDOW_DELAY).pipe(
+              Effect.andThen(showWhileMigrating),
+              Effect.forkScoped,
+            );
+          }
+          return;
+        }
         if (startup._tag !== "Failing") return;
-        if (Option.isSome(yield* Ref.get(failureRef))) return;
+        yield* Ref.set(migrationRef, Option.none());
+        if (Option.isSome(yield* Ref.get(failureRef))) {
+          yield* render;
+          return;
+        }
         yield* Ref.set(failureRef, Option.some({ reason: startup.reason, output: startup.output }));
         // The backend manager already logs each failure's reason.
         yield* logWarning("primary backend failing to start");
@@ -374,9 +463,10 @@ export const listen: Effect.Effect<
   // macOS keeps running with no windows; the Dock icon must bring the error back.
   yield* electronApp.on("activate", () => {
     runFork(
-      Ref.get(failureRef).pipe(
-        Effect.flatMap((failure) => (Option.isSome(failure) ? show() : Effect.void)),
-      ),
+      Effect.gen(function* () {
+        const failure = yield* Ref.get(failureRef);
+        if (Option.isSome(failure) || Option.isSome(yield* Ref.get(migrationRef))) yield* show();
+      }),
     );
   });
 });
