@@ -22,6 +22,8 @@ export const writeFileStringAtomically = (input: {
   readonly filePath: string;
   readonly contents: string;
   readonly preserveMode?: boolean;
+  /** Set on the new file before it replaces the target, so it is never readable more widely. */
+  readonly mode?: number;
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -42,7 +44,11 @@ export const writeFileStringAtomically = (input: {
       );
       const tempPath = path.join(tempDirectory, "contents.tmp");
 
-      yield* fs.writeFileString(tempPath, input.contents);
+      yield* fs.writeFileString(
+        tempPath,
+        input.contents,
+        input.mode === undefined ? undefined : { mode: input.mode },
+      );
       if (input.preserveMode && platform !== "win32") {
         const mode = yield* fs.stat(targetPath).pipe(
           Effect.map((info) => info.mode & 0o7777),

@@ -833,6 +833,58 @@ describe("codexSignInChanges", () => {
       changed: ["codex"],
     },
     {
+      name: "a later CODEX_HOME in another case, which Windows reads",
+      platform: "win32" as const,
+      before: { codex: codexAccount({}, "/a") },
+      after: {
+        codex: {
+          ...codexAccount({}, "/a"),
+          environment: [
+            { name: "CODEX_HOME", value: "/a", sensitive: false },
+            { name: "codex_home", value: "/b", sensitive: false },
+          ],
+        },
+      },
+      changed: ["codex"],
+    },
+    {
+      name: "no other spelling of CODEX_HOME, which Linux does not read",
+      before: { codex: codexAccount({}, "/a") },
+      after: {
+        codex: {
+          ...codexAccount({}, "/a"),
+          environment: [
+            { name: "CODEX_HOME", value: "/a", sensitive: false },
+            { name: "codex_home", value: "/b", sensitive: false },
+          ],
+        },
+      },
+      changed: [],
+    },
+    {
+      name: "no CODEX_HOME that a later one overrides",
+      platform: "win32" as const,
+      before: {
+        codex: {
+          ...codexAccount({}),
+          environment: [
+            { name: "codex_home", value: "/a", sensitive: false },
+            { name: "CODEX_HOME", value: "/c", sensitive: false },
+          ],
+        },
+      },
+      after: {
+        codex: {
+          ...codexAccount({}),
+          environment: [
+            { name: "codex_home", value: "/b", sensitive: false },
+            { name: "CODEX_HOME", value: "/c", sensitive: false },
+          ],
+        },
+      },
+      changed: [],
+    },
+    {
       name: "no setting that keeps the login, even on its first save",
       before: {},
       after: { codex: codexAccount({ launchArgs: "--verbose", setupMode: "existing" }) },
@@ -848,8 +900,11 @@ describe("codexSignInChanges", () => {
       },
       changed: [],
     },
-  ])("lists $name", ({ before, after, changed }) => {
-    assert.deepEqual(AccountRouting.codexSignInChanges(before, after), changed);
+  ])("lists $name", ({ before, after, changed, platform }) => {
+    assert.deepEqual(
+      AccountRouting.codexSignInChanges(before, after, platform ?? "linux"),
+      changed,
+    );
   });
 });
 

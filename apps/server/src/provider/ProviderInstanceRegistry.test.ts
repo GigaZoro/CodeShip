@@ -43,7 +43,10 @@ import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ClaudeAccountFolders from "./ClaudeAccountFolders.ts";
+import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistry.ts";
+import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 import { ProviderDriverError } from "./Errors.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "./ProviderOrchestrationAdapterInfrastructure.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
@@ -463,6 +466,184 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         auth: { status: "authenticated" },
       });
     }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect.each([
+    { platform: "linux", namesIgnoreCase: false },
+    { platform: "win32", namesIgnoreCase: true },
+  ] as const)(
+    "publishes the folder each enabled Claude account runs in on $platform",
+    ({ platform, namesIgnoreCase }) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "claude-folders-home-" });
+        const claude = ProviderDriverKind.make("claudeAgent");
+        const binaryPath = path.join(home, "claude-not-installed");
+        const enabledConfig = makeClaudeConfig({ enabled: true, binaryPath });
+        const folderSecret: SecretReference = {
+          provider: SecretProviderId.make("personal"),
+          reference: "op://Private/Claude/folder",
+        };
+        const missingSecret: SecretReference = {
+          provider: SecretProviderId.make("personal"),
+          reference: "op://Private/Claude/missing",
+        };
+        const gate = Deferred.makeUnsafe<void>();
+        const resolver = Layer.succeed(SecretResolver.SecretResolver, {
+          read: (references) =>
+            Deferred.await(gate).pipe(
+              Effect.as(
+                references.map((reference) =>
+                  reference.reference === folderSecret.reference
+                    ? "/vault/claude-folder"
+                    : undefined,
+                ),
+              ),
+            ),
+          invalidate: () => Effect.void,
+        });
+        const settingsLayer = ServerSettings.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("claudeAgent")]: { driver: claude, config: enabledConfig },
+            [ProviderInstanceId.make("home_path")]: {
+              driver: claude,
+              displayName: "Home path",
+              config: makeClaudeConfig({ enabled: true, binaryPath, homePath: "~/.claude-own" }),
+            },
+            [ProviderInstanceId.make("own")]: { driver: claude, config: enabledConfig },
+            [ProviderInstanceId.make("named")]: {
+              driver: claude,
+              environment: [
+                { name: "CLAUDE_CONFIG_DIR", value: "~/.claude-named", sensitive: false },
+              ],
+              config: enabledConfig,
+            },
+            [ProviderInstanceId.make("lowercase")]: {
+              driver: claude,
+              environment: [
+                { name: "claude_config_dir", value: "/srv/claude-lower", sensitive: false },
+              ],
+              config: enabledConfig,
+            },
+            [ProviderInstanceId.make("from_secret")]: {
+              driver: claude,
+              environment: [{ name: "CLAUDE_CONFIG_DIR", value: folderSecret, sensitive: true }],
+              config: enabledConfig,
+            },
+            [ProviderInstanceId.make("unreadable")]: {
+              driver: claude,
+              environment: [{ name: "CLAUDE_CONFIG_DIR", value: missingSecret, sensitive: true }],
+              config: enabledConfig,
+            },
+            [ProviderInstanceId.make("invalid")]: { driver: claude, config: { binaryPath: 42 } },
+            [ProviderInstanceId.make("off")]: {
+              driver: claude,
+              enabled: false,
+              config: enabledConfig,
+            },
+            [ProviderInstanceId.make("off_invalid")]: {
+              driver: claude,
+              enabled: false,
+              config: { binaryPath: 42 },
+            },
+          },
+        });
+
+        const contents = yield* Effect.gen(function* () {
+          const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+          const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
+            drivers: [ClaudeDriver],
+            configMap: deriveProviderInstanceConfigMap(settings),
+          }).pipe(Effect.provide(resolver));
+          // Secrets are read after startup; wait for the change that applies them.
+          const changes = yield* registry.subscribeChanges;
+          yield* Deferred.succeed(gate, undefined);
+          yield* PubSub.take(changes);
+          yield* Layer.build(
+            ClaudeAccountFolders.layer.pipe(
+              Layer.provide(
+                Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
+              ),
+            ),
+          );
+          return yield* fileSystem.readFileString(
+            ClaudeAccountFolders.claudeAccountFoldersPath(path, stateDir),
+          );
+        }).pipe(
+          Effect.provide(settingsLayer),
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.provideService(HostProcess.Environment, {}),
+        );
+
+        const ownHome = (instanceId: string) =>
+          path.join(stateDir, "providers", "claudeAgent", instanceId, "home");
+        expect(JSON.parse(contents)).toEqual({
+          version: 1,
+          accounts: [
+            {
+              instanceId: "claudeAgent",
+              displayName: null,
+              status: "available",
+              configFolder: { kind: "default" },
+            },
+            {
+              instanceId: "home_path",
+              displayName: "Home path",
+              status: "available",
+              configFolder: { kind: "path", path: path.join(home, ".claude-own") },
+            },
+            {
+              instanceId: "own",
+              displayName: null,
+              status: "available",
+              configFolder: { kind: "path", path: ownHome("own") },
+            },
+            {
+              instanceId: "named",
+              displayName: null,
+              status: "available",
+              configFolder: { kind: "path", path: path.join(home, ".claude-named") },
+            },
+            {
+              instanceId: "lowercase",
+              displayName: null,
+              status: "available",
+              configFolder: {
+                kind: "path",
+                path: namesIgnoreCase ? "/srv/claude-lower" : ownHome("lowercase"),
+              },
+            },
+            {
+              instanceId: "from_secret",
+              displayName: null,
+              status: "available",
+              configFolder: { kind: "secret" },
+            },
+            {
+              instanceId: "unreadable",
+              displayName: null,
+              status: "unavailable",
+              reason: expect.stringContaining("Could not read CLAUDE_CONFIG_DIR"),
+            },
+            {
+              instanceId: "invalid",
+              displayName: null,
+              status: "unavailable",
+              reason: expect.stringContaining("Invalid config for instance 'invalid'"),
+            },
+          ],
+        });
+        expect(contents).not.toContain("/vault/claude-folder");
+        if (!windowsHost) {
+          const info = yield* fileSystem.stat(
+            ClaudeAccountFolders.claudeAccountFoldersPath(path, stateDir),
+          );
+          expect(info.mode & 0o777).toBe(0o600);
+        }
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("scopes Claude's one-probe fallback to the logged-in organization", () =>

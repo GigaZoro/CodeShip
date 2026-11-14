@@ -10,7 +10,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  findProviderInstanceEnvironmentVariable,
+  mergeProviderInstanceEnvironment,
+} from "@t3tools/provider-core/server/instanceEnvironment";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
@@ -86,10 +89,22 @@ export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnviro
   instanceEnvironment: ProviderInstanceEnvironment | undefined,
   hostEnvironment: NodeJS.ProcessEnv,
 ) {
-  const environment = yield* mergeProviderInstanceEnvironment(instanceEnvironment, {
-    ...hostEnvironment,
-    CLAUDE_CODE_ENTRYPOINT: "t3-code",
-  });
+  const path = yield* Path.Path;
+  const entrypoint = yield* findProviderInstanceEnvironmentVariable(
+    instanceEnvironment,
+    "CLAUDE_CODE_ENTRYPOINT",
+  );
+  const merged = yield* mergeProviderInstanceEnvironment(
+    entrypoint === undefined ? undefined : [entrypoint],
+    { ...hostEnvironment, CLAUDE_CODE_ENTRYPOINT: "t3-code" },
+  );
+  // Claude resolves a relative folder against each process's working directory, which differs by
+  // project. It names its Keychain item from the exact value, so an absolute one passes unchanged.
+  const configDir = merged.CLAUDE_CONFIG_DIR?.trim();
+  const environment =
+    configDir && !path.isAbsolute(configDir)
+      ? { ...merged, CLAUDE_CONFIG_DIR: path.resolve(configDir) }
+      : merged;
   const settingsEntrypoint = (yield* readClaudeSettingsEnv(config, undefined, environment))
     .CLAUDE_CODE_ENTRYPOINT;
   return settingsEntrypoint

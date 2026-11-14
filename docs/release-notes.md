@@ -1,3 +1,9 @@
+## 2026-11-14 — Local tools can read the folder each Claude account runs in
+
+- T3.CodeShip now writes `providers/claudeAgent/accounts.json` in its state folder (`~/.t3/userdata` by default), listing each enabled Claude provider with the folder it runs Claude in, so a tool that reads Claude's login, such as a usage meter, no longer has to work the folder out from the settings and get it wrong. A folder set from a secret is listed without its path, and a provider that cannot start is listed with its reason. See [Separate accounts or configurations](user/providers-claude.md#separate-accounts-or-configurations).
+- On Windows, provider **Environment variables** named in lower or mixed case now count as Windows reads them. A Claude provider's `claude_config_dir` runs it in that folder; it used to sign in to a folder T3.CodeShip made for it instead. A `claude_code_entrypoint` replaces T3.CodeShip's label, and a Codex account's `codex_home` that moves it to another login clears its usage-limit holds, as `CODEX_HOME` does.
+- A Claude provider whose `CLAUDE_CONFIG_DIR` is a relative path now uses the same folder in every chat, resolved against the folder T3.CodeShip started in; each project used to get a folder of its own. Sign in to such a provider again, or set an absolute path.
+
 ## 2026-11-14 — Runs move off a Codex account whose login was rejected
 
 - When Codex rejects an account's login (its saved sign-in no longer works, ChatGPT refuses a ChatGPT-sharing connection's token even after renewing it, the connection was removed, or it no longer allows token sharing), the run now fails with "This account's sign-in was rejected" and the account shows as signed out in **Providers** and **Manual steps**. Before, the run failed with Codex's own error, the account showed only a failed status check, and Auto, **Switch accounts at usage limits** and scheduled tasks kept sending work to it.

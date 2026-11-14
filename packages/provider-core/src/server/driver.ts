@@ -47,6 +47,12 @@ export interface ProviderDriverMetadata {
 export type ProviderWorkspaceSnapshot = ServerProvider &
   Pick<ServerProviderWorkspaceSnapshot, "slashCommandsPending" | "optionDescriptors">;
 
+/** The folder a provider keeps its login in; `secret` when it came from a secret, so it is never written out. */
+export type ProviderConfigFolder =
+  | { readonly kind: "default" }
+  | { readonly kind: "path"; readonly path: string }
+  | { readonly kind: "secret" };
+
 export interface ProviderInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
@@ -73,6 +79,8 @@ export interface ProviderInstance {
   /** A login kept beside `auth` only to read this account's usage limits; see ProviderAuthPurpose. */
   readonly limitsAuth?: ProviderAuthController;
   readonly plugins?: ProviderPluginManagement;
+  /** Published for local tools that read the login; set by drivers whose accounts they read. */
+  readonly configFolder?: ProviderConfigFolder;
   /** Where this provider loads personal skills from; absent when it cannot take copied skills. */
   readonly personalSkillsDirectory?: string;
   /** Turns one skill on or off in the provider's own config; absent when it has no such switch. */

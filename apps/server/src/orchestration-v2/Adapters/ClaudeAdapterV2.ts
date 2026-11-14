@@ -12197,7 +12197,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     // entrypoint keeps it ahead of T3.CodeShip's label.
     const baseEnvironment = yield* mergeClaudeProcessEnvironment(
       config,
-      environment?.filter((variable) => variable.name === "CLAUDE_CODE_ENTRYPOINT"),
+      environment,
       yield* mergeClaudeInstanceEnvironment(instanceId, environment, hostEnvironment),
     );
     const claudeEnvironment = yield* makeClaudeEnvironment(config, baseEnvironment);

@@ -53,6 +53,15 @@ location intact. Setting `HOME` instead can put credentials where this provider 
 not find them. Threads on an instance with its own **CLAUDE_CONFIG_DIR path** can
 switch only to instances that use the same directory.
 
+A local tool that reads Claude's login, such as a usage meter, can find the folder each enabled
+Claude provider runs in from `providers/claudeAgent/accounts.json` in T3.CodeShip's state folder
+(`~/.t3/userdata` by default), instead of working it out from the settings. Each entry gives the
+provider's id, display name and folder: `default` for Claude's own `~/.claude`, whose account
+settings are in `~/.claude.json`; the folder's path; or `secret` when the folder comes from a
+secret, whose path is not written out. A provider that cannot start is listed as `unavailable` with
+the reason. T3.CodeShip rewrites the file when providers change. On macOS and Linux only your user
+can read it; on Windows it has the state folder's permissions.
+
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.
 

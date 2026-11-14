@@ -53,9 +53,11 @@ import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import { resolveClaudeModelCatalog } from "../ClaudeModelCatalog.ts";
 import {
   defaultProviderContinuationIdentity,
+  type ProviderConfigFolder,
   type ProviderDriver,
   type ProviderInstance,
 } from "@t3tools/provider-core/server/driver";
+import { findProviderInstanceEnvironmentVariable } from "@t3tools/provider-core/server/instanceEnvironment";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
@@ -215,11 +217,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       environment,
       yield* HostProcess.Environment,
     );
-    const processEnv = yield* mergeClaudeProcessEnvironment(
-      config,
-      environment.filter((variable) => variable.name === "CLAUDE_CODE_ENTRYPOINT"),
-      instanceEnv,
-    );
+    const processEnv = yield* mergeClaudeProcessEnvironment(config, environment, instanceEnv);
     const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
       instanceId,
@@ -227,10 +225,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     // An added account signs in to its own folder unless it names one; the rest of that folder
     // links to the shared Claude folder, so every account keeps the same files and sessions.
     const sharedHome = yield* resolveClaudeHomePath(config, processEnv);
+    const configDirVariable = yield* findProviderInstanceEnvironmentVariable(
+      environment,
+      "CLAUDE_CONFIG_DIR",
+    );
     const accountHome =
       instanceId !== defaultInstanceIdForDriver(DRIVER_KIND) &&
       config.homePath.trim().length === 0 &&
-      !environment.some((variable) => variable.name === "CLAUDE_CONFIG_DIR")
+      configDirVariable === undefined
         ? claudeAccountHomePath(path, stateDir, instanceId)
         : undefined;
     const sharedConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
@@ -275,11 +277,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     // Threads continue across accounts because every account shares the sessions folder.
     const continuationGroupKey = yield* makeClaudeContinuationGroupKey(config, processEnv);
     const configDir = yield* resolveClaudeHomePath(effectiveConfig, processEnv);
-    const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
+    // Claude's own default keeps its account config beside the folder, in ~/.claude.json.
+    const ownConfigDir =
       effectiveConfig.homePath.trim() || processEnv.CLAUDE_CONFIG_DIR?.trim()
         ? configDir
-        : undefined,
-    );
+        : undefined;
+    const configFolder: ProviderConfigFolder =
+      ownConfigDir === undefined
+        ? { kind: "default" }
+        : effectiveConfig.homePath.trim().length === 0 && configDirVariable?.sensitive
+          ? { kind: "secret" }
+          : { kind: "path", path: ownConfigDir };
+    const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(ownConfigDir);
     const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
     const { CLAUDE_CODE_OAUTH_TOKEN: _existingToken, ...regularLoginEnvironment } = processEnv;
     const readLoginExpiry = readClaudeLoginExpiry({
@@ -671,6 +680,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       enabled,
       auth: auth.controller,
       plugins,
+      configFolder,
       personalSkillsDirectory: path.join(configDir, "skills"),
       setSkillEnabled: ({ name, enabled }) =>
         // Plugin skills (`plugin:name`) follow their plugin, which has no per-skill override.

@@ -116,6 +116,7 @@ import * as CodexInstallation from "./provider/CodexInstallation.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderAutoUpdate from "./provider/ProviderAutoUpdate.ts";
+import * as ClaudeAccountFolders from "./provider/ClaudeAccountFolders.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProviderPlugins from "./provider/ProviderPlugins.ts";
@@ -771,6 +772,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ).pipe(Layer.provide(UnattendedApprovalReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   ProviderUsageLimitsIngestion.layer,
   ProviderAutoUpdate.layer,
+  ClaudeAccountFolders.layer,
   layerProviderInstallationRefresh,
   ReplayMarkers.layer,
   ManualStepChats.layer,

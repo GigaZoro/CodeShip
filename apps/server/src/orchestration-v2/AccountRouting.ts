@@ -12,6 +12,8 @@ import {
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
+import { mergedProviderInstanceEnvironmentName } from "@t3tools/provider-core/server/instanceEnvironment";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { modelPicksEqual, resolveSelectableModel } from "@t3tools/shared/model";
 import {
   orderProviderInstancesForFailover,
@@ -703,7 +705,7 @@ const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
 
 // The instance's own CODEX_HOME is the login home when no home path is set.
-const codexSignIn = (instance: ProviderInstanceConfig | undefined) =>
+const codexSignIn = (instance: ProviderInstanceConfig | undefined, platform: NodeJS.Platform) =>
   Option.match(decodeCodexSettings(instance?.config ?? {}), {
     onNone: () => "",
     onSome: (codex) =>
@@ -712,7 +714,10 @@ const codexSignIn = (instance: ProviderInstanceConfig | undefined) =>
         codex.privateLogin === true,
         codex.homePath,
         codex.shadowHomePath,
-        instance?.environment?.find((variable) => variable.name === "CODEX_HOME")?.value ?? null,
+        instance?.environment?.findLast(
+          (variable) =>
+            mergedProviderInstanceEnvironmentName(variable.name, platform) === "CODEX_HOME",
+        )?.value ?? null,
       ]),
   });
 
@@ -720,13 +725,14 @@ const codexSignIn = (instance: ProviderInstanceConfig | undefined) =>
 export function codexSignInChanges(
   previous: ProviderInstanceConfigMap,
   current: ProviderInstanceConfigMap,
+  platform: NodeJS.Platform,
 ): Array<ProviderInstanceId> {
   return [...new Set([...Object.keys(previous), ...Object.keys(current)])].flatMap((key) => {
     const id = ProviderInstanceId.make(key);
     const before = Object.hasOwn(previous, id) ? previous[id] : undefined;
     const after = Object.hasOwn(current, id) ? current[id] : undefined;
     if (before?.driver !== CODEX_DRIVER && after?.driver !== CODEX_DRIVER) return [];
-    return codexSignIn(before) === codexSignIn(after) ? [] : [id];
+    return codexSignIn(before, platform) === codexSignIn(after, platform) ? [] : [id];
   });
 }
 const USAGE_PROBE_TIMEOUT = "20 seconds";
@@ -791,10 +797,11 @@ export const layer = Layer.effect(
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const settingsChanges = yield* serverSettings.subscribeChanges;
+    const platform = yield* HostProcess.Platform;
     let instances = (yield* serverSettings.getSettings.pipe(Effect.orDie)).providerInstances;
     yield* forkParked(
       Stream.runForEach(settingsChanges, (settings) => {
-        const changed = codexSignInChanges(instances, settings.providerInstances);
+        const changed = codexSignInChanges(instances, settings.providerInstances, platform);
         instances = settings.providerInstances;
         return Effect.forEach(
           changed,

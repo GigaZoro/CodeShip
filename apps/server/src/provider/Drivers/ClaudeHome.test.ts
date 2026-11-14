@@ -3,6 +3,7 @@ import * as NodeOS from "node:os";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -48,6 +49,14 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         expect(yield* resolveClaudeHomePath({ homePath: "~/.claude-work" }, environment)).toBe(
           explicit,
         );
+
+        const processFolder = (CLAUDE_CONFIG_DIR: string) =>
+          mergeClaudeProcessEnvironment({ homePath: "" }, undefined, { CLAUDE_CONFIG_DIR }).pipe(
+            Effect.map((processEnv) => processEnv.CLAUDE_CONFIG_DIR),
+          );
+        const unnormalized = `${inherited}${path.sep}`;
+        expect(yield* processFolder(unnormalized)).toBe(unnormalized);
+        expect(yield* processFolder("claude-relative")).toBe(path.resolve("claude-relative"));
       }),
     );
 
@@ -107,6 +116,16 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
       expect(
         (yield* mergeClaudeProcessEnvironment({ homePath }, instance, host)).CLAUDE_CODE_ENTRYPOINT,
       ).toBe("instance");
+      // Only the entrypoint is applied again: the merged host env already dropped a blank token.
+      const fullInstance = [
+        { name: "claude_code_entrypoint", value: "instance", sensitive: false },
+        { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
+      ];
+      const onWindows = yield* mergeClaudeProcessEnvironment({ homePath }, fullInstance, host).pipe(
+        Effect.provideService(HostProcess.Platform, "win32"),
+      );
+      expect(onWindows.CLAUDE_CODE_ENTRYPOINT).toBe("instance");
+      expect(onWindows).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
 
       yield* fileSystem.writeFileString(
         path.join(homePath, "settings.json"),
