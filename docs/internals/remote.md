@@ -249,7 +249,21 @@ own copy.
 
 Every machine waits its rank times a grace period, asks the machines in the
 order (`list_scheduled_tasks`, which also finds a run started without a claim,
-such as one on an older version), then claims. A peer's last run, no-work skip
+such as one on an older version), then claims. The check decodes only the
+fields it reads, and only the asked task's entry, so a version that changes any
+other field never hides its run. A machine ahead that answers but in a way
+this one cannot read (too old to report runs, an entry that does not decode, an
+entry without an id it reads when none matches, or an answer the client fails
+as `version_mismatch`; a JSON-RPC error is not one) is up and may run the
+occurrence outside the claims, so it is watched
+like a running holder; one that cannot be reached is left to the claims, which
+is what lets a later machine take over from one that is off. Every recheck
+while watching asks all the machines again, not only the one watched, since
+another may hold a run outside the claims by then. The link listing keeps the
+unreadable version as `versionWarning`, in memory, until a listing or a call
+sees that machine on another version, and keeps it while it does not answer: a later
+readable answer clears `lastError` but not the skew, since the next call may
+fail the same way. A peer's last run, no-work skip
 and running check each name the occurrence they serve, in the claims' form, and
 count only for that occurrence or a later one: a machine that took the previous
 occurrence over late starts its run inside this one's window, so start time

@@ -403,8 +403,11 @@ A task's **Runs** choice keeps a copy of it on each of your machines:
   has it, or their run failed (for example when a machine is offline or out of
   usage), and more than half of the machines recorded its claim. While another
   machine is still running it, the machine keeps asking every few minutes and
-  runs the task itself if that run fails, until the next run is due. A run you
-  or an agent stop stays stopped. A fixed time is the same time on machines in
+  runs the task itself if that run fails, until the next run is due. A machine
+  ahead of it that answers in a way its version cannot read counts as running
+  it, so it never runs twice; **Settings → Machines & access → Linked
+  environments** says which machine to update. A run you or an agent stop stays
+  stopped. A fixed time is the same time on machines in
   different time zones, each at its own local hour, so it still runs once. The
   order belongs to the project, so changing it in one task changes it for every
   one-machine task in that project. A machine missing from the order adds

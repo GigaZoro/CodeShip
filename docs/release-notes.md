@@ -1,3 +1,10 @@
+## 2026-11-14 — One-machine tasks no longer run twice across versions
+
+- A one-machine scheduled task could run twice in the same slot when its machines ran different T3.CodeShip versions: the later machine could not read the first machine's answer, counted it as away, and started the run while the first machine was still running it. The check now reads only what it needs from the other machine's answer, so a newer version that changes anything else no longer hides its run.
+- A machine ahead in the order that answers in a way this version still cannot read now counts as running the time: the later machine waits and checks again, as it does for a machine that is still running, and leaves that time to it when the next one is due. A machine that cannot be reached at all is still taken over from, as before.
+- While watching another machine's run, a later machine now asks every machine in the order each time, so a run another one started meanwhile is no longer missed.
+- When a linked machine's answer cannot be read, **Settings → Machines & access → Linked environments**, `t3 environment list` and the task's warnings now say which machine runs the older version and to update it, instead of asking you to update both, whenever the two versions compare. The warning has a line of its own and stays while that version runs there, also after a call that works or while that machine does not answer.
+
 ## 2026-11-14 — Local tools can read the folder each Claude account runs in
 
 - T3.CodeShip now writes `providers/claudeAgent/accounts.json` in its state folder (`~/.t3/userdata` by default), listing each enabled Claude provider with the folder it runs Claude in, so a tool that reads Claude's login, such as a usage meter, no longer has to work the folder out from the settings and get it wrong. A folder set from a secret is listed without its path, and a provider that cannot start is listed with its reason. See [Separate accounts or configurations](user/providers-claude.md#separate-accounts-or-configurations).

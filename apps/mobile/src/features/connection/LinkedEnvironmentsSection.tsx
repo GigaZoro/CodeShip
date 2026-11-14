@@ -71,6 +71,9 @@ export function LinkedEnvironmentsSection(props: {
               >
                 {status}
               </Text>
+              {link.versionWarning === undefined ? null : (
+                <Text className="text-xs text-warning-foreground">{link.versionWarning}</Text>
+              )}
             </View>
           );
         })}

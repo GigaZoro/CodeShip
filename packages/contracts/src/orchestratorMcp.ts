@@ -693,6 +693,8 @@ export const OrchestratorMcpEnvironmentLink = Schema.Struct({
   access: AuthMcpClientAccess,
   expiresAt: IsoDateTime,
   lastError: Schema.NullOr(Schema.String),
+  /** The version it runs answered in a way this one cannot read, and which side to update. */
+  versionWarning: Schema.optionalKey(Schema.String),
 });
 export type OrchestratorMcpEnvironmentLink = typeof OrchestratorMcpEnvironmentLink.Type;
 
@@ -1237,6 +1239,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_credential_required",
       "target_required",
       "memory_short",
+      /** A linked environment answered, but its version answers in a way this one cannot read. */
+      "version_mismatch",
     ]),
     message: Schema.String,
   },

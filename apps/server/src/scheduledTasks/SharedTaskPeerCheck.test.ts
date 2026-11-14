@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as PeerLinks from "../peer/PeerLinks.ts";
@@ -54,6 +55,24 @@ const peerCheckLayer = (
     ),
   );
 
+const MISMATCH = "Peer runs T3.CodeShip 9.0.0, newer than 1.0.0 here. Update T3.CodeShip here.";
+
+/** As the real client answers: decoded with the schema the call asks for. */
+const decodedAs =
+  (answer: PeerAnswer) =>
+  (call: { readonly environmentId: EnvironmentId; readonly success: Schema.Decoder<unknown> }) => {
+    const decode = Schema.decodeUnknownEffect(call.success);
+    return answer(call).pipe(
+      Effect.flatMap((value) =>
+        decode(value).pipe(
+          Effect.mapError(
+            () => new OrchestratorMcpFailure({ code: "version_mismatch", message: MISMATCH }),
+          ),
+        ),
+      ),
+    );
+  };
+
 const check = (input: PeerSetup & { readonly answer: PeerAnswer; readonly occurrence?: string }) =>
   Effect.gen(function* () {
     const service = yield* SharedTaskPeerCheck.SharedTaskPeerCheck;
@@ -63,7 +82,14 @@ const check = (input: PeerSetup & { readonly answer: PeerAnswer; readonly occurr
       occurrence: input.occurrence ?? OCCURRENCE,
       since: SINCE,
     });
-  }).pipe(Effect.provide(peerCheckLayer(input, { call: input.answer as never })));
+  }).pipe(
+    Effect.provide(
+      peerCheckLayer(input, {
+        call: decodedAs(input.answer) as never,
+        recordUnreadable: () => Effect.succeed(MISMATCH),
+      }),
+    ),
+  );
 
 const claim = (
   input: PeerSetup & {
@@ -253,6 +279,14 @@ it.effect.each([
     working: true,
   },
   {
+    // Another version shapes the fields the check does not read its own way.
+    name: "a run of this occurrence, whose other fields this version would not read",
+    lastRun: { at: OCCURRENCE, outcome: "working", occurrence: OCCURRENCE },
+    fields: { title: 7, schedule: "hourly", projectId: null },
+    ranOn: PEER,
+    working: true,
+  },
+  {
     // A stale asker judges the occurrence it slept through; the peer is past it.
     name: "a run of a later occurrence",
     lastRun: {
@@ -274,6 +308,14 @@ it.effect.each([
         occurrence: OCCURRENCE,
       },
     },
+    ranOn: PEER,
+    working: false,
+    noWork: { reason: null },
+  },
+  {
+    name: "a no-work skip of this occurrence, without the time it was scheduled for",
+    lastRun: EARLIER_RUN,
+    fields: { lastSkipped: { at: OCCURRENCE, reason: null, occurrence: OCCURRENCE } },
     ranOn: PEER,
     working: false,
     noWork: { reason: null },
@@ -370,19 +412,50 @@ it.effect.each([
   },
   {
     name: "the task is not there",
-    input: { answer: () => Effect.succeed({ tasks: [] }) },
+    input: {
+      answer: () => Effect.succeed({ tasks: [{ scheduledTaskId: "another-task", extra: 1 }] }),
+    },
     reason: "It does not have this task yet.",
+  },
+  {
+    name: "it lists a task this version cannot tell the id of",
+    input: { answer: () => Effect.succeed({ tasks: [{ id: TASK }] }) },
+    reason: MISMATCH,
+    unreadable: true,
+  },
+  {
+    name: "the client cannot read its answer",
+    input: {
+      answer: () =>
+        Effect.fail(new OrchestratorMcpFailure({ code: "version_mismatch", message: MISMATCH })),
+    },
+    reason: MISMATCH,
+    unreadable: true,
   },
   {
     name: "it predates lastRun",
     input: { answer: () => Effect.succeed({ tasks: [{ scheduledTaskId: TASK }] }) },
-    reason: "It runs an older version of T3.CodeShip.",
+    reason: MISMATCH,
+    unreadable: true,
   },
-])("a peer is unchecked when $name", ({ input, reason }) =>
+  {
+    name: "its answer is not a list of tasks",
+    input: { answer: () => Effect.succeed({ tasks: null }) },
+    reason: MISMATCH,
+    unreadable: true,
+  },
+  {
+    name: "its answer about the task does not decode",
+    input: { answer: peerTask({ at: OCCURRENCE, outcome: "paused" }) },
+    reason: MISMATCH,
+    unreadable: true,
+  },
+])("a peer is unchecked when $name", ({ input, reason, unreadable }) =>
   check(input).pipe(
     Effect.map((result) => {
       expect(result.ranOn).toBeNull();
       expect(result.unchecked).toEqual([{ environmentId: PEER, reason }]);
+      expect(result.unreadable).toEqual(unreadable === true ? [PEER] : []);
     }),
   ),
 );

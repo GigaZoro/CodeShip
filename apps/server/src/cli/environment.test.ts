@@ -39,4 +39,27 @@ describe("environment link output", () => {
     expect(listed).toContain(PEER_LINK_AGENTS_ONLY_NOTE);
     expect(formatLinks([])).toBe("No linked environments.\n");
   });
+
+  it.each([null, "warning"] as const)(
+    "names a version this one cannot read once, with the last error %s",
+    (lastError) => {
+      const warning =
+        "Box runs T3.CodeShip 0.0.1, older than 0.0.2 here. Update T3.CodeShip on Box.";
+      const listed = formatLinks([
+        {
+          environmentId: EnvironmentId.make("env-box"),
+          label: "Box",
+          urls: ["https://box.example.ts.net"],
+          access: "auto",
+          linkedAt: expiresAt,
+          expiresAt,
+          lastReachedAt: null,
+          lastError: lastError === null ? null : warning,
+          status: "reachable",
+          versionWarning: warning,
+        },
+      ]);
+      expect(listed.split(warning)).toHaveLength(2);
+    },
+  );
 });

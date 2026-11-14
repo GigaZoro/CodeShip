@@ -139,7 +139,7 @@ export const formatLinks = (links: ReadonlyArray<PeerLinkSummary>) =>
     : `${links
         .map(
           (link) =>
-            `${link.label} (${link.environmentId})\n  ${link.status}, access ${link.access}, expires ${DateTime.formatIso(link.expiresAt)}\n  ${link.urls.join(", ")}${link.lastError === null ? "" : `\n  last error: ${link.lastError}`}`,
+            `${link.label} (${link.environmentId})\n  ${link.status}, access ${link.access}, expires ${DateTime.formatIso(link.expiresAt)}\n  ${link.urls.join(", ")}${link.versionWarning === undefined ? "" : `\n  ${link.versionWarning}`}${link.lastError === null || link.lastError === link.versionWarning ? "" : `\n  last error: ${link.lastError}`}`,
         )
         .join("\n\n")}\n\n${PEER_LINK_AGENTS_ONLY_NOTE}\n`;
 

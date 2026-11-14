@@ -56,14 +56,16 @@ export type PeerLinkHealth =
 /**
  * Listing only checks that the peer answers, so a link whose last call failed
  * (the peer revoked it, say) is `failing` with the recorded reason; the next
- * successful call clears it.
+ * successful call clears it. `versionWarning` is shown on its own whatever the
+ * health, so a last error that repeats it is not a second detail.
  */
 export function peerLinkHealth(link: PeerLinkSummary, now: DateTime.Utc): PeerLinkHealth {
   if (link.status === "expired" || DateTime.isLessThanOrEqualTo(link.expiresAt, now)) {
     return { kind: "expired" };
   }
-  if (link.status === "unreachable") return { kind: "unreachable", detail: link.lastError };
-  if (link.lastError !== null) return { kind: "failing", detail: link.lastError };
+  const lastError = link.lastError === link.versionWarning ? null : link.lastError;
+  if (link.status === "unreachable") return { kind: "unreachable", detail: lastError };
+  if (lastError !== null) return { kind: "failing", detail: lastError };
   const days = Math.ceil(Duration.toDays(DateTime.distance(now, link.expiresAt)));
   return { kind: "reachable", expiresInDays: days <= EXPIRY_WARNING_DAYS ? days : null };
 }

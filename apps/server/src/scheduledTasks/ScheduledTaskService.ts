@@ -3566,32 +3566,18 @@ export const layer = Layer.effect(
           );
           return yield* startScheduledRun(task, fire);
         });
-        const since = iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs));
-        if (watched === null) {
-          // Also finds a run a machine started outside the claims, such as one on an older version.
-          const answer = yield* peerCheck.check({
-            taskId: task.id,
-            peers: plan.order.filter((id) => id !== hereEnvironmentId),
-            since,
-            occurrence: slot,
-          });
-          yield* logUnchecked(answer.unchecked);
-          const decision = { at: iso(now), ranOn: answer.ranOn, unchecked: answer.unchecked };
-          if (answer.ranOn === null) return yield* takeOccurrence(null, answer.liveRunsElsewhere);
-          return answer.working
-            ? yield* watch({ environmentId: answer.ranOn, ended: false }, decision)
-            : yield* skipOccurrence(answer.ranOn, next, decision, answer.noWork);
-        }
+        // Every machine, also while watching one, since any of them may hold a run outside the
+        // claims, such as one on an older version.
         const answer = yield* peerCheck.check({
           taskId: task.id,
-          peers: [watched.environmentId],
-          since,
+          peers: plan.order.filter((id) => id !== hereEnvironmentId),
+          since: iso(DateTime.makeUnsafe(occurrenceDueMs - windowMs)),
           occurrence: slot,
         });
         yield* logUnchecked(answer.unchecked);
         const decision = {
           at: iso(now),
-          ranOn: watched.environmentId,
+          ranOn: answer.ranOn ?? watched?.environmentId ?? null,
           unchecked: answer.unchecked,
         };
         if (answer.ranOn !== null) {
@@ -3602,7 +3588,24 @@ export const layer = Layer.effect(
         }
         // Silence is not an ended run: a busy machine misses calls, and taking over then runs
         // the occurrence twice.
-        if (answer.unchecked.length > 0) return yield* watch(watched, decision);
+        if (
+          watched !== null &&
+          answer.unchecked.some((peer) => peer.environmentId === watched.environmentId)
+        ) {
+          return yield* watch(watched, decision);
+        }
+        // A machine ahead that answered unreadably is up and may be running it outside the claims,
+        // as an older version does; one that could not be reached is left to them.
+        const unreadableAhead = plan.order
+          .slice(0, plan.rank)
+          .find((id) => answer.unreadable.includes(id));
+        if (unreadableAhead !== undefined) {
+          return yield* watch(
+            { environmentId: unreadableAhead, ended: false },
+            { ...decision, ranOn: unreadableAhead },
+          );
+        }
+        if (watched === null) return yield* takeOccurrence(null, answer.liveRunsElsewhere);
         // The machines between the one whose run ended and this one were watching it too. The
         // nearest takes over at once; each one after it waits its place and asks again, still
         // giving the occurrence up when the next one is due.

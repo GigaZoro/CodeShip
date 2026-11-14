@@ -367,6 +367,11 @@ machine** option as the dialog, and the agent is told whether the link back was 
 - When an agent passes an option that the other machine's version does not have yet, the call
   fails and names the option and that version, instead of running without it. Update
   T3.CodeShip there to use it.
+- When a linked machine answers in a way this machine's version cannot read, its row in
+  **Linked environments** says which machine runs the older version and to update it (or to
+  update both, when the two versions do not compare), and keeps saying so, also while that
+  machine does not answer, until it runs another version.
+  `t3 environment list` shows the same line.
 - A link is for agents only: it does not add the machine to this app's machine
   list (bottom-left of the sidebar). A linked machine that is missing there is
   marked in **Linked environments**; choose **Add to this app** (one click for a

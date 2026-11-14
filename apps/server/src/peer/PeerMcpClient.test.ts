@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
@@ -130,6 +131,90 @@ it.effect("tells a peer without a tool, such as an older version, from a failed 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+// The link keeps the message, so Settings → Linked environments shows which machine to update.
+it.effect.each([
+  {
+    name: "an older peer",
+    serverVersion: "0.0.1",
+    message: `Box runs T3.CodeShip 0.0.1, older than ${packageJson.version} here, so this version cannot read its answer. Update T3.CodeShip on Box.`,
+  },
+  {
+    name: "a newer peer",
+    serverVersion: "999.0.0",
+    message: `Box runs T3.CodeShip 999.0.0, newer than ${packageJson.version} here, so this version cannot read its answer. Update T3.CodeShip here.`,
+  },
+  {
+    name: "a peer whose version does not compare",
+    serverVersion: "dev",
+    message:
+      "The linked environment's answer did not match this version. Update both environments.",
+  },
+])(
+  "an answer this version cannot read from $name names the side to update",
+  ({ serverVersion, message }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handlers = McpToolAccess.toLayer(toolkit, {
+          probe: McpToolAccess.reads(() => Effect.succeed({ modes: "probe" })),
+          hold: McpToolAccess.reads(() => Effect.succeed({ modes: "hold" })),
+        });
+        const box = { ...descriptorOf("environment-box", "Box"), serverVersion };
+        const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers));
+        const context = yield* Layer.build(
+          layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+        );
+        const links = Context.get(context, PeerLinks.PeerLinks);
+        const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+        yield* linkTo(links, b);
+        const failure = yield* Effect.flip(
+          client.call({
+            environmentId: box.environmentId,
+            tool: "probe",
+            arguments: {},
+            limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+            success: Schema.Struct({ modes: Schema.Number }),
+          }),
+        );
+        const listed = Effect.map(links.list, (all) => {
+          const link = all.find((each) => each.environmentId === box.environmentId);
+          return { lastError: link?.lastError, versionWarning: link?.versionWarning };
+        });
+        expect(failure).toMatchObject({ code: "version_mismatch", message });
+        expect(yield* listed).toEqual({ lastError: message, versionWarning: message });
+        // An answer it can read clears the last error, not the warning about that version.
+        yield* client.call({
+          environmentId: box.environmentId,
+          tool: "probe",
+          arguments: {},
+          limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+          success: Result,
+        });
+        expect(yield* listed).toEqual({ lastError: null, versionWarning: message });
+        // A caller that decodes part of an answer itself records the same message.
+        expect(yield* client.recordUnreadable(box.environmentId)).toBe(message);
+        expect(yield* listed).toEqual({ lastError: message, versionWarning: message });
+        // Once it is seen on another version, by a call or by the list, an outage does not bring the warning back.
+        const goesQuiet = Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+        yield* Ref.set(b.descriptor, { ...box, serverVersion: "0.0.3" });
+        yield* client.call({
+          environmentId: box.environmentId,
+          tool: "probe",
+          arguments: {},
+          limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
+          success: Result,
+        });
+        yield* goesQuiet;
+        expect((yield* listed).versionWarning).toBeUndefined();
+        yield* Ref.set(b.descriptor, { ...box, serverVersion: "0.0.3" });
+        yield* client.recordUnreadable(box.environmentId);
+        yield* Ref.set(b.descriptor, { ...box, serverVersion: "0.0.4" });
+        expect((yield* listed).versionWarning).toBeUndefined();
+        yield* goesQuiet;
+        expect((yield* listed).versionWarning).toBeUndefined();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("refuses arguments the peer's version does not take, listing its tools once", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -243,6 +328,7 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
   let schema: unknown = { type: "object", properties };
   let live = new Set<string>();
   let started = 0;
+  let listError: string | undefined;
   let heldList:
     | { readonly received: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
     | undefined;
@@ -268,6 +354,13 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
       if (sessionId === undefined || !live.has(sessionId)) return answer(404);
       if (body.method === "notifications/initialized") return answer(202);
       if (body.method === "tools/list") {
+        if (listError !== undefined) {
+          return answer(200, {
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32603, message: listError },
+          });
+        }
         const tools = [{ name: "probe", inputSchema: schema }];
         const held = heldList;
         heldList = undefined;
@@ -305,6 +398,7 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
                 serverVersion: "0.0.0-test",
               }),
             recordOutcome: () => Effect.void,
+            recordUnreadable: () => Effect.void,
           }),
         ),
       ),
@@ -325,6 +419,9 @@ const fakePeerClient = Effect.fn("fakePeerClient")(function* (properties: Record
     restart: (next: Record<string, unknown>) => {
       schema = { type: "object", properties: next };
       live = new Set();
+    },
+    failList: (message: string) => {
+      listError = message;
     },
     /** Holds the next tools/list answer, as listed when it arrived, until `release`. */
     holdNextList: Effect.gen(function* () {
@@ -363,6 +460,17 @@ it.effect("renews a session the peer lost once, checks the call again in it, and
       "tools/list session-2",
       "tools/call session-2",
     ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("a peer whose tool list errors fails the call with its error, not as unreadable", () =>
+  Effect.gen(function* () {
+    const peer = yield* fakePeerClient({});
+    peer.failList("Internal error");
+    expect(yield* Effect.flip(peer.call({ newSetting: true }))).toMatchObject({
+      code: "orchestration_error",
+      message: "Internal error",
+    });
   }).pipe(Effect.scoped),
 );
 

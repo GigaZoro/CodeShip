@@ -302,6 +302,7 @@ const make = Effect.gen(function* () {
           access: link.access,
           expiresAt: DateTime.formatIso(link.expiresAt),
           lastError: link.lastError,
+          ...(link.versionWarning === undefined ? {} : { versionWarning: link.versionWarning }),
         })),
         notListed: NOT_LISTED,
         appList: PEER_LINK_AGENTS_ONLY_NOTE,

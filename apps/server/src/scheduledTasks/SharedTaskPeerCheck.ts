@@ -2,17 +2,44 @@ import {
   type EnvironmentId,
   type PeerLinkError,
   OrchestratorMcpClaimScheduledTaskOccurrenceResult,
-  OrchestratorMcpListScheduledTasksResult,
+  OrchestratorMcpScheduledOccurrence,
+  OrchestratorMcpScheduledTask,
   type ScheduledTaskId,
+  ScheduledTaskNoWorkSkip,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+
+// Only what the check reads, and only for this task, so a change to any other field or task in a
+// peer's answer never hides its run.
+const decodePeerTaskList = Schema.decodeUnknownOption(
+  Schema.Struct({ tasks: Schema.Array(Schema.Unknown) }),
+);
+const decodePeerTask = Schema.decodeUnknownOption(
+  Schema.Struct({
+    ...Struct.pick(OrchestratorMcpScheduledTask.fields, [
+      "checkingSince",
+      "checkingFor",
+      "liveRuns",
+      "lastRun",
+    ]),
+    lastSkipped: Schema.optional(
+      Schema.Struct({
+        ...Struct.pick(ScheduledTaskNoWorkSkip.fields, ["at", "reason"]),
+        occurrence: Schema.optional(Schema.NullOr(OrchestratorMcpScheduledOccurrence)),
+      }),
+    ),
+  }),
+);
 
 interface LinkStatus {
   readonly enabled: boolean;
@@ -39,6 +66,11 @@ export interface PeerCheckResult {
     readonly environmentId: EnvironmentId;
     readonly reason: string;
   }>;
+  /**
+   * The unchecked machines that answered, so they are up, but not in a way that says whether they
+   * have the occurrence, such as one on a version whose answer this one cannot read.
+   */
+  readonly unreadable: ReadonlyArray<EnvironmentId>;
 }
 
 export interface PeerClaimResult {
@@ -58,6 +90,8 @@ interface PeerAnswer {
   readonly environmentId: EnvironmentId;
   /** Why it could not be asked; null when it answered. */
   readonly reason: string | null;
+  /** It answered, so it is up, but its answer does not say whether it has the occurrence. */
+  readonly unreadable: boolean;
   readonly has: "working" | "completed" | null;
   readonly noWork: PeerCheckResult["noWork"];
   readonly liveRuns: number;
@@ -140,7 +174,14 @@ const make = Effect.gen(function* () {
   const check: SharedTaskPeerCheck["Service"]["check"] = Effect.fn("SharedTaskPeerCheck.check")(
     function* (input) {
       if (input.peers.length === 0) {
-        return { ranOn: null, working: false, noWork: null, liveRunsElsewhere: [], unchecked: [] };
+        return {
+          ranOn: null,
+          working: false,
+          noWork: null,
+          liveRunsElsewhere: [],
+          unchecked: [],
+          unreadable: [],
+        };
       }
       // A late run of the occurrence before starts inside this one's window, so only the occurrence
       // a peer names tells them apart; a later one settles a stale asker too. Null: run now or by
@@ -150,91 +191,103 @@ const make = Effect.gen(function* () {
           ? Date.parse(startedAt) >= Date.parse(input.since)
           : occurrence !== null && Date.parse(occurrence) >= Date.parse(input.occurrence);
       const askOne = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
+        const unchecked = (reason: string, unreadable = false): PeerAnswer => ({
+          environmentId,
+          reason,
+          unreadable,
+          has: null,
+          noWork: null,
+          liveRuns: 0,
+        });
         const problem = yield* linkProblem(environmentId);
-        if (problem !== null) {
-          return {
-            environmentId,
-            reason: problem,
-            has: null,
-            noWork: null,
-            liveRuns: 0,
-          } satisfies PeerAnswer;
-        }
-        return yield* client
+        if (problem !== null) return unchecked(problem);
+        const listed = yield* client
           .call({
             environmentId,
             tool: "list_scheduled_tasks",
-            // One task keeps the peer's live-run counts to that task's chats.
+            // One task keeps the peer's live-run counts to that task's chats. A version without
+            // the filter answers with every task, this one among them.
             arguments: { scheduledTaskId: input.taskId },
+            ignorableArguments: ["scheduledTaskId"],
             limits: PeerMcpClient.READ_ONLY_PEER_LIMITS,
-            success: OrchestratorMcpListScheduledTasksResult,
+            success: Schema.Unknown,
           })
           .pipe(
             Effect.timeoutOption(PeerMcpClient.PEER_READ_TIMEOUT),
-            Effect.map((answer): PeerAnswer => {
-              const unchecked = (reason: string): PeerAnswer => ({
-                environmentId,
-                reason,
-                has: null,
-                noWork: null,
-                liveRuns: 0,
-              });
-              if (Option.isNone(answer)) return unchecked("It did not answer in time.");
-              const task = answer.value.tasks.find(
-                (candidate) => candidate.scheduledTaskId === input.taskId,
-              );
-              if (task === undefined) return unchecked("It does not have this task yet.");
-              if (task.lastRun === undefined) {
-                return unchecked("It runs an older version of T3.CodeShip.");
-              }
-              // A peer without live-run counts reports only whether its last run's chat works.
-              const liveRuns =
-                task.liveRuns ??
-                (task.lastRun !== null &&
-                task.lastRun.outcome === "working" &&
-                !counts(task.lastRun.occurrence, task.lastRun.at)
-                  ? 1
-                  : 0);
-              const answered = (has: PeerAnswer["has"], noWork: PeerAnswer["noWork"] = null) => ({
-                environmentId,
-                reason: null,
-                has,
-                noWork,
-                liveRuns,
-              });
-              if (
-                task.checkingSince !== undefined &&
-                counts(task.checkingFor, task.checkingSince)
-              ) {
-                return answered("working");
-              }
-              if (
-                task.lastSkipped !== undefined &&
-                counts(task.lastSkipped.occurrence, task.lastSkipped.at)
-              ) {
-                return answered("completed", { reason: task.lastSkipped.reason });
-              }
-              // A run someone stopped on purpose is settled, so it counts as finished.
-              return answered(
-                task.lastRun === null ||
-                  !counts(task.lastRun.occurrence, task.lastRun.at) ||
-                  (task.lastRun.outcome === "failed" && task.lastRun.stopped !== true)
-                  ? null
-                  : task.lastRun.outcome === "working"
-                    ? "working"
-                    : "completed",
-              );
-            }),
-            Effect.catch((error) =>
-              Effect.succeed<PeerAnswer>({
-                environmentId,
-                reason: error.message,
-                has: null,
-                noWork: null,
-                liveRuns: 0,
+            Effect.map(
+              Option.match({
+                onNone: () => unchecked("It did not answer in time."),
+                onSome: (answer) => decodePeerTaskList(answer),
               }),
             ),
+            // The client recorded an answer it could not read already.
+            Effect.catch((error) =>
+              Effect.succeed(unchecked(error.message, error.code === "version_mismatch")),
+            ),
           );
+        if (!Option.isOption(listed)) return listed;
+        // It answered, so it is up, but not in a way that says whether it has the occurrence.
+        const unreadable = Effect.map(client.recordUnreadable(environmentId), (reason) =>
+          unchecked(reason, true),
+        );
+        if (Option.isNone(listed)) return yield* unreadable;
+        const entry = listed.value.tasks.find(
+          (candidate) =>
+            Predicate.hasProperty(candidate, "scheduledTaskId") &&
+            candidate.scheduledTaskId === input.taskId,
+        );
+        if (entry === undefined) {
+          // An entry without an id this version reads may be this task in another shape.
+          const unidentified = listed.value.tasks.some(
+            (candidate) =>
+              !Predicate.hasProperty(candidate, "scheduledTaskId") ||
+              typeof candidate.scheduledTaskId !== "string",
+          );
+          return unidentified ? yield* unreadable : unchecked("It does not have this task yet.");
+        }
+        const decoded = decodePeerTask(entry);
+        if (Option.isNone(decoded)) return yield* unreadable;
+        const task = decoded.value;
+        // A version before `lastRun` reports no run it started outside the claims.
+        if (task.lastRun === undefined) return yield* unreadable;
+        // A peer without live-run counts reports only whether its last run's chat works.
+        const liveRuns =
+          task.liveRuns ??
+          (task.lastRun !== null &&
+          task.lastRun.outcome === "working" &&
+          !counts(task.lastRun.occurrence, task.lastRun.at)
+            ? 1
+            : 0);
+        const answered = (
+          has: PeerAnswer["has"],
+          noWork: PeerAnswer["noWork"] = null,
+        ): PeerAnswer => ({
+          environmentId,
+          reason: null,
+          unreadable: false,
+          has,
+          noWork,
+          liveRuns,
+        });
+        if (task.checkingSince !== undefined && counts(task.checkingFor, task.checkingSince)) {
+          return answered("working");
+        }
+        if (
+          task.lastSkipped !== undefined &&
+          counts(task.lastSkipped.occurrence, task.lastSkipped.at)
+        ) {
+          return answered("completed", { reason: task.lastSkipped.reason });
+        }
+        // A run someone stopped on purpose is settled, so it counts as finished.
+        return answered(
+          task.lastRun === null ||
+            !counts(task.lastRun.occurrence, task.lastRun.at) ||
+            (task.lastRun.outcome === "failed" && task.lastRun.stopped !== true)
+            ? null
+            : task.lastRun.outcome === "working"
+              ? "working"
+              : "completed",
+        );
       });
       const answers = yield* Effect.forEach(input.peers, askOne, { concurrency: "unbounded" });
       const holder =
@@ -252,6 +305,7 @@ const make = Effect.gen(function* () {
             ? []
             : [{ environmentId: answer.environmentId, reason: answer.reason }],
         ),
+        unreadable: answers.flatMap((answer) => (answer.unreadable ? [answer.environmentId] : [])),
       };
     },
   );

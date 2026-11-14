@@ -166,7 +166,7 @@ function LinkedEnvironmentRow({
               tooltipText={status}
               dotClassName={
                 health.kind === "reachable"
-                  ? health.expiresInDays === null
+                  ? health.expiresInDays === null && link.versionWarning === undefined
                     ? "bg-success"
                     : "bg-warning"
                   : health.kind === "expired" || health.kind === "failing"
@@ -180,6 +180,9 @@ function LinkedEnvironmentRow({
           <p className="text-xs text-muted-foreground">
             {t(accessConfig[link.access].label)} · {status}
           </p>
+          {link.versionWarning === undefined ? null : (
+            <p className="text-xs text-warning-foreground">{link.versionWarning}</p>
+          )}
           <p className="truncate text-xs text-muted-foreground/80">{link.urls.join(", ")}</p>
           {addRoute.kind === "in-app" ? null : (
             <p className="text-xs text-muted-foreground">

@@ -37,6 +37,11 @@ export type PeerLinkStatus = typeof PeerLinkStatus.Type;
 export const PeerLinkSummary = Schema.Struct({
   ...PeerLink.fields,
   status: PeerLinkStatus,
+  /**
+   * The version it runs answered in a way this one cannot read, naming the side to update. It
+   * stays while that version runs there, which a later readable answer does not change.
+   */
+  versionWarning: Schema.optionalKey(Schema.String),
 });
 export type PeerLinkSummary = typeof PeerLinkSummary.Type;
 

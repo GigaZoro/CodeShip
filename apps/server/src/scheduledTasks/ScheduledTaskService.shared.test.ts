@@ -633,6 +633,7 @@ const FINISHED_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   noWork: null,
   liveRunsElsewhere: [],
   unchecked: [],
+  unreadable: [],
 };
 const NO_WORK_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ...FINISHED_THERE,
@@ -646,6 +647,7 @@ const NO_RUN_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   noWork: null,
   liveRunsElsewhere: [],
   unchecked: [],
+  unreadable: [],
 };
 const SILENT_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   ranOn: null,
@@ -653,6 +655,33 @@ const SILENT_THERE: SharedTaskPeerCheck.PeerCheckResult = {
   noWork: null,
   liveRunsElsewhere: [],
   unchecked: [{ environmentId: OTHER as never, reason: "It did not answer in time." }],
+  unreadable: [],
+};
+/** The machines are up, but their answers do not say whether they have the occurrence. */
+const unreadableOn = (...environmentIds: string[]): SharedTaskPeerCheck.PeerCheckResult => ({
+  ...NO_RUN_THERE,
+  unchecked: environmentIds.map((environmentId) => ({
+    environmentId: environmentId as never,
+    reason: "Its answer about this task did not match this version.",
+  })),
+  unreadable: environmentIds as never,
+});
+const UNREADABLE_THERE = unreadableOn(OTHER);
+
+/** What a check of `asked` hears of `answer`: nothing about the machines it did not ask. */
+const askedOnly = (
+  answer: SharedTaskPeerCheck.PeerCheckResult,
+  asked: ReadonlyArray<string>,
+): SharedTaskPeerCheck.PeerCheckResult => {
+  const isAsked = (environmentId: string) => asked.includes(environmentId);
+  return {
+    ...(answer.ranOn === null || isAsked(answer.ranOn)
+      ? answer
+      : { ...answer, ranOn: null, working: false, noWork: null }),
+    liveRunsElsewhere: answer.liveRunsElsewhere.filter((peer) => isAsked(peer.environmentId)),
+    unchecked: answer.unchecked.filter((peer) => isAsked(peer.environmentId)),
+    unreadable: answer.unreadable.filter(isAsked),
+  };
 };
 
 const UNREACHABLE = "unreachable";
@@ -705,7 +734,10 @@ const runScenario = <A, E>(
           { peers: input.peers, occurrence: input.occurrence, since: input.since },
         ]).pipe(
           Effect.map((calls) =>
-            "ranOn" in peers ? peers : peers[Math.min(calls.length, peers.length) - 1]!,
+            askedOnly(
+              "ranOn" in peers ? peers : peers[Math.min(calls.length, peers.length) - 1]!,
+              input.peers,
+            ),
           ),
         ),
       claim: (input) =>
@@ -887,19 +919,21 @@ it.effect("the first machine's own no-work skip moves the task to its next align
   }),
 );
 
-it.effect(
-  "the first machine in the order runs on time once no other machine ran it and the copies agree",
-  () =>
-    runScenario([HERE_ENVIRONMENT_ID, OTHER], NO_RUN_THERE, (scenario) =>
-      Effect.gen(function* () {
-        yield* scenario.tick(DUE + 1_000);
-        yield* Queue.take(scenario.launches);
-        expect(yield* Ref.get(scenario.peerCalls)).toEqual([
-          { peers: [OTHER], occurrence: iso(DUE), since: iso(DUE - 30 * MINUTE_MS) },
-        ]);
-        expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(HERE_ENVIRONMENT_ID);
-      }),
-    ),
+// Machines after it wait their turn, so one whose answer it cannot read holds nothing back.
+it.effect.each([
+  { name: "no other machine ran it", answer: NO_RUN_THERE },
+  { name: "a later machine's answer cannot be read", answer: UNREADABLE_THERE },
+])("the first machine in the order runs on time when $name and the copies agree", ({ answer }) =>
+  runScenario([HERE_ENVIRONMENT_ID, OTHER], answer, (scenario) =>
+    Effect.gen(function* () {
+      yield* scenario.tick(DUE + 1_000);
+      yield* Queue.take(scenario.launches);
+      expect(yield* Ref.get(scenario.peerCalls)).toEqual([
+        { peers: [OTHER], occurrence: iso(DUE), since: iso(DUE - 30 * MINUTE_MS) },
+      ]);
+      expect((yield* Ref.get(scenario.peerCopies)).get(OTHER)).toBe(HERE_ENVIRONMENT_ID);
+    }),
+  ),
 );
 
 const dueLocal = DateTime.toParts(
@@ -1036,6 +1070,7 @@ const unreachable = (...environmentIds: string[]): SharedTaskPeerCheck.PeerCheck
     environmentId: environmentId as never,
     reason: "It did not answer in time.",
   })),
+  unreadable: [],
 });
 const claimsOf = (sql: SqlClient.SqlClient) =>
   sql<{ occurrence_at: string; holder_environment_id: string }>`
@@ -1541,9 +1576,12 @@ it.effect(
 );
 
 // Silence is not an ended run: a busy machine misses calls, so taking over then would run it twice.
+// A machine whose answer can't be read is up and may be running it outside the claims, as an older
+// version does.
 it.effect.each([
   { name: "still going", answers: [WORKING_THERE] },
   { name: "that stopped answering", answers: [WORKING_THERE, SILENT_THERE] },
+  { name: "on a machine whose answer it cannot read", answers: [UNREADABLE_THERE] },
 ])(
   "a later machine leaves a run $name when the next occurrence is due, and judges that one on its own",
   ({ answers }) =>
@@ -1648,6 +1686,24 @@ it.effect(
           expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(due + 15 * MINUTE_MS));
         }),
       { type: "interval", everyMs: 10 * MINUTE_MS },
+    ),
+);
+
+// The watched machine's answer says nothing of the others, so each one ahead is asked again.
+it.effect(
+  "a machine further back keeps watching a nearer one whose answer it cannot read after the first one's can be read",
+  () =>
+    runScenario(
+      [OTHER, MIDDLE, HERE_ENVIRONMENT_ID],
+      [unreadableOn(OTHER, MIDDLE), unreadableOn(MIDDLE)],
+      (scenario) =>
+        Effect.gen(function* () {
+          // Wait two places, watch the first machine, then the middle one, and ask it again.
+          for (let step = 0; step < 4; step++) yield* fireWhenDue(scenario);
+          expect(yield* Queue.size(scenario.launches)).toBe(0);
+          expect(yield* claimsOf(scenario.sql)).toEqual([]);
+          expect((yield* taskOf(scenario.service))?.lastOneMachineDecision?.ranOn).toBe(MIDDLE);
+        }),
     ),
 );
 

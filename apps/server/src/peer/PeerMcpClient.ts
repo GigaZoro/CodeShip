@@ -75,6 +75,11 @@ export class PeerMcpClient extends Context.Service<
     readonly callIfAvailable: <S extends Schema.Decoder<unknown>>(
       input: PeerCallInput<S>,
     ) => Effect.Effect<Option.Option<S["Type"]>, OrchestratorMcpFailure>;
+    /**
+     * Records on the link that part of the peer's last answer, which its caller decodes itself,
+     * did not match this version, and returns the message, which names the side to update.
+     */
+    readonly recordUnreadable: (environmentId: EnvironmentId) => Effect.Effect<string>;
   }
 >()("t3/peer/PeerMcpClient") {}
 
@@ -97,9 +102,12 @@ const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(
 const decodeToolsListResponse = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
-      result: Schema.Struct({
-        tools: Schema.Array(Schema.Struct({ name: Schema.String, inputSchema: Schema.Unknown })),
-      }),
+      result: Schema.optional(
+        Schema.Struct({
+          tools: Schema.Array(Schema.Struct({ name: Schema.String, inputSchema: Schema.Unknown })),
+        }),
+      ),
+      error: Schema.optional(Schema.Struct({ message: Schema.String })),
     }),
   ),
 );
@@ -128,13 +136,9 @@ const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
     "The linked environment has Linked environments turned off. Turn it on in its Settings → Machines & access → Linked environments.",
 });
 
-const unexpectedShape = new OrchestratorMcpFailure({
-  code: "orchestration_error",
-  message: "The linked environment answered in an unexpected shape.",
-});
-
 /** One linked environment at the address it answered on, for one call. */
 interface Peer {
+  readonly environmentId: EnvironmentId;
   readonly key: string;
   readonly label: string;
   readonly url: string;
@@ -251,6 +255,19 @@ const make = Effect.gen(function* () {
     return sessionId;
   });
 
+  /** It answered, so it is up, but on a version that answers in a way this one cannot read. */
+  const unreadable = (peer: Peer) =>
+    links.recordUnreadable(peer.environmentId, peer.serverVersion).pipe(
+      Effect.andThen(
+        Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "version_mismatch",
+            message: PeerLinks.unreadableAnswerMessage(peer),
+          }),
+        ),
+      ),
+    );
+
   const startSession = Effect.fnUntraced(function* (peer: Peer) {
     const sessionId = yield* openSession(peer.url, peer.token, peer.limitHeader);
     // The initialized session outlives a request, including a long wait or cancellation.
@@ -313,7 +330,14 @@ const make = Effect.gen(function* () {
     );
     const listed = yield* decodeToolsListResponse(
       responseJson(response.headers["content-type"], yield* response.text),
-    ).pipe(Effect.mapError(() => unexpectedShape));
+    ).pipe(Effect.catch(() => unreadable(peer)));
+    if (listed.error !== undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: listed.error.message,
+      });
+    }
+    if (listed.result === undefined) return yield* unreadable(peer);
     const schemas = new Map(listed.result.tools.map((tool) => [tool.name, tool.inputSchema]));
     const stillCurrent = (yield* Ref.get(sessions)).get(peer.key) === sessionId;
     if (stillCurrent) {
@@ -368,12 +392,13 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * The text of the peer's result, or none when the peer has no such tool. Its callers own the span
-   * and record the outcome on the link.
+   * The peer's result decoded with `success`, or none when the peer has no such tool. Its callers
+   * own the span and record the outcome on the link.
    */
   const request = Effect.fnUntraced(function* (input: PeerCallInput<Schema.Decoder<unknown>>) {
     const resolved = yield* links.resolve(input.environmentId).pipe(Effect.mapError(fromLinkError));
     const peer: Peer = {
+      environmentId: input.environmentId,
       key: `${input.environmentId} ${resolved.url}`,
       label: resolved.link.label,
       url: resolved.url,
@@ -398,12 +423,12 @@ const make = Effect.gen(function* () {
         response.headers["content-type"],
         yield* readBody(response, input.maxResultBytes),
       ),
-    ).pipe(Effect.mapError(() => unexpectedShape));
+    ).pipe(Effect.catch(() => unreadable(peer)));
     if (
       body.error?.code === INVALID_PARAMS &&
       body.error.message === `Tool '${input.tool}' not found`
     ) {
-      return Option.none<string>();
+      return Option.none<unknown>();
     }
     if (body.error !== undefined || body.result === undefined) {
       return yield* new OrchestratorMcpFailure({
@@ -428,20 +453,13 @@ const make = Effect.gen(function* () {
             message: text || "The linked environment refused the call.",
           });
     }
-    return Option.some(text);
-  });
-
-  const decodeResult = <S extends Schema.Decoder<unknown>>(success: S, text: string) =>
-    Schema.decodeEffect(Schema.fromJsonString(success))(text).pipe(
-      Effect.mapError(
-        () =>
-          new OrchestratorMcpFailure({
-            code: "orchestration_error",
-            message:
-              "The linked environment's answer did not match this version. Update both environments.",
-          }),
+    const { success } = input;
+    return Option.some(
+      yield* Schema.decodeEffect(Schema.fromJsonString(success))(text).pipe(
+        Effect.catch(() => unreadable(peer)),
       ),
     );
+  });
 
   const recorded = <A>(
     effect: Effect.Effect<A, OrchestratorMcpFailure | HttpClientError.HttpClientError>,
@@ -465,25 +483,40 @@ const make = Effect.gen(function* () {
     );
 
   const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpClient.call")(function* (input) {
-    const text = yield* request(input);
-    if (Option.isNone(text)) {
+    const result = yield* request(input);
+    if (Option.isNone(result)) {
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
         message: `Tool '${input.tool}' not found`,
       });
     }
-    return yield* decodeResult(input.success, text.value);
+    return result.value;
   }, recorded);
 
   const callIfAvailable: PeerMcpClient["Service"]["callIfAvailable"] = Effect.fn(
     "PeerMcpClient.callIfAvailable",
   )(function* (input) {
-    const text = yield* request(input);
-    if (Option.isNone(text)) return Option.none();
-    return Option.some(yield* decodeResult(input.success, text.value));
+    return yield* request(input);
   }, recorded);
 
-  return PeerMcpClient.of({ call, callIfAvailable });
+  const recordUnreadable: PeerMcpClient["Service"]["recordUnreadable"] = Effect.fn(
+    "PeerMcpClient.recordUnreadable",
+  )(function* (environmentId) {
+    const resolved = yield* links.resolve(environmentId).pipe(Effect.option);
+    // A peer that stopped answering has no version to compare, so the message names neither side.
+    const message = PeerLinks.unreadableAnswerMessage(
+      Option.isSome(resolved)
+        ? { label: resolved.value.link.label, serverVersion: resolved.value.serverVersion }
+        : { label: "", serverVersion: "" },
+    );
+    yield* links.recordOutcome(environmentId, { error: message });
+    if (Option.isSome(resolved)) {
+      yield* links.recordUnreadable(environmentId, resolved.value.serverVersion);
+    }
+    return message;
+  });
+
+  return PeerMcpClient.of({ call, callIfAvailable, recordUnreadable });
 });
 
 export const layer = Layer.effect(PeerMcpClient, make);

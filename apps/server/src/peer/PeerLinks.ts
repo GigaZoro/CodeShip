@@ -9,7 +9,6 @@ import {
   type PeerLink,
   type PeerLinkCreateInput,
   PeerLinkError,
-  type PeerLinkStatus,
   type PeerLinkSummary,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -22,6 +21,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -31,7 +31,9 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -60,6 +62,23 @@ export interface ResolvedPeerLink {
   /** The T3.CodeShip version that address reported, read on every resolve. */
   readonly serverVersion: string;
 }
+
+/** Why this version cannot read an answer from `peer`, naming the side to update when the versions tell. */
+export const unreadableAnswerMessage = (peer: {
+  readonly label: string;
+  readonly serverVersion: string;
+}) => {
+  const here = packageJson.version;
+  const order =
+    parseSemver(peer.serverVersion) === null || parseSemver(here) === null
+      ? 0
+      : compareSemverVersions(peer.serverVersion, here);
+  return order < 0
+    ? `${peer.label} runs T3.CodeShip ${peer.serverVersion}, older than ${here} here, so this version cannot read its answer. Update T3.CodeShip on ${peer.label}.`
+    : order > 0
+      ? `${peer.label} runs T3.CodeShip ${peer.serverVersion}, newer than ${here} here, so this version cannot read its answer. Update T3.CodeShip here.`
+      : "The linked environment's answer did not match this version. Update both environments.";
+};
 
 export const LINKED_ENVIRONMENTS_OFF =
   "Linked environments is off on this machine. Turn it on in Settings → Machines & access → Linked environments.";
@@ -111,6 +130,14 @@ export class PeerLinks extends Context.Service<
     readonly recordOutcome: (
       environmentId: EnvironmentId,
       outcome: { readonly error: string | null },
+    ) => Effect.Effect<void>;
+    /**
+     * Records that the peer, running `serverVersion`, answered in a way this version cannot read.
+     * Listing warns about it while the peer runs that version.
+     */
+    readonly recordUnreadable: (
+      environmentId: EnvironmentId,
+      serverVersion: string,
     ) => Effect.Effect<void>;
   }
 >()("t3/peer/PeerLinks") {}
@@ -539,30 +566,70 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => Option.none()),
     );
 
-  const statusOf = (link: PeerLink, now: DateTime.Utc) =>
-    DateTime.isLessThanOrEqualTo(link.expiresAt, now)
-      ? Effect.succeed<PeerLinkStatus>("expired")
-      : Effect.findFirst(link.urls, (url) =>
-          describe(url).pipe(
-            Effect.map(
-              (found) => Option.isSome(found) && found.value.environmentId === link.environmentId,
-            ),
-          ),
-        ).pipe(
-          Effect.map((answered): PeerLinkStatus =>
-            Option.isSome(answered) ? "reachable" : "unreachable",
-          ),
-        );
+  /** Its status, with the version it reports when it answers. */
+  const statusOf = Effect.fnUntraced(function* (link: PeerLink, now: DateTime.Utc) {
+    if (DateTime.isLessThanOrEqualTo(link.expiresAt, now)) {
+      return { status: "expired", serverVersion: null } as const;
+    }
+    for (const url of link.urls) {
+      const found = yield* describe(url);
+      if (Option.isSome(found) && found.value.environmentId === link.environmentId) {
+        return { status: "reachable", serverVersion: found.value.serverVersion } as const;
+      }
+    }
+    return { status: "unreachable", serverVersion: null } as const;
+  });
+
+  // In memory: what this version could not read, so a restart, usually onto another version,
+  // forgets it, and the next unreadable answer records it again.
+  const unreadableVersions = yield* Ref.make<ReadonlyMap<EnvironmentId, string>>(new Map());
+
+  /** A peer seen on another version than the one this could not read is past that skew. */
+  const sawVersion = (environmentId: EnvironmentId, serverVersion: string) =>
+    Ref.update(unreadableVersions, (current) => {
+      const recorded = current.get(environmentId);
+      if (recorded === undefined || recorded === serverVersion) return current;
+      const next = new Map(current);
+      next.delete(environmentId);
+      return next;
+    });
 
   const list: PeerLinks["Service"]["list"] = Effect.gen(function* () {
     const links = yield* Effect.forEach(yield* readRows, toLink);
     const now = yield* DateTime.now;
-    return yield* Effect.forEach(
+    const statuses = yield* Effect.forEach(
       links,
-      (link) => statusOf(link, now).pipe(Effect.map((status) => ({ ...link, status }))),
+      (link) =>
+        statusOf(link, now).pipe(
+          Effect.tap(({ serverVersion }) =>
+            serverVersion === null ? Effect.void : sawVersion(link.environmentId, serverVersion),
+          ),
+          Effect.map(({ status }) => ({ link, status })),
+        ),
       { concurrency: "unbounded" },
     );
+    // One that does not answer now is judged by the version it last ran.
+    const unreadable = yield* Ref.get(unreadableVersions);
+    return statuses.map(({ link, status }) => {
+      const unreadableVersion = unreadable.get(link.environmentId);
+      return unreadableVersion === undefined
+        ? { ...link, status }
+        : {
+            ...link,
+            status,
+            versionWarning: unreadableAnswerMessage({
+              label: link.label,
+              serverVersion: unreadableVersion,
+            }),
+          };
+    });
   });
+
+  const recordUnreadable: PeerLinks["Service"]["recordUnreadable"] = (
+    environmentId,
+    serverVersion,
+  ) =>
+    Ref.update(unreadableVersions, (current) => new Map(current).set(environmentId, serverVersion));
 
   const listStored: PeerLinks["Service"]["listStored"] = readRows.pipe(
     Effect.flatMap((rows) => Effect.forEach(rows, toLink)),
@@ -642,6 +709,7 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3.CodeShip version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
+      yield* sawVersion(environmentId, serverVersion);
       return {
         link,
         url: url.value,
@@ -794,6 +862,7 @@ const make = Effect.gen(function* () {
     unlink,
     resolve,
     recordOutcome,
+    recordUnreadable,
   });
 });
 
