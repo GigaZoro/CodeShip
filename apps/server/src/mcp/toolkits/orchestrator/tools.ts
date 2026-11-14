@@ -156,7 +156,7 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
 
 const CommandRunTool = Tool.make("t3_command_run", {
   description:
-    "Run a shell command that ends (tests, build, install, deploy) apart from you. It keeps running through a restart. Its end wakes you with the exit code and the last output. Not for dev servers or watchers. `task_cancel` stops it.",
+    "Run a shell command that ends (tests, build, install, deploy) apart from you. Only in Full access and the default mode; otherwise use your shell. It keeps running through a restart. Its end wakes you with the exit code and the last output. Not for dev servers or watchers. `task_cancel` stops it.",
   parameters: OrchestratorMcpRunCommandInput,
   success: OrchestratorMcpRunCommandResult,
   failure: OrchestratorMcpFailure,
