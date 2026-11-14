@@ -22,6 +22,7 @@ import {
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
 import * as DocumentText from "../../../provider/DocumentText.ts";
+import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -194,6 +195,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ServerSettings.ServerSettingsService,
     ProviderRegistry.ProviderRegistry,
     DocumentText.DocumentText,
+    MemoryAdmission.MemoryAdmission,
   ],
 })
   .annotate(Tool.Destructive, true)

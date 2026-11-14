@@ -1,5 +1,6 @@
 import {
   type DeviceActionInput,
+  DeviceBootError,
   type DeviceCloseInput,
   type DeviceConfigureInput,
   type DeviceDetail,
@@ -65,6 +66,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as HttpClient from "effect/http/HttpClient";
 
 import * as ServerSettings from "../serverSettings.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import { isLocalSshDeviceHost, remoteSshDeviceHosts } from "./localSshDeviceHost.ts";
 
 import { readDeviceDetail, runDeviceAction } from "./DeviceActions.ts";
@@ -79,6 +81,8 @@ import * as Exit from "effect/Exit";
 import * as LocalDeviceHost from "./LocalDeviceHost.ts";
 
 export const DEVICE_HUB_ROUTE_PREFIX = "/api/device-hub";
+// Covers starting Node over SSH on a loaded host; a slower answer reads as no answer.
+const MEMORY_SAMPLE_TIMEOUT_MS = 15_000;
 
 const sshProbeFailureMessage = (error: DeviceHost.DeviceHostError): string => {
   const cause = error.cause;
@@ -272,6 +276,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   launchers?: AgentDeviceLaunchers,
 ) {
   const settings = yield* ServerSettings.ServerSettingsService;
+  const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
   // Agent device access is shared with the user's other machines, so this machine's own change to
   // it is recorded there, where an older shared version cannot undo it.
   const sharedSettings = yield* SharedSettings.SharedSettings;
@@ -770,6 +775,27 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
             platform: "android",
             reason:
               "Android emulator video needs the libx264 encoder. Install an ffmpeg build that includes libx264 on the device host, then retry opening the emulator. After changing PATH or SERVE_EMU_FFMPEG, turn device support off and on for SSH hosts, or restart the local environment server.",
+          });
+        }
+      }
+      // Cloud hosts route their own streams and boot on machines CodeShip does not run.
+      if (
+        !device.booted &&
+        input.boot !== false &&
+        context?.byAgent === true &&
+        !device.physical &&
+        !ready.upstream
+      ) {
+        const shortage = yield* memoryAdmission.shortageOn((args) =>
+          ready.run(ready.nodePath, args, { timeoutMs: MEMORY_SAMPLE_TIMEOUT_MS }),
+        );
+        if (shortage !== null) {
+          return yield* new DeviceBootError({
+            hostId: host.id,
+            deviceId: device.id,
+            reason: "memory",
+            diagnostics: `On ${host.label}, ${MemoryAdmission.describeMemoryShortage(shortage)}. The device was not started. Ask the user to start it from the Device panel, or retry once memory frees up.`,
+            cause: shortage,
           });
         }
       }

@@ -36,6 +36,7 @@ import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -76,7 +77,9 @@ const layerOrchestrator = Layer.mergeAll(
 );
 const layerOrchestration = ThreadManagement.layer.pipe(
   Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-  Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
+  Layer.provideMerge(
+    Layer.mergeAll(layerOrchestrator, ServerSettings.layerTest(), MemoryAdmission.layerTest()),
+  ),
 );
 
 /** Launches dispatch the real thread.create, and nothing more: no workspace, no run. */

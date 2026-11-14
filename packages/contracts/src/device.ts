@@ -556,13 +556,14 @@ export class DeviceNotFoundError extends Schema.TaggedError<DeviceNotFoundError>
 export class DeviceBootError extends Schema.TaggedError<DeviceBootError>()("DeviceBootError", {
   hostId: DeviceHostId,
   deviceId: DeviceId,
-  reason: Schema.Literals(["disk_space", "timeout", "launch_failed"]),
+  reason: Schema.Literals(["disk_space", "memory", "timeout", "launch_failed"]),
   diagnostics: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   cause: Schema.Defect(),
 }) {
   override get message(): string {
     const explanation = {
       disk_space: "There is not enough free disk space on its device host.",
+      memory: "Memory is short on its device host, so an agent may not start it now.",
       timeout: "The device did not become ready in time.",
       launch_failed: "The simulator or emulator could not start.",
     }[this.reason];

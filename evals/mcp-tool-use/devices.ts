@@ -45,6 +45,7 @@ import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationCo
 import { liveThreadsLayer } from "../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import * as ProjectService from "../../apps/server/src/project/ProjectService.ts";
+import * as MemoryAdmission from "../../apps/server/src/resourceTelemetry/MemoryAdmission.ts";
 import { ServerSettingsService } from "../../apps/server/src/serverSettings.ts";
 import * as SharedSettings from "../../apps/server/src/sharedSettings/SharedSettings.ts";
 import { shellInvocations } from "./device-grading.ts";
@@ -779,6 +780,7 @@ export const makeDeviceTools = Effect.fn("evaluateMcpToolUse.makeDeviceTools")(f
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(devices),
       Layer.provideMerge(SharedSettings.layerTest),
+      Layer.provideMerge(MemoryAdmission.layerTest()),
       Layer.provideMerge(
         Layer.mergeAll(
           liveThreadsLayer,

@@ -80,6 +80,8 @@ export type HostDevice = Omit<DeviceSummary, "hostId">;
 /** Where a device is being opened from, for hosts whose devices depend on the project. */
 export interface DeviceOpenContext {
   readonly workspaceRoot?: string | undefined;
+  /** An agent opens it: an emulator or simulator then boots only while its host has memory. */
+  readonly byAgent?: boolean;
 }
 
 export type AgentDaemonEndpoint = Pick<AgentDeviceEndpoint, "baseUrl" | "token">;

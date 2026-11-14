@@ -56,6 +56,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
@@ -159,7 +160,9 @@ const makeLaptop = Effect.gen(function* () {
   );
   const layerThreads = ThreadManagement.layer.pipe(
     Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-    Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
+    Layer.provideMerge(
+      Layer.mergeAll(layerOrchestrator, ServerSettings.layerTest(), MemoryAdmission.layerTest()),
+    ),
   );
   // Linking back itself is PeerLinkBack's own test; here it records what the answer asked it for
   // and answers as the box would.

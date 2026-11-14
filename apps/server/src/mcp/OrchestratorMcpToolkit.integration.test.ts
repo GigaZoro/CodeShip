@@ -32,6 +32,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -253,6 +254,7 @@ describe("orchestrator MCP toolkit", () => {
           ),
           Layer.provide(layerProviderRegistry),
           Layer.provide(ServerSettings.layerTest()),
+          Layer.provide(MemoryAdmission.layerTest()),
           Layer.provide(layerUnusedScheduledTaskStub),
           Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
           Layer.provide(

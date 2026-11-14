@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as AccountRouting from "../../../orchestration-v2/AccountRouting.ts";
+import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -269,6 +270,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               projectId,
             },
             yield* Effect.serviceOption(AccountRouting.AccountRouting),
+          );
+        // Another machine's delegate_task child: judged by this machine's memory, which runs it.
+        if (!replaying && input.delegatedFrom !== undefined && caller === undefined)
+          yield* OrchestrationMcp.requireMemoryForDelegation(
+            yield* MemoryAdmission.MemoryAdmission,
           );
         let startedRuntimeMode =
           projectDefaults !== undefined && input.runtimeMode === undefined

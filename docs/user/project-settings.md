@@ -338,6 +338,26 @@ count and last run do not change. A **Once** task moves to that time instead.
 - **Run now** and webhook runs always start.
 - Agents set it with `schedule_task` (`delegateProviders`).
 
+## Wait while memory is short
+
+Automated work does not start while the machine that would run it is short of
+memory. A scheduled run is skipped, and **Run history** names the reading. A
+**Once** task tries again 5 minutes later; a repeating task waits for its next
+time. Memory is read again after a run condition answers, and a run that waited
+for the network to read its prompt file fails if memory went short meanwhile.
+A task an agent delegates is refused, so the agent does the work in its own
+chat, and an emulator or simulator an agent asks to start stays off. Chats you
+start, **Run now** and webhook runs always start.
+
+- On macOS, memory is short once compressed memory takes 35% of it, or when
+  macOS reports memory pressure. On Linux and Windows, memory is short once
+  less than 2 GiB is available.
+- Turn it off, or change both limits under **Advanced**, in **Settings →
+  Maintenance & about → Background activity**. Each machine keeps its own
+  setting.
+- A shared task set to **One machine** leaves a time it skips this way to the
+  next machine in its order.
+
 ## Limit how many runs work at once
 
 A task that starts a new chat for each run skips a scheduled time while as many

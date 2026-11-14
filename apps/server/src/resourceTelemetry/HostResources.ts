@@ -26,15 +26,42 @@ function readCpu() {
   return { ...cpu, count: cpus.length };
 }
 
+interface VmStatPages {
+  readonly pageSize: number;
+  readonly free: number;
+  readonly inactive: number;
+  readonly speculative: number;
+  readonly occupiedByCompressor: number;
+}
+
+export function parseVmStat(output: string): VmStatPages | null {
+  const pages = (label: string) => {
+    const value = new RegExp(`^${label}:\\s+(\\d+)\\.`, "m").exec(output)?.[1];
+    return value === undefined ? null : Number(value);
+  };
+  const pageSize = Number(/page size of (\d+) bytes/.exec(output)?.[1] ?? Number.NaN);
+  const free = pages("Pages free");
+  const inactive = pages("Pages inactive");
+  const speculative = pages("Pages speculative");
+  const occupiedByCompressor = pages("Pages occupied by compressor");
+  if (
+    !(pageSize > 0) ||
+    free === null ||
+    inactive === null ||
+    speculative === null ||
+    occupiedByCompressor === null
+  ) {
+    return null;
+  }
+  return { pageSize, free, inactive, speculative, occupiedByCompressor };
+}
+
 function darwinAvailableMemory(output: string): number | null {
-  const pageSize = /page size of (\d+) bytes/.exec(output)?.[1];
-  const free = /^Pages free:\s+(\d+)\./m.exec(output)?.[1];
-  const inactive = /^Pages inactive:\s+(\d+)\./m.exec(output)?.[1];
-  const speculative = /^Pages speculative:\s+(\d+)\./m.exec(output)?.[1];
-  if (!pageSize || !free || !inactive || !speculative) return null;
+  const pages = parseVmStat(output);
+  if (pages === null) return null;
   // vm_stat excludes speculative from free; add it once, without overlapping purgeable pages.
-  const available = (Number(free) + Number(inactive) + Number(speculative)) * Number(pageSize);
-  return Number.isSafeInteger(available) && Number(pageSize) > 0 ? available : null;
+  const available = (pages.free + pages.inactive + pages.speculative) * pages.pageSize;
+  return Number.isSafeInteger(available) ? available : null;
 }
 
 const make = Effect.fn("makeHostResources")(function* () {

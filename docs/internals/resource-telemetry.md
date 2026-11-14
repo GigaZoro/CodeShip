@@ -55,3 +55,22 @@ A WSL backend needs a Linux monitor even though Electron runs on Windows. Window
 desktop packages currently supply only the Windows executable, so native process
 telemetry for the WSL backend is unavailable. The inherited Electron power feed
 still works.
+
+## Memory admission
+
+Automated heavy starts pass one gate,
+[`MemoryAdmission`](../../apps/server/src/resourceTelemetry/MemoryAdmission.ts). These are
+scheduled occurrences, `delegate_task` children (including another machine's child) and an
+agent's emulator boot. A new automated start path must call it too. Nothing else bounds how
+much starts at once across tasks, and the 24 GB Mac panicked with each task within its own
+limit. Chats the user starts are never gated.
+
+- macOS judges the compressor's share of physical memory plus the kernel pressure level.
+  Compressed memory is not used memory: a normal day reads about 0.31 and must keep
+  starting work. The pressure level alone reads normal between warn readings, even at the
+  panic, so only the share holds the gate shut.
+- A probe that fails or times out admits the start. Linux without `MemAvailable` admits
+  too, because free memory leaves out the reclaimable page cache.
+- Readings go stale. The scheduler judges again after a run condition answers, and after
+  a prompt-file read that waited for the network. That run already shows as running, so a
+  shortage there fails it instead of skipping it.

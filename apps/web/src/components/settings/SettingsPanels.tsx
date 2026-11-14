@@ -118,6 +118,8 @@ import {
 import { searchableSetting } from "./settingsSearch";
 import { LanguageSettingsRow } from "./LanguageSettingsRow";
 import {
+  AutomatedStartMemoryGuardRow,
+  AutomatedStartMemoryLimitsRow,
   BackgroundActivitySettingsRow,
   GitFetchIntervalRow,
   ProviderHealthIntervalRow,
@@ -2102,14 +2104,17 @@ export function MaintenanceSettingsPanel() {
 
           <SettingsSection id="background" title={t("Background activity")}>
             <BackgroundActivitySettingsRow />
+            <AutomatedStartMemoryGuardRow />
             <AdvancedSettings
               targetIds={[
                 searchableSetting("provider-health-check-interval").id,
                 searchableSetting("git-fetch-interval").id,
+                searchableSetting("automated-start-memory-limits").id,
               ]}
             >
               <ProviderHealthIntervalRow />
               <GitFetchIntervalRow />
+              <AutomatedStartMemoryLimitsRow />
             </AdvancedSettings>
           </SettingsSection>
 

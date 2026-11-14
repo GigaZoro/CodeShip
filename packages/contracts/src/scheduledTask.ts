@@ -12,6 +12,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { MemoryShortage } from "./hostMemory.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -267,6 +268,8 @@ export const ScheduledTaskRunSkipReason = Schema.Literals([
   "usage_limited",
   /** As many of its runs as its live-run limit allows were still working, delegated tasks included. */
   "live_run_limit",
+  /** This machine's memory read short, so nothing new started on it. */
+  "memory",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
 
@@ -384,6 +387,8 @@ export const ScheduledTaskRunRecord = Schema.Struct({
   check: Schema.optional(Schema.NullOr(ScheduledTaskRunCheck)),
   /** Set on a `usage_limited` skip. Absent from servers without it. */
   usageLimit: Schema.optional(Schema.NullOr(ScheduledTaskRunUsageLimit)),
+  /** Set on a `memory` skip. Absent from servers without it. */
+  memory: Schema.optional(Schema.NullOr(MemoryShortage)),
 });
 export type ScheduledTaskRunRecord = typeof ScheduledTaskRunRecord.Type;
 

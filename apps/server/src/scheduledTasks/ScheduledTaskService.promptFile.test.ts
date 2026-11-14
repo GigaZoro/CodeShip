@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
+  type MemoryShortage,
   type ScheduledTask,
   ScheduledTaskApplySharedInput,
   type ScheduledTaskId,
@@ -26,6 +27,7 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PromptFileReader from "./PromptFileReader.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -125,6 +127,8 @@ interface Harness {
   readonly remote: Remote;
   readonly launched: Ref.Ref<ReadonlyArray<string>>;
   readonly network: Network;
+  /** What this machine's memory reads; it never reads short unless a test sets it. */
+  readonly memory: Ref.Ref<MemoryShortage | null>;
   /** Holds a save of a worktree task after it has loaded the stored task. */
   readonly saveHold: Ref.Ref<Hold | undefined>;
   /** One pass of the scheduler over the due tasks. */
@@ -149,6 +153,7 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
       probed: yield* Queue.unbounded<boolean>(),
     };
     const saveHold = yield* Ref.make<Hold | undefined>(undefined);
+    const memory = yield* Ref.make<MemoryShortage | null>(null);
     const workers = new Map<string, Effect.Effect<void>>();
     const reader = Layer.mock(PromptFileReader.PromptFileReader)({
       read: ({ cwd, path }) =>
@@ -186,6 +191,7 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
               }),
           }),
           ServerSettings.layerTest(),
+          Layer.mock(MemoryAdmission.MemoryAdmission)({ shortage: Ref.get(memory) }),
           ManagedPolicy.layerTest(),
           Layer.succeed(
             NetworkRecoveryWorker.NetworkProbe,
@@ -218,6 +224,7 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
         remote,
         launched,
         network,
+        memory,
         saveHold,
         poll: Effect.suspend(() => workers.get("scheduled-tasks")!),
         whenTask: (id, matches) =>
@@ -528,6 +535,46 @@ it.effect(
         expect((yield* service.listRuns({ id: task.id })).runs).toHaveLength(1);
       }),
     ),
+);
+
+it.effect("a scheduled read that waited for the network starts no chat once memory is short", () =>
+  withService(({ service, remote, launched, network, memory, poll, whenTask }) =>
+    Effect.gen(function* () {
+      const task = (yield* service.upsert(
+        upsertInput({ enabled: true }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      )).task;
+      yield* Ref.set(remote, {
+        text: "Pushed before the wake.",
+        commit: "c2",
+        lostConnection: true,
+      });
+      yield* Ref.set(network.online, false);
+      yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+      const ended = yield* whenTask(
+        task.id,
+        (current) => current.lastRunStatus === "failed" || current.lastRunStatus === "succeeded",
+      );
+
+      yield* poll;
+      expect(yield* Queue.take(network.probed)).toBe(false);
+      yield* Ref.set(memory, {
+        kind: "available",
+        totalBytes: 8 * 1024 ** 3,
+        availableBytes: 1024 ** 3,
+        reserveBytes: 2 * 1024 ** 3,
+      });
+      yield* Ref.set(remote, { text: "Pushed before the wake.", commit: "c2" });
+      yield* Ref.set(network.online, true);
+      yield* TestClock.adjust("30 seconds");
+      yield* ended;
+
+      expect(yield* Ref.get(launched)).toEqual([]);
+      expect((yield* taskOf(service, task.id))?.lastRunError).toBe(
+        "This machine's memory was short when the prompt file arrived (1 GiB of 8 GiB is available, under the 2 GiB reserve), so the chat did not start.",
+      );
+    }),
+  ),
 );
 
 it.effect("a scheduled read gives up when the network is not back, and says so", () =>

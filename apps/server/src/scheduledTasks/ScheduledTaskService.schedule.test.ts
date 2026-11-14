@@ -1,8 +1,10 @@
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
+  type MemoryShortage,
   ProviderDriverKind,
   ProviderInstanceId,
   type ScheduledTask,
@@ -38,6 +40,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       NodeCrypto.layer,
       Scheduler.layer,
       ServerSettings.layerTest(),
+      MemoryAdmission.layerTest(),
       ManagedPolicy.layerTest(),
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -94,6 +97,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
       NodeCrypto.layer,
       Scheduler.layer,
       ServerSettings.layerTest(),
+      MemoryAdmission.layerTest(),
       ManagedPolicy.layerTest(),
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -154,6 +158,7 @@ it.effect("keeps the task list order when a toggle or edit rewrites updated_at",
       NodeCrypto.layer,
       Scheduler.layer,
       ServerSettings.layerTest(),
+      MemoryAdmission.layerTest(),
       ManagedPolicy.layerTest(),
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -223,6 +228,7 @@ it.effect(
         NodeCrypto.layer,
         Scheduler.layer,
         ServerSettings.layerTest(),
+        MemoryAdmission.layerTest(),
         ManagedPolicy.layerTest(),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({
           launch: (input) =>
@@ -282,6 +288,7 @@ it.effect(
 const runHistoryLayer = (
   launch: ThreadLaunchService.ThreadLaunchService["Service"]["launch"],
   accountRouting: Layer.Layer<never> = Layer.empty,
+  memory: Layer.Layer<MemoryAdmission.MemoryAdmission> = MemoryAdmission.layerTest(),
 ) =>
   ScheduledTaskService.layer.pipe(
     Layer.provide(
@@ -289,6 +296,7 @@ const runHistoryLayer = (
         NodeCrypto.layer,
         Scheduler.layer,
         ServerSettings.layerTest(),
+        memory,
         ManagedPolicy.layerTest(),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({ launch }),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -526,14 +534,14 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
       expect(runs[1]?.error).toContain("Claude is out of usage until Friday.");
 
       // Each task keeps its latest 50 runs, and older ones from the last 90 days; the list shows
-      // the newest 80, room for 50 runs and the three quiet skip buckets.
+      // the newest 90, room for 50 runs and the four quiet skip buckets.
       const sql = yield* SqlClient.SqlClient;
       const insertRun = (runId: string, startedAt: string) =>
         sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome)
           VALUES (${runId}, ${task.id}, 'scheduled', ${startedAt}, 'succeeded')`;
       yield* insertRun("expired", "2026-08-01T00:00:00.000Z");
       yield* insertRun("in-window", "2026-08-13T00:00:00.000Z");
-      for (let index = 0; index < 80; index += 1) {
+      for (let index = 0; index < 90; index += 1) {
         yield* insertRun(
           `recent-${index}`,
           DateTime.formatIso(
@@ -544,14 +552,14 @@ it.effect("keeps a run that failed before it had a thread, next to the run after
       yield* TestClock.adjust("1 minute");
       yield* service.runNow({ id: task.id });
       const kept = (yield* service.listRuns({ id: task.id })).runs;
-      expect(kept).toHaveLength(80);
+      expect(kept).toHaveLength(90);
       expect(kept[0]?.threadId).toBe("thread-second");
       const stored = yield* sql<{ run_id: string }>`
         SELECT run_id FROM scheduled_task_runs WHERE run_id IN ('expired', 'in-window')`;
       expect(stored).toEqual([{ run_id: "in-window" }]);
       const counted = yield* sql<{ count: number }>`
         SELECT COUNT(*) AS count FROM scheduled_task_runs WHERE task_id = ${task.id}`;
-      expect(counted).toEqual([{ count: 84 }]);
+      expect(counted).toEqual([{ count: 94 }]);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -700,6 +708,84 @@ it.effect(
           runCount: 1,
           lastRunScheduledFor: "2026-11-10T12:02:00.000Z",
         });
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "skips a scheduled run while memory is short, names the reading, and runs the next once it frees",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
+      const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+      // The reading at the 2026-11-13 kernel panic: pressure still normal, compressor at 0.56.
+      const panic = {
+        kind: "compressor",
+        totalBytes: 24 * 1024 ** 3,
+        compressorBytes: 873_905 * 16_384,
+        compressorShareLimit: 0.35,
+        pressure: "normal",
+      } as const;
+      const shortage = yield* Ref.make<MemoryShortage | null>(panic);
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launched, (titles) => [...titles, input.title]).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-memory"), resumed: false } as never),
+          ),
+        Layer.empty,
+        Layer.mock(MemoryAdmission.MemoryAdmission)({ shortage: Ref.get(shortage) }),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          yield* historyTask("Autopilot", { schedule: { type: "interval", everyMs: 60_000 } }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        // Its only occurrence would be lost, so a one-time task tries again a little later.
+        const { task: once } = yield* service.upsert(
+          yield* historyTask("Once", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const settled = (done: (tasks: ReadonlyArray<ScheduledTask>) => boolean) =>
+          service.subscribeList().pipe(
+            Stream.filter(({ tasks }) => done(tasks)),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+        const byId = (tasks: ReadonlyArray<ScheduledTask>, id: string) =>
+          tasks.find((entry) => entry.id === id);
+
+        const skipped = yield* settled(
+          (tasks) =>
+            byId(tasks, task.id)?.nextRunAt !== task.nextRunAt &&
+            byId(tasks, once.id)?.nextRunAt !== once.nextRunAt,
+        );
+        yield* TestClock.adjust("65 seconds");
+        yield* Fiber.join(skipped);
+
+        expect(yield* Ref.get(launched)).toEqual([]);
+        const memorySkip = expect.objectContaining({
+          trigger: "scheduled",
+          outcome: "skipped",
+          skipReason: "memory",
+          threadId: null,
+          memory: panic,
+        });
+        expect((yield* service.listRuns({ id: task.id })).runs).toEqual([memorySkip]);
+        expect((yield* service.listRuns({ id: once.id })).runs).toEqual([memorySkip]);
+        const retry = byId((yield* service.list()).tasks, once.id);
+        expect(retry).toMatchObject({ enabled: true, runCount: 0 });
+        expect(Date.parse(retry!.nextRunAt!)).toBeGreaterThanOrEqual(
+          Date.parse("2026-11-10T12:05:30.000Z"),
+        );
+
+        yield* Ref.set(shortage, null);
+        const ran = yield* settled((tasks) => byId(tasks, task.id)?.lastRunStatus === "succeeded");
+        yield* TestClock.adjust("65 seconds");
+        yield* Fiber.join(ran);
+        expect(yield* Ref.get(launched)).toEqual(["Autopilot"]);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

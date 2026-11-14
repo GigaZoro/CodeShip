@@ -3,6 +3,7 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import { formatScheduledTaskRunTime } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
   failoverText,
+  memorySkipText,
   peerNoWorkText,
   runCheckText,
   usageLimitSkipText,
@@ -107,6 +108,8 @@ function skipReasonText(
       );
     case "usage_limited":
       return usageLimitSkipText(run.usageLimit, formatScheduledTaskRunTime);
+    case "memory":
+      return memorySkipText(run.memory);
     case "live_run_limit":
       return run.ranOn === null
         ? t("Its live-run limit was reached: earlier runs were still working.")

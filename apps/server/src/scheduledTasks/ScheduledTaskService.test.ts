@@ -5,6 +5,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  type MemoryShortage,
   type ModelSelection,
   type OrchestrationV2RunStatus,
   ProjectId,
@@ -46,6 +47,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -213,6 +215,7 @@ it.effect(
               Layer.mergeAll(
                 ManagedPolicy.layerTest(),
                 ServerSettings.layerTest(),
+                MemoryAdmission.layerTest(),
                 Layer.mock(ThreadLaunchService.ThreadLaunchService)({
                   launch: () =>
                     Ref.updateAndGet(dispatched, (n) => n + 1).pipe(
@@ -313,6 +316,7 @@ it.effect(
               Layer.mergeAll(
                 ManagedPolicy.layerTest(),
                 ServerSettings.layerTest(),
+                MemoryAdmission.layerTest(),
                 Layer.mock(ThreadLaunchService.ThreadLaunchService)({
                   launch: () =>
                     Ref.updateAndGet(dispatched, (n) => n + 1).pipe(
@@ -380,6 +384,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
           ServerSettings.layerTest(),
+          MemoryAdmission.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: () =>
@@ -469,6 +474,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
           ServerSettings.layerTest(),
+          MemoryAdmission.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: (input) =>
@@ -562,6 +568,7 @@ it.effect("a placement and the last run's thread survive edits and leave with th
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
           layerSharedTaskDependencies(),
+          MemoryAdmission.layerTest(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -720,6 +727,7 @@ it.effect("a task that follows the default runs the scheduled tasks model and ke
           }),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
           layerSharedTaskDependencies(),
+          MemoryAdmission.layerTest(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -831,6 +839,7 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
           layerSharedTaskDependencies(),
+          MemoryAdmission.layerTest(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -902,6 +911,7 @@ it.effect("a run interrupted right after it reserves the task does not block the
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
           ServerSettings.layerTest(),
+          MemoryAdmission.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: () =>
               Ref.update(launches, (n) => n + 1).pipe(
@@ -1046,6 +1056,7 @@ const withRunConditions = <A, E>(
     ) => Effect.Effect<Effect.Effect<void>, never, Scope.Scope>;
   }) => Effect.Effect<A, E, Scope.Scope>,
   policy?: Parameters<typeof ManagedPolicy.layerTest>[0],
+  memory: Layer.Layer<MemoryAdmission.MemoryAdmission> = MemoryAdmission.layerTest(),
 ) =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<LaunchInput>();
@@ -1066,6 +1077,7 @@ const withRunConditions = <A, E>(
         Layer.mergeAll(
           ManagedPolicy.layerTest(policy),
           ServerSettings.layerTest(),
+          memory,
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: (input) =>
               Queue.offer(launches, input).pipe(
@@ -1298,6 +1310,45 @@ it.effect.each([
           assert.deepEqual(run?.check, check);
         }),
     ),
+);
+
+it.effect("a check that finds work starts no chat when memory went short while it ran", () =>
+  Effect.gen(function* () {
+    const short: MemoryShortage = {
+      kind: "compressor",
+      totalBytes: 24 * 1024 ** 3,
+      compressorBytes: 873_905 * 16_384,
+      compressorShareLimit: 0.35,
+      pressure: "normal",
+    };
+    const shortage = yield* Ref.make<MemoryShortage | null>(null);
+    yield* withRunConditions(
+      () => Ref.set(shortage, short).pipe(Effect.as(FOUND_WORK)),
+      ({ service, poll, launches, whenTask }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(
+            conditionTask(),
+            ScheduledTaskService.CHANGED_IN_APP,
+          );
+          yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
+          const moved = yield* whenTask((t) => t.nextRunAt !== task.nextRunAt);
+          yield* poll;
+          yield* moved;
+
+          assert.equal(yield* Queue.size(launches), 0);
+          const [run] = yield* runsOf(service);
+          assert.deepInclude(run, {
+            outcome: "skipped",
+            skipReason: "memory",
+            threadId: null,
+            check: FOUND_WORK,
+            memory: short,
+          });
+        }),
+      undefined,
+      Layer.mock(MemoryAdmission.MemoryAdmission)({ shortage: Ref.get(shortage) }),
+    );
+  }),
 );
 
 it.effect("a slow check holds up no other task, and the next poll starts no second check", () =>
@@ -1958,6 +2009,7 @@ it.effect("a group pause turns off the group's running tasks and resume turns on
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
           ServerSettings.layerTest(),
+          MemoryAdmission.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({}),
           layerSharedTaskDependencies(),
@@ -2129,6 +2181,7 @@ it.effect(
             Layer.mergeAll(
               ManagedPolicy.layerTest(),
               ServerSettings.layerTest(),
+              MemoryAdmission.layerTest(),
               Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
               Layer.mock(ThreadManagementService.ThreadManagementService)({
                 getThreadShell: (threadId) =>
@@ -2232,6 +2285,7 @@ it.effect("a group change during a launch moves the chat it starts", () =>
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
           ServerSettings.layerTest(),
+          MemoryAdmission.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: (input) =>
               Effect.flatten(Ref.get(duringLaunch)).pipe(

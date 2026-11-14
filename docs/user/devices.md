@@ -85,6 +85,10 @@ taps build a small test runner on first use, which takes a couple of minutes
 once per server. Restart an existing agent session after granting access so it
 receives the device CLI environment.
 
+An agent cannot start an emulator or simulator while its machine is short of
+memory; it gets the reason and can ask you to start the device from the Device
+panel. See [Wait while memory is short](project-settings.md#wait-while-memory-is-short).
+
 To keep agents away from simulators, turn off **Agents can use devices** in
 **Settings → Browser & devices**. This hides the device tools from agents
 started from then on; your own Device panel is unaffected.

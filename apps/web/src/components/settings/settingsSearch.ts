@@ -986,6 +986,24 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "automated-start-memory-guard",
+    title: msg("Wait for memory before automated starts"),
+    to: "/settings/maintenance",
+    searchTerms: [
+      "memory ram out of memory pressure compressor swap scheduled tasks delegated tasks emulator simulator kernel panic crash hold skip",
+    ],
+    environmentOnly: true,
+    scope: "environment",
+  },
+  {
+    id: "automated-start-memory-limits",
+    title: msg("Memory limits for automated starts"),
+    to: "/settings/maintenance",
+    searchTerms: ["memory compressor share percent reserve gib available threshold"],
+    environmentOnly: true,
+    scope: "environment",
+  },
+  {
     id: "agent-browser-access",
     title: msg("Agent browser access"),
     to: "/settings/browser",

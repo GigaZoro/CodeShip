@@ -32,6 +32,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -136,6 +137,7 @@ const withService = <A, E>(
             ? Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })
             : Scheduler.layer,
           ServerSettings.layerTest(extras.settings),
+          MemoryAdmission.layerTest(),
           ManagedPolicy.layerTest(),
           layerSharedTaskDependencies(projects, extras.peerCheck, extras.runConditionCheck),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)(

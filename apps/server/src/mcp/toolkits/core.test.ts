@@ -54,6 +54,7 @@ import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
+import * as MemoryAdmission from "../../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as McpHttpServer from "../McpHttpServer.ts";
 import * as McpInvocationContext from "../McpInvocationContext.ts";
@@ -85,6 +86,7 @@ const layerOrchestratorMcpServer = ({
     Layer.provide(NodeCrypto.layer),
     Layer.provide(threads),
     Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(MemoryAdmission.layerTest()),
     Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
     Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
     Layer.provide(scheduledTasks),

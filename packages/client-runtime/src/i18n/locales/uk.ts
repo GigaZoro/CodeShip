@@ -1764,6 +1764,7 @@ const catalog: MessageCatalog = {
   "#{number} · Offline": "#{number} · Офлайн",
   "#{number} · reviewing {sha}": "#{number} · рев’ю {sha}",
   "#{number} {term} {status}": "#{number} {term} {status}",
+  "% on macOS": "% на macOS",
   "↑ Drag T3.CodeShip into the list above": "↑ Перетягніть T3.CodeShip у список вище",
   "↻ {duration}": "↻ {duration}",
   "+ {count} files": {
@@ -3646,6 +3647,8 @@ const catalog: MessageCatalog = {
     "Поле повідомлення: протилежна дія черги або скерування",
   "Composer: Send and Start New Thread": "Поле повідомлення: надіслати й почати новий чат",
   "Composer: Start in Background": "Поле повідомлення: запустити у фоні",
+  "compressed memory share": "частка стисненої пам’яті",
+  "Compressed memory share in percent": "Частка стисненої пам’яті у відсотках",
   Computer: "Комп’ютер",
   "Computer use": "Керування комп’ютером",
   "Computers to set up": "Комп’ютери для налаштування",
@@ -5983,6 +5986,7 @@ const catalog: MessageCatalog = {
   "Get more tunnels": "Отримати більше тунелів",
   "Get T3.CodeShip": "Отримати T3.CodeShip",
   ghq: "ghq",
+  "GiB on Linux and Windows": "ГіБ на Linux і Windows",
   git: "git",
   "Git action failed": "Дія git не вдалася",
   "Git action failed.": "Дія git не вдалася.",
@@ -7207,6 +7211,24 @@ const catalog: MessageCatalog = {
   "Media library": "Медіатека",
   "Media unavailable": "Медіа недоступне",
   Memory: "Пам’ять",
+  "memory limits": "ліміти пам’яті",
+  "Memory limits for automated starts": "Ліміти пам’яті для автоматичних запусків",
+  "memory reserve": "резерв пам’яті",
+  "Memory reserve in GiB": "Резерв пам’яті в ГіБ",
+  "Memory was short on this machine, so it didn't start.":
+    "Цій машині бракувало пам’яті, тож запуск не відбувся.",
+  "Memory was short: {available} of {total} was available, under the {reserve} reserve.":
+    "Бракувало пам’яті: доступно {available} з {total}, менше за резерв {reserve}.",
+  "Memory was short: compressed memory took {share} of {total}, over the {limit} limit.":
+    "Бракувало пам’яті: стиснена пам’ять займала {share} з {total}, більше за ліміт {limit}.",
+  "Memory was short: macOS reported critical memory pressure, and compressed memory took {share} of {total}.":
+    "Бракувало пам’яті: macOS повідомила про критичне навантаження на пам’ять, а стиснена пам’ять займала {share} з {total}.",
+  "Memory was short: macOS reported critical memory pressure.":
+    "Бракувало пам’яті: macOS повідомила про критичне навантаження на пам’ять.",
+  "Memory was short: macOS warned of memory pressure, and compressed memory took {share} of {total}.":
+    "Бракувало пам’яті: macOS попередила про навантаження на пам’ять, а стиснена пам’ять займала {share} з {total}.",
+  "Memory was short: macOS warned of memory pressure.":
+    "Бракувало пам’яті: macOS попередила про навантаження на пам’ять.",
   "Mention copied": "Згадку скопійовано",
   "Menu now: {options}": "Зараз у меню: {options}",
   "Menus offer only Custom…": "Меню пропонують лише «Власний…»",
@@ -8012,6 +8034,8 @@ const catalog: MessageCatalog = {
   "On another machine, so this machine's agent can't read it. Remove it or switch back to send.":
     "Він на іншому комп’ютері, тому агент цього комп’ютера не може його прочитати. Видаліть його або поверніться назад, щоб надіслати.",
   "On demand": "На вимогу",
+  "On macOS, memory is short once compressed memory takes this share of it. On Linux and Windows, once less than the reserve is available.":
+    "На macOS пам’яті бракує, коли стиснена пам’ять займає таку її частку. На Linux і Windows – коли доступно менше за резерв.",
   "On more than one machine": "На кількох комп’ютерах",
   "On OpenAI, sign in with the account you choose here.":
     "На OpenAI увійдіть з обліковим записом, який ви виберете тут.",
@@ -10178,6 +10202,8 @@ const catalog: MessageCatalog = {
   "scheduled tasks model": "модель запланованих завдань",
   "Scheduled tasks model": "Модель запланованих завдань",
   "Scheduled tasks model not saved": "Модель запланованих завдань не збережено",
+  "Scheduled tasks, delegated tasks and the emulators agents open wait while this machine is short of memory. Chats you start always run.":
+    "Заплановані й делеговані завдання та емулятори, які відкривають агенти, чекають, поки цій машині бракує пам’яті. Чати, які ви запускаєте, працюють завжди.",
   "Scheduled tasks: {count} tasks' last runs failed": {
     one: "Заплановані завдання: останній запуск {count} завдання не вдався",
     few: "Заплановані завдання: останні запуски {count} завдань не вдалися",
@@ -13858,6 +13884,7 @@ const catalog: MessageCatalog = {
   "Wait for file uploads before stashing this prompt":
     "Дочекайтеся завантаження файлів, перш ніж зберігати цей запит",
   "Wait for it to finish before the agent starts": "Дочекатися завершення перед стартом агента",
+  "Wait for memory before automated starts": "Чекати на пам’ять перед автоматичними запусками",
   "Wait for shared content to finish importing.":
     "Дочекайтеся завершення імпорту спільного вмісту.",
   "Wait for the current config change to finish.":

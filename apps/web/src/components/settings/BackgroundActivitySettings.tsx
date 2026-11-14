@@ -1,4 +1,5 @@
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
+import { cn } from "../../lib/utils";
 import { msg, t, type Message } from "~/i18n";
 import { SettingsIcon } from "lucide-react";
 import { useState } from "react";
@@ -34,7 +35,8 @@ import {
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
   resolveBackgroundActivityProfileOption,
 } from "./SettingsPanels.logic";
-import { IntervalSecondsField } from "./IntervalSecondsField";
+import { CommittedNumberField, IntervalSecondsField } from "./IntervalSecondsField";
+import { ScopedSwitch } from "./ScopedSwitch";
 import { PolicyTooltip, SettingResetButton, SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 
@@ -542,6 +544,104 @@ export function GitFetchIntervalRow() {
             onCommit={(next, options) => setInterval(Duration.seconds(next), options)}
           />
           <span className="text-xs text-muted-foreground">{t("seconds")}</span>
+        </div>
+      }
+    />
+  );
+}
+
+const clampRounded = (value: number, min: number, max: number, step: number) =>
+  Math.min(max, Math.max(min, Math.round(value / step) * step));
+
+export function AutomatedStartMemoryGuardRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["automatedStartMemoryGuard"]}
+      {...searchableSetting("automated-start-memory-guard")}
+      description={t(
+        "Scheduled tasks, delegated tasks and the emulators agents open wait while this machine is short of memory. Chats you start always run.",
+      )}
+      control={
+        <ScopedSwitch
+          settingKeys={["automatedStartMemoryGuard"]}
+          checked={settings.automatedStartMemoryGuard.enabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ automatedStartMemoryGuard: { enabled: Boolean(checked) } })
+          }
+          aria-label={t("Wait for memory before automated starts")}
+        />
+      }
+    />
+  );
+}
+
+export function AutomatedStartMemoryLimitsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const canWriteSettings = useScopedSettingsWriteAllowed();
+  const guard = settings.automatedStartMemoryGuard;
+  const defaults = DEFAULT_UNIFIED_SETTINGS.automatedStartMemoryGuard;
+  const editable = canWriteSettings && guard.enabled;
+  const setLimits = (
+    limits: { readonly compressorShare?: number; readonly reserveGiB?: number },
+    options?: Parameters<typeof updateSettings>[1],
+  ) => updateSettings({ automatedStartMemoryGuard: limits }, options);
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["automatedStartMemoryGuard"]}
+      {...searchableSetting("automated-start-memory-limits")}
+      description={t(
+        "On macOS, memory is short once compressed memory takes this share of it. On Linux and Windows, once less than the reserve is available.",
+      )}
+      resetAction={
+        canWriteSettings &&
+        (guard.compressorShare !== defaults.compressorShare ||
+          guard.reserveGiB !== defaults.reserveGiB) ? (
+          <SettingResetButton
+            label={t("memory limits")}
+            onClick={() =>
+              setLimits({
+                compressorShare: defaults.compressorShare,
+                reserveGiB: defaults.reserveGiB,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <div
+          inert={!editable}
+          className={cn(
+            "grid shrink-0 grid-cols-[auto_auto] items-center gap-2",
+            !editable && "opacity-50",
+          )}
+        >
+          <CommittedNumberField
+            label={t("compressed memory share")}
+            inputLabel={t("Compressed memory share in percent")}
+            value={Math.round(guard.compressorShare * 100)}
+            min={5}
+            max={100}
+            step={5}
+            normalize={(percent) => clampRounded(percent, 5, 100, 1)}
+            onCommit={(percent, options) => setLimits({ compressorShare: percent / 100 }, options)}
+          />
+          <span className="text-xs text-muted-foreground">{t("% on macOS")}</span>
+          <CommittedNumberField
+            label={t("memory reserve")}
+            inputLabel={t("Memory reserve in GiB")}
+            value={guard.reserveGiB}
+            min={0}
+            max={1024}
+            step={0.5}
+            normalize={(gib) => clampRounded(gib, 0, 1024, 0.5)}
+            onCommit={(reserveGiB, options) => setLimits({ reserveGiB }, options)}
+          />
+          <span className="text-xs text-muted-foreground">{t("GiB on Linux and Windows")}</span>
         </div>
       }
     />

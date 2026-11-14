@@ -33,6 +33,7 @@ import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
+import * as MemoryAdmission from "../../../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
@@ -130,6 +131,7 @@ const clientLaunchHarness = (input: {
           }),
     }),
     NodeCrypto.layer,
+    MemoryAdmission.layerTest(),
     Layer.succeed(McpInvocationContext.McpInvocationContext, {
       environmentId: EnvironmentId.make("environment"),
       requestNamespace: "client:session-1",

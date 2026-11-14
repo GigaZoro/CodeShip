@@ -113,6 +113,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   subagentResultForRun,
@@ -576,6 +577,22 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     );
   },
 );
+
+/**
+ * Refuses a delegated child before anything is created while this machine's memory reads short:
+ * an automated start then can push the machine into a kernel panic. A chat the user starts is
+ * never held back.
+ */
+export const requireMemoryForDelegation = Effect.fn(
+  "OrchestratorMcpService.requireMemoryForDelegation",
+)(function* (admission: MemoryAdmission.MemoryAdmission["Service"]) {
+  const shortage = yield* admission.shortage;
+  if (shortage === null) return;
+  return yield* failure(
+    "memory_short",
+    `Memory is short on the machine that would run the task: ${MemoryAdmission.describeMemoryShortage(shortage)}. The task was not started. Do the work inline in this thread instead; another delegation is refused the same way until memory frees up.`,
+  );
+});
 
 /** t3_thread_launch keeps a selection as given, so it can hold options its model does not have. */
 function knownOptions(
@@ -1277,6 +1294,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   // Optional so test runtimes without provider state refuse no launch on a usage limit.
   const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+  const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const peerLinks = yield* PeerLinks.PeerLinks;
@@ -3276,7 +3294,7 @@ const make = Effect.gen(function* () {
                   }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
                 ),
               );
-      if (!isRetryOfAcceptedDelegation)
+      if (!isRetryOfAcceptedDelegation) {
         yield* requireAccountWithRoom(
           {
             selection: target.modelSelection,
@@ -3284,6 +3302,8 @@ const make = Effect.gen(function* () {
           },
           accountRouting,
         );
+        yield* requireMemoryForDelegation(memoryAdmission);
+      }
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -4271,4 +4291,5 @@ export const layer: Layer.Layer<
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
   | PeerLinks.PeerLinks
+  | MemoryAdmission.MemoryAdmission
 > = Layer.effect(OrchestratorMcpService, make);

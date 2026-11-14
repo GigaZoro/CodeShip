@@ -1,3 +1,4 @@
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
@@ -26,6 +27,7 @@ const dependencies = Layer.mergeAll(
   NodeCrypto.layer,
   Scheduler.layer,
   ServerSettings.layerTest(),
+  MemoryAdmission.layerTest(),
   ManagedPolicy.layerTest(),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({
     launch: () => Effect.die("synthetic dispatch failure"),

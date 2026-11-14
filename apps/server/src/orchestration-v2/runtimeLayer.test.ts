@@ -71,6 +71,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
@@ -336,7 +337,7 @@ const layerLegacyImportTest = RuntimeLayer.layer.pipe(
   Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
-  Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerProjectServiceTest),
@@ -344,7 +345,7 @@ const layerLegacyImportTest = RuntimeLayer.layer.pipe(
 );
 
 const layerScheduledTasksTest = ScheduledTaskService.layer.pipe(
-  Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
   Layer.provide(
     Layer.mergeAll(
       ManagedPolicy.layerTest(),
@@ -404,7 +405,7 @@ const layerProjectDeletionTest = Layer.mergeAll(
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
-  Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
@@ -890,7 +891,7 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
-  Layer.provide(ServerSettings.layerTest()),
+  Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
@@ -11422,7 +11423,7 @@ const layerProductionBrowserAccessTest = RuntimeLayer.layerProduction.pipe(
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
   Layer.provide(layerSharedTaskIdentities()),
-  Layer.provide(ManagedPolicy.layerTest()),
+  Layer.provide(Layer.merge(ManagedPolicy.layerTest(), MemoryAdmission.layerTest())),
   Layer.provide(Layer.mock(ThreadPageCheckAccess.ThreadPageCheckAccess)({})),
   Layer.provide(layerPlatformTest),
 );

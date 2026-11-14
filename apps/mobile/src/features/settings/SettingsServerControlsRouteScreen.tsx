@@ -702,6 +702,30 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       onValueChange={(value) => write({ installUpdatesAutomatically: value })}
                     />
                   </SettingsSection>
+                  <SettingsSection title={t("Background activity")}>
+                    <SettingsSwitchRow
+                      icon="timer"
+                      label={t("Wait for memory before automated starts")}
+                      subtitle={managedSubtitle(
+                        "automatedStartMemoryGuard",
+                        t(
+                          "Scheduled tasks, delegated tasks and the emulators agents open wait while this machine is short of memory. Chats you start always run.",
+                        ),
+                      )}
+                      value={
+                        reference === null ||
+                        displayTargets.some(
+                          (entry) =>
+                            entry.settings.automatedStartMemoryGuard.enabled !==
+                            reference.settings.automatedStartMemoryGuard.enabled,
+                        )
+                          ? null
+                          : reference.settings.automatedStartMemoryGuard.enabled
+                      }
+                      disabled={disabledFor("automatedStartMemoryGuard")}
+                      onValueChange={(enabled) => write({ automatedStartMemoryGuard: { enabled } })}
+                    />
+                  </SettingsSection>
                 </>
               ) : null}
             </>

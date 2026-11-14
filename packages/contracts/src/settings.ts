@@ -31,6 +31,11 @@ import {
   ProviderOptionSelections,
 } from "./model.ts";
 import { DelegatedTaskRole } from "./delegatedTaskRole.ts";
+import {
+  AutomatedStartMemoryGuard,
+  MemoryGuardCompressorShare,
+  MemoryGuardReserveGiB,
+} from "./hostMemory.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
@@ -1368,6 +1373,10 @@ export const ServerSettings = Schema.Struct({
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
   ),
+  /** This machine's own memory decides, so it is not shared. */
+  automatedStartMemoryGuard: AutomatedStartMemoryGuard.pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 
   worktreesDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** Server-maintained history keeps old worktrees eligible for cleanup and review diffs. */
@@ -1878,6 +1887,13 @@ export const ServerSettingsPatch = Schema.Struct({
       browserArtifactsAfterDays: Schema.optionalKey(StorageRetentionDays),
       logsAfterDays: Schema.optionalKey(StorageRetentionDays),
       toolOutputAfterDays: Schema.optionalKey(StorageRetentionDays),
+    }),
+  ),
+  automatedStartMemoryGuard: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      compressorShare: Schema.optionalKey(MemoryGuardCompressorShare),
+      reserveGiB: Schema.optionalKey(MemoryGuardReserveGiB),
     }),
   ),
   worktreesDirectory: Schema.optionalKey(TrimmedString),

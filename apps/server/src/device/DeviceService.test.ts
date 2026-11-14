@@ -7,6 +7,7 @@ import {
   LOCAL_DEVICE_HOST_ID,
   ThreadId,
   type DeviceSummary,
+  type MemoryShortage,
   type ServerSettings as Settings,
   type SshDeviceHostConfig,
 } from "@t3tools/contracts";
@@ -30,6 +31,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import * as DeviceHost from "./DeviceHost.ts";
@@ -89,6 +91,7 @@ const fixture = Effect.fn("fixture")(function* (
     readonly routesStreams?: boolean;
     readonly onClose?: Effect.Effect<"ok" | "missing" | "reject" | "http_error" | "malformed">;
     readonly onPlatformAvailability?: Effect.Effect<void>;
+    readonly memoryShortage?: MemoryShortage;
   } = {},
 ) {
   const settings = yield* Ref.make(DEFAULT_SERVER_SETTINGS);
@@ -285,7 +288,13 @@ const fixture = Effect.fn("fixture")(function* (
     () => Effect.succeed("/host.json"),
     installTool,
   ).pipe(
-    Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)),
+    Effect.provide(
+      Layer.mergeAll(
+        SharedSettings.layerTest,
+        NodeCrypto.layer,
+        MemoryAdmission.layerTest(options.memoryShortage),
+      ),
+    ),
     Effect.provideService(DeviceHost.DeviceHost, host),
     Effect.provideService(
       ServerSettings.ServerSettingsService,
@@ -408,6 +417,42 @@ describe("device setup consent", () => {
       const state = yield* service.state;
       expect(state.devices.map((device) => device.id)).toEqual(["emulator-5554"]);
       expect(state.bootingDevices).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses an agent's emulator boot while memory is short; the user's still boots", () =>
+    Effect.gen(function* () {
+      const { service, requests } = yield* fixture(
+        Effect.void,
+        undefined,
+        false,
+        undefined,
+        false,
+        undefined,
+        {
+          memoryShortage: {
+            kind: "available",
+            totalBytes: 8 * 1024 ** 3,
+            availableBytes: 1024 ** 3,
+            reserveBytes: 2 * 1024 ** 3,
+          },
+        },
+      );
+      yield* service.configure({ enabled: true });
+      const input = {
+        threadId: ThreadId.make("thread-1"),
+        deviceId: "Pixel_API_35",
+        platform: "android",
+      } as const;
+      const refused = yield* service.open(input, { byAgent: true }).pipe(Effect.flip);
+      expect(refused).toMatchObject({ _tag: "DeviceBootError", reason: "memory" });
+      expect(refused.message).toContain("1 GiB of 8 GiB is available, under the 2 GiB reserve");
+      expect(requests.filter((url) => url.endsWith("/boot"))).toEqual([]);
+      expect((yield* service.state).bootingDevices ?? []).toEqual([]);
+
+      const session = yield* service.open(input);
+      expect(session.deviceId).toBe("emulator-5554");
+      expect(requests.filter((url) => url.endsWith("/boot"))).toHaveLength(1);
     }).pipe(Effect.scoped),
   );
 
@@ -881,7 +926,11 @@ it.effect.each(["shutdown", "close"] as const)(
               releasedWhileBooted.push(booted);
             }),
         },
-      ).pipe(Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)));
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(SharedSettings.layerTest, NodeCrypto.layer, MemoryAdmission.layerTest()),
+        ),
+      );
       expect(launchers).toEqual(new Set());
       const input = { threadId, deviceId, platform: "ios" as const };
       const other = { ...input, threadId: ThreadId.make("capture-recovery-other") };
@@ -1031,7 +1080,11 @@ it.effect("leaves a session its host leases to every thread open when one thread
         prune: () => Effect.void,
         release: (launcher) => Effect.sync(() => void released.push(launcher)),
       },
-    ).pipe(Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)));
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(SharedSettings.layerTest, NodeCrypto.layer, MemoryAdmission.layerTest()),
+      ),
+    );
     const threads = [ThreadId.make("pool-a"), ThreadId.make("pool-b")];
     for (const threadId of threads) {
       yield* service.open({ threadId, deviceId, platform: "ios" });
@@ -1134,7 +1187,9 @@ it.effect.each([
         stop: Effect.void,
       };
       const service = yield* DeviceService.makeWithHosts(new Map([[host.id, host]])).pipe(
-        Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)),
+        Effect.provide(
+          Layer.mergeAll(SharedSettings.layerTest, NodeCrypto.layer, MemoryAdmission.layerTest()),
+        ),
       );
       yield* service.list;
       const exit = yield* Effect.exit(service.shutdown({ deviceId, platform: "ios" }));
@@ -1206,7 +1261,9 @@ it.effect.each([LOCAL_DEVICE_HOST_ID, "ssh-fixture"])(
         stopAgent: Effect.void,
       };
       const service = yield* DeviceService.makeWithHosts(new Map([[hostId, host]])).pipe(
-        Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)),
+        Effect.provide(
+          Layer.mergeAll(SharedSettings.layerTest, NodeCrypto.layer, MemoryAdmission.layerTest()),
+        ),
         Effect.provideService(HttpClient.HttpClient, http),
       );
 
@@ -1409,7 +1466,13 @@ it.effect("reconciles SSH host settings without publishing no-op changes", () =>
           ),
         ),
       ),
-      Effect.provide(Layer.mergeAll(ServerConfig.layerTest(baseDir, baseDir), NetService.layer)),
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(baseDir, baseDir),
+          NetService.layer,
+          MemoryAdmission.layerTest(),
+        ),
+      ),
     );
     const update = Effect.fnUntraced(function* (deviceHosts: ReadonlyArray<SshDeviceHostConfig>) {
       const value = yield* settings.updateSettings({ deviceHosts: [...deviceHosts] });
@@ -1439,7 +1502,9 @@ it.effect("reconciles SSH host settings without publishing no-op changes", () =>
     expect(removedFiles).toHaveLength(1);
   }).pipe(
     Effect.scoped,
-    Effect.provide(Layer.mergeAll(ServerSettings.layerTest(), NodeServices.layer)),
+    Effect.provide(
+      Layer.mergeAll(ServerSettings.layerTest(), NodeServices.layer, MemoryAdmission.layerTest()),
+    ),
   ),
 );
 
@@ -1499,6 +1564,7 @@ it.effect("a failed tool update reports npm's exit code but not its output", () 
       Layer.mergeAll(
         ServerSettings.layerTest({ enableDeviceSupport: true }),
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-device-update-" }),
+        MemoryAdmission.layerTest(),
         NodeCrypto.layer,
         NetService.layer,
       ).pipe(Layer.provideMerge(NodeServices.layer)),
@@ -1790,7 +1856,11 @@ describe("locating a device id across hosts", () => {
           [thisMachine.id, listingHost(thisMachine, ["Pixel_10"])],
           [macMini.id, listingHost(macMini, ["MAC-UDID", "Pixel_10"])],
         ]),
-      ).pipe(Effect.provide(Layer.merge(SharedSettings.layerTest, NodeCrypto.layer)));
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(SharedSettings.layerTest, NodeCrypto.layer, MemoryAdmission.layerTest()),
+        ),
+      );
       yield* service.list;
       return yield* test(service);
     }).pipe(Effect.provide(ServerSettings.layerTest({ enableDeviceSupport: true })), Effect.scoped);

@@ -35,6 +35,7 @@ import {
   type ScheduledTaskRunSkipReason,
   ScheduledTaskRunFailover,
   ScheduledTaskRunUsageLimit,
+  MemoryShortage,
   type ScheduledTaskRunTrigger,
   type ScheduledTaskDeleteInput,
   type ScheduledTaskDeleteResult,
@@ -107,6 +108,7 @@ import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/proje
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import {
   isMissedFixedTimeRun,
   isSameSchedule,
@@ -164,6 +166,7 @@ const QUIET_SKIP_REASONS = [
   "no_work",
   "usage_limited",
   "live_run_limit",
+  "memory",
 ] as const satisfies ReadonlyArray<ScheduledTaskRunSkipReason>;
 const QUIET_SKIP_RETENTION = 10;
 // The newest run chats a live-run count reads: room for a full limit plus as many Run now runs.
@@ -314,6 +317,11 @@ const McpServersJson = Schema.fromJsonString(Schema.Array(Schema.String));
 const decodeMcpServersJson = Schema.decodeUnknownOption(McpServersJson);
 const encodeMcpServersJson = Schema.encodeSync(McpServersJson);
 const encodeRunUsageLimitJson = Schema.encodeSync(RunUsageLimitJson);
+const RunMemoryJson = Schema.fromJsonString(MemoryShortage);
+const decodeRunMemoryJson = Schema.decodeUnknownOption(RunMemoryJson);
+const encodeRunMemoryJson = Schema.encodeSync(RunMemoryJson);
+// A one-time task keeps its only occurrence and tries again this much later.
+const ONCE_MEMORY_RETRY = Duration.minutes(5);
 const DelegateProvidersJson = Schema.fromJsonString(ScheduledTaskDelegateProviders);
 const decodeDelegateProvidersJson = Schema.decodeUnknownEffect(DelegateProvidersJson);
 const encodeDelegateProvidersSchema = Schema.encodeSync(DelegateProvidersJson);
@@ -406,6 +414,7 @@ interface RunRecordRow {
   readonly failover_mcp_servers_json: string | null;
   readonly check_json: string | null;
   readonly usage_limit_json: string | null;
+  readonly memory_json: string | null;
 }
 
 /** What a scheduled run is for: the time it serves, and whether it catches up a missed one. */
@@ -910,6 +919,7 @@ export const layer = Layer.effect(
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     // Optional so tests without accounts run every launch on the task's own account.
     const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+    const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
     const managedPolicy = yield* ManagedPolicy.ManagedPolicy;
     const webhookPolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "webhookTasks");
@@ -1144,6 +1154,9 @@ export const layer = Layer.effect(
     const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
     if (!runColumns.some((column) => column.name === "usage_limit_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
+    }
+    if (!runColumns.some((column) => column.name === "memory_json")) {
+      yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN memory_json TEXT`;
     }
     yield* sql`
       UPDATE scheduled_task_runs SET skip_reason = 'live_run_limit'
@@ -1797,12 +1810,13 @@ export const layer = Layer.effect(
       readonly failover: ScheduledTaskRunFailover | null;
       readonly check?: ScheduledTaskRunCheck | undefined;
       readonly usageLimit?: ScheduledTaskRunUsageLimit | undefined;
+      readonly memory?: MemoryShortage | undefined;
     }) =>
       sql`
         INSERT INTO scheduled_task_runs (
           run_id, task_id, trigger, scheduled_for, started_at, completed_at, outcome,
           skip_reason, ran_on, failover_from, failover_to, failover_reason, failover_mcp_servers_json,
-          check_json, usage_limit_json
+          check_json, usage_limit_json, memory_json
         )
         SELECT ${record.id}, ${record.taskId}, ${record.trigger}, ${record.scheduledFor},
           ${record.startedAt}, ${record.completedAt}, ${record.outcome},
@@ -1811,7 +1825,8 @@ export const layer = Layer.effect(
           ${record.failover?.reason ?? null},
           ${record.failover?.mcpServers === undefined ? null : encodeMcpServersJson(record.failover.mcpServers)},
           ${record.check === undefined ? null : JSON.stringify(record.check)},
-          ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)}
+          ${record.usageLimit === undefined ? null : encodeRunUsageLimitJson(record.usageLimit)},
+          ${record.memory === undefined ? null : encodeRunMemoryJson(record.memory)}
         WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${record.taskId})
         ON CONFLICT (run_id) DO NOTHING
       `.pipe(
@@ -2132,7 +2147,7 @@ export const layer = Layer.effect(
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
-        const prompt: Result.Result<
+        const read: Result.Result<
           string,
           PromptFileReader.PromptFileReadError | ScheduledTaskError
         > =
@@ -2146,6 +2161,21 @@ export const layer = Layer.effect(
                     : readRunPromptFile(active, active.promptFile.path)
                   ).pipe(Effect.map((read) => read.text)),
                 );
+        // A scheduled read can wait minutes for the network while the run already shows as
+        // started, so memory that went short meanwhile fails the run, naming the reading.
+        const shortAfterRead =
+          trigger === "scheduled" && active.promptFile != null && Result.isSuccess(read)
+            ? yield* memoryAdmission.shortage
+            : null;
+        const prompt: typeof read =
+          shortAfterRead === null
+            ? read
+            : Result.fail(
+                taskError(
+                  `This machine's memory was short when the prompt file arrived (${MemoryAdmission.describeMemoryShortage(shortAfterRead)}), so the chat did not start.`,
+                  { taskId: active.id },
+                ),
+              );
 
         // A bound thread can move to another project (No project to a project) while
         // this fires. Follow it; one move needs at most two retries. Same ids replay safely.
@@ -2427,6 +2457,7 @@ export const layer = Layer.effect(
         readonly ranOn?: EnvironmentId;
         readonly check?: ScheduledTaskRunCheck;
         readonly usageLimit?: ScheduledTaskRunUsageLimit;
+        readonly memory?: MemoryShortage;
       },
     ) {
       const { reason, next, now, startedAt = now, ...details } = skip;
@@ -2484,6 +2515,50 @@ export const layer = Layer.effect(
         });
       }
       return skipped;
+    });
+
+    /**
+     * Skips an occurrence while this machine's memory reads short, so an automated run cannot
+     * push it into a kernel panic. Nothing ran, so the run columns stay. A one-time task tries
+     * again shortly instead of losing its only occurrence.
+     */
+    const skippedForMemory = Effect.fn("ScheduledTaskService.skippedForMemory")(function* (
+      task: ScheduledTask,
+      fire: ScheduledFire,
+      /** The task's check that ran first; its answer goes into the record. */
+      checked?: {
+        readonly condition: RunConditionRow;
+        readonly check: ScheduledTaskRunCheck;
+        readonly startedAt: DateTime.DateTime;
+      },
+    ) {
+      const shortage = yield* memoryAdmission.shortage;
+      if (shortage === null) return false;
+      const now = yield* localNow;
+      const unmoved =
+        checked === undefined
+          ? occurrenceUnmoved(task)
+          : occurrenceAsChecked(task, checked.condition);
+      const skipped = yield* recordQuietSkip(task, fire, unmoved, {
+        reason: "memory",
+        next:
+          task.schedule.type === "once"
+            ? iso(DateTime.addDuration(now, ONCE_MEMORY_RETRY))
+            : nextRunAt(task, now),
+        now,
+        memory: shortage,
+        ...(checked === undefined ? {} : { startedAt: checked.startedAt, check: checked.check }),
+      });
+      if (skipped) {
+        yield* Effect.logWarning("Skipping a schedule task run: this machine's memory is short", {
+          taskId: task.id,
+          scheduledFor: fire.scheduledFor ?? task.nextRunAt,
+          memory: MemoryAdmission.describeMemoryShortage(shortage),
+        });
+        yield* notifyChanged;
+      }
+      // A moved occurrence is someone else's now; the next poll judges it afresh.
+      return true;
     });
 
     /**
@@ -2771,6 +2846,12 @@ export const layer = Layer.effect(
           ),
         );
         if (unchanged.length > 0) {
+          // A check can take minutes, so memory is judged again right before the chat starts.
+          if (
+            yield* skippedForMemory(task, fire, { condition, check, startedAt: checkStartedAt })
+          ) {
+            return "skipped" as const;
+          }
           yield* runTask(task, "scheduled", undefined, { ...fire, check });
           return "ran" as const;
         }
@@ -3456,6 +3537,7 @@ export const layer = Layer.effect(
           // With its sharing, so the skip lands on the slot every copy runs.
           if (yield* skippedAtLiveRunLimit(shared, fire, liveRunsElsewhere)) return;
           // A machine that could not start it claims nothing, so the next machine may run it.
+          if (yield* skippedForMemory(task, fire)) return;
           if (yield* skippedForUsage(task, fire)) return;
           const claim = yield* claimOneMachineOccurrence(task.id, slot, plan, replaces);
           yield* logUnchecked(claim.unchecked);
@@ -3552,6 +3634,7 @@ export const layer = Layer.effect(
       if (sharing != null) return yield* settleOneMachineOccurrence(task, sharing, now, catchUp);
       const fire = { scheduledFor: task.nextRunAt, catchUp };
       if (yield* skippedAtLiveRunLimit(task, fire, [])) return;
+      if (yield* skippedForMemory(task, fire)) return;
       if (yield* skippedForUsage(task, fire)) return;
       return yield* startScheduledRun(task, fire);
     });
@@ -4961,7 +5044,7 @@ export const layer = Layer.effect(
       sql<RunRecordRow>`
         SELECT run_id, trigger, scheduled_for, started_at, completed_at, outcome, thread_id,
           error, skip_reason, ran_on, failover_from, failover_to, failover_reason,
-          failover_mcp_servers_json, check_json, usage_limit_json
+          failover_mcp_servers_json, check_json, usage_limit_json, memory_json
         FROM scheduled_task_runs WHERE task_id = ${input.id}
         ORDER BY started_at DESC, run_id DESC
         LIMIT ${RUN_HISTORY_RETENTION + QUIET_SKIP_REASONS.length * QUIET_SKIP_RETENTION}
@@ -5003,6 +5086,10 @@ export const layer = Layer.effect(
                   row.usage_limit_json === null
                     ? null
                     : Option.getOrNull(decodeRunUsageLimitJson(row.usage_limit_json)),
+                memory:
+                  row.memory_json === null
+                    ? null
+                    : Option.getOrNull(decodeRunMemoryJson(row.memory_json)),
               }),
             ),
           ),

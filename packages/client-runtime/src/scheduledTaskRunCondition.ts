@@ -4,6 +4,7 @@ import {
   MAX_RUN_CONDITION_COMMAND_LENGTH,
   MAX_RUN_CONDITION_TIMEOUT_SECONDS,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
+  type MemoryShortage,
   type ScheduledTask,
   type ScheduledTaskNoWorkSkip,
   type ScheduledTaskRunCheck,
@@ -131,6 +132,52 @@ export function usageLimitSkipText(
     provider: providerDriverDisplayName(usageLimit.driver),
     time: formatTime(usageLimit.until),
   });
+}
+
+const GIB = 1024 ** 3;
+const gib = (bytes: number) => t("{size} GiB", { size: String(Number((bytes / GIB).toFixed(1))) });
+const percent = (share: number) => `${Math.round(share * 100)}%`;
+
+/** Run history's line for a run that did not start because its machine's memory read short. */
+export function memorySkipText(memory: MemoryShortage | null | undefined): string {
+  if (memory == null) return t("Memory was short on this machine, so it didn't start.");
+  if (memory.kind === "available") {
+    return t(
+      "Memory was short: {available} of {total} was available, under the {reserve} reserve.",
+      {
+        available: gib(memory.availableBytes),
+        total: gib(memory.totalBytes),
+        reserve: gib(memory.reserveBytes),
+      },
+    );
+  }
+  if (memory.kind === "pressure") {
+    return memory.pressure === "critical"
+      ? t("Memory was short: macOS reported critical memory pressure.")
+      : t("Memory was short: macOS warned of memory pressure.");
+  }
+  const values = {
+    share: percent(memory.compressorBytes / memory.totalBytes),
+    total: gib(memory.totalBytes),
+    limit: percent(memory.compressorShareLimit),
+  };
+  switch (memory.pressure) {
+    case "critical":
+      return t(
+        "Memory was short: macOS reported critical memory pressure, and compressed memory took {share} of {total}.",
+        values,
+      );
+    case "warn":
+      return t(
+        "Memory was short: macOS warned of memory pressure, and compressed memory took {share} of {total}.",
+        values,
+      );
+    default:
+      return t(
+        "Memory was short: compressed memory took {share} of {total}, over the {limit} limit.",
+        values,
+      );
+  }
 }
 
 /** Run history's line for a run that started on another account than its task named, and why. */

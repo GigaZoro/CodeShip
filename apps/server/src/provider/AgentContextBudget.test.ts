@@ -38,6 +38,7 @@ import { PullRequestReviewGuideService } from "../pullRequest/PullRequestReviewG
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import { SecretRequests } from "../secrets/SecretRequests.ts";
 import { SharedSettings } from "../sharedSettings/SharedSettings.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { SourceControlRepositoryService } from "../sourceControl/SourceControlRepositoryService.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
@@ -57,6 +58,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(DocumentText)({}),
   Layer.mock(GitVcsDriver)({}),
   Layer.mock(GitWorkflowService)({}),
+  MemoryAdmission.layerTest(),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
   Layer.mock(OrchestratorV2)({}),
