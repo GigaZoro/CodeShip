@@ -1,3 +1,7 @@
+## 2026-11-14 — Agents release a background wait with `clear: true`
+
+- `t3_background_wait` keeps a Claude chat in Working until the tasks it names end. To release that hold early, an agent now passes `clear: true`. The old `waiting` flag read like a field for what the agent was waiting on, so agents filled it with text such as "integration lock" and the call failed. Leaving out `clear` holds the chat in Working, as before.
+
 ## 2026-11-14 — A restart no longer leaves a delegated chat uncontinued
 
 - A chat started by another chat (a delegated task) that a server restart cut while its parent was also running could stay idle forever, because the parent's recovery marked the child's provider thread idle first. Recovery now leaves a delegated chat's provider thread to that chat's own recovery, and a test covers the decision that resumes it.

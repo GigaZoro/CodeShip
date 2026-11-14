@@ -70,7 +70,7 @@ const handlers = {
         .awaitBackgroundTasks({
           threadId: caller.thread.threadId,
           taskIds: input.taskIds,
-          awaited: input.waiting ?? true,
+          awaited: input.clear !== true,
         })
         .pipe(
           Effect.mapError(
