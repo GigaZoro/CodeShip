@@ -1,3 +1,7 @@
+## 2026-11-14 — Large chats get more time to resume
+
+- Resuming a chat gave the provider a fixed 5 minutes, however large the chat or busy the machine, and a retry waited the same 5 minutes, so a big chat on a loaded host failed every time. The wait now grows with the chat (one extra minute per MB of messages) and doubles after each earlier resume timeout, up to 60 minutes. Small chats on idle machines still wait 5 minutes.
+
 ## 2026-11-14 — A restart no longer strands a chat waiting on a finished helper
 
 - When the server restarted while a chat had ended its turn to wait for a helper, the helper's result was held for a resume that never came, so the chat stayed queued and never ran again. A restart now holds a message that an agent, the server or a scheduled task queued only when it also resumes a cut run; otherwise it starts at once. Messages you queued are still held for you to resume.

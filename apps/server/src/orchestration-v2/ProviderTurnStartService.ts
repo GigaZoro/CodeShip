@@ -111,26 +111,45 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
 }
 
 // A provider that never answers would keep its run starting and hold an effect worker forever.
-// Slow providers still fit: a Codex resume took 4.5 minutes on a busy app-server.
 const PROVIDER_START_STEP_TIMEOUT_MINUTES = 5;
+// A resume replays the whole transcript, so a large chat on a loaded host needs longer than a
+// small one: 5 minutes plus 1 per MB of history, doubled after each earlier resume timeout.
+const RESUME_TIMEOUT_MINUTES_PER_MB = 1;
+const RESUME_TIMEOUT_MAX_MINUTES = 60;
+const RESUME_STEP = "resume the conversation";
+const RESUME_TIMEOUT_MESSAGE_PREFIX = `The provider did not ${RESUME_STEP} within `;
+
+export const resumeTimeoutMinutes = (input: {
+  readonly transcriptBytes: number;
+  readonly priorTimeouts: number;
+}) =>
+  Math.min(
+    RESUME_TIMEOUT_MAX_MINUTES,
+    Math.floor(
+      (PROVIDER_START_STEP_TIMEOUT_MINUTES +
+        (input.transcriptBytes / 1_000_000) * RESUME_TIMEOUT_MINUTES_PER_MB) *
+        2 ** input.priorTimeouts,
+    ),
+  );
 
 class ProviderStartStepTimeoutError extends Schema.TaggedError<ProviderStartStepTimeoutError>()(
   "ProviderStartStepTimeoutError",
-  { step: Schema.String, slept: Schema.Boolean },
+  { step: Schema.String, slept: Schema.Boolean, minutes: Schema.Number },
 ) {
   override get message(): string {
     const after = this.slept ? " after the computer slept" : "";
-    return `The provider did not ${this.step} within ${PROVIDER_START_STEP_TIMEOUT_MINUTES} minutes${after}.`;
+    return `The provider did not ${this.step} within ${this.minutes} minutes${after}.`;
   }
 }
 
 const withStartStepTimeout =
-  (step: string) =>
+  (step: string, minutes: number = PROVIDER_START_STEP_TIMEOUT_MINUTES) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       timeoutAwakeOrElse({
-        duration: Duration.minutes(PROVIDER_START_STEP_TIMEOUT_MINUTES),
-        orElse: ({ slept }) => Effect.fail(new ProviderStartStepTimeoutError({ step, slept })),
+        duration: Duration.minutes(minutes),
+        orElse: ({ slept }) =>
+          Effect.fail(new ProviderStartStepTimeoutError({ step, slept, minutes })),
       }),
     );
 
@@ -1458,14 +1477,30 @@ export const layer: Layer.Layer<
                   cause: "Uncertain native history injection",
                 }),
               )
-            : session
-                .resumeThread({
-                  providerThread,
-                  threadId: projection.thread.id,
-                  modelSelection: run.modelSelection,
-                  runtimePolicy: resolvedRuntimePolicy,
-                })
-                .pipe(withStartStepTimeout("resume the conversation")),
+            : Effect.suspend(() => {
+                const transcriptBytes = projection.messages.reduce(
+                  (sum, candidate) => sum + Buffer.byteLength(candidate.text),
+                  0,
+                );
+                const priorTimeouts = projection.turnItems.filter(
+                  (item) =>
+                    item.type === "error" &&
+                    item.failure.message.startsWith(RESUME_TIMEOUT_MESSAGE_PREFIX),
+                ).length;
+                return session
+                  .resumeThread({
+                    providerThread,
+                    threadId: projection.thread.id,
+                    modelSelection: run.modelSelection,
+                    runtimePolicy: resolvedRuntimePolicy,
+                  })
+                  .pipe(
+                    withStartStepTimeout(
+                      RESUME_STEP,
+                      resumeTimeoutMinutes({ transcriptBytes, priorTimeouts }),
+                    ),
+                  );
+              }),
         );
         if (resumed._tag === "Success") {
           const context = handoffContextForThread(resumed.success);

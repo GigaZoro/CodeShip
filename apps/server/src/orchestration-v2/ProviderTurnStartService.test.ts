@@ -2050,6 +2050,18 @@ effectIt.effect(
     }),
 );
 
+it.each([
+  { transcriptBytes: 10_000, priorTimeouts: 0, minutes: 5 },
+  { transcriptBytes: 5_800_000, priorTimeouts: 0, minutes: 10 },
+  { transcriptBytes: 5_800_000, priorTimeouts: 1, minutes: 21 },
+  { transcriptBytes: 5_800_000, priorTimeouts: 5, minutes: 60 },
+])(
+  "waits $minutes minutes to resume $transcriptBytes bytes after $priorTimeouts timeouts",
+  ({ minutes, ...input }) => {
+    expect(ProviderTurnStart.resumeTimeoutMinutes(input)).toBe(minutes);
+  },
+);
+
 effectIt.effect("gives a provider start step its full awake time when the computer sleeps", () =>
   Effect.gen(function* () {
     const resuming = yield* Deferred.make<void>();
