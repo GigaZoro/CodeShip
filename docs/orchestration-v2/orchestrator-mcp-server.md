@@ -340,7 +340,56 @@ Runs a shell command that ends (tests, a build, an install, a push, a deploy, a 
 the calling thread, started outside the provider and the server so a restart does not cut it.
 It takes `command`, an optional `cwd` (the thread's checkout by default), `label`, and
 `timeoutMinutes` (default 60, at most 720), and returns the `taskId`, the log path and the
-timeout. The command's end completes the task through the same durable delivery as a delegated
+timeout. The command gets the whole environment the calling agent's own shell commands get in
+the thread's folder: the host environment without the server's own variables, then the
+variables set on the agent's provider account, which every provider starts its agent with, then
+its provider's rules. For Claude that is
+the `env` of the settings its launch arguments load, its organization's settings last; for
+Codex it is the whole `shell_environment_policy` (`inherit`, the default excludes, `exclude`,
+`set`, `include_only`, `filters`), so a policy also removes variables, then Codex's own last
+steps: its launch context, such as `NODE_REPL_AUTH_TOKEN`, goes even when the policy sets it,
+a Windows command without `PATHEXT` gets Codex's default, and
+`CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS` is `1` exactly when the
+`apply_patch_preserve_line_endings` feature is on (from `configRequirements/read` when a managed
+requirement pins it, from the folder's config otherwise). `T3CODE_THREAD_ID` comes
+last. T3.CodeShip's own launch variables, such as the account folder from its settings, and
+those a CLI adds for itself, such as `CODEX_THREAD_ID`, are not shell settings and stay out;
+because Codex replaces `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_VERSION` and
+`CODEX_PERMISSION_PROFILE` with its own session's, an inherited one does not reach a Codex
+thread's command either.
+Claude's settings files and its `--settings` launch argument go through the SDK's
+`resolveSettings`, `--settings` as the project settings of a scratch folder only the server's
+user can open, since `resolveSettings` takes no flag tier; so settings Claude Code rejects for
+one invalid field add nothing, as in Claude Code. `--settings` is judged as the object Claude
+Code receives in the calling thread's active run (`claudeFlagSettings`): the launch argument's
+in the SDK's shape, with the run's model selection, the compact window and the thinking
+summaries switch replacing their fields. A launch leaves `fastMode` as a live switch to the
+same selection would, so whether Claude Code accepts that object never depends on the
+selections a retained query ran before. For an account whose config folder is
+not the server's, that runs in the Claude history worker, because `resolveSettings` reads
+`CLAUDE_CONFIG_DIR` from its process. On POSIX the launcher keeps the host environment, whose
+`PATH`, or the shell's default search when it has none, finds the tools of the wrapper that
+records the end, and starts the command through
+`env`, which removes each variable the command must not get and sets its `PATH`. The variables
+bash, the `/bin/sh` of macOS and many Linux systems, reads as its own options and functions
+(`SHELLOPTS`, `BASHOPTS`, `EXECIGNORE`, `BASH_FUNC_*`) never reach the wrapper's shell and are
+set by `env` too, so an option such as `errexit` cannot stop the wrapper recording the end; no
+other value reaches an argument. On Windows, where a later spelling of a name replaces any other case of
+it, the launcher passes the command's whole environment to `Win32_Process.Create` over stdin,
+never through a file, as a Unicode block (`Create_Unicode_Environment`), so a value outside the
+host's ANSI code page survives. T3.CodeShip merges only spellings that differ in ASCII case, as
+Codex's `set` does, and moves each name it sets to the end; Windows folds other letters by a
+table only it has and that can change between versions, so the launcher keeps the last of the
+spellings Windows reads as one name with .NET's `OrdinalIgnoreCase`, and `Straße` and `STRASSE`
+stay two variables. The wrapper reads no variable but its exit status: the launcher
+hands it PowerShell's path from the system directory, so neither the agent's `PATH` nor a
+`SystemRoot` its settings move or drop can change which PowerShell runs, and a command's own
+`ERRORLEVEL`, which cmd would expand in place of the exit status, reaches the script as
+`T3CODE_COMMAND_ERRORLEVEL` and is put back before the command runs. When the provider is
+turned off or not running, or cannot read them, including
+Claude settings an organization's policy helper computes (a `policyHelper` or a per-OS
+`policyHelpers` entry, neither of which `resolveSettings` applies), the call fails and nothing
+runs. The command's end completes the task through the same durable delivery as a delegated
 task's result, which wakes the thread once with the exit code and the last output.
 `task_status` reads the task, and `task_cancel` kills the command's process tree. Native
 background shells stay for work left running, such as dev servers and watchers; the update hold

@@ -5,6 +5,7 @@ import type {
   AcpRegistryListProvidersResult,
   AcpRegistryOperationError,
   AcpRegistrySetProviderInput,
+  ModelSelection,
   ProviderDriverKind,
   ResolvedProviderInstanceEnvironment,
   ProviderInstanceId,
@@ -92,6 +93,17 @@ export interface ProviderInstance {
     readonly enabled: boolean;
   }) => Effect.Effect<void, ProviderSkillError>;
   readonly mcp?: ProviderMcpManagement;
+  /**
+   * The whole environment the provider's own shell commands get in `cwd` during a turn on
+   * `modelSelection` when they would otherwise inherit `inherited`. A driver whose settings cannot
+   * change the account's variables it starts its agent with leaves it out; the instance registry
+   * gives those commands just that.
+   */
+  readonly shellEnvironment?: (
+    cwd: string,
+    inherited: Readonly<Record<string, string>>,
+    modelSelection: ModelSelection,
+  ) => Effect.Effect<Readonly<NodeJS.ProcessEnv>, ProviderDriverError>;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {
       readonly cwd: string;

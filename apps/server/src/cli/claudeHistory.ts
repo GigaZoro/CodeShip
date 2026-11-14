@@ -6,17 +6,13 @@ import { runClaudeHistoryWorker } from "../claudeHistoryWorker.ts";
 /** Single-executable builds lack Node, so they use this subcommand instead of claudeHistoryWorker.mjs. */
 export const claudeHistoryCommand = Command.make("__claude-history", {
   method: Argument.String("method"),
-  sessionId: Argument.String("session-id"),
+  input: Argument.String("input"),
   options: Argument.String("options").pipe(Argument.optional),
 }).pipe(
   Command.unlisted,
-  Command.withHandler(({ method, sessionId, options }) =>
+  Command.withHandler(({ method, input, options }) =>
     Effect.promise(() =>
-      runClaudeHistoryWorker(
-        method,
-        sessionId,
-        options._tag === "Some" ? options.value : undefined,
-      ),
+      runClaudeHistoryWorker(method, input, options._tag === "Some" ? options.value : undefined),
     ),
   ),
 );

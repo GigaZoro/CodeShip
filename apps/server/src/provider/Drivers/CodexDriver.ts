@@ -28,6 +28,7 @@ import {
 import { ProviderDriverError } from "../Errors.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
+import { makeCodexShellEnvironment } from "../codexShellEnvironment.ts";
 import {
   checkCodexProviderStatus,
   CODEX_NOT_FOUND_MESSAGE,
@@ -80,6 +81,11 @@ const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 const DEFAULT_BINARY_PATH = decodeCodexSettings({}).binaryPath;
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
+
+/** Both setup modes build their own instance; each must read its account's shell environment. */
+type CodexProviderInstance = ProviderInstance & {
+  readonly shellEnvironment: NonNullable<ProviderInstance["shellEnvironment"]>;
+};
 const CODEX_STANDALONE_HOME_PATTERN = /^(.*)\/packages\/standalone\//is;
 
 function codexStandaloneHome(commandPath: string): string | null {
@@ -156,14 +162,14 @@ export const CodexDriver: ProviderDriver<
     config,
   }) {
     if (config.setupMode === "managed")
-      return yield* makeManagedCodexProvider({
+      return (yield* makeManagedCodexProvider({
         instanceId,
         displayName,
         accentColor,
         environment,
         enabled,
         config,
-      });
+      })) satisfies CodexProviderInstance;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -516,8 +522,13 @@ export const CodexDriver: ProviderDriver<
           ),
         ),
       mcp,
+      shellEnvironment: makeCodexShellEnvironment({
+        instanceId,
+        environment,
+        openClient: openAppServerClient,
+      }),
       orchestrationAdapter,
       textGeneration,
-    } satisfies ProviderInstance;
+    } satisfies CodexProviderInstance;
   }),
 };

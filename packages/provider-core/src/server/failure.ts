@@ -126,6 +126,8 @@ function curatedCauseMessages(cause: unknown): {
         case "ClaudeCodeStartupExitError":
         case "ClaudeTermsReviewRequiredError":
         case "ClaudeSettingsLaunchArgError":
+        case "ClaudeProjectConfigRootError":
+        case "ClaudeSettingsResolveError":
         case "ClaudeMcpRegistrationTimeoutError":
         case "CursorModelUnavailableError":
           return { known: stringField(cause, "message"), category: categoryMessage() };

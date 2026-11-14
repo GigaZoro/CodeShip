@@ -940,6 +940,30 @@ export function setWindowsPath(env: NodeJS.ProcessEnv, value: string | null): vo
   if (value !== null) env.PATH = value;
 }
 
+/** `name` with its ASCII letters uppercased, the one case folding every Windows version shares. */
+export const asciiUpperCase = (name: string) =>
+  name.replace(/[a-z]+/g, (letters) => letters.toUpperCase());
+
+/**
+ * `base`'s set variables, then `overrides` set in order, each set name moved to the end. On Windows
+ * a name replaces every earlier spelling of it in another ASCII case; Windows folds other letters
+ * by a table only it has, so a launcher there keeps the last of those spellings.
+ */
+export function overrideEnvironment(
+  base: Readonly<NodeJS.ProcessEnv>,
+  overrides: Readonly<Record<string, string>>,
+  platform: NodeJS.Platform,
+): Record<string, string> {
+  const variables = new Map<string, readonly [string, string]>();
+  for (const [name, value] of [...Object.entries(base), ...Object.entries(overrides)]) {
+    if (value === undefined) continue;
+    const key = platform === "win32" ? asciiUpperCase(name) : name;
+    variables.delete(key);
+    variables.set(key, [name, value]);
+  }
+  return Object.fromEntries(variables.values());
+}
+
 function mergeWindowsEnv(
   currentEnv: NodeJS.ProcessEnv,
   patch: Partial<Record<string, string>>,

@@ -18,6 +18,7 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { asciiUpperCase, overrideEnvironment } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -39,8 +40,11 @@ import * as ServerConfig from "../config.ts";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as PortScanner from "../preview/PortScanner.ts";
+import { escapePowerShellStringLiteral } from "../process/externalLauncher.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
 import { isProcessAlive, readProcessStartedAt } from "../serverRuntimeState.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
@@ -63,16 +67,21 @@ const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
 const COMMAND_DRIVER = ProviderDriverKind.make("command");
 const TRIMMED_MARKER = "[CodeShip removed earlier output to keep this log small]\n";
+// Win32_ProcessStartup's Create_Unicode_Environment; without it the block is ANSI.
+const CREATE_UNICODE_ENVIRONMENT = 0x400;
+// cmd expands %ERRORLEVEL% to a variable of that name before the exit code, so the command's own
+// one reaches command.ps1 under this name and the script puts it back.
+const COMMAND_ERRORLEVEL = "T3CODE_COMMAND_ERRORLEVEL";
 
-// Names itself first, then runs the command in the user's shell and outlives it to write its exit
-// status; each rename makes its file appear whole. Arguments: log, shell, status file, command,
-// pid file.
+// Names itself first, then runs the command and outlives it to write its exit status; each rename
+// makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
 const POSIX_WRAPPER = [
-  'printf "%s\\n" "$$" >"$5.tmp" && mv -f "$5.tmp" "$5"',
+  'printf "%s\\n" "$$" >"$3.tmp" && mv -f "$3.tmp" "$3"',
   'exec >>"$1" 2>&1 </dev/null',
-  '"$2" -c "$4"',
+  'run() { shift 3; "$@"; }',
+  'run "$@"',
   "code=$?",
-  'printf "%s\\n" "$code" >"$3.tmp" && mv -f "$3.tmp" "$3"',
+  'printf "%s\\n" "$code" >"$2.tmp" && mv -f "$2.tmp" "$2"',
 ].join("\n");
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
@@ -135,15 +144,46 @@ class CommandLaunchError extends Schema.TaggedError<CommandLaunchError>()("Comma
 const failure = (code: OrchestratorMcpFailure["code"], message: string) =>
   new OrchestratorMcpFailure({ code, message });
 
-/** bash or zsh as the user's own commands expect; anything else (fish, nu) gets /bin/sh. */
+/**
+ * bash or zsh as the user's own commands expect; anything else (fish, nu) gets /bin/sh. A path
+ * with `=` would read as an assignment to `env`.
+ */
 const posixShell = (env: NodeJS.ProcessEnv) => {
   const shell = env.SHELL;
-  return shell !== undefined && shell.startsWith("/") && /\/(?:ba|z)sh$/.test(shell)
-    ? shell
-    : "/bin/sh";
+  return shell !== undefined && /^\/(?:[^=]*\/)?(?:ba|z)sh$/.test(shell) ? shell : "/bin/sh";
 };
 
-const quotePowerShell = (value: string) => `'${value.replaceAll("'", "''")}'`;
+/** The options and functions bash, /bin/sh on macOS and many Linux systems, reads from its environment. */
+const isShellConfiguration = (name: string) =>
+  name === "SHELLOPTS" ||
+  name === "BASHOPTS" ||
+  name === "EXECIGNORE" ||
+  name.startsWith("BASH_FUNC_");
+
+/**
+ * The launcher keeps the host's PATH, or the shell's default search when it has none, to find its
+ * `mv`, and `env` arguments turn its environment into the command's own. Shell configuration
+ * reaches only the command, so an option such as errexit cannot stop the launcher recording the end.
+ */
+const posixLaunchEnvironment = (
+  host: Readonly<Record<string, string>>,
+  command: Readonly<Record<string, string>>,
+) => {
+  const { PATH: commandPath, ...commandWithoutPath } = command;
+  const env = Object.fromEntries(
+    Object.entries({ ...host, ...commandWithoutPath }).filter(
+      ([name]) => !isShellConfiguration(name),
+    ),
+  );
+  const envArgs = [
+    ...Object.keys(env).flatMap((name) => (Object.hasOwn(command, name) ? [] : ["-u", name])),
+    ...Object.entries(command)
+      .filter(([name]) => isShellConfiguration(name))
+      .map(([name, value]) => `${name}=${value}`),
+    ...(commandPath === undefined || commandPath === env.PATH ? [] : [`PATH=${commandPath}`]),
+  ];
+  return { env, prefix: envArgs.length === 0 ? [] : ["/usr/bin/env", ...envArgs] };
+};
 
 /** The last lines of a log, starting at a whole line when the start was cut. */
 const decodeTail = (bytes: Uint8Array, cut: boolean) => {
@@ -158,20 +198,22 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectService.ProjectService;
+  const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const agentScope = yield* AgentScope;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   const { logsDir } = yield* ServerConfig.ServerConfig;
-  const windows = (yield* HostProcess.Platform) === "win32";
+  const platform = yield* HostProcess.Platform;
+  const windows = platform === "win32";
   const hostEnv = yield* HostProcess.Environment;
   const watchInterval = yield* WatchInterval;
 
   const commandsDir = path.join(logsDir, "commands");
-  const commandEnv = Object.fromEntries(
+  const hostCommandEnv = Object.fromEntries(
     Object.entries(hostEnv).filter(
-      ([key, value]) => value !== undefined && !isServerOnlyEnvKey(key),
+      (entry): entry is [string, string] => entry[1] !== undefined && !isServerOnlyEnvKey(entry[0]),
     ),
   );
   /** Commands whose end has not reached their task yet, by task id. */
@@ -504,11 +546,16 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const spawnDetached = (command: string, args: ReadonlyArray<string>, cwd: string) =>
+  const spawnDetached = (
+    command: string,
+    args: ReadonlyArray<string>,
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+  ) =>
     Effect.callback<number, CommandLaunchError>((resume) => {
       const child = NodeChildProcess.spawn(command, args, {
         cwd,
-        env: commandEnv,
+        env,
         detached: true,
         stdio: "ignore",
         windowsHide: true,
@@ -531,10 +578,18 @@ const make = Effect.gen(function* () {
     directory: string,
     command: string,
     cwd: string,
+    /** The command's whole environment, as the calling agent's own shell commands get it. */
+    commandEnv: Readonly<Record<string, string>>,
   ) {
     const logPath = path.join(directory, LOG_FILE);
     const statusPath = path.join(directory, STATUS_FILE);
+    if (Object.entries(commandEnv).some((entry) => entry.join("=").includes("\0"))) {
+      return yield* new CommandLaunchError({
+        detail: "An environment variable for the command contains a NUL character.",
+      });
+    }
     if (!windows) {
+      const { env, prefix } = posixLaunchEnvironment(hostCommandEnv, commandEnv);
       const scoped = yield* agentScope.wrap({
         command: "/bin/sh",
         args: [
@@ -542,23 +597,41 @@ const make = Effect.gen(function* () {
           POSIX_WRAPPER,
           "t3-command",
           logPath,
-          posixShell(commandEnv),
           statusPath,
-          command,
           path.join(directory, PID_FILE),
+          ...prefix,
+          posixShell(env),
+          "-c",
+          command,
         ],
         name: "command",
-        env: commandEnv,
+        env,
         survivesRestart: true,
       });
-      const pid = yield* spawnDetached(scoped.command, scoped.args, cwd);
+      const pid = yield* spawnDetached(scoped.command, scoped.args, cwd, env);
       return { pid, unit: scoped.unit ?? null };
     }
-    // Win32_Process.Create parents the command under WMI, outside this server's job and tree,
-    // with the user's own environment. PowerShell first names its cmd parent, the process this
-    // command is known by, and cmd writes the status once PowerShell exits.
+    // Win32_Process.Create parents the command under WMI, outside this server's job and tree. Its
+    // startup block is the command's whole environment, which the launcher reads from stdin so no
+    // value reaches the disk. PowerShell first names its cmd parent, the process this command is
+    // known by, and cmd writes the status once PowerShell exits.
     const scriptPath = path.join(directory, "command.ps1");
     const runPath = path.join(directory, "run.cmd");
+    // The environment merged spellings Windows reads as one, and ERRORLEVEL has no letter it folds
+    // beyond ASCII, so there is at most one.
+    const errorLevel = Object.entries(commandEnv).find(
+      ([name]) => asciiUpperCase(name) === "ERRORLEVEL",
+    );
+    const startupEnv =
+      errorLevel === undefined
+        ? commandEnv
+        : overrideEnvironment(
+            Object.fromEntries(
+              Object.entries(commandEnv).filter(([name]) => name !== errorLevel[0]),
+            ),
+            { [COMMAND_ERRORLEVEL]: errorLevel[1] },
+            "win32",
+          );
     yield* fs.writeFileString(
       scriptPath,
       [
@@ -566,6 +639,11 @@ const make = Effect.gen(function* () {
         `$t3PidFile = Join-Path $PSScriptRoot '${PID_FILE}'`,
         `(Get-CimInstance Win32_Process -Filter "ProcessId = $PID").ParentProcessId | Set-Content -LiteralPath "$t3PidFile.tmp"`,
         `Move-Item -Force -LiteralPath "$t3PidFile.tmp" -Destination $t3PidFile`,
+        ...(errorLevel === undefined
+          ? []
+          : [
+              `[Environment]::SetEnvironmentVariable(${escapePowerShellStringLiteral(errorLevel[0])}, $env:${COMMAND_ERRORLEVEL}); Remove-Item Env:${COMMAND_ERRORLEVEL} -ErrorAction Ignore`,
+            ]),
         command,
         "$t3Ok = $?",
         "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
@@ -578,7 +656,9 @@ const make = Effect.gen(function* () {
       runPath,
       [
         "@echo off",
-        `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0command.ps1" >> "%~dp0${LOG_FILE}" 2>&1`,
+        // PowerShell's path is the launcher's argument, since cmd looks in the folder and the agent's
+        // PATH before System32 and the command's environment may move or drop SystemRoot.
+        `"%~1" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0command.ps1" >> "%~dp0${LOG_FILE}" 2>&1`,
         `> "%~dp0${STATUS_FILE}.tmp" echo %ERRORLEVEL%`,
         `move /y "%~dp0${STATUS_FILE}.tmp" "%~dp0${STATUS_FILE}" > nul`,
         "",
@@ -591,8 +671,18 @@ const make = Effect.gen(function* () {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${quotePowerShell(`cmd.exe /d /s /c ""${runPath}""`)}; CurrentDirectory = ${quotePowerShell(cwd)} }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId`,
+        // Windows folds names by a case table only it has, so the launcher keeps the last of the
+        // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
+        // like a member (Values) hides that member in PowerShell.
+        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${escapePowerShellStringLiteral(`cmd.exe /d /s /c ""${runPath}" "`)} + $powershell + '""'; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId`,
       ],
+      // Base64, since PowerShell decodes stdin with the console code page.
+      stdin: Buffer.from(
+        Object.entries(startupEnv)
+          .map(([name, value]) => `${name}=${value}`)
+          .join("\0"),
+        "utf8",
+      ).toString("base64"),
       timeout: Duration.seconds(30),
       maxOutputBytes: 16_384,
     });
@@ -644,6 +734,39 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => false),
       );
       if (!isFolder) return yield* failure("invalid_request", `No folder at ${cwd}.`);
+      // Read for the thread's folder, where the agent's own session read its settings, though `cwd` may differ.
+      const instance = yield* providerInstances.getInstance(scope.thread.providerInstanceId);
+      // A turned-off instance never resolved its secrets, so its environment would lack them.
+      if (instance === undefined || !instance.enabled) {
+        return yield* failure(
+          "provider_unavailable",
+          "This agent's provider is turned off or not running, so the environment its shell commands get is unknown.",
+        );
+      }
+      const agentShellEnv =
+        instance.shellEnvironment === undefined
+          ? hostCommandEnv
+          : yield* instance
+              .shellEnvironment(base ?? cwd, hostCommandEnv, parentRun.modelSelection)
+              .pipe(
+                Effect.tapError((cause) =>
+                  Effect.logWarning("command-runner.shell-environment-failed", {
+                    parentThreadId: scope.thread.threadId,
+                    cause,
+                  }),
+                ),
+                Effect.mapError((cause) =>
+                  failure(
+                    "provider_unavailable",
+                    `Could not read the environment this agent's shell commands get. ${cause.detail}`,
+                  ),
+                ),
+              );
+      const commandEnv = overrideEnvironment(
+        agentShellEnv,
+        { [PortScanner.AGENT_THREAD_ENV]: scope.thread.threadId },
+        platform,
+      );
       const timeoutMinutes =
         input.timeoutMinutes ?? ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES;
       const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
@@ -796,7 +919,9 @@ const make = Effect.gen(function* () {
                     `Could not start the command: ${recordedRow.failure.message}`,
                   );
                 }
-                const started = yield* launch(directory, input.command, cwd).pipe(Effect.result);
+                const started = yield* launch(directory, input.command, cwd, commandEnv).pipe(
+                  Effect.result,
+                );
                 if (started._tag === "Failure") {
                   yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`.pipe(
                     Effect.ignore({ log: true }),

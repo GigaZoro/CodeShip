@@ -1088,13 +1088,22 @@ describe("ProviderInstanceRegistry secret environment", () => {
     return Effect.gen(function* () {
       const { registry } = yield* fixture.make;
 
-      expect(yield* registry.getInstance(instanceId)).toBeDefined();
+      const shellEnvironment = (yield* registry.getInstance(instanceId))?.shellEnvironment;
       expect(fixture.created).toEqual([
         [
           { name: "OPENAI_API_KEY", value: "sk-live", sensitive: true },
           { name: "BASE_URL", value: "https://example.test", sensitive: false },
         ],
       ]);
+      // Its driver sets no shell environment, so its agent's shell commands get what it started with.
+      expect(shellEnvironment).toBeDefined();
+      expect(
+        yield* shellEnvironment!("/work", { HOME: "/home/me" }, { instanceId, model: "gpt-5" }),
+      ).toEqual({
+        HOME: "/home/me",
+        OPENAI_API_KEY: "sk-live",
+        BASE_URL: "https://example.test",
+      });
     }).pipe(Effect.scoped);
   });
 

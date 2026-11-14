@@ -97,4 +97,10 @@ export const UserId = Context.Reference<number | undefined>("@t3tools/shared/Hos
   defaultValue: () => process.getuid?.(),
 });
 
+/** The user that permission and ownership checks see, which differs from UserId under setuid. */
+export const EffectiveUserId = Context.Reference<number | undefined>(
+  "@t3tools/shared/HostProcess/EffectiveUserId",
+  { defaultValue: () => process.geteuid?.() ?? process.getuid?.() },
+);
+
 export const isWindows = Effect.map(Platform, (platform) => platform === "win32");

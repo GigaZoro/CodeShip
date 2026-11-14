@@ -174,7 +174,7 @@ function encodeUtf16LeBase64(input: string): string {
 }
 
 // PowerShell also closes single-quoted strings on U+2018-U+201B, so double those too.
-function escapePowerShellStringLiteral(input: string): string {
+export function escapePowerShellStringLiteral(input: string): string {
   return `'${input.replace(/['\u2018-\u201b]/g, "$&$&")}'`;
 }
 

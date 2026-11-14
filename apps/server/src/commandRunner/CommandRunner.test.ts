@@ -14,16 +14,20 @@ import {
   ProviderInstanceId,
   type ThreadId,
 } from "@t3tools/contracts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -39,6 +43,7 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CommandRunner from "./CommandRunner.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -94,9 +99,24 @@ const layerThreads = Layer.unwrap(
     }),
   ),
 );
+/** The calling thread's provider, whose own settings give its shell commands these variables. */
+const providerShell = (shellEnvironment?: ProviderInstance["shellEnvironment"]) =>
+  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+    getInstance: (id) =>
+      Effect.succeed(
+        id === instanceId
+          ? ({
+              instanceId,
+              enabled: true,
+              ...(shellEnvironment === undefined ? {} : { shellEnvironment }),
+            } as ProviderInstance)
+          : undefined,
+      ),
+  });
 const layerTest = Layer.mergeAll(
   layerThreads,
   Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+  providerShell(),
   ProcessRunner.layer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-runner-" }),
   NodeCrypto.layer,
@@ -336,6 +356,194 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         /^\[CodeShip removed earlier output to keep this log small\]\nx+\nlast-line\n$/,
       );
       assert.isBelow(log.length, 8 * 1024 * 1024);
+    }),
+  );
+
+  it.effect.each([
+    ["/t3-agent-tools", true, "command-agent-shell"],
+    ["", true, "command-agent-shell-empty-path"],
+    ["/t3-agent-tools", false, "command-agent-shell-no-host-path"],
+    ["", false, "command-agent-shell-empty-path-no-host-path"],
+  ] as const)(
+    "gives a command what its agent's own shell commands get, shell options only to the command, PATH %j, host PATH %s",
+    ([PATH, hostHasPath, name]) =>
+      Effect.gen(function* () {
+        const { PATH: _hostPath, ...hostWithoutPath } = process.env;
+        const chat = yield* liveChat(name);
+        NodeFS.mkdirSync(NodePath.join(chat.workspace, "sub"));
+        const started = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), {
+              command:
+                'printf "%s %s %s %s\\n%s\\n%s\\n" "$AGENT_SETTING" "$T3CODE_THREAD_ID" "$HOST_KEPT" "${HOST_REMOVED-removed}" "$PATH" "$SHELLOPTS"; exit 7',
+              cwd: "sub",
+            })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        ).pipe(
+          Effect.provide(
+            providerShell((cwd, { HOST_REMOVED: _removed, ...inherited }) =>
+              // A PATH without the wrapper's own tools, which it still needs to record the end.
+              // sh reads no startup files that could add to it.
+              Effect.succeed({
+                ...inherited,
+                AGENT_SETTING: `set for ${cwd}`,
+                PATH,
+                SHELL: "/bin/sh",
+                // bash as /bin/sh takes this as its own option; dash ignores it.
+                SHELLOPTS: "errexit",
+              }),
+            ),
+          ),
+          Effect.provideService(HostProcess.Environment, {
+            ...(hostHasPath ? process.env : hostWithoutPath),
+            HOST_KEPT: "kept",
+            HOST_REMOVED: "host",
+          }),
+        );
+        const [seen, commandPath, shellOptions] = NodeFS.readFileSync(
+          started.logPath,
+          "utf8",
+        ).split("\n");
+        // Read for the chat's folder, as the agent's own settings were, though it ran below it.
+        assert.equal(seen, `set for ${chat.workspace} ${chat.threadId} kept removed`);
+        assert.equal(commandPath, PATH);
+        assert.match(shellOptions ?? "", /errexit/);
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "failed");
+        assert.match(task?.result ?? "", /^Exited with code 7 after /);
+      }),
+  );
+
+  it.effect(
+    "gives a Windows command the host environment under its agent's in Unicode, each name once, its ERRORLEVEL past cmd, writing no value and reading none to start",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-windows-environment");
+        const processRunner = yield* ProcessRunner.ProcessRunner;
+        const launcher = yield* Deferred.make<ProcessRunner.ProcessRunInput>();
+        const refused = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "Write-Output started" }),
+        ).pipe(
+          Effect.flip,
+          Effect.provide(
+            // Spellings Windows reads as one name; the later one is the value the agent's own get.
+            providerShell(
+              (_cwd, { HOST_REMOVED: _removed, SystemRoot: _systemRoot, ...inherited }) =>
+                Effect.succeed({
+                  ...inherited,
+                  PATH: "C:\\agent",
+                  AGENT_SETTING: "from user settings",
+                  agent_setting: "from settings",
+                  // Defined, it would be the exit status cmd records whatever the command returns.
+                  ErrorLevel: "0",
+                }),
+            ),
+          ),
+          Effect.provideService(ProcessRunner.ProcessRunner, {
+            run: (input) =>
+              !input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))
+                ? processRunner.run(input)
+                : Deferred.succeed(launcher, input).pipe(
+                    Effect.as({
+                      stdout: "",
+                      stderr: "Win32_Process.Create returned 9",
+                      code: ChildProcessSpawner.ExitCode(1),
+                      timedOut: false,
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                      stdoutInvalidUtf8: false,
+                      stderrInvalidUtf8: false,
+                    }),
+                  ),
+          }),
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.Environment, {
+            Path: "C:\\host",
+            HOST_ONLY: "kept",
+            HOST_REMOVED: "removed by its settings",
+            SystemRoot: "C:\\Windows",
+            T3CODE_AUTH_TOKEN: "server only",
+          }),
+        );
+        assert.include(refused.message, "Win32_Process.Create returned 9");
+        const launch = yield* Deferred.await(launcher);
+        assert.deepEqual(
+          Buffer.from(launch.stdin ?? "", "base64")
+            .toString("utf8")
+            .split("\0")
+            .toSorted(),
+          [
+            "HOST_ONLY=kept",
+            "PATH=C:\\agent",
+            "T3CODE_COMMAND_ERRORLEVEL=0",
+            `T3CODE_THREAD_ID=${chat.threadId}`,
+            "agent_setting=from settings",
+          ],
+        );
+        const launcherScript = launch.args.join(" ");
+        assert.include(launcherScript, "CreateFlags = [uint32]1024");
+        assert.include(
+          launcherScript,
+          "HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)",
+        );
+        assert.include(
+          launcherScript,
+          "Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'",
+        );
+        const runPath = /""(.+run\.cmd)" "/.exec(launcherScript)?.[1] ?? "";
+        // Its exit status is the only variable run.cmd reads, so no setting can move PowerShell.
+        assert.deepEqual(NodeFS.readFileSync(runPath, "utf8").match(/%\w+%/g), ["%ERRORLEVEL%"]);
+        const scriptPath = NodePath.join(NodePath.dirname(runPath), "command.ps1");
+        assert.include(
+          NodeFS.readFileSync(scriptPath, "utf8"),
+          "[Environment]::SetEnvironmentVariable('ErrorLevel', $env:T3CODE_COMMAND_ERRORLEVEL); Remove-Item Env:T3CODE_COMMAND_ERRORLEVEL -ErrorAction Ignore",
+        );
+        for (const file of [runPath, scriptPath]) {
+          assert.notInclude(NodeFS.readFileSync(file, "utf8"), "from settings");
+        }
+      }),
+  );
+
+  it.effect.each([
+    [
+      "its agent's shell environment cannot be read",
+      "command-agent-shell-unreadable",
+      providerShell(() =>
+        Effect.fail(
+          new ProviderDriverError({ driver, instanceId, detail: "settings.json is not JSON" }),
+        ),
+      ),
+      "settings.json is not JSON",
+    ],
+    [
+      "its agent's provider is no longer running",
+      "command-agent-provider-gone",
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        getInstance: () => Effect.undefined,
+      }),
+      "provider is turned off or not running",
+    ],
+    [
+      // Its secrets were never resolved, so its shell environment would run the command without them.
+      "its agent's provider is turned off",
+      "command-agent-provider-off",
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        getInstance: () => Effect.succeed({ instanceId, enabled: false } as ProviderInstance),
+      }),
+      "provider is turned off",
+    ],
+  ] as const)("starts no command when %s", ([, name, providers, message]) =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat(name);
+      const failed = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), { command: "true" }),
+      ).pipe(Effect.provide(providers), Effect.flip);
+      assert.equal(failed.code, "provider_unavailable");
+      assert.include(failed.message, message);
+      const projection = yield* Orchestrator.OrchestratorV2.pipe(
+        Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(chat.threadId)),
+      );
+      assert.lengthOf(projection.subagents, 0);
     }),
   );
 

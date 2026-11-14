@@ -28,6 +28,7 @@ import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretReso
 import { buildUnavailableProviderSnapshot } from "./unavailableProviderSnapshot.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import type { AnyProviderDriver, ProviderInstance } from "@t3tools/provider-core/server/driver";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 
 export class ProviderInstanceRegistry extends Context.Service<
   ProviderInstanceRegistry,
@@ -293,10 +294,20 @@ const buildEntry = Effect.fn("ProviderInstanceRegistry.buildEntry")(function* <R
     };
   }
 
+  const instance = createResult.success;
   return {
     kind: "live" as const,
     live: {
-      instance: createResult.success,
+      // A provider starts its agent with its account's variables, which the agent's shell
+      // commands inherit unless its settings change them.
+      instance:
+        instance.shellEnvironment === undefined
+          ? {
+              ...instance,
+              shellEnvironment: (_cwd, inherited) =>
+                mergeProviderInstanceEnvironment(secrets.environment, inherited),
+            }
+          : instance,
       scope: childScope,
       entry,
       secrets,

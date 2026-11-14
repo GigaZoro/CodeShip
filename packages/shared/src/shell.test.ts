@@ -26,6 +26,7 @@ import {
   mergePathEntries,
   mergePathValues,
   npmShimExecutable,
+  overrideEnvironment,
   preferGitForWindowsBinary,
   readEnvironmentFromLoginShell,
   readEnvironmentFromWindowsShell,
@@ -194,6 +195,52 @@ describe("listLoginShellCandidates", () => {
       "/opt/homebrew/bin/nu",
       "/bin/zsh",
     ]);
+  });
+});
+
+describe("overrideEnvironment", () => {
+  it.each([
+    [
+      "darwin",
+      [
+        ["Case_Test", "base"],
+        ["KEPT", "kept"],
+        ["Straße", "host"],
+        ["case_test", "project"],
+        ["CASE_TEST", "local"],
+        ["STRASSE", "configured"],
+        ["ä", "first"],
+        ["Ä", "last"],
+      ],
+    ],
+    // Windows reads ß and SS as different letters; of ä and Ä, the launcher keeps the one set last.
+    [
+      "win32",
+      [
+        ["KEPT", "kept"],
+        ["Straße", "host"],
+        ["CASE_TEST", "local"],
+        ["STRASSE", "configured"],
+        ["ä", "first"],
+        ["Ä", "last"],
+      ],
+    ],
+  ] as const)("sets each later spelling over the earlier ones on %s", (platform, expected) => {
+    expect(
+      Object.entries(
+        overrideEnvironment(
+          { Case_Test: "base", KEPT: "kept", UNSET: undefined, Straße: "host", Ä: "host" },
+          {
+            case_test: "project",
+            CASE_TEST: "local",
+            STRASSE: "configured",
+            ä: "first",
+            Ä: "last",
+          },
+          platform,
+        ),
+      ),
+    ).toStrictEqual(expected);
   });
 });
 

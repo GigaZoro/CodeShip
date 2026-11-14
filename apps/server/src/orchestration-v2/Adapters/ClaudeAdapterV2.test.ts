@@ -341,7 +341,7 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
       nativeThreadId: "native-tool-search",
       resume: false,
       cwd: "/workspace",
-      sdkSettings: { env: { OTHER: "kept" } },
+      launchArgSettings: { env: { OTHER: "kept" } },
       toolSearchOverride: "true",
     });
     assert.deepEqual((options.settings as { env?: Record<string, string> }).env, {
@@ -662,7 +662,7 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
       nativeThreadId: "native-thread-claude-settings-log",
       resume: false,
       cwd: "/workspace",
-      sdkSettings: { env: { ANTHROPIC_API_KEY: "secret-settings-key" } },
+      launchArgSettings: { env: { ANTHROPIC_API_KEY: "secret-settings-key" } },
     });
     const logged = ClaudeAdapterV2.loggedClaudeQueryOptions(options);
     assert.deepEqual(logged.settingKeys, ["env", "showThinkingSummaries"]);
@@ -1182,6 +1182,17 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
     [
       `--settings '{"env":{"ANTHROPIC_API_KEY":"secret-settings-key"},'`,
       () => new ClaudeAdapterV2.ClaudeSettingsLaunchArgError({}).message,
+    ],
+    [
+      "--project-config-root relative/folder",
+      () => new ClaudeAdapterV2.ClaudeProjectConfigRootError({ path: "relative/folder" }).message,
+    ],
+    [
+      "--project-config-root /t3-missing-project-config-root",
+      () =>
+        new ClaudeAdapterV2.ClaudeProjectConfigRootError({
+          path: "/t3-missing-project-config-root",
+        }).message,
     ],
   ] as const)("fails the turn before opening Claude for %s", ([launchArgs, expectedMessage]) =>
     Effect.scoped(
@@ -3960,7 +3971,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
     it.effect("asks before restricted Full access tools and follows policy across turns", () =>
       Effect.gen(function* () {
-        const resolveSettings = vi
+        const resolver = vi
           .mocked(ClaudeSdk.resolveSettings)
           .mockImplementation(async (options) => ({
             effective:
@@ -3977,6 +3988,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             provenance: {},
             sources: [],
           }));
+        // Only the bypass check passes server-managed settings with its folder.
+        const folderResolutions = () =>
+          resolver.mock.calls.filter(
+            ([options]) =>
+              options?.cwd !== undefined && options.serverManagedSettings !== undefined,
+          );
         const harness = yield* makeWakeHarnessWithOptions({
           close: Queue.shutdown,
           freshQueueOnReopen: true,
@@ -4027,7 +4044,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(harness.getOpenedOptions()?.permissionMode, "auto");
         yield* finish;
         assert.equal(notices().length, 0);
-        assert.equal(resolveSettings.mock.calls.length, 0);
+        assert.equal(folderResolutions().length, 0);
 
         yield* start("/restricted");
         const openedOptions = harness.getOpenedOptions()!;
@@ -4080,13 +4097,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* start("/restricted");
         assert.strictEqual(harness.getOpenedOptions(), openedOptions);
         assert.deepEqual(harness.permissionModeChanges, ["auto"]);
-        assert.equal(resolveSettings.mock.calls.length, 1);
+        assert.equal(folderResolutions().length, 1);
         yield* finish;
 
         yield* start("/restricted-worktree");
         assert.equal(harness.getOpenedOptions()?.permissionMode, "default");
         assert.isUndefined(harness.getOpenedOptions()?.allowDangerouslySkipPermissions);
-        assert.equal(resolveSettings.mock.calls.length, 2);
+        assert.equal(folderResolutions().length, 2);
         yield* finish;
 
         yield* start("/unrestricted");
@@ -4185,7 +4202,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ["auto"],
           "A CLI policy downgrade must not be restored to bypass on the next turn",
         );
-        assert.equal(resolveSettings.mock.calls.length, 3);
+        assert.equal(folderResolutions().length, 3);
         yield* harness.offerAndWait(
           claudeSdkFrame({
             type: "system",
@@ -4333,11 +4350,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* fileSystem.writeFileString(settingsFile, "{ invalid json");
           assert.equal((yield* open).permissionMode, "auto");
           yield* fileSystem.remove(settingsFile);
-          const resolveSettings = vi
+          const resolver = vi
             .mocked(ClaudeSdk.resolveSettings)
             .mockClear()
             .mockRejectedValueOnce(new Error("Cannot resolve managed settings"))
             .mockResolvedValue({ effective: {}, provenance: {}, sources: [] });
+          const folderResolutions = () =>
+            resolver.mock.calls.filter(([options]) => options?.cwd !== undefined);
           const harness = yield* makeWakeHarnessWithOptions({
             settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home },
             close: Queue.shutdown,
@@ -4363,17 +4382,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             );
             if (ordinal === 1) assert.isUndefined(options.allowDangerouslySkipPermissions);
             else assert.equal(options.allowDangerouslySkipPermissions, true);
-            assert.equal(resolveSettings.mock.calls.length, ordinal);
+            assert.equal(folderResolutions().length, ordinal);
             yield* harness.offerAndWait(
               makeResultFrame({ uuid: `settings-recovery-result-${ordinal}`, result: "Done." }),
             );
             assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
           }
           assert.equal(harness.offeredMessages.length, 2);
-          assert.equal(
-            resolveSettings.mock.calls[0]?.[0]?.cwd,
-            resolveSettings.mock.calls[1]?.[0]?.cwd,
-          );
+          assert.equal(folderResolutions()[0]?.[0]?.cwd, folderResolutions()[1]?.[0]?.cwd);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
@@ -4385,6 +4401,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
+        const sdk = yield* Effect.promise(() =>
+          vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
+        );
+        // --settings counts only once Claude's own engine accepts it.
+        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
         const home = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-claude-tool-search-",
         });
@@ -4480,6 +4501,308 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
+    );
+
+    it.effect.each([
+      ["later files winning", "", undefined, { FROM: "project", LAUNCHED: "--settings" }],
+      [
+        "only from the files its launch arguments name",
+        "--setting-sources user",
+        undefined,
+        { FROM: "user", LAUNCHED: "--settings" },
+      ],
+      [
+        "with its own account's managed settings above every file",
+        "",
+        { env: { FROM: "remote", LAUNCHED: "remote" } },
+        { FROM: "remote", LAUNCHED: "remote" },
+      ],
+      [
+        "and says when its organization's policy helper may add to it",
+        "",
+        { policyHelper: { path: "/opt/org/policy-helper" } },
+        { FROM: "project", LAUNCHED: "--settings", computedByPolicyHelper: true },
+      ],
+      [
+        "and says so for a per-OS policy helper, whose static default it cannot apply either",
+        "",
+        { policyHelpers: { default: { env: { FROM: "policy default" } } } },
+        { FROM: "project", LAUNCHED: "--settings", computedByPolicyHelper: true },
+      ],
+    ] as const)(
+      "reads the env Claude's settings give its shell commands %s",
+      ([, launchArgs, remote, expected]) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sdk = yield* Effect.promise(() =>
+            vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
+          );
+          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+          const home = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-shell-home-",
+          });
+          const project = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-shell-project-",
+          });
+          yield* fileSystem.writeFileString(
+            path.join(home, "settings.json"),
+            JSON.stringify({
+              env: { NODE_OPTIONS: "--max-old-space-size=4096", FROM: "user", COUNT: 3 },
+            }),
+          );
+          if (remote !== undefined) {
+            yield* fileSystem.writeFileString(
+              path.join(home, "remote-settings.json"),
+              JSON.stringify(remote),
+            );
+          }
+          yield* fileSystem.makeDirectory(path.join(project, ".claude"));
+          yield* fileSystem.writeFileString(
+            path.join(project, ".claude", "settings.json"),
+            '{"env":{"FROM":"project"}}',
+          );
+          const { environment, computedByPolicyHelper } =
+            yield* ClaudeAdapterV2.readClaudeSettingsEnvironment({
+              homePath: home,
+              environment: {},
+              cwd: project,
+              settingSources: ClaudeAdapterV2.claudeSettingSources({
+                ...DEFAULT_CLAUDE_SETTINGS,
+                launchArgs,
+              }),
+              projectConfigRoot: undefined,
+              flagSettings: { env: { LAUNCHED: "--settings" } },
+              fileSystem,
+              path,
+            });
+          // Picked, so managed settings on the machine running the test cannot add to it.
+          const { NODE_OPTIONS, FROM, LAUNCHED, COUNT } = environment;
+          assert.deepEqual(
+            { NODE_OPTIONS, FROM, LAUNCHED, COUNT, computedByPolicyHelper },
+            {
+              NODE_OPTIONS: "--max-old-space-size=4096",
+              // Claude Code gives its shell a number in settings as text.
+              COUNT: "3",
+              computedByPolicyHelper: false,
+              ...expected,
+            },
+          );
+        }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("reads a repository root's local settings only when this user owns the root", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sdk = yield* Effect.promise(() =>
+          vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
+        );
+        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-owner-home-" });
+        const repo = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-owner-repo-" });
+        const cwd = path.join(repo, "app");
+        yield* fileSystem.makeDirectory(path.join(repo, ".git"));
+        yield* fileSystem.makeDirectory(path.join(repo, ".claude"));
+        yield* fileSystem.makeDirectory(path.join(cwd, ".claude"), { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(repo, ".claude", "settings.local.json"),
+          '{"env":{"FROM":"root"}}',
+        );
+        yield* fileSystem.writeFileString(
+          path.join(cwd, ".claude", "settings.local.json"),
+          '{"env":{"FROM":"cwd"}}',
+        );
+        const owner = Option.getOrThrow((yield* fileSystem.stat(repo)).uid);
+        const readAs = (uid: number, platform: NodeJS.Platform) =>
+          ClaudeAdapterV2.readClaudeSettingsEnvironment({
+            homePath: home,
+            environment: {},
+            cwd,
+            settingSources: ["local"],
+            projectConfigRoot: undefined,
+            flagSettings: undefined,
+            fileSystem,
+            path,
+          }).pipe(
+            Effect.map(({ environment }) => environment.FROM),
+            Effect.provideService(HostProcess.EffectiveUserId, uid),
+            Effect.provideService(HostProcess.Platform, platform),
+          );
+        // Claude Code on Windows keeps the local file in cwd whoever owns the root.
+        assert.deepEqual(
+          [
+            yield* readAs(owner, "linux"),
+            yield* readAs(owner + 1, "linux"),
+            yield* readAs(owner, "win32"),
+          ],
+          ["root", "cwd", "cwd"],
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    const INVALID_LAUNCH_SETTINGS = '{"env":{"FROM_FLAG":"flag"},"cleanupPeriodDays":"weekly"}';
+    it.effect.each([
+      [
+        "through the worker for another account's folder, --settings inline",
+        ["user", "project", "local"],
+        `--settings '${INVALID_LAUNCH_SETTINGS}'`,
+        CLAUDE_TEST_MODEL_SELECTION,
+        undefined,
+      ],
+      [
+        "in this process when user settings are not read, --settings from a file",
+        ["project", "local"],
+        "--settings launch-settings.json",
+        CLAUDE_TEST_MODEL_SELECTION,
+        undefined,
+      ],
+      [
+        "keeping --settings whose invalid value the SDK leaves out",
+        ["project", "local"],
+        `--settings '{"env":{"FROM_FLAG":"flag"},"disableAutoMode":false}'`,
+        CLAUDE_TEST_MODEL_SELECTION,
+        "flag",
+      ],
+      [
+        "keeping --settings whose invalid fast mode a switch to the selection clears",
+        ["project", "local"],
+        `--settings '{"env":{"FROM_FLAG":"flag"},"fastMode":"yes"}'`,
+        CLAUDE_TEST_MODEL_SELECTION,
+        "flag",
+      ],
+      [
+        "keeping --settings whose invalid thinking summaries switch the turn replaces",
+        ["project", "local"],
+        `--settings '{"env":{"FROM_FLAG":"flag"},"showThinkingSummaries":"yes"}'`,
+        CLAUDE_TEST_MODEL_SELECTION,
+        "flag",
+      ],
+      [
+        "keeping --settings whose invalid field the model selection replaces",
+        ["project", "local"],
+        `--settings '{"env":{"FROM_FLAG":"flag"},"alwaysThinkingEnabled":"yes"}'`,
+        CLAUDE_TEST_RESTART_MODEL_SELECTION,
+        "flag",
+      ],
+    ] as const)(
+      "drops the env of settings Claude rejects for any invalid field, %s",
+      ([, settingSources, launchArgs, modelSelection, expectedFlag]) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sdk = yield* Effect.promise(() =>
+            vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
+          );
+          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+          const home = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-invalid-home-",
+          });
+          const project = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-claude-invalid-project-",
+          });
+          yield* fileSystem.writeFileString(
+            path.join(home, "settings.json"),
+            '{"env":{"FROM_USER":"user"},"cleanupPeriodDays":"weekly"}',
+          );
+          yield* fileSystem.makeDirectory(path.join(project, ".claude"));
+          yield* fileSystem.writeFileString(
+            path.join(project, ".claude", "settings.json"),
+            '{"env":{"FROM_PROJECT":"project"},"permissions":{"defaultMode":123}}',
+          );
+          yield* fileSystem.writeFileString(
+            path.join(project, ".claude", "settings.local.json"),
+            '{"env":{"FROM_LOCAL":"local"}}',
+          );
+          yield* fileSystem.writeFileString(
+            path.join(project, "launch-settings.json"),
+            INVALID_LAUNCH_SETTINGS,
+          );
+          const { environment } = yield* ClaudeAdapterV2.readClaudeSettingsEnvironment({
+            homePath: home,
+            environment: {},
+            cwd: project,
+            settingSources,
+            projectConfigRoot: undefined,
+            flagSettings: ClaudeAdapterV2.claudeFlagSettings({
+              launchArgSettings: yield* ClaudeAdapterV2.readClaudeLaunchArgSettings({
+                settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs },
+                cwd: project,
+                fileSystem,
+                path,
+              }),
+              modelSelection,
+              settings: DEFAULT_CLAUDE_SETTINGS,
+            }),
+            fileSystem,
+            path,
+          });
+          const { FROM_USER, FROM_PROJECT, FROM_LOCAL, FROM_FLAG } = environment;
+          assert.deepEqual(
+            { FROM_USER, FROM_PROJECT, FROM_LOCAL, FROM_FLAG },
+            {
+              FROM_USER: undefined,
+              FROM_PROJECT: undefined,
+              FROM_LOCAL: "local",
+              FROM_FLAG: expectedFlag,
+            },
+          );
+        }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect.each([
+      ["by its path", false],
+      // `cwd/link/..` spells cwd, but the file system resolves it to root.
+      ["through a symlink and `..`", true],
+    ] as const)(
+      "reads project and local settings from the folder --project-config-root names %s",
+      ([, throughSymlink]) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sdk = yield* Effect.promise(() =>
+            vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
+          );
+          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+          const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pcr-home-" });
+          const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pcr-cwd-" });
+          const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-pcr-root-" });
+          for (const [folder, name] of [
+            [cwd, "cwd"],
+            [root, "root"],
+          ] as const) {
+            yield* fileSystem.makeDirectory(path.join(folder, ".claude"));
+            yield* fileSystem.writeFileString(
+              path.join(folder, ".claude", "settings.json"),
+              `{"env":{"FROM_PROJECT":"${name}"}}`,
+            );
+            yield* fileSystem.writeFileString(
+              path.join(folder, ".claude", "settings.local.json"),
+              `{"env":{"FROM_LOCAL":"${name}"}}`,
+            );
+          }
+          yield* fileSystem.makeDirectory(path.join(root, "sub"));
+          yield* fileSystem.symlink(path.join(root, "sub"), path.join(cwd, "link"));
+          const named = throughSymlink ? `${path.join(cwd, "link")}/..` : root;
+          const { environment } = yield* ClaudeAdapterV2.readClaudeSettingsEnvironment({
+            homePath: home,
+            environment: {},
+            cwd,
+            settingSources: ["project", "local"],
+            projectConfigRoot: ClaudeAdapterV2.claudeProjectConfigRoot({
+              ...DEFAULT_CLAUDE_SETTINGS,
+              launchArgs: `--project-config-root '${named}'`,
+            }),
+            flagSettings: undefined,
+            fileSystem,
+            path,
+          });
+          const { FROM_PROJECT, FROM_LOCAL } = environment;
+          assert.deepEqual(
+            { FROM_PROJECT, FROM_LOCAL },
+            { FROM_PROJECT: "root", FROM_LOCAL: "root" },
+          );
+        }).pipe(Effect.provide(NodeServices.layer)),
     );
   });
 

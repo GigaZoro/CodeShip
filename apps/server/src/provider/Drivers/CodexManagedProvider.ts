@@ -30,6 +30,7 @@ import {
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
+import { makeCodexShellEnvironment } from "../codexShellEnvironment.ts";
 import { codexAccountLimitsHomePath, makeCodexLimitsLogin } from "../CodexLimitsLogin.ts";
 import { chatGptSharingLimitReading } from "../codexUsageLimits.ts";
 import * as ServerConfig from "../../config.ts";
@@ -502,6 +503,11 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     limitsAuth: limits.controller,
     plugins,
     mcp,
+    shellEnvironment: makeCodexShellEnvironment({
+      instanceId,
+      environment: input.environment,
+      openClient: openAppServerClient,
+    }),
     snapshotForCwd: (cwd: string) =>
       enabled
         ? resolveRuntime.pipe(

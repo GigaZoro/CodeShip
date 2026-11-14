@@ -83,12 +83,10 @@ export const MuseDriver: ProviderDriver<
     const eventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
     const { cwd } = host.paths;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-    const hostEnvironment = yield* HostProcess.Environment;
     // Drop an inherited META_API_KEY so Muse uses its login; an instance value still wins.
-    const processEnvironment = yield* mergeProviderInstanceEnvironment(
-      environment,
-      makeMuseEnvironment(hostEnvironment),
-    );
+    const museEnvironment = (inherited: NodeJS.ProcessEnv) =>
+      mergeProviderInstanceEnvironment(environment, makeMuseEnvironment(inherited));
+    const processEnvironment = yield* museEnvironment(yield* HostProcess.Environment);
     const effectiveConfig = {
       ...config,
       enabled,
@@ -222,6 +220,8 @@ export const MuseDriver: ProviderDriver<
       snapshot: { ...snapshot, resolveMaintenance },
       orchestrationAdapter,
       textGeneration,
+      // Muse's shell commands inherit what Muse runs with.
+      shellEnvironment: (_cwd, inherited) => museEnvironment(inherited),
     } satisfies ProviderInstance;
   }),
 };

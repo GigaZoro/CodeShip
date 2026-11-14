@@ -28,7 +28,12 @@ import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
+  claudeFlagSettings,
+  claudeProjectConfigRoot,
+  claudeSettingSources,
   createClaudeAdapterV2,
+  readClaudeLaunchArgSettings,
+  readClaudeSettingsEnvironment,
   type ClaudeAdapterV2DriverEnv,
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -96,6 +101,7 @@ import {
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { overrideEnvironment } from "@t3tools/shared/shell";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -704,6 +710,56 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               ),
             ),
       mcp,
+      // Claude Code starts with this account's variables and sets its settings' `env` in its own
+      // environment, which its shell commands inherit.
+      shellEnvironment: (cwd, inherited, modelSelection) =>
+        readClaudeLaunchArgSettings({ settings: effectiveConfig, cwd, fileSystem, path }).pipe(
+          Effect.flatMap((launchArgSettings) =>
+            readClaudeSettingsEnvironment({
+              homePath: configDir,
+              environment: processEnv,
+              cwd,
+              settingSources: claudeSettingSources(effectiveConfig),
+              projectConfigRoot: claudeProjectConfigRoot(effectiveConfig),
+              flagSettings: claudeFlagSettings({
+                launchArgSettings,
+                modelSelection,
+                settings: effectiveConfig,
+              }),
+              fileSystem,
+              path,
+            }),
+          ),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.mapError(
+            (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: cause.message,
+                cause,
+              }),
+          ),
+          Effect.flatMap(({ environment: settingsEnvironment, computedByPolicyHelper }) =>
+            computedByPolicyHelper
+              ? Effect.fail(
+                  new ProviderDriverError({
+                    driver: DRIVER_KIND,
+                    instanceId,
+                    detail:
+                      "Your organization computes Claude's settings with a policy helper, which T3.CodeShip cannot run.",
+                  }),
+                )
+              : Effect.all([
+                  mergeClaudeInstanceEnvironment(instanceId, environment, inherited),
+                  HostProcess.Platform,
+                ]).pipe(
+                  Effect.map(([launched, platform]) =>
+                    overrideEnvironment(launched, settingsEnvironment, platform),
+                  ),
+                ),
+          ),
+        ),
       snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       snapshotForCwd: (cwd: string) =>
