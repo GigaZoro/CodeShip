@@ -3,12 +3,34 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as CodexClient from "../../packages/effect-codex-app-server/src/client.ts";
+import {
+  type CodexRateLimitSnapshot,
+  codexRateLimitsToWindows,
+  codexUsageLimitResetAt,
+} from "../../apps/server/src/provider/codexUsageLimits.ts";
 
 export type EvalProvider = "openai" | "anthropic";
 export interface OpenAiConnection {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly publicApi: boolean;
+  /** The Codex home whose login signs the requests, for a Codex login. */
+  readonly login?: string;
+}
+
+/** Why a Codex login cannot run samples now, or undefined when it can. */
+export function codexUsageBlock(usage: {
+  readonly ordinaryUsageAllowed?: boolean | null;
+  readonly rateLimits: CodexRateLimitSnapshot;
+  readonly rateLimitsByLimitId?: Readonly<Record<string, CodexRateLimitSnapshot>> | null;
+}): string | undefined {
+  const snapshot = usage.rateLimitsByLimitId?.codex ?? usage.rateLimits;
+  // The backend's permission decides; window percentages stand in only when it gives none.
+  const allowed =
+    usage.ordinaryUsageAllowed ??
+    !codexRateLimitsToWindows(snapshot).some((window) => window.usedPercent >= 100);
+  if (allowed) return undefined;
+  return `out of usage until ${codexUsageLimitResetAt(snapshot) ?? "an unknown time"}`;
 }
 
 export function selectEvalProvider(input: {
@@ -84,11 +106,34 @@ export const readCodexConnection = Effect.fn("evals.readCodexConnection")(
         includeToken: true,
         refreshToken: true,
       });
-      return yield* Effect.try(() => openAiConnection(auth));
+      const connection = yield* Effect.try(() => openAiConnection(auth));
+      if (!connection) return undefined;
+      const login = process.env.CODEX_HOME?.trim() || "~/.codex";
+      // An exhausted plan login fails every sample after minutes of 429 retries; stop before the first.
+      const blocked = connection.publicApi
+        ? undefined
+        : yield* client.request("account/rateLimits/read", null).pipe(
+            Effect.map(codexUsageBlock),
+            Effect.timeout("5 seconds"),
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Could not read the Codex login's usage; running anyway.",
+                cause,
+              ).pipe(Effect.as(undefined)),
+            ),
+          );
+      if (blocked)
+        return yield* Effect.die(
+          new Error(
+            `The Codex login in ${login} is ${blocked}. Set CODEX_HOME to a Codex home whose login has usage left.`,
+          ),
+        );
+      return { ...connection, login };
     }).pipe(Effect.provide(CodexClient.layerChildProcess(child)));
   },
   Effect.scoped,
-  Effect.timeout("15 seconds"),
+  // Sign-in's 15 seconds plus the usage read's own 5, so a slow read cannot cost the sign-in.
+  Effect.timeout("20 seconds"),
 );
 
 export function openAiShellRequest(request: {

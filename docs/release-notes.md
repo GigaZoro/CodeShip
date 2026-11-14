@@ -1,3 +1,8 @@
+## 2026-11-14 — Tool-use evals name the Codex login they run on
+
+- The MCP tool-use evals ran on whichever Codex login `CODEX_HOME` held (by default `~/.codex`), which can be a different account from the one CodeShip runs Codex on, and nothing said which. An exhausted login then failed every sample after about four minutes of retries. The run summary now names the login, a login that is out of usage stops the run at once with its reset time, and the eval's README says how to run on a CodeShip account's login.
+- The evals' own tests pass again after the Auto coordinator brief was reworded. They no longer copy the brief's wording, which its own tests cover.
+
 ## 2026-11-14 — Automated work waits while the machine is short of memory
 
 - Scheduled runs, delegated tasks and the emulators agents open started no matter how little memory was left, and on a 24 GB Mac they filled it until the kernel panicked. They now wait while the machine that would run them is short of memory: a scheduled run is skipped and **Run history** names the reading (a **Once** task tries again 5 minutes later), a delegated task is refused so the agent works in its own chat, and an agent's emulator or simulator stays off. On macOS, memory is short once compressed memory takes 35% of it or macOS reports memory pressure; on Linux and Windows, once less than 2 GiB is available. Chats you start, **Run now** and webhook runs always start. Turn it off or change the limits in **Settings → Maintenance & about → Background activity**.

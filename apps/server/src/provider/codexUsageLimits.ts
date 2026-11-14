@@ -57,7 +57,7 @@ function labelForKind(kind: ServerProviderUsageWindow["kind"]): string {
 }
 
 /** primary/secondary are positions; without windowDurationMins, paid plans use 5-hour/weekly windows and Free/Go use monthly. */
-function codexRateLimitsToWindows(
+export function codexRateLimitsToWindows(
   snapshot: CodexRateLimitSnapshot,
 ): ReadonlyArray<ServerProviderUsageWindow> {
   // Keep model-specific limits out of main allowance rows; older CLIs omit limit IDs.

@@ -3409,14 +3409,13 @@ it("builds Auto model-choice and control cases from the current coordinator brie
     assert.notInclude(prompt, "claude-sonnet-5-5 (`claude-sonnet-5-5`)");
     if (testCase.setup.otherAutoProviders) {
       assert.include(prompt, '{"providerInstanceId":"codex","model":"<slug>"');
-      assert.include(prompt, "otherwise give each piece to the cheapest capable model");
       assert.include(prompt, "Claude native subagents");
       assert.include(prompt, "Codex via");
       assert.include(prompt, "\n  - GPT-6 Astra (`gpt-6-astra`)");
       assert.include(prompt, "claude-opus-5-5, effort max");
     } else {
       assert.include(prompt, "native subagents");
-      assert.notInclude(prompt, "Otherwise split the work");
+      assert.notInclude(prompt, "via `delegate_task`");
     }
   }
 });

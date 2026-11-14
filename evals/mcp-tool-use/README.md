@@ -13,6 +13,7 @@ pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
 ```
 
 - With one available provider, the runner selects it automatically. OpenAI uses `OPENAI_API_KEY` or your existing `codex login`; Anthropic uses `ANTHROPIC_API_KEY`. Without `codex` on your PATH, set `CODEX_BIN` to the Codex that T3.CodeShip installs, `~/.t3/tools/codex/<version>/bin/codex`.
+- The Codex login is the one in `CODEX_HOME`, default `~/.codex`, which can be a different account from the one T3.CodeShip runs Codex on. To use a T3.CodeShip account, set `CODEX_HOME` to the home that account runs in, such as `<T3 home>/userdata/providers/codex/<instance id>/shadow` for a private login. Point at the home itself: a copied `auth.json` signs the account out. The summary names the login, and a login that is out of usage stops the run before its first sample with the reset time.
 - With both available, choose `--provider openai` or `--provider anthropic`. Set `CODESHIP_EVAL_PROVIDER=openai` (or `anthropic`) in the repo root's gitignored `.env` to save your default. An explicit `--provider` or `--model` overrides it; an unavailable explicit choice fails without switching providers.
 - Both the agent and shell simulator use the selected provider. OpenAI defaults to Luna for both; Anthropic defaults to Sonnet and Haiku. `--model` and `--shell-model` select models within that provider.
 - Existing CLIProxyAPI setups can opt in with `--provider openai --proxy`; this uses the `vibeproxy` entry in `~/.codex/config.toml`. The proxy must serve the selected OpenAI agent and simulator models.

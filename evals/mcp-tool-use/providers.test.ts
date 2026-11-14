@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  codexUsageBlock,
   selectEvalProvider,
   openAiConnection,
   openAiShellRequest,
@@ -93,4 +94,38 @@ it("keeps API keys on the public endpoint and routes CLI logins to their account
   assert.equal(login?.headers.Authorization, `Bearer ${token}`);
   assert.isUndefined(openAiConnection({ authMethod: null, authToken: null }));
   assert.isUndefined(openAiConnection({ authMethod: "unsupported", authToken: "test" }));
+});
+
+it("stops a Codex login whose usage is exhausted or not allowed, naming the reset", () => {
+  const week = { windowDurationMins: 10080, resetsAt: 1794899379 };
+  assert.equal(
+    codexUsageBlock({ rateLimits: { secondary: { ...week, usedPercent: 100 } } }),
+    "out of usage until 2026-11-17T07:09:39.000Z",
+  );
+  assert.equal(
+    codexUsageBlock({
+      ordinaryUsageAllowed: false,
+      rateLimits: { secondary: { ...week, usedPercent: 40 } },
+    }),
+    "out of usage until an unknown time",
+  );
+  assert.equal(
+    codexUsageBlock({ rateLimits: { secondary: { windowDurationMins: 10080, usedPercent: 100 } } }),
+    "out of usage until an unknown time",
+  );
+  assert.isUndefined(
+    codexUsageBlock({
+      ordinaryUsageAllowed: true,
+      rateLimits: {
+        primary: { ...week, usedPercent: 12 },
+        individualLimit: { remainingPercent: 0, resetsAt: 1794899379 },
+      },
+    }),
+  );
+  assert.isUndefined(
+    codexUsageBlock({
+      ordinaryUsageAllowed: null,
+      rateLimits: { primary: { windowDurationMins: 300, usedPercent: 99, resetsAt: 1794899379 } },
+    }),
+  );
 });
