@@ -43,6 +43,7 @@ import type { MuseSdkHost, MuseSdkHostOptions } from "./sdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { makeMuseAdapterV2, type MuseAdapterV2Options } from "./adapter.ts";
 
 const testLayer = Layer.mergeAll(
@@ -208,7 +209,7 @@ const makeHarness = Effect.fnUntraced(function* (
   policy = runtimePolicy,
   overrides: Pick<
     MuseAdapterV2Options,
-    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests"
+    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests" | "login"
   > = {},
 ) {
   let hostCount = 0;
@@ -710,6 +711,85 @@ describe("MuseAdapterV2", () => {
       assert.strictEqual(terminal.failure?.class, "usage_limit");
       assert.isUndefined(terminal.failure?.resetAt);
       assert.strictEqual(fake.closeCount(), 0);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("signs out and relaunches the host only when Muse refuses its own login", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("first");
+      const recovery = yield* makeFakeMuse("second");
+      const reports = yield* Queue.unbounded<string>();
+      let launches = 0;
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        recovery,
+        undefined,
+        runtimePolicy,
+        {
+          login: Effect.sync(() => {
+            const launch = ++launches;
+            return {
+              rejected: Queue.offer(reports, `host ${launch} rejected`),
+              accepted: Queue.offer(reports, `host ${launch} accepted`),
+            };
+          }),
+        },
+      );
+      const mcp = yield* startConversation(harness, fake);
+      yield* fake.emit("turn/completed", {
+        turnId: mcp.nativeId,
+        terminal: "failed",
+        error: {
+          kind: "mcpLinkError",
+          message: "t3-code: MCP HTTP authentication failed: 401 Unauthorized",
+          retryable: false,
+        },
+      });
+      const mcpTerminal = yield* harness.takeEvent("turn.terminal");
+      assert.notStrictEqual(mcpTerminal.failure?.code, AUTHENTICATION_FAILED_FAILURE_CODE);
+
+      const refused = yield* startConversation(harness, fake, 2);
+      yield* fake.emit("turn/completed", {
+        turnId: refused.nativeId,
+        terminal: "failed",
+        reason: "not logged in: run /login to add an API key",
+        error: {
+          kind: "authRequired",
+          message: "not logged in: run /login to add an API key",
+          retryable: false,
+        },
+      });
+      const terminal = yield* harness.takeEvent("turn.terminal");
+      assert.strictEqual(terminal.failure?.code, AUTHENTICATION_FAILED_FAILURE_CODE);
+      assert.include(terminal.failure?.message, "`muse login`");
+      assert.strictEqual(terminal.threadDisposition, "reusable");
+      assert.strictEqual(yield* Queue.take(reports), "host 1 rejected");
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.status === "error",
+      );
+      yield* Effect.promise(() => fake.closing);
+
+      // Muse reads its login only at startup, so the turn after `muse login` needs a new host.
+      const reEnsured = yield* harness.runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection(),
+        runtimePolicy,
+        existingProviderThread: harness.providerThread,
+      });
+      const resumed = yield* recovery.takeCall("session/resume");
+      assert.strictEqual(
+        resumed.params.sessionId,
+        harness.providerThread.nativeThreadRef?.nativeId,
+      );
+      yield* harness.runtime.startTurn(yield* turnInput(reEnsured, 3));
+      const started = yield* recovery.takeCall("turn/start");
+      yield* recovery.emit("turn/completed", { turnId: started.commandId, terminal: "completed" });
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+      assert.strictEqual(yield* Queue.take(reports), "host 2 accepted");
+      assert.strictEqual(yield* Queue.size(reports), 0);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

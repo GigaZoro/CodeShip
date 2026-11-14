@@ -26,7 +26,7 @@ import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
 import { materializeReplayTranscriptWorkspace } from "@t3tools/provider-testing/replayTranscript";
-import { makeMuseAdapterV2 } from "@t3tools/provider-muse/server";
+import { makeMuseAdapterV2, type MuseAdapterV2Options } from "@t3tools/provider-muse/server";
 
 export const MUSE_PROVIDER_KIND = "muse";
 export const MUSE_MSP_REPLAY_PROTOCOL = "muse.msp-jsonl";
@@ -412,6 +412,7 @@ export function layer(input: {
   readonly scenario: string;
   readonly createHost: NonNullable<Parameters<typeof makeMuseAdapterV2>[0]["createHost"]>;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly login?: MuseAdapterV2Options["login"];
 }) {
   return ProviderAdapterRegistry.layerFromAdaptersEffect(
     Effect.gen(function* () {
@@ -422,6 +423,7 @@ export function layer(input: {
           environment: input.environment ?? {},
           createHost: input.createHost,
           continuationRequests: yield* ProviderContinuationRequests.ProviderContinuationRequests,
+          ...(input.login === undefined ? {} : { login: input.login }),
         }),
       ];
     }),
@@ -461,10 +463,9 @@ export const materializeMuseReplayWorkspace = Effect.fn("materializeMuseReplayWo
   },
 );
 
-export const MuseOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
-  MuseReplayTranscript,
-  MuseReplayTranscriptDecodeError
-> = {
+export const makeMuseOrchestratorReplayHarness = (
+  hooks: Pick<MuseAdapterV2Options, "login"> = {},
+): OrchestratorV2ProviderReplayHarness<MuseReplayTranscript, MuseReplayTranscriptDecodeError> => ({
   driver: ProviderDriverKind.make(MUSE_PROVIDER_KIND),
   decodeTranscript: (transcript: ProviderReplayTranscript) =>
     decodeMuseReplayTranscript(transcript).pipe(
@@ -480,7 +481,10 @@ export const MuseOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
         return layer({
           scenario: transcript.scenario,
           createHost: makeReplayCreateHost(controller),
+          ...hooks,
         });
       }),
     ),
-};
+});
+
+export const MuseOrchestratorReplayHarness = makeMuseOrchestratorReplayHarness();

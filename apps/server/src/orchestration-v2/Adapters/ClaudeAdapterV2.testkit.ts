@@ -1029,6 +1029,7 @@ function layerClaudeProviderAdapterRegistryReplay(
   options: {
     readonly replayGate?: ProviderReplayGate;
     readonly queryRunner?: ClaudeQueryRunner;
+    readonly onAuthenticationFailed?: ClaudeAdapterV2.ClaudeAdapterV2Options["onAuthenticationFailed"];
   } = {},
 ) {
   const layerServerConfig = Layer.effect(
@@ -1048,7 +1049,9 @@ function layerClaudeProviderAdapterRegistryReplay(
               enabled: true,
               config: DEFAULT_CLAUDE_SETTINGS,
             },
-            {},
+            options.onAuthenticationFailed === undefined
+              ? {}
+              : { onAuthenticationFailed: options.onAuthenticationFailed },
           ).pipe(Effect.map((adapter) => [adapter])),
         ),
       ),
@@ -2824,10 +2827,12 @@ const decodeClaudeAgentSdkReplayTranscript = Schema.decodeUnknownEffect(
   ClaudeAgentSdkReplayTranscript,
 );
 
-export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
+export const makeClaudeOrchestratorReplayHarness = (
+  hooks: Pick<ClaudeAdapterV2.ClaudeAdapterV2Options, "onAuthenticationFailed"> = {},
+): OrchestratorV2ProviderReplayHarness<
   ClaudeAgentSdkReplayTranscript,
   ClaudeOrchestratorReplayHarnessError
-> = {
+> => ({
   driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
   decodeTranscript: (transcript) =>
     decodeClaudeAgentSdkReplayTranscript(transcript).pipe(
@@ -2840,8 +2845,10 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
       ),
     ),
   makeProviderAdapterRegistryLayer: (transcript, options) =>
-    layerClaudeProviderAdapterRegistryReplay(transcript, options),
-};
+    layerClaudeProviderAdapterRegistryReplay(transcript, { ...options, ...hooks }),
+});
+
+export const ClaudeOrchestratorReplayHarness = makeClaudeOrchestratorReplayHarness();
 
 export function makeClaudeRestartReplayHarness(
   transcript: ClaudeAgentSdkReplayTranscript,

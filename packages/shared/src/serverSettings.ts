@@ -104,11 +104,14 @@ export function defaultTextGenerationModel(driver: ProviderDriverKind): string {
   );
 }
 
-// Only these drivers report a usage-limit reset time, which failover needs to skip limited accounts.
-const ACCOUNT_FAILOVER_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent", "muse"]);
+// Only these drivers report a usage-limit reset time and a rejected login, which failover needs to
+// skip an account that cannot run.
+export const ACCOUNT_FAILOVER_DRIVERS = ["codex", "claudeAgent", "muse"] as const;
+export type AccountFailoverDriver = (typeof ACCOUNT_FAILOVER_DRIVERS)[number];
+const accountFailoverDrivers: ReadonlySet<string> = new Set(ACCOUNT_FAILOVER_DRIVERS);
 
 export const supportsAccountFailover = (driver: ProviderDriverKind): boolean =>
-  ACCOUNT_FAILOVER_DRIVERS.has(driver);
+  accountFailoverDrivers.has(driver);
 
 // Their native subagent tools take a model, so Auto's coordinator can hand work to a cheaper one.
 const AUTO_COORDINATOR_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);

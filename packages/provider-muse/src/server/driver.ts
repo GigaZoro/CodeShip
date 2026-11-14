@@ -18,6 +18,7 @@ import { makeMuseAdapterV2 } from "./adapter.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { checkMuseProviderStatus, makePendingMuseProvider } from "./status.ts";
+import { makeMuseSignedOut, museSignedOutMessage } from "./signedOut.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "./maintenance.ts";
@@ -129,6 +130,7 @@ export const MuseDriver: ProviderDriver<
         : undefined;
       return latestVersion !== undefined ? { ...capabilities, latestVersion } : capabilities;
     });
+    const signedOut = yield* makeMuseSignedOut(museSignedOutMessage(processEnvironment));
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<MuseSettings>>({
       // Status refresh respects update checks; explicit updates use the resolver below.
       resolveMaintenance: (options) =>
@@ -145,8 +147,18 @@ export const MuseDriver: ProviderDriver<
       haveSettingsChanged: haveProviderSnapshotSettingsChanged,
       initialSnapshot: (settings) =>
         makePendingMuseProvider(settings.provider).pipe(Effect.map(stampIdentity)),
-      checkProvider: checkMuseProviderStatus(effectiveConfig, processEnvironment, cwd).pipe(
+      checkProvider: signedOut.launch.pipe(
+        Effect.flatMap((login) =>
+          checkMuseProviderStatus(
+            effectiveConfig,
+            processEnvironment,
+            cwd,
+            undefined,
+            Effect.asVoid(login.accepted),
+          ),
+        ),
         Effect.map(stampIdentity),
+        Effect.flatMap(signedOut.apply),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -177,6 +189,10 @@ export const MuseDriver: ProviderDriver<
       ),
     );
     const modelCatalog = snapshot.getSnapshot.pipe(Effect.map((current) => current.models));
+    const republishIfChanged = (changed: boolean) =>
+      changed
+        ? Effect.suspend(() => snapshot.refresh).pipe(Effect.ignoreCause({ log: true }))
+        : Effect.void;
     const orchestrationAdapter = yield* makeMuseAdapterV2({
       instanceId,
       settings: effectiveConfig,
@@ -184,6 +200,13 @@ export const MuseDriver: ProviderDriver<
       modelCatalog,
       ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       continuationRequests,
+      // A signed-out snapshot moves the failed run to another account and keeps Auto off this one.
+      login: signedOut.launch.pipe(
+        Effect.map((login) => ({
+          rejected: login.rejected.pipe(Effect.flatMap(republishIfChanged)),
+          accepted: login.accepted.pipe(Effect.flatMap(republishIfChanged)),
+        })),
+      ),
     });
     const textGeneration = yield* makeMuseTextGeneration(effectiveConfig, {
       environment: processEnvironment,

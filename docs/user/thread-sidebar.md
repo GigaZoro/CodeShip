@@ -553,6 +553,12 @@ the same way, and a delegate whose parent chat runs on such an account starts on
 another one. When every account needs a sign-in, the chat stays where it is. Plugin
 servers and servers that can't be signed in to from CodeShip don't count.
 
+An account whose login Codex, Claude or Muse Code rejected shows as signed out in
+**Providers** and **Manual steps**, and Auto and scheduled tasks skip it until you sign in
+again. With account switching on, a chat that failed this way in the last day, before its
+agent did any work, starts again with the same message on the next account of that
+provider.
+
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers & models → Models** on web or desktop: pick a primary provider under **Auto mode**, and
 choose the coordinator model and effort for each provider. Auto keeps these choices

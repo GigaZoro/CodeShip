@@ -97,6 +97,7 @@ function metadataFromTranscript(transcript: ProviderReplayTranscript): {
 export function layer(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
+  readonly onAuthenticationFailed?: CodexAdapterV2.CodexAdapterV2Options["onAuthenticationFailed"];
 }) {
   const layerReplay =
     input.driver === undefined
@@ -126,13 +127,18 @@ export function layer(input: {
     makeReplayServerConfig(input.transcript.scenario).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
   const layerRegistry = ProviderAdapterRegistry.layerFromAdaptersEffect(
-    CodexAdapterV2.createCodexAdapterV2({
-      instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
-      displayName: undefined,
-      environment: [],
-      enabled: true,
-      config: DEFAULT_CODEX_SETTINGS,
-    }).pipe(Effect.map((adapter) => [adapter])),
+    CodexAdapterV2.createCodexAdapterV2(
+      {
+        instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+        displayName: undefined,
+        environment: [],
+        enabled: true,
+        config: DEFAULT_CODEX_SETTINGS,
+      },
+      input.onAuthenticationFailed === undefined
+        ? {}
+        : { onAuthenticationFailed: input.onAuthenticationFailed },
+    ).pipe(Effect.map((adapter) => [adapter])),
   ).pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -151,10 +157,12 @@ const decodeCodexAppServerReplayTranscript = Schema.decodeUnknownEffect(
   CodexReplay.CodexAppServerReplayTranscript,
 );
 
-export const CodexOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
+export const makeCodexOrchestratorReplayHarness = (
+  hooks: Pick<CodexAdapterV2.CodexAdapterV2Options, "onAuthenticationFailed"> = {},
+): OrchestratorV2ProviderReplayHarness<
   CodexReplay.CodexAppServerReplayTranscript,
   CodexOrchestratorReplayHarnessError
-> = {
+> => ({
   driver: CodexAdapterV2.CODEX_DRIVER_KIND,
   decodeTranscript: (transcript) =>
     decodeCodexAppServerReplayTranscript(transcript).pipe(
@@ -185,8 +193,10 @@ export const CodexOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness
                   Effect.promise((signal) => replayGate.beforeEmit(entry.label, signal)),
               },
         );
-        return yield* Layer.build(layer({ transcript, driver }));
+        return yield* Layer.build(layer({ transcript, driver, ...hooks }));
       }),
     );
   },
-};
+});
+
+export const CodexOrchestratorReplayHarness = makeCodexOrchestratorReplayHarness();

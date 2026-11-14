@@ -106,6 +106,10 @@ export interface ReplayFixtureRun<
     transcript: ProviderReplayTranscript,
     workspace: string,
   ) => Effect.Effect<ProviderReplayTranscript, WorkspaceError>;
+  /** A database the test reads again after the run. */
+  readonly databaseLayer?: NonNullable<
+    Parameters<typeof runOrchestratorV2ProviderReplayScenario>[2]
+  >["databaseLayer"];
 }
 
 const runFixtureProvider = Effect.fn("runOrchestratorReplayFixture")(function* <
@@ -144,11 +148,10 @@ const runFixtureProvider = Effect.fn("runOrchestratorReplayFixture")(function* <
     },
   };
 
-  const result = yield* runOrchestratorV2ProviderReplayScenario(
-    scenario,
-    input.harness,
-    input.driver.runContinuationWorker === true ? { runContinuationWorker: true } : {},
-  ).pipe(provideDeterministicTestRuntime);
+  const result = yield* runOrchestratorV2ProviderReplayScenario(scenario, input.harness, {
+    ...(input.driver.runContinuationWorker === true ? { runContinuationWorker: true } : {}),
+    ...(input.databaseLayer === undefined ? {} : { databaseLayer: input.databaseLayer }),
+  }).pipe(provideDeterministicTestRuntime);
   input.driver.assertOutput(result, transcript);
   assertProviderNativeSubagentRootTurns(result);
   const expectedAbsentWorkspacePaths = input.driver.expectedAbsentWorkspacePaths;

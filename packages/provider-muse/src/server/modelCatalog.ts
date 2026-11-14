@@ -39,8 +39,14 @@ const ModelCatalogEntry = Schema.Struct({
   ),
 });
 const decodeModelList = Schema.decodeUnknownEffect(
-  Schema.Struct({ providerId: Schema.String, models: Schema.Array(ModelCatalogEntry) }),
+  Schema.Struct({
+    providerId: Schema.String,
+    models: Schema.Array(ModelCatalogEntry),
+    source: Schema.optional(Schema.String),
+  }),
 );
+// Muse serves its compiled-in catalog when the server rejects its login, so only this one proves the login works.
+const LIVE_CATALOG_SOURCE = "providerCatalog";
 
 export function museModelCapabilities(
   model?: Pick<
@@ -119,7 +125,7 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
     return yield* new MuseCatalogError({ detail: "Muse returned a catalog for another provider." });
   }
   const seen = new Set<string>();
-  return catalog.models.flatMap((model): ServerProviderModel[] => {
+  const models = catalog.models.flatMap((model): ServerProviderModel[] => {
     if (model.providerId !== "meta" || seen.has(model.modelId)) return [];
     seen.add(model.modelId);
     const label = model.displayLabel.trim() || model.modelId;
@@ -137,4 +143,5 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
       },
     ];
   });
+  return { models, live: catalog.source === LIVE_CATALOG_SOURCE };
 });

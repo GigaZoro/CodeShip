@@ -8,3 +8,4 @@ export {
   type MuseSdkHostOptions,
 } from "./server/sdk.ts";
 export { parseMuseVersion } from "./server/maintenance.ts";
+export { makeMuseSignedOut } from "./server/signedOut.ts";

@@ -61,6 +61,7 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
   environment?: NodeJS.ProcessEnv,
   cwd?: string,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
+  onLiveCatalog: Effect.Effect<void> = Effect.void,
 ) {
   if (!settings.enabled) return yield* makePendingMuseProvider(settings);
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -139,8 +140,9 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
         "Muse Code SDK could not read the model catalog. Check your Muse installation and run `muse login` on this T3.CodeShip server host.",
     });
   }
-  const models = catalog.success.value;
-  // MSP has no auth signal and serves cached models while logged out; failures surface on first turn.
+  const { models, live } = catalog.success.value;
+  if (live) yield* onLiveCatalog;
+  // MSP reports no login state; a turn Muse refuses for its login marks the account signed out.
   return snapshot(
     {
       installed: true,

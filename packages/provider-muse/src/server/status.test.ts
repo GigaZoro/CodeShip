@@ -113,6 +113,32 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
     ),
   );
 
+  // Muse falls back to its compiled-in catalog when the server rejects its login.
+  it.effect.each([
+    { source: "providerCatalog", live: true },
+    { source: "bundledCatalog", live: false },
+    { source: undefined, live: false },
+  ])(
+    "reads a working login only from a model list the server sent (source $source)",
+    ({ source, live }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const binaryPath = yield* fakeCli();
+          let reportedLive = false;
+          yield* checkMuseProviderStatus(
+            settings({ enabled: true, binaryPath }),
+            undefined,
+            undefined,
+            async () => makeHost(source === undefined ? metaCatalog : { ...metaCatalog, source }),
+            Effect.sync(() => {
+              reportedLive = true;
+            }),
+          );
+          expect(reportedLive).toBe(live);
+        }),
+      ),
+  );
+
   it.effect("keeps an empty discovered catalog empty instead of advertising a fallback model", () =>
     Effect.scoped(
       Effect.gen(function* () {

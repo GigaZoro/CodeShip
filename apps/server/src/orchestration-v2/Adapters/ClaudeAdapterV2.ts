@@ -1914,6 +1914,18 @@ function isClaudeGoalAcknowledgement(message: SDKMessage): boolean {
   return text.startsWith(CLAUDE_GOAL_SET_PREFIX) || text.startsWith("Goal cleared: ");
 }
 
+/**
+ * The CLI reports a refused login as an assistant message. The run's error item reports it, so
+ * it is not a reply, and a reply would make failover treat the run as work it must not repeat.
+ */
+function isClaudeLoginRejection(message: SDKMessage): boolean {
+  return (
+    message.type === "assistant" &&
+    message.parent_tool_use_id === null &&
+    message.error === "authentication_failed"
+  );
+}
+
 const providerGoalsEqual = Schema.toEquivalence(Schema.NullOr(OrchestrationV2ProviderGoal));
 
 function normalizeClaudeResultText(text: string): string {
@@ -8973,7 +8985,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   };
                 }
               }
-              if (message.error === "authentication_failed") {
+              if (isClaudeLoginRejection(message)) {
                 context.authenticationFailureMessage = claudeSignedOutMessage({
                   configDir: adapterOptions.environment.CLAUDE_CONFIG_DIR,
                   cwd: path.resolve(context.input.runtimePolicy.cwd ?? "."),
@@ -9762,7 +9774,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             });
             return;
           }
-          if (isClaudeGoalAcknowledgement(message)) {
+          if (isClaudeGoalAcknowledgement(message) || isClaudeLoginRejection(message)) {
             // The CLI repeats a local command's output as the turn's result text.
             if (assistantText !== null) {
               context.assistant.noticeTexts.add(normalizeClaudeResultText(assistantText.text));

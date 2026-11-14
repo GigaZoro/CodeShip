@@ -64,6 +64,12 @@ import {
 } from "./protocol.ts";
 import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./usageLimits.ts";
 import {
+  MUSE_LOGIN_REJECTED_KIND,
+  museSignedOutFailure,
+  museSignedOutMessage,
+  type MuseLoginReport,
+} from "./signedOut.ts";
+import {
   createMuseSdkHostEffect,
   museApprovalMode,
   museCanonicalPath,
@@ -202,6 +208,8 @@ export interface MuseAdapterV2Options {
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
   };
+  /** Taken as each Muse host starts, because Muse reads its login only then. */
+  readonly login?: Effect.Effect<MuseLoginReport>;
 }
 
 interface ActiveTurn {
@@ -323,6 +331,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       const commands = yield* Semaphore.make(1);
       const eventPermit = yield* Semaphore.make(1);
       let host: MuseSdkHost;
+      let hostLogin: MuseLoginReport | undefined;
       let hostEpoch = 0;
       let closed = false;
       let broken = false;
@@ -944,15 +953,40 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         yield* emit({ type: "node.updated", driver: MUSE_PROVIDER, node: entry.node });
         yield* emit({ type: "turn_item.updated", driver: MUSE_PROVIDER, turnItem: entry.item });
       });
+      const signedOutMessage = museSignedOutMessage(options.environment);
+      // The new epoch makes late events from the retired host stale.
+      const retireHost = (relaunch: boolean) => {
+        hostEpoch++;
+        const retired = host;
+        broken = true;
+        relaunchable = relaunch;
+        wake = undefined;
+        dispatchedWakes = 0;
+        return retired;
+      };
+      // Muse reads its login only when it starts, so this host would refuse a new `muse login` too.
+      const retireSignedOutHost = Effect.fnUntraced(function* () {
+        if (hostLogin) yield* hostLogin.rejected.pipe(Effect.forkIn(scope));
+        if (closed || broken) return;
+        const retired = retireHost(true);
+        yield* settleObservedChildren("failed");
+        yield* updateThread({ status: "error" });
+        yield* Effect.tryPromise(() => retired.close()).pipe(Effect.ignore, Effect.forkIn(scope));
+      });
       const finish = Effect.fnUntraced(function* (
         turn: ActiveTurn,
         status: "completed" | "cancelled" | "interrupted" | "failed",
         detail?: string,
         disposition: "reusable" | "broken" = "reusable",
-        quota?: { readonly resetsAtMs: number },
+        nativeError?: (typeof MuseTurnCompleted.Type)["error"],
       ) {
         if (active !== turn || seenTerminals.has(turn.nativeId)) return;
         seenTerminals.add(turn.nativeId);
+        const signedOut =
+          status === "failed" &&
+          disposition === "reusable" &&
+          nativeError?.kind === MUSE_LOGIN_REJECTED_KIND;
+        const quota = nativeError?.quota;
         const completedAt = yield* DateTime.now;
         for (const item of turn.items.values()) {
           if (
@@ -982,29 +1016,36 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             ? { nativeConversationHeadRef: nativeRef(turn.nativeId) }
             : {}),
         });
-        yield* updateSession(disposition === "broken" ? "error" : "ready", detail ?? null);
+        yield* updateSession(
+          disposition === "broken" ? "error" : "ready",
+          signedOut ? signedOutMessage : (detail ?? null),
+        );
         active = undefined;
         if (status === "failed") {
           const usageLimited =
-            disposition === "reusable" && (quota !== undefined || isMuseUsageLimitFailure(detail));
-          const failure = makeProviderFailure({
-            class:
-              disposition === "broken"
-                ? "transport_error"
-                : usageLimited
-                  ? "usage_limit"
-                  : providerErrorClass(detail),
-            message: detail ?? "Muse turn failed.",
-            ...(usageLimited
-              ? {
-                  resetAt: museUsageLimitResetAt(
-                    latestSubscriptionUsage,
-                    DateTime.toEpochMillis(completedAt),
-                    { quota, message: detail },
-                  ),
-                }
-              : {}),
-          });
+            !signedOut &&
+            disposition === "reusable" &&
+            (quota !== undefined || isMuseUsageLimitFailure(detail));
+          const failure = signedOut
+            ? museSignedOutFailure(signedOutMessage)
+            : makeProviderFailure({
+                class:
+                  disposition === "broken"
+                    ? "transport_error"
+                    : usageLimited
+                      ? "usage_limit"
+                      : providerErrorClass(detail),
+                message: detail ?? "Muse turn failed.",
+                ...(usageLimited
+                  ? {
+                      resetAt: museUsageLimitResetAt(
+                        latestSubscriptionUsage,
+                        DateTime.toEpochMillis(completedAt),
+                        { quota, message: detail },
+                      ),
+                    }
+                  : {}),
+              });
           const base = baseItem(turn, `failure:${turn.nativeId}`, completedAt);
           yield* emit({
             type: "turn_item.updated",
@@ -1042,17 +1083,13 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           });
         }
         yield* Deferred.succeed(turn.done, undefined);
+        if (signedOut) yield* retireSignedOutHost();
       });
       const failHost = Effect.fnUntraced(function* (cause: unknown) {
         if (closed || broken) return;
-        hostEpoch++;
-        // Registration can replace the host while failure events are consumed.
-        const failed = host;
         const turn = active;
-        broken = true;
-        relaunchable = !turn;
-        wake = undefined;
-        dispatchedWakes = 0;
+        // Registration can replace the host while failure events are consumed.
+        const failed = retireHost(!turn);
         const rootCause = Cause.isCause(cause) ? Cause.squash(cause) : cause;
         const failure = isOpenSessionError(rootCause) ? rootCause.cause : rootCause;
         const detail = isProtocolError(failure)
@@ -1495,8 +1532,10 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               status,
               result.error?.message ?? result.reason,
               "reusable",
-              result.error?.quota,
+              result.error,
             );
+            if (status === "completed" && hostLogin)
+              yield* hostLogin.accepted.pipe(Effect.forkIn(scope));
             break;
           }
           case "approval/requested":
@@ -1705,6 +1744,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         const processExited = yield* Deferred.make<ProcessExit>();
         // Observe raw exit before acquisition: inherited stdout can also block startup cleanup.
         yield* Deferred.await(processExited).pipe(Effect.andThen(stopScope), Effect.forkIn(scope));
+        const login = options.login ? yield* options.login : undefined;
         const created = yield* Effect.acquireRelease(
           createMuseSdkHostEffect(
             {
@@ -1746,6 +1786,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           { interruptible: true },
         ).pipe(Effect.provideService(Scope.Scope, scope));
         host = created;
+        hostLogin = login;
         created.connection.onNotification((notification) => {
           Queue.offerUnsafe(inbox, {
             type: "notification",

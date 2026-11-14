@@ -9,8 +9,11 @@ and enable **Muse Code**. Set **Binary path** if Muse is not on the host's `PATH
 Refresh provider status after installation or login, then select Muse in a
 thread's model picker.
 
-Provider status does not check your login. If you are signed out, messages
-fail until you run `muse login` on the host.
+Provider status cannot tell whether you are signed in. When Muse refuses a
+message because it rejected the login, the account shows as signed out until
+you run `muse login` on the host and refresh provider status. If the instance
+sets its own `META_API_KEY`, replace that key instead. An MCP server that refuses
+its own credentials does not sign the account out.
 
 ## Sign-in and API keys
 

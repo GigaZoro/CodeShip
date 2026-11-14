@@ -154,6 +154,7 @@ export const MuseTurnCompleted = Schema.Struct({
   reason: Schema.optional(Schema.String),
   error: Schema.optional(
     Schema.Struct({
+      kind: Schema.optional(Schema.String),
       message: Schema.String,
       quota: Schema.optional(Schema.Struct({ resetsAtMs: Schema.Finite })),
     }),
