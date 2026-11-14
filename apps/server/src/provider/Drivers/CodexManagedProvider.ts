@@ -21,6 +21,7 @@ import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import {
+  makeCodexSetSkillEnabled,
   checkCodexProviderStatus,
   makePendingCodexProvider,
   probeCodexSkillsForCwd,
@@ -502,6 +503,9 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     },
     limitsAuth: limits.controller,
     plugins,
+    // The account's shadow home links its skills folder here, which may not exist yet.
+    personalSkillsDirectory: path.join(runtime.homeLayout.sharedHomePath, "skills"),
+    setSkillEnabled: makeCodexSetSkillEnabled({ instanceId, openClient: openAppServerClient }),
     mcp,
     shellEnvironment: makeCodexShellEnvironment({
       instanceId,

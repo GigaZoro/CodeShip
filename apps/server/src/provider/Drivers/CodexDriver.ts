@@ -3,7 +3,6 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   ProviderSetupError,
-  ProviderSkillError,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -30,6 +29,7 @@ import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
 import { makeCodexShellEnvironment } from "../codexShellEnvironment.ts";
 import {
+  makeCodexSetSkillEnabled,
   checkCodexProviderStatus,
   CODEX_NOT_FOUND_MESSAGE,
   makeMissingCodexProvider,
@@ -82,8 +82,10 @@ const DEFAULT_BINARY_PATH = decodeCodexSettings({}).binaryPath;
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 
-/** Both setup modes build their own instance; each must read its account's shell environment. */
+/** Both setup modes must expose Codex's account capabilities. */
 type CodexProviderInstance = ProviderInstance & {
+  readonly personalSkillsDirectory: string;
+  readonly setSkillEnabled: NonNullable<ProviderInstance["setSkillEnabled"]>;
   readonly shellEnvironment: NonNullable<ProviderInstance["shellEnvironment"]>;
 };
 const CODEX_STANDALONE_HOME_PATTERN = /^(.*)\/packages\/standalone\//is;
@@ -502,25 +504,9 @@ export const CodexDriver: ProviderDriver<
       consumeResetCredit,
       auth: auth.controller,
       plugins,
-      personalSkillsDirectory: pathService.join(
-        homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath,
-        "skills",
-      ),
-      setSkillEnabled: ({ path: skillPath, enabled }) =>
-        openAppServerClient.pipe(
-          Effect.flatMap((client) =>
-            client.request("skills/config/write", { path: skillPath, enabled }),
-          ),
-          Effect.scoped,
-          Effect.timeout("20 seconds"),
-          Effect.asVoid,
-          Effect.tapError((cause) =>
-            Effect.logWarning("Codex skill toggle failed", { instanceId, cause }),
-          ),
-          Effect.mapError(
-            () => new ProviderSkillError({ operation: "setEnabled", instanceId, reason: "failed" }),
-          ),
-        ),
+      // The account's shadow home links its skills folder here, which may not exist yet.
+      personalSkillsDirectory: pathService.join(homeLayout.sharedHomePath, "skills"),
+      setSkillEnabled: makeCodexSetSkillEnabled({ instanceId, openClient: openAppServerClient }),
       mcp,
       shellEnvironment: makeCodexShellEnvironment({
         instanceId,

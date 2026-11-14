@@ -18,6 +18,7 @@ import * as CodexSchema from "effect-codex-app-server/schema";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import type {
+  ProviderInstanceId,
   CodexSettings,
   CustomModelSetting,
   ServerProvider,
@@ -27,7 +28,12 @@ import type {
   ServerProviderModel,
   ServerProviderSkill,
 } from "@t3tools/contracts";
-import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import {
+  PREFERRED_DEFAULT_CODEX_MODELS,
+  ProviderSkillError,
+  ServerSettingsError,
+} from "@t3tools/contracts";
 
 import {
   codexModelFamily,
@@ -542,6 +548,31 @@ const codexProcessEnvironment = Effect.fn("codexProcessEnvironment")(function* (
     ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
   };
 });
+
+export function makeCodexSetSkillEnabled<E>(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly openClient: Effect.Effect<CodexClient.CodexAppServerClient["Service"], E, Scope.Scope>;
+}): NonNullable<ProviderInstance["setSkillEnabled"]> {
+  return Effect.fn("CodexProvider.setSkillEnabled")(({ path, enabled }) =>
+    input.openClient.pipe(
+      Effect.flatMap((client) => client.request("skills/config/write", { path, enabled })),
+      Effect.scoped,
+      Effect.timeout("20 seconds"),
+      Effect.asVoid,
+      Effect.tapError((cause) =>
+        Effect.logWarning("Codex skill toggle failed", { instanceId: input.instanceId, cause }),
+      ),
+      Effect.mapError(
+        () =>
+          new ProviderSkillError({
+            operation: "setEnabled",
+            instanceId: input.instanceId,
+            reason: "failed",
+          }),
+      ),
+    ),
+  );
+}
 
 export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(function* (input: {
   readonly binaryPath: string;

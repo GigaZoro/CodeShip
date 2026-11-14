@@ -20,6 +20,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -168,6 +169,9 @@ it.layer(layerTest)("CodexDriver", (it) => {
           Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
         > = [];
 
+        let togglingSkills = false;
+        const skillWrites: Array<unknown> = [];
+        const skillHomes: Array<unknown> = [];
         let interruptedChecks = 0;
         let failAcquire = false;
         const startupChecksInterrupted = yield* Deferred.make<void>();
@@ -215,8 +219,56 @@ it.layer(layerTest)("CodexDriver", (it) => {
           ),
           Effect.provideService(
             ChildProcessSpawner.ChildProcessSpawner,
-            ChildProcessSpawner.make(() =>
+            ChildProcessSpawner.make((command) =>
               Effect.gen(function* () {
+                if (togglingSkills) {
+                  if (!ChildProcess.isStandardCommand(command))
+                    return yield* Effect.die("Expected a standard command");
+                  skillHomes.push(command.options.env?.CODEX_HOME);
+                  const responses = yield* Queue.unbounded<Uint8Array>();
+                  return ChildProcessSpawner.makeHandle({
+                    pid: ChildProcessSpawner.ProcessId(1),
+                    exitCode: Effect.never,
+                    isRunning: Effect.succeed(true),
+                    kill: () => Effect.void,
+                    unref: Effect.succeed(Effect.void),
+                    stdin: Sink.forEach((chunk: Uint8Array) =>
+                      Effect.gen(function* () {
+                        const request = JSON.parse(new TextDecoder().decode(chunk)) as {
+                          id?: number;
+                          method: string;
+                          params?: { enabled?: boolean };
+                        };
+                        if (request.method === "initialized") return;
+                        expect(["initialize", "skills/config/write"]).toContain(request.method);
+                        if (request.method === "skills/config/write")
+                          skillWrites.push(request.params);
+                        yield* Queue.offer(
+                          responses,
+                          new TextEncoder().encode(
+                            JSON.stringify({
+                              id: request.id,
+                              result:
+                                request.method === "initialize"
+                                  ? {
+                                      userAgent: "codex/test",
+                                      codexHome: command.options.env?.CODEX_HOME,
+                                      platformFamily: "unix",
+                                      platformOs: "macos",
+                                    }
+                                  : { effectiveEnabled: request.params?.enabled },
+                            }) + "\n",
+                          ),
+                        );
+                      }),
+                    ),
+                    stdout: Stream.fromQueue(responses),
+                    stderr: Stream.empty,
+                    all: Stream.empty,
+                    getInputFd: () => Sink.drain,
+                    getOutputFd: () => Stream.empty,
+                  });
+                }
                 if (replacementTiming === "during-probe") {
                   yield* Deferred.succeed(probeEntered, undefined);
                   yield* Deferred.await(resumeProbe);
@@ -266,6 +318,19 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(restored.runtimePaths?.shadowHomePath).toContain(
           `providers/codex/${instanceId}/shadow`,
         );
+        const accountHome = restored.runtimePaths!.shadowHomePath!;
+        expect(instance.personalSkillsDirectory).toBe(NodePath.join(sharedHome, "skills"));
+        const skillPath = NodePath.join(accountHome, "skills", "example", "SKILL.md");
+        togglingSkills = true;
+        for (const enabled of [false, true]) {
+          yield* instance.setSkillEnabled!({ name: "example", path: skillPath, enabled });
+        }
+        togglingSkills = false;
+        expect(skillWrites).toEqual([
+          { path: skillPath, enabled: false },
+          { path: skillPath, enabled: true },
+        ]);
+        expect(skillHomes).toEqual([accountHome, accountHome]);
         const scan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(Effect.exit);
         expect(Exit.isFailure(scan)).toBe(true);
         failAcquire = true;
@@ -765,7 +830,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
   );
 
   it.effect.skipIf(windowsHost)(
-    "runs the standalone updater against the shared home, not the shadow home",
+    "runs the standalone updater and installs skills in the shared home, not the shadow home",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -799,6 +864,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           lockKey: "codex-native",
           env: { CODEX_HOME: sharedHome },
         });
+        expect(instance.personalSkillsDirectory).toBe(NodePath.join(sharedHome, "skills"));
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
         Effect.scoped,

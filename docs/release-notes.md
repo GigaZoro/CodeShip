@@ -1,3 +1,7 @@
+## 2026-11-15 — Skills page works for Codex accounts connected with ChatGPT
+
+- On the Skills page you can now copy a skill to a Codex account connected with ChatGPT and turn its skills on or off, as you already could for a Codex account that uses an existing login.
+
 ## 2026-11-15 — Windows Codex accounts keep configuration changes
 
 - Skill toggles and other Codex configuration changes made through an added account on Windows now survive provider refresh and reach the shared Codex home, including configurations linked to a dotfiles folder. Conflicting, unrecognized or oversized copies are kept as backups instead of being replaced.
