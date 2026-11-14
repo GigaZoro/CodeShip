@@ -85,7 +85,9 @@ it.effect("a restart resumes 091 after its last committed step instead of starti
     });
 
     const killed = yield* Effect.exit(
-      runMigrations().pipe(Effect.provideService(MigrationProgress, killedAfterEvents)),
+      runMigrations({ toMigrationInclusive: 91 }).pipe(
+        Effect.provideService(MigrationProgress, killedAfterEvents),
+      ),
     );
     const afterKill = {
       events: yield* eventPayloadIds,
@@ -96,7 +98,7 @@ it.effect("a restart resumes 091 after its last committed step instead of starti
     };
     // Written after the kill: a rerun that started over would compact it too.
     yield* insertEvent("event:after-kill", 2, { id: LEGACY_ROOT });
-    const resumed = yield* runMigrations();
+    const resumed = yield* runMigrations({ toMigrationInclusive: 91 });
 
     assert.isTrue(Exit.isFailure(killed));
     assert.deepStrictEqual(afterKill, {
@@ -137,7 +139,9 @@ it.effect("091 splits a large table into bounded steps and reports growing progr
         }).pipe(Effect.orDie, Effect.provideService(SqlClient.SqlClient, sql)),
     });
 
-    yield* runMigrations().pipe(Effect.provideService(MigrationProgress, recording));
+    yield* runMigrations({ toMigrationInclusive: 91 }).pipe(
+      Effect.provideService(MigrationProgress, recording),
+    );
 
     const eventCursors = reports.flatMap(({ cursor }) =>
       cursor !== undefined && (cursor as { table: string }).table === "orchestration_events"
@@ -184,7 +188,7 @@ layer("091_CompactOrchestrationIds", (it) => {
         )
       `;
 
-      yield* runMigrations();
+      yield* runMigrations({ toMigrationInclusive: 91 });
 
       const events = yield* sql<{ readonly event_id: string; readonly payload_json: string }>`
         SELECT event_id, payload_json FROM orchestration_events ORDER BY sequence
