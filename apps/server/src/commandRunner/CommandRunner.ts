@@ -185,6 +185,46 @@ const posixLaunchEnvironment = (
   return { env, prefix: envArgs.length === 0 ? [] : ["/usr/bin/env", ...envArgs] };
 };
 
+/**
+ * Walks `ParentProcessId` from the wrapper, which outlives it (a named Job object does not).
+ * Only processes created after the command started count; if the pid now names another process,
+ * only children created before it do.
+ */
+const windowsStopScript = (pid: number, sinceMs: number, identityMs: number | null) =>
+  [
+    "$ErrorActionPreference = 'Stop'",
+    "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
+    `$root = ${pid}; $since = ${sinceMs}; $identity = ${identityMs ?? -1}`,
+    "for ($pass = 0; $pass -lt 5; $pass++) {",
+    "  $all = @(Get-CimInstance Win32_Process)",
+    "  $upper = [long]::MaxValue",
+    "  $targets = @{}",
+    "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
+    "  if ($holder) {",
+    "    $made = Ms $holder.CreationDate",
+    "    if ($identity -ge 0 -and [math]::Abs($made - $identity) -gt 1000) { $upper = $made } else { $targets[$root] = $true }",
+    "  }",
+    "  $queue = New-Object System.Collections.Queue",
+    "  $queue.Enqueue($root)",
+    "  $seen = @{ $root = $true }",
+    "  while ($queue.Count -gt 0) {",
+    "    $id = $queue.Dequeue()",
+    "    foreach ($child in $all) {",
+    "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
+    "      $made = Ms $child.CreationDate",
+    "      $limit = if ($id -eq $root) { $upper } else { [long]::MaxValue }",
+    "      if ($made -ge $since -and $made -lt $limit) {",
+    "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $true; $queue.Enqueue($child.ProcessId)",
+    "      }",
+    "    }",
+    "  }",
+    "  if ($targets.Count -eq 0) { break }",
+    "  foreach ($id in $targets.Keys) {",
+    "    try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { throw } }",
+    "  }",
+    "}",
+  ].join("\n");
+
 /** The last lines of a log, starting at a whole line when the start was cut. */
 const decodeTail = (bytes: Uint8Array, cut: boolean) => {
   const text = new TextDecoder().decode(bytes);
@@ -293,20 +333,26 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Stops the command and everything it started: its process group, or its tree on Windows. A
-   * group outlives its wrapper and its id is not reused while any member lives, so short of a
-   * reboot, only a live process reusing the wrapper's pid means nothing of the group is left.
+   * Stops the command and everything it started: its process group, or on Windows what descends
+   * from its wrapper's pid (`windowsStopScript`), also after the wrapper ended. A group outlives
+   * its wrapper and its id is not reused while any member lives, so short of a reboot, only a live
+   * process reusing the wrapper's pid means nothing of the group is left.
    */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     const pid = row.pid;
     if (pid !== null && !(yield* rebootedSince(row))) {
       if (!windows) {
         if (!isProcessAlive(pid) || (yield* isSameProcess(row))) yield* killGroup(pid);
-      } else if (yield* isSameProcess(row)) {
+      } else {
         yield* processRunner
           .run({
-            command: "taskkill",
-            args: ["/PID", String(pid), "/T", "/F"],
+            command: "powershell.exe",
+            args: [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              windowsStopScript(pid, Date.parse(row.started_at), row.process_started_at),
+            ],
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
           })
