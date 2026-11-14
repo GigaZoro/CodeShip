@@ -1291,6 +1291,8 @@ export const DatabaseStorageStatus = Schema.Struct({
   databaseBytes: Schema.Number,
   /** Free pages inside the file that an offline VACUUM (or incremental auto_vacuum) returns to disk. */
   reclaimableBytes: Schema.Number,
+  /** Estimate of unused bytes inside partly filled pages; only an offline VACUUM returns them. Zero until the server's first measurement. */
+  fragmentedBytes: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   /** False on databases created before incremental auto_vacuum; `t3 doctor` converts them. */
   incrementalVacuumEnabled: Schema.Boolean,
   /** Run on the host while offline. */
@@ -1298,11 +1300,13 @@ export const DatabaseStorageStatus = Schema.Struct({
 });
 export type DatabaseStorageStatus = typeof DatabaseStorageStatus.Type;
 
+/** Bytes an offline VACUUM would return: fragmented space, plus free pages the server cannot shrink online. */
+export function offlineVacuumBytes(status: DatabaseStorageStatus): number {
+  return status.fragmentedBytes + (status.incrementalVacuumEnabled ? 0 : status.reclaimableBytes);
+}
+
 export function shouldRecommendDatabaseCompaction(status: DatabaseStorageStatus): boolean {
-  return (
-    !status.incrementalVacuumEnabled &&
-    status.reclaimableBytes >= DATABASE_COMPACTION_RECOMMENDED_BYTES
-  );
+  return offlineVacuumBytes(status) >= DATABASE_COMPACTION_RECOMMENDED_BYTES;
 }
 
 export const StorageCleanupReportEntry = Schema.Struct({

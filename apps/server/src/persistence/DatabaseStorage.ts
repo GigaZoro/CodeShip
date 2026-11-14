@@ -1,7 +1,6 @@
 import type { DatabaseStorageStatus } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -11,11 +10,13 @@ import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { resolveHostCliCommand } from "../cli/invocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
+import { readFragmentedBytes } from "./databaseFragmentation.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Settings from "../serverSettings.ts";
 
@@ -67,6 +68,8 @@ const make = Effect.gen(function* () {
           return layout;
         }),
   );
+  // Counting it reads every page, so it is measured once per compaction pass, not per status publish.
+  let fragmentedBytes = 0;
   const publishStatus = Effect.gen(function* () {
     if (!doctorTargetsThisDatabase) return;
     const { pageSize, incrementalVacuum } = yield* readLayout;
@@ -75,6 +78,7 @@ const make = Effect.gen(function* () {
     const next: DatabaseStorageStatus = {
       databaseBytes: (pages[0]?.page_count ?? 0) * pageSize,
       reclaimableBytes: (free[0]?.freelist_count ?? 0) * pageSize,
+      fragmentedBytes,
       incrementalVacuumEnabled: incrementalVacuum,
       compactCommand,
     };
@@ -101,11 +105,11 @@ const make = Effect.gen(function* () {
 
   const pruneToolOutput = Effect.fn("DatabaseStorage.pruneToolOutput")(
     function* (betweenPages: Effect.Effect<void>) {
-      const days = (yield* settingsService.getSettings).storageCleanup.toolOutputAfterDays;
-      if (days === null) return;
-      const idleBefore = DateTime.subtract(yield* DateTime.now, { days });
-      const result = yield* maintenance.pruneColdThreadToolOutput({ idleBefore, betweenPages });
-      if (result.threadCount > 0 || result.unreadableItemCount > 0) {
+      const result = yield* ProjectionMaintenance.pruneToolOutputAfterDays(
+        (yield* settingsService.getSettings).storageCleanup.toolOutputAfterDays,
+        betweenPages,
+      ).pipe(Effect.provideService(ProjectionMaintenance.ProjectionMaintenanceV2, maintenance));
+      if (result !== null && (result.threadCount > 0 || result.unreadableItemCount > 0)) {
         yield* Effect.logInfo("Removed old tool output from idle chats", result);
       }
     },
@@ -131,11 +135,13 @@ const make = Effect.gen(function* () {
     if (result.deletedEventCount > 0 || result.deletedReceiptCount > 0) {
       yield* Effect.logInfo("Compacted orchestration history", result);
     }
+    fragmentedBytes = yield* readFragmentedBytes.pipe(NodeSqliteClient.readOnly);
     const { pageSize } = yield* readLayout;
     const pages = yield* sql<{ readonly page_count: number }>`PRAGMA page_count`;
     yield* Effect.logInfo("Database size", {
       databaseBytes: (pages[0]?.page_count ?? 0) * pageSize,
       reclaimableBytes: result.reclaimableBytes,
+      fragmentedBytes,
     });
   }).pipe(
     Effect.catch((cause) =>

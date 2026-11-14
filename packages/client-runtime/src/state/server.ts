@@ -11,6 +11,7 @@ import {
   type ServerProviderWorkspaceSnapshot,
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateResult,
+  offlineVacuumBytes,
   shouldRecommendDatabaseCompaction,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -1359,7 +1360,7 @@ export function createServerEnvironmentAtoms<R, E>(
     Atom.make((get) =>
       get(databaseStorageStatuses(environmentIdsKey))
         .filter(({ status }) => shouldRecommendDatabaseCompaction(status))
-        .sort((left, right) => right.status.reclaimableBytes - left.status.reclaimableBytes),
+        .sort((left, right) => offlineVacuumBytes(right.status) - offlineVacuumBytes(left.status)),
     ).pipe(
       Atom.withLabel(
         `environment-data:server:database-compaction-recommendations:${environmentIdsKey}`,

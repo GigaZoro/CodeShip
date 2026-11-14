@@ -1,3 +1,8 @@
+## 2026-11-14 — `t3 doctor` also removes old tool output and Settings sees fragmented space
+
+- `t3 doctor` now removes command and tool output from idle chats with the same rule and **Remove old tool output** setting the server uses before it rebuilds the database, so a doctor run no longer keeps output the server would have removed.
+- Removing that output leaves pages partly empty, and only `t3 doctor` returns them to disk. The database size shown in Settings → Maintenance & about → Storage & cleanup now estimates that space, measured after each cleanup pass (so it appears within hours of starting the server), and suggests `t3 doctor` when it reaches 1 GiB. `t3 doctor` reports it too.
+
 ## 2026-11-14 — Server updates that migrate the database no longer copy it
 
 - An update that changes the database schema copied the whole database file for its rollback, which on a disk without copy-on-write (ext4) took minutes and could stall a busy disk. When the database is in WAL mode, as it always is here, the launcher now holds the database as it was and keeps the new version's changes in the write-ahead log, which a failed update deletes. The rollback needs free space only for what the migrations change. A failed update still restores the database before either version starts. The launcher picks this up after a local `t3 service update`.

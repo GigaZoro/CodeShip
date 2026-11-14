@@ -34,6 +34,35 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
       }).pipe(Effect.scoped),
     );
 
+    it.effect("estimates space that shrunken rows left inside pages, which VACUUM returns", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
+        const dbPath = path.join(
+          yield* fs.makeTempDirectoryScoped({ prefix: "t3-fragmented-" }),
+          "statev2.sqlite",
+        );
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`CREATE TABLE rows (id INTEGER PRIMARY KEY, value BLOB)`;
+          yield* sql`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+            INSERT INTO rows SELECT i, zeroblob(500) FROM n`;
+          // Shrinking rows in place, as removing tool output does, leaves their pages partly empty.
+          yield* sql`UPDATE rows SET value = zeroblob(20)`;
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+
+        const fragmented = (yield* maintenance.inspect(dbPath)).fragmentedBytes;
+        assert.isAbove(fragmented, 500_000);
+
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`VACUUM`;
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+        assert.isBelow((yield* maintenance.inspect(dbPath)).fragmentedBytes, fragmented / 4);
+      }).pipe(Effect.scoped),
+    );
+
     it.effect("reports and deletes only the database from before 0.1.0", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -160,7 +189,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         const refused = yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* sql`SELECT value FROM retained_data`;
-          return yield* maintenance.compact(dbPath).pipe(Effect.flip);
+          return yield* maintenance.compact(dbPath, { toolOutputAfterDays: 7 }).pipe(Effect.flip);
         }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
         assert.equal(refused._tag, "DatabaseInUseError");
         assert.equal((yield* fs.stat(dbPath)).size, sizeBefore);
@@ -168,7 +197,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         const clock = yield* Clock.Clock;
         const pauses: number[] = [];
         let activeNanos = 0n;
-        const result = yield* maintenance.compact(dbPath).pipe(
+        const result = yield* maintenance.compact(dbPath, { toolOutputAfterDays: 7 }).pipe(
           Effect.provideService(Clock.Clock, {
             ...clock,
             // Exceed the background budget whenever the compactor checks elapsed time.

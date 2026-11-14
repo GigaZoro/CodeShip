@@ -13,6 +13,7 @@ import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../orchestration-v2/messageSearchIndex.ts";
+import { readFragmentedBytes } from "./databaseFragmentation.ts";
 
 export class DatabaseMissingError extends Schema.TaggedError<DatabaseMissingError>()(
   "DatabaseMissingError",
@@ -75,14 +76,19 @@ export class DatabaseMaintenance extends Context.Service<
       {
         readonly databaseBytes: number;
         readonly reclaimableBytes: number;
+        /** Estimated unused bytes in partly filled pages; only a full VACUUM returns them. */
+        readonly fragmentedBytes: number;
         readonly incrementalVacuumEnabled: boolean;
         /** Size of the database from before 0.1.0 still kept beside it, or null. */
         readonly legacyDatabaseBytes: number | null;
       },
       DatabaseMissingError | DatabaseInspectError
     >;
-    /** Compacts history, then VACUUMs into incremental auto_vacuum. Refuses while a server has it open. */
-    readonly compact: (databasePath: string) => Effect.Effect<
+    /** Removes tool output older than `toolOutputAfterDays` (null keeps it), compacts history, then VACUUMs into incremental auto_vacuum. Refuses while a server has it open. */
+    readonly compact: (
+      databasePath: string,
+      options: { readonly toolOutputAfterDays: number | null },
+    ) => Effect.Effect<
       {
         readonly beforeBytes: number;
         readonly afterBytes: number;
@@ -115,6 +121,7 @@ const readStorage = Effect.gen(function* () {
   return {
     databaseBytes: (pages[0]?.page_count ?? 0) * pageSize,
     reclaimableBytes: (free[0]?.freelist_count ?? 0) * pageSize,
+    fragmentedBytes: yield* readFragmentedBytes,
     incrementalVacuumEnabled: mode[0]?.auto_vacuum === 2,
   };
 });
@@ -173,7 +180,7 @@ const make = Effect.gen(function* () {
   );
 
   const compact = Effect.fn("DatabaseMaintenance.compact")(
-    function* (databasePath: string) {
+    function* (databasePath: string, options: { readonly toolOutputAfterDays: number | null }) {
       yield* locate(databasePath);
       const beforeBytes = Number((yield* fs.stat(databasePath)).size);
       const result = yield* Effect.gen(function* () {
@@ -183,6 +190,8 @@ const make = Effect.gen(function* () {
         if (!(yield* maintenance.verify).valid) {
           return yield* new DatabaseProjectionsInvalidError({ path: databasePath });
         }
+        // The server's retention rule, so the rebuilt file never keeps output the server would remove.
+        yield* ProjectionMaintenance.pruneToolOutputAfterDays(options.toolOutputAfterDays);
         const summary = yield* maintenance.compactEventStore();
         if (!(yield* maintenance.verify).valid) {
           return yield* new DatabaseProjectionsInvalidError({ path: databasePath });

@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import * as Statement from "effect/sql/Statement";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -754,6 +755,21 @@ it.effect(
       const replay = yield* eventStore.read({ threadId: settled.id }).pipe(Stream.runCollect);
       assert.isTrue(replay.some((stored) => stored.event.id === "event:retention:later"));
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("applies the retention days setting, and null keeps all tool output", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DateTime.toEpochMillis(recently) + 4 * 86_400_000);
+    const archived = retentionThread("days-archived", longAgo, { archivedAt: longAgo });
+    yield* writeRetentionItems(archived, longAgo);
+    const before = yield* storedRetentionItems(archived.id);
+
+    assert.isNull(yield* ProjectionMaintenance.pruneToolOutputAfterDays(null));
+    assert.deepEqual(yield* storedRetentionItems(archived.id), before);
+    const result = yield* ProjectionMaintenance.pruneToolOutputAfterDays(7);
+    assert.equal(result?.threadCount, 1);
+    assert.deepEqual(yield* storedRetentionItems(archived.id), prunedRetentionItems(before));
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("keeps old tool output while any chat sharing the root is open, pinned or active", () =>

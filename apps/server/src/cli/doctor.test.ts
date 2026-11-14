@@ -20,7 +20,11 @@ const doctor = (input: {
   readonly restart: Effect.Effect<unknown>;
 }) =>
   runDoctor(
-    { baseDir: input.baseDir, dbPath: `${input.baseDir}/userdata/statev2.sqlite` },
+    {
+      baseDir: input.baseDir,
+      dbPath: `${input.baseDir}/userdata/statev2.sqlite`,
+      settingsPath: `${input.baseDir}/userdata/settings.json`,
+    },
     { fix: true, dryRun: input.dryRun, interactive: false },
   ).pipe(
     Effect.provide(
@@ -47,12 +51,13 @@ const doctor = (input: {
             Effect.succeed({
               databaseBytes: 2000,
               reclaimableBytes: 1000,
+              fragmentedBytes: 0,
               incrementalVacuumEnabled: false,
               legacyDatabaseBytes: 4000,
             }),
-          compact: () =>
+          compact: (_path, options) =>
             Effect.sync(() => {
-              input.calls.push("compact");
+              input.calls.push(`compact:${options.toolOutputAfterDays}`);
               return {
                 beforeBytes: 2000,
                 afterBytes: 1000,
@@ -78,8 +83,24 @@ it.layer(NodeServices.layer)("t3 doctor", (it) => {
         yield* doctor({ baseDir, dryRun: true, calls, restart });
         assert.deepEqual(calls, []);
         yield* doctor({ baseDir, dryRun: false, calls, restart });
-        assert.deepEqual(calls, ["pause", "compact", "resume"]);
+        // The retention default applies when settings.json says nothing.
+        assert.deepEqual(calls, ["pause", "compact:7", "resume"]);
       }),
+  );
+
+  it.effect("--fix removes tool output after the days stored in settings.json", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-doctor-test-" });
+      yield* fs.makeDirectory(`${baseDir}/userdata`, { recursive: true });
+      yield* fs.writeFileString(
+        `${baseDir}/userdata/settings.json`,
+        JSON.stringify({ storageCleanup: { toolOutputAfterDays: 3 } }),
+      );
+      const calls: string[] = [];
+      yield* doctor({ baseDir, dryRun: false, calls, restart: publishServer(fs, baseDir) });
+      assert.deepEqual(calls, ["pause", "compact:3", "resume"]);
+    }),
   );
 
   // regression: `t3 doctor --fix` returned before the service it restarted served

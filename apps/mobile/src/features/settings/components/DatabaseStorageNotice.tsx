@@ -1,6 +1,7 @@
 import { t } from "../../../lib/i18n";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
+import { offlineVacuumBytes } from "@t3tools/contracts";
 import { formatBytes } from "@t3tools/shared/formatBytes";
 
 import { copyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
@@ -39,10 +40,10 @@ export function DatabaseStorageNotice({
           icon="internaldrive"
           label={targets.find((target) => target.environmentId === environmentId)?.label ?? ""}
           value={
-            status.reclaimableBytes > 0
+            status.reclaimableBytes + status.fragmentedBytes > 0
               ? t("{size} ({reclaimable} can be reclaimed)", {
                   size: formatBytes(status.databaseBytes),
-                  reclaimable: formatBytes(status.reclaimableBytes),
+                  reclaimable: formatBytes(status.reclaimableBytes + status.fragmentedBytes),
                 })
               : formatBytes(status.databaseBytes)
           }
@@ -66,7 +67,7 @@ export function DatabaseStorageNotice({
             icon="doc.on.doc"
             label={targets.find((target) => target.environmentId === environmentId)?.label ?? ""}
             description={status.compactCommand}
-            detail={t("{size} GiB", { size: (status.reclaimableBytes / 1024 ** 3).toFixed(1) })}
+            detail={t("{size} GiB", { size: (offlineVacuumBytes(status) / 1024 ** 3).toFixed(1) })}
             onPress={() => copyTextWithHaptic(status.compactCommand, { target: "command" })}
           />
         ))}

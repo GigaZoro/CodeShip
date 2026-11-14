@@ -71,6 +71,19 @@ export class ProjectionMaintenanceV2 extends Context.Service<
   ProjectionMaintenanceV2Shape
 >()("t3/orchestration-v2/ProjectionMaintenance/ProjectionMaintenanceV2") {}
 
+/** The one retention rule for old tool output, shared by the server's storage pass and `t3 doctor`. */
+export const pruneToolOutputAfterDays = Effect.fn("ProjectionMaintenance.pruneToolOutputAfterDays")(
+  function* (days: number | null, betweenPages?: Effect.Effect<void>) {
+    if (days === null) return null;
+    const maintenance = yield* ProjectionMaintenanceV2;
+    const idleBefore = DateTime.subtract(yield* DateTime.now, { days });
+    return yield* maintenance.pruneColdThreadToolOutput({
+      idleBefore,
+      ...(betweenPages === undefined ? {} : { betweenPages }),
+    });
+  },
+);
+
 type ProjectionMetadataRow = {
   readonly schema_version: number;
   readonly last_sequence: number;

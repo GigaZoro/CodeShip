@@ -1,7 +1,10 @@
-import { DATABASE_COMPACTION_RECOMMENDED_BYTES } from "@t3tools/contracts";
+import { DATABASE_COMPACTION_RECOMMENDED_BYTES, StorageCleanupSettings } from "@t3tools/contracts";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
 
 import * as BootService from "../cloud/bootService.ts";
@@ -16,14 +19,33 @@ const formatBytes = (bytes: number) =>
       ? `${(bytes / 1024 ** 2).toFixed(1)} MiB`
       : `${Math.ceil(bytes / 1024)} KiB`;
 
+const decodeStorageCleanup = Schema.decodeUnknownEffect(StorageCleanupSettings);
+const decodeSettingsFile = Schema.decodeUnknownEffect(fromLenientJson(Schema.Unknown));
+
+// Reads the stored file, which holds only what differs from the defaults; decoding adds the rest.
+const readToolOutputAfterDays = Effect.fn("readToolOutputAfterDays")(function* (
+  settingsPath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(settingsPath))) {
+    return (yield* decodeStorageCleanup({})).toolOutputAfterDays;
+  }
+  const stored = yield* decodeSettingsFile(yield* fs.readFileString(settingsPath));
+  const storageCleanup =
+    typeof stored === "object" && stored !== null && "storageCleanup" in stored
+      ? stored.storageCleanup
+      : {};
+  return (yield* decodeStorageCleanup(storageCleanup)).toolOutputAfterDays;
+});
+
 export const runDoctor = Effect.fn("runDoctor")(function* (
-  paths: { readonly baseDir: string; readonly dbPath: string },
+  paths: { readonly baseDir: string; readonly dbPath: string; readonly settingsPath: string },
   options: { readonly fix: boolean; readonly dryRun: boolean; readonly interactive?: boolean },
 ) {
   const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
   const status = yield* maintenance.inspect(paths.dbPath);
   yield* Console.log(
-    `Database: ${formatBytes(status.databaseBytes)}, ${formatBytes(status.reclaimableBytes)} reclaimable.`,
+    `Database: ${formatBytes(status.databaseBytes)}, ${formatBytes(status.reclaimableBytes)} free, about ${formatBytes(status.fragmentedBytes)} fragmented.`,
   );
   if (status.legacyDatabaseBytes !== null) {
     yield* Console.log(
@@ -31,7 +53,9 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
     );
   }
   const repairs = [
-    ...(status.incrementalVacuumEnabled && status.reclaimableBytes === 0
+    ...(status.incrementalVacuumEnabled &&
+    status.reclaimableBytes === 0 &&
+    status.fragmentedBytes < DATABASE_COMPACTION_RECOMMENDED_BYTES
       ? []
       : [
           {
@@ -39,12 +63,13 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
             title: "Reclaim database space",
             description: `${
               status.incrementalVacuumEnabled
-                ? "Returns unused space to disk."
-                : "Returns unused space to disk and turns on automatic shrinking."
+                ? "Removes old tool output, then returns unused space to disk."
+                : "Removes old tool output, then returns unused space to disk and turns on automatic shrinking."
             }\n  Pauses the background service, if installed, while it runs and may need temporary disk space.`,
             recommended:
               !status.incrementalVacuumEnabled ||
-              status.reclaimableBytes >= DATABASE_COMPACTION_RECOMMENDED_BYTES,
+              status.reclaimableBytes >= DATABASE_COMPACTION_RECOMMENDED_BYTES ||
+              status.fragmentedBytes >= DATABASE_COMPACTION_RECOMMENDED_BYTES,
           },
         ]),
     ...(status.legacyDatabaseBytes === null
@@ -100,12 +125,13 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
   }
   if (selected.includes("database")) {
     const service = yield* BootService.BootService;
+    const toolOutputAfterDays = yield* readToolOutputAfterDays(paths.settingsPath);
     const replaced = yield* CliService.readServerPublication(paths.baseDir);
     yield* Console.log("\nReclaiming database space. This can take several minutes...");
     // Report the repair before restarting, which can fail independently.
     const { restarted } = yield* service.withStopped(
       maintenance
-        .compact(paths.dbPath)
+        .compact(paths.dbPath, { toolOutputAfterDays })
         .pipe(
           Effect.tap((result) =>
             Console.log(

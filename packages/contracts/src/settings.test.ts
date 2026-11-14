@@ -8,6 +8,8 @@ import {
   ProviderInstanceId,
 } from "./providerInstance.ts";
 import {
+  shouldRecommendDatabaseCompaction,
+  type DatabaseStorageStatus,
   ClientSettingsSchema,
   StoredClientSettingsSchema,
   usageLimitRecoveryChoice,
@@ -607,5 +609,30 @@ describe("server model preferences", () => {
     const input = { favorites: [], providerModelPreferences: {} };
     expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
     expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+});
+
+describe("shouldRecommendDatabaseCompaction", () => {
+  const GiB = 1024 ** 3;
+  const status = (patch: Partial<DatabaseStorageStatus>): DatabaseStorageStatus => ({
+    databaseBytes: 10 * GiB,
+    reclaimableBytes: 0,
+    fragmentedBytes: 0,
+    incrementalVacuumEnabled: true,
+    compactCommand: "t3 doctor",
+    ...patch,
+  });
+
+  it("suggests t3 doctor for fragmented space, which only an offline VACUUM returns", () => {
+    expect(shouldRecommendDatabaseCompaction(status({ fragmentedBytes: 2 * GiB }))).toBe(true);
+  });
+
+  it("leaves free pages to the online reclaim once incremental vacuum is on", () => {
+    expect(shouldRecommendDatabaseCompaction(status({ reclaimableBytes: 2 * GiB }))).toBe(false);
+    expect(
+      shouldRecommendDatabaseCompaction(
+        status({ reclaimableBytes: 2 * GiB, incrementalVacuumEnabled: false }),
+      ),
+    ).toBe(true);
   });
 });

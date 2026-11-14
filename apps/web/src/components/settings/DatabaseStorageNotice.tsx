@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { formatBytes } from "@t3tools/shared/formatBytes";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { offlineVacuumBytes, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -45,8 +45,10 @@ export function DatabaseStorageNotice({
           key={`size-${environmentId}`}
           title={t("Database on {environment}", { environment: labelOf(environmentId) })}
           description={
-            status.reclaimableBytes > 0
-              ? t("{size} can be reclaimed", { size: formatBytes(status.reclaimableBytes) })
+            status.reclaimableBytes + status.fragmentedBytes > 0
+              ? t("{size} can be reclaimed", {
+                  size: formatBytes(status.reclaimableBytes + status.fragmentedBytes),
+                })
               : undefined
           }
           control={
@@ -66,7 +68,7 @@ export function DatabaseStorageNotice({
         <SettingsRow
           key={environmentId}
           title={t("{size} GiB on {environment}", {
-            size: (status.reclaimableBytes / 1024 ** 3).toFixed(1),
+            size: (offlineVacuumBytes(status) / 1024 ** 3).toFixed(1),
             environment: labelOf(environmentId),
           })}
           description={<code className="select-text break-all">{status.compactCommand}</code>}
