@@ -349,6 +349,18 @@ export function accountsWithRoom(
   return [...ordered.filter(signedIn), ...ordered.filter((account) => !signedIn(account))];
 }
 
+/** Accounts of `driver` that could run `model` but for usage, each with when its limits on it end. */
+function accountsByLimitEnd(input: AccountSearch) {
+  if (!supportsAccountFailover(input.driver)) return [];
+  return input.providers.flatMap((provider) => {
+    if (provider.driver !== input.driver) return [];
+    const model = usableModel(provider, input);
+    if (model === null) return [];
+    const end = accountLimitEnd(provider, input.recordedLimits, input.nowMs, model);
+    return [{ instanceId: provider.instanceId, model, end }];
+  });
+}
+
 /**
  * When the first account of `driver` other than `exceptInstanceId` that a usage limit keeps from
  * running `model` gets room back: the end of its last refusal or used-up window. Null when none waits.
@@ -356,23 +368,29 @@ export function accountsWithRoom(
 export function nextAccountRoomAt(
   input: AccountSearch & { readonly exceptInstanceId: ProviderInstanceId },
 ): number | null {
-  if (!supportsAccountFailover(input.driver)) return null;
-  const ends = input.providers.flatMap((provider) => {
-    if (provider.driver !== input.driver || provider.instanceId === input.exceptInstanceId)
-      return [];
-    const model = usableModel(provider, input);
-    const end =
-      model === null ? null : accountLimitEnd(provider, input.recordedLimits, input.nowMs, model);
-    return end === null ? [] : [end];
-  });
+  const ends = accountsByLimitEnd(input).flatMap(({ instanceId, end }) =>
+    instanceId === input.exceptInstanceId || end === null ? [] : [end],
+  );
   return ends.length === 0 ? null : Math.min(...ends);
 }
 
 /**
- * Where an Auto selection runs: its provider's Auto model. With account switching on, a thread
- * keeps its account while it has room, so its session never restarts needlessly, unless that
- * account must sign in to an MCP server again and the top account with room need not; otherwise
- * it takes the highest account in the order with room, else stays put. Auto off runs it as named.
+ * Of the accounts of `driver` that could run `model` but for usage, the one whose limits on it end
+ * first, the highest in the saved order on a tie. Undefined when none could run it.
+ */
+function firstAccountWithRoomAgain(input: AccountSearch) {
+  const roomAt = (account: { readonly end: number | null }) => account.end ?? input.nowMs;
+  return orderProviderInstancesForFailover(
+    input.settings.providerInstanceFailoverOrder,
+    accountsByLimitEnd(input),
+  ).toSorted((a, b) => roomAt(a) - roomAt(b))[0];
+}
+
+/**
+ * Where an Auto selection runs: its provider's Auto model. With account switching on, a thread keeps
+ * an account with room, so its session never restarts needlessly, unless it must sign in to an MCP
+ * server again and the top account with room need not; else the top one with room. With none, it keeps
+ * an account that can still run, else the signed-in one whose limit ends first. Off: as named.
  */
 export function routeAutoAccount(
   input: AccountRoutingContext &
@@ -400,21 +418,30 @@ export function routeAutoAccount(
   const current = input.providers.find(
     (provider) => provider.instanceId === input.currentInstanceId && provider.driver === driver,
   );
+  const search = { ...input, driver, model: selection.model };
   const pickTarget = () => {
     if (current !== undefined) {
-      const model = modelWithRoom(current, { ...input, model: selection.model });
+      const model = modelWithRoom(current, search);
       if (model !== null) {
         const keep = { instanceId: current.instanceId, model };
         if (pendingSignIns(input, current.instanceId).length === 0) return keep;
         // Accounts that need no sign-in come first, so the top one is the move or there is none.
-        const top = accountsWithRoom({ ...input, driver, model: selection.model })[0];
+        const top = accountsWithRoom(search)[0];
         return top !== undefined && pendingSignIns(input, top.instanceId).length === 0 ? top : keep;
       }
     }
-    const withRoom = accountsWithRoom({ ...input, driver, model: selection.model })[0];
+    const withRoom = accountsWithRoom(search)[0];
     if (withRoom !== undefined) return withRoom;
-    return current === undefined
-      ? undefined
+    // No subscription account has room. A thread keeps an account that can still run, and a new
+    // one starts on its named account when that has no usage limits (an API key).
+    const named = input.providers.find((provider) => provider.instanceId === selection.instanceId);
+    const keep =
+      current ?? (named !== undefined && !isSubscriptionAccount(named) ? named : undefined);
+    const kept = keep === undefined ? null : runnableModel(keep, search);
+    if (keep !== undefined && kept !== null) return { instanceId: keep.instanceId, model: kept };
+    const waitOn = firstAccountWithRoomAgain(search);
+    return waitOn !== undefined || current === undefined
+      ? waitOn
       : { instanceId: current.instanceId, model: selection.model };
   };
   const target = input.settings.failoverLimitedThreads ? pickTarget() : undefined;

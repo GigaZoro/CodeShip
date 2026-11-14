@@ -6109,7 +6109,33 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect("names an expired Claude login instead of the terminal API error", () =>
+  it.effect.each([
+    {
+      name: "flagged authentication_failed",
+      frames: [
+        makeAssistantErrorFrame({
+          uuid: "00000000-0000-4000-8000-000000000606",
+          error: "authentication_failed",
+        }),
+        makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000000607",
+          result: "API Error: 401 Credentials expired.",
+          terminalReason: "api_error",
+        }),
+      ],
+    },
+    {
+      name: "only a 401 result",
+      frames: [
+        makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000000611",
+          result: "Claude API authentication failed.",
+          isError: true,
+          apiErrorStatus: 401,
+        }),
+      ],
+    },
+  ])("names an expired Claude login, $name, instead of the API error", ({ frames }) =>
     Effect.gen(function* () {
       const configDir = "/synthetic/Claude config";
       // The adapter resolves the cwd on the host, which adds a drive letter on Windows.
@@ -6136,17 +6162,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         }),
       );
-      yield* Queue.offerAll(harness.sdkMessages, [
-        makeAssistantErrorFrame({
-          uuid: "00000000-0000-4000-8000-000000000606",
-          error: "authentication_failed",
-        }),
-        makeResultFrame({
-          uuid: "00000000-0000-4000-8000-000000000607",
-          result: "API Error: 401 Credentials expired.",
-          terminalReason: "api_error",
-        }),
-      ]);
+      yield* Queue.offerAll(harness.sdkMessages, frames);
 
       const terminal = yield* Queue.take(harness.terminalReceipts);
       assert.equal(terminal.status, "failed");

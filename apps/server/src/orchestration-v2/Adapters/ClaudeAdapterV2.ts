@@ -4867,6 +4867,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       }),
       Effect.orElseSucceed(() => undefined),
     );
+  const signedOutMessage = (context: ActiveClaudeTurnContext) =>
+    claudeSignedOutMessage({
+      configDir: adapterOptions.environment.CLAUDE_CONFIG_DIR,
+      cwd: path.resolve(context.input.runtimePolicy.cwd ?? "."),
+    });
   // A worktree's .git file points at <main>/.git/worktrees/<name>, whose commondir leads back to
   // <main>/.git. A bare repository has no main checkout, so its worktree keeps its own file.
   const mainCheckoutRoot = (checkout: string) =>
@@ -8986,10 +8991,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
               }
               if (isClaudeLoginRejection(message)) {
-                context.authenticationFailureMessage = claudeSignedOutMessage({
-                  configDir: adapterOptions.environment.CLAUDE_CONFIG_DIR,
-                  cwd: path.resolve(context.input.runtimePolicy.cwd ?? "."),
-                });
+                context.authenticationFailureMessage = signedOutMessage(context);
               }
             }
           }
@@ -9877,8 +9879,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.delete(context.providerTurnId);
               return next;
             });
+            // A 401 rejects the login even when the CLI sends no authentication_failed frame first.
+            const authenticationFailureMessage =
+              context.authenticationFailureMessage ??
+              (message.subtype === "success" && message.api_error_status === 401
+                ? signedOutMessage(context)
+                : undefined);
             const usageLimited =
-              context.authenticationFailureMessage === undefined &&
+              authenticationFailureMessage === undefined &&
               (context.rejectedRateLimitTypes.size > 0 ||
                 context.latestAssistantRateLimit !== null) &&
               (message.subtype !== "success" ||
@@ -9891,11 +9899,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const permissionDenied =
               message.subtype === "success" && message.api_error_status === 403;
             // A 403 is a permission refusal; signing in again would not change it.
-            const signedOut =
-              context.authenticationFailureMessage !== undefined && !permissionDenied;
+            const signedOut = authenticationFailureMessage !== undefined && !permissionDenied;
             const failureHint = permissionDenied
               ? message.result
-              : (context.authenticationFailureMessage ??
+              : (authenticationFailureMessage ??
                 (usageLimited
                   ? "Claude usage limit reached. Send the message again once the limit resets."
                   : undefined));

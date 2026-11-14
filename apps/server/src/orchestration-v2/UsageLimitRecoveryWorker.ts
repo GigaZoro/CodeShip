@@ -10,6 +10,7 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
+import { resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
 import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -244,6 +245,37 @@ function continueLimitedRun(
   };
 }
 
+/**
+ * The model a started thread's next turn runs: an Auto thread's current Auto model, which dispatch
+ * routing puts it on and may not be the one it last ran, else the one it names.
+ */
+function nextTurnModel(
+  input: Pick<AccountRoutingContext, "settings" | "providers">,
+  selection: ModelSelection,
+): string {
+  return resolveAutoModelSelection({
+    selection,
+    settings: input.settings,
+    accounts: input.providers,
+    started: true,
+  }).model;
+}
+
+/** The search for another account of `current`'s driver that could run the thread's next turn. */
+function otherAccountSearch<Input extends AccountRoutingContext & McpSignIns>(
+  input: Input,
+  thread: Pick<ProjectionStore.ProjectionSignedOutCandidate, "projectId" | "modelSelection">,
+  current: Input["providers"][number],
+) {
+  return {
+    ...input,
+    driver: current.driver,
+    projectId: thread.projectId,
+    model: nextTurnModel(input, thread.modelSelection),
+    exceptInstanceId: current.instanceId,
+  };
+}
+
 /** The search for another account of its driver that a limited thread could move to, or null when it stays. */
 function failoverSearch({ thread, ...input }: FailoverInput) {
   const runId = waitingRunId(thread, input.nowMs);
@@ -254,16 +286,7 @@ function failoverSearch({ thread, ...input }: FailoverInput) {
   const current = input.providers.find(
     (provider) => provider.instanceId === thread.providerInstanceId,
   );
-  return current === undefined
-    ? null
-    : {
-        ...input,
-        driver: current.driver,
-        projectId: thread.projectId,
-        model: thread.modelSelection.model,
-        exceptInstanceId: current.instanceId,
-        runId,
-      };
+  return current === undefined ? null : { ...otherAccountSearch(input, thread, current), runId };
 }
 
 /**
@@ -304,7 +327,7 @@ export function resetCreditResumeCommand(input: FailoverInput): DispatchCommand 
     modelWithRoom(account.provider, {
       ...input,
       projectId: thread.projectId,
-      model: thread.modelSelection.model,
+      model: nextTurnModel(input, thread.modelSelection),
     }) === null
   )
     return null;
@@ -313,8 +336,8 @@ export function resetCreditResumeCommand(input: FailoverInput): DispatchCommand 
 
 /**
  * The account to redeem a banked reset credit on so a limited thread can continue there, or null
- * when the thread waits. Only while the account's own limits read used up for the thread's model:
- * that is what a reset clears, unlike a refusal such as ChatGPT's app cap.
+ * when the thread waits. Only while the account's own limits read used up for the model its next
+ * turn runs: that is what a reset clears, unlike a refusal such as ChatGPT's app cap.
  */
 export function resetCreditRedemptionAccount(input: FailoverInput): ProviderInstanceId | null {
   const { thread } = input;
@@ -325,7 +348,7 @@ export function resetCreditRedemptionAccount(input: FailoverInput): ProviderInst
   const model = usableModel(provider, {
     ...input,
     projectId: thread.projectId,
-    model: thread.modelSelection.model,
+    model: nextTurnModel(input, thread.modelSelection),
   });
   const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
   return model !== null &&
@@ -339,18 +362,16 @@ export function resetCreditRedemptionAccount(input: FailoverInput): ProviderInst
 // A stop older than this is left to the person, as a lost connection's is.
 const MAX_SIGNED_OUT_FAILURE_AGE_MS = 24 * 60 * 60 * 1000;
 
+type SignedOutInput = AccountRoutingContext &
+  McpSignIns & {
+    readonly thread: ProjectionStore.ProjectionSignedOutCandidate;
+  };
+
 /**
- * Moves a thread whose run a rejected login stopped before the agent did any work to the first
- * other account of its driver that can run it. The agent never saw the message, so it is sent again.
- * Only while the account still reads signed out: signing in again leaves the thread where it is.
+ * The search for another account a thread stopped by a rejected login could move to, or null when
+ * it stays. Only while the account still reads signed out: signing in again leaves the thread where it is.
  */
-export function signedOutFailoverCommand(
-  input: AccountRoutingContext &
-    McpSignIns & {
-      readonly thread: ProjectionStore.ProjectionSignedOutCandidate;
-    },
-): DispatchCommand | null {
-  const { thread } = input;
+function signedOutSearch({ thread, ...input }: SignedOutInput) {
   if (
     thread.archivedAt !== null ||
     thread.settledOverride === "settled" ||
@@ -361,13 +382,22 @@ export function signedOutFailoverCommand(
   const current = input.providers.find(
     (provider) => provider.instanceId === thread.providerInstanceId,
   );
-  if (current === undefined || current.auth.status !== "unauthenticated") return null;
-  const target = accountsWithRoom({
-    ...input,
-    driver: current.driver,
-    projectId: thread.projectId,
-    model: thread.modelSelection.model,
-  }).find((account) => account.instanceId !== current.instanceId);
+  return current === undefined || current.auth.status !== "unauthenticated"
+    ? null
+    : otherAccountSearch(input, thread, current);
+}
+
+/**
+ * Moves a thread whose run a rejected login stopped before the agent did any work to the first
+ * other account of its driver that can run it. The agent never saw the message, so it is sent again.
+ */
+export function signedOutFailoverCommand(input: SignedOutInput): DispatchCommand | null {
+  const { thread } = input;
+  const search = signedOutSearch(input);
+  if (search === null) return null;
+  const target = accountsWithRoom(search).find(
+    (account) => account.instanceId !== search.exceptInstanceId,
+  );
   if (target === undefined) return null;
   const identity = `${thread.id}:${thread.latestRunId}:${target.instanceId}`;
   return {
@@ -382,8 +412,7 @@ export function signedOutFailoverCommand(
       instanceId: target.instanceId,
       model: target.model,
     },
-    text: thread.messageText,
-    attachments: [],
+    ...thread.message,
     dispatchMode: { type: "start_immediately" },
     createdBy: "user",
     creationSource: "server",
@@ -612,13 +641,15 @@ const makeSweep = Effect.gen(function* () {
     const wakeAt = yield* projections.getLimitRecoveryWakeAt(now, {
       waiting: switching || resetting,
     });
-    // A waiting thread can move to another account the moment that account's limit ends.
+    // A waiting or signed-out thread can move to another account the moment its limit ends.
     const accountRoomAt =
       failover === null
         ? Infinity
         : Math.min(
-            ...candidates.flatMap((thread) => {
-              const search = failoverSearch({ ...failover, thread });
+            ...[
+              ...candidates.map((thread) => failoverSearch({ ...failover, thread })),
+              ...signedOut.map((thread) => signedOutSearch({ ...failover, thread })),
+            ].flatMap((search) => {
               const at = search === null ? null : nextAccountRoomAt(search);
               return at === null ? [] : [at];
             }),

@@ -542,7 +542,10 @@ its limit starts its new thread on the first other account with usage left, and
 its **Run history** says which account it used and why. **Usage → Limits** shows which
 account a limited thread continues on right now. When no other account has room, an
 account set to **Use reset credits automatically** redeems a banked reset and continues the
-thread; see [Track subscription limits](usage.md#track-subscription-limits).
+thread; see [Track subscription limits](usage.md#track-subscription-limits). When an
+account's login is rejected before the agent does any work, the thread sends its message
+again on the first other signed-in account with usage left, right away or as soon as one
+gets usage back within a day.
 
 An account that must sign in to an MCP server again (such as ThreadPage, shown as a
 manual step on the provider) would start the chat without that server's tools. With
@@ -567,7 +570,9 @@ the default model in settings for new threads. A scheduled task's model can be A
 too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
 starts it there. A new thread starts on the primary provider's first account in its
 account order. With account switching enabled in **Settings → Threads**, it starts on the first
-one that has usage left and switches accounts at usage limits. The turn a
+signed-in one that has usage left, or, when none has, on the signed-in one whose limit ends
+first, and switches accounts at usage limits. A thread whose account signed out moves the
+same way on its next message. The turn a
 finished background command starts stays on the account that ran the command,
 because only that session has its result; if that account is out of usage, the
 thread moves on at that limit as described above. A thread that

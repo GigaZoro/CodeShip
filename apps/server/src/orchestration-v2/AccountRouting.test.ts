@@ -83,6 +83,11 @@ const route = (input: {
   readonly limited?: ReadonlyArray<ProviderInstanceId>;
   readonly needingSignIn?: ReadonlyArray<ProviderInstanceId>;
   readonly switching?: boolean;
+  readonly signedOut?: ReadonlyArray<ProviderInstanceId>;
+  /** Accounts limited until a reset the provider reported. */
+  readonly limitedUntil?: ReadonlyArray<readonly [ProviderInstanceId, string]>;
+  /** API-key accounts, which have no usage limits. */
+  readonly metered?: ReadonlyArray<ProviderInstanceId>;
 }) =>
   routeAutoAccount({
     selection: input.selection ?? auto,
@@ -91,16 +96,23 @@ const route = (input: {
     mcpSignInsNeeded: signIns(input.needingSignIn),
     started: input.currentInstanceId !== null,
     // Listed out of settings order, so the saved order decides.
-    providers: [provider(third), provider(second), provider(primary)],
+    providers: [third, second, primary].map((id) =>
+      provider(id, {
+        auth: {
+          status: input.signedOut?.includes(id) === true ? "unauthenticated" : "authenticated",
+          ...(input.metered?.includes(id) === true ? { type: "apiKey" } : {}),
+        },
+      }),
+    ),
     settings: {
       ...settings([primary, second, third]),
       failoverLimitedThreads: input.switching ?? true,
     },
     recordedLimits: new Map(
-      (input.limited ?? []).map((id) => [
-        id,
-        [{ resetAt: null, refusedAt: "2026-11-03T11:00:00Z" }],
-      ]),
+      [
+        ...(input.limited ?? []).map((id) => [id, null] as const),
+        ...(input.limitedUntil ?? []),
+      ].map(([id, resetAt]) => [id, [{ resetAt, refusedAt: "2026-11-03T11:00:00Z" }]] as const),
     ),
     nowMs,
   });
@@ -117,6 +129,107 @@ describe("routeAutoAccount", () => {
       ...auto,
       instanceId: expected,
     });
+  });
+
+  // Every account is limited here, in reverse of the saved order: third gets room first.
+  const limitedUntil = [
+    [primary, "2026-11-03T15:00:00.000Z"],
+    [second, "2026-11-03T14:00:00.000Z"],
+    [third, "2026-11-03T13:00:00.000Z"],
+  ] as const;
+  it.each([
+    ["a new thread skips a signed-out primary", null, [primary], [], second],
+    ["a thread leaves a signed-out account for the highest with room", third, [third], [], primary],
+    [
+      "a new thread with every account limited starts where a limit ends first",
+      null,
+      [],
+      limitedUntil,
+      third,
+    ],
+    [
+      "a new thread with every account limited skips a signed-out one",
+      null,
+      [third],
+      limitedUntil,
+      second,
+    ],
+    [
+      "a thread on a signed-out account moves to where a limit ends first",
+      third,
+      [third],
+      limitedUntil,
+      second,
+    ],
+    [
+      "a thread on a limited account that can still run stays put",
+      second,
+      [],
+      limitedUntil,
+      second,
+    ],
+    [
+      "a new thread stays named when no account can run",
+      null,
+      [primary, second, third],
+      [],
+      primary,
+    ],
+    [
+      "a thread on an API-key account stays while every subscription is limited",
+      primary,
+      [],
+      limitedUntil,
+      primary,
+      [primary],
+    ],
+    [
+      "a new thread starts on a first API-key account while every subscription is limited",
+      null,
+      [],
+      limitedUntil,
+      primary,
+      [primary],
+    ],
+  ] as const)(
+    "%s",
+    (
+      _,
+      currentInstanceId,
+      signedOut,
+      until,
+      expected,
+      metered: ReadonlyArray<ProviderInstanceId> = [],
+    ) => {
+      assert.deepEqual(route({ currentInstanceId, signedOut, limitedUntil: until, metered }), {
+        ...auto,
+        instanceId: expected,
+      });
+    },
+  );
+
+  it("never picks a limited account while one has room, or a signed-out one while one can run", () => {
+    const accounts = [primary, second, third];
+    const states = ["room", "limited", "signedOut"] as const;
+    const mixes = states.flatMap((a) => states.flatMap((b) => states.map((c) => [a, b, c])));
+    for (const mix of mixes) {
+      const inState = (state: (typeof states)[number]) =>
+        accounts.filter((_, index) => mix[index] === state);
+      const best = Math.min(...mix.map((state) => states.indexOf(state)));
+      for (const currentInstanceId of [null, ...accounts]) {
+        const { instanceId } = route({
+          currentInstanceId,
+          signedOut: inState("signedOut"),
+          limitedUntil: inState("limited").map((id) => [id, "2026-11-03T13:00:00.000Z"] as const),
+        });
+        const picked = mix[accounts.indexOf(instanceId)];
+        assert.strictEqual(
+          picked === undefined ? -1 : states.indexOf(picked),
+          best,
+          `${mix.join(",")} from ${currentInstanceId ?? "a new thread"}`,
+        );
+      }
+    }
   });
 
   it.each([

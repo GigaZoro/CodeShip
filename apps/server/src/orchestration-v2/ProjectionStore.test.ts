@@ -1,5 +1,6 @@
 import { assert, it, vi } from "@effect/vitest";
 import {
+  ChatAttachmentId,
   EnvironmentId,
   EventId,
   CommandId,
@@ -5203,6 +5204,13 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         store
           .getSignedOutFailoverCandidates({ now: DateTime.add(now, { seconds: 2 }), maxAgeMs })
           .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
+      const screenshot = {
+        type: "image" as const,
+        id: ChatAttachmentId.make("signed-out-inbox"),
+        name: "inbox.png",
+        mimeType: "image/png",
+        sizeBytes: 1024,
+      };
       yield* store.apply({
         id: EventId.make("event:signed-out:message"),
         type: "message.updated",
@@ -5217,7 +5225,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           creationSource: "server",
           role: "user",
           text: "Summarise the inbox",
-          attachments: [],
+          attachments: [screenshot],
           streaming: false,
           createdAt: now,
           updatedAt: now,
@@ -5286,7 +5294,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const candidate = yield* listed();
       assert.equal(candidate?.latestRunId, failedRunId);
       assert.equal(candidate?.latestRunProviderInstanceId, providerInstanceId);
-      assert.equal(candidate?.messageText, "Summarise the inbox");
+      assert.deepEqual(candidate?.message, {
+        text: "Summarise the inbox",
+        attachments: [screenshot],
+      });
       assert.isUndefined(yield* listed(500), "an older failure is left alone");
 
       yield* store.apply({

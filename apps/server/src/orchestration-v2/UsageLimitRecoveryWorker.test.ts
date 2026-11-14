@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  ChatAttachmentId,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   MessageId,
@@ -66,6 +67,13 @@ const provider = (instanceId: string, overrides: Partial<ServerProvider> = {}): 
   slashCommands: [],
   skills: [],
   ...overrides,
+});
+
+const model = (slug: string, name: string) => ({
+  slug,
+  name,
+  isCustom: false,
+  capabilities: null,
 });
 
 const thread: ProjectionStore.ProjectionLimitRecoveryCandidate = {
@@ -188,6 +196,35 @@ const failover = (overrides: Partial<Parameters<typeof limitFailoverCommand>[0]>
     ...overrides,
   });
 
+// Auto moved from Fable to Opus since the thread last ran, and claude_first holds only Fable.
+const autoMovedOffFable = {
+  modelSelection: {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    model: "claude-fable-5-2",
+    autoAccount: true,
+  },
+  settings: {
+    ...settings,
+    autoModeProvider: claude,
+    autoModeModels: { [claude]: { model: "claude-opus-4-1" } },
+  },
+  recordedLimits: new Map([
+    [
+      ProviderInstanceId.make("claude_limited"),
+      [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }],
+    ],
+    [
+      ProviderInstanceId.make("claude_first"),
+      [{ resetAt, refusedAt: "2026-10-29T11:00:00Z", modelScope: "fable" }],
+    ],
+  ]),
+  withFable: (accounts: ReadonlyArray<ServerProvider>) =>
+    accounts.map((account) => ({
+      ...account,
+      models: [...account.models, model("claude-fable-5-2", "Claude Fable 5.2")],
+    })),
+};
+
 describe("limitFailoverCommand", () => {
   it("continues on the first account of the same driver that can still run", () => {
     assert.deepEqual(failover(), {
@@ -254,6 +291,15 @@ describe("limitFailoverCommand", () => {
     assert.isNull(failover({ thread: { ...thread, ...overrides } }));
   });
 
+  it("moves an Auto thread for its current Auto model, not the one it last ran", () => {
+    const { modelSelection, withFable, ...auto } = autoMovedOffFable;
+    assert.include(
+      failover({ ...auto, thread: { ...thread, modelSelection }, providers: withFable(providers) })
+        ?.modelSelection,
+      { instanceId: ProviderInstanceId.make("claude_first"), model: "claude-opus-4-1" },
+    );
+  });
+
   it("restarts a held turn on the first account that can still run", () => {
     const command = failover({ thread: heldThread });
     assert.deepEqual(command?.dispatchMode, { type: "restart_active", targetRunId: runId });
@@ -298,12 +344,6 @@ describe("limitFailoverCommand", () => {
 
 describe("limitRecoveryTarget", () => {
   const claudeAgent = ProviderInstanceId.make("claudeAgent");
-  const model = (slug: string, name: string) => ({
-    slug,
-    name,
-    isCustom: false,
-    capabilities: null,
-  });
   // Claude held only Fable on this account until its weekly reset.
   const stopped: ProjectionStore.ProjectionLimitRecoveryCandidate = {
     ...thread,
@@ -572,8 +612,9 @@ describe("limitRecoveryTarget", () => {
           Queue.take(dispatched),
           Queue.take(redeemed).pipe(Effect.as(null)),
         );
+        // Its account has room for Opus, the model Auto runs now, so it continues there.
         assert(first?.type === "message.dispatch");
-        assert.equal(first.modelSelection?.model, "claude-opus-5-5");
+        assert.equal(first.automaticContinuationOfRunId, runId);
         assert.equal(yield* Queue.size(redeemed), 0);
       }).pipe(Effect.provide(layer));
     }),
@@ -677,6 +718,32 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
   }),
 );
 
+// A rejected login stopped this thread's run before the agent did any work.
+const signedOutThread: ProjectionStore.ProjectionSignedOutCandidate = {
+  id: thread.id,
+  projectId,
+  providerInstanceId: thread.providerInstanceId,
+  modelSelection: thread.modelSelection,
+  archivedAt: null,
+  settledOverride: null,
+  snoozedUntil: null,
+  latestRunId: runId,
+  latestRunProviderInstanceId: thread.providerInstanceId,
+  message: {
+    text: "Summarise the inbox",
+    context: { version: 1, records: [] },
+    attachments: [
+      {
+        type: "image",
+        id: ChatAttachmentId.make("thread-failover-inbox"),
+        name: "inbox.png",
+        mimeType: "image/png",
+        sizeBytes: 1024,
+      },
+    ],
+  },
+};
+
 // Each limit frees claude_first two minutes in; the sweep's ten-minute backstop would come later.
 const freedAt = "2026-10-29T12:02:00.000Z";
 it.effect.each([
@@ -688,20 +755,32 @@ it.effect.each([
     limit: "a used-up window's hold",
     window: { usedPercent: 100, exhaustedSince: "2026-10-29T11:00:00Z" },
   },
+  {
+    limit: "a refusal's reset, for a thread a rejected login stopped",
+    refusalResetAt: freedAt,
+    window: {},
+    signedOut: true,
+  },
 ] as const)("a waiting thread wakes when another account's limit ends: $limit", (testCase) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(now);
     const queries = yield* Queue.unbounded<number>();
+    const signedOut = "signedOut" in testCase;
     const layer = UsageLimitRecoveryWorker.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           Scheduler.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getSignedOutFailoverCandidates: () => Effect.succeed([]),
+            getSignedOutFailoverCandidates: () =>
+              Effect.succeed(signedOut ? [signedOutThread] : []),
             getLimitRecoveryCandidates: () =>
               Clock.currentTimeMillis.pipe(
                 Effect.flatMap((nowMs) => Queue.offer(queries, nowMs - now)),
-                Effect.as([{ ...thread, limitRecovery: { runId, resetAt, autoResume: true } }]),
+                Effect.as(
+                  signedOut
+                    ? []
+                    : [{ ...thread, limitRecovery: { runId, resetAt, autoResume: true } }],
+                ),
               ),
             getUsageLimitedProviderInstances: () =>
               Effect.succeed(
@@ -745,7 +824,7 @@ it.effect.each([
           Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Effect.succeed([
-              provider("claudeAgent"),
+              provider("claudeAgent", signedOut ? { auth: { status: "unauthenticated" } } : {}),
               {
                 ...provider("claude_first"),
                 usageLimits: {
@@ -911,6 +990,47 @@ describe("reset credits", () => {
     ],
   ] as const)("does not continue the thread early when %s", (_, overrides) => {
     assert.isNull(resetCreditResumeCommand(input(overrides)));
+  });
+
+  it("judges the model an Auto thread runs next, not the one it stopped on", () => {
+    // Auto moved from Fable to Opus since the thread stopped on Fable.
+    const autoWithUsedUp = (scope: string) =>
+      input({
+        thread: {
+          ...thread,
+          modelSelection: { instanceId: own, model: "claude-fable-5-2", autoAccount: true },
+        },
+        settings: {
+          ...settings,
+          autoUseResetCredits: [own],
+          autoModeProvider: claude,
+          autoModeModels: { [claude]: { model: "claude-opus-5-5" } },
+        },
+        providers: [
+          provider("claudeAgent", {
+            models: [
+              model("claude-fable-5-2", "Claude Fable 5.2"),
+              model("claude-opus-5-5", "Claude Opus 5.5"),
+            ],
+            usageLimits: {
+              ...limits(0).usageLimits,
+              windows: [
+                {
+                  id: `seven_day_${scope}`,
+                  kind: "weekly",
+                  label: "Weekly",
+                  usedPercent: 100,
+                  resetsAt: resetAt,
+                },
+              ],
+            },
+          }),
+        ],
+        recordedLimits: new Map(),
+      });
+    assert.equal(resetCreditRedemptionAccount(autoWithUsedUp("opus")), own);
+    assert.isNull(resetCreditRedemptionAccount(autoWithUsedUp("fable")));
+    assert.isNull(resetCreditResumeCommand(autoWithUsedUp("opus")));
   });
 
   const sweepLayer = (options: {
@@ -1161,24 +1281,12 @@ describe("signedOutFailoverCommand", () => {
       ? { ...candidate, status: "error" as const, auth: { status: "unauthenticated" as const } }
       : candidate,
   );
-  const candidate: ProjectionStore.ProjectionSignedOutCandidate = {
-    id: thread.id,
-    projectId,
-    providerInstanceId: thread.providerInstanceId,
-    modelSelection: thread.modelSelection,
-    archivedAt: null,
-    settledOverride: null,
-    snoozedUntil: null,
-    latestRunId: runId,
-    latestRunProviderInstanceId: thread.providerInstanceId,
-    messageText: "Summarise the inbox",
-  };
   const limitedAccount = ProviderInstanceId.make("claude_limited");
   const refusal = [{ resetAt: null, refusedAt: "2026-10-29T11:00:00Z" }];
   const move = (overrides: Partial<Parameters<typeof signedOutFailoverCommand>[0]> = {}) =>
     signedOutFailoverCommand({
       mcpSignInsNeeded: new Map(),
-      thread: candidate,
+      thread: signedOutThread,
       settings,
       providers: signedOutProviders,
       recordedLimits: new Map([[limitedAccount, refusal]]),
@@ -1199,8 +1307,7 @@ describe("signedOutFailoverCommand", () => {
         model: "claude-opus-4-1",
         options: [{ id: "effort", value: "high" }],
       },
-      text: "Summarise the inbox",
-      attachments: [],
+      ...signedOutThread.message,
       dispatchMode: { type: "start_immediately" },
       createdBy: "user",
       creationSource: "server",
@@ -1218,18 +1325,41 @@ describe("signedOutFailoverCommand", () => {
     );
   });
 
+  it("moves an Auto thread for its current Auto model, not the one it last ran", () => {
+    const { modelSelection, withFable, ...auto } = autoMovedOffFable;
+    assert.include(
+      move({
+        ...auto,
+        thread: { ...signedOutThread, modelSelection },
+        providers: withFable(signedOutProviders),
+      })?.modelSelection,
+      { instanceId: ProviderInstanceId.make("claude_first"), model: "claude-opus-4-1" },
+    );
+  });
+
   it.each([
     ["the account signed in again", { providers }],
     [
       "the thread moved to another account",
-      { thread: { ...candidate, latestRunProviderInstanceId: ProviderInstanceId.make("codex") } },
+      {
+        thread: {
+          ...signedOutThread,
+          latestRunProviderInstanceId: ProviderInstanceId.make("codex"),
+        },
+      },
     ],
-    ["the thread is archived", { thread: { ...candidate, archivedAt: DateTime.makeUnsafe(now) } }],
+    [
+      "the thread is archived",
+      { thread: { ...signedOutThread, archivedAt: DateTime.makeUnsafe(now) } },
+    ],
     [
       "the thread is snoozed",
-      { thread: { ...candidate, snoozedUntil: DateTime.makeUnsafe(now + 60_000) } },
+      { thread: { ...signedOutThread, snoozedUntil: DateTime.makeUnsafe(now + 60_000) } },
     ],
-    ["the thread was settled", { thread: { ...candidate, settledOverride: "settled" as const } }],
+    [
+      "the thread was settled",
+      { thread: { ...signedOutThread, settledOverride: "settled" as const } },
+    ],
     ["no other account can run it", { providers: [signedOutProviders[0]!] }],
   ] as const)("keeps the thread in place when %s", (_, overrides) => {
     assert.isNull(move(overrides));

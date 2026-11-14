@@ -187,7 +187,7 @@ export type ProjectionSignedOutCandidate = Pick<
   /** The account whose login failed; the thread may point elsewhere since. */
   readonly latestRunProviderInstanceId: ProviderInstanceId | null;
   /** What the person asked, which the agent never saw. */
-  readonly messageText: string;
+  readonly message: Pick<OrchestrationV2ConversationMessage, "text" | "context" | "attachments">;
 };
 
 export type ProjectionRecoveryKind =
@@ -616,10 +616,7 @@ export interface ProjectionStoreV2Shape {
     readonly snooze: boolean;
     readonly waiting?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
-  /**
-   * Threads whose latest run failed on a rejected login before doing any work, within `maxAgeMs`,
-   * and whose message has no attachments to resend.
-   */
+  /** Threads whose latest run failed on a rejected login before doing any work, within `maxAgeMs`. */
   readonly getSignedOutFailoverCandidates: (options: {
     readonly now: DateTime.Utc;
     readonly maxAgeMs: number;
@@ -4341,7 +4338,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             )
             AND json_extract(t.payload_json, '$.archivedAt') IS NULL
             AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
-            AND json_array_length(message.payload_json, '$.attachments') = 0
             AND EXISTS (
               SELECT 1 FROM orchestration_v2_projection_turn_items error
               WHERE error.thread_id = t.thread_id AND error.run_id = r.run_id
@@ -4364,7 +4360,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         const candidates: Array<ProjectionSignedOutCandidate> = [];
         for (const row of rows) {
           const thread = yield* decodeThreadPayload(row.payload_json);
-          const message = yield* decodeMessagePayload(row.message_payload_json);
+          const { text, context, attachments } = yield* decodeMessagePayload(
+            row.message_payload_json,
+          );
           candidates.push({
             id: thread.id,
             projectId: thread.projectId,
@@ -4378,7 +4376,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               row.provider_instance_id === null
                 ? null
                 : ProviderInstanceId.make(row.provider_instance_id),
-            messageText: message.text,
+            message: { text, attachments, ...(context === undefined ? {} : { context }) },
           });
         }
         return candidates;

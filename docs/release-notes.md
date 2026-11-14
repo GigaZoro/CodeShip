@@ -1,3 +1,10 @@
+## 2026-11-14 — Auto no longer starts on a signed-out account when every account is limited
+
+- With account switching on, Auto already took the first account with usage left, but when none had any it started a new chat on the first account in the order, even one whose login had failed, and kept a chat on a signed-out account. It now waits on a signed-in account instead: a chat stays on its own account while that account can still run, and otherwise starts on the signed-in account whose limit ends first. See [Auto](user/thread-sidebar.md).
+- A chat whose login was rejected before the agent did any work moves to another account as soon as one gets usage back, instead of up to ten minutes later. It moves when its message had attachments too, and sends them again with the message instead of waiting for you.
+- When a limited or signed-out Auto chat looks for another account, or for room on its own, it checks usage for the model Auto runs now, not the one the chat last ran, so changing a coordinator model no longer keeps it waiting on a limit that model does not have, and a banked usage reset is spent only when that model is used up.
+- A Claude turn that the API refused with 401 now counts as a rejected login even when Claude sends no sign-in error first: the chat shows how to sign in again instead of ending as completed, the account reads as signed out, and the chat moves to another account.
+
 ## 2026-11-14 — Link errors say what answered at each address
 
 - When linking an environment, or reaching a linked one, fails because nothing answers there as T3.CodeShip, the error now says what happened at each address: it did not answer in time, could not be reached, answered with an HTTP error status, answered as another environment, or sent an answer that is not a T3.CodeShip environment's. Before, it only listed the addresses.
