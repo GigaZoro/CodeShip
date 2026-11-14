@@ -1791,7 +1791,7 @@ it.layer(
               Layer.succeed(TerminalManager.TerminalManager, terminals),
               Layer.mock(ProjectService.ProjectService)({}),
               Layer.mock(T3ProjectFileLoader.T3ProjectFileLoader)({
-                load: () => Effect.succeed(Option.none()),
+                load: () => Effect.succeedNone,
               }),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getThreadShell: () => Effect.succeed(null),
@@ -1943,7 +1943,7 @@ it.layer(
             Layer.succeed(TerminalManager.TerminalManager, manager),
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(T3ProjectFileLoader.T3ProjectFileLoader)({
-              load: () => Effect.succeed(Option.none()),
+              load: () => Effect.succeedNone,
             }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThreadShell: () => Effect.succeed(null),

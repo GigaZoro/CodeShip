@@ -91,7 +91,9 @@ const makeHarness = Effect.fn(function* (options: {
             ? {}
             : {
                 projectSettingsOverrides: {
-                  "project-1": { defaultProjectScripts: [...options.projectOverrideScripts] },
+                  [ProjectId.make("project-1")]: {
+                    defaultProjectScripts: [...options.projectOverrideScripts],
+                  },
                 },
               },
         ),
