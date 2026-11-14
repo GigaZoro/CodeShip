@@ -82,7 +82,7 @@ it("keeps the note for the provider thread that lost the work across a provider 
 });
 
 it("owes lost work until a prompt that carried it completes a turn", () => {
-  const build: Work = { kind: "shell", label: "vp run build", id: "build", awaited: true };
+  const build: Work = { kind: "shell", label: "vp run build", id: "build" };
   const tests: Work = { kind: "shell", label: "vp test", id: "tests" };
   const root = run(1, claudeThread, { restartCancelledBackgroundWork: [build] });
   // Its session was still closing when this turn built its prompt, so the record came later.
@@ -256,12 +256,9 @@ it("names a lost subagent by the id the agent resumes it with", () => {
   }).label;
   assert.lengthOf(longId, 160);
   assert.isFalse(isAwaitedWork(cancelledRosterTaskWork({ kind: "command", taskId: "shell-2" })));
-  assert.isTrue(
-    isAwaitedWork(cancelledRosterTaskWork({ kind: "command", taskId: "tests", awaited: true })),
-  );
   assert.isFalse(isAwaitedWork(cancelledRosterTaskWork({ kind: "monitor", taskId: "watchdog" })));
   assert.isTrue(
-    isAwaitedWork(cancelledRosterTaskWork({ kind: "monitor", taskId: "ci", awaited: true })),
+    isAwaitedWork(cancelledRosterTaskWork({ kind: "background_task", taskId: "tests" })),
   );
   assert.equal(
     cancelledTurnItemWork({

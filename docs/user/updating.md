@@ -48,9 +48,14 @@ is, installs the update, restarts, and resumes them, even when **Continue
 threads after restarts** is off. An update another device starts follows that
 setting instead.
 
-A restart stops background work: a command, task or subagent a chat started and
-is waiting on, such as a test run. It also stops the tool calls and subagents a
-running chat is waiting on, and the calls it queued behind them never start.
+Agents run the commands they wait on, such as a test run, a build or a push,
+through T3.CodeShip, outside the agent and the server. These carry on through the
+update and tell their chat when they finish, so the Safe update lists them under
+**Carry on through the update** and does not wait for them.
+
+A restart stops other background work: a task or subagent a chat's agent started
+and is waiting on. It also stops the tool calls and subagents a running chat is
+waiting on, and the calls it queued behind them never start.
 When chats are waiting on such work or running tool calls, the Safe update lists
 them, and **Update when it finishes** installs the update once the listed work is
 done and each listed chat has no tool call running, so the chats still get their

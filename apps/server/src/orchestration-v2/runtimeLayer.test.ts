@@ -4648,11 +4648,11 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     ["completed", "shell", false],
     ["waiting", "shell", false],
     ["cancelled", "shell", false],
-    ["completed", "watchdog-monitor", false],
-    ["failed", "awaited-monitor", false],
-    ["completed", "awaited-monitor", true],
-    ["waiting", "awaited-monitor", true],
-    ["cancelled", "awaited-monitor", true],
+    ["completed", "monitor", false],
+    ["failed", "task", false],
+    ["completed", "task", true],
+    ["waiting", "task", true],
+    ["cancelled", "task", true],
   ] as const)(
     "admits a restart continuation of a %s run that lost a %s: %s",
     ([status, kind, admitted]) =>
@@ -4710,15 +4710,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
               occurredAt: now,
               payload: {
                 runId: original.id,
-                restartCancelledBackgroundWork: [
-                  kind === "shell"
-                    ? { kind, label: "sleep 25" }
-                    : {
-                        kind: "monitor",
-                        label: "sleep 25",
-                        ...(kind === "awaited-monitor" ? { awaited: true as const } : {}),
-                      },
-                ],
+                restartCancelledBackgroundWork: [{ kind, label: "sleep 25" }],
               },
             },
           ],
@@ -10315,9 +10307,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         const [original] = (yield* orchestrator.getThreadProjection(threadId)).runs as [
           OrchestrationV2Run,
         ];
-        const work = [
-          { kind: "shell" as const, label: "sleep 5400", id: "shell-1", awaited: true as const },
-        ];
+        const work = [{ kind: "task" as const, label: "sleep 5400", id: "shell-1" }];
         const notice = backgroundWorkStoppedNotice({
           run: original,
           cause: "server-restarted",

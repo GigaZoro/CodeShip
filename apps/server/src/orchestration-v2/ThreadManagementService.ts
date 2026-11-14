@@ -340,28 +340,6 @@ export class ThreadManagementProviderInstanceDisabledError extends Schema.Tagged
   }
 }
 
-export class ThreadManagementBackgroundWaitError extends Schema.TaggedError<ThreadManagementBackgroundWaitError>()(
-  "ThreadManagementBackgroundWaitError",
-  {
-    threadId: ThreadId,
-    reason: Schema.Literals(["unsupported", "unavailable", "failed"]),
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    switch (this.reason) {
-      case "unsupported":
-        return "This provider cannot mark background work as awaited.";
-      case "unavailable":
-        return "This thread has no live provider session.";
-      case "failed":
-        return `Failed to update the awaited background work: ${
-          this.cause instanceof Error ? this.cause.message : String(this.cause ?? "unknown cause")
-        }`;
-    }
-  }
-}
-
 export const ThreadManagementError = Schema.Union([
   ThreadManagementThreadNotFoundError,
   ThreadManagementRunNotFoundError,
@@ -493,14 +471,6 @@ export interface ThreadManagementServiceShape {
   readonly forceStopThread: (
     input: OrchestrationV2ForceStopThreadInput,
   ) => Effect.Effect<OrchestrationV2ForceStopThreadResult, OrchestrationV2ForceStopThreadError>;
-  readonly awaitBackgroundTasks: (input: {
-    readonly threadId: ThreadId;
-    readonly taskIds: ReadonlyArray<string>;
-    readonly awaited: boolean;
-  }) => Effect.Effect<
-    { readonly matched: ReadonlyArray<string>; readonly unmatched: ReadonlyArray<string> },
-    ThreadManagementBackgroundWaitError
-  >;
   readonly stopDelegatedTasks: (input: {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
@@ -1232,7 +1202,7 @@ const make = Effect.gen(function* () {
       });
       if (run?.status !== "completed") return;
       if (runId !== input.runId) {
-        // The agent did not see this work when it asked to settle, so its awaited work keeps the thread active.
+        // The agent did not see this work when it asked to settle, so work that holds completion keeps the thread active.
         const shell = yield* orchestrator.getThreadShell(input.threadId);
         if (backgroundWorkHoldsCompletion(shell?.pendingBackgroundTasks ?? [])) return;
       }
@@ -1572,55 +1542,6 @@ const make = Effect.gen(function* () {
     (effect, input) => effect.pipe((effect) => threadDispatch.withLock(input.threadId, effect)),
   );
 
-  const awaitBackgroundTasks: ThreadManagementServiceShape["awaitBackgroundTasks"] = Effect.fn(
-    "ThreadManagementService.awaitBackgroundTasks",
-  )(function* (input) {
-    const unavailable = (cause?: unknown) =>
-      new ThreadManagementBackgroundWaitError({
-        threadId: input.threadId,
-        reason: "unavailable",
-        ...(cause === undefined ? {} : { cause }),
-      });
-    const records = yield* orchestrator
-      .getThreadRecords(input.threadId, ["providerThreads"])
-      .pipe(Effect.mapError(unavailable));
-    const providerThread = records.providerThreads.find(
-      (candidate) =>
-        candidate.id === records.thread.activeProviderThreadId &&
-        candidate.appThreadId === input.threadId,
-    );
-    if (records.thread.deletedAt !== null || providerThread?.providerSessionId == null) {
-      return yield* unavailable();
-    }
-    const runtime = yield* sessions
-      .get(providerThread.providerSessionId)
-      .pipe(Effect.mapError(unavailable));
-    if (Option.isNone(runtime)) {
-      return yield* unavailable();
-    }
-    if (runtime.value.awaitBackgroundTasks === undefined) {
-      return yield* new ThreadManagementBackgroundWaitError({
-        threadId: input.threadId,
-        reason: "unsupported",
-      });
-    }
-    const { matched } = yield* runtime.value
-      .awaitBackgroundTasks({ providerThread, taskIds: input.taskIds, awaited: input.awaited })
-      .pipe(
-        Effect.timeout("15 seconds"),
-        Effect.mapError(
-          (cause) =>
-            new ThreadManagementBackgroundWaitError({
-              threadId: input.threadId,
-              reason: "failed",
-              cause,
-            }),
-        ),
-      );
-    const matchedIds = new Set(matched);
-    return { matched, unmatched: input.taskIds.filter((taskId) => !matchedIds.has(taskId)) };
-  });
-
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = Effect.fn(
     "ThreadManagementService.stopDelegatedTasks",
   )(function* (input) {
@@ -1793,7 +1714,6 @@ const make = Effect.gen(function* () {
     stopDelegatedTasks,
     stopWorkflow,
     forceStopThread,
-    awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,

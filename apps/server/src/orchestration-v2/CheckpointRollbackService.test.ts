@@ -835,7 +835,6 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
             label: "npm run dev (id dev-server)",
             id: "dev-server",
             nativeItemId: "toolu_kept",
-            awaited: true,
           } as const;
           // A run about to go already lost work: its own, and work an earlier turn started.
           yield* history.recordLoss(4, [
@@ -853,7 +852,6 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
               kind: "command",
               description: "npm run dev",
               nativeItemId: "toolu_kept",
-              awaited: true,
             },
             {
               taskId: "later",
@@ -902,7 +900,6 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
             message: [
               "Rewinding the conversation ended the agent process and stopped background work before it finished:",
               "- shell: npm run dev (id dev-server)",
-              "This chat was waiting on it.",
             ].join("\n"),
           });
         }),
@@ -940,7 +937,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
         Effect.gen(function* () {
           const history = yield* seedRollbackHistory("rollback-history-failure");
           const tasks = [
-            { taskId: "dev-server", kind: "command", description: "npm run dev", awaited: true },
+            { taskId: "dev-server", kind: "command", description: "npm run dev" },
             { taskId: "later", kind: "command", description: "sleep 600" },
           ] as const;
           yield* history.listBackgroundTasks(tasks);
@@ -965,7 +962,6 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
                     kind: "shell",
                     label: "npm run dev (id dev-server)",
                     id: "dev-server",
-                    awaited: true,
                   },
                   { kind: "shell", label: "sleep 600 (id later)", id: "later" },
                 ],

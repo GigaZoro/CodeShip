@@ -25,7 +25,8 @@ import {
   type UpdateEverythingSelection,
   updateRowKey,
 } from "./updateEverything.logic";
-import { runningThreadCountAtom } from "./runningThreads";
+import { runningCommandCountAtom, runningThreadCountAtom } from "./runningThreads";
+import { runningCommandsCarryOnLabel } from "../desktopUpdate.logic";
 
 import { msg, t, tn, tx } from "~/i18n";
 interface UpdateEverythingDialogProps {
@@ -128,6 +129,32 @@ function UpdateEverythingDialogContent({
   );
   const running = stopped + continuing;
   const restarting = new Set(selectedRestarts.map((machine) => machine.environmentId));
+  const commands = useAtomValue(runningCommandCountAtom([...restarting].join("\n")));
+  const footerNote = [
+    running === 0
+      ? null
+      : stopped === 0
+        ? tn(
+            running,
+            "{count} running thread will pause and resume after the restart.",
+            "{count} running threads will pause and resume after the restart.",
+          )
+        : tn(
+            running,
+            "{count} running thread will be interrupted.",
+            "{count} running threads will be interrupted.",
+          ),
+    stopped > 0 && continuing > 0
+      ? tn(
+          continuing,
+          "{count} can resume after the restart.",
+          "{count} can resume after the restart.",
+        )
+      : null,
+    commands === 0 ? null : runningCommandsCarryOnLabel(commands),
+  ]
+    .filter((sentence) => sentence !== null)
+    .join(" ");
 
   return (
     <>
@@ -247,29 +274,9 @@ function UpdateEverythingDialogContent({
           <p className="self-center text-sm max-sm:order-1 max-sm:text-center sm:mr-auto">
             {disabledReason}
           </p>
-        ) : running > 0 ? (
+        ) : footerNote !== "" ? (
           <p className="self-center text-muted-foreground text-sm max-sm:order-1 max-sm:text-center sm:mr-auto">
-            {stopped === 0
-              ? tn(
-                  running,
-                  "{count} running thread will pause and resume after the restart.",
-                  "{count} running threads will pause and resume after the restart.",
-                )
-              : continuing === 0
-                ? tn(
-                    running,
-                    "{count} running thread will be interrupted.",
-                    "{count} running threads will be interrupted.",
-                  )
-                : `${tn(
-                    running,
-                    "{count} running thread will be interrupted.",
-                    "{count} running threads will be interrupted.",
-                  )} ${tn(
-                    continuing,
-                    "{count} can resume after the restart.",
-                    "{count} can resume after the restart.",
-                  )}`}
+            {footerNote}
           </p>
         ) : null}
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" disabled={busy} />}>

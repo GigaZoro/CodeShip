@@ -161,20 +161,37 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
 export function getSafeUpdateButtonTooltip(
   state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion">,
   runningThreads: number,
+  runningCommands: number,
 ): string {
   const version = getDesktopUpdateDownloadedVersion(state);
-  return version
-    ? tn(
-        runningThreads,
-        "Update {version} downloaded. Click for a safe update: {count} running chat resume after the restart.",
-        "Update {version} downloaded. Click for a safe update: {count} running chats resume after the restart.",
-        { version },
-      )
-    : tn(
-        runningThreads,
-        "Update downloaded. Click for a safe update: {count} running chat resume after the restart.",
-        "Update downloaded. Click for a safe update: {count} running chats resume after the restart.",
-      );
+  const threads =
+    runningThreads === 0
+      ? version
+        ? t("Update {version} downloaded. Click for a safe update.", { version })
+        : t("Update downloaded. Click for a safe update.")
+      : version
+        ? tn(
+            runningThreads,
+            "Update {version} downloaded. Click for a safe update: {count} running chat resume after the restart.",
+            "Update {version} downloaded. Click for a safe update: {count} running chats resume after the restart.",
+            { version },
+          )
+        : tn(
+            runningThreads,
+            "Update downloaded. Click for a safe update: {count} running chat resume after the restart.",
+            "Update downloaded. Click for a safe update: {count} running chats resume after the restart.",
+          );
+  return runningCommands === 0
+    ? threads
+    : `${threads} ${runningCommandsCarryOnLabel(runningCommands)}`;
+}
+
+export function runningCommandsCarryOnLabel(count: number): string {
+  return tn(
+    count,
+    "{count} running command carries on through the update.",
+    "{count} running commands carry on through the update.",
+  );
 }
 
 export function getDesktopUpdateInstallConfirmationMessage(

@@ -193,7 +193,7 @@ provider selection model-visible without allowing a request that cannot run.
 
 ## Tool Surface
 
-The server exposes eleven orchestration tools.
+The server exposes these orchestration tools.
 
 ### `orchestrator_capabilities`
 
@@ -333,6 +333,19 @@ watches. A nonterminal task with no interruptible run is rejected. A terminal ta
 returns its existing status, and its child thread still stops, including later
 runs and watch wakes. Published task results remain available. It accepts an
 optional cancellation reason.
+
+### `t3_command_run`
+
+Runs a shell command that ends (tests, a build, an install, a push, a deploy, a long script) as an app-owned task of
+the calling thread, started outside the provider and the server so a restart does not cut it.
+It takes `command`, an optional `cwd` (the thread's checkout by default), `label`, and
+`timeoutMinutes` (default 60, at most 720), and returns the `taskId`, the log path and the
+timeout. The command's end completes the task through the same durable delivery as a delegated
+task's result, which wakes the thread once with the exit code and the last output.
+`task_status` reads the task, and `task_cancel` kills the command's process tree. Native
+background shells stay for work left running, such as dev servers and watchers; the update hold
+lists neither. [Server updates](../internals/server-updates.md) describes how the command
+survives a restart.
 
 ### `create_threads`
 

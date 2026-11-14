@@ -398,6 +398,7 @@ export interface PendingBackgroundWorkItem {
   readonly kind: BackgroundWorkKind;
   readonly label: string;
   readonly childThreadId: ThreadId | undefined;
+  readonly startedAtMs: number | null;
 }
 
 export interface PendingBackgroundWorkPresentation {
@@ -455,6 +456,7 @@ export function presentPendingBackgroundWork(
             ? t(BACKGROUND_WORK_KINDS[task.kind].singular)
             : label,
         childThreadId: task.kind === "subagent" ? task.childThreadId : undefined,
+        startedAtMs: task.startedAt === undefined ? null : DateTime.toEpochMillis(task.startedAt),
       };
     })
     // `map` returned a new array; Hermes has no `toSorted`.

@@ -149,11 +149,11 @@ into an ordinary one, and every release drops the mark, so a later failure hold 
 inherit it. The run-update listener does
 not replay completions from before startup, so a startup pass after reconciliation applies
 the same release to threads whose latest run completed, then starts their queues. A settled run qualifies only when it lost work the agent waits on
-(a subagent, a background task, or a shell or monitor the agent marked with
-`t3_background_wait`) and its session was live, so stale records from an older crash
-never wake it. Its continuation prompt is the note of what will not report back. An
-unmarked shell or monitor does not wake a settled run: most are dev servers and their
-watchdogs that nobody waits on, so that note waits for the next user message.
+(a subagent or a background task) and its session was live, so stale records from an older
+crash never wake it. Its continuation prompt is the note of what will not report back. A
+shell or monitor does not wake a settled run: most are dev servers and their watchdogs that
+nobody waits on, and a command a chat waits on runs through `t3_command_run`, which a
+restart does not cut, so that note waits for the next user message.
 For a settled chat the provider thread's roster is often the only record of a background
 command, since the command's turn item may already have completed. Whoever empties a
 roster whose process is gone therefore records the loss on a run in the same write: the
@@ -220,7 +220,7 @@ they name nothing. An attempt from before the record counts as having delivered 
 lost before its run. Only `run.background-work-cancelled` changes a run's record: a run
 finishes from the snapshot it started with, so the projection keeps the stored record
 whatever a `run.updated` carries. A wake leaves out work a completed prompt already
-named, since a run started again tells its own, and a settled run whose awaited work was
+named, since a run started again tells its own, and a settled run whose waited-on work was
 all told is not woken.
 
 A restart of a running turn moves its run to the next attempt before it interrupts the
@@ -270,11 +270,13 @@ command and message IDs prevent duplicate submissions after an outbox retry. Cod
 resumes without adding provider prompt text unless the turn lost background work;
 other adapters receive the continuation message through their normal turn path.
 
-Clients hold an update while chats wait on background work, because no provider's
-background shell outlives the provider process a restart stops. Claude Code owns its
-`run_in_background` shells and kills them when it exits, and a new server cannot
-reattach to an old provider process mid-protocol. `server.watchRestartHold` streams
-the awaited part of what a restart would cancel, computed by the same
+Clients hold an update while chats wait on subagents or background tasks a restart would
+cut, because no provider's background work outlives the provider process a restart stops.
+Claude Code owns its `run_in_background` shells and kills them when it exits, and a new
+server cannot reattach to an old provider process mid-protocol. Shells and monitors do not
+hold: most are dev servers and watchers, which would hold every update, and a command a chat
+waits on runs through `t3_command_run` instead. `server.watchRestartHold` streams the
+part of what a restart would cancel that a chat waits on, computed by the same
 `restartCancelledBackgroundWork` the shutdown reconcile uses for its note, so the hold
 and the note cannot disagree. The client that starts the update waits on it before
 restarting and lets the user update now or cancel. The wait happens outside the

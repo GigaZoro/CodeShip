@@ -210,9 +210,6 @@ export function summarizeT3ToolCalls(
         tn(countEntities(entityIds("taskId")), "{count} command", "{count} commands"),
       );
       break;
-    case "background-wait":
-      label = phrase(t("Updated"), t("update"), t("background waits {times}", { times }));
-      break;
     case "task-cancel":
       label = phrase(
         t("Requested cancellation of"),

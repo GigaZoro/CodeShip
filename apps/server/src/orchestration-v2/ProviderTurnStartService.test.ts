@@ -1539,7 +1539,7 @@ effectIt.effect.each([
         })),
       });
       const work = [
-        { kind: "shell" as const, label: "vp run build (id build)", id: "build", awaited: true },
+        { kind: "shell" as const, label: "vp run build (id build)", id: "build" },
       ] as const;
       const openSession = harness.open.getMockImplementation()!;
       harness.open.mockImplementation(() =>

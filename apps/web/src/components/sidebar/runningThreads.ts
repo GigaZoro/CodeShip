@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2PendingRuntimeRequestSummary,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -34,6 +35,34 @@ export const runningThreadsAtom = Atom.family((environmentIds: string) =>
 export const runningThreadCountAtom = Atom.family((environmentIds: string) =>
   Atom.make((get) => get(runningThreadsAtom(environmentIds)).length).pipe(
     Atom.withLabel(`running-thread-count:${environmentIds}`),
+  ),
+);
+
+export interface RunningCommand extends RunningThread {
+  readonly task: OrchestrationV2PendingBackgroundTask;
+}
+
+/** Commands chats wait on that keep running through a restart of their server. */
+export const runningCommandsAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get): ReadonlyArray<RunningCommand> =>
+    environmentIds
+      .split("\n")
+      .filter((id) => id !== "")
+      .flatMap((id) => {
+        const environmentId = EnvironmentId.make(id);
+        return get(environmentThreadShells.environmentThreadsAtom(environmentId)).flatMap(
+          (thread) =>
+            (thread.pendingBackgroundTasks ?? [])
+              .filter((task) => task.survivesRestart === true)
+              .map((task) => ({ environmentId, thread, task })),
+        );
+      }),
+  ).pipe(Atom.withLabel(`running-commands:${environmentIds}`)),
+);
+
+export const runningCommandCountAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get) => get(runningCommandsAtom(environmentIds)).length).pipe(
+    Atom.withLabel(`running-command-count:${environmentIds}`),
   ),
 );
 

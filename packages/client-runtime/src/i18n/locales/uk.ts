@@ -811,6 +811,12 @@ const catalog: MessageCatalog = {
     other: "{count} рядка",
   },
   "{count} running": "запущено: {count}",
+  "{count} running commands carry on through the update.": {
+    one: "{count} запущена команда працюватиме й під час оновлення.",
+    few: "{count} запущені команди працюватимуть і під час оновлення.",
+    many: "{count} запущених команд працюватимуть і під час оновлення.",
+    other: "{count} запущеної команди працюватимуть і під час оновлення.",
+  },
   "{count} running threads will be interrupted.": {
     one: "{count} запущений чат буде перервано.",
     few: "{count} запущені чати буде перервано.",
@@ -2692,7 +2698,6 @@ const catalog: MessageCatalog = {
   "background task": "фонове завдання",
   "Background task": "Фонове завдання",
   "Background task failed": "Фонове завдання не вдалося",
-  "background waits {times}": "фонові очікування {times}",
   "Background work": "Фонова робота",
   "Backup: {path}": "Резервна копія: {path}",
   "Bad signature": "Хибний підпис",
@@ -2922,6 +2927,7 @@ const catalog: MessageCatalog = {
   "Capturing the window failed.": "Не вдалося захопити вікно.",
   "Capturing the window timed out.": "Час захоплення вікна вичерпано.",
   CarPlay: "CarPlay",
+  "Carry on through the update": "Працюють і під час оновлення",
   Catalog: "Каталог",
   "Catch up a missed run": "Надолужувати пропущений запуск",
   Category: "Категорія",
@@ -11463,6 +11469,8 @@ const catalog: MessageCatalog = {
     many: "T3.CodeShip видалив {count} прихованих символів. Прочитайте запит перед надсиланням.",
     other: "T3.CodeShip видалив {count} прихованого символу. Прочитайте запит перед надсиланням.",
   },
+  "T3.CodeShip runs these commands outside the chats, so the restart does not stop them. Each tells its chat when it finishes.":
+    "T3.CodeShip виконує ці команди поза чатами, тому перезапуск їх не зупиняє. Кожна повідомить свій чат, коли завершиться.",
   "T3.CodeShip saves where each running chat is, installs the update and restarts, then resumes every chat automatically.":
     "T3.CodeShip запам’ятовує стан кожного запущеного чату, встановлює оновлення, перезапускається, а потім автоматично відновлює всі чати.",
   "T3.CodeShip system footprint": "Системне навантаження T3.CodeShip",
@@ -13375,6 +13383,8 @@ const catalog: MessageCatalog = {
       other:
         "Оновлення {version} завантажено. Натисніть для безпечного оновлення: {count} запущеного чату відновляться після перезапуску.",
     },
+  "Update {version} downloaded. Click for a safe update.":
+    "Оновлення {version} завантажено. Натисніть для безпечного оновлення.",
   "Update {version} downloaded. Click to restart and install.":
     "Оновлення {version} завантажено. Натисніть, щоб перезапустити й установити.",
   "Update {version} ready to download": "Оновлення {version} готове до завантаження",
@@ -13410,6 +13420,8 @@ const catalog: MessageCatalog = {
     other:
       "Оновлення завантажено. Натисніть для безпечного оновлення: {count} запущеного чату відновляться після перезапуску.",
   },
+  "Update downloaded. Click for a safe update.":
+    "Оновлення завантажено. Натисніть для безпечного оновлення.",
   "Update existing": "Оновити наявну",
   "Update extension": "Оновити розширення",
   "Update failed": "Не вдалося оновити",

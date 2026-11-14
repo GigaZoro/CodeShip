@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderInstanceId, ProviderThreadId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import {
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
@@ -312,6 +313,8 @@ describe("derivePendingBackgroundWork", () => {
 });
 
 describe("derivePendingBackgroundWork kinds", () => {
+  const runStartedAt = DateTime.makeUnsafe("2026-11-14T10:00:00.000Z");
+
   it("keeps the roster's kinds and names turn items by their type", () => {
     const tasks = derivePendingBackgroundWork({
       latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
@@ -343,6 +346,21 @@ describe("derivePendingBackgroundWork kinds", () => {
           nativeItemRef: { nativeId: "cmd" },
           input: "npm test",
         },
+        {
+          id: "item-run" as never,
+          type: "subagent",
+          status: "running",
+          title: "vp run check:changed",
+          nativeItemRef: null,
+          childThreadId: null,
+          command: {
+            command: "vp run check:changed",
+            cwd: "/repo",
+            logPath: "/repo/.t3/commands/run.log",
+            timeoutMinutes: 30,
+          },
+          startedAt: runStartedAt,
+        },
       ],
     });
     expect(tasks).toEqual([
@@ -357,6 +375,14 @@ describe("derivePendingBackgroundWork kinds", () => {
         childThreadId: "thread:child",
       },
       { taskId: "cmd", description: "npm test", kind: "command" },
+      {
+        taskId: "item-run",
+        description: "vp run check:changed",
+        kind: "command",
+        awaited: true,
+        survivesRestart: true,
+        startedAt: runStartedAt,
+      },
     ]);
   });
 

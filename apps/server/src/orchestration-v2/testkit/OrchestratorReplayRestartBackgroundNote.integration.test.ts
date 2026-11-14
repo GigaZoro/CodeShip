@@ -12,7 +12,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -337,7 +336,6 @@ const LOST_WORK = {
   label: LOST_TASK_LABEL,
   id: LOST_TASK_ID,
   nativeItemId: "toolu_01DAnwwvVvLM1cTfzrm6kkor",
-  awaited: true,
 } as const;
 const LOST_GATE = "process-exit";
 const QUESTION_AFTER_LOSS = "Is the background command done yet?";
@@ -356,19 +354,16 @@ interface LostWork {
   readonly rootResultLabel: string;
   readonly work: OrchestrationV2RestartCancelledBackgroundWork;
   readonly note: string;
-  /** A command waits only once the agent marks it awaited; a subagent always holds the chat. */
-  readonly awaitTaskId?: string;
 }
 
 const LOST_COMMAND: LostWork = {
-  name: "a marked background command",
+  name: "a background command",
   scenario: LOST_SCENARIO,
   sessionId: LOST_SESSION_ID,
   prompt: CLAUDE_BACKGROUND_TASK_AFTER_ROOT_PROMPT,
   rootResultLabel: "result:root",
   work: LOST_WORK,
   note: LOST_NOTE,
-  awaitTaskId: LOST_TASK_ID,
 };
 
 /** No roster lists a background subagent; only the process that runs it knows it. */
@@ -423,7 +418,7 @@ const readLostTaskTranscript = Effect.fn("readLostTaskTranscript")(function* (
     ...recorded,
     entries: [
       ...recorded.entries.slice(0, label(lost.rootResultLabel) + 1),
-      // Holds the process until the agent marks the command awaited; it then ends unprompted.
+      // Holds the process until the test lets it go; it then ends unprompted.
       // The frame carries nothing, so no event races the process exit.
       ...(processExits === "idle"
         ? ([
@@ -552,28 +547,6 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
       if (providerThread?.providerSessionId == null) {
         return yield* Effect.die("lost task scenario has no provider session");
       }
-      const runtime = yield* sessions.get(providerThread.providerSessionId);
-      if (Option.isNone(runtime) || runtime.value.awaitBackgroundTasks === undefined) {
-        return yield* Effect.die("lost task scenario has no live Claude runtime");
-      }
-      if (lostWork.awaitTaskId !== undefined) {
-        const markedAfter = yield* eventSink.latestSequence({ threadId });
-        // What t3_background_wait does for the agent.
-        const { matched } = yield* runtime.value.awaitBackgroundTasks({
-          providerThread,
-          taskIds: [lostWork.awaitTaskId],
-          awaited: true,
-        });
-        assert.deepEqual(matched, [lostWork.awaitTaskId]);
-        yield* eventSink.stream({ threadId, afterSequence: markedAfter }).pipe(
-          Stream.filter(
-            ({ event }) =>
-              event.type === "provider-thread.updated" &&
-              (event.payload.pendingBackgroundTasks ?? []).some((task) => task.awaited === true),
-          ),
-          Stream.runHead,
-        );
-      }
       const afterSequence = yield* eventSink.latestSequence({ threadId });
       const settledRun = settled.runs[0];
       if (stop && settledRun !== undefined) {
@@ -658,7 +631,7 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
     message: [
       `${lead} and stopped background work before it finished:`,
       `- ${lostWork.work.kind}: ${lostWork.work.label}`,
-      "This chat was waiting on it.",
+      ...(lostWork.work.kind === "shell" ? [] : ["This chat was waiting on it."]),
     ].join("\n"),
   });
   if (wakeWithoutRestart) {
@@ -698,8 +671,8 @@ const runLostTask = Effect.fn("runLostTask")(function* (input: {
 });
 
 /**
- * The chat waits on a marked command, the user asks about it, and the process ends during that
- * turn. Threads continue after restarts here, so a wake would show as a continuation run.
+ * The chat leaves a background command running, the user asks about it, and the process ends
+ * during that turn. Threads continue after restarts here, so a wake would show as a continuation run.
  */
 const runLostTaskDuringTurn = Effect.gen(function* () {
   const transcript = yield* readLostTaskTranscript(
@@ -740,31 +713,6 @@ const runLostTaskDuringTurn = Effect.gen(function* () {
   const after = yield* Effect.scoped(
     Effect.gen(function* () {
       yield* runOrchestratorV2Scenario(settledScenario);
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const eventSink = yield* EventSink.EventSinkV2;
-      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-      const providerThread = (yield* orchestrator.getThreadProjection(threadId)).providerThreads[0];
-      if (providerThread?.providerSessionId == null) {
-        return yield* Effect.die("lost task scenario has no provider session");
-      }
-      const runtime = yield* sessions.get(providerThread.providerSessionId);
-      if (Option.isNone(runtime) || runtime.value.awaitBackgroundTasks === undefined) {
-        return yield* Effect.die("lost task scenario has no live Claude runtime");
-      }
-      const markedAfter = yield* eventSink.latestSequence({ threadId });
-      yield* runtime.value.awaitBackgroundTasks({
-        providerThread,
-        taskIds: [LOST_TASK_ID],
-        awaited: true,
-      });
-      yield* eventSink.stream({ threadId, afterSequence: markedAfter }).pipe(
-        Stream.filter(
-          ({ event }) =>
-            event.type === "provider-thread.updated" &&
-            (event.payload.pendingBackgroundTasks ?? []).some((task) => task.awaited === true),
-        ),
-        Stream.runHead,
-      );
       const result = yield* runOrchestratorV2Scenario(
         scenario("cut", materialized.steps.slice(settledAt + 1)),
       );
@@ -785,13 +733,13 @@ const runLostTaskDuringTurn = Effect.gen(function* () {
 
 describe("background work its agent process lost", () => {
   it.effect(
-    "a restart wakes a chat whose run completed while it waits on a marked background command",
+    "a restart wakes a chat whose run completed while it waits on a background subagent",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
           const { recovered } = yield* runLostTask({
-            lost: LOST_COMMAND,
-            resumedPrompts: [LOST_NOTE],
+            lost: LOST_SUBAGENT,
+            resumedPrompts: [LOST_SUBAGENT.note],
             userMessagesAfterRestart: [],
             continueThreadsAfterServerUpdate: true,
           });
@@ -805,7 +753,7 @@ describe("background work its agent process lost", () => {
           const continuation = recovered.runs[1];
           assert.equal(
             recovered.messages.find((message) => message.id === continuation?.userMessageId)?.text,
-            LOST_NOTE,
+            LOST_SUBAGENT.note,
           );
         }).pipe(
           provideDeterministicTestRuntime,
@@ -814,11 +762,12 @@ describe("background work its agent process lost", () => {
       ),
   );
 
-  it.effect.each([LOST_COMMAND, LOST_SUBAGENT])(
-    "wakes the chat at once when only the agent process running $name ends",
-    (lost) =>
+  it.effect(
+    "wakes the chat at once when only the agent process running a background subagent ends",
+    () =>
       Effect.scoped(
         Effect.gen(function* () {
+          const lost = LOST_SUBAGENT;
           const { after: woken } = yield* runLostTask({
             lost,
             resumedPrompts: [lost.note],
@@ -845,11 +794,12 @@ describe("background work its agent process lost", () => {
       ),
   );
 
-  it.effect.each([LOST_COMMAND, LOST_SUBAGENT])(
-    "wakes the chat waiting on $name when its session is closed after too long without activity",
-    (lost) =>
+  it.effect(
+    "wakes the chat waiting on a background subagent when its session is closed after too long without activity",
+    () =>
       Effect.scoped(
         Effect.gen(function* () {
+          const lost = LOST_SUBAGENT;
           const { after: woken } = yield* runLostTask({
             lost,
             resumedPrompts: [lost.note],
@@ -962,7 +912,6 @@ describe("background work its agent process lost", () => {
               message: [
                 `${lead} and stopped background work before it finished:`,
                 `- shell: ${LOST_TASK_LABEL}`,
-                "This chat was waiting on it.",
               ].join("\n"),
             },
           );
@@ -973,14 +922,21 @@ describe("background work its agent process lost", () => {
       ),
   );
 
-  it.effect("tells the next user message when restarts do not continue threads", () =>
+  it.effect.each([
+    { lost: LOST_COMMAND, continueThreadsAfterServerUpdate: true, case: "a background command" },
+    {
+      lost: LOST_SUBAGENT,
+      continueThreadsAfterServerUpdate: false,
+      case: "a subagent when restarts do not continue threads",
+    },
+  ])("tells the next user message about $case", ({ lost, continueThreadsAfterServerUpdate }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { recovered, after } = yield* runLostTask({
-          lost: LOST_COMMAND,
-          resumedPrompts: [`${LOST_NOTE}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
+          lost,
+          resumedPrompts: [`${lost.note}\n\nUser message:\n${QUESTION_AFTER_LOSS}`],
           userMessagesAfterRestart: [QUESTION_AFTER_LOSS],
-          continueThreadsAfterServerUpdate: false,
+          continueThreadsAfterServerUpdate,
         });
         assert.lengthOf(recovered.runs, 1);
         assert.deepEqual(

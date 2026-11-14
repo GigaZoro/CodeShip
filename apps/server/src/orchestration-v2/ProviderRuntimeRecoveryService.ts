@@ -187,7 +187,7 @@ interface RestartCancelledEntry {
 
 /**
  * The background work a restart cancels, keyed by the provider thread that waits on it. Shutdown
- * records it for the restart note; an update waits on the awaited part of it before restarting.
+ * records it for the restart note; an update waits on the part a chat waits on before restarting.
  */
 function restartCancelledBackgroundWork(
   projection: RecoveryProjection,
@@ -196,14 +196,6 @@ function restartCancelledBackgroundWork(
 ): ReadonlyMap<ProviderThreadId, ReadonlyArray<RestartCancelledEntry>> {
   const cancelled = new Map<ProviderThreadId, Array<RestartCancelledEntry>>();
   const recordedNativeIds = new Set<string>();
-  // The roster carries the agent's t3_background_wait mark, which its turn item lacks.
-  const awaitedNativeIds = new Set(
-    (projection.providerThreads ?? []).flatMap((providerThread) =>
-      (providerThread.pendingBackgroundTasks ?? []).flatMap((task) =>
-        task.awaited === true ? [task.taskId] : [],
-      ),
-    ),
-  );
   const record = (
     providerThreadId: ProviderThreadId | null | undefined,
     entry: RestartCancelledEntry,
@@ -228,10 +220,7 @@ function restartCancelledBackgroundWork(
     );
     if (work === undefined) return;
     const nativeId = item.nativeItemRef?.nativeId;
-    record(awaitingId, {
-      work: nativeId != null && awaitedNativeIds.has(nativeId) ? { ...work, awaited: true } : work,
-      holdId: nativeId ?? item.id,
-    });
+    record(awaitingId, { work, holdId: nativeId ?? item.id });
     if (nativeId != null) recordedNativeIds.add(nativeId);
   };
   for (const run of cutRuns) {

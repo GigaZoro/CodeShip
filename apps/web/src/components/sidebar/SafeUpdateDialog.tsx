@@ -3,6 +3,7 @@ import type {
   OrchestrationV2RestartHoldTurn,
   OrchestrationV2RestartHoldWork,
 } from "@t3tools/contracts";
+import { commandDisplayText } from "@t3tools/client-runtime/work-log/command-label";
 import { type ReactNode, type RefObject, useRef } from "react";
 
 import { useEnvironments } from "~/state/environments";
@@ -19,7 +20,10 @@ import {
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import {
+  type RunningCommand,
   type RunningThread,
+  runningCommandCountAtom,
+  runningCommandsAtom,
   runningThreadCountAtom,
   runningThreadsAtom,
   splitRunningThreadsForRestart,
@@ -48,8 +52,9 @@ export function useThisAppRunningThreads(ready: boolean) {
       )
     : "";
   const count = useAtomValue(runningThreadCountAtom(key));
+  const commandCount = useAtomValue(runningCommandCountAtom(key));
   const holdCount = useRestartHoldWorkCount(useHostedRestartHoldKey(ready));
-  return { key, count, busy: count > 0 || holdCount > 0 };
+  return { key, count, commandCount, busy: count > 0 || commandCount > 0 || holdCount > 0 };
 }
 
 export function SafeUpdateDialog({
@@ -106,6 +111,7 @@ function SafeUpdateDialogContent({
   const { resuming, waitingOnYou } = splitRunningThreadsForRestart(
     useAtomValue(runningThreadsAtom(environmentIds)),
   );
+  const commands = useAtomValue(runningCommandsAtom(environmentIds));
   const work = useRestartHoldWork(useHostedRestartHoldKey());
   const { background, turnCalls } = splitRestartHoldWork(work);
   return (
@@ -140,6 +146,7 @@ function SafeUpdateDialogContent({
             )}
             work={turnCalls}
           />
+          <CommandGroup commands={commands} />
           <ThreadGroup title={t("Resume after the restart")} threads={resuming} />
           <ThreadGroup
             title={t("Waiting for your answer")}
@@ -215,6 +222,30 @@ function ThreadGroup({
       entries={threads.map(({ environmentId, thread }) => ({
         key: `${environmentId}:${thread.id}`,
         content: thread.title,
+      }))}
+    />
+  );
+}
+
+function CommandGroup({ commands }: { readonly commands: ReadonlyArray<RunningCommand> }) {
+  return (
+    <EntryGroup
+      title={t("Carry on through the update")}
+      note={t(
+        "T3.CodeShip runs these commands outside the chats, so the restart does not stop them. Each tells its chat when it finishes.",
+      )}
+      entries={commands.map(({ environmentId, thread, task }) => ({
+        key: `${environmentId}:${task.taskId}`,
+        content: (
+          <>
+            {task.description === undefined ? (
+              t("Command")
+            ) : (
+              <span className="font-mono">{commandDisplayText(task.description)}</span>
+            )}{" "}
+            <span className="text-muted-foreground">{thread.title}</span>
+          </>
+        ),
       }))}
     />
   );

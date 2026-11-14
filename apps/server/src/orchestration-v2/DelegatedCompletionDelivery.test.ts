@@ -2571,52 +2571,54 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
     }),
   );
 
-  it.effect("reports a child whose monitor the restart cut as interrupted, not completed", () =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const now = yield* DateTime.now;
-      const threadId = ThreadId.make("thread:restart-monitor-parent");
-      const projectId = ProjectId.make("project:restart-monitor-parent");
-      const runId = RunId.make("run:restart-monitor-parent");
-      const rootNodeId = NodeId.make("node:restart-monitor-parent-root");
-      yield* seedParentWithTerminalTask({
-        threadId,
-        projectId,
-        runId,
-        rootNodeId,
-        taskId: NodeId.make("node:restart-monitor-parent-settled"),
-        deliveryState: "delivered",
-        now,
-      });
-      const child = yield* seedRestartCancelledChild({
-        parentThreadId: threadId,
-        projectId,
-        parentRunId: runId,
-        rootNodeId,
-        name: "restart-monitor-child",
-        completionWake: "always",
-        continuationPending: true,
-        runStatus: "completed",
-        lostWork: [{ kind: "monitor", label: "Gate attempt 9", awaited: true }],
-        now,
-      });
-      yield* orchestrator.recoverDelegatedTasks;
-      const held = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(held.subagents.find((row) => row.id === child.taskId)?.status, "running");
+  it.effect(
+    "reports a child whose background task the restart cut as interrupted, not completed",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:restart-monitor-parent");
+        const projectId = ProjectId.make("project:restart-monitor-parent");
+        const runId = RunId.make("run:restart-monitor-parent");
+        const rootNodeId = NodeId.make("node:restart-monitor-parent-root");
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId,
+          runId,
+          rootNodeId,
+          taskId: NodeId.make("node:restart-monitor-parent-settled"),
+          deliveryState: "delivered",
+          now,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId: threadId,
+          projectId,
+          parentRunId: runId,
+          rootNodeId,
+          name: "restart-monitor-child",
+          completionWake: "always",
+          continuationPending: true,
+          runStatus: "completed",
+          lostWork: [{ kind: "task", label: "Gate attempt 9" }],
+          now,
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        const held = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(held.subagents.find((row) => row.id === child.taskId)?.status, "running");
 
-      yield* continueRestartedRun({
-        threadId: child.childThreadId,
-        sourceRunId: child.childRunId,
-      }).pipe(
-        Effect.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false })),
-      );
+        yield* continueRestartedRun({
+          threadId: child.childThreadId,
+          sourceRunId: child.childRunId,
+        }).pipe(
+          Effect.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false })),
+        );
 
-      const settled = yield* orchestrator.getThreadProjection(threadId);
-      const task = settled.subagents.find((row) => row.id === child.taskId);
-      assert.equal(task?.status, "interrupted");
-      assert.equal(task?.result, "Child task ended with status interrupted.");
-      assert.equal(task?.completionDelivery?.state, "claimed");
-    }),
+        const settled = yield* orchestrator.getThreadProjection(threadId);
+        const task = settled.subagents.find((row) => row.id === child.taskId);
+        assert.equal(task?.status, "interrupted");
+        assert.equal(task?.result, "Child task ended with status interrupted.");
+        assert.equal(task?.completionDelivery?.state, "claimed");
+      }),
   );
 
   // Running does not prove prompt consumption in Claude; re-offer cut deliveries even when resuming the turn.
@@ -3196,9 +3198,7 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
                 payload: {
                   ...providerThread,
                   pendingBackgroundTasks: [
-                    ...(open
-                      ? [{ taskId: "sleep-900", kind: "command" as const, awaited: true as const }]
-                      : []),
+                    ...(open ? [{ taskId: "sleep-900", kind: "background_task" as const }] : []),
                     { taskId: "log-watcher", kind: "monitor" as const },
                   ],
                 },

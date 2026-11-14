@@ -650,7 +650,6 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
     assert.equal(systemPrompt.type, "preset");
     assert.equal(systemPrompt.preset, "claude_code");
     assert.include(systemPrompt.append ?? "", "Use `delegate_task`");
-    assert.include(systemPrompt.append ?? "", "call `t3_background_wait`");
     assert.notInclude(systemPrompt.append ?? "", "## T3.CodeShip devices");
     const logged = ClaudeAdapterV2.loggedClaudeQueryOptions(options);
     assert.equal(logged.hasMcpServers, true);
@@ -9254,154 +9253,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
-  it.effect("holds only the background tasks the agent marks awaited, until they end", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const slowFrameEntered = yield* Deferred.make<void>();
-        const releaseSlowFrame = yield* Deferred.make<void>();
-        const harness = yield* makeWakeHarnessWithOptions({
-          onUsageLimits: () =>
-            Deferred.succeed(slowFrameEntered, undefined).pipe(
-              Effect.andThen(Deferred.await(releaseSlowFrame)),
-            ),
-        });
-        const now = yield* DateTime.now;
-        const awaitBackgroundTasks = harness.runtime.awaitBackgroundTasks;
-        if (awaitBackgroundTasks === undefined) {
-          throw new Error("Claude adapter runtime must expose awaitBackgroundTasks.");
-        }
-        const roster = (tasks: ReadonlyArray<string>, uuid: string) =>
-          claudeSdkFrame({
-            type: "system",
-            subtype: "background_tasks_changed",
-            tasks: tasks.map((taskId) => ({
-              task_id: taskId,
-              task_type: "local_bash",
-              description: taskId,
-            })),
-            uuid,
-            session_id: WAKE_NATIVE_SESSION,
-          });
-        const nextRoster = Effect.fn("nextRoster")(function* (
-          matches: (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>) => boolean,
-        ) {
-          while (true) {
-            const { providerThread } = yield* Queue.take(harness.providerThreadReceipts);
-            const tasks = providerThread.pendingBackgroundTasks ?? [];
-            if (matches(tasks)) return tasks;
-          }
-        });
-        const marks = (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>) =>
-          tasks.map((task) => [task.taskId, task.awaited === true]);
-
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-awaited-roster"),
-            text: "Run the tests in the background and the dev server.",
-            attachments: [],
-          }),
-        );
-        yield* Queue.offer(
-          harness.sdkMessages,
-          roster([WAKE_TASK_ID, "dev-server"], "00000000-0000-4000-8000-000000000301"),
-        );
-        yield* nextRoster((tasks) => tasks.length === 2);
-
-        // A slow frame holds the SDK stream; the mark must not wait for it.
-        yield* Queue.offer(
-          harness.sdkMessages,
-          claudeSdkFrame({
-            type: "rate_limit_event",
-            rate_limit_info: {
-              status: "allowed",
-              unifiedWindows: { five_hour: { utilization: 0.2 } },
-            },
-            uuid: "00000000-0000-4000-8000-000000000305",
-            session_id: WAKE_NATIVE_SESSION,
-          }),
-        );
-        yield* Deferred.await(slowFrameEntered);
-        const marked = yield* awaitBackgroundTasks({
-          providerThread: harness.providerThread,
-          taskIds: [WAKE_TASK_ID, "already-finished"],
-          awaited: true,
-        });
-        assert.deepStrictEqual(marked.matched, [WAKE_TASK_ID]);
-        yield* Deferred.succeed(releaseSlowFrame, undefined);
-        assert.deepStrictEqual(
-          marks(yield* nextRoster((tasks) => tasks.some((task) => task.awaited === true))),
-          [
-            [WAKE_TASK_ID, true],
-            ["dev-server", false],
-          ],
-        );
-        yield* Queue.offer(harness.sdkMessages, turnOneResult);
-        yield* Queue.take(harness.terminalReceipts);
-
-        // A replacing level rebuilds every entry; the mark must survive it.
-        yield* Queue.offer(
-          harness.sdkMessages,
-          roster(["dev-server", WAKE_TASK_ID], "00000000-0000-4000-8000-000000000302"),
-        );
-        assert.deepStrictEqual(
-          marks(yield* nextRoster((tasks) => tasks[0]?.taskId === "dev-server")),
-          [
-            ["dev-server", false],
-            [WAKE_TASK_ID, true],
-          ],
-        );
-
-        // Once the task leaves the roster, a reused id starts unmarked.
-        yield* Queue.offer(
-          harness.sdkMessages,
-          roster(["dev-server"], "00000000-0000-4000-8000-000000000303"),
-        );
-        yield* nextRoster((tasks) => tasks.length === 1);
-        yield* Queue.offer(
-          harness.sdkMessages,
-          roster(["dev-server", WAKE_TASK_ID], "00000000-0000-4000-8000-000000000304"),
-        );
-        assert.deepStrictEqual(marks(yield* nextRoster((tasks) => tasks.length === 2)), [
-          ["dev-server", false],
-          [WAKE_TASK_ID, false],
-        ]);
-
-        yield* awaitBackgroundTasks({
-          providerThread: harness.providerThread,
-          taskIds: ["dev-server"],
-          awaited: true,
-        });
-        assert.deepStrictEqual(
-          marks(yield* nextRoster((tasks) => tasks.some((task) => task.awaited === true))),
-          [
-            ["dev-server", true],
-            [WAKE_TASK_ID, false],
-          ],
-        );
-        const released = yield* awaitBackgroundTasks({
-          providerThread: harness.providerThread,
-          taskIds: ["dev-server"],
-          awaited: false,
-        });
-        assert.deepStrictEqual(released.matched, ["dev-server"]);
-        assert.deepStrictEqual(
-          marks(yield* nextRoster((tasks) => !tasks.some((task) => task.awaited === true))),
-          [
-            ["dev-server", false],
-            [WAKE_TASK_ID, false],
-          ],
-        );
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-        ),
-      ),
-    ),
-  );
-
   it.effect.each([
     { ending: "ends on its own while idle", close: "exit", turn: "settled" },
     { ending: "is closed by Stop while idle", close: "stop", turn: "settled" },
@@ -9411,7 +9262,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     { ending: "ends after a Stop the turn answered", close: "stop", turn: "answered" },
     { ending: "is closed by a rollback", close: "rollback", turn: "settled" },
     { ending: "is kept by a rollback it cannot rewind to", close: "no-rollback", turn: "settled" },
-  ] as const)("reports the awaited roster as lost when its query $ending", ({ close, turn }) =>
+  ] as const)("reports the roster as lost when its query $ending", ({ close, turn }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const interruptedResult = makeResultFrame({
@@ -9430,10 +9281,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         });
         if (turn === "interrupted" || turn === "answered") {
           answerInterrupt = harness.offerAndWait(interruptedResult);
-        }
-        const awaitBackgroundTasks = harness.runtime.awaitBackgroundTasks;
-        if (awaitBackgroundTasks === undefined) {
-          throw new Error("Claude adapter runtime must expose awaitBackgroundTasks.");
         }
         const nextRoster = Effect.fn("nextRoster")(function* (
           matches: (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>) => boolean,
@@ -9464,12 +9311,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
         yield* nextRoster((tasks) => tasks.length === 1);
-        yield* awaitBackgroundTasks({
-          providerThread: harness.providerThread,
-          taskIds: [WAKE_TASK_ID],
-          awaited: true,
-        });
-        yield* nextRoster((tasks) => tasks[0]?.awaited === true);
         // A background subagent is not in the roster, and it ends with the process too.
         yield* Queue.offer(
           harness.sdkMessages,
@@ -9490,14 +9331,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         const settled = yield* Queue.take(harness.terminalReceipts);
         const lost = [
-          [WAKE_TASK_ID, "command", true, undefined],
-          ["task-lost-subagent", "subagent", undefined, "Audit recent commits"],
+          [WAKE_TASK_ID, "command", undefined],
+          ["task-lost-subagent", "subagent", "Audit recent commits"],
         ];
         const marks = (tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask> | undefined) =>
           tasks?.map((task) => [
             task.taskId,
             task.kind,
-            task.awaited,
             task.kind === "subagent" ? task.description : undefined,
           ]);
         const lossReports = () =>

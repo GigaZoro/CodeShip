@@ -2369,7 +2369,7 @@ it.effect.each([
   { ending: "was closed by a Stop", status: "completed", cause: "stopped", wakes: false },
   { ending: "ended on its own during its turn", status: "running", cause: undefined, wakes: false },
 ] as const)(
-  "records the awaited work lost with a process that $ending, and wakes only a settled run nobody stopped",
+  "records the background task lost with a process that $ending, and wakes only a settled run nobody stopped",
   ({ status, cause, wakes }) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
@@ -2449,7 +2449,7 @@ it.effect.each([
             updatedAt: now,
           },
           lostBackgroundTasks: [
-            { taskId: "task-1", kind: "command", description: "sleep 600", awaited: true },
+            { taskId: "task-1", kind: "background_task", description: "sleep 600" },
           ],
           ...(cause === undefined ? {} : { lostBackgroundTasksCause: cause }),
         },
@@ -2457,7 +2457,7 @@ it.effect.each([
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
-        { kind: "shell", label: "sleep 600 (id task-1)", id: "task-1", awaited: true },
+        { kind: "task", label: "sleep 600 (id task-1)", id: "task-1" },
       ]);
       assert.equal(
         projection.turnItems.find((item) => item.id === backgroundWorkStoppedNoticeId(lostRunId))

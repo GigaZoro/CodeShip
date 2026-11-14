@@ -47,7 +47,6 @@ import {
   OrchestratorMcpThreadWaitResult,
   ThreadMetadataMcpUpdateInput,
   ThreadMetadataMcpUpdateResult,
-  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Schema from "effect/Schema";
@@ -167,25 +166,6 @@ const CommandRunTool = Tool.make("t3_command_run", {
   .annotate(Tool.Title, "Run a command")
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
-
-const BackgroundWaitTool = Tool.make("t3_background_wait", {
-  description:
-    'Keep this thread in Working while background work runs. Pass `taskIds: ["<task id>"]` after starting it. Not for work left running (dev server, watcher). `clear: true` undoes it. Does not stop the task. Claude only.',
-  parameters: Schema.Struct({
-    taskIds: Schema.Array(TrimmedNonEmptyString).check(
-      Schema.isMinLength(1),
-      Schema.isMaxLength(20),
-    ),
-    clear: Schema.optional(Schema.Boolean),
-  }),
-  success: Schema.Struct({
-    matched: Schema.Array(Schema.String),
-    unmatched: Schema.Array(Schema.String),
-  }),
-  failure: OrchestratorMcpFailure,
-  failureMode: "return",
-  dependencies,
-}).annotate(Tool.Title, "Wait on background work");
 
 const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
@@ -456,7 +436,6 @@ export const OrchestratorToolkit = Toolkit.make(
   TaskCancelTool,
   WorkflowStopTool,
   CommandRunTool,
-  BackgroundWaitTool,
   ScheduleTaskTool,
   ListScheduledTasksTool,
   SharedScheduledTasksTool,

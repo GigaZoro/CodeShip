@@ -2,6 +2,7 @@ import type {
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
+  OrchestrationV2TaskCommand,
   OrchestrationV2TurnItem,
   ThreadId,
   ThreadPullRequestLink,
@@ -108,7 +109,7 @@ export function backgroundWorkHoldsCompletion(
 }
 
 // Commands and monitors are as often a dev server or its watchdog as a wait, so they hold
-// only when the agent marks them awaited.
+// only when marked awaited, as a pull request watch and a `t3_command_run` command are.
 function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind"]): boolean {
   switch (kind) {
     case "command":
@@ -149,6 +150,8 @@ type PendingBackgroundWorkTurnItem = {
   readonly monitor?: boolean | undefined;
   readonly prompt?: string | undefined;
   readonly childThreadId?: ThreadId | null;
+  readonly command?: OrchestrationV2TaskCommand | undefined;
+  readonly startedAt?: OrchestrationV2TurnItem["startedAt"];
 };
 
 function isLatestRunSettledForBackgroundWait(
@@ -196,6 +199,15 @@ function pendingTaskFromTurnItem(
   const named = { taskId, ...(description === undefined ? {} : { description }) };
   switch (item.type) {
     case "subagent":
+      // The chat waits on a `t3_command_run` command; CodeShip runs it, not a subagent.
+      if (item.command !== undefined)
+        return {
+          ...named,
+          kind: "command",
+          awaited: true,
+          survivesRestart: true,
+          ...(item.startedAt == null ? {} : { startedAt: item.startedAt }),
+        };
       return {
         ...named,
         kind: "subagent",

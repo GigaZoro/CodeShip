@@ -274,9 +274,9 @@ it("waits for nested work and retains the report across monitor acknowledgements
       "result_available",
     );
   }
-  for (const [awaited, state] of [
-    [true, "waiting_for_children"],
-    [false, "result_available"],
+  for (const [kind, state] of [
+    ["background_task", "waiting_for_children"],
+    ["command", "result_available"],
   ] as const) {
     assert.equal(
       delegatedTaskProgress({
@@ -284,7 +284,7 @@ it("waits for nested work and retains the report across monitor acknowledgements
         providerThreads: [
           {
             pendingBackgroundTasks: [
-              { taskId: "background-audit", kind: "command", ...(awaited ? { awaited } : {}) },
+              { taskId: "background-audit", kind },
               { taskId: "log-watcher", kind: "monitor" },
             ],
           },

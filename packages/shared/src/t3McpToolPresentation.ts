@@ -23,7 +23,6 @@ export type T3McpToolSummaryAction =
   | "thread-interrupt"
   | "workflow-stop"
   | "command-run"
-  | "background-wait"
   | "thread-configuration"
   | "thread-configure"
   | "thread-fork"
@@ -180,10 +179,6 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "workflow-stop",
   ),
   t3_command_run: tool(["Run", "Running", "Started", "a command"], "command-run"),
-  t3_background_wait: tool(
-    ["Update", "Updating", "Updated", "background waits"],
-    "background-wait",
-  ),
   t3_thread_interrupt: tool(
     ["Interrupt", "Interrupting", "Requested an interrupt of", "a T3.CodeShip thread"],
     "thread-interrupt",

@@ -196,10 +196,10 @@ it("recovers an admitted continuation after another crash before provider start"
   assert.equal(restartContinuationRun(starting, now)?.id, runId);
 });
 
-it("continues a settled root run for awaited work it recorded, only while its session lives", () => {
+it("continues a settled root run for background work it recorded, only while its session lives", () => {
   const projection = makeProjection();
   const settled = (input: {
-    readonly awaited: boolean;
+    readonly kind: "shell" | "task";
     readonly session: "ready" | "stopped";
     readonly status: "completed" | "waiting";
     readonly projectId: typeof scratchProjectId;
@@ -210,13 +210,7 @@ it("continues a settled root run for awaited work it recorded, only while its se
       {
         ...projection.runs[0]!,
         status: input.status,
-        restartCancelledBackgroundWork: [
-          {
-            kind: "shell" as const,
-            label: "sleep 25",
-            ...(input.awaited ? { awaited: true as const } : {}),
-          },
-        ],
+        restartCancelledBackgroundWork: [{ kind: input.kind, label: "sleep 25" }],
       },
     ],
     providerThreads: [{ ...projection.providerThreads[0]!, status: "idle" as const }],
@@ -225,26 +219,26 @@ it("continues a settled root run for awaited work it recorded, only while its se
   });
   for (const projectId of [scratchProjectId, projection.thread.projectId])
     for (const status of ["completed", "waiting"] as const)
-      for (const [awaited, session, continues] of [
-        [true, "ready", true],
-        [true, "stopped", false],
-        [false, "ready", false],
-        [false, "stopped", false],
+      for (const [kind, session, continues] of [
+        ["task", "ready", true],
+        ["task", "stopped", false],
+        ["shell", "ready", false],
+        ["shell", "stopped", false],
       ] as const)
         assert.equal(
-          restartContinuationRun(settled({ awaited, session, status, projectId }), now)?.id,
+          restartContinuationRun(settled({ kind, session, status, projectId }), now)?.id,
           continues ? runId : undefined,
-          `${status} awaited=${awaited} session=${session}`,
+          `${status} kind=${kind} session=${session}`,
         );
 });
 
 it.effect.each(["completed", "waiting", "cancelled"] as const)(
-  "wakes a %s run whose awaited monitor the restart cancelled, with the note as its prompt",
+  "wakes a %s run whose background task the restart cancelled, with the note as its prompt",
   (status) =>
     Effect.gen(function* () {
       const base = makeProjection();
       const work = [
-        { kind: "monitor" as const, label: "Watch CI run 42", awaited: true as const },
+        { kind: "task" as const, label: "Watch CI run 42" },
         { kind: "shell" as const, label: "vp run dev" },
       ];
       const projection = {
@@ -275,7 +269,7 @@ it.effect.each(["completed", "waiting", "cancelled"] as const)(
       assert.equal(command.type, "message.dispatch");
       if (command.type !== "message.dispatch") return;
       assert.equal(command.restartContinuationOfRunId, runId);
-      assert.include(command.text, "- monitor: Watch CI run 42");
+      assert.include(command.text, "- task: Watch CI run 42");
       assert.include(command.text, "- shell: vp run dev");
     }),
 );
@@ -288,12 +282,7 @@ it.effect.each([
   ({ told, wakes }) =>
     Effect.gen(function* () {
       const base = makeProjection();
-      const ci = {
-        kind: "monitor" as const,
-        label: "Watch CI run 42",
-        id: "ci",
-        awaited: true as const,
-      };
+      const ci = { kind: "task" as const, label: "Watch CI run 42", id: "ci" };
       const dev = { kind: "shell" as const, label: "vp run dev", id: "dev" };
       // The run started again after it recorded this work, and that prompt named part of it.
       const projection = {
@@ -720,7 +709,7 @@ it.effect.each([
   ["completed", ProjectId.make("restart-project"), devServer, false],
   ["waiting", scratchProjectId, devServer, false],
 ] as const)(
-  "cleans up background work of a %s run in project %s and wakes it only for awaited work",
+  "cleans up background work of a %s run in project %s and wakes it only for a subagent or task",
   ([status, projectId, background, wakes]) =>
     Effect.gen(function* () {
       const base = makeProjection();
@@ -1060,7 +1049,6 @@ it.effect("names the calls the restart cut when it continues the turn", () =>
       label: "vp run dev (id bdev1)",
       id: "bdev1",
       nativeItemId: "toolu_dev",
-      awaited: true as const,
     };
     const texts = yield* continuationTexts({
       ...cutMidTurn({ restartCancelledBackgroundWork: [reviewer, devServer] }),
@@ -1299,7 +1287,7 @@ it.effect("continues a /compact with what it owes but never repeats a /logout", 
       ],
     } as unknown as OrchestrationV2ThreadProjection);
     assert.deepEqual(texts, [CONTINUE_PROMPT]);
-    // A compaction that finished still owes the note of the awaited work it lost afterwards.
+    // A compaction that finished still owes the note of the background work it lost afterwards.
     const lost = [{ kind: "task" as const, label: "build" }];
     const settled = makeProjection();
     for (const [text, expected] of [

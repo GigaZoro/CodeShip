@@ -920,37 +920,6 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
   }).pipe(Effect.provide(layerOrchestratorMcpServer())),
 );
 
-it.effect("t3_background_wait holds the caller in Working until clear: true undoes it", () => {
-  const awaited: Array<boolean> = [];
-  return Effect.gen(function* () {
-    const server = yield* McpServer.McpServer;
-    const call = (args: Record<string, unknown>) =>
-      server
-        .callTool({ name: "t3_background_wait", arguments: { taskIds: ["b1"], ...args } })
-        .pipe(
-          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-          Effect.provideService(McpSchema.McpServerClient, client),
-        );
-    const held = yield* call({});
-    yield* call({ clear: true });
-    expect(held.structuredContent).toEqual({ matched: ["b1"], unmatched: [] });
-    expect(awaited).toEqual([true, false]);
-  }).pipe(
-    Effect.provide(
-      layerOrchestratorMcpServer({
-        threads: Layer.mock(ThreadManagement.ThreadManagementService)({
-          getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
-          awaitBackgroundTasks: (input) =>
-            Effect.sync(() => {
-              awaited.push(input.awaited);
-              return { matched: input.taskIds, unmatched: [] };
-            }),
-        }),
-      }),
-    ),
-  );
-});
-
 it.effect("a caller cannot rewrite a scheduled task that runs above its own modes", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;

@@ -175,10 +175,11 @@ export function backgroundWorkNowItem(input: {
       (candidate) => (candidate.nativeItemRef?.nativeId || candidate.id) === itemKey,
     );
     const subagent = item?.type === "subagent" ? item : undefined;
+    const command = item?.type === "command_execution" ? item.input : subagent?.command?.command;
     return {
       task,
       label:
-        item?.type === "command_execution" && commandDisplayText(item.input) === task.label ? (
+        command !== undefined && commandDisplayText(command) === task.label ? (
           <span className="font-mono in-data-[slot=popover-popup]:whitespace-pre-wrap">
             {task.label}
           </span>
@@ -188,7 +189,7 @@ export function backgroundWorkNowItem(input: {
           task.label
         ),
       activity: subagent?.progress?.replace(/\s+/gu, " ").trim() || null,
-      startedAtMs: item?.startedAt ? DateTime.toEpochMillis(item.startedAt) : null,
+      startedAtMs: item?.startedAt ? DateTime.toEpochMillis(item.startedAt) : task.startedAtMs,
       updatedAtMs: subagent ? DateTime.toEpochMillis(subagent.updatedAt) : 0,
       childThreadId: task.childThreadId ?? subagent?.childThreadId ?? undefined,
     };

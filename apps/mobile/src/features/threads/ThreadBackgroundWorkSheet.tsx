@@ -6,6 +6,7 @@ import {
   type PendingBackgroundWorkItem,
 } from "@t3tools/client-runtime/state/thread-execution";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as Haptics from "expo-haptics";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { ScreenStack } from "react-native-screens";
@@ -20,6 +21,7 @@ import { NativeHeader, NativeScreen } from "../../native/ThemedScreenStack";
 import { environmentThreadShells } from "../../state/threads";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { msg, t } from "../../lib/i18n";
+import { useVisibleSecondClock } from "./use-visible-second-clock";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 const KIND_LABELS = {
@@ -104,6 +106,15 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
   );
 }
 
+function BackgroundWorkElapsed(props: { readonly startedAtMs: number }) {
+  const nowMs = useVisibleSecondClock(true);
+  return (
+    <Text className="shrink-0 text-xs tabular-nums text-foreground-muted">
+      {formatDuration(Math.max(1_000, nowMs - props.startedAtMs))}
+    </Text>
+  );
+}
+
 function BackgroundWorkRow(props: {
   readonly item: PendingBackgroundWorkItem;
   readonly onOpen: (threadId: ThreadId) => void;
@@ -124,6 +135,7 @@ function BackgroundWorkRow(props: {
         <Text className="font-t3-medium text-sm text-foreground">{item.label}</Text>
         <Text className="text-xs text-foreground-muted">{t(KIND_LABELS[item.kind])}</Text>
       </View>
+      {item.startedAtMs === null ? null : <BackgroundWorkElapsed startedAtMs={item.startedAtMs} />}
       {childThreadId === undefined ? null : (
         <SymbolView name="chevron.right" size={12} tintColorClassName="accent-icon-subtle" />
       )}

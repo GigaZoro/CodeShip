@@ -12,6 +12,13 @@ import {
   t3OrchestrationSystemPrompt,
 } from "./orchestrationInstructions.ts";
 
+it("sends a command the agent waits on to t3_command_run, which outlives a restart", () => {
+  const section = T3_CODE_ORCHESTRATION_INSTRUCTIONS.split("### Background work you wait on")[1];
+  expect(section).toContain("`t3_command_run`");
+  expect(section).toContain("dev servers and watchers");
+  expect(T3_CODE_ORCHESTRATION_INSTRUCTIONS).not.toContain("t3_background_wait");
+});
+
 describe("T3 device instructions", () => {
   it("route device work through device_open and give Claude the line that loads the tools", () => {
     for (const intent of ["`device_list`", "`device_open`", "`agent-device`", "ssh", "`hostId`"]) {

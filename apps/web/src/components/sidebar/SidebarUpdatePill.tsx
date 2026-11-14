@@ -297,8 +297,10 @@ function SidebarUpdateControl() {
       ? restartHoldTooltip(pendingWork, pendingTurns)
       : runsEverything && !isWaitingOnRecheck
         ? everything.summary
-        : state && action === "install" && thisAppThreads.count > 0
-          ? getSafeUpdateButtonTooltip(state, thisAppThreads.count)
+        : state &&
+            action === "install" &&
+            (thisAppThreads.count > 0 || thisAppThreads.commandCount > 0)
+          ? getSafeUpdateButtonTooltip(state, thisAppThreads.count, thisAppThreads.commandCount)
           : state
             ? getDesktopUpdateButtonTooltip(state)
             : t("Update available");

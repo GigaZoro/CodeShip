@@ -1285,10 +1285,9 @@ const delegatedProviderThreadRecoversInItsOwnChat = Effect.gen(function* () {
     forkedFrom: null,
     pendingBackgroundTasks: [
       {
-        kind: "command" as const,
+        kind: "background_task" as const,
         taskId: `task:${suffix}`,
         description: "CI wait",
-        awaited: true as const,
       },
     ],
     createdAt: now,
@@ -4301,7 +4300,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       // Recorded while the run ran: its finishing snapshot from its start still lists only "dev".
       const lostWork = [
         ...run.restartCancelledBackgroundWork,
-        { kind: "shell" as const, label: "vp run build", id: "build", awaited: true as const },
+        { kind: "task" as const, label: "vp run build", id: "build" },
       ];
       const task = {
         id: taskId,

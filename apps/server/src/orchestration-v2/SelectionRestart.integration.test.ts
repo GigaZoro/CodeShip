@@ -816,7 +816,7 @@ it.live.each([
       }> = [];
       const messages: string[] = [];
       const backgroundWork = mode === "background-work" || mode === "queued-background-work";
-      const lostWork = [{ taskId: "build", kind: "command", awaited: true }] as const;
+      const lostWork = [{ taskId: "build", kind: "background_task" }] as const;
       const scope = yield* Effect.scope;
       const heldTurnMayComplete = yield* Deferred.make<void>();
       const capabilities = mode === "pooled" ? pooledCapabilities : exclusiveCapabilities;
@@ -1051,7 +1051,7 @@ it.live.each(["earlier-run", "first-run"] as const)(
           failedReplacementOpen: true,
         });
         const lostWork = [
-          { taskId: "build", kind: "command", description: "vp run build", awaited: true },
+          { taskId: "build", kind: "background_task", description: "vp run build" },
         ] as const;
         const messages: string[] = [];
         const base = makeRestartAdapter(
@@ -1166,7 +1166,7 @@ it.live.each(["earlier-run", "first-run"] as const)(
             title: "Turn restarted",
             message: [
               "Restarting the turn ended the agent process and stopped background work before it finished:",
-              "- shell: vp run build (id build)",
+              "- task: vp run build (id build)",
               "This chat was waiting on it.",
             ].join("\n"),
           },

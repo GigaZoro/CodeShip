@@ -3,7 +3,6 @@ import { Tool } from "effect/ai";
 
 import {
   T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
-  T3_CODE_CLAUDE_BACKGROUND_WAIT_INSTRUCTIONS,
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -111,14 +110,12 @@ function argumentProblems(
   return problems;
 }
 
-// Agents call a tool with the keys its text names. "call `t3_background_wait` with its task ID"
-// sent `taskId` to a tool that takes `taskIds`, and every call was refused.
+// Agents call a tool with the keys its text names, so a key the tool lacks fails every call.
 it("names only argument keys the tool takes in tool and instruction text", () => {
   const instructions = {
     orchestration: T3_CODE_ORCHESTRATION_INSTRUCTIONS,
     browser: T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
     devices: T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
-    claudeBackgroundWait: T3_CODE_CLAUDE_BACKGROUND_WAIT_INSTRUCTIONS,
     runtime: buildRuntimeInstructions({ harness: "Claude Code" }),
   };
   const problems = [

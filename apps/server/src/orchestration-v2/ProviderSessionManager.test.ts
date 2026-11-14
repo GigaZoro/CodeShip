@@ -2546,8 +2546,9 @@ type ReleasedWorkCase = {
   readonly name: string;
   readonly reason: "idle_timeout" | "runtime_error" | "manual_shutdown";
   readonly wakes: boolean;
-  readonly awaited?: false;
-  /** The waiting run continues a run that lost awaited work, or one a restart cut. */
+  /** A shell never wakes a chat; the default is a background task, which does. */
+  readonly shell?: true;
+  /** The waiting run continues a run that lost background work, or one a restart cut. */
   readonly continues?: "lost-work" | "cut-turn";
 };
 
@@ -2555,7 +2556,7 @@ it.effect.each<ReleasedWorkCase>([
   { name: "an idle close wakes a waiting chat", reason: "idle_timeout", wakes: true },
   { name: "a failed session wakes a waiting chat", reason: "runtime_error", wakes: true },
   { name: "a requested close wakes nobody", reason: "manual_shutdown", wakes: false },
-  { name: "unawaited work wakes nobody", reason: "idle_timeout", awaited: false, wakes: false },
+  { name: "a lost shell wakes nobody", reason: "idle_timeout", shell: true, wakes: false },
   // Quiet work the agent restarted after a wake would be closed and woken again.
   {
     name: "an idle close does not wake a chat woken for lost work",
@@ -2577,7 +2578,7 @@ it.effect.each<ReleasedWorkCase>([
   },
 ])(
   "ProviderSessionManagerV2 records the work a release stops: $name",
-  ({ name, reason, awaited = true, continues, wakes }) =>
+  ({ name, reason, shell, continues, wakes }) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const effect = Effect.gen(function* () {
@@ -2590,9 +2591,8 @@ it.effect.each<ReleasedWorkCase>([
             [
               {
                 taskId: "build",
-                kind: "command",
+                kind: shell === true ? "command" : "background_task",
                 description: "vp run build",
-                ...(awaited ? { awaited: true as const } : {}),
               },
             ],
           );
@@ -2622,10 +2622,9 @@ it.effect.each<ReleasedWorkCase>([
           projection.runs.find((run) => run.id === runId)?.restartCancelledBackgroundWork;
         assert.deepStrictEqual(work(waiting.id), [
           {
-            kind: "shell",
+            kind: shell === true ? "shell" : "task",
             label: "vp run build (id build)",
             id: "build",
-            ...(awaited ? { awaited: true } : {}),
           },
         ]);
         assert.isUndefined(work(replacing.id));
@@ -2660,7 +2659,7 @@ it.effect(
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const { threadId, providerSessionId, writeRun, rosters } =
           yield* openSessionWithBackgroundCommand("provider-session-manager-slow-close", [
-            { taskId: "build", kind: "command", description: "vp run build", awaited: true },
+            { taskId: "build", kind: "background_task", description: "vp run build" },
           ]);
         const waiting = yield* writeRun(1, "completed");
         const lostWork = () =>
@@ -2682,7 +2681,7 @@ it.effect(
         // A turn that opens the session while the old one is still closing reads what it stopped.
         yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
         assert.deepStrictEqual(yield* lostWork(), [
-          { kind: "shell", label: "vp run build (id build)", id: "build", awaited: true },
+          { kind: "task", label: "vp run build (id build)", id: "build" },
         ]);
         // The roster and the wake wait for the close.
         assert.deepStrictEqual(yield* rosters, [["build"], ["build"]]);
@@ -2723,7 +2722,7 @@ it.effect(
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const { threadId, providerSessionId, providerThreads, writeRun, rosters } =
           yield* openSessionWithBackgroundCommand("provider-session-manager-moved-roster", [
-            { taskId: "build", kind: "command", description: "vp run build", awaited: true },
+            { taskId: "build", kind: "background_task", description: "vp run build" },
           ]);
         // The turn that replaces the session points the thread at the next one before the detach.
         const moved = providerThreads[1]!;
@@ -2742,7 +2741,7 @@ it.effect(
         const work = (runId: OrchestrationV2Run["id"]) =>
           runs.find((run) => run.id === runId)?.restartCancelledBackgroundWork;
         assert.deepStrictEqual(work(waiting.id), [
-          { kind: "shell", label: "vp run build (id build)", id: "build", awaited: true },
+          { kind: "task", label: "vp run build (id build)", id: "build" },
         ]);
         assert.isUndefined(work(replacing.id));
         assert.isTrue(

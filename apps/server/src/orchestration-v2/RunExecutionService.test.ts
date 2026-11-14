@@ -1892,7 +1892,7 @@ it.effect("keeps ingesting until the queued roster update lands after the probe 
             } as OrchestrationV2ProviderThread,
           }) satisfies ProviderAdapter.ProviderAdapterV2Event;
         return [
-          roster([{ taskId: "build", kind: "command", awaited: true }]),
+          roster([{ taskId: "build", kind: "background_task" }]),
           rootTerminalEvent(ids, "completed"),
           roster([]),
         ];

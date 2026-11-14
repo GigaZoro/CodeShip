@@ -661,8 +661,6 @@ export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
   id: Schema.optional(TrimmedNonEmptyString),
   /** Native id of the turn item that started this work, when it is not `id`. */
   nativeItemId: Schema.optional(TrimmedNonEmptyString),
-  /** The agent was waiting on this work, so its restart note wakes the agent even for a shell. */
-  awaited: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationV2RestartCancelledBackgroundWork =
   typeof OrchestrationV2RestartCancelledBackgroundWork.Type;
@@ -1144,10 +1142,14 @@ const PendingBackgroundTaskFields = {
   /** Native id of the turn item that started this work, when it is not `taskId`. */
   nativeItemId: Schema.optional(TrimmedNonEmptyString),
   /**
-   * The agent declared it resumes when this work ends, so the thread holds like it does for a
-   * subagent. Only the agent knows whether a command is a wait or a dev server it left running.
+   * The thread waits on this work, so it holds like a subagent: a pull request watch or a
+   * `t3_command_run` command.
    */
   awaited: Schema.optional(Schema.Literal(true)),
+  /** CodeShip runs this outside the provider and the server, so an update does not stop it. */
+  survivesRestart: Schema.optional(Schema.Literal(true)),
+  /** Shown as elapsed time; only a `t3_command_run` command's record knows it. */
+  startedAt: Schema.optional(Schema.DateTimeUtc),
 };
 
 export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(

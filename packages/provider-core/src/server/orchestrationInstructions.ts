@@ -30,6 +30,9 @@ Ordinary coding tasks need no T3 tools.
 
 - Answer data with a trend or comparison with a chart, and show any visual the user asks for here: pass its HTML to \`html_preview\`, then \`html_render\`. If the visual is a file, pass that file's HTML. A screenshot on disk or a text description does not show it. Never start a server for it. Tools a web page exposes give data only. Never use them to show results. Asked for an image to post, send, or use elsewhere: a \`.png\` file and its path, never \`html_render\`.
 - Never use \`preview_*\` unasked to verify or show your own edit. Use them when the current request asks for browser work, including recording edits, or names a page or tab. Do not repeat preview calls from an earlier turn. Public pages: web fetch or search unless browser work was asked; then preview tools only, no web fetch. Close a tab you opened before you reply, unless the user asked for it or uses it.`,
+  `### Background work you wait on
+
+Run a command that ends and takes more than about a minute (tests, a build, an install, a push, a deploy, a long script or until-loop) with \`t3_command_run\`, not in your shell, in the background or in the foreground. It keeps running through a T3.CodeShip restart, and its end wakes you once with the exit code and the last output, so end your turn instead of waiting or polling. \`task_status\` and \`task_cancel\` take its \`taskId\`. Keep native background shells for work you leave running, such as dev servers and watchers.`,
 ];
 
 export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
@@ -184,15 +187,6 @@ ${sections.join("\n")}
 - After implementation, review the diff yourself on your Settings primary, ${primary}.${review}
 - Read results and diffs, run relevant checks, fix small issues yourself; take over or reassign bigger ones.${omitted ? "\n- More accounts and models: call `orchestrator_capabilities`." : ""}`;
 }
-
-// Claude Code defers MCP tools behind ToolSearch, so the agent only finds
-// t3_background_wait when the system prompt says when to reach for it.
-export const T3_CODE_CLAUDE_BACKGROUND_WAIT_INSTRUCTIONS = `
-
-### Background work you wait on
-
-To wait for a background command or Monitor you started (tests, a build), call \`t3_background_wait\` with \`taskIds: ["<task id>"]\` before you end your turn. Do not mark work you leave running, or PRs. T3 MCP tools are deferred: load one with ToolSearch before you call it.
-`;
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
