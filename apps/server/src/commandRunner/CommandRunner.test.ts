@@ -224,6 +224,17 @@ const deletionOf = (threadId: ThreadId) =>
     threadId,
   }) as const;
 
+/** What task_cancel records for a command. */
+const cancellationOf = (threadId: ThreadId, taskId: string) =>
+  ({
+    type: "delegated_task.command.complete",
+    commandId: CommandId.make(`command:cancel:${taskId}`),
+    parentThreadId: threadId,
+    taskId: NodeId.make(taskId),
+    status: "cancelled",
+    result: "Cancelled.",
+  }) as const;
+
 /** Starts a child that writes `ready` once it can note a stop signal, and `stopped` on one. */
 const STOP_NOTING_CHILD = `sh -c 'trap "echo > stopped; exit 0" TERM; echo > ready; while :; do sleep 1; done' &`;
 /** Once `go` exists it kills its wrapper, leaving no exit status, then writes `orphaned`. */
@@ -414,32 +425,50 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     }),
   );
 
-  it.effect("never starts a command for a chat deleted while its request was recorded", () =>
-    Effect.gen(function* () {
-      const chat = yield* liveChat("command-chat-deleted-early");
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const refused = yield* withServer((runner) =>
-        runner.run(callerOf(chat.threadId), { command: "echo started" }).pipe(Effect.flip),
-      ).pipe(
-        Effect.provideService(ThreadManagement.ThreadManagementService, {
-          ...threads,
-          dispatch: (command) =>
-            threads
-              .dispatch(command)
-              .pipe(
-                Effect.tap(() =>
-                  command.type === "delegated_task.command.request"
-                    ? threads.dispatch(deletionOf(chat.threadId))
-                    : Effect.void,
-                ),
+  it.effect.each([
+    [
+      "its chat was deleted",
+      "command-chat-deleted-early",
+      (threadId: ThreadId) => deletionOf(threadId),
+      "Stopped: the chat was deleted.",
+    ],
+    [
+      "its task was cancelled",
+      "command-cancelled-early",
+      (threadId: ThreadId, taskId: string) => cancellationOf(threadId, taskId),
+      "Cancelled.",
+    ],
+  ] as const)(
+    "never starts a command when %s while its request was recorded",
+    ([, name, close, message]) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(name);
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const refused = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo started" }).pipe(Effect.flip),
+        ).pipe(
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            dispatch: (command) =>
+              threads.dispatch(command).pipe(
+                Effect.tap((recorded) => {
+                  const task = recorded.storedEvents.find(
+                    (stored) => stored.event.type === "subagent.updated",
+                  )?.event;
+                  return command.type === "delegated_task.command.request" &&
+                    task?.type === "subagent.updated"
+                    ? threads.dispatch(close(chat.threadId, task.payload.id))
+                    : Effect.void;
+                }),
               ),
-        }),
-      );
-      assert.equal(refused.message, "Stopped: the chat was deleted.");
-      const sql = yield* SqlClient.SqlClient;
-      const rows = yield* sql`SELECT task_id FROM command_runs WHERE thread_id = ${chat.threadId}`;
-      assert.lengthOf(rows, 0);
-    }),
+          }),
+        );
+        assert.equal(refused.message, message);
+        const sql = yield* SqlClient.SqlClient;
+        const rows =
+          yield* sql`SELECT task_id FROM command_runs WHERE thread_id = ${chat.threadId}`;
+        assert.lengthOf(rows, 0);
+      }),
   );
 
   it.effect("stops a command whose chat was deleted while it started", () =>
@@ -530,15 +559,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           });
           yield* awaitFile(NodePath.join(chat.workspace, "ready"));
           const orchestrator = yield* Orchestrator.OrchestratorV2;
-          // What task_cancel records for a command.
-          yield* orchestrator.dispatch({
-            type: "delegated_task.command.complete",
-            commandId: CommandId.make("command:cancel:command-cancelled"),
-            parentThreadId: chat.threadId,
-            taskId: NodeId.make(started.taskId),
-            status: "cancelled",
-            result: "Cancelled.",
-          });
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
           yield* awaitFile(NodePath.join(chat.workspace, "stopped"));
           const row = yield* commandRow(started.taskId);
           assert.equal(row?.status, "stopped");
@@ -571,14 +592,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         yield* awaitFile(NodePath.join(chat.workspace, "orphaned"));
       }
       const orchestrator = yield* Orchestrator.OrchestratorV2;
-      yield* orchestrator.dispatch({
-        type: "delegated_task.command.complete",
-        commandId: CommandId.make(`command:cancel:${chat.threadId}`),
-        parentThreadId: chat.threadId,
-        taskId: NodeId.make(started.taskId),
-        status: "cancelled",
-        result: "Cancelled.",
-      });
+      yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
       if (cutStop) {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`

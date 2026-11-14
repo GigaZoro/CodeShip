@@ -728,19 +728,22 @@ const make = Effect.gen(function* () {
             SELECT task_id FROM command_runs WHERE task_id = ${taskId}
           `;
                 if (existing.length > 0) return result(taskId);
-                // Its first request could not start it, and the task already says why.
-                if (prior?.result != null)
-                  return yield* failure("orchestration_error", prior.result);
-                // stopForThread for a thread closed since the request began may have looked already.
+                // Read again here: stopForTask or stopForThread may already have looked for a task
+                // cancelled, or a thread closed, since the request began.
                 const records = yield* threads
-                  .getThreadRecords(scope.thread.threadId, [])
+                  .getThreadRecords(scope.thread.threadId, ["subagents"], {
+                    subagentIds: [taskId],
+                  })
                   .pipe(Effect.result);
                 if (records._tag === "Failure") {
                   return yield* unstarted(
                     `Could not start the command: ${records.failure.message}`,
                   );
                 }
-                const { thread } = records.success;
+                const { thread, subagents } = records.success;
+                // Cancelled, or its first request could not start it: the task already says why.
+                const endedWith = subagents[0]?.result;
+                if (endedWith != null) return yield* failure("orchestration_error", endedWith);
                 const closed =
                   thread.deletedAt !== null
                     ? "deleted"
