@@ -1,3 +1,7 @@
+## 2026-11-14 — A server update brings the background service its new launcher
+
+- The launcher that runs the background service stayed on the release that installed it, so a launcher fix reached a machine only after someone ran `t3 service install` there. After an update commits, and whenever the service starts, the old launcher now checks that the newer release's launcher loads the service state and then hands the service to it. If that launcher fails the check or exits with an error, the old one keeps running the service. The one-time `t3 service install` is needed only once more, to put a service on a launcher that has this hand-off.
+
 ## 2026-11-14 — Large chats get more time to resume
 
 - Resuming a chat gave the provider a fixed 5 minutes, however large the chat or busy the machine, and a retry waited the same 5 minutes, so a big chat on a loaded host failed every time. The wait now grows with the chat (one extra minute per MB of messages) and doubles after each earlier resume timeout, up to 60 minutes. Small chats on idle machines still wait 5 minutes.

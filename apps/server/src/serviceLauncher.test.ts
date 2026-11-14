@@ -322,6 +322,90 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
+  const launcherHandOff = (newLauncher: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-handoff-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const ranPath = path.join(root, "runtime", "versions", "1.1.0", "delegate-ran");
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.1.0"),
+        [
+          'const fs = require("node:fs");',
+          'if (process.argv[2] === "serve") {',
+          '  process.send("served");',
+          "  setInterval(() => {}, 1_000);",
+          "} else {",
+          `  ${newLauncher}`,
+          "}",
+          "",
+        ].join("\n"),
+      );
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.1.0",
+        }),
+      );
+      const served = Promise.withResolvers<void>();
+      const listener = (child: NodeChildProcess.ChildProcess) =>
+        void child.on("message", (message) => message === "served" && served.resolve());
+      spawnListeners.add(listener);
+      yield* Effect.addFinalizer(() => Effect.sync(() => spawnListeners.delete(listener)));
+      const launcher = new Launcher(
+        root,
+        yield* Effect.promise(() => readServiceState(statePath)),
+        {
+          launcherVersion: "1.0.0",
+        },
+      );
+      return { fs, root, ranPath, served: served.promise, launcher, running: launcher.run() };
+    });
+
+  const probeThenRun = (runBody: string) =>
+    [
+      'if (process.env.T3_SERVICE_LAUNCHER_PROBE === "1") {',
+      '  process.stdout.write("service-launcher-probe-ok\\n");',
+      "} else {",
+      `  ${runBody}`,
+      "}",
+    ].join("\n");
+
+  it.effect("hands the service to the active release's launcher and finishes with it", () =>
+    Effect.gen(function* () {
+      const { fs, ranPath, running } = yield* launcherHandOff(
+        probeThenRun('fs.writeFileSync(require("node:path").join(__dirname, "delegate-ran"), "");'),
+      );
+      yield* Effect.promise(() => running);
+      assert.isTrue(yield* fs.exists(ranPath));
+    }),
+  );
+
+  it.effect(
+    "keeps the old launcher running the service when the new launcher fails its probe",
+    () =>
+      Effect.gen(function* () {
+        const { launcher, served, running } = yield* launcherHandOff("process.exit(1);");
+        yield* Effect.promise(() => served);
+        yield* Effect.promise(() => launcher.stop("SIGTERM"));
+        yield* Effect.promise(() => running);
+      }),
+  );
+
+  it.effect("resumes the service when the new launcher exits with a failure", () =>
+    Effect.gen(function* () {
+      const { launcher, served, running } = yield* launcherHandOff(
+        probeThenRun("process.exit(1);"),
+      );
+      yield* Effect.promise(() => served);
+      yield* Effect.promise(() => launcher.stop("SIGTERM"));
+      yield* Effect.promise(() => running);
+    }),
+  );
+
   it.effect("stays idle instead of exiting when another server owns the T3 home", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -42,6 +42,10 @@ const STATE_DIR_OWNED_EXIT_CODE = 78;
 // Matches the server trace log's per-file cap.
 const SERVICE_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const SERVICE_LOG_CHECK_INTERVAL_MS = 10 * 60_000;
+const HANDOFF_PROBE_TIMEOUT_MS = 30_000;
+/** A launcher started with this set only proves it can load the service state, then exits. */
+const LAUNCHER_PROBE_ENV = "T3_SERVICE_LAUNCHER_PROBE";
+const LAUNCHER_PROBE_OK = "service-launcher-probe-ok";
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
 type ChildRole = "active" | "trial";
@@ -62,6 +66,15 @@ const runtimePaths = (baseDir: string, version: string) => {
     sentinelPath: NodePath.join(versionDir, ".install-complete"),
   };
 };
+
+/** The release this launcher process runs from; undefined outside an installed runtime (dev, tests). */
+function runningLauncherVersion(baseDir: string, execPath: string): string | undefined {
+  const versionDir = NodePath.dirname(execPath);
+  const versionsDir = NodePath.join(baseDir, "runtime", "versions");
+  if (NodePath.dirname(versionDir) !== versionsDir) return undefined;
+  const version = NodePath.basename(versionDir);
+  return isExactServiceVersion(version) ? version : undefined;
+}
 
 const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   command: paths.entryPath,
@@ -438,6 +451,22 @@ function sendMessage(
   });
 }
 
+/** The target launcher must load this state before the service is handed to it. */
+function probeLauncher(entryPath: string, environment: NodeJS.ProcessEnv): Promise<boolean> {
+  return new Promise((resolve) => {
+    NodeChildProcess.execFile(
+      entryPath,
+      ["__service-launcher"],
+      {
+        env: { ...environment, [LAUNCHER_PROBE_ENV]: "1" },
+        timeout: HANDOFF_PROBE_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      },
+      (error, stdout) => resolve(error === null && stdout.includes(LAUNCHER_PROBE_OK)),
+    );
+  });
+}
+
 function waitForExit(child: NodeChildProcess.ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve) => child.once("exit", () => resolve()));
@@ -473,6 +502,8 @@ export class Launcher {
   #stopRequested = false;
   #stopping = false;
   #done = false;
+  #delegate: NodeChildProcess.ChildProcess | null = null;
+  readonly #launcherVersion: string | undefined;
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
@@ -483,8 +514,13 @@ export class Launcher {
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
+      readonly launcherVersion?: string | undefined;
     } = {},
   ) {
+    this.#launcherVersion =
+      "launcherVersion" in options
+        ? options.launcherVersion
+        : runningLauncherVersion(baseDir, process.execPath);
     this.#baseDir = baseDir;
     this.#backupSpaceProbe = options.backupSpaceProbe;
     this.#environment = { ...(options.environment ?? process.env) };
@@ -543,6 +579,13 @@ export class Launcher {
       return;
     }
     this.#stopRequested = true;
+    const delegate = this.#delegate;
+    if (delegate !== null) {
+      // The queue is blocked on the delegate, which owns the service and takes the signal.
+      await terminateChild(delegate, signal);
+      await this.#completion.promise.catch(() => undefined);
+      return;
+    }
     this.#clearTimer();
     this.#enqueue(async () => {
       // Let in-progress updates start replacements first; replacements observe the marker and own pre-activation tunnel cleanup.
@@ -570,6 +613,7 @@ export class Launcher {
       await NodeFSP.rm(restartPending, { force: true }).catch(() => undefined);
     }
     const update = this.#state.update;
+    if (update?.status !== "pending" && (await this.#handOff())) return;
     if (update?.status !== "pending") {
       if (update !== undefined) {
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
@@ -764,6 +808,61 @@ export class Launcher {
     child.role = "active";
     await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     await sendMessage(child.process, { type: "committed", updateId: committed.id });
+    if (await this.#handOff(child)) return;
+    if (this.#child === null && !this.#stopping) {
+      await this.#startChild(next.activeVersion, "active", committed);
+    }
+  }
+
+  /**
+   * Updates replace the server child but not this launcher, so a launcher fix reaches a machine
+   * only through this hand-off. Any failure leaves this launcher running the service.
+   * @returns true when the delegate ran to completion and this launcher is done.
+   */
+  async #handOff(active?: ManagedChild): Promise<boolean> {
+    const target = this.#state.activeVersion;
+    const own = this.#launcherVersion;
+    if (
+      own === undefined ||
+      this.#stopping ||
+      this.#stopRequested ||
+      this.#state.update?.status === "pending" ||
+      compareExactServiceVersions(target, own) <= 0 ||
+      !(await runtimeExists(this.#baseDir, target))
+    ) {
+      return false;
+    }
+    const entryPath = runtimePaths(this.#baseDir, target).entryPath;
+    if (!(await probeLauncher(entryPath, this.#environment))) {
+      process.stderr.write(
+        `[service-launcher] t3@${target} launcher failed its probe; t3@${own} keeps the service.\n`,
+      );
+      return false;
+    }
+    if (this.#stopping || this.#stopRequested) return false;
+    if (active !== undefined && this.#child === active) {
+      this.#child = null;
+      await terminateChild(active.process);
+    }
+    const delegate = NodeChildProcess.spawn(entryPath, ["__service-launcher"], {
+      env: { ...this.#environment },
+      stdio: "inherit",
+    });
+    this.#delegate = delegate;
+    const outcome = await new Promise<number | null>((resolve) => {
+      delegate.once("error", () => resolve(null));
+      delegate.once("exit", (code) => resolve(code));
+    });
+    this.#delegate = null;
+    if (this.#stopRequested || outcome === 0) {
+      this.#done = true;
+      this.#completion.resolve();
+      return true;
+    }
+    process.stderr.write(
+      `[service-launcher] t3@${target} launcher exited (${String(outcome)}); t3@${own} resumes the service.\n`,
+    );
+    return false;
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -862,5 +961,9 @@ export async function main(): Promise<void> {
   const environment = await readServiceEnvironment(baseDir);
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
+  if (process.env[LAUNCHER_PROBE_ENV] === "1") {
+    process.stdout.write(`${LAUNCHER_PROBE_OK}\n`);
+    return;
+  }
   await new Launcher(baseDir, state, { environment }).run();
 }
