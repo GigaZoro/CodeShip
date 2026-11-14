@@ -25,7 +25,8 @@ import {
   type UpdateEverythingSelection,
   updateRowKey,
 } from "./updateEverything.logic";
-import { runningCommandCountAtom, runningThreadCountAtom } from "./runningThreads";
+import { runningThreadCountAtom } from "./runningThreads";
+import { useRestartingCommandCount } from "./localInstallWait";
 import { runningCommandsCarryOnLabel } from "../desktopUpdate.logic";
 
 import { msg, t, tn, tx } from "~/i18n";
@@ -129,7 +130,7 @@ function UpdateEverythingDialogContent({
   );
   const running = stopped + continuing;
   const restarting = new Set(selectedRestarts.map((machine) => machine.environmentId));
-  const commands = useAtomValue(runningCommandCountAtom([...restarting].join("\n")));
+  const commands = useRestartingCommandCount(restarting);
   const footerNote = [
     running === 0
       ? null

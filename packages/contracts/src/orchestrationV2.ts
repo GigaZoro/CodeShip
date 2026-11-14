@@ -691,10 +691,25 @@ export const OrchestrationV2RestartHoldTurn = Schema.Struct({
 });
 export type OrchestrationV2RestartHoldTurn = typeof OrchestrationV2RestartHoldTurn.Type;
 
+/**
+ * A `t3_command_run` command a chat waits on. CodeShip runs it apart from its server, so a
+ * restart does not stop it and no update waits for it.
+ */
+export const OrchestrationV2RestartHoldCommand = Schema.Struct({
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+  taskId: NodeId,
+  label: Schema.NullOr(Schema.String),
+  command: Schema.String,
+});
+export type OrchestrationV2RestartHoldCommand = typeof OrchestrationV2RestartHoldCommand.Type;
+
 export const OrchestrationV2RestartHold = Schema.Struct({
   work: Schema.Array(OrchestrationV2RestartHoldWork),
   /** Absent from servers that predate automatic updates waiting for running turns. */
   runningTurns: Schema.optional(Schema.Array(OrchestrationV2RestartHoldTurn)),
+  /** Absent from servers that predate `t3_command_run`. */
+  commands: Schema.optional(Schema.Array(OrchestrationV2RestartHoldCommand)),
 });
 export type OrchestrationV2RestartHold = typeof OrchestrationV2RestartHold.Type;
 
@@ -1146,8 +1161,6 @@ const PendingBackgroundTaskFields = {
    * `t3_command_run` command.
    */
   awaited: Schema.optional(Schema.Literal(true)),
-  /** CodeShip runs this outside the provider and the server, so an update does not stop it. */
-  survivesRestart: Schema.optional(Schema.Literal(true)),
   /** Shown as elapsed time; only a `t3_command_run` command's record knows it. */
   startedAt: Schema.optional(Schema.DateTimeUtc),
 };

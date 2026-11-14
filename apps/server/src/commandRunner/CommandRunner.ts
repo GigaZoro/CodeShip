@@ -52,8 +52,10 @@ export const WatchInterval = Context.Reference<Duration.Duration>(
 
 const LOG_FILE = "output.log";
 const STATUS_FILE = "exit-status";
+const PID_FILE = "pid";
 const LOG_TRIM_AT_BYTES = 8 * 1024 * 1024;
 const LOG_KEEP_BYTES = 4 * 1024 * 1024;
+const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
 const RESULT_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
 const RETENTION = Duration.days(14);
@@ -61,9 +63,11 @@ const RETENTION_INTERVAL = Duration.hours(1);
 const COMMAND_DRIVER = ProviderDriverKind.make("command");
 const TRIMMED_MARKER = "[CodeShip removed earlier output to keep this log small]\n";
 
-// Runs the command in the user's shell and outlives it to write its exit status; the rename makes
-// the status file appear whole. Arguments: log, shell, status file, command.
+// Names itself first, then runs the command in the user's shell and outlives it to write its exit
+// status; each rename makes its file appear whole. Arguments: log, shell, status file, command,
+// pid file.
 const POSIX_WRAPPER = [
+  'printf "%s\\n" "$$" >"$5.tmp" && mv -f "$5.tmp" "$5"',
   'exec >>"$1" 2>&1 </dev/null',
   '"$2" -c "$4"',
   "code=$?",
@@ -86,7 +90,8 @@ interface CommandRunRow {
   readonly command: string;
   readonly cwd: string;
   readonly directory: string;
-  readonly pid: number;
+  /** Null from its record until its process starts. */
+  readonly pid: number | null;
   readonly process_started_at: number | null;
   readonly unit: string | null;
   readonly status: CommandRunStatus;
@@ -184,19 +189,33 @@ const make = Effect.gen(function* () {
   const statusPathOf = (row: Pick<CommandRunRow, "directory">) =>
     path.join(row.directory, STATUS_FILE);
 
-  const readExitStatus = (row: CommandRunRow) =>
-    fs.readFileString(statusPathOf(row)).pipe(
-      Effect.map((text) => {
-        const code = Number.parseInt(text.trim(), 10);
-        return { code: Number.isSafeInteger(code) ? code : null };
-      }),
+  /** A file the wrapper wrote, with when it wrote it. */
+  const readWrapperFile = (file: string) =>
+    Effect.all([fs.readFileString(file), fs.stat(file)]).pipe(
+      Effect.map(([text, info]) => ({
+        value: Number.parseInt(text.trim(), 10),
+        writtenAt: Option.getOrUndefined(info.mtime),
+      })),
       Effect.option,
       Effect.map(Option.getOrUndefined),
     );
 
+  /** Its exit code, and when it ended: a command can end while no server watches it. */
+  const readExitStatus = (row: CommandRunRow) =>
+    readWrapperFile(statusPathOf(row)).pipe(
+      Effect.map((status) =>
+        status === undefined
+          ? undefined
+          : {
+              code: Number.isSafeInteger(status.value) ? status.value : null,
+              endedAt: status.writtenAt?.toISOString(),
+            },
+      ),
+    );
+
   /** Whether `pid` is still the process this command started, not a later one reusing it. */
   const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (row: CommandRunRow) {
-    if (!isProcessAlive(row.pid)) return false;
+    if (row.pid === null || !isProcessAlive(row.pid)) return false;
     if (row.process_started_at === null) return true;
     const startedAt = yield* startedAtOf(row.pid);
     // ps reports whole seconds. Unknown identity stays conservative.
@@ -205,12 +224,13 @@ const make = Effect.gen(function* () {
 
   /** Stops the command and everything it started: its process group, or its tree on Windows. */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
-    if (!(yield* isSameProcess(row))) return;
+    const pid = row.pid;
+    if (pid === null || !(yield* isSameProcess(row))) return;
     if (windows) {
       yield* processRunner
         .run({
           command: "taskkill",
-          args: ["/PID", String(row.pid), "/T", "/F"],
+          args: ["/PID", String(pid), "/T", "/F"],
           timeout: Duration.seconds(30),
           maxOutputBytes: 16_384,
         })
@@ -219,7 +239,7 @@ const make = Effect.gen(function* () {
       const signal = (name: NodeJS.Signals | 0) =>
         Effect.sync(() => {
           try {
-            signalProcessGroup(row.pid, name);
+            signalProcessGroup(pid, name);
             return true;
           } catch {
             return false;
@@ -242,7 +262,8 @@ const make = Effect.gen(function* () {
   const writeRow = (row: CommandRunRow) =>
     sql`
       UPDATE command_runs
-      SET status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
+      SET pid = ${row.pid}, process_started_at = ${row.process_started_at}, unit = ${row.unit},
+        status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}
       WHERE task_id = ${row.task_id}
     `;
@@ -322,56 +343,75 @@ const make = Effect.gen(function* () {
     if (delivered) yield* settle({ ...row, delivered_at: yield* nowIso });
   });
 
-  /** Keeps a log that keeps growing to its last part; on Windows only once the command ends. */
+  /**
+   * Keeps a log that keeps growing to its last part; on Windows only once the command ends. The
+   * wrapper still appends to it, so the last part moves to the front in place, following what
+   * lands meanwhile. Output that lands after the last copy, before the cut, is lost, never
+   * reordered.
+   */
   const trimLog = Effect.fn("CommandRunner.trimLog")(function* (row: CommandRunRow) {
     const logPath = logPathOf(row);
-    const size = yield* fs.stat(logPath).pipe(
-      Effect.map((info) => Number(info.size)),
-      Effect.orElseSucceed(() => 0),
+    const grown = yield* fs.stat(logPath).pipe(
+      Effect.map((info) => Number(info.size) > LOG_TRIM_AT_BYTES),
+      Effect.orElseSucceed(() => false),
     );
-    if (size <= LOG_TRIM_AT_BYTES) return;
-    // Its wrapper appends, so a write that lands during the trim is kept, after the kept part.
+    if (!grown) return;
     yield* Effect.scoped(
       Effect.gen(function* () {
         const file = yield* fs.open(logPath, { flag: "r+" });
-        yield* file.seek(BigInt(size - LOG_KEEP_BYTES), "start");
-        const kept = Option.getOrElse(
-          yield* file.readAlloc(LOG_KEEP_BYTES),
-          () => new Uint8Array(),
-        );
-        yield* file.truncate(0);
-        yield* fs.writeFile(
-          logPath,
-          new Uint8Array([...new TextEncoder().encode(TRIMMED_MARKER), ...kept]),
-          { flag: "a" },
-        );
+        const size = Number((yield* file.stat).size);
+        const marker = new TextEncoder().encode(TRIMMED_MARKER);
+        yield* file.seek(0n, "start");
+        yield* file.writeAll(marker);
+        let readAt = size - LOG_KEEP_BYTES;
+        let writeAt = marker.length;
+        let end = size;
+        while (readAt < end) {
+          yield* file.seek(BigInt(readAt), "start");
+          const chunk = Option.getOrUndefined(
+            yield* file.readAlloc(Math.min(LOG_COPY_CHUNK_BYTES, end - readAt)),
+          );
+          if (chunk === undefined || chunk.length === 0) break;
+          yield* file.seek(BigInt(writeAt), "start");
+          yield* file.writeAll(chunk);
+          readAt += chunk.length;
+          writeAt += chunk.length;
+          // A command that writes faster than this copies is cut at the next check instead.
+          if (readAt >= end && writeAt < LOG_TRIM_AT_BYTES) end = Number((yield* file.stat).size);
+        }
+        yield* file.truncate(writeAt);
       }),
     ).pipe(Effect.ignore({ log: true }));
   });
 
   /** Moves a running command on: its end, its deadline, or its process gone without a status. */
   const check = Effect.fn("CommandRunner.check")(function* (row: CommandRunRow) {
+    // stopForTask is still stopping it, and records it once it has.
+    if (row.status === "stopped") return;
     if (row.status !== "running") return yield* deliver(row);
-    const ended = (status: CommandRunStatus, exitCode: number | null) =>
-      nowIso.pipe(
-        Effect.flatMap((endedAt) => {
-          const next = { ...row, status, exit_code: exitCode, ended_at: endedAt };
+    const ended = (status: CommandRunStatus, exitCode: number | null, endedAt?: string) =>
+      (endedAt === undefined ? nowIso : Effect.succeed(endedAt)).pipe(
+        Effect.flatMap((at) => {
+          const next = { ...row, status, exit_code: exitCode, ended_at: at };
           return settle(next).pipe(Effect.andThen(deliver(next)));
         }),
       );
     const exit = yield* readExitStatus(row);
     if (exit !== undefined) {
       yield* trimLog(row);
-      return yield* ended("exited", exit.code);
+      return yield* ended("exited", exit.code, exit.endedAt);
     }
+    // A deadline that passed while no server ran is enforced at the first check after.
     if (Date.parse(row.deadline_at) <= DateTime.toEpochMillis(yield* DateTime.now)) {
       yield* killTree(row);
       return yield* ended("timed_out", null);
     }
-    if (!isProcessAlive(row.pid)) {
+    if (row.pid === null || !isProcessAlive(row.pid)) {
       // Its wrapper writes the status just before it exits.
       const late = yield* readExitStatus(row);
-      return yield* late === undefined ? ended("lost", null) : ended("exited", late.code);
+      return yield* late === undefined
+        ? ended("lost", null)
+        : ended("exited", late.code, late.endedAt);
     }
     if (!windows) yield* trimLog(row);
   });
@@ -388,19 +428,32 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  /** The task got its result elsewhere: a cancel, Stop, or the thread archived. */
+  /**
+   * The task got its result elsewhere: a cancel, Stop, or the thread archived. It is recorded as
+   * delivered only once its process is gone, so a server that stops meanwhile leaves the next one
+   * to stop it. The kill runs outside the lock, which it would hold for its grace period.
+   */
   const stopForTask = (taskId: string) =>
     lock
       .withPermits(1)(
         Effect.gen(function* () {
           const row = watched.get(taskId);
           if (row === undefined || row.status !== "running") return undefined;
-          const now = yield* nowIso;
-          yield* settle({ ...row, status: "stopped", ended_at: now, delivered_at: now });
-          return row;
+          const stopped: CommandRunRow = { ...row, status: "stopped", ended_at: yield* nowIso };
+          yield* settle(stopped);
+          return stopped;
         }),
       )
-      .pipe(Effect.flatMap((row) => (row === undefined ? Effect.void : killTree(row))));
+      .pipe(
+        Effect.flatMap((row) =>
+          row === undefined
+            ? Effect.void
+            : killTree(row).pipe(
+                Effect.andThen(nowIso),
+                Effect.flatMap((now) => lock.withPermits(1)(settle({ ...row, delivered_at: now }))),
+              ),
+        ),
+      );
 
   /** A thread that is archived or deleted keeps nothing running. */
   const stopForThread = Effect.fn("CommandRunner.stopForThread")(function* (
@@ -469,6 +522,7 @@ const make = Effect.gen(function* () {
           posixShell(commandEnv),
           statusPath,
           command,
+          path.join(directory, PID_FILE),
         ],
         name: "command",
         env: commandEnv,
@@ -478,12 +532,24 @@ const make = Effect.gen(function* () {
       return { pid, unit: scoped.unit ?? null };
     }
     // Win32_Process.Create parents the command under WMI, outside this server's job and tree,
-    // with the user's own environment. cmd writes the status once PowerShell exits.
+    // with the user's own environment. PowerShell first names its cmd parent, the process this
+    // command is known by, and cmd writes the status once PowerShell exits.
     const scriptPath = path.join(directory, "command.ps1");
     const runPath = path.join(directory, "run.cmd");
     yield* fs.writeFileString(
       scriptPath,
-      `﻿$ErrorActionPreference = 'Continue'\r\n${command}\r\n$t3Ok = $?\r\nif ($LASTEXITCODE) { exit $LASTEXITCODE }\r\nif (-not $t3Ok) { exit 1 }\r\nexit 0\r\n`,
+      [
+        "﻿$ErrorActionPreference = 'Continue'",
+        `$t3PidFile = Join-Path $PSScriptRoot '${PID_FILE}'`,
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = $PID").ParentProcessId | Set-Content -LiteralPath "$t3PidFile.tmp"`,
+        `Move-Item -Force -LiteralPath "$t3PidFile.tmp" -Destination $t3PidFile`,
+        command,
+        "$t3Ok = $?",
+        "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
+        "if (-not $t3Ok) { exit 1 }",
+        "exit 0",
+        "",
+      ].join("\r\n"),
     );
     yield* fs.writeFileString(
       runPath,
@@ -603,6 +669,29 @@ const make = Effect.gen(function* () {
       if (taskId === undefined) {
         return yield* failure("orchestration_error", "The command was not recorded.");
       }
+      /** Fails a task whose command never started, with nothing left to wake its thread for. */
+      const unstarted = (message: string) =>
+        threads
+          .dispatch({
+            type: "delegated_task.command.complete",
+            commandId: CommandId.make(`command:command-task-unstarted:${taskId}`),
+            parentThreadId: scope.thread.threadId,
+            taskId,
+            status: "failed",
+            result: message,
+          })
+          .pipe(
+            Effect.andThen(
+              threads.dispatch({
+                type: "delegated_task.completion-delivery.dispose",
+                commandId: CommandId.make(`command:command-task-unstarted-dispose:${taskId}`),
+                parentThreadId: scope.thread.threadId,
+                taskId,
+              }),
+            ),
+            Effect.ignore({ log: true }),
+            Effect.andThen(Effect.fail(failure("orchestration_error", message))),
+          );
       return yield* lock
         .withPermits(1)(
           Effect.gen(function* () {
@@ -612,35 +701,6 @@ const make = Effect.gen(function* () {
             if (existing.length > 0) return result(taskId);
             // Its first request could not start it, and the task already says why.
             if (prior?.result != null) return yield* failure("orchestration_error", prior.result);
-            const started = yield* fs
-              .makeDirectory(directory, { recursive: true })
-              .pipe(Effect.andThen(launch(directory, input.command, cwd)), Effect.result);
-            if (started._tag === "Failure") {
-              const message = `Could not start the command: ${started.failure.message}`;
-              yield* threads
-                .dispatch({
-                  type: "delegated_task.command.complete",
-                  commandId: CommandId.make(`command:command-task-unstarted:${taskId}`),
-                  parentThreadId: scope.thread.threadId,
-                  taskId,
-                  status: "failed",
-                  result: message,
-                })
-                .pipe(
-                  Effect.andThen(
-                    threads.dispatch({
-                      type: "delegated_task.completion-delivery.dispose",
-                      commandId: CommandId.make(`command:command-task-unstarted-dispose:${taskId}`),
-                      parentThreadId: scope.thread.threadId,
-                      taskId,
-                    }),
-                  ),
-                  Effect.ignore({ log: true }),
-                );
-              return yield* failure("orchestration_error", message);
-            }
-            const { pid, unit } = started.success;
-            const processStartedAt = (yield* startedAtOf(pid)) ?? null;
             const now = yield* DateTime.now;
             const row: CommandRunRow = {
               task_id: taskId,
@@ -650,9 +710,9 @@ const make = Effect.gen(function* () {
               command: input.command,
               cwd,
               directory,
-              pid,
-              process_started_at: processStartedAt,
-              unit,
+              pid: null,
+              process_started_at: null,
+              unit: null,
               status: "running",
               exit_code: null,
               started_at: DateTime.formatIso(now),
@@ -660,19 +720,47 @@ const make = Effect.gen(function* () {
               ended_at: null,
               delivered_at: null,
             };
-            yield* sql`
-            INSERT INTO command_runs (
-              task_id, thread_id, run_id, label, command, cwd, directory, pid,
-              process_started_at, unit, status, exit_code, started_at, deadline_at, ended_at,
-              delivered_at
-            ) VALUES (
-              ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
-              ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_started_at}, ${row.unit},
-              ${row.status}, ${row.exit_code}, ${row.started_at}, ${row.deadline_at},
-              ${row.ended_at}, ${row.delivered_at}
-            )
-          `;
-            watched.set(row.task_id, row);
+            // Recorded before it starts, so a server that stops in between leaves the next one
+            // a record to adopt it by, never a command nothing watches.
+            const recordedRow = yield* fs.makeDirectory(directory, { recursive: true }).pipe(
+              Effect.andThen(
+                sql`
+                INSERT INTO command_runs (
+                  task_id, thread_id, run_id, label, command, cwd, directory, pid,
+                  process_started_at, unit, status, exit_code, started_at, deadline_at, ended_at,
+                  delivered_at
+                ) VALUES (
+                  ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
+                  ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_started_at}, ${row.unit},
+                  ${row.status}, ${row.exit_code}, ${row.started_at}, ${row.deadline_at},
+                  ${row.ended_at}, ${row.delivered_at}
+                )
+              `,
+              ),
+              Effect.result,
+            );
+            if (recordedRow._tag === "Failure") {
+              return yield* unstarted(
+                `Could not start the command: ${recordedRow.failure.message}`,
+              );
+            }
+            const started = yield* launch(directory, input.command, cwd).pipe(Effect.result);
+            if (started._tag === "Failure") {
+              yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`.pipe(
+                Effect.ignore({ log: true }),
+              );
+              return yield* unstarted(`Could not start the command: ${started.failure.message}`);
+            }
+            const { pid, unit } = started.success;
+            const launched: CommandRunRow = {
+              ...row,
+              pid,
+              process_started_at: (yield* startedAtOf(pid)) ?? null,
+              unit,
+            };
+            watched.set(taskId, launched);
+            // Its pid file names it to the next server if this write is lost.
+            yield* writeRow(launched).pipe(Effect.ignore({ log: true }));
             return result(taskId);
           }),
         )
@@ -690,25 +778,93 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Picks up what an earlier server left: commands to watch again, ends to deliver, and tasks
-   * whose command never got its record (the server stopped between the two), which are lost.
+   * A command whose server stopped before it recorded the pid: its wrapper's pid file names it.
+   * Without that file it never started, so its record goes and its task fails with the others.
+   */
+  const recoverPid = Effect.fn("CommandRunner.recoverPid")(function* (row: CommandRunRow) {
+    const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
+    if (named === undefined || !Number.isSafeInteger(named.value) || named.value <= 0) {
+      if ((yield* readExitStatus(row)) !== undefined) return row;
+      yield* sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`;
+      return undefined;
+    }
+    const pid = named.value;
+    if (!isProcessAlive(pid)) return row;
+    const startedAt = yield* startedAtOf(pid);
+    const writtenAt = named.writtenAt?.getTime();
+    // It started before it wrote the file; a later process reusing the pid did not. ps reports
+    // whole seconds.
+    if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
+      return row;
+    }
+    const recovered: CommandRunRow = { ...row, pid, process_started_at: startedAt ?? null };
+    yield* writeRow(recovered);
+    return recovered;
+  });
+
+  /** What one record an earlier server left needs, given its task if that is still open. */
+  const adoptRow = Effect.fn("CommandRunner.adoptRow")(function* (
+    stored: CommandRunRow,
+    task: ProjectionStore.ProjectionOpenCommandTask | undefined,
+  ) {
+    const row = stored.pid === null ? yield* recoverPid(stored) : stored;
+    if (row === undefined) return;
+    if (row.status === "stopped") {
+      // Its server stopped before the stop was done.
+      yield* killTree(row);
+      return yield* settle({ ...row, delivered_at: yield* nowIso });
+    }
+    if (row.status !== "running") {
+      watched.set(row.task_id, row);
+      return;
+    }
+    if (task === undefined || task.threadClosed !== null) {
+      // Its task got its result while no server ran (a cancel), or its chat was closed.
+      if (task?.threadClosed != null) {
+        yield* threads
+          .dispatch({
+            type: "delegated_task.command.complete",
+            commandId: CommandId.make(`command:command-task-${task.threadClosed}:${row.task_id}`),
+            parentThreadId: task.parentThreadId,
+            taskId: task.taskId,
+            status: "interrupted",
+            result: `Stopped: the chat was ${task.threadClosed}.`,
+          })
+          .pipe(Effect.ignore);
+      }
+      yield* killTree(row);
+      const now = yield* nowIso;
+      return yield* settle({ ...row, status: "stopped", ended_at: now, delivered_at: now });
+    }
+    if ((yield* readExitStatus(row)) !== undefined) {
+      watched.set(row.task_id, row);
+      return;
+    }
+    // A pid reused by another process means this command ended while no server watched it.
+    if (yield* isSameProcess(row)) watched.set(row.task_id, row);
+    else yield* settle({ ...row, status: "lost", ended_at: yield* nowIso });
+  });
+
+  /**
+   * Picks up what an earlier server left: commands to watch again, ends to deliver, stops to
+   * finish, and tasks whose command never got its record (the server stopped between the two),
+   * which are lost.
    */
   const adopt = Effect.gen(function* () {
+    const open = yield* projections.getOpenCommandTasks;
+    const openById = new Map<string, ProjectionStore.ProjectionOpenCommandTask>(
+      open.map((task) => [task.taskId, task]),
+    );
     const rows = yield* sql<CommandRunRow>`
       SELECT * FROM command_runs WHERE delivered_at IS NULL
     `;
     yield* Effect.forEach(rows, (row) =>
-      Effect.gen(function* () {
-        if (row.status !== "running" || (yield* readExitStatus(row)) !== undefined) {
-          watched.set(row.task_id, row);
-          return;
-        }
-        // A pid reused by another process means this command ended while no server watched it.
-        if (yield* isSameProcess(row)) watched.set(row.task_id, row);
-        else yield* settle({ ...row, status: "lost", ended_at: yield* nowIso });
-      }),
+      adoptRow(row, openById.get(row.task_id)).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("command-runner.adopt-failed", { taskId: row.task_id, cause }),
+        ),
+      ),
     );
-    const open = yield* projections.getOpenCommandTasks;
     const known = new Set(
       (yield* sql<{ readonly task_id: string }>`SELECT task_id FROM command_runs`).map(
         (row) => row.task_id,
@@ -772,16 +928,22 @@ const make = Effect.gen(function* () {
         // Subscribed before adopting, so a cancel that lands meanwhile is not missed.
         yield* Effect.forkScoped(
           Stream.runForEach(threads.streamDomainEvents, (event) => {
-            if (
+            const handled =
               event.type === "subagent.updated" &&
               event.payload.command !== undefined &&
               event.payload.result !== null
-            ) {
-              return stopForTask(event.payload.id);
-            }
-            if (event.type === "thread.archived") return stopForThread(event.threadId, "archived");
-            if (event.type === "thread.deleted") return stopForThread(event.threadId, "deleted");
-            return Effect.void;
+                ? stopForTask(event.payload.id)
+                : event.type === "thread.archived"
+                  ? stopForThread(event.threadId, "archived")
+                  : event.type === "thread.deleted"
+                    ? stopForThread(event.threadId, "deleted")
+                    : Effect.void;
+            // One failed stop must not end the subscription every later stop needs.
+            return handled.pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("command-runner.stop-failed", { type: event.type, cause }),
+              ),
+            );
           }).pipe(Effect.ignoreCause({ log: true })),
           { startImmediately: true },
         );

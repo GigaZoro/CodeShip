@@ -332,7 +332,18 @@ function runningTurnCalls(projection: RecoveryProjection): ReadonlyArray<Restart
 function sameRestartHold(left: OrchestrationV2RestartHold, right: OrchestrationV2RestartHold) {
   const leftTurns = left.runningTurns ?? [];
   const rightTurns = right.runningTurns ?? [];
+  const leftCommands = left.commands ?? [];
+  const rightCommands = right.commands ?? [];
   return (
+    leftCommands.length === rightCommands.length &&
+    leftCommands.every((command, index) => {
+      const other = rightCommands[index]!;
+      return (
+        command.taskId === other.taskId &&
+        command.threadTitle === other.threadTitle &&
+        command.label === other.label
+      );
+    }) &&
     leftTurns.length === rightTurns.length &&
     leftTurns.every(
       (turn, index) =>
@@ -1091,7 +1102,24 @@ export const make = Effect.gen(function* () {
         }
       }
     }
-    return { work, runningTurns } satisfies OrchestrationV2RestartHold;
+    const commands = (yield* projections.getOpenCommandTasks.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
+      ),
+    )).flatMap((task) =>
+      task.threadClosed === null
+        ? [
+            {
+              threadId: task.parentThreadId,
+              threadTitle: task.threadTitle,
+              taskId: task.taskId,
+              label: task.label,
+              command: task.command,
+            },
+          ]
+        : [],
+    );
+    return { work, runningTurns, commands } satisfies OrchestrationV2RestartHold;
   }).pipe(Effect.withSpan("ProviderRuntimeRecoveryService.restartHold"));
 
   const watchRestartHold = Stream.unwrap(

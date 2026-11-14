@@ -132,15 +132,23 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
 
-export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare(
+export const actsAsCaller = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  options?: {
+    readonly caller?: (caller: Caller) => Effect.Effect<void, OrchestratorMcpFailure>;
+  },
+) => {
+  const check = options?.caller;
+  return declare(
     (params: P) =>
       requireThreadCaller.pipe(
         Effect.andThen(writingCaller),
+        Effect.tap((caller) => (check === undefined ? Effect.void : check(caller))),
         Effect.flatMap(() => handle(params)),
       ),
     undefined,
   );
+};
 
 /**
  * Changes something that belongs to no thread, such as a pending upload or a

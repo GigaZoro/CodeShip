@@ -116,6 +116,7 @@ const ProbeToolkit = Toolkit.make(
   Tool.make("reads", probe),
   Tool.make("reads_as_caller", probe),
   Tool.make("acts_as_caller", probe),
+  Tool.make("acts_as_caller_full_access", probe),
   Tool.make("writes", probe),
   Tool.make("writes_with_capability", probe),
   Tool.make("writes_threads", {
@@ -136,6 +137,9 @@ const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   reads: McpToolAccess.reads(() => ran),
   reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
   acts_as_caller: McpToolAccess.actsAsCaller(() => ran),
+  acts_as_caller_full_access: McpToolAccess.actsAsCaller(() => ran, {
+    caller: (caller) => assertFullAccess(caller, "Needs full access."),
+  }),
   writes: McpToolAccess.writes(() => ran),
   writes_with_capability: McpToolAccess.writesWithCapability(() => ran),
   writes_threads: McpToolAccess.writesThreads(
@@ -182,6 +186,7 @@ export const refusedAtCompileTime = () => {
       reads: unchecked,
       reads_as_caller: unchecked,
       acts_as_caller: unchecked,
+      acts_as_caller_full_access: unchecked,
       writes: unchecked,
       writes_with_capability: unchecked,
       writes_threads: unchecked,
@@ -264,6 +269,9 @@ it.effect.each([
   ["acts_as_caller", archivedBackground, {}, "parent_not_active"],
   ["acts_as_caller", unknownOwnerBackground, {}, "parent_not_active"],
   ["acts_as_caller", fullAccessClient, {}, "thread_credential_required"],
+  ["acts_as_caller_full_access", fullAccess, {}, "ran"],
+  ["acts_as_caller_full_access", supervised, {}, "capability_denied"],
+  ["acts_as_caller_full_access", plan, {}, "capability_denied"],
 
   ["writes", supervised, {}, "ran"],
   ["writes", ended, {}, "parent_not_active"],

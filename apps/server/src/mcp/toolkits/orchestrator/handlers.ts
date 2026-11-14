@@ -8,7 +8,7 @@ import * as PeerLinkBack from "../../../peer/PeerLinkBack.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
 import * as SharedSettings from "../../../sharedSettings/SharedSettings.ts";
-import { readCaller } from "../../threadAccess.ts";
+import { assertFullAccess, readCaller } from "../../threadAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
@@ -63,13 +63,21 @@ const handlers = {
         );
       }),
   ),
-  t3_command_run: McpToolAccess.actsAsCaller((input) =>
-    Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
-      const caller = yield* McpInvocationContext.requireThreadScope(scope, "t3_command_run");
-      const runner = yield* CommandRunner.CommandRunner;
-      return yield* runner.run(caller, input);
-    }),
+  t3_command_run: McpToolAccess.actsAsCaller(
+    (input) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const caller = yield* McpInvocationContext.requireThreadScope(scope, "t3_command_run");
+        const runner = yield* CommandRunner.CommandRunner;
+        return yield* runner.run(caller, input);
+      }),
+    {
+      caller: (caller) =>
+        assertFullAccess(
+          caller,
+          "t3_command_run runs a command without approval, so it needs this thread in Full access and default mode. Run the command in your own shell instead.",
+        ),
+    },
   ),
   schedule_task: McpToolAccess.either(
     (input) => input.scheduledTaskId === undefined,

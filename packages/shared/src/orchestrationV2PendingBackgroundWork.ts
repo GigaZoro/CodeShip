@@ -205,7 +205,6 @@ function pendingTaskFromTurnItem(
           ...named,
           kind: "command",
           awaited: true,
-          survivesRestart: true,
           ...(item.startedAt == null ? {} : { startedAt: item.startedAt }),
         };
       return {

@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
+  OrchestrationV2RestartHoldCommand,
   OrchestrationV2RestartHoldTurn,
   OrchestrationV2RestartHoldWork,
 } from "@t3tools/contracts";
@@ -20,16 +21,15 @@ import {
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import {
-  type RunningCommand,
   type RunningThread,
-  runningCommandCountAtom,
-  runningCommandsAtom,
   runningThreadCountAtom,
   runningThreadsAtom,
   splitRunningThreadsForRestart,
 } from "./runningThreads";
 import {
   useHostedRestartHoldKey,
+  useRestartHoldCommandCount,
+  useRestartHoldCommands,
   useRestartHoldWork,
   useRestartHoldWorkCount,
 } from "./localInstallWait";
@@ -52,8 +52,9 @@ export function useThisAppRunningThreads(ready: boolean) {
       )
     : "";
   const count = useAtomValue(runningThreadCountAtom(key));
-  const commandCount = useAtomValue(runningCommandCountAtom(key));
-  const holdCount = useRestartHoldWorkCount(useHostedRestartHoldKey(ready));
+  const holdKey = useHostedRestartHoldKey(ready);
+  const commandCount = useRestartHoldCommandCount(holdKey);
+  const holdCount = useRestartHoldWorkCount(holdKey);
   return { key, count, commandCount, busy: count > 0 || commandCount > 0 || holdCount > 0 };
 }
 
@@ -111,8 +112,9 @@ function SafeUpdateDialogContent({
   const { resuming, waitingOnYou } = splitRunningThreadsForRestart(
     useAtomValue(runningThreadsAtom(environmentIds)),
   );
-  const commands = useAtomValue(runningCommandsAtom(environmentIds));
-  const work = useRestartHoldWork(useHostedRestartHoldKey());
+  const holdKey = useHostedRestartHoldKey();
+  const commands = useRestartHoldCommands(holdKey);
+  const work = useRestartHoldWork(holdKey);
   const { background, turnCalls } = splitRestartHoldWork(work);
   return (
     <>
@@ -227,23 +229,23 @@ function ThreadGroup({
   );
 }
 
-function CommandGroup({ commands }: { readonly commands: ReadonlyArray<RunningCommand> }) {
+function CommandGroup({
+  commands,
+}: {
+  readonly commands: ReadonlyArray<OrchestrationV2RestartHoldCommand>;
+}) {
   return (
     <EntryGroup
       title={t("Carry on through the update")}
       note={t(
         "T3.CodeShip runs these commands outside the chats, so the restart does not stop them. Each tells its chat when it finishes.",
       )}
-      entries={commands.map(({ environmentId, thread, task }) => ({
-        key: `${environmentId}:${task.taskId}`,
+      entries={commands.map((entry) => ({
+        key: `${entry.threadId}:${entry.taskId}`,
         content: (
           <>
-            {task.description === undefined ? (
-              t("Command")
-            ) : (
-              <span className="font-mono">{commandDisplayText(task.description)}</span>
-            )}{" "}
-            <span className="text-muted-foreground">{thread.title}</span>
+            {entry.label ?? <span className="font-mono">{commandDisplayText(entry.command)}</span>}{" "}
+            <span className="text-muted-foreground">{entry.threadTitle}</span>
           </>
         ),
       }))}

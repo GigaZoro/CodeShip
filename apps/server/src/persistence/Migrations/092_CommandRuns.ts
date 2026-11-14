@@ -6,7 +6,8 @@ export default Effect.gen(function* () {
 
   // A `t3_command_run` command outlives the server that started it, so the next one adopts it
   // from here: its process, the folder its wrapper writes the output and exit status to, and
-  // whether its end has reached the task.
+  // whether its end has reached the task. The row comes before the process, so `pid` is null
+  // until it starts; its wrapper's pid file names it if the server stopped in between.
   yield* sql`
     CREATE TABLE command_runs (
       task_id TEXT PRIMARY KEY,
@@ -16,7 +17,7 @@ export default Effect.gen(function* () {
       command TEXT NOT NULL,
       cwd TEXT NOT NULL,
       directory TEXT NOT NULL,
-      pid INTEGER NOT NULL,
+      pid INTEGER,
       process_started_at INTEGER,
       unit TEXT,
       status TEXT NOT NULL,

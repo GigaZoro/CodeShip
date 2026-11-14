@@ -227,6 +227,17 @@ export type ProjectionLimitRecoveryCandidate = Pick<
   readonly heldAttemptId?: RunAttemptId;
 };
 
+/** A `t3_command_run` task without a result yet, with what the update dialogs show of it. */
+export interface ProjectionOpenCommandTask {
+  readonly parentThreadId: ThreadId;
+  readonly taskId: NodeId;
+  readonly threadTitle: string;
+  /** Set when its thread is archived or deleted, which keeps nothing running. */
+  readonly threadClosed: "archived" | "deleted" | null;
+  readonly label: string | null;
+  readonly command: string;
+}
+
 /** The latest run of a thread that a lost connection stopped, as network recovery reads it. */
 export interface ProjectionNetworkRecoveryCandidate {
   readonly threadId: ThreadId;
@@ -677,9 +688,8 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
     ProjectionStoreV2Error
   >;
-  /** `t3_command_run` tasks without a result yet. */
   readonly getOpenCommandTasks: Effect.Effect<
-    ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
+    ReadonlyArray<ProjectionOpenCommandTask>,
     ProjectionStoreV2Error
   >;
   readonly getTurnStartContext: (
@@ -7199,17 +7209,39 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const getOpenCommandTasks: ProjectionStoreV2Shape["getOpenCommandTasks"] = sql<{
       readonly thread_id: string;
       readonly subagent_id: string;
+      readonly label: string | null;
+      readonly command: string;
+      readonly thread_title: string | null;
+      readonly archived_at: string | null;
+      readonly deleted_at: string | null;
     }>`
-      SELECT thread_id, subagent_id FROM orchestration_v2_projection_subagents
-      WHERE origin = 'app_owned'
-        AND child_thread_id IS NULL
-        AND json_type(payload_json, '$.command') = 'object'
-        AND json_type(payload_json, '$.result') = 'null'
+      SELECT task.thread_id, task.subagent_id,
+        json_extract(task.payload_json, '$.title') AS label,
+        json_extract(task.payload_json, '$.command.command') AS command,
+        thread.title AS thread_title, thread.archived_at, thread.deleted_at
+      FROM orchestration_v2_projection_subagents AS task
+      LEFT JOIN orchestration_v2_projection_threads AS thread
+        ON thread.thread_id = task.thread_id
+      WHERE task.origin = 'app_owned'
+        AND task.child_thread_id IS NULL
+        AND json_type(task.payload_json, '$.command') = 'object'
+        AND json_type(task.payload_json, '$.result') = 'null'
+      ORDER BY task.thread_id, task.subagent_id
     `.pipe(
       Effect.map((rows) =>
-        rows.map((row) => ({
+        rows.map((row): ProjectionOpenCommandTask => ({
           parentThreadId: ThreadId.make(row.thread_id),
           taskId: NodeId.make(row.subagent_id),
+          threadTitle: row.thread_title ?? "",
+          // Without a thread row there is no title, and nothing to keep running for.
+          threadClosed:
+            row.thread_title === null || row.deleted_at !== null
+              ? "deleted"
+              : row.archived_at !== null
+                ? "archived"
+                : null,
+          label: row.label,
+          command: row.command,
         })),
       ),
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),

@@ -153,8 +153,13 @@ const nextWake = (threadId: ThreadId) =>
 const commandRow = (taskId: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql<{ readonly status: string; readonly delivered_at: string | null }>`
-      SELECT status, delivered_at FROM command_runs WHERE task_id = ${taskId}
+    const rows = yield* sql<{
+      readonly status: string;
+      readonly pid: number | null;
+      readonly started_at: string;
+      readonly delivered_at: string | null;
+    }>`
+      SELECT status, pid, started_at, delivered_at FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
   });
@@ -174,12 +179,22 @@ const liveChat = (name: string) =>
     const parent = yield* seedLiveParent({ name, driver, modelSelection, worktreePath: workspace });
     const sql = yield* SqlClient.SqlClient;
     yield* Effect.addFinalizer(() =>
-      sql<{ readonly pid: number }>`
-        SELECT pid FROM command_runs WHERE thread_id = ${parent.threadId}
+      sql<{ readonly pid: number | null; readonly directory: string }>`
+        SELECT pid, directory FROM command_runs WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
-          Effect.forEach(rows, ({ pid }) =>
-            Effect.try(() => signalProcessGroup(pid, "SIGKILL")).pipe(Effect.ignore),
+          Effect.forEach(rows, (row) =>
+            Effect.try(() =>
+              signalProcessGroup(
+                // A failed test can leave a row without its pid; the wrapper's pid file still names it.
+                row.pid ??
+                  Number.parseInt(
+                    NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
+                    10,
+                  ),
+                "SIGKILL",
+              ),
+            ).pipe(Effect.ignore),
           ),
         ),
         Effect.ignore,
@@ -236,11 +251,62 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         }),
       );
       NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
-      yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "exit-status"));
+      const statusFile = NodePath.join(NodePath.dirname(started.logPath), "exit-status");
+      yield* awaitFile(statusFile);
+      // The status file is written as it ends, so its time is the end, not the next server's start.
+      const startedAt = Date.parse((yield* commandRow(started.taskId))!.started_at);
+      const endedAtSeconds = (startedAt + 42_000) / 1000;
+      NodeFS.utimesSync(statusFile, endedAtSeconds, endedAtSeconds);
       yield* withServer(() => nextWake(chat.threadId));
       const task = yield* taskOf(chat.threadId, started.taskId);
       assert.equal(task?.status, "completed");
-      assert.match(task?.result ?? "", /^Exited with code 0 after .+\.\nLast output:\nbuilt\n/);
+      assert.match(task?.result ?? "", /^Exited with code 0 after 42s\.\nLast output:\nbuilt\n/);
+    }),
+  );
+
+  it.effect("adopts a command whose server stopped before it recorded the pid", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("command-pid-unrecorded");
+      const started = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), {
+          command: "until [ -e go ]; do sleep 0.05; done; echo adopted",
+        }),
+      );
+      // Its wrapper names itself at once; a restart takes far longer.
+      yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "pid"));
+      const sql = yield* SqlClient.SqlClient;
+      // What the record holds when its server stops between starting it and recording the pid.
+      yield* sql`
+        UPDATE command_runs SET pid = NULL, process_started_at = NULL
+        WHERE task_id = ${started.taskId}
+      `;
+      yield* withServer(() =>
+        Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "")).pipe(
+          Effect.andThen(nextWake(chat.threadId)),
+        ),
+      );
+      const task = yield* taskOf(chat.threadId, started.taskId);
+      assert.match(task?.result ?? "", /^Exited with code 0 after .+\.\nLast output:\nadopted\n/);
+      assert.isNotNull((yield* commandRow(started.taskId))?.pid);
+    }),
+  );
+
+  it.effect("keeps the end of a log that grew too large, after a note that it was cut", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("command-log-trimmed");
+      const started = yield* withServer((runner) =>
+        runner
+          .run(callerOf(chat.threadId), {
+            command: "head -c 9000000 /dev/zero | tr '\\0' x; echo; echo last-line",
+          })
+          .pipe(Effect.tap(() => nextWake(chat.threadId))),
+      );
+      const log = NodeFS.readFileSync(started.logPath, "utf8");
+      assert.match(
+        log,
+        /^\[CodeShip removed earlier output to keep this log small\]\nx+\nlast-line\n$/,
+      );
+      assert.isBelow(log.length, 8 * 1024 * 1024);
     }),
   );
 
@@ -318,6 +384,43 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           assert.equal(row?.status, "stopped");
         }),
       );
+    }),
+  );
+
+  it.effect.each([
+    ["its task is cancelled while no server runs", false],
+    ["its server stopped before it finished stopping it", true],
+  ] as const)("stops a command when %s, once a server starts", ([, cutStop]) =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat(cutStop ? "command-stop-cut" : "command-cancelled-down");
+      const started = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), {
+          command: `sh -c 'trap "echo > stopped; exit 0" TERM; echo > ready; while :; do sleep 1; done' & wait`,
+        }),
+      );
+      yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.dispatch({
+        type: "delegated_task.command.complete",
+        commandId: CommandId.make(`command:cancel:${chat.threadId}`),
+        parentThreadId: chat.threadId,
+        taskId: NodeId.make(started.taskId),
+        status: "cancelled",
+        result: "Cancelled.",
+      });
+      if (cutStop) {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+            UPDATE command_runs SET status = 'stopped', ended_at = started_at
+            WHERE task_id = ${started.taskId}
+          `;
+      }
+      // A run waits until the server has adopted what the earlier one left.
+      yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+      assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+      const row = yield* commandRow(started.taskId);
+      assert.equal(row?.status, "stopped");
+      assert.isNotNull(row?.delivered_at);
     }),
   );
 });

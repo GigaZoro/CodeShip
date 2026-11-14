@@ -380,7 +380,6 @@ describe("derivePendingBackgroundWork kinds", () => {
         description: "vp run check:changed",
         kind: "command",
         awaited: true,
-        survivesRestart: true,
         startedAt: runStartedAt,
       },
     ]);

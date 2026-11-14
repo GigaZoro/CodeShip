@@ -11,6 +11,7 @@ import {
 import {
   EnvironmentId,
   type OrchestrationV2RestartHold,
+  type OrchestrationV2RestartHoldCommand,
   type OrchestrationV2RestartHoldTurn,
   type OrchestrationV2RestartHoldWork,
 } from "@t3tools/contracts";
@@ -46,11 +47,14 @@ export function usePendingLocalInstall(): PendingLocalInstall | null {
 
 const EMPTY_WORK: ReadonlyArray<OrchestrationV2RestartHoldWork> = [];
 const EMPTY_TURNS: ReadonlyArray<OrchestrationV2RestartHoldTurn> = [];
+const EMPTY_COMMANDS: ReadonlyArray<OrchestrationV2RestartHoldCommand> = [];
 
 /** Only servers that advertise the capability can report background work; others have none. */
-const holdsRestart = (environment: EnvironmentPresentation) =>
-  isHostedByThisApp(environment) &&
+const reportsRestartHold = (environment: EnvironmentPresentation) =>
   environment.serverConfig?.environment.capabilities.restartHold === true;
+
+const holdsRestart = (environment: EnvironmentPresentation) =>
+  isHostedByThisApp(environment) && reportsRestartHold(environment);
 
 /** Keyed by `environmentIdsKey`; the latest hold each listed server reported. */
 const restartHoldsAtom = Atom.family((environmentIds: string) =>
@@ -97,6 +101,20 @@ const restartHoldWorkCountAtom = Atom.family((environmentIds: string) =>
   ),
 );
 
+/** Keyed by `environmentIdsKey`; the `t3_command_run` commands that carry on through a restart. */
+const restartHoldCommandsAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get): ReadonlyArray<OrchestrationV2RestartHoldCommand> => {
+    const holds = get(restartHoldsAtom(environmentIds));
+    return holds.length === 0 ? EMPTY_COMMANDS : holds.flatMap((hold) => hold.commands ?? []);
+  }).pipe(Atom.withLabel(`restart-hold-commands:${environmentIds}`)),
+);
+
+const restartHoldCommandCountAtom = Atom.family((environmentIds: string) =>
+  Atom.make((get) => get(restartHoldCommandsAtom(environmentIds)).length).pipe(
+    Atom.withLabel(`restart-hold-command-count:${environmentIds}`),
+  ),
+);
+
 /** The servers this app hosts that can report background work, as an `environmentIdsKey`. */
 export function useHostedRestartHoldKey(enabled = true): string {
   const { environments } = useEnvironments();
@@ -111,6 +129,29 @@ export function useRestartHoldWork(environmentIds: string) {
 
 export function useRestartHoldWorkCount(environmentIds: string) {
   return useAtomValue(restartHoldWorkCountAtom(environmentIds));
+}
+
+export function useRestartHoldCommands(environmentIds: string) {
+  return useAtomValue(restartHoldCommandsAtom(environmentIds));
+}
+
+export function useRestartHoldCommandCount(environmentIds: string) {
+  return useAtomValue(restartHoldCommandCountAtom(environmentIds));
+}
+
+/** The commands that carry on through a restart of any of these servers, hosted here or not. */
+export function useRestartingCommandCount(environmentIds: ReadonlySet<string>): number {
+  const { environments } = useEnvironments();
+  return useRestartHoldCommandCount(
+    environmentIdsKey(
+      environments
+        .filter(
+          (environment) =>
+            environmentIds.has(environment.environmentId) && reportsRestartHold(environment),
+        )
+        .map(({ environmentId }) => environmentId),
+    ),
+  );
 }
 
 /** The work listed when a pending install began that is still running; later work is left out. */

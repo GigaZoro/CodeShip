@@ -1679,6 +1679,7 @@ function restartHoldLayer(input: {
   readonly threadId: ThreadId;
   readonly projection: () => OrchestrationV2ThreadProjection;
   readonly live?: Stream.Stream<OrchestrationV2StoredEvent>;
+  readonly commands?: () => ReadonlyArray<ProjectionStore.ProjectionOpenCommandTask>;
   readonly onCommit?: (
     input: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0],
   ) => void;
@@ -1690,6 +1691,7 @@ function restartHoldLayer(input: {
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getRecoveryThreadIds: () => Effect.succeed([input.threadId]),
           getRuntimeRecoveryProjection: () => Effect.sync(input.projection),
+          getOpenCommandTasks: Effect.sync(() => input.commands?.() ?? []),
         }),
         Layer.mock(EventSink.EventSinkV2)({
           lastCommittedAt: Effect.succeed(null),
@@ -1720,7 +1722,7 @@ it.effect("holds no update for a chat's background shells, which a restart repor
   let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null = null;
   return Effect.gen(function* () {
     const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
-    assert.deepEqual(yield* recovery.restartHold, { work: [], runningTurns: [] });
+    assert.deepEqual(yield* recovery.restartHold, { work: [], runningTurns: [], commands: [] });
 
     yield* recovery.reconcile("shutdown");
     const notes = (committed?.events ?? []).flatMap((event) =>
@@ -1776,7 +1778,11 @@ it.effect("lists a chat that is answering, for an automatic update to wait on", 
       Stream.runForEach((hold) => Queue.offer(holds, hold)),
       Effect.forkScoped({ startImmediately: true }),
     );
-    assert.deepEqual(yield* Queue.take(holds), { work: [], runningTurns: [answering] });
+    assert.deepEqual(yield* Queue.take(holds), {
+      work: [],
+      runningTurns: [answering],
+      commands: [],
+    });
 
     // A settled turn, waiting only on its checkpoint, is not answering.
     projection = withRun("waiting");
@@ -1786,7 +1792,7 @@ it.effect("lists a chat that is answering, for an automatic update to wait on", 
     } as unknown as OrchestrationV2StoredEvent);
     yield* Queue.take(pulled);
     yield* TestClock.adjust("1 second");
-    assert.deepEqual(yield* Queue.take(holds), { work: [], runningTurns: [] });
+    assert.deepEqual(yield* Queue.take(holds), { work: [], runningTurns: [], commands: [] });
 
     for (const status of ["preparing", "starting"]) {
       projection = withRun(status);
@@ -1794,6 +1800,67 @@ it.effect("lists a chat that is answering, for an automatic update to wait on", 
     }
   }).pipe(Effect.scoped);
 });
+
+// The update dialogs say which commands carry on through the update, however busy their chats are.
+it.effect(
+  "lists the open commands of chats that are not closed, and holds no update for them",
+  () => {
+    const fixture = restartHoldFixture();
+    const command = (taskId: string, threadClosed: "archived" | null) => ({
+      parentThreadId: fixture.threadId,
+      taskId: NodeId.make(taskId),
+      threadTitle: "AB#975 one-sided book",
+      threadClosed,
+      label: null,
+      command: "vp run check:changed",
+    });
+    let commands: ReadonlyArray<ProjectionStore.ProjectionOpenCommandTask> = [];
+    return Effect.gen(function* () {
+      const live = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      const pulled = yield* Queue.unbounded<void>();
+      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+        Effect.provide(
+          restartHoldLayer({
+            threadId: fixture.threadId,
+            projection: () => fixture.projectionWith([]),
+            commands: () => commands,
+            live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
+          }),
+        ),
+      );
+      const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
+      yield* recovery.watchRestartHold.pipe(
+        Stream.runForEach((hold) => Queue.offer(holds, hold)),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      assert.deepEqual((yield* Queue.take(holds)).commands, []);
+
+      commands = [
+        command("command-task:check", null),
+        command("command-task:archived", "archived"),
+      ];
+      yield* Queue.offer(live, {
+        sequence: 1,
+        event: { type: "subagent.updated", threadId: fixture.threadId },
+      } as unknown as OrchestrationV2StoredEvent);
+      yield* Queue.take(pulled);
+      yield* TestClock.adjust("1 second");
+      assert.deepEqual(yield* Queue.take(holds), {
+        work: [],
+        runningTurns: [],
+        commands: [
+          {
+            threadId: fixture.threadId,
+            threadTitle: "AB#975 one-sided book",
+            taskId: NodeId.make("command-task:check"),
+            label: null,
+            command: "vp run check:changed",
+          },
+        ],
+      });
+    }).pipe(Effect.scoped);
+  },
+);
 
 function runningTurnFixture() {
   const fixture = restartHoldFixture();
@@ -1898,6 +1965,7 @@ it.effect("lists the calls a running turn waits on, until it runs none", () => {
         call("subagent", "Review the diff (id toolu_reviewer)", "toolu_reviewer"),
       ],
       runningTurns: [answering],
+      commands: [],
     });
 
     // A busy agent sends tool events without a pause, and the hold still follows its calls.
@@ -1920,7 +1988,7 @@ it.effect("lists the calls a running turn waits on, until it runs none", () => {
       });
     assert.deepEqual(
       yield* next([answer, bash("completed"), edit("running"), reviewer("completed")]),
-      { work: [editCall], runningTurns: [answering] },
+      { work: [editCall], runningTurns: [answering], commands: [] },
     );
     // Streaming its answer, or waiting on a delegated task, the turn runs no call of its own.
     assert.deepEqual(
@@ -1931,7 +1999,7 @@ it.effect("lists the calls a running turn waits on, until it runs none", () => {
         reviewer("completed"),
         ...delegated,
       ]),
-      { work: [], runningTurns: [answering] },
+      { work: [], runningTurns: [answering], commands: [] },
     );
   }).pipe(Effect.scoped);
 });
@@ -2047,7 +2115,7 @@ it.effect("does not hold an update for a wait on another chat or a delegated tas
   let projection = fixture.projectionWith([], waits);
   return Effect.gen(function* () {
     const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
-    assert.deepEqual(yield* recovery.restartHold, { work: [], runningTurns: [] });
+    assert.deepEqual(yield* recovery.restartHold, { work: [], runningTurns: [], commands: [] });
 
     // Work the chat itself runs still holds the update.
     projection = fixture.projectionWith([fixture.audit], waits);
