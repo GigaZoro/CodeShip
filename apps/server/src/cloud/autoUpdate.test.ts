@@ -72,6 +72,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
             requestUpdate: () =>
               Effect.die("the launcher is asked through the self-update service"),
             prepareTrial: Effect.undefined,
+            reportPreparing: Effect.void,
           }),
         ),
         Layer.mock(Settings.ServerSettingsService)({

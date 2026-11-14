@@ -46,6 +46,11 @@ export type ServiceLauncherChildMessage =
   | {
       readonly type: "prepared";
       readonly updateId: string;
+    }
+  | {
+      /** A trial still migrating; launchers that predate it ignore it and keep a fixed deadline. */
+      readonly type: "preparing";
+      readonly updateId: string;
     };
 
 export type ServiceLauncherParentMessage =
@@ -254,7 +259,8 @@ export function decodeServiceLauncherChildMessage(
       ...(value.migratesDatabase === false ? { migratesDatabase: false } : {}),
     };
   }
-  return value.type === "prepared" && typeof value.updateId === "string"
+  return (value.type === "prepared" || value.type === "preparing") &&
+    typeof value.updateId === "string"
     ? { type: value.type, updateId: value.updateId }
     : undefined;
 }

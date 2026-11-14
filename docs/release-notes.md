@@ -1,3 +1,8 @@
+## 2026-11-14 — An update that rewrites the database shows its progress instead of failing to start
+
+- The update that shortens stored event ids rewrites every event, which takes minutes on a large database. The desktop app gave up on the backend after 3 minutes, reported that it could not start and restarted it, and each restart began the rewrite again. The rewrite now saves its progress as it goes and continues where it stopped after a restart or a quit, and the desktop app shows **Updating T3.CodeShip** with how much is done until it finishes. Scheduled tasks wait for it.
+- A background service that updates itself now rolls an update back only when its migration stops making progress for 30 minutes, not after 30 minutes in total. This starts with the update after this one, because the version already running decides the deadline.
+
 ## 2026-11-14 — Tool-use evals name the Codex login they run on
 
 - The MCP tool-use evals ran on whichever Codex login `CODEX_HOME` held (by default `~/.codex`), which can be a different account from the one CodeShip runs Codex on, and nothing said which. An exhausted login then failed every sample after about four minutes of retries. The run summary now names the login, a login that is out of usage stops the run at once with its reset time, and the eval's README says how to run on a CodeShip account's login.

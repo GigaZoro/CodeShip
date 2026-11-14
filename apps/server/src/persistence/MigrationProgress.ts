@@ -14,14 +14,25 @@ export class MigrationProgress extends Context.Service<
   }
 >()("t3/persistence/MigrationProgress") {}
 
-export const layer = Layer.sync(MigrationProgress, () => {
+const wholePercent = (status: EnvironmentStartup | undefined) =>
+  status?.progress === undefined ? undefined : Math.floor(status.progress * 100);
+
+/** `onAdvance` runs when a migration starts or gains a whole percent, not on every batch. */
+export const make = (onAdvance: Effect.Effect<void>) => {
   let status: EnvironmentStartup | undefined;
   return MigrationProgress.of({
-    report: Effect.fn("MigrationProgress.report")((next: EnvironmentStartup | undefined) =>
-      Effect.sync(() => {
-        status = next;
-      }),
-    ),
+    report: Effect.fn("MigrationProgress.report")(function* (next: EnvironmentStartup | undefined) {
+      const previous = status;
+      status = next;
+      if (
+        next !== undefined &&
+        (next.migration !== previous?.migration || wholePercent(next) !== wholePercent(previous))
+      ) {
+        yield* onAdvance;
+      }
+    }),
     current: () => status,
   });
-});
+};
+
+export const layer = Layer.sync(MigrationProgress, () => make(Effect.void));

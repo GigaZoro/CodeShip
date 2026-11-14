@@ -500,6 +500,114 @@ if (context.update?.status === "pending") {
     }),
   );
 
+  it.effect.each([
+    { reportsPrepared: true, outcome: ["1.1.0", "committed", undefined] },
+    { reportsPrepared: false, outcome: ["1.0.0", "rolled-back", "prepared-timeout"] },
+  ] as const)(
+    "keeps a trial that reports migration progress until it stops (prepared $reportsPrepared)",
+    ({ reportsPrepared, outcome }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-progress-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const databasePath = path.join(root, "userdata", "state.sqlite");
+        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+        yield* fs.writeFileString(databasePath, "before trial");
+        const childSource = `
+const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+if (context.update?.status === "pending") {
+  process.on("message", (message) => {
+    if (message === "migrate") {
+      process.send({ type: "preparing", updateId: context.update.id });
+      process.send("migrated");
+    } else if (message === "finish") {
+      process.send({ type: "prepared", updateId: context.update.id });
+    } else if (message.type === "committed") {
+      process.exit(0);
+    }
+  });
+  process.send("trial-started");
+} else if (context.update === undefined) {
+  process.on("message", (message) => {
+    if (message.type === "update-accepted") process.send("update-accepted");
+  });
+  process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${JSON.stringify(databasePath)} });
+  setInterval(() => {}, 1_000);
+} else {
+  process.exit(0);
+}
+`;
+        for (const version of ["1.0.0", "1.1.0"]) {
+          yield* writeFakeRuntime(
+            fs,
+            path,
+            path.join(root, "runtime", "versions", version),
+            childSource,
+          );
+        }
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+          }),
+        );
+        const listeners: Array<(child: NodeChildProcess.ChildProcess) => void> = [];
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => listeners.forEach((listener) => spawnListeners.delete(listener))),
+        );
+        const fromChild = (text: string) =>
+          new Promise<NodeChildProcess.ChildProcess>((resolve) => {
+            const listener = (child: NodeChildProcess.ChildProcess) =>
+              child.on("message", (message) => {
+                if (message === text) resolve(child);
+              });
+            listeners.push(listener);
+            spawnListeners.add(listener);
+          });
+        const accepted = fromChild("update-accepted");
+        const trialStarted = fromChild("trial-started");
+
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+        );
+        const running = launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => undefined,
+        );
+        yield* Effect.promise(() => accepted);
+        // The hand-off timer is already on the real clock; the trial's deadline is not.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+        const trial = yield* Effect.promise(() => trialStarted);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(29 * 60_000));
+        const migrated = new Promise<void>((resolve) =>
+          trial.on("message", (message) => {
+            if (message === "migrated") resolve();
+          }),
+        );
+        trial.send("migrate");
+        yield* Effect.promise(() => migrated);
+        // Past the trial's first deadline, and before or after the one its progress set.
+        yield* Effect.promise(() =>
+          vi.advanceTimersByTimeAsync((reportsPrepared ? 29 : 31) * 60_000),
+        );
+        if (reportsPrepared && trial.connected) trial.send("finish");
+        yield* Effect.promise(() => running);
+
+        const state = yield* Effect.promise(() => readServiceState(statePath));
+        assert.deepEqual(
+          [
+            state.activeVersion,
+            state.update?.status,
+            state.update?.status === "rolled-back" ? state.update.reason : undefined,
+          ],
+          [...outcome],
+        );
+      }),
+  );
+
   it.effect("rolls back invalid trials with the startup environment", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

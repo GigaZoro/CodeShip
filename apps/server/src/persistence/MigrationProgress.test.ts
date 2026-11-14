@@ -42,6 +42,25 @@ const get = (port: number, path: string) =>
     }).on("error", (error) => resume(Effect.die(error)));
   });
 
+it.effect("signals a migration's start and each whole percent, not every batch", () =>
+  Effect.gen(function* () {
+    let advances = 0;
+    const progress = MigrationProgress.make(Effect.sync(() => void advances++));
+    for (const status of [
+      { migration: "90_A" },
+      { migration: "91_B" },
+      { migration: "91_B", progress: 0.001 },
+      { migration: "91_B", progress: 0.004 },
+      { migration: "91_B", progress: 0.012 },
+      { migration: "91_B", progress: 0.019 },
+      undefined,
+    ]) {
+      yield* progress.report(status);
+    }
+    assert.strictEqual(advances, 4);
+  }),
+);
+
 it.effect("a server migrating a large database answers its descriptor path with the progress", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;

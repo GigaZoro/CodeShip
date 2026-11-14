@@ -191,8 +191,9 @@ export class ServerUpdateTerminalError extends Schema.TaggedError<ServerUpdateTe
   }
 }
 
-// Covers the service launcher's 30-minute trial deadline (PREPARED_TIMEOUT_MS)
-// and a final restart of the previous version when the trial rolls back.
+// Covers a trial that finishes within the launcher's first 30-minute deadline (PREPARED_TIMEOUT_MS)
+// and the restart of the previous version on rollback. A trial whose migration keeps reporting
+// progress may run longer; this wait then ends in the reconnect prompt, not a failure.
 const SERVER_UPDATE_RESUME_TIMEOUT = Duration.minutes(32);
 
 export function matchesServerUpdateReadyEvent(

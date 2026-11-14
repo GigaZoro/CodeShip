@@ -441,7 +441,16 @@ export const layerHttpServer = Layer.unwrap(
       ),
     );
   }),
-).pipe(Layer.provide(ManagedPolicy.layer), Layer.provideMerge(MigrationProgress.layer));
+).pipe(Layer.provide(ManagedPolicy.layer));
+
+// A trial update the launcher started is rolled back when it stops making progress.
+const layerMigrationProgress = Layer.effect(
+  MigrationProgress.MigrationProgress,
+  Effect.gen(function* () {
+    const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
+    return MigrationProgress.make(launcher.reportPreparing);
+  }),
+);
 
 const layerPlatformServices = DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer));
 
@@ -1323,6 +1332,7 @@ const layerMakeServer = Layer.unwrap(
         RelayTracing.layerServerRelayBroker.pipe(Layer.provide(ManagedPolicy.layer)),
       ),
       Layer.provideMerge(layerHttpServer),
+      Layer.provideMerge(layerMigrationProgress.pipe(Layer.provide(layerLauncher))),
       Layer.provide(layerApplicationObservability),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),

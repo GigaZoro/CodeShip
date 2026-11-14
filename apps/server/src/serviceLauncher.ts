@@ -32,8 +32,8 @@ import {
 
 const HANDOFF_DELAY_MS = 2_000;
 /**
- * Migrations count toward it and can scale with the database: tens of GB on a cold page cache
- * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
+ * How long a trial may go without reporting migration progress or prepared. Migrations scale with
+ * the database, and a missed window rolls the database back, so the next attempt starts over.
  */
 const PREPARED_TIMEOUT_MS = 30 * 60_000;
 const TERMINATE_GRACE_MS = 5_000;
@@ -860,21 +860,36 @@ export class Launcher {
       this.#enqueue(() => this.#handleExit(managed, code, signal)),
     );
 
-    if (role === "trial") {
-      this.#timer = setTimeout(
-        () => this.#enqueue(() => this.#handlePreparedTimeout(managed)),
-        PREPARED_TIMEOUT_MS,
-      );
-    }
+    if (role === "trial") this.#armPreparedTimeout(managed);
+  }
+
+  #armPreparedTimeout(child: ManagedChild): void {
+    this.#timer = setTimeout(
+      () => this.#enqueue(() => this.#handlePreparedTimeout(child)),
+      PREPARED_TIMEOUT_MS,
+    );
   }
 
   async #handleMessage(child: ManagedChild, message: ServiceLauncherChildMessage): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
-    if (message.type === "request-update") {
-      await this.#handleUpdateRequest(child, message);
-      return;
+    switch (message.type) {
+      case "request-update":
+        await this.#handleUpdateRequest(child, message);
+        return;
+      case "preparing":
+        this.#handlePreparing(child, message.updateId);
+        return;
+      case "prepared":
+        await this.#handlePrepared(child, message.updateId);
+        return;
     }
-    await this.#handlePrepared(child, message.updateId);
+  }
+
+  #handlePreparing(child: ManagedChild, updateId: string): void {
+    const pending = this.#state.update;
+    if (child.role !== "trial" || pending?.status !== "pending" || pending.id !== updateId) return;
+    this.#clearTimer();
+    this.#armPreparedTimeout(child);
   }
 
   async #handleUpdateRequest(

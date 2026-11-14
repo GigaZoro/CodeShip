@@ -111,6 +111,8 @@ export class ServiceLauncherClient extends Context.Service<
       ServerSelfUpdateOutcome | undefined,
       ServiceLauncherClientError
     >;
+    /** Keeps a trial that is still migrating from being rolled back as stalled; never waits. */
+    readonly reportPreparing: Effect.Effect<void>;
   }
 >()("t3/cloud/serviceLauncherClient") {}
 
@@ -247,12 +249,40 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
           }),
         )
       : Effect.succeed(outcome);
+  // A launcher that stops reading must not hold up the migration that reports to it.
+  const reportPreparing =
+    pending === undefined
+      ? Effect.void
+      : Effect.callback<void, ServiceLauncherClientError>((resume) => {
+          try {
+            host.send({ type: "preparing", updateId: pending.id }, (error) =>
+              resume(
+                error === null
+                  ? Effect.void
+                  : Effect.fail(
+                      new ServiceLauncherClientError({ operation: "send", cause: error }),
+                    ),
+              ),
+            );
+          } catch (cause) {
+            resume(Effect.fail(new ServiceLauncherClientError({ operation: "send", cause })));
+          }
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Could not report update progress to the service launcher", {
+              cause: error,
+            }),
+          ),
+          Effect.forkDetach,
+          Effect.asVoid,
+        );
 
   return ServiceLauncherClient.of({
     managed,
     settledOutcome: outcome,
     requestUpdate,
     prepareTrial,
+    reportPreparing,
   });
 });
 

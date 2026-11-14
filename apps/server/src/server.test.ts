@@ -11,6 +11,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 
 import * as ServerConfig from "./config.ts";
+import * as MigrationProgress from "./persistence/MigrationProgress.ts";
 import { layerHttpServer } from "./server.ts";
 
 // Holds a port on a specific non-loopback address, so a wildcard bind on that
@@ -47,6 +48,7 @@ const httpServerWithConfig = (
     ),
     Layer.provide(NetService.layer),
     Layer.provide(NodeServices.layer),
+    Layer.provide(MigrationProgress.layer),
   );
 
 it.live.skipIf(!wildcardBindConflicts)(
