@@ -3,6 +3,12 @@
 import type * as NodeHttp from "node:http";
 import type * as NodeStream from "node:stream";
 
+import {
+  ENVIRONMENT_DESCRIPTOR_PATH,
+  type EnvironmentStartingResponse,
+  type EnvironmentStartup,
+} from "@t3tools/contracts";
+
 export function guardHttpResponseWriteErrors<T extends NodeHttp.Server>(
   server: T,
   onError?: (error: unknown) => void,
@@ -21,13 +27,32 @@ export function guardHttpResponseWriteErrors<T extends NodeHttp.Server>(
 }
 
 /**
- * NodeHttpServer listens before serve() attaches its handlers, so requests in
- * between would hang. Install this after the write-error guards so only the
- * serving handlers trigger the handoff.
+ * NodeHttpServer listens before serve() attaches its handlers, so requests in between would hang.
+ * Install this after the write-error guards so only the serving handlers trigger the handoff.
+ * The descriptor path's 503 carries a running migration, so clients can tell busy from dead.
  */
-export function rejectRequestsUntilServing<T extends NodeHttp.Server>(server: T): T {
-  const rejectRequest = (_request: NodeHttp.IncomingMessage, response: NodeHttp.ServerResponse) => {
-    response.writeHead(503, { "retry-after": "1", connection: "close" }).end();
+export function rejectRequestsUntilServing<T extends NodeHttp.Server>(
+  server: T,
+  startup: () => EnvironmentStartup | undefined = () => undefined,
+): T {
+  const rejectRequest = (request: NodeHttp.IncomingMessage, response: NodeHttp.ServerResponse) => {
+    const status =
+      request.method === "GET" && request.url?.split("?")[0] === ENVIRONMENT_DESCRIPTOR_PATH
+        ? startup()
+        : undefined;
+    if (status === undefined) {
+      response.writeHead(503, { "retry-after": "1", connection: "close" }).end();
+      return;
+    }
+    const body: EnvironmentStartingResponse = { startup: status };
+    response
+      .writeHead(503, {
+        "retry-after": "1",
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        connection: "close",
+      })
+      .end(JSON.stringify(body));
   };
   const rejectUpgrade = (_request: NodeHttp.IncomingMessage, socket: NodeStream.Duplex) => {
     socket.end(

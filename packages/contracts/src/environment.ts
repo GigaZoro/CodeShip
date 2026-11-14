@@ -242,6 +242,21 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
+export const ENVIRONMENT_DESCRIPTOR_PATH = "/.well-known/t3/environment";
+
+/** What a starting server is doing before it serves anything. */
+export const EnvironmentStartup = Schema.Struct({
+  /** The database migration running now, as `<id>_<name>`. */
+  migration: TrimmedNonEmptyString,
+  /** Share of that migration done, 0 to 1; absent when unknown. */
+  progress: Schema.optionalKey(Schema.Number),
+});
+export type EnvironmentStartup = typeof EnvironmentStartup.Type;
+
+/** The body of the 503 a starting server answers its descriptor path with while it migrates. */
+export const EnvironmentStartingResponse = Schema.Struct({ startup: EnvironmentStartup });
+export type EnvironmentStartingResponse = typeof EnvironmentStartingResponse.Type;
+
 export const ExecutionEnvironmentDescriptor = Schema.Struct({
   environmentId: EnvironmentId,
   label: TrimmedNonEmptyString,

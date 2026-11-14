@@ -1,7 +1,11 @@
+import type { EnvironmentStartup } from "@t3tools/contracts";
 import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import { MigrationProgress } from "./MigrationProgress.ts";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
+import { isResumableMigration, type ResumableMigration } from "./ResumableMigration.ts";
 
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
 import Migration0002 from "./Migrations/002_OrchestrationCommandReceipts.ts";
@@ -192,14 +196,79 @@ const migrationEntries = [
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
+// Resumable migrations commit step by step outside the migrator's single transaction.
 const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
     Object.fromEntries(
-      migrationEntries
-        .filter(([id]) => throughId === undefined || id <= throughId)
-        .map(([id, name, migration]) => [`${id}_${name}`, migration]),
+      migrationEntries.flatMap(([id, name, migration]) =>
+        isResumableMigration(migration) || (throughId !== undefined && id > throughId)
+          ? []
+          : [[`${id}_${name}`, migration] as const],
+      ),
     ),
   );
+
+const latestRecordedMigrationId = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `;
+  if (tables.length === 0) return 0;
+  const rows = yield* sql<{ readonly latest: number | null }>`
+    SELECT max(migration_id) AS latest FROM effect_sql_migrations
+  `;
+  return rows[0]?.latest ?? 0;
+});
+
+type ReportMigration = (status: EnvironmentStartup | undefined) => Effect.Effect<void>;
+
+// Each step commits with its cursor in `migration_progress`, under the write lock, so a restart
+// resumes after the last committed step and another process sees the same cursor.
+const runResumableMigration = Effect.fn("runResumableMigration")(function* (
+  id: number,
+  name: string,
+  migration: ResumableMigration,
+  report: ReportMigration,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const label = `${id}_${name}`;
+  yield* report({ migration: label });
+  for (;;) {
+    const progress = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const recorded = yield* sql`
+          SELECT 1 FROM effect_sql_migrations WHERE migration_id = ${id}
+        `;
+        if (recorded.length > 0) return undefined;
+        yield* sql`
+          CREATE TABLE IF NOT EXISTS migration_progress (
+            migration_id INTEGER PRIMARY KEY NOT NULL,
+            cursor_json TEXT NOT NULL
+          )
+        `;
+        const stored = yield* sql<{ readonly cursor_json: string }>`
+          SELECT cursor_json FROM migration_progress WHERE migration_id = ${id}
+        `;
+        const step = yield* migration.step(stored[0]?.cursor_json);
+        if (step.next !== undefined) {
+          yield* sql`
+            INSERT INTO migration_progress (migration_id, cursor_json) VALUES (${id}, ${step.next})
+            ON CONFLICT (migration_id) DO UPDATE SET cursor_json = excluded.cursor_json
+          `;
+          return step.progress;
+        }
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
+        yield* sql`DELETE FROM migration_progress WHERE migration_id = ${id}`;
+        const unfinished = yield* sql`SELECT 1 FROM migration_progress LIMIT 1`;
+        if (unfinished.length === 0) yield* sql`DROP TABLE migration_progress`;
+        return undefined;
+      }),
+    );
+    if (progress === undefined) return;
+    yield* report({ migration: label, progress });
+    yield* Effect.yieldNow;
+  }
+});
 
 const FIRST_V2_MIGRATION_ID = 55;
 
@@ -251,10 +320,34 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }
-  const executedMigrations = [
-    ...previewMigrations,
-    ...(yield* run({ loader: makeMigrationLoader(toMigrationInclusive) })),
-  ];
+  const progress = yield* Effect.serviceOption(MigrationProgress);
+  const report: ReportMigration = (status) =>
+    Option.match(progress, { onNone: () => Effect.void, onSome: ({ report }) => report(status) });
+  const runThrough = Effect.fn("runMigrationsThrough")(function* (throughId: number | undefined) {
+    const latest = yield* latestRecordedMigrationId;
+    const pending = migrationEntries.find(
+      ([id, , migration]) =>
+        id > latest &&
+        (throughId === undefined || id <= throughId) &&
+        !isResumableMigration(migration),
+    );
+    if (pending !== undefined) yield* report({ migration: `${pending[0]}_${pending[1]}` });
+    return yield* run({ loader: makeMigrationLoader(throughId) });
+  });
+
+  const executedMigrations: Array<readonly [id: number, name: string]> = [...previewMigrations];
+  yield* Effect.gen(function* () {
+    for (const [id, name, migration] of migrationEntries) {
+      if (!isResumableMigration(migration)) continue;
+      if (toMigrationInclusive !== undefined && id > toMigrationInclusive) break;
+      executedMigrations.push(...(yield* runThrough(id - 1)));
+      // The migrator skips every id up to the highest recorded one; skip this one the same way.
+      if ((yield* latestRecordedMigrationId) >= id) continue;
+      yield* runResumableMigration(id, name, migration, report);
+      executedMigrations.push([id, name]);
+    }
+    executedMigrations.push(...(yield* runThrough(toMigrationInclusive)));
+  }).pipe(Effect.ensuring(report(undefined)));
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")

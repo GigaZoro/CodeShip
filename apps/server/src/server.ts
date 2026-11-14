@@ -42,6 +42,7 @@ import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import * as MigrationProgress from "./persistence/MigrationProgress.ts";
 import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as PullRequestReviewGuides from "./persistence/PullRequestReviewGuides.ts";
@@ -379,11 +380,13 @@ export const layerHttpServer = Layer.unwrap(
       privateNetworkOnly: config.privateNetworkOnly,
     });
     yield* ManagedLimits.closeTailscaleServeTo(policy, { host: bindHost, port: config.port });
+    const migration = yield* MigrationProgress.MigrationProgress;
     const listen = (host: string) =>
       NodeHttpServer.layer(
         () => {
           const server = rejectRequestsUntilServing(
             guardHttpResponseWriteErrors(NodeHttp.createServer()),
+            migration.current,
           );
           server.keepAliveTimeout = HTTP_KEEP_ALIVE_TIMEOUT_MS;
           if (config.privateNetworkOnly) {
@@ -438,7 +441,7 @@ export const layerHttpServer = Layer.unwrap(
       ),
     );
   }),
-).pipe(Layer.provide(ManagedPolicy.layer));
+).pipe(Layer.provide(ManagedPolicy.layer), Layer.provideMerge(MigrationProgress.layer));
 
 const layerPlatformServices = DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer));
 

@@ -38,6 +38,7 @@ import {
   ServerAuthSessionMethod,
 } from "./auth.ts";
 import {
+  ENVIRONMENT_DESCRIPTOR_PATH,
   ExecutionEnvironmentDescriptor,
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
@@ -528,7 +529,7 @@ export const AuthOtherClientSessionsRevokeResult = Schema.Struct({
 export type AuthOtherClientSessionsRevokeResult = typeof AuthOtherClientSessionsRevokeResult.Type;
 
 class EnvironmentMetadataHttpApi extends HttpApiGroup.make("metadata").add(
-  HttpApiEndpoint.get("descriptor", "/.well-known/t3/environment", {
+  HttpApiEndpoint.get("descriptor", ENVIRONMENT_DESCRIPTOR_PATH, {
     success: ExecutionEnvironmentDescriptor,
   }),
 ) {}
