@@ -166,6 +166,15 @@ const commandRow = (taskId: string) =>
     return rows[0];
   });
 
+/** What the record holds when its server stops between starting it and recording the pid. */
+const forgetPid = (taskId: string) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql`
+      UPDATE command_runs SET pid = NULL, process_started_at = NULL WHERE task_id = ${taskId}
+    `,
+  );
+
 const taskOf = (threadId: ThreadId, taskId: string) =>
   Orchestrator.OrchestratorV2.pipe(
     Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(threadId)),
@@ -207,6 +216,13 @@ const liveChat = (name: string) =>
     );
     return { ...parent, workspace };
   });
+
+const deletionOf = (threadId: ThreadId) =>
+  ({
+    type: "thread.delete",
+    commandId: CommandId.make(`command:delete:${threadId}`),
+    threadId,
+  }) as const;
 
 /** Starts a child that writes `ready` once it can note a stop signal, and `stopped` on one. */
 const STOP_NOTING_CHILD = `sh -c 'trap "echo > stopped; exit 0" TERM; echo > ready; while :; do sleep 1; done' &`;
@@ -281,12 +297,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       );
       // Its wrapper names itself at once; a restart takes far longer.
       yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "pid"));
-      const sql = yield* SqlClient.SqlClient;
-      // What the record holds when its server stops between starting it and recording the pid.
-      yield* sql`
-        UPDATE command_runs SET pid = NULL, process_started_at = NULL
-        WHERE task_id = ${started.taskId}
-      `;
+      yield* forgetPid(started.taskId);
       yield* withServer(() =>
         Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "")).pipe(
           Effect.andThen(nextWake(chat.threadId)),
@@ -318,11 +329,17 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   it.effect.each([
-    ["while no server runs", "command-lost", false],
-    ["while a server watches it", "command-lost-watched", true],
+    ["while no server runs", "command-lost", false, false],
+    [
+      "before its server recorded the pid, while no server runs",
+      "command-lost-pid-unrecorded",
+      false,
+      true,
+    ],
+    ["while a server watches it", "command-lost-watched", true, false],
   ] as const)(
     "reports a command whose wrapper was killed %s as lost, and stops what it started",
-    ([, name, watching]) =>
+    ([, name, watching, pidUnrecorded]) =>
       Effect.gen(function* () {
         const chat = yield* liveChat(name);
         // As a reboot would; what it started lives on.
@@ -339,9 +356,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
                 .pipe(Effect.tap(() => go.pipe(Effect.andThen(nextWake(chat.threadId))))),
             )
           : yield* withServer((runner) => runner.run(callerOf(chat.threadId), request)).pipe(
-              Effect.tap(() =>
+              Effect.tap(({ taskId }) =>
                 go.pipe(
                   Effect.andThen(awaitFile(NodePath.join(chat.workspace, "orphaned"))),
+                  Effect.andThen(pidUnrecorded ? forgetPid(taskId) : Effect.void),
                   Effect.andThen(withServer(() => nextWake(chat.threadId))),
                 ),
               ),
@@ -393,6 +411,81 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       );
       assert.equal(ended?.status, "completed");
       assert.match(ended?.result ?? "", /Last output:\nwatched\n/);
+    }),
+  );
+
+  it.effect("never starts a command for a chat deleted while its request was recorded", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("command-chat-deleted-early");
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const refused = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), { command: "echo started" }).pipe(Effect.flip),
+      ).pipe(
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          ...threads,
+          dispatch: (command) =>
+            threads
+              .dispatch(command)
+              .pipe(
+                Effect.tap(() =>
+                  command.type === "delegated_task.command.request"
+                    ? threads.dispatch(deletionOf(chat.threadId))
+                    : Effect.void,
+                ),
+              ),
+        }),
+      );
+      assert.equal(refused.message, "Stopped: the chat was deleted.");
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql`SELECT task_id FROM command_runs WHERE thread_id = ${chat.threadId}`;
+      assert.lengthOf(rows, 0);
+    }),
+  );
+
+  it.effect("stops a command whose chat was deleted while it started", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("command-chat-deleted-late");
+      const agentScope = yield* AgentScope;
+      const processRunner = yield* ProcessRunner.ProcessRunner;
+      const starting = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      // Its first process lookup is the one that names the command it just started.
+      let spawning = false;
+      const started = yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const request = yield* runner
+            .run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` })
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(starting);
+          yield* Orchestrator.OrchestratorV2.pipe(
+            Effect.flatMap((orchestrator) => orchestrator.dispatch(deletionOf(chat.threadId))),
+          );
+          yield* Deferred.succeed(proceed, undefined);
+          const result = yield* Fiber.join(request);
+          yield* awaitFile(NodePath.join(chat.workspace, "stopped"));
+          return result;
+        }),
+      ).pipe(
+        Effect.provideService(AgentScope, {
+          ...agentScope,
+          wrap: (input) =>
+            Effect.sync(() => {
+              spawning = true;
+            }).pipe(Effect.andThen(agentScope.wrap(input))),
+        }),
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: (input) => {
+            if (!spawning || input.command !== "ps") return processRunner.run(input);
+            spawning = false;
+            return awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
+              Effect.andThen(Deferred.succeed(starting, undefined)),
+              Effect.andThen(Deferred.await(proceed)),
+              Effect.andThen(processRunner.run(input)),
+            );
+          },
+        }),
+      );
+      assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
     }),
   );
 

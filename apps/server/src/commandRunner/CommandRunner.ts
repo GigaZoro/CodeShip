@@ -471,13 +471,20 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  /** A thread that is archived or deleted keeps nothing running. */
+  /**
+   * A thread that is archived or deleted keeps nothing running. It looks under the lock, so a
+   * command still starting is watched by then, and run() starts none for a closed thread after.
+   */
   const stopForThread = Effect.fn("CommandRunner.stopForThread")(function* (
     threadId: ThreadId,
     why: "archived" | "deleted",
   ) {
-    const running = [...watched.values()].filter(
-      (row) => row.thread_id === threadId && row.status === "running",
+    const running = yield* lock.withPermits(1)(
+      Effect.sync(() =>
+        [...watched.values()].filter(
+          (row) => row.thread_id === threadId && row.status === "running",
+        ),
+      ),
     );
     yield* Effect.forEach(running, (row) =>
       threads
@@ -691,15 +698,15 @@ const make = Effect.gen(function* () {
           if (taskId === undefined) {
             return yield* failure("orchestration_error", "The command was not recorded.");
           }
-          /** Fails a task whose command never started, with nothing left to wake its thread for. */
-          const unstarted = (message: string) =>
+          /** Ends a task whose command never started, with nothing left to wake its thread for. */
+          const unstarted = (message: string, status: "failed" | "interrupted" = "failed") =>
             threads
               .dispatch({
                 type: "delegated_task.command.complete",
                 commandId: CommandId.make(`command:command-task-unstarted:${taskId}`),
                 parentThreadId: scope.thread.threadId,
                 taskId,
-                status: "failed",
+                status,
                 result: message,
               })
               .pipe(
@@ -724,6 +731,25 @@ const make = Effect.gen(function* () {
                 // Its first request could not start it, and the task already says why.
                 if (prior?.result != null)
                   return yield* failure("orchestration_error", prior.result);
+                // stopForThread for a thread closed since the request began may have looked already.
+                const records = yield* threads
+                  .getThreadRecords(scope.thread.threadId, [])
+                  .pipe(Effect.result);
+                if (records._tag === "Failure") {
+                  return yield* unstarted(
+                    `Could not start the command: ${records.failure.message}`,
+                  );
+                }
+                const { thread } = records.success;
+                const closed =
+                  thread.deletedAt !== null
+                    ? "deleted"
+                    : thread.archivedAt !== null
+                      ? "archived"
+                      : undefined;
+                if (closed !== undefined) {
+                  return yield* unstarted(`Stopped: the chat was ${closed}.`, "interrupted");
+                }
                 const now = yield* DateTime.now;
                 const row: CommandRunRow = {
                   task_id: taskId,
@@ -816,7 +842,11 @@ const make = Effect.gen(function* () {
       return undefined;
     }
     const pid = named.value;
-    if (!isProcessAlive(pid)) return row;
+    // A wrapper that is gone still names its group, which can outlive it. When it wrote the file
+    // stands in for its start, so a later process under the pid is never taken for it.
+    if (!isProcessAlive(pid)) {
+      return { ...row, pid, process_started_at: named.writtenAt?.getTime() ?? null };
+    }
     const startedAt = yield* startedAtOf(pid);
     const writtenAt = named.writtenAt?.getTime();
     // It started before it wrote the file; a later process reusing the pid did not. ps reports
