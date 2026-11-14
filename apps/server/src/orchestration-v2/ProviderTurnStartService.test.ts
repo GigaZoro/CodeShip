@@ -331,6 +331,7 @@ function makeLocalCommandHarness(input: {
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly resumeThread?: () => Effect.Effect<never>;
+  readonly hostLoadPerCpu?: number;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly beforeOpenFailure?: () => void;
@@ -1177,7 +1178,13 @@ function makeLocalCommandHarness(input: {
     projection: () => projection,
     start: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
-    }).pipe(Effect.provide(layer)),
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(
+        ProviderTurnStart.HostLoadPerCpu,
+        Effect.succeed(input.hostLoadPerCpu ?? 0),
+      ),
+    ),
     startWithRetry: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
         threadId,
@@ -2045,18 +2052,46 @@ effectIt.effect(
       expect(
         harness
           .projection()
-          .turnItems.flatMap((item) => (item.type === "error" ? [item.failure.message] : [])),
-      ).toEqual(["The provider did not resume the conversation within 5 minutes."]);
+          .turnItems.flatMap((item) => (item.type === "error" ? [item.failure] : [])),
+      ).toMatchObject([
+        {
+          code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+          retryable: true,
+          message: "The provider did not resume the conversation within 5 minutes.",
+        },
+      ]);
     }),
 );
 
+effectIt.effect("gives a resume on a loaded host a deadline scaled by its load", () =>
+  Effect.gen(function* () {
+    const resuming = yield* Deferred.make<void>();
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      hostLoadPerCpu: 4,
+      resumeThread: () => Deferred.succeed(resuming, undefined).pipe(Effect.andThen(Effect.never)),
+    });
+    const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(resuming);
+
+    yield* TestClock.adjust("19 minutes");
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    yield* TestClock.adjust("1 minute");
+    yield* Fiber.join(startup);
+
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+
 it.each([
-  { transcriptBytes: 10_000, priorTimeouts: 0, minutes: 5 },
-  { transcriptBytes: 5_800_000, priorTimeouts: 0, minutes: 10 },
-  { transcriptBytes: 5_800_000, priorTimeouts: 1, minutes: 21 },
-  { transcriptBytes: 5_800_000, priorTimeouts: 5, minutes: 60 },
+  { transcriptBytes: 10_000, priorTimeouts: 0, loadPerCpu: 0.3, minutes: 5 },
+  { transcriptBytes: 5_800_000, priorTimeouts: 0, loadPerCpu: 1, minutes: 10 },
+  { transcriptBytes: 5_800_000, priorTimeouts: 1, loadPerCpu: 1, minutes: 21 },
+  { transcriptBytes: 5_800_000, priorTimeouts: 5, loadPerCpu: 1, minutes: 60 },
+  { transcriptBytes: 5_000_000, priorTimeouts: 0, loadPerCpu: 6.5, minutes: 60 },
+  { transcriptBytes: 0, priorTimeouts: 0, loadPerCpu: 3, minutes: 15 },
 ])(
-  "waits $minutes minutes to resume $transcriptBytes bytes after $priorTimeouts timeouts",
+  "waits $minutes minutes to resume $transcriptBytes bytes at $loadPerCpu load per CPU after $priorTimeouts timeouts",
   ({ minutes, ...input }) => {
     expect(ProviderTurnStart.resumeTimeoutMinutes(input)).toBe(minutes);
   },

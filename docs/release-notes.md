@@ -1,3 +1,7 @@
+## 2026-11-14 — A chat whose provider is slow to resume is retried instead of left queued
+
+- When a provider did not resume a chat in time, for example on a server starved of CPU, the run failed for good and the next message stayed queued for hours. The wait for a resume now also grows with the host load per CPU (up to 60 minutes), and a start that times out is retried automatically after 0, 1 and 5 minutes, each time with a longer wait, like a start cut by a lost connection. After the last retry the chat stays failed and Chat Doctor picks it up.
+
 ## 2026-11-14 — Chat folders
 
 - You can now put chats in folders of your own, such as "Autopilot" or "Optimization". Create one with **New folder…** in the sidebar filter menu or the command palette, and move chats in with **Move to folder** in a chat's right-click menu, its header menu, the command palette, or the mobile chat menu. Folders sit at the top of the sidebar; right-click one to rename, delete or reorder it. Each machine keeps its folders, empty ones and their order included, so your desktop, browser and phone show the same list.

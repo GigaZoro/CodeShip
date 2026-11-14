@@ -25,6 +25,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -113,7 +114,8 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
 // A provider that never answers would keep its run starting and hold an effect worker forever.
 const PROVIDER_START_STEP_TIMEOUT_MINUTES = 5;
 // A resume replays the whole transcript, so a large chat on a loaded host needs longer than a
-// small one: 5 minutes plus 1 per MB of history, doubled after each earlier resume timeout.
+// small one: 5 minutes plus 1 per MB of history, scaled by the host's load per CPU (a starved
+// host replays slower) and doubled after each earlier resume timeout.
 const RESUME_TIMEOUT_MINUTES_PER_MB = 1;
 const RESUME_TIMEOUT_MAX_MINUTES = 60;
 const RESUME_STEP = "resume the conversation";
@@ -122,15 +124,23 @@ const RESUME_TIMEOUT_MESSAGE_PREFIX = `The provider did not ${RESUME_STEP} withi
 export const resumeTimeoutMinutes = (input: {
   readonly transcriptBytes: number;
   readonly priorTimeouts: number;
+  readonly loadPerCpu: number;
 }) =>
   Math.min(
     RESUME_TIMEOUT_MAX_MINUTES,
     Math.floor(
       (PROVIDER_START_STEP_TIMEOUT_MINUTES +
         (input.transcriptBytes / 1_000_000) * RESUME_TIMEOUT_MINUTES_PER_MB) *
+        Math.max(1, input.loadPerCpu) *
         2 ** input.priorTimeouts,
     ),
   );
+
+/** One-minute load average per CPU. Tests replace it; Windows reports 0. */
+export class HostLoadPerCpu extends Context.Reference<Effect.Effect<number>>(
+  "t3/orchestration-v2/HostLoadPerCpu",
+  { defaultValue: () => Effect.sync(() => NodeOS.loadavg()[0]! / NodeOS.availableParallelism()) },
+) {}
 
 class ProviderStartStepTimeoutError extends Schema.TaggedError<ProviderStartStepTimeoutError>()(
   "ProviderStartStepTimeoutError",
@@ -370,12 +380,12 @@ export const layer: Layer.Layer<
             : typeof nestedCause === "string"
               ? nestedCause
               : failed.error.message);
-        // The agent never saw the message, so a start that a sleep or a lost connection
-        // stopped can go again once the network answers. Any failure across a sleep counts:
-        // a provider's own wall-clock deadlines expire on wake too.
+        // The agent never saw the message, so a start that a sleep, a lost connection or a
+        // timeout (a loaded host recovers) stopped can go again on the retry worker's backoff.
+        // Any failure across a sleep counts: a provider's wall-clock deadlines expire on wake.
         const waitingFixes =
           failed.slept === true ||
-          (isProviderStartStepTimeoutError(failed.error) && failed.error.slept) ||
+          isProviderStartStepTimeoutError(failed.error) ||
           providerErrorClass(message) === "transport_error";
         yield* settleUnstartedRun(context, {
           signal: failed.signal,
@@ -1477,7 +1487,7 @@ export const layer: Layer.Layer<
                   cause: "Uncertain native history injection",
                 }),
               )
-            : Effect.suspend(() => {
+            : Effect.gen(function* () {
                 const transcriptBytes = projection.messages.reduce(
                   (sum, candidate) => sum + Buffer.byteLength(candidate.text),
                   0,
@@ -1487,7 +1497,8 @@ export const layer: Layer.Layer<
                     item.type === "error" &&
                     item.failure.message.startsWith(RESUME_TIMEOUT_MESSAGE_PREFIX),
                 ).length;
-                return session
+                const loadPerCpu = yield* yield* HostLoadPerCpu;
+                return yield* session
                   .resumeThread({
                     providerThread,
                     threadId: projection.thread.id,
@@ -1497,7 +1508,11 @@ export const layer: Layer.Layer<
                   .pipe(
                     withStartStepTimeout(
                       RESUME_STEP,
-                      resumeTimeoutMinutes({ transcriptBytes, priorTimeouts }),
+                      resumeTimeoutMinutes({
+                        transcriptBytes,
+                        priorTimeouts,
+                        loadPerCpu,
+                      }),
                     ),
                   );
               }),
