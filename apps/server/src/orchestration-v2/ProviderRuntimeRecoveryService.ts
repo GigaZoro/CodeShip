@@ -6,8 +6,8 @@ import {
   type OrchestrationV2RestartHold,
   type OrchestrationV2RestartHoldTurn,
   type OrchestrationV2RestartHoldWork,
-  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
+  isAppOwnedTaskWork,
   isOrchestrationV2WorkActive,
   ThreadId,
 } from "@t3tools/contracts";
@@ -115,25 +115,10 @@ function isNonterminalTurnItemStatus(status: string): boolean {
   return status === "pending" || status === "running" || status === "waiting";
 }
 
-/**
- * A delegate_task child. Its own thread is reconciled and continued on its own
- * (here, or in the linked environment it runs in) and reports back through
- * the app, so it is not provider background work.
- */
-function isAppOwnedDelegation(task: {
-  readonly origin: OrchestrationV2Subagent["origin"];
-  readonly childThreadId: ThreadId | null;
-  readonly remoteChild?: OrchestrationV2Subagent["remoteChild"];
-}): boolean {
-  return (
-    task.origin === "app_owned" && (task.childThreadId !== null || task.remoteChild !== undefined)
-  );
-}
-
 function isAppOwnedDelegationItem(
   item: OrchestrationV2ThreadProjection["turnItems"][number],
 ): boolean {
-  return item.type === "subagent" && isAppOwnedDelegation(item);
+  return item.type === "subagent" && isAppOwnedTaskWork(item);
 }
 
 function providerThreadHasPendingBackgroundTasks(
@@ -477,9 +462,9 @@ export const make = Effect.gen(function* () {
       );
       // Delegated task rows, items and nodes stay open: the child settles them.
       const delegatedTaskNodeIds = new Set<string>([
-        ...(projection.subagents ?? []).filter(isAppOwnedDelegation).map((subagent) => subagent.id),
+        ...(projection.subagents ?? []).filter(isAppOwnedTaskWork).map((subagent) => subagent.id),
         ...(projection.turnItems ?? []).flatMap((item) =>
-          item.type === "subagent" && isAppOwnedDelegation(item) ? [item.subagentId] : [],
+          item.type === "subagent" && isAppOwnedTaskWork(item) ? [item.subagentId] : [],
         ),
       ]);
       const detail = `Cancelled because the server ${trigger === "startup" ? "restarted" : "shut down"} before the provider work completed.`;

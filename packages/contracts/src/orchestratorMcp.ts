@@ -52,6 +52,7 @@ import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
+  OrchestrationV2TaskCommand,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import { CanonicalModelSelection, ModelSelection } from "./modelSelection.ts";
@@ -219,6 +220,8 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
     Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId, label: Schema.String }),
   ),
   link: Schema.optional(Schema.String),
+  /** What a `t3_command_run` task runs, and where its output goes. */
+  command: Schema.optional(OrchestrationV2TaskCommand),
   childRunId: Schema.NullOr(RunId),
   childNodeId: NodeId,
   status: OrchestratorMcpDelegatedTaskStatus,
@@ -266,6 +269,36 @@ export const OrchestratorMcpTaskCancelResult = Schema.Struct({
   status: Schema.Literals(["cancel_requested", "completed", "failed", "cancelled", "interrupted"]),
 });
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
+
+const ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES = 60;
+const ORCHESTRATOR_MCP_COMMAND_MAX_TIMEOUT_MINUTES = 720;
+
+export const OrchestratorMcpRunCommandInput = Schema.Struct({
+  command: TrimmedNonEmptyString.check(Schema.isMaxLength(32_000)),
+  cwd: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)).annotate({
+      description: "Absolute, or relative to this thread's checkout (the default).",
+    }),
+  ),
+  label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  timeoutMinutes: Schema.optional(
+    Schema.Int.check(
+      Schema.isBetween({ minimum: 1, maximum: ORCHESTRATOR_MCP_COMMAND_MAX_TIMEOUT_MINUTES }),
+    ).annotate({
+      description: `Default ${ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES}. The command is stopped after it.`,
+    }),
+  ),
+  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+});
+export type OrchestratorMcpRunCommandInput = typeof OrchestratorMcpRunCommandInput.Type;
+
+export const OrchestratorMcpRunCommandResult = Schema.Struct({
+  taskId: NodeId,
+  logPath: Schema.String,
+  timeoutMinutes: PositiveInt,
+  next: OrchestratorMcpRunningTaskNext,
+});
+export type OrchestratorMcpRunCommandResult = typeof OrchestratorMcpRunCommandResult.Type;
 
 export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   prompt: Schema.optional(OrchestratorMcpPrompt),

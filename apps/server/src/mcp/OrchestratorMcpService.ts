@@ -1907,14 +1907,17 @@ const make = Effect.gen(function* () {
         candidate.origin === "app_owned" &&
         candidate.threadId === scope.thread.threadId,
     );
-    if (task === undefined || (task.childThreadId === null && task.remoteChild === undefined)) {
+    if (
+      task === undefined ||
+      (task.childThreadId === null && task.remoteChild === undefined && task.command === undefined)
+    ) {
       return yield* failure(
         "task_not_found",
         `Delegated task ${taskId} does not belong to thread ${scope.thread.threadId}.`,
       );
     }
     if (task.childThreadId === null) {
-      return yield* readRemoteTask(scope, task, waitTimedOut, acknowledgeTerminal);
+      return yield* readRecordedTask(scope, task, waitTimedOut, acknowledgeTerminal);
     }
     const childControls = yield* threadManagement
       .getThreadRecords(
@@ -2129,10 +2132,81 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * A task that runs in a linked environment, answered from its row here:
-   * the follower records its result once its thread there ends.
+   * A task with no child thread here, answered from its row: one in a linked environment,
+   * whose follower records its result once its thread there ends, or a command, whose
+   * runner records it once the command exits.
    */
-  const readRemoteTask = Effect.fn("OrchestratorMcpService.readRemoteTask")(function* (
+  /**
+   * Records a running command as cancelled; its runner then stops the command's processes.
+   * The caller asked for the stop, so the command's end does not wake it.
+   */
+  const cancelCommandTask = Effect.fn("OrchestratorMcpService.cancelCommandTask")(function* (
+    scope: McpThreadInvocationScope,
+    input: OrchestratorMcpTaskCancelInput,
+    current: OrchestratorMcpDelegateTaskResult,
+  ): Effect.fn.Return<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure> {
+    const settled = (task: OrchestratorMcpDelegateTaskResult) =>
+      task.status === "completed" ||
+      task.status === "failed" ||
+      task.status === "cancelled" ||
+      task.status === "interrupted"
+        ? task.status
+        : undefined;
+    const done = settled(current);
+    if (done !== undefined) return { taskId: current.taskId, status: done };
+    const key = yield* requestKey(input.clientRequestId);
+    const recorded = yield* threadManagement
+      .dispatch({
+        type: "delegated_task.command.complete",
+        commandId: stableCommandId({ scope, requestKey: key, operation: "cancel-command" }),
+        parentThreadId: scope.thread.threadId,
+        taskId: current.taskId,
+        status: "cancelled",
+        result: input.reason === undefined ? "Cancelled." : `Cancelled: ${input.reason}`,
+      })
+      .pipe(
+        Effect.as(undefined),
+        // The command's own end can land first; its result stands.
+        Effect.catch((error) =>
+          readTask(scope, current.taskId).pipe(
+            Effect.flatMap((task) => {
+              const status = settled(task);
+              return status === undefined
+                ? Effect.fail(
+                    failure(
+                      "orchestration_error",
+                      `Unable to cancel command task ${current.taskId}: ${errorMessage(error)}`,
+                    ),
+                  )
+                : Effect.succeed(status);
+            }),
+          ),
+        ),
+      );
+    if (recorded !== undefined) return { taskId: current.taskId, status: recorded };
+    yield* threadManagement
+      .dispatch({
+        type: "delegated_task.completion-delivery.dispose",
+        commandId: stableCommandId({
+          scope,
+          requestKey: key,
+          operation: "cancel-task-completion-delivery",
+        }),
+        parentThreadId: scope.thread.threadId,
+        taskId: current.taskId,
+      })
+      .pipe(
+        Effect.mapError((error) =>
+          failure(
+            "orchestration_error",
+            `Unable to dispose command task ${current.taskId} completion delivery: ${errorMessage(error)}`,
+          ),
+        ),
+      );
+    return { taskId: current.taskId, status: "cancel_requested" };
+  });
+
+  const readRecordedTask = Effect.fn("OrchestratorMcpService.readRecordedTask")(function* (
     scope: McpThreadInvocationScope,
     task: OrchestrationV2Subagent,
     waitTimedOut: boolean,
@@ -2196,6 +2270,7 @@ const make = Effect.gen(function* () {
       ...(task.remoteChild === undefined
         ? {}
         : { remoteChild: task.remoteChild, link: formatThreadLink(task.remoteChild) }),
+      ...(task.command === undefined ? {} : { command: task.command }),
       childRunId: null,
       childNodeId: task.id,
       status,
@@ -3462,6 +3537,9 @@ const make = Effect.gen(function* () {
     cancelTask: Effect.fn("OrchestratorMcpService.cancelTask")(function* (callerScope, input) {
       const scope = yield* requireThreadScope(callerScope, "task_cancel");
       const current = yield* readTask(scope, input.taskId);
+      if (current.command !== undefined) {
+        return yield* cancelCommandTask(scope, input, current);
+      }
       const childThreadId = current.childThreadId;
       if (childThreadId === null) {
         // The task runs in a linked environment: its thread there is stopped through the link.

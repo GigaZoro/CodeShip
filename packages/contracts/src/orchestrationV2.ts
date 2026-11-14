@@ -984,6 +984,36 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
+/**
+ * The shell command an app-owned task runs on this machine through `t3_command_run`, outside
+ * the provider and the server, so it outlives a restart of either. The task's `prompt` is the
+ * command and its `title` the label. Such a task has no `childThreadId`.
+ */
+export const OrchestrationV2TaskCommand = Schema.Struct({
+  command: TrimmedNonEmptyString,
+  cwd: TrimmedNonEmptyString,
+  logPath: TrimmedNonEmptyString,
+  timeoutMinutes: PositiveInt,
+});
+export type OrchestrationV2TaskCommand = typeof OrchestrationV2TaskCommand.Type;
+
+/**
+ * Work an app-owned task does outside the thread's own provider: a delegate_task child here or
+ * in a linked environment, or a command. It reports back through the app, so a restart neither
+ * cancels it nor waits for it.
+ */
+export function isAppOwnedTaskWork(task: {
+  readonly origin: "provider_native" | "app_owned";
+  readonly childThreadId: ThreadId | null;
+  readonly remoteChild?: OrchestrationV2RemoteTaskChild | undefined;
+  readonly command?: OrchestrationV2TaskCommand | undefined;
+}): boolean {
+  return (
+    task.origin === "app_owned" &&
+    (task.childThreadId !== null || task.remoteChild !== undefined || task.command !== undefined)
+  );
+}
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -996,6 +1026,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   providerThreadId: Schema.NullOr(ProviderThreadId),
   childThreadId: Schema.NullOr(ThreadId),
   remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
+  command: Schema.optional(OrchestrationV2TaskCommand),
   nativeTaskRef: Schema.NullOr(OrchestrationV2ProviderRef),
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
@@ -1905,6 +1936,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     providerInstanceId: ProviderInstanceId,
     childThreadId: Schema.NullOr(ThreadId),
     remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
+    command: Schema.optional(OrchestrationV2TaskCommand),
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
@@ -2779,6 +2811,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     providerInstanceId: ProviderInstanceId,
     childThreadId: Schema.NullOr(ThreadId),
     remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
+    command: Schema.optional(OrchestrationV2TaskCommand),
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
@@ -3676,6 +3709,34 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
+  }),
+  /**
+   * Records a `t3_command_run` command on the thread that runs it: the task, its node and its
+   * turn item, as a remote task is recorded. The ids derive from `commandId`, so a retry records
+   * nothing new.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.command.request"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    parentRunId: RunId,
+    parentNodeId: NodeId,
+    title: Schema.optional(TrimmedNonEmptyString),
+    driver: ProviderDriverKind,
+    providerInstanceId: ProviderInstanceId,
+    command: OrchestrationV2TaskCommand,
+  }),
+  /**
+   * Records how a command ended. Its thread wakes exactly as for any delegated task; the first
+   * result stands, so a later report records nothing.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.command.complete"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
+    result: Schema.String,
   }),
   Schema.Struct({
     type: Schema.Literal("checkpoint.rollback.fail"),

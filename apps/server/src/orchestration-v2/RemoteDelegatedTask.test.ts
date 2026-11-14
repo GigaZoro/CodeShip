@@ -28,7 +28,7 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 
-// A delegated task whose child runs in a linked environment is recorded on
+// A delegated task whose child runs in a linked environment, and a command task, is recorded on
 // its parent without a child thread here, and completing it wakes the parent
 // the way a local child's result does.
 
@@ -403,6 +403,70 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       const delivery = projection.runs.find((run) => run.id === parent.runId)?.delegatedCompletion
         ?.delivery;
       assert.deepEqual(delivery?.taskIds, [taskId]);
+      const offered = yield* Ref.get(offers);
+      assert.equal(offered.length, 1);
+      assert.equal(offered[0]?.threadId, parent.threadId);
+    }),
+  );
+});
+
+const command = {
+  command: "vp run check:changed",
+  cwd: "/work/checkout",
+  logPath: "/state/logs/commands/task/output.log",
+  timeoutMinutes: 60,
+};
+
+it.layer(layerTest)("a command task", (it) => {
+  it.effect("is recorded once and wakes its parent once with the first result", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parent = yield* seedLiveParent("command");
+      const request = {
+        type: "delegated_task.command.request" as const,
+        commandId: CommandId.make("command:command-run:command"),
+        parentThreadId: parent.threadId,
+        parentRunId: parent.runId,
+        parentNodeId: parent.rootNodeId,
+        title: "Checks",
+        driver: ProviderDriverKind.make("command"),
+        providerInstanceId: instanceId,
+        command,
+      };
+      yield* orchestrator.dispatch(request);
+      yield* orchestrator.dispatch(request);
+      const recorded = yield* orchestrator.getThreadProjection(parent.threadId);
+      assert.equal(recorded.subagents.length, 1);
+      const task = recorded.subagents[0]!;
+      assert.equal(task.childThreadId, null);
+      assert.deepEqual(task.command, command);
+      assert.equal(task.status, "running");
+      assert.equal(task.title, "Checks");
+
+      const offers = yield* Offers;
+      yield* Ref.set(offers, []);
+      const complete = (result: string) =>
+        orchestrator.dispatch({
+          type: "delegated_task.command.complete",
+          commandId: CommandId.make(`command:command-complete:${result}`),
+          parentThreadId: parent.threadId,
+          taskId: task.id,
+          status: "failed",
+          result,
+        });
+      yield* complete("Exited with code 3 after 2s.");
+      // The runner reports again after a restart; the first result stands and nothing wakes.
+      yield* complete("Exited with code 3 after 2s, reported again.").pipe(Effect.ignore);
+
+      const projection = yield* orchestrator.getThreadProjection(parent.threadId);
+      const settled = projection.subagents.find((candidate) => candidate.id === task.id);
+      assert.equal(settled?.status, "failed");
+      assert.equal(settled?.result, "Exited with code 3 after 2s.");
+      const item = projection.turnItems.find(
+        (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
+      );
+      assert.deepEqual(item?.type === "subagent" ? item.command : undefined, command);
+      assert.equal(item?.status, "failed");
       const offered = yield* Ref.get(offers);
       assert.equal(offered.length, 1);
       assert.equal(offered[0]?.threadId, parent.threadId);

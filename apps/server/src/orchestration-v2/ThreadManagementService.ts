@@ -126,6 +126,8 @@ function existingThreadIdsForCommand(
     case "delegated_task.remote.request":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
+    case "delegated_task.command.request":
+    case "delegated_task.command.complete":
       return [command.parentThreadId];
     case "thread.created.record":
       return command.parentThreadId === command.targetThreadId
@@ -584,10 +586,9 @@ const openTasks = (projection: Pick<OrchestrationV2ThreadProjection, "subagents"
   projection.subagents.filter((task) => isOrchestrationV2WorkActive(task.status));
 
 /**
- * For a chat that still works: whether nothing has happened in it, nor anywhere in the delegated
- * work it waits on, for longer than their providers' turns ever go quiet, so it will not finish by
- * itself. A pending approval or question counts as nothing happening. Work on another machine
- * leaves no trace here while it runs, so a chat waiting on it is never judged stalled.
+ * For a chat that still works: whether nothing has happened in it, nor in the delegated work it
+ * waits on, for longer than their providers' turns ever go quiet. A pending approval or question
+ * counts as nothing. Work on another machine, or a command, leaves no trace here while it runs.
  */
 export const stalledWork = Effect.fnUntraced(function* (
   threadManagement: Pick<ThreadManagementServiceShape, "getThreadRecords">,
@@ -618,7 +619,7 @@ export const stalledWork = Effect.fnUntraced(function* (
   while (open.length > 0) {
     const children: Array<ThreadId> = [];
     for (const task of open) {
-      if (task.remoteChild !== undefined) return undefined;
+      if (task.remoteChild !== undefined || task.command !== undefined) return undefined;
       limitMs = Math.max(limitMs, stalledTurnQuietMs(task.driver));
       if (task.childThreadId !== null && !seen.has(task.childThreadId)) {
         seen.add(task.childThreadId);
@@ -1630,6 +1631,30 @@ const make = Effect.gen(function* () {
     const stoppedChildThreadIds = new Set<ThreadId>();
     for (const task of subagents) {
       if (task.origin !== "app_owned") continue;
+      // A command ends with its result here; the command runner then stops its processes.
+      if (task.command !== undefined) {
+        if (task.result !== null) continue;
+        yield* dispatch({
+          type: "delegated_task.command.complete",
+          commandId: CommandId.make(`${input.commandId}:stop:${task.id}`),
+          parentThreadId: input.threadId,
+          taskId: task.id,
+          status: "interrupted",
+          result:
+            input.reason === undefined
+              ? "Stopped with its parent."
+              : `Stopped with its parent: ${input.reason}`,
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Unable to stop a command task", {
+              parentThreadId: input.threadId,
+              taskId: task.id,
+              error,
+            }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
+          ),
+        );
+        continue;
+      }
       if (task.childThreadId === null) {
         // A task in a linked environment ends here; its follower then stops it there.
         // One with its result keeps it, but its thread there may run follow-up work.
