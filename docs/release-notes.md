@@ -1,3 +1,7 @@
+## 2026-11-15 — Agents are told which shell their commands run in
+
+- The tool agents use to run a long command apart from the chat now names its shell: bash or zsh on macOS and Linux, Windows PowerShell 5.1 on Windows. It also says PowerShell 5.1 has no `&&` or `||` and how to chain steps there, so a Windows command no longer fails with "not a valid statement separator".
+
 ## 2026-11-15 — A scheduled run a restart cut before its prompt no longer leaves an empty chat
 
 - When a restart cut a scheduled run after its chat was made but before the task's prompt reached it, the run was shown as failed but its empty chat stayed in the sidebar. The next startup now deletes that chat and shows the run as interrupted in its history; a recurring task runs again at its next time, as after any missed run. A chat you wrote in or moved to another folder is kept.
