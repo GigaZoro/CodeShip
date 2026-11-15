@@ -251,6 +251,13 @@ export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
 
 const isEffectOutboxError = Schema.is(EffectOutboxError);
 
+export interface SlowEffectClaimLimit {
+  /** Running slow effects (title generation, provider starts) allowed; see `SLOW_EFFECT_TYPES`. */
+  readonly maxRunningSlowEffects?: number;
+  /** How long a worker waits on one effect; one claimed longer ago no longer holds a worker. */
+  readonly workerSlotWait?: Duration.Duration;
+}
+
 export interface EffectOutboxV2Shape {
   readonly awaitAvailable: Effect.Effect<void>;
   readonly notifyAvailable: (count?: number) => Effect.Effect<void>;
@@ -278,15 +285,15 @@ export interface EffectOutboxV2Shape {
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
   >;
-  readonly claimNext: (input: {
-    readonly workerId: string;
-    readonly excludeRestartContinuations?: boolean;
-    /** Running slow effects (title generation, provider starts) allowed; see `SLOW_EFFECT_TYPES`. */
-    readonly maxRunningSlowEffects?: number;
-  }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
-  readonly nextClaimableAt: (input?: {
-    readonly maxRunningSlowEffects?: number;
-  }) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
+  readonly claimNext: (
+    input: SlowEffectClaimLimit & {
+      readonly workerId: string;
+      readonly excludeRestartContinuations?: boolean;
+    },
+  ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
+  readonly nextClaimableAt: (
+    input?: SlowEffectClaimLimit,
+  ) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
   readonly succeed: (input: {
     readonly effectId: string;
     readonly workerId: string;
@@ -373,11 +380,17 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ).pipe(Effect.asVoid);
     // Retry backoff must block later effects so turns cannot race a pending rollback.
     const claimableCandidatePredicate = (
+      now: DateTime.Utc,
       availableBefore?: string,
       excludeRestartContinuations = false,
-      maxRunningSlowEffects?: number,
-    ) =>
-      sql`
+      { maxRunningSlowEffects, workerSlotWait }: SlowEffectClaimLimit = {},
+    ) => {
+      // A running row's updated_at is when it was claimed.
+      const claimedAfter =
+        workerSlotWait === undefined
+          ? undefined
+          : DateTime.formatIso(DateTime.subtractDuration(now, workerSlotWait));
+      return sql`
         ${
           availableBefore === undefined
             ? sql`1 = 1`
@@ -424,6 +437,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                     FROM orchestration_v2_effect_outbox AS running_start
                     WHERE running_start.status = 'running'
                       AND running_start.effect_type IN ${sql.in(PROVIDER_START_EFFECT_TYPES)}
+                      AND ${
+                        claimedAfter === undefined
+                          ? sql`1 = 1`
+                          : sql`running_start.updated_at > ${claimedAfter}`
+                      }
                   ) < ${maxRunningSlowEffects}
                 )
                 OR (
@@ -433,11 +451,17 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                     FROM orchestration_v2_effect_outbox AS running_slow
                     WHERE running_slow.status = 'running'
                       AND running_slow.effect_type IN ${sql.in(SLOW_EFFECT_TYPES)}
+                      AND ${
+                        claimedAfter === undefined
+                          ? sql`1 = 1`
+                          : sql`running_slow.updated_at > ${claimedAfter}`
+                      }
                   ) < ${maxRunningSlowEffects}
                 )
               )`
         }
       `;
+    };
 
     const cancellationSignal = (effectId: string) => {
       const existing = cancellationSignals.get(effectId);
@@ -620,7 +644,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ),
       // The worker polls for the next effect even when there is no work to claim.
       claimNext: Effect.fnUntraced(
-        function* ({ workerId, excludeRestartContinuations = false, maxRunningSlowEffects }) {
+        function* ({ workerId, excludeRestartContinuations = false, ...slowEffectLimit }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           // Idle claims return empty; tracing their full SQL on every poll overwhelms useful traces.
@@ -636,9 +660,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
               WHERE ${claimableCandidatePredicate(
+                now,
                 nowIso,
                 excludeRestartContinuations,
-                maxRunningSlowEffects,
+                slowEffectLimit,
               )}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
@@ -655,11 +680,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         Effect.mapError((cause) => new EffectOutboxError({ operation: "claim", cause })),
       ),
       nextClaimableAt: Effect.fnUntraced(
-        function* ({ maxRunningSlowEffects }: { readonly maxRunningSlowEffects?: number } = {}) {
+        function* (slowEffectLimit: SlowEffectClaimLimit = {}) {
+          const now = yield* DateTime.now;
           const rows = yield* sql<{ readonly available_at: string | null }>`
             SELECT MIN(candidate.available_at) AS available_at
             FROM orchestration_v2_effect_outbox AS candidate
-            WHERE ${claimableCandidatePredicate(undefined, false, maxRunningSlowEffects)}
+            WHERE ${claimableCandidatePredicate(now, undefined, false, slowEffectLimit)}
           `.pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
           const availableAt = rows[0]?.available_at;
           if (availableAt === undefined || availableAt === null) return Option.none();
