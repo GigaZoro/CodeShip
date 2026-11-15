@@ -11,6 +11,7 @@ import { assert, it } from "@effect/vitest";
 import type { DesktopAppActivationRequest } from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as NetService from "@t3tools/shared/Net";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -217,13 +218,11 @@ describe("t3 server command safety", () => {
 });
 
 describe("t3 app", () => {
-  it.live.each(["permissions", "owner", "symlink", "missing owner"] as const)(
-    "rejects unsafe %s on the socket directory before sending",
-    (unsafe) =>
-      Effect.gen(function* () {
-        const platform = yield* HostProcess.Platform;
-        if (platform === "win32") return;
-        yield* withTempDirectory(
+  describe.skipIf(isWindowsHost)("on a POSIX socket directory", () => {
+    it.live.each(["permissions", "owner", "symlink", "missing owner"] as const)(
+      "rejects unsafe %s on the socket directory before sending",
+      (unsafe) =>
+        withTempDirectory(
           "t3-app-unsafe-",
           (root) =>
             Effect.gen(function* () {
@@ -267,17 +266,17 @@ describe("t3 app", () => {
               });
             }).pipe(Effect.scoped),
           "/tmp",
-        );
-      }),
-  );
+        ),
+    );
+  });
 
   it.effect("uses T3CODE_HOME or --base-dir and sends the default or explicit path", () =>
     withTempDirectory("t3-app-command-test-", (root) =>
       Effect.gen(function* () {
         const baseDir = NodePath.join(root, "t3-home");
         const explicitPath = NodePath.join(root, "project");
-        const platform = yield* HostProcess.Platform;
         const workingDirectory = yield* HostProcess.WorkingDirectory;
+        const platform = yield* HostProcess.Platform;
         const desktop = yield* fakeDesktop({ baseDir });
 
         yield* runCli(["app"], { T3CODE_HOME: baseDir });

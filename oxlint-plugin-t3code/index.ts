@@ -19,6 +19,7 @@ import noUnreasonedStateSync from "./rules/no-unreasoned-state-sync.ts";
 import noUntranslatedText from "./rules/no-untranslated-text.ts";
 import requireRegisteredListScroll from "./rules/require-registered-list-scroll.ts";
 import noOutsetStateIndicators from "./rules/no-outset-state-indicators.ts";
+import noPlatformEarlyReturnInTests from "./rules/no-platform-early-return-in-tests.ts";
 import noPollingLoopInTests from "./rules/no-polling-loop-in-tests.ts";
 import noRawMcpRegistration from "./rules/no-raw-mcp-registration.ts";
 import noRemoteGitThroughExecute from "./rules/no-remote-git-through-execute.ts";
@@ -61,6 +62,7 @@ export default definePlugin({
     "no-untranslated-text": noUntranslatedText,
     "require-registered-list-scroll": requireRegisteredListScroll,
     "no-outset-state-indicators": noOutsetStateIndicators,
+    "no-platform-early-return-in-tests": noPlatformEarlyReturnInTests,
     "no-polling-loop-in-tests": noPollingLoopInTests,
     "no-raw-mcp-registration": noRawMcpRegistration,
     "no-remote-git-through-execute": noRemoteGitThroughExecute,

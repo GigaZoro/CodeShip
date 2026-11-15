@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { afterEach, describe, expect } from "vite-plus/test";
@@ -119,32 +120,34 @@ describe("desktop app control server", () => {
     }),
   );
 
-  it.effect("keeps a newer app's socket when an older app on the same state dir quits", () =>
-    Effect.gen(function* () {
-      const platform = yield* HostProcess.Platform;
-      const userId = yield* HostProcess.UserId;
-      if (platform === "win32") return;
-      yield* Effect.promise(async () => {
-        const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-app-takeover-test-"));
-        const target = makeTarget(NodePath.join(root, "userdata"), platform, userId);
-        const older = await startOkServer(target, userId);
-        await startOkServer(target, userId);
+  it.effect.skipIf(isWindowsHost)(
+    "keeps a newer app's socket when an older app on the same state dir quits",
+    () =>
+      Effect.gen(function* () {
+        const platform = yield* HostProcess.Platform;
+        const userId = yield* HostProcess.UserId;
+        yield* Effect.promise(async () => {
+          const root = await NodeFSP.mkdtemp(
+            NodePath.join(NodeOS.tmpdir(), "t3-app-takeover-test-"),
+          );
+          const target = makeTarget(NodePath.join(root, "userdata"), platform, userId);
+          const older = await startOkServer(target, userId);
+          await startOkServer(target, userId);
 
-        await older.close();
+          await older.close();
 
-        await expect(
-          exchange(target.address, request("after-quit", platform)),
-        ).resolves.toMatchObject({ ok: true, requestId: "after-quit" });
-        await NodeFSP.rm(root, { recursive: true, force: true });
-      });
-    }),
+          await expect(
+            exchange(target.address, request("after-quit", platform)),
+          ).resolves.toMatchObject({ ok: true, requestId: "after-quit" });
+          await NodeFSP.rm(root, { recursive: true, force: true });
+        });
+      }),
   );
 
-  it.effect("binds its address again after the socket file is removed", () =>
+  it.effect.skipIf(isWindowsHost)("binds its address again after the socket file is removed", () =>
     Effect.gen(function* () {
       const platform = yield* HostProcess.Platform;
       const userId = yield* HostProcess.UserId;
-      if (platform === "win32") return;
       yield* Effect.promise(async () => {
         const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-app-reclaim-test-"));
         const target = makeTarget(NodePath.join(root, "userdata"), platform, userId);

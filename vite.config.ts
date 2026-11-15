@@ -307,6 +307,7 @@ export default defineConfig({
       "t3code/no-manual-effect-runtime-in-tests": "error",
       "t3code/no-native-title-tooltip": "error",
       // Test files only (the rule checks the filename).
+      "t3code/no-platform-early-return-in-tests": "error",
       "t3code/no-polling-loop-in-tests": "error",
       "t3code/no-raw-mcp-registration": "error",
       "t3code/no-remote-git-through-execute": "error",

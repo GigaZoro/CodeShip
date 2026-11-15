@@ -12,6 +12,7 @@ import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
@@ -134,71 +135,69 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }),
     );
 
-    it.effect("lists symlinks as what they point to, hiding ones that cannot be opened", () =>
-      Effect.gen(function* () {
-        const platform = yield* HostProcess.Platform;
-        if (platform === "win32") return;
-        const cwd = yield* makeTempDir({ git: true });
-        const outside = yield* makeTempDir();
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        yield* writeTextFile(cwd, "real.txt");
-        yield* writeTextFile(cwd, "realdir/nested.txt");
-        yield* writeTextFile(outside, "outside.txt");
-        yield* fileSystem.symlink("real.txt", path.join(cwd, "link.txt"));
-        yield* fileSystem.symlink("realdir", path.join(cwd, "linkdir"));
-        yield* fileSystem.symlink(outside, path.join(cwd, "outside-link"));
-        yield* fileSystem.symlink(".git", path.join(cwd, "git-link"));
-        yield* fileSystem.symlink("missing", path.join(cwd, "dangling"));
+    it.effect.skipIf(isWindowsHost)(
+      "lists symlinks as what they point to, hiding ones that cannot be opened",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTempDir({ git: true });
+          const outside = yield* makeTempDir();
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* writeTextFile(cwd, "real.txt");
+          yield* writeTextFile(cwd, "realdir/nested.txt");
+          yield* writeTextFile(outside, "outside.txt");
+          yield* fileSystem.symlink("real.txt", path.join(cwd, "link.txt"));
+          yield* fileSystem.symlink("realdir", path.join(cwd, "linkdir"));
+          yield* fileSystem.symlink(outside, path.join(cwd, "outside-link"));
+          yield* fileSystem.symlink(".git", path.join(cwd, "git-link"));
+          yield* fileSystem.symlink("missing", path.join(cwd, "dangling"));
 
-        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-        const root = yield* workspaceEntries.list({ cwd, directoryPath: "" });
-        expect(root.entries.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual([
-          { path: "link.txt", kind: "file" },
-          { path: "linkdir", kind: "directory" },
-          { path: "real.txt", kind: "file" },
-          { path: "realdir", kind: "directory" },
-        ]);
-        expect(yield* workspaceEntries.list({ cwd, directoryPath: "linkdir" })).toEqual({
-          entries: [{ path: "linkdir/nested.txt", kind: "file" }],
-          truncated: false,
-        });
-      }),
+          const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+          const root = yield* workspaceEntries.list({ cwd, directoryPath: "" });
+          expect(root.entries.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual([
+            { path: "link.txt", kind: "file" },
+            { path: "linkdir", kind: "directory" },
+            { path: "real.txt", kind: "file" },
+            { path: "realdir", kind: "directory" },
+          ]);
+          expect(yield* workspaceEntries.list({ cwd, directoryPath: "linkdir" })).toEqual({
+            entries: [{ path: "linkdir/nested.txt", kind: "file" }],
+            truncated: false,
+          });
+        }),
     );
 
-    it.effect("hides folder links that lead back to a folder on the listed path", () =>
-      // "Expand all folders" loads every folder it expands, so a link that loops would
-      // keep nesting the same entries without end.
-      Effect.gen(function* () {
-        const platform = yield* HostProcess.Platform;
-        if (platform === "win32") return;
-        const cwd = yield* makeTempDir();
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        yield* writeTextFile(cwd, "a/file.txt");
-        yield* writeTextFile(cwd, "b/file.txt");
-        yield* fileSystem.symlink(".", path.join(cwd, "self"));
-        yield* fileSystem.symlink("..", path.join(cwd, "a/up"));
-        yield* fileSystem.symlink("../b", path.join(cwd, "a/to-b"));
-        yield* fileSystem.symlink("../a", path.join(cwd, "b/to-a"));
+    it.effect.skipIf(isWindowsHost)(
+      "hides folder links that lead back to a folder on the listed path",
+      () =>
+        // "Expand all folders" loads every folder it expands, so a link that loops would
+        // keep nesting the same entries without end.
+        Effect.gen(function* () {
+          const cwd = yield* makeTempDir();
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* writeTextFile(cwd, "a/file.txt");
+          yield* writeTextFile(cwd, "b/file.txt");
+          yield* fileSystem.symlink(".", path.join(cwd, "self"));
+          yield* fileSystem.symlink("..", path.join(cwd, "a/up"));
+          yield* fileSystem.symlink("../b", path.join(cwd, "a/to-b"));
+          yield* fileSystem.symlink("../a", path.join(cwd, "b/to-a"));
 
-        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-        const paths = (directoryPath: string) =>
-          workspaceEntries
-            .list({ cwd, directoryPath })
-            .pipe(Effect.map(({ entries }) => entries.map((entry) => entry.path).toSorted()));
-        expect(yield* paths("")).toEqual(["a", "b"]);
-        // A link into a sibling folder is fine on its own...
-        expect(yield* paths("a")).toEqual(["a/file.txt", "a/to-b"]);
-        // ...but once followed, the sibling's link back is hidden.
-        expect(yield* paths("a/to-b")).toEqual(["a/to-b/file.txt"]);
-      }),
+          const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+          const paths = (directoryPath: string) =>
+            workspaceEntries
+              .list({ cwd, directoryPath })
+              .pipe(Effect.map(({ entries }) => entries.map((entry) => entry.path).toSorted()));
+          expect(yield* paths("")).toEqual(["a", "b"]);
+          // A link into a sibling folder is fine on its own...
+          expect(yield* paths("a")).toEqual(["a/file.txt", "a/to-b"]);
+          // ...but once followed, the sibling's link back is hidden.
+          expect(yield* paths("a/to-b")).toEqual(["a/to-b/file.txt"]);
+        }),
     );
 
-    it.effect("resolves a folder of many symlinks in bounded batches", () =>
+    it.effect.skipIf(isWindowsHost)("resolves a folder of many symlinks in bounded batches", () =>
       Effect.gen(function* () {
-        const platform = yield* HostProcess.Platform;
-        if (platform === "win32") return;
         const cwd = yield* makeTempDir();
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;

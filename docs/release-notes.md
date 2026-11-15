@@ -1,3 +1,7 @@
+## 2026-11-15 — Windows and POSIX-only tests now report a skip, not a pass
+
+- 19 tests that returned early on the wrong platform reported a pass without running. They now skip, so a test run shows what ran on each platform, and a lint rule refuses new early returns on the host platform.
+
 ## 2026-11-15 — See every machine's CPU, memory and disk on the new Machines page
 
 - New **Machines** page, at the bottom of the sidebar rail and in the command palette, and on mobile at the top of **Settings**. It shows each connected machine's CPU use, core count and load averages, memory, swap, free disk space and uptime, refreshing every 5 seconds while it is open. Values turn amber at 80% and red at 90%, and an offline machine offers to reconnect.

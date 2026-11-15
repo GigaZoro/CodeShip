@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { spawnMspConnection, type MspHandshake, type SpawnedMspConnection } from "@muse-code/sdk";
 import { it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -139,18 +140,16 @@ describe("Muse SDK host", () => {
     },
   );
 
-  it.effect(
+  it.effect.skipIf(isWindowsHost)(
     "observes native host exit while the SDK still waits for a detached stdout holder",
     () =>
-      Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) === "win32") return;
-        yield* Effect.promise(async () => {
-          const sdk = await vi.importActual<typeof import("@muse-code/sdk")>("@muse-code/sdk");
-          const processExited = pending<{ code: number | null; signal: NodeJS.Signals | null }>();
-          const holderSource = `process.send("ready", () => {
+      Effect.promise(async () => {
+        const sdk = await vi.importActual<typeof import("@muse-code/sdk")>("@muse-code/sdk");
+        const processExited = pending<{ code: number | null; signal: NodeJS.Signals | null }>();
+        const holderSource = `process.send("ready", () => {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
       });`;
-          const fixture = `
+        const fixture = `
         const { spawn } = require("node:child_process");
         require("node:readline").createInterface({ input: process.stdin }).on("line", async line => {
           const frame = JSON.parse(line);
@@ -167,54 +166,53 @@ describe("Muse SDK host", () => {
             () => { if (frame.method === "fixture/exit") process.exit(7); });
         });
       `;
-          let holderPid: number | undefined;
-          let host: MuseSdkHost | undefined;
-          const reap = () => {
-            if (holderPid !== undefined) {
-              try {
-                process.kill(holderPid, "SIGKILL");
-              } catch {
-                /* Already reaped. */
-              }
-              holderPid = undefined;
+        let holderPid: number | undefined;
+        let host: MuseSdkHost | undefined;
+        const reap = () => {
+          if (holderPid !== undefined) {
+            try {
+              process.kill(holderPid, "SIGKILL");
+            } catch {
+              /* Already reaped. */
             }
-          };
-          onTestFinished(async () => {
-            reap();
-            await host?.close();
-          });
-          try {
-            host = await createMuseSdkHost(
-              {
-                binaryPath: process.execPath,
-                launch: { command: process.execPath, args: ["-e", fixture] },
-                onProcessExit: processExited.resolve,
-              },
-              sdk.spawnMspConnection,
-            );
-            let sdkExited = false;
-            let connectionClosed = false;
-            void host.exited.then(() => {
-              sdkExited = true;
-            });
-            void host.connection.closed.then(() => {
-              connectionClosed = true;
-            });
-            const response = await host.connection.request("fixture/exit", {});
-            expect(response).toMatchObject({ pid: expect.any(Number) });
-            holderPid = Number((response as { pid: number }).pid);
-            expect(await processExited.promise).toEqual({ code: 7, signal: null });
-            expect(sdkExited).toBe(false);
-            expect(connectionClosed).toBe(false);
-            reap();
-            expect(await host.exited).toEqual({ code: 7, signal: null });
-            await host.close();
-            expect(connectionClosed).toBe(true);
-          } finally {
-            reap();
-            await host?.close();
+            holderPid = undefined;
           }
+        };
+        onTestFinished(async () => {
+          reap();
+          await host?.close();
         });
+        try {
+          host = await createMuseSdkHost(
+            {
+              binaryPath: process.execPath,
+              launch: { command: process.execPath, args: ["-e", fixture] },
+              onProcessExit: processExited.resolve,
+            },
+            sdk.spawnMspConnection,
+          );
+          let sdkExited = false;
+          let connectionClosed = false;
+          void host.exited.then(() => {
+            sdkExited = true;
+          });
+          void host.connection.closed.then(() => {
+            connectionClosed = true;
+          });
+          const response = await host.connection.request("fixture/exit", {});
+          expect(response).toMatchObject({ pid: expect.any(Number) });
+          holderPid = Number((response as { pid: number }).pid);
+          expect(await processExited.promise).toEqual({ code: 7, signal: null });
+          expect(sdkExited).toBe(false);
+          expect(connectionClosed).toBe(false);
+          reap();
+          expect(await host.exited).toEqual({ code: 7, signal: null });
+          await host.close();
+          expect(connectionClosed).toBe(true);
+        } finally {
+          reap();
+          await host?.close();
+        }
       }),
   );
 
@@ -291,26 +289,27 @@ describe("Muse launch", () => {
   );
 
   // cmd's quote rules only show with a real cmd.exe, spawning as the SDK does.
-  it.effect("starts a real launcher from a folder with spaces and cmd metacharacters", () =>
-    Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) !== "win32") return;
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const folder = path.join(
-        yield* fs.makeTempDirectoryScoped({ prefix: "MuseLaunch-" }),
-        "R&D Team (x) @ ^y",
-      );
-      yield* fs.makeDirectory(folder);
-      const launcher = path.join(folder, "muse.cmd");
-      yield* fs.writeFileString(launcher, '@echo off\r\necho %*>"%~dp0args.txt"\r\n');
-      const launch = yield* museLaunch(launcher);
-      const run = NodeChildProcess.spawnSync(launch.command, [...launch.args, "serve", "--x"], {
-        cwd: folder,
-        encoding: "utf8",
-      });
-      expect(run.status, run.stderr).toBe(0);
-      expect((yield* fs.readFileString(path.join(folder, "args.txt"))).trim()).toBe("serve --x");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  it.effect.runIf(isWindowsHost)(
+    "starts a real launcher from a folder with spaces and cmd metacharacters",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const folder = path.join(
+          yield* fs.makeTempDirectoryScoped({ prefix: "MuseLaunch-" }),
+          "R&D Team (x) @ ^y",
+        );
+        yield* fs.makeDirectory(folder);
+        const launcher = path.join(folder, "muse.cmd");
+        yield* fs.writeFileString(launcher, '@echo off\r\necho %*>"%~dp0args.txt"\r\n');
+        const launch = yield* museLaunch(launcher);
+        const run = NodeChildProcess.spawnSync(launch.command, [...launch.args, "serve", "--x"], {
+          cwd: folder,
+          encoding: "utf8",
+        });
+        expect(run.status, run.stderr).toBe(0);
+        expect((yield* fs.readFileString(path.join(folder, "args.txt"))).trim()).toBe("serve --x");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
 
@@ -350,9 +349,8 @@ describe("Muse workspace root", () => {
 
   // FileSystem.realPath keeps the case it is given; Muse rejects a root whose case
   // differs from the disk's, and APFS is case-insensitive just like NTFS.
-  it.effect("fixes the case of a macOS root natively", () =>
+  it.effect.runIf(isDarwinHost)("fixes the case of a macOS root natively", () =>
     Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) !== "darwin") return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const created = yield* fs.makeTempDirectoryScoped({ prefix: "MuseRoot-" });
@@ -363,9 +361,8 @@ describe("Muse workspace root", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("fixes the case of a Windows root natively", () =>
+  it.effect.runIf(isWindowsHost)("fixes the case of a Windows root natively", () =>
     Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) !== "win32") return;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const created = yield* fs.makeTempDirectoryScoped({ prefix: "MuseRoot-" });

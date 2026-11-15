@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
@@ -22,6 +22,7 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -878,52 +879,53 @@ const stillRunning = (pid: number) =>
   ).trim() === "alive";
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
-it.layer(layerTest, { excludeTestServices: true })(
-  "a Windows command whose wrapper ended",
-  (it) => {
-    it.effect.each([
-      ["its task is cancelled", "command-win-cancelled", true],
-      ["it is found without its wrapper", "command-win-lost", false],
-    ] as const)("leaves nothing running when %s", ([, name, cancelled]) =>
-      Effect.gen(function* () {
-        // The commands are PowerShell: other platforms have their own wrapper, tested above.
-        if ((yield* HostProcess.Platform) !== "win32") return;
-        const chat = yield* liveChat(name);
-        const started = yield* withServer((runner) =>
-          runner.run(callerOf(chat.threadId), {
-            command:
-              "$p = Start-Process -PassThru -WindowStyle Hidden -FilePath ping.exe -ArgumentList '-n','300','127.0.0.1'; " +
-              "Set-Content -LiteralPath child.pid -Value $p.Id; Set-Content -LiteralPath ready -Value 1; Start-Sleep 300",
-          }),
-        );
-        yield* awaitFile(NodePath.join(chat.workspace, "ready"));
-        const childPid = Number.parseInt(
-          NodeFS.readFileSync(NodePath.join(chat.workspace, "child.pid"), "utf8"),
-          10,
-        );
-        yield* Effect.addFinalizer(() =>
-          Effect.try(() => process.kill(childPid)).pipe(Effect.ignore),
-        );
-        // Only the wrapper, as a stop cut by a restart leaves it.
-        NodeChildProcess.execFileSync("taskkill", [
-          "/PID",
-          String((yield* commandRow(started.taskId))!.pid),
-          "/F",
-        ]);
-        assert.isTrue(process.kill(childPid, 0));
-        if (cancelled) {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
-          // Run elsewhere: a Windows folder cannot be removed while a command still has it open.
-          yield* withServer((runner) =>
-            runner.run(callerOf(chat.threadId), { command: "exit 0", cwd: NodeOS.tmpdir() }),
+describe.runIf(isWindowsHost)("Windows only", () => {
+  it.layer(layerTest, { excludeTestServices: true })(
+    "a Windows command whose wrapper ended",
+    (it) => {
+      it.effect.each([
+        ["its task is cancelled", "command-win-cancelled", true],
+        ["it is found without its wrapper", "command-win-lost", false],
+      ] as const)("leaves nothing running when %s", ([, name, cancelled]) =>
+        Effect.gen(function* () {
+          // The commands are PowerShell: other platforms have their own wrapper, tested above.
+          const chat = yield* liveChat(name);
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), {
+              command:
+                "$p = Start-Process -PassThru -WindowStyle Hidden -FilePath ping.exe -ArgumentList '-n','300','127.0.0.1'; " +
+                "Set-Content -LiteralPath child.pid -Value $p.Id; Set-Content -LiteralPath ready -Value 1; Start-Sleep 300",
+            }),
           );
-        } else {
-          yield* withServer(() => nextWake(chat.threadId));
-        }
-        assert.equal((yield* commandRow(started.taskId))?.status, cancelled ? "stopped" : "lost");
-        assert.isFalse(stillRunning(childPid));
-      }),
-    );
-  },
-);
+          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          const childPid = Number.parseInt(
+            NodeFS.readFileSync(NodePath.join(chat.workspace, "child.pid"), "utf8"),
+            10,
+          );
+          yield* Effect.addFinalizer(() =>
+            Effect.try(() => process.kill(childPid)).pipe(Effect.ignore),
+          );
+          // Only the wrapper, as a stop cut by a restart leaves it.
+          NodeChildProcess.execFileSync("taskkill", [
+            "/PID",
+            String((yield* commandRow(started.taskId))!.pid),
+            "/F",
+          ]);
+          assert.isTrue(process.kill(childPid, 0));
+          if (cancelled) {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+            // Run elsewhere: a Windows folder cannot be removed while a command still has it open.
+            yield* withServer((runner) =>
+              runner.run(callerOf(chat.threadId), { command: "exit 0", cwd: NodeOS.tmpdir() }),
+            );
+          } else {
+            yield* withServer(() => nextWake(chat.threadId));
+          }
+          assert.equal((yield* commandRow(started.taskId))?.status, cancelled ? "stopped" : "lost");
+          assert.isFalse(stillRunning(childPid));
+        }),
+      );
+    },
+  );
+});
