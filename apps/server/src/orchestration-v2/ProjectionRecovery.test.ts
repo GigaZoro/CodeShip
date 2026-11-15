@@ -285,6 +285,8 @@ it.effect("selects unfinished recovery work without reading settled thread histo
       yield* createRun(threadId, "queued", threadId === queued ? { ordinal: 2 } : {});
     }
     yield* createRun(blocked, "waiting", { ordinal: 2 });
+    const archivedAnswering = yield* createThread("archived-answering", { archivedAt: now });
+    yield* createRun(archivedAnswering, "running");
     const background = yield* createThread("background");
     yield* createRun(background, "completed");
     yield* projections.apply({
@@ -360,7 +362,11 @@ it.effect("selects unfinished recovery work without reading settled thread histo
     assert.deepEqual(yield* projections.getRecoveryThreadIds("queued-runs"), [queued]);
     assert.deepEqual(
       new Set(yield* projections.getRecoveryThreadIds("runtime")),
-      new Set([queued, archived, blocked, background, outboxOnly, requestOnly]),
+      new Set([queued, archived, blocked, archivedAnswering, background, outboxOnly, requestOnly]),
+    );
+    assert.deepEqual(
+      new Set(yield* projections.getRecoveryThreadIds("restart-hold")),
+      new Set([blocked, background]),
     );
     assert.deepEqual(yield* projections.getRecoveryThreadIds("delegated-completions"), [delivery]);
     assert.deepEqual(yield* projections.getRecoveryThreadIds("subagent-results"), []);
@@ -643,6 +649,11 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
     assert.deepEqual(
       new Set(yield* projections.getRecoveryThreadIds("runtime")),
       new Set([first, second, roster, prepared]),
+    );
+    // A shared Codex session binds every chat that used it; a restart cuts nothing of theirs.
+    assert.deepEqual(
+      new Set(yield* projections.getRecoveryThreadIds("restart-hold")),
+      new Set([roster, prepared]),
     );
     const preparedState = yield* projections.getRuntimeRecoveryProjection(prepared);
     assert.deepEqual(

@@ -193,6 +193,7 @@ export type ProjectionSignedOutCandidate = Pick<
 export type ProjectionRecoveryKind =
   | "queued-runs"
   | "runtime"
+  | "restart-hold"
   | "subagent-results"
   | "delegated-completions";
 
@@ -4751,6 +4752,37 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   )))
                   ELSE 0 END
               `;
+            // The chats with work a restart cuts. Unlike "runtime", a live session alone does
+            // not count: one shared Codex session binds every chat that ever used it.
+            case "restart-hold":
+              return sql`
+                WITH background_provider_threads AS MATERIALIZED (
+                  SELECT provider_thread_id, thread_id
+                  FROM orchestration_v2_projection_provider_threads
+                  WHERE CASE WHEN json_valid(payload_json)
+                    THEN json_array_length(payload_json, '$.pendingBackgroundTasks') > 0
+                    ELSE 0 END
+                )
+                SELECT thread_id FROM orchestration_v2_projection_runs
+                WHERE status IN ('preparing', 'starting', 'running', 'waiting')
+                UNION
+                SELECT thread_id FROM background_provider_threads
+                UNION
+                SELECT subagents.thread_id FROM background_provider_threads
+                CROSS JOIN orchestration_v2_projection_subagents AS subagents
+                  ON subagents.provider_thread_id = background_provider_threads.provider_thread_id
+                WHERE subagents.origin = 'provider_native'
+                UNION
+                SELECT item.thread_id FROM orchestration_v2_projection_turn_items AS item
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_runs AS run
+                    WHERE run.run_id = item.run_id AND run.status = 'rolled_back'
+                  )
+                  AND type IN ('command_execution', 'dynamic_tool', 'subagent')
+                  AND status IN ('pending', 'running', 'waiting')
+              `;
+            // For passes that run once per start or stop: a live session puts every chat it
+            // binds here, and one shared Codex session binds most chats.
             case "runtime":
               return sql`
                 WITH pending_provider_threads AS MATERIALIZED (
@@ -4835,7 +4867,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           SELECT thread_id FROM orchestration_v2_projection_threads
           WHERE deleted_at IS NULL
             AND thread_id IN (${candidates})
-            ${kind === "queued-runs" ? sql`AND archived_at IS NULL` : sql``}
+            ${kind === "queued-runs" || kind === "restart-hold" ? sql`AND archived_at IS NULL` : sql``}
           ORDER BY updated_at ASC, thread_id ASC
         `;
         return rows.map((row) => ThreadId.make(row.thread_id));

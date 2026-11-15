@@ -17,7 +17,9 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -242,10 +244,15 @@ function restartCancelledBackgroundWork(
         recordItem(item);
     }
   }
-  const cutRunIds = new Set(cutRuns.map((run) => run.id));
+  const skippedRunIds = new Set([
+    ...cutRuns.map((run) => run.id),
+    // A rollback closed the process that ran these turns' work, and the rewound chat no longer
+    // knows it, so a note would have the agent start it again.
+    ...projection.runs.flatMap((run) => (run.status === "rolled_back" ? [run.id] : [])),
+  ]);
   for (const item of projection.turnItems ?? []) {
     if (
-      (item.runId !== null && cutRunIds.has(item.runId)) ||
+      (item.runId !== null && skippedRunIds.has(item.runId)) ||
       !isNonterminalTurnItemStatus(item.status) ||
       isAppOwnedDelegationItem(item)
     )
@@ -1049,8 +1056,9 @@ export const make = Effect.gen(function* () {
   });
 
   const restartHold = Effect.gen(function* () {
+    // Archived and deleted chats are left out: nobody waits in them, and a restart wakes nothing.
     const threadIds = yield* projections
-      .getRecoveryThreadIds("runtime")
+      .getRecoveryThreadIds("restart-hold")
       .pipe(
         Effect.mapError(
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
@@ -1067,8 +1075,6 @@ export const make = Effect.gen(function* () {
               new ProviderRuntimeRecoveryError({ operation: "read-projections", threadId, cause }),
           ),
         );
-      // Nobody waits in an archived or deleted thread, and its restart wakes nothing.
-      if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) continue;
       if (projection.runs.some(isRunningTurn)) {
         runningTurns.push({ threadId, threadTitle: projection.thread.title });
       }
@@ -1122,25 +1128,52 @@ export const make = Effect.gen(function* () {
     return { work, runningTurns, commands } satisfies OrchestrationV2RestartHold;
   }).pipe(Effect.withSpan("ProviderRuntimeRecoveryService.restartHold"));
 
-  const watchRestartHold = Stream.unwrap(
+  // Watchers read the hold one at a time, in numbered order, so a read with a higher number
+  // reflects every change a lower one did. An event sequence read beside a hold can't order two
+  // reads: a commit may land between it and the hold.
+  const restartHoldReads = yield* Semaphore.make(1);
+  const restartHoldReadCount = yield* Ref.make(0);
+  const numberedRestartHold = restartHoldReads.withPermit(
+    Effect.all({ hold: restartHold, read: Ref.updateAndGet(restartHoldReadCount, (n) => n + 1) }),
+  );
+
+  // Every client and remote environment watches the hold; one read per change serves them all.
+  // A watcher needs only the latest hold, so a slow one skips older ones instead of stalling the rest.
+  const sharedRestartHolds = yield* Stream.unwrap(
     eventSink.latestSequence().pipe(
       Effect.mapError(
         (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
       ),
       Effect.map((afterSequence) =>
         Stream.concat(
-          Stream.fromEffect(restartHold),
+          Stream.fromEffect(numberedRestartHold),
           eventSink.stream({ afterSequence, bounded: true }).pipe(
             Stream.mapError(
               (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
             ),
             Stream.filter(({ event }) => changesRestartHold(event)),
             Stream.groupedWithin(RESTART_HOLD_MAX_EVENTS, RESTART_HOLD_SETTLE),
-            Stream.mapEffect(() => restartHold),
+            Stream.mapEffect(() => numberedRestartHold),
           ),
-        ).pipe(Stream.changesWith(sameRestartHold)),
+        ),
       ),
     ),
+  ).pipe(Stream.share({ capacity: 1, strategy: "sliding", replay: 1 }));
+
+  // The last shared hold can predate a change still settling, and a restart decided on it cuts
+  // work, so a new watcher reads its own first and then takes only shared holds read after it.
+  const watchRestartHold = Stream.unwrap(
+    numberedRestartHold.pipe(
+      Effect.map((own) =>
+        Stream.concat(
+          Stream.succeed(own),
+          sharedRestartHolds.pipe(Stream.filter((shared) => shared.read > own.read)),
+        ),
+      ),
+    ),
+  ).pipe(
+    Stream.map(({ hold }) => hold),
+    Stream.changesWith(sameRestartHold),
   );
 
   return ProviderRuntimeRecoveryService.of({

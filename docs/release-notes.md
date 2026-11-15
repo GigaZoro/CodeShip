@@ -1,3 +1,7 @@
+## 2026-11-15 — The server stops rereading idle chats while it checks for an update
+
+- With many Codex chats, the server reread every chat that had ever used Codex's shared session each time any chat's work changed, once for every open window and linked computer, to tell whether an update would stop anything. That kept the server and the disk busy and filled its trace log in seconds. It now reads only the chats with work a restart would stop, once for everyone who watches.
+
 ## 2026-11-15 — Claude chats try registering their MCP tools again
 
 - When a Claude chat's MCP tools took longer than 90 seconds to register, its turn failed with "Claude timed out while registering its MCP tools". Registration is now tried once more before the turn fails, also in a new chat such as a scheduled task's, as long as Claude saved no conversation file on the first try.

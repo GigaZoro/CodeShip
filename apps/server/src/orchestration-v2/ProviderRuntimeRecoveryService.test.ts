@@ -16,9 +16,11 @@ import {
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -1715,6 +1717,12 @@ function restartHoldLayer(input: {
   );
 }
 
+/** The service built in the test's scope, which the shared hold watch lives in. */
+const restartHoldService = (input: Parameters<typeof restartHoldLayer>[0]) =>
+  Layer.build(restartHoldLayer(input)).pipe(
+    Effect.map(Context.get(ProviderRuntimeRecovery.ProviderRuntimeRecoveryService)),
+  );
+
 // A command a chat waits on runs through t3_command_run; a native background shell is a dev
 // server or a watcher as often as not.
 it.effect("holds no update for a chat's background shells, which a restart reports", () => {
@@ -1763,15 +1771,11 @@ it.effect("lists a chat that is answering, for an automatic update to wait on", 
   return Effect.gen(function* () {
     const live = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
     const pulled = yield* Queue.unbounded<void>();
-    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
-      Effect.provide(
-        restartHoldLayer({
-          threadId: fixture.threadId,
-          projection: () => projection,
-          live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
-        }),
-      ),
-    );
+    const recovery = yield* restartHoldService({
+      threadId: fixture.threadId,
+      projection: () => projection,
+      live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
+    });
     const answering = { threadId: fixture.threadId, threadTitle: "AB#975 one-sided book" };
     const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
     yield* recovery.watchRestartHold.pipe(
@@ -1801,6 +1805,78 @@ it.effect("lists a chat that is answering, for an automatic update to wait on", 
   }).pipe(Effect.scoped);
 });
 
+it.effect("reads the hold once per change for every client, and afresh for one that joins", () => {
+  const fixture = restartHoldFixture();
+  const withRun = (status: string, title = "AB#975 one-sided book") => {
+    const base = fixture.projectionWith([]);
+    return {
+      ...base,
+      thread: { ...base.thread, title },
+      runs: base.runs.map((run) => ({ ...run, status })),
+    } as unknown as OrchestrationV2ThreadProjection;
+  };
+  let projection = withRun("running");
+  let reads = 0;
+  let sequence = 0;
+  let commitDuringRead: (() => void) | undefined;
+  return Effect.gen(function* () {
+    // Like the event sink, every reader of the stream gets every event.
+    const live = yield* PubSub.unbounded<OrchestrationV2StoredEvent>({ replay: 8 });
+    const pulled = yield* Queue.unbounded<void>();
+    const recovery = yield* restartHoldService({
+      threadId: fixture.threadId,
+      projection: () => {
+        reads += 1;
+        commitDuringRead?.();
+        commitDuringRead = undefined;
+        return projection;
+      },
+      live: Stream.fromPubSub(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
+    });
+    const watch = Effect.gen(function* () {
+      const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
+      yield* recovery.watchRestartHold.pipe(
+        Stream.runForEach((hold) => Queue.offer(holds, hold)),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      return holds;
+    });
+    const committed = (status: string, title?: string) => {
+      projection = withRun(status, title);
+      sequence += 1;
+      return {
+        sequence,
+        event: { type: "run.updated", threadId: fixture.threadId },
+      } as unknown as OrchestrationV2StoredEvent;
+    };
+    const commitRun = (status: string, title?: string) =>
+      PubSub.publish(live, committed(status, title)).pipe(Effect.andThen(Queue.take(pulled)));
+    const answering = [{ threadId: fixture.threadId, threadTitle: "AB#975 one-sided book" }];
+    const first = yield* watch;
+    assert.deepEqual((yield* Queue.take(first)).runningTurns, answering);
+    yield* commitRun("waiting");
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual((yield* Queue.take(first)).runningTurns, []);
+
+    // The turn starts while a new client reads; the last shared hold, read earlier, says it doesn't.
+    commitDuringRead = () => PubSub.publishUnsafe(live, committed("running"));
+    const second = yield* watch;
+    assert.deepEqual((yield* Queue.take(second)).runningTurns, answering);
+    yield* Queue.take(pulled);
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual((yield* Queue.take(first)).runningTurns, answering);
+
+    const readsBefore = reads;
+    yield* commitRun("running", "AB#975 two-sided book");
+    yield* TestClock.adjust("1 second");
+    const renamed = [{ threadId: fixture.threadId, threadTitle: "AB#975 two-sided book" }];
+    for (const holds of [first, second]) {
+      assert.deepEqual((yield* Queue.take(holds)).runningTurns, renamed);
+    }
+    assert.equal(reads - readsBefore, 1);
+  }).pipe(Effect.scoped);
+});
+
 // The update dialogs say which commands carry on through the update, however busy their chats are.
 it.effect(
   "lists the open commands of chats that are not closed, and holds no update for them",
@@ -1818,16 +1894,12 @@ it.effect(
     return Effect.gen(function* () {
       const live = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
       const pulled = yield* Queue.unbounded<void>();
-      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
-        Effect.provide(
-          restartHoldLayer({
-            threadId: fixture.threadId,
-            projection: () => fixture.projectionWith([]),
-            commands: () => commands,
-            live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
-          }),
-        ),
-      );
+      const recovery = yield* restartHoldService({
+        threadId: fixture.threadId,
+        projection: () => fixture.projectionWith([]),
+        commands: () => commands,
+        live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
+      });
       const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
       yield* recovery.watchRestartHold.pipe(
         Stream.runForEach((hold) => Queue.offer(holds, hold)),
@@ -1943,15 +2015,11 @@ it.effect("lists the calls a running turn waits on, until it runs none", () => {
   return Effect.gen(function* () {
     const live = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
     const pulled = yield* Queue.unbounded<void>();
-    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
-      Effect.provide(
-        restartHoldLayer({
-          threadId: fixture.threadId,
-          projection: () => projection,
-          live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
-        }),
-      ),
-    );
+    const recovery = yield* restartHoldService({
+      threadId: fixture.threadId,
+      projection: () => projection,
+      live: Stream.fromQueue(live).pipe(Stream.tap(() => Queue.offer(pulled, undefined))),
+    });
     const holds = yield* Queue.unbounded<OrchestrationV2RestartHold>();
     yield* recovery.watchRestartHold.pipe(
       Stream.runForEach((hold) => Queue.offer(holds, hold)),
@@ -2080,6 +2148,59 @@ it.effect("records a background command once while its turn item still runs", ()
         id: "turn-item:verify",
       },
     ]);
+  }).pipe(
+    Effect.provide(
+      restartHoldLayer({
+        threadId: fixture.threadId,
+        projection: () => projection,
+        onCommit: (input) => {
+          committed = input;
+        },
+      }),
+    ),
+  );
+});
+
+// A rollback closed the process that ran the turn's work and left its row open.
+it.effect.each([
+  { status: "completed", held: 1, noted: 1 },
+  { status: "rolled_back", held: 0, noted: 0 },
+])("holds an update for and notes an open call of a $status turn: $held", (expected) => {
+  const fixture = restartHoldFixture();
+  const base = fixture.projectionWith(
+    [],
+    [
+      {
+        id: TurnItemId.make("turn-item:audit"),
+        runId: fixture.runId,
+        nodeId: null,
+        providerThreadId: fixture.providerThreadId,
+        type: "dynamic_tool",
+        status: "running",
+        title: "Audit the diff",
+        toolName: "mcp__review__audit",
+        input: {},
+        nativeItemRef: { nativeId: "turn-item:audit" },
+      },
+    ],
+  );
+  const [first] = base.runs;
+  const projection = {
+    ...base,
+    runs: [
+      { ...first, status: expected.status },
+      { ...first, id: RunId.make("run_after_rollback"), ordinal: 2 },
+    ],
+  } as unknown as OrchestrationV2ThreadProjection;
+  let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null = null;
+  return Effect.gen(function* () {
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const held = (yield* recovery.restartHold).work.length;
+    yield* recovery.reconcile("startup");
+    const noted = (committed?.events ?? []).filter(
+      (event) => event.type === "run.background-work-cancelled",
+    ).length;
+    assert.deepEqual({ held, noted }, { held: expected.held, noted: expected.noted });
   }).pipe(
     Effect.provide(
       restartHoldLayer({
