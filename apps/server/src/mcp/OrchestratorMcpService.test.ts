@@ -7304,8 +7304,13 @@ describe("OrchestratorMcpService thread list", () => {
           ["thread:b-snoozed", "project:b"],
         ],
       );
+      const full = yield* mcp.listThreads(client, {
+        allProjects: true,
+        snoozed: true,
+        fields: "full",
+      });
       assert.deepStrictEqual(
-        listed.threads.map((thread) => [thread.blockedOnThreadWait, thread.pendingBackgroundTasks]),
+        full.threads.map((thread) => [thread.blockedOnThreadWait, thread.pendingBackgroundTasks]),
         [
           [false, []],
           [
