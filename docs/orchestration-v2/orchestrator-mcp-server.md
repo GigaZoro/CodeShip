@@ -383,12 +383,12 @@ host's ANSI code page survives. T3.CodeShip merges only spellings that differ in
 Codex's `set` does, and moves each name it sets to the end; Windows folds other letters by a
 table only it has and that can change between versions, so the launcher keeps the last of the
 spellings Windows reads as one name with .NET's `OrdinalIgnoreCase`, and `Straße` and `STRASSE`
-stay two variables. The wrapper reads no variable but its exit status: the launcher
-hands it PowerShell's path from the system directory, so neither the agent's `PATH` nor a
-`SystemRoot` its settings move or drop can change which PowerShell runs, and a command's own
-`ERRORLEVEL`, which cmd would expand in place of the exit status, reaches the script as
-`T3CODE_COMMAND_ERRORLEVEL` and is put back before the command runs. When the provider is
-turned off or not running, or cannot read them, including
+stay two variables. The wrapper is a PowerShell process with no console and reads no
+variable: it takes cmd and PowerShell from the system directory, so neither the agent's `PATH`
+nor a `SystemRoot` its settings move or drop can change which ones run. It runs the command in
+a console with no window and writes the exit status once the command ends, so a Ctrl+C,
+Ctrl+Break or close event in that console can end the command but never the wrapper. When the
+provider is turned off or not running, or cannot read them, including
 Claude settings an organization's policy helper computes (a `policyHelper` or a per-OS
 `policyHelpers` entry, neither of which `resolveSettings` applies), the call fails and nothing
 runs. The command's end completes the task through the same durable delivery as a delegated

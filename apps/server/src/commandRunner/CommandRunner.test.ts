@@ -451,7 +451,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   });
 
   it.effect(
-    "starts a Windows command in a hidden window with the host environment under its agent's in Unicode, each name once, its ERRORLEVEL past cmd, writing no value and reading none to start",
+    "starts a Windows command from a wrapper with no console, with the host environment under its agent's in Unicode, each name once, writing no value and reading none to start",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-windows-environment");
@@ -470,8 +470,6 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
                   PATH: "C:\\agent",
                   AGENT_SETTING: "from user settings",
                   agent_setting: "from settings",
-                  // Defined, it would be the exit status cmd records whatever the command returns.
-                  ErrorLevel: "0",
                 }),
             ),
           ),
@@ -511,15 +509,13 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           [
             "HOST_ONLY=kept",
             "PATH=C:\\agent",
-            "T3CODE_COMMAND_ERRORLEVEL=0",
             `T3CODE_THREAD_ID=${chat.threadId}`,
             "agent_setting=from settings",
           ],
         );
         const launcherScript = launch.args.join(" ");
-        assert.include(launcherScript, "CreateFlags = [uint32]1024");
-        // SW_HIDE: otherwise every command opens a console window on the user's desktop.
-        assert.include(launcherScript, "ShowWindow = [uint16]0");
+        // Create_Unicode_Environment and Detached_Process: no console event reaches the wrapper.
+        assert.include(launcherScript, "CreateFlags = [uint32]1032");
         assert.include(
           launcherScript,
           "HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)",
@@ -528,14 +524,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           launcherScript,
           "Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'",
         );
-        const runPath = /""(.+run\.cmd)" "/.exec(launcherScript)?.[1] ?? "";
-        // Its exit status is the only variable run.cmd reads, so no setting can move PowerShell.
-        assert.deepEqual(NodeFS.readFileSync(runPath, "utf8").match(/%\w+%/g), ["%ERRORLEVEL%"]);
+        const runPath = /-File "(.+run\.ps1)"/.exec(launcherScript)?.[1] ?? "";
+        // The wrapper reads no variable, so no setting can move the cmd or PowerShell it starts.
+        assert.notMatch(NodeFS.readFileSync(runPath, "utf8"), /\$env:/i);
         const scriptPath = NodePath.join(NodePath.dirname(runPath), "command.ps1");
-        assert.include(
-          NodeFS.readFileSync(scriptPath, "utf8"),
-          "[Environment]::SetEnvironmentVariable('ErrorLevel', $env:T3CODE_COMMAND_ERRORLEVEL); Remove-Item Env:T3CODE_COMMAND_ERRORLEVEL -ErrorAction Ignore",
-        );
         for (const file of [runPath, scriptPath]) {
           assert.notInclude(NodeFS.readFileSync(file, "utf8"), "from settings");
         }
@@ -1036,6 +1028,45 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       { encoding: "utf8" },
     );
     assert.deepEqual(tree.trim().split(/\r?\n/), ["10", "20", "30"]);
+  });
+
+  it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
+    const consoleApi = [
+      "Add-Type -Namespace T3Test -Name Console -MemberDefinition '",
+      '[DllImport("kernel32.dll")] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint group);',
+      '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();',
+      '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);',
+      "'",
+    ].join("\n");
+    it.effect.each([
+      ["Ctrl+C", "command-win-ctrl-c", "[void][T3Test.Console]::GenerateConsoleCtrlEvent(0, 0)"],
+      [
+        "Ctrl+Break",
+        "command-win-ctrl-break",
+        "[void][T3Test.Console]::GenerateConsoleCtrlEvent(1, 0)",
+      ],
+      [
+        // As taskkill without /F does to a console program.
+        "its window closing",
+        "command-win-close",
+        "$window = [T3Test.Console]::GetConsoleWindow(); if ($window -ne [IntPtr]::Zero) { [void][T3Test.Console]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }",
+      ],
+    ] as const)("records the exit status of a command whose console gets %s", ([, name, event]) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(name);
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const started = yield* runner.run(callerOf(chat.threadId), {
+              command: [consoleApi, event, "Start-Sleep 5", "exit 3"].join("\n"),
+            });
+            yield* nextWake(chat.threadId);
+            const row = yield* commandRow(started.taskId);
+            assert.equal(row?.status, "exited");
+            assert.isNumber(row?.exit_code);
+          }),
+        );
+      }),
+    );
   });
 
   it.layer(layerTest, { excludeTestServices: true })(

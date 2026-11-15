@@ -310,10 +310,14 @@ is also a scope outside the service's cgroup (`AgentScope` with `survivesRestart
 Windows through `Win32_Process.Create`, outside the server's job. Neither the desktop app, the
 launcher nor the service manager reaches it. A wrapper writes its output to a capped log under
 the state directory and its exit status to a file it renames into place, so a reader never sees
-half a status. The command is an app-owned task on its thread, recorded like a delegated task,
-with a `command_runs` row holding its pid and that process's start time. Startup adopts every
+half a status. On Windows the wrapper has no console, so a console event the command gets
+(Ctrl+C, or its console closing) cannot end it first. The command is an app-owned task on its
+thread, recorded like a delegated task, with a `command_runs` row holding its pid and that process's start time. Startup adopts every
 row not yet delivered: a status file means it ended; a live pid with the same start time is
-watched again; anything else is lost, and reported once. Its end completes the task through
+watched again, and a pid whose check fails for a reason other than "no such process" is checked
+again on the next pass. Anything else is lost and reported once, and its row keeps why (its
+process ended, the machine restarted, or its pid names a later process), when it was last seen
+running, what the check reported and its last output. Its end completes the task through
 `delegated_task.command.complete`, which wakes the chat through the durable delivery a child's
 result uses and refuses a second result, so a restart between the end and its delivery cannot
 wake the chat twice. task_cancel, Stop, archiving and deleting the thread also give the task
