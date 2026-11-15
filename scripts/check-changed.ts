@@ -337,6 +337,31 @@ export const splitTests = (tests: Iterable<string>) => {
     nodeTests: all.filter((file) => NODE_TEST.test(file)),
   };
 };
+// Windows caps a command line at 32,767 characters, and macOS caps arguments and environment at
+// 1 MiB together; the rest of each limit is left for the program path and fixed arguments.
+const commandLineLimit = (platform: NodeJS.Platform) =>
+  platform === "win32" ? 30_000 : 256 * 1024;
+
+/** Splits `files` into runs whose arguments stay within `limit` characters, keeping their order. */
+export const argumentBatches = (files: ReadonlyArray<string>, limit: number) => {
+  const batches: Array<Array<string>> = [];
+  let size = limit;
+  for (const file of files) {
+    // A separator and the quotes Windows may add.
+    const cost = file.length + 3;
+    if (size + cost > limit) {
+      batches.push([]);
+      size = 0;
+    }
+    batches.at(-1)!.push(file);
+    size += cost;
+  }
+  return batches;
+};
+
+const batchName = (name: string, index: number, count: number) =>
+  count === 1 ? name : `${name} ${index + 1}/${count}`;
+
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Harnesses, fakes and fixtures: code that exists to drive tests.
@@ -604,7 +629,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return true;
   }
 
-  const present = yield* Effect.filter(files, (file) => fs.exists(inRoot(file)));
+  // .repos holds read-only vendored references: no check reads them, and an upstream sync changes thousands.
+  const present = yield* Effect.filter(
+    files.filter((file) => !file.startsWith(".repos/")),
+    (file) => fs.exists(inRoot(file)),
+  );
   const code = present.filter((file) => CODE.test(file));
   const packages = readWorkspace();
   const { affected, outputs } = decide(files, packages, false);
@@ -774,21 +803,23 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     files.some((file) => file.startsWith(`${dir}/`)),
   );
   const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: () => vp(args) });
+  const fileCommands = (name: string, args: ReadonlyArray<string>, files: ReadonlyArray<string>) =>
+    argumentBatches(files, commandLineLimit(platform)).map((batch, index, batches) =>
+      command(batchName(name, index, batches.length), [...args, ...batch]),
+    );
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
   // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
   // so they keep one worker busy however many there are.
-  const serverTests = vitestTests.filter((file) => file.startsWith("apps/server/")).length;
-  const testWorkers = vitestTests.length - serverTests + Math.min(serverTests, 1);
+  const testWorkers = (tests: ReadonlyArray<string>) => {
+    const serverTests = tests.filter((file) => file.startsWith("apps/server/")).length;
+    return tests.length - serverTests + Math.min(serverTests, 1);
+  };
 
   const steps: Array<Step<never>> = [
     command("release notes", ["exec", "node", ".github/scripts/release-notes.cjs", "check", base]),
     ...(runPatchCheck ? [{ name: "unused patches", run: () => checkPatches }] : []),
-    ...(present.length > 0
-      ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]
-      : []),
-    ...(code.length > 0
-      ? [command("lint", ["lint", "--no-error-on-unmatched-pattern", ...code])]
-      : []),
+    ...fileCommands("format", ["fmt", "--check", "--no-error-on-unmatched-pattern"], present),
+    ...fileCommands("lint", ["lint", "--no-error-on-unmatched-pattern"], code),
     ...(code.some((file) => TRANSLATED_SOURCE.test(file))
       ? [command("translations", ["run", "i18n:check"])]
       : []),
@@ -808,25 +839,14 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       command(`typecheck ${name}`, ["run", "--cache", "--filter", name, "typecheck"]),
     ),
     // From the repo root, the root vite.config.ts hands each file to its package's config.
-    ...(vitestTests.length > 0
-      ? [
-          {
-            name: `test (${vitestTests.length} files)`,
-            run: (slots: number) =>
-              vp([
-                "test",
-                "run",
-                "--passWithNoTests",
-                "--maxWorkers",
-                String(slots),
-                ...vitestTests,
-              ]),
-            workers: testWorkers,
-            serial: true,
-            timeoutSeconds: Math.max(timeoutSeconds, TEST_FILE_SECONDS * vitestTests.length),
-          },
-        ]
-      : []),
+    ...argumentBatches(vitestTests, commandLineLimit(platform)).map((batch, index, batches) => ({
+      name: batchName(`test (${batch.length} files)`, index, batches.length),
+      run: (slots: number) =>
+        vp(["test", "run", "--passWithNoTests", "--maxWorkers", String(slots), ...batch]),
+      workers: testWorkers(batch),
+      serial: true,
+      timeoutSeconds: Math.max(timeoutSeconds, TEST_FILE_SECONDS * batch.length),
+    })),
     ...(nodeTests.length > 0
       ? [
           command(`node --test (${nodeTests.length} files)`, [

@@ -17,6 +17,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  argumentBatches,
   comparisonBase,
   defaultConcurrency,
   docReaderTests,
@@ -38,6 +39,17 @@ describe("check:changed", () => {
     assert.strictEqual(defaultConcurrency(4, 15 * GiB), 2);
     assert.strictEqual(defaultConcurrency(4, 2 * GiB), 1);
     assert.strictEqual(defaultConcurrency(1, 64 * GiB), 1);
+  });
+
+  it("splits file arguments into runs that each fit the command-line limit", () => {
+    const files = Array.from({ length: 10 }, (_, index) => `apps/web/src/file${index}.ts`);
+    const batches = argumentBatches(files, 100);
+    assert.deepStrictEqual(
+      batches.map((batch) => batch.length),
+      [4, 4, 2],
+    );
+    assert.deepStrictEqual(batches.flat(), files);
+    assert.deepStrictEqual(argumentBatches([], 100), []);
   });
 
   it("runs the server tests for the one guide they read and leaves other docs inert", () => {
@@ -576,9 +588,11 @@ function launcherFixture() {
 it("checks changed source paths through the Windows launcher", () => {
   using project = launcherFixture();
   project.write(project.source, "export const value = 2;\n");
+  project.write(".repos/vendor/index.ts", "export const vendored = 1;\n");
   const result = project.run();
   expect(result.status, result.stdout + result.stderr).toBe(0);
   const calls = project.calls();
+  expect(calls.some(({ args }) => args.includes(".repos/vendor/index.ts"))).toBe(false);
   expect(calls.find(({ args }) => args[0] === "lint")).toEqual({
     args: ["lint", "--no-error-on-unmatched-pattern", project.source],
     cwd: project.root,
