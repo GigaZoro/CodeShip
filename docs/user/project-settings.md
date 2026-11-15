@@ -476,9 +476,13 @@ GitHub user.
 For GitHub, turn on **Require signature**, keep the header
 `x-hub-signature-256`, hex encoding and the `sha256=` prefix, and enter the
 same secret in the repository's webhook settings with content type
-`application/json`. Requests without a valid signature are rejected. Set this
-up on desktop or web; mobile keeps an existing signature check but can't turn
-one on.
+`application/json`. For a service that signs with
+[Standard Webhooks](https://www.standardwebhooks.com/), such as ThreadPage,
+choose the **Standard Webhooks** scheme and enter its `whsec_` secret. Such a
+request is also rejected when its `webhook-timestamp` is more than 5 minutes
+from when it arrived, and a repeated `webhook-id` runs only once. Requests
+without a valid signature are rejected. Set this up on desktop or web; mobile
+keeps an existing signature check but can't turn one on.
 
 To run only for some requests, add **Filters**. Each one tests a value named
 like a placeholder, without the braces, such as `headers.x-github-event` equals

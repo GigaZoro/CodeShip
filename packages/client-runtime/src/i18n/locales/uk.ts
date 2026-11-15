@@ -6188,6 +6188,7 @@ const catalog: MessageCatalog = {
   "Hint: Try again. If the problem continues, copy the trace ID.":
     "Підказка: спробуйте ще раз. Якщо проблема не зникає, скопіюйте trace ID.",
   "History did not advance.": "Історія не просунулася.",
+  "HMAC-SHA256 of the body": "HMAC-SHA256 тіла запиту",
   Hold: "Утримання",
   "Hold {shortcut} or press twice to quit": "Утримуйте {shortcut} або натисніть двічі, щоб вийти",
   "Hold mode also quits on two quick presses.":
@@ -9406,8 +9407,7 @@ const catalog: MessageCatalog = {
   "Regular chat": "Звичайний чат",
   "Reinstall Antigravity": "Перевстановити Antigravity",
   "Reinstall helper": "Перевстановити помічник",
-  "Reject requests without a valid HMAC-SHA256 signature of the body.":
-    "Відхиляти запити без дійсного підпису тіла за HMAC-SHA256.",
+  "Reject requests without a valid signature.": "Відхиляти запити без дійсного підпису.",
   "Rejected · HTTP {status}": "Відхилено · HTTP {status}",
   "Related threads": "Пов’язані чати",
   "Relative path copied": "Відносний шлях скопійовано",
@@ -10268,6 +10268,7 @@ const catalog: MessageCatalog = {
     many: "Заплановані завдання: останні запуски {count} завдань не вдалися",
     other: "Заплановані завдання: останні запуски {count} завдання не вдалися",
   },
+  Scheme: "Схема",
   "Screen Recording": "Запис екрана",
   "Screenshot · Shift-click to record": "Знімок екрана · Shift-клік для запису",
   "Screenshot capture failed ({status}). Try again.":
@@ -10388,6 +10389,7 @@ const catalog: MessageCatalog = {
   "seconds, 10–3600": "секунд, 10–3600",
   Secret: "Секрет",
   "Secret providers": "Провайдери секретів",
+  "Secret starting with whsec_": "Секрет, що починається з whsec_",
   Secrets: "Секрети",
   Sections: "Розділи",
   "Secure connection to {host}'s tunnel failed":
@@ -11144,6 +11146,7 @@ const catalog: MessageCatalog = {
   Standard: "Стандартний",
   "Standard Android navigation bar and side rail.":
     "Стандартна панель навігації Android і бічна панель.",
+  "Standard Webhooks": "Standard Webhooks",
   "Star on GitHub": "Зірка на GitHub",
   start: "запустити",
   Start: "Запустити",

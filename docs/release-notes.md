@@ -1,3 +1,7 @@
+## 2026-11-15 — Webhook tasks can check Standard Webhooks signatures, such as ThreadPage's
+
+- A webhook task's **Require signature** now offers a **Standard Webhooks** scheme next to the HMAC-SHA256 one. Enter the sender's `whsec_` secret; requests with a missing or forged `webhook-signature`, or a `webhook-timestamp` more than 5 minutes from when they arrived, are rejected, and a repeated `webhook-id` runs only once. Agents can choose it with `schedule_task` as `signature: { scheme: "standard-webhooks" }`.
+
 ## 2026-11-15 — The weekly upstream sync ends within three hours
 
 - The scheduled "weekly sync from T3 Code" task no longer chases a busy main for hours. It merges upstream into the main it started from and, when main moves before it lands, merges main in at most twice more. When main conflicts with the sync, or the run passes 3 merges or 3 hours, it stops, pushes its branch, and names the conflicting files in its report and follow-up. `node scripts/upstream-sync.ts` keeps those bounds.

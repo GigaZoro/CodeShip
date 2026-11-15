@@ -46,6 +46,8 @@ import {
   type ScheduledTaskRotateWebhookTokenInput,
   type ScheduledTaskWebhookDeliveryOutcome,
   type ScheduledTaskWebhookFilter,
+  type ScheduledTaskWebhookSignature,
+  STANDARD_WEBHOOKS_REPLAY_KEY,
   type ScheduledTaskListResult,
   type ScheduledTaskMutationResult,
   type ScheduledTaskRunNowInput,
@@ -136,7 +138,11 @@ import {
   dedupeError,
 } from "./webhookDedupe.ts";
 import { describeFailedWebhookFilter, findFailedWebhookFilter } from "./webhookFilter.ts";
-import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerification.ts";
+import {
+  constantTimeEquals,
+  standardWebhooksKey,
+  verifyWebhookSignature,
+} from "./webhookVerification.ts";
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -276,6 +282,31 @@ export type WebhookTriggerResult =
 
 const webhookFilters = (filters: ReadonlyArray<ScheduledTaskWebhookFilter> | undefined) =>
   filters?.length ? { filters } : {};
+
+type UpsertWebhookSignature = Extract<
+  ScheduledTaskUpsertInput["schedule"],
+  { readonly type: "webhook" }
+>["signature"];
+type WebhookDedupe = Extract<ScheduledTask["schedule"], { readonly type: "webhook" }>["dedupe"];
+
+const storedWebhookSignature = (
+  signature: UpsertWebhookSignature,
+): ScheduledTaskWebhookSignature | null => {
+  if (signature == null) return null;
+  if ("scheme" in signature) return { scheme: signature.scheme };
+  return {
+    header: signature.header.toLowerCase(),
+    encoding: signature.encoding,
+    prefix: signature.prefix,
+  };
+};
+
+/** Standard Webhooks senders retry with the same `webhook-id`, so it is the replay key unless one is set. */
+const webhookDedupe = (signature: UpsertWebhookSignature, dedupe: WebhookDedupe) => {
+  if (signature == null || !("scheme" in signature) || dedupe?.replayKey !== undefined)
+    return dedupe === undefined ? {} : { dedupe };
+  return { dedupe: { ...dedupe, replayKey: STANDARD_WEBHOOKS_REPLAY_KEY } };
+};
 
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeRunRecord = Schema.decodeUnknownOption(ScheduledTaskRunRecord);
@@ -4363,21 +4394,15 @@ export const layer = Layer.effect(
         input.schedule.type === "webhook"
           ? {
               type: "webhook",
-              signature:
-                input.schedule.signature == null
-                  ? null
-                  : {
-                      header: input.schedule.signature.header.toLowerCase(),
-                      encoding: input.schedule.signature.encoding,
-                      prefix: input.schedule.signature.prefix,
-                    },
+              signature: storedWebhookSignature(input.schedule.signature),
               maxDeliveryAgeMinutes: input.schedule.maxDeliveryAgeMinutes ?? null,
-              ...(input.schedule.dedupe === undefined
-                ? existingTask?.schedule.type === "webhook" &&
-                  existingTask.schedule.dedupe !== undefined
-                  ? { dedupe: existingTask.schedule.dedupe }
-                  : {}
-                : { dedupe: input.schedule.dedupe }),
+              ...webhookDedupe(
+                input.schedule.signature,
+                input.schedule.dedupe ??
+                  (existingTask?.schedule.type === "webhook"
+                    ? existingTask.schedule.dedupe
+                    : undefined),
+              ),
               ...webhookFilters(
                 // Omitted keeps the stored filters, so a client that predates
                 // them can re-save a task without clearing them.
@@ -4422,6 +4447,17 @@ export const layer = Layer.effect(
                 return yield* taskError("A webhook signature check needs a signing secret.", {
                   taskId: id,
                 });
+              }
+              if (
+                signature != null &&
+                "scheme" in signature &&
+                secret !== null &&
+                standardWebhooksKey(secret) === null
+              ) {
+                return yield* taskError(
+                  "A Standard Webhooks secret is `whsec_` followed by base64.",
+                  { taskId: id },
+                );
               }
               return { token, secret, secretChanged };
             })
@@ -5773,6 +5809,7 @@ export const layer = Layer.effect(
                 secret: row.webhook_secret,
                 headers: request.headers,
                 body: request.body,
+                receivedAtMs: DateTime.toEpochMillis(receivedAt),
               });
             if (!verified) {
               yield* log("rejected_signature");

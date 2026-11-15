@@ -94,10 +94,27 @@ const ScheduledTaskWebhookSignatureFields = {
   }),
 };
 
-export const ScheduledTaskWebhookSignature = Schema.Struct(
-  ScheduledTaskWebhookSignatureFields,
-).annotate({ description: "HMAC-SHA256 check on the raw body." });
+const ScheduledTaskStandardWebhookSignatureFields = {
+  scheme: Schema.Literal("standard-webhooks"),
+};
+
+const standardWebhooksDescription =
+  "Standard Webhooks (webhook-id, webhook-timestamp, webhook-signature; whsec_ secret). Refuses timestamps over 5 min off. Replay key defaults to webhook-id.";
+
+/** Standard Webhooks comes first: a union member ignores keys it does not declare. */
+export const ScheduledTaskWebhookSignature = Schema.Union([
+  Schema.Struct(ScheduledTaskStandardWebhookSignatureFields).annotate({
+    description: standardWebhooksDescription,
+  }),
+  Schema.Struct(ScheduledTaskWebhookSignatureFields).annotate({
+    description: "HMAC-SHA256 of the raw body with the secret.",
+  }),
+]);
 export type ScheduledTaskWebhookSignature = typeof ScheduledTaskWebhookSignature.Type;
+export type ScheduledTaskWebhookSignatureScheme = "hmac-sha256" | "standard-webhooks";
+
+/** The replay key a Standard Webhooks task uses when it sets none. */
+export const STANDARD_WEBHOOKS_REPLAY_KEY = "{{headers.webhook-id}}";
 
 /** Matches how long the relay holds a request for an offline environment. */
 export const MAX_WEBHOOK_DELIVERY_AGE_MINUTES = 24 * 60;
@@ -176,19 +193,29 @@ const ScheduledTaskWebhookSchedule = Schema.Struct({
   description: "Run on each webhook request.",
 });
 
+const ScheduledTaskWebhookSecretFields = {
+  secret: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "Default: stored secret.",
+  }),
+  secretRef: Schema.optional(SecretRef).annotate({
+    description: "From `request_secret`. Instead of `secret`. Spent by this save.",
+  }),
+};
+
 const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
   type: Schema.Literal("webhook"),
   signature: Schema.optional(
     Schema.NullOr(
-      Schema.Struct({
-        ...ScheduledTaskWebhookSignatureFields,
-        secret: Schema.optional(TrimmedNonEmptyString).annotate({
-          description: "Default: stored secret.",
-        }),
-        secretRef: Schema.optional(SecretRef).annotate({
-          description: "From `request_secret`. Instead of `secret`. Spent by this save.",
-        }),
-      }),
+      Schema.Union([
+        Schema.Struct({
+          ...ScheduledTaskStandardWebhookSignatureFields,
+          ...ScheduledTaskWebhookSecretFields,
+        }).annotate({ description: standardWebhooksDescription }),
+        Schema.Struct({
+          ...ScheduledTaskWebhookSignatureFields,
+          ...ScheduledTaskWebhookSecretFields,
+        }).annotate({ description: "HMAC-SHA256 of the raw body with the secret." }),
+      ]),
     ),
   ).annotate({
     description: "Omit for URL token only.",
