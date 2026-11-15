@@ -2502,8 +2502,14 @@ describe("OrchestratorMcpService provider resolution", () => {
           }),
           ServerSettings.layerTest(),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
-            getProviders: Effect.succeed([
-              provider(availability === "already advertised" ? model : "muse-spark-1.3"),
+            // A refresh replaces the registry's snapshot, which later reads return.
+            getProviders: Effect.sync(() => [
+              provider(
+                availability === "already advertised" ||
+                  (availability === "newly advertised" && refreshedInstances.length > 0)
+                  ? model
+                  : "muse-spark-1.3",
+              ),
             ]),
             refreshInstance: (instanceId) =>
               Effect.sync(() => {
