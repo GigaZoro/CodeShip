@@ -1,3 +1,7 @@
+## 2026-11-15 — `check:changed` installs the browser its web browser tests run in
+
+- For contributors: on a machine without Playwright's Chromium for the current Playwright version, `vp run check:changed` failed every web browser test with "Executable doesn't exist". When a run includes web browser tests, it now first installs the Chromium build CI installs. Already installed, this takes about two seconds.
+
 ## 2026-11-15 — Pull request guides are written in your app's language
 
 - A pull request's review guide is now written in the app's language (**Settings → General → Language**) on web, desktop and mobile. Its closing "Other files" stop is labelled in that language too. Before, it came in English whatever language you chose.

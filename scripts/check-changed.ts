@@ -280,6 +280,7 @@ const TRANSLATED_SOURCE = /^(apps\/(web|mobile|desktop)|packages\/(client-runtim
 const TEST = /\.test\.[cm]?[jt]sx?$/;
 // CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
 const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
+const WEB_BROWSER_TEST = /^apps[/\\]web[/\\].*\.browser\.test\.tsx?$/;
 export const splitTests = (tests: Iterable<string>) => {
   const all = [...tests];
   return {
@@ -601,6 +602,24 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
+
+  // Web browser tests run in the Chromium build CI installs for this Playwright, which no
+  // package install fetches. Already installed, this takes about two seconds.
+  if (vitestTests.some((file) => WEB_BROWSER_TEST.test(file))) {
+    const chromium = yield* vp([
+      "exec",
+      "node",
+      "apps/web/node_modules/playwright/cli.js",
+      "install",
+      "--only-shell",
+      "chromium",
+    ]);
+    if (!chromium.ok) {
+      return yield* Effect.fail(
+        `check:changed could not install Chromium for the browser tests:\n${chromium.output}`,
+      );
+    }
+  }
 
   // React Compiler coverage compiles every client source file, so run only the
   // changed files' cases, in one extra step: a -t filter in the main test step
