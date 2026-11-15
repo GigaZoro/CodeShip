@@ -2360,7 +2360,7 @@ it.effect.each(["healthy", "hung"] as const)("bounds a %s remote fetch at five m
     const result = yield* Fiber.join(fetching);
     assert.equal(
       Result.isFailure(result) ? result.failure.detail : "fetched",
-      fetch === "healthy" ? "fetched" : "Git command timed out.",
+      fetch === "healthy" ? "fetched" : GIT_REMOTE_TIMED_OUT_DETAIL,
     );
   }).pipe(
     Effect.provide(
