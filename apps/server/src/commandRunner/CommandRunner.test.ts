@@ -1148,7 +1148,8 @@ describe.runIf(isWindowsHost)("Windows only", () => {
 
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
     // Send returns once the command's own handler has the event, and takes it so the command goes on.
-    // Windows PowerShell compiles this as C# 5.
+    // No API sends a close event, which ends every process in its console with STATUS_CONTROL_C_EXIT;
+    // Close ends the others the same way. Windows PowerShell compiles this as C# 5.
     const consoleApi = [
       "Add-Type -Namespace T3Test -Name Console -MemberDefinition '",
       '[DllImport("kernel32.dll")] private static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint group);',
@@ -1158,6 +1159,10 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       "private static uint wanted;",
       "private static readonly Handler take = ctrlEvent => { if (ctrlEvent != wanted) return false; got.Set(); return true; };",
       "public static bool Send(uint ctrlEvent) { wanted = ctrlEvent; return SetConsoleCtrlHandler(null, false) && SetConsoleCtrlHandler(take, true) && GenerateConsoleCtrlEvent(ctrlEvent, 0) && got.WaitOne(60000); }",
+      '[DllImport("kernel32.dll")] private static extern uint GetConsoleProcessList(uint[] processes, uint count);',
+      '[DllImport("kernel32.dll")] private static extern System.IntPtr OpenProcess(uint access, bool inherit, uint id);',
+      '[DllImport("kernel32.dll")] private static extern bool TerminateProcess(System.IntPtr process, uint code);',
+      "public static uint Close() { var processes = new uint[64]; var count = GetConsoleProcessList(processes, 64); if (count > 64) return 0; var self = (uint)System.Diagnostics.Process.GetCurrentProcess().Id; for (uint i = 0; i < count; i++) { if (processes[i] != self && !TerminateProcess(OpenProcess(1, false, processes[i]), 0xC000013A)) return 0; } return count; }",
       "'",
     ].join("\n");
     it.effect.each([
@@ -1190,21 +1195,18 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         yield* withServer((runner) =>
           Effect.gen(function* () {
             const started = yield* runner.run(callerOf(chat.threadId), {
-              // Its console's host is a child of cmd, the first process in that console.
+              // Its console holds cmd and this PowerShell, so a count below 2 means Close ended nothing.
               command: [
-                '$cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId',
-                "$conhost = Get-CimInstance Win32_Process -Filter \"ParentProcessId=$cmd AND Name='conhost.exe'\"",
-                "if (-not $conhost) { exit 93 }",
-                "Stop-Process -Id $conhost.ProcessId -Force",
-                // Ends with its console; this only keeps a command that does not from hanging the test.
-                "Start-Sleep 60",
+                consoleApi,
+                "if ([T3Test.Console]::Close() -lt 2) { exit 93 }",
                 "exit 94",
               ].join("\n"),
             });
             yield* nextWake(chat.threadId);
             const row = yield* commandRow(started.taskId);
             assert.equal(row?.status, "exited");
-            assert.notInclude([93, 94], row?.exit_code);
+            // cmd's own STATUS_CONTROL_C_EXIT, as 0xC000013A reads in an Int32.
+            assert.equal(row?.exit_code, -1073741510);
           }),
         );
       }),
