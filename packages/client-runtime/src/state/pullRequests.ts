@@ -21,6 +21,7 @@ import {
   type PullRequestDiffInput,
   type PullRequestListEntry,
   type PullRequestRef,
+  type PullRequestReviewGuideInput,
   type PullRequestMergeMethod,
   type PullRequestLabel,
   type PullRequestLabelCandidateList,
@@ -51,7 +52,7 @@ import { createPullRequestRouter } from "./pullRequestRouting.ts";
 import * as PullRequestDiffLoader from "./pullRequestDiffHttp.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
-import { t } from "@t3tools/shared/i18n";
+import { getActiveLanguage, t } from "@t3tools/shared/i18n";
 import { isStalePullRequestReply } from "../pullRequestReply.ts";
 import { parsePullRequestQuery } from "../pullRequestQuery.ts";
 import { reuseUnchanged } from "./serverConfigProjection.ts";
@@ -71,24 +72,43 @@ export class EnvironmentHttpConnectionNotReadyError extends Schema.TaggedError<E
 
 const LINKED_PULL_REQUEST_IDLE_TTL_MS = 5_000;
 
+// Atoms are keyed by their input's JSON, so one PR must always build the same input.
+function normalizePullRequestRef({
+  projectId,
+  host,
+  repository,
+  number,
+  allowStale,
+  expectedAccountId,
+}: PullRequestRef): PullRequestRef {
+  return {
+    projectId,
+    ...(host === undefined ? {} : { host }),
+    repository,
+    number,
+    ...(allowStale === undefined ? {} : { allowStale }),
+    ...(expectedAccountId === undefined ? {} : { expectedAccountId }),
+  };
+}
+
+const normalizeReviewGuideInput = ({
+  language,
+  ...reference
+}: PullRequestReviewGuideInput): PullRequestReviewGuideInput => ({
+  ...normalizePullRequestRef(reference),
+  language,
+});
+
+/** Asks for the guide in this client's interface language. */
+export const pullRequestReviewGuideInput = (
+  reference: PullRequestRef,
+): PullRequestReviewGuideInput => ({ ...reference, language: getActiveLanguage() });
+
 function normalizePullRequestQuery<A>(
   query: (target: { readonly environmentId: EnvironmentId; readonly input: PullRequestRef }) => A,
 ) {
-  return ({
-    environmentId,
-    input: { projectId, host, repository, number, allowStale, expectedAccountId },
-  }: Parameters<typeof query>[0]) =>
-    query({
-      environmentId,
-      input: {
-        projectId,
-        ...(host === undefined ? {} : { host }),
-        repository,
-        number,
-        ...(allowStale === undefined ? {} : { allowStale }),
-        ...(expectedAccountId === undefined ? {} : { expectedAccountId }),
-      },
-    });
+  return ({ environmentId, input }: Parameters<typeof query>[0]) =>
+    query({ environmentId, input: normalizePullRequestRef(input) });
 }
 
 function writableQuery<A, E>(
@@ -111,16 +131,18 @@ function writableQuery<A, E>(
   ).pipe(Atom.setIdleTTL(idleTtlMs));
 }
 
-function writableQueryFamily<A, E>(
+function writableQueryFamily<I, A, E>(
   family: (target: {
     readonly environmentId: EnvironmentId;
-    readonly input: PullRequestRef;
+    readonly input: I;
   }) => Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  normalize: (input: I) => I,
 ) {
   const writable = Atom.family((source: Atom.Atom<AsyncResult.AsyncResult<A, E>>) =>
     writableQuery(source),
   );
-  return normalizePullRequestQuery((target) => writable(family(target)));
+  return ({ environmentId, input }: { readonly environmentId: EnvironmentId; readonly input: I }) =>
+    writable(family({ environmentId, input: normalize(input) }));
 }
 
 /** Restart pre-mutation reads before patching so they cannot restore stale values. */
@@ -766,7 +788,10 @@ export interface PullRequestAnswerHandlers {
   readonly detail?: QueryAnswerHandler<PullRequestRef, PullRequestDetail>;
   readonly filesViewed?: QueryAnswerHandler<PullRequestRef, PullRequestFilesViewedResult>;
   readonly checks?: QueryAnswerHandler<PullRequestRef, PullRequestChecks | null>;
-  readonly reviewGuide?: QueryAnswerHandler<PullRequestRef, PullRequestReviewGuideResult>;
+  readonly reviewGuide?: QueryAnswerHandler<
+    PullRequestReviewGuideInput,
+    PullRequestReviewGuideResult
+  >;
   /** Once per action reply, after the loaded readers show it; unscoped references only. */
   readonly actionReply?: QueryAnswerHandler<PullRequestRef, PullRequestSummary>;
   readonly acceptedEdit?: QueryAnswerHandler<PullRequestRef, PullRequestPendingEdit>;
@@ -844,6 +869,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => refreshes({ environmentId, input: {} }),
     }),
+    normalizePullRequestRef,
   );
   const detailAnswerAtoms = Atom.family((_key: string) =>
     Atom.make<{ readonly value: PullRequestDetail; readonly version: number } | null>(null).pipe(
@@ -1001,6 +1027,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       execute: (input) => routedRequest(WS_METHODS.pullRequestsLabelCandidates, input),
       staleTimeMs: 60_000,
     }),
+    normalizePullRequestRef,
   );
   const labelCandidates = normalizePullRequestQuery((target) =>
     editedQuery(labelCandidateQueries(target), {
@@ -1043,6 +1070,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       refreshTrigger: ({ environmentId }) => refreshes({ environmentId, input: {} }),
       ...(onAnswer.reviewGuide === undefined ? {} : { onAnswer: onAnswer.reviewGuide }),
     }),
+    normalizeReviewGuideInput,
   );
   const reviewerCandidates = writableQueryFamily(
     createEnvironmentRpcQueryAtomFamily(runtime, {
@@ -1051,6 +1079,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       execute: (input) => routedRequest(WS_METHODS.pullRequestsReviewerCandidates, input),
       staleTimeMs: 60_000,
     }),
+    normalizePullRequestRef,
   );
   // Asked only when the menu's first page is not everybody, so a query cannot be answered from it.
   const reviewerSearch = createEnvironmentRpcQueryAtomFamily(runtime, {

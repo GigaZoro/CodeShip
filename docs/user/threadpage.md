@@ -56,7 +56,9 @@ Each ThreadPage step also gets an AI review without you asking: whether it reall
 up to three suggested solutions, best first, with the exact command to copy when there is one. Tap
 or click a step to read its review on the **Manual steps** page; a bot icon on a row means an agent
 can do it without you. A new note in the step's thread refreshes the review, and **Review again**
-asks for a new one.
+asks for a new one. The review is written in the app's language (**Settings → General →
+Language**), and once it is ready the step's text is shown translated into that language too;
+the chat that **Choose** starts gets the step as it was written.
 
 To act on a step from that page, press **Choose** on a suggested solution, or **Other…** to write
 your own decision. Either one starts a chat under **No project** and opens it: its first message is

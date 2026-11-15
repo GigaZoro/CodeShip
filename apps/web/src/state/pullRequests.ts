@@ -481,12 +481,12 @@ export const pullRequestEnvironment = createPullRequestEnvironmentAtoms(connecti
       );
     }),
   // Covers runs started elsewhere (another client, an agent) as well as this client's own.
-  reviewGuide: ({ environmentId, input }, guide) =>
+  reviewGuide: ({ environmentId, input: { language: _language, ...reference } }, guide) =>
     Effect.map(Clock.currentTimeMillis, (since) => {
       if (guide.run?._tag !== "Running") return;
       useGuideRunStore.getState().watch({
         environmentId,
-        reference: input,
+        reference,
         title: null,
         previousGuideAt: guide.guide?.generatedAt ?? null,
         previousFailedAt: null,

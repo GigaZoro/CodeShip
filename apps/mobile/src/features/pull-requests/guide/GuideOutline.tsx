@@ -1,6 +1,6 @@
 import { Button } from "../../../components/ui/Button";
 import type { PullRequestReviewGuide } from "@t3tools/contracts";
-import { stopFilePaths } from "@t3tools/client-runtime/review-guide-tour";
+import { stopFilePaths, stopSummary, stopTitle } from "@t3tools/client-runtime/review-guide-tour";
 import { Pressable, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { SymbolView } from "../../../components/ui/AppSymbol";
@@ -21,6 +21,8 @@ export function GuideOutline({
 }) {
   const { appearance, setCodeWordBreak } = useAppearancePreferences();
   const files = new Set(guide.stops.flatMap(stopFilePaths));
+  const firstStop = guide.stops[0];
+  const intro = firstStop === undefined ? "" : stopSummary(firstStop);
   return (
     <View>
       <View className="mb-5 flex-row items-center justify-between">
@@ -60,9 +62,9 @@ export function GuideOutline({
           </Pressable>
         </Menu>
       </View>
-      {guide.stops[0]?.summary ? (
+      {intro ? (
         <View className="mb-6">
-          <PullRequestMarkdown lineBreaks={false} markdown={guide.stops[0].summary} />
+          <PullRequestMarkdown lineBreaks={false} markdown={intro} />
         </View>
       ) : null}
       {guide.stops.map((stop, position) => {
@@ -75,7 +77,7 @@ export function GuideOutline({
             accessibilityRole="button"
             accessibilityLabel={t("Stop {number}: {title}", {
               number: position + 1,
-              title: stop.title,
+              title: stopTitle(stop),
             })}
             onPress={() => onOpen(position)}
             className="flex-row gap-4 active:opacity-60"
@@ -89,7 +91,7 @@ export function GuideOutline({
               ) : null}
             </View>
             <View className="min-w-0 flex-1 gap-2 pb-7 pt-0.5">
-              <Text className="text-base leading-6 font-t3-medium">{stop.title}</Text>
+              <Text className="text-base leading-6 font-t3-medium">{stopTitle(stop)}</Text>
               <View className="flex-row items-center gap-1.5">
                 {stop.attention ? (
                   <SymbolView name="eye" size={14} tintColorClassName="accent-warning-foreground" />

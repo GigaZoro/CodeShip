@@ -97,6 +97,8 @@ export interface ReviewGuideGenerationInput {
   settledReview: string;
   instructions?: string | undefined;
   stack?: ReadonlyArray<ReviewGuideStackLayer> | undefined;
+  /** The reader's language code, such as `uk`: the guide's prose is in it. */
+  language: string;
   modelSelection: ModelSelection;
   projectId?: ProjectId | null | undefined;
 }
@@ -115,6 +117,8 @@ export interface ManualStepReviewGenerationInput {
     machine: string;
   };
   notes: ReadonlyArray<{ createdAt: string; markdown: string }>;
+  /** The reader's language code, such as `uk`: the review and the translation are in it. */
+  language: string;
   modelSelection: ModelSelection;
 }
 
@@ -122,6 +126,7 @@ export interface ManualStepReviewGenerationResult {
   summary: string;
   needsPerson: boolean;
   solutions: ReadonlyArray<ManualStepSolution>;
+  translation: { title: string; step: string };
 }
 
 export interface TranscriptionPostProcessingInput {

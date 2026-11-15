@@ -5,6 +5,7 @@ import {
   ThreadId,
   type DetectedManualStep,
   type ManualStep,
+  type ManualStepReview,
 } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
 import { AsyncResult } from "effect/reactivity";
@@ -16,8 +17,10 @@ import {
   detectedManualStepText,
   manualStepChatHost,
   manualStepReviewState,
+  manualStepShownText,
   manualStepsEnvironmentIdsKey,
   settleManualStepStart,
+  type ManualStepReviewState,
   type ManualStepStart,
 } from "./manualSteps.ts";
 
@@ -356,5 +359,24 @@ describe("manualStepReviewState", () => {
       failure(new ManualStepReviewError({ reason: "generation-failed", detail: "bad" })),
     ).toEqual({ status: "failed", reason: "generation-failed" });
     expect(failure(new Error("socket closed"))).toEqual({ status: "failed", reason: "offline" });
+  });
+});
+
+describe("manualStepShownText", () => {
+  const translation = { title: "Увійти", step: "Виконайте вхід." };
+  const ready = (fields: Partial<ManualStepReview>): ManualStepReviewState => ({
+    status: "ready",
+    review: { ...({} as ManualStepReview), ...fields },
+    refreshing: false,
+  });
+  const asWritten = { title: "sign-in", step: "Do sign-in" };
+
+  it.each([
+    ["the review's translation once it is ready", ready({ translation }), translation],
+    ["the step as written from a server that predates translations", ready({}), asWritten],
+    ["the step as written while the review loads", { status: "loading" } as const, asWritten],
+    ["the step as written when no machine reviews", null, asWritten],
+  ])("shows %s", (_case, review, expected) => {
+    expect(manualStepShownText(step("sign-in", "Mac"), review)).toEqual(expected);
   });
 });

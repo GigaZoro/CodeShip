@@ -3,6 +3,7 @@ import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
 import { useNavigation } from "@react-navigation/native";
 import {
   detectedManualStepText,
+  manualStepShownText,
   manualStepsFailureMessage,
   detectedManualStepKey,
   type DetectedManualStepEntry,
@@ -51,6 +52,7 @@ const ManualStepRow = memo(function ManualStepRow(props: {
   // Asking here reviews every listed step, so its review is ready when it is opened.
   const review = useManualStepReview(step, props.reviewEnvironmentId).state;
   const agentCanDo = review?.status === "ready" && !review.review.needsPerson;
+  const text = manualStepShownText(step, review);
   const theme = useUniwindTheme();
   const sidebarPane = props.pane === "sidebar";
   const appearance = getThreadListV2RowAppearance(theme, sidebarPane, false);
@@ -70,7 +72,7 @@ const ManualStepRow = memo(function ManualStepRow(props: {
           className={cn("flex-1 text-base font-t3-medium", appearance.foregroundClassName)}
           numberOfLines={1}
         >
-          {step.step}
+          {text.step}
         </Text>
         {agentCanDo ? (
           <SymbolView
@@ -93,7 +95,7 @@ const ManualStepRow = memo(function ManualStepRow(props: {
           className={cn("flex-1 text-xs", appearance.mutedForegroundClassName)}
           numberOfLines={1}
         >
-          {step.title}
+          {text.title}
         </Text>
         {chatShell ? (
           <Pressable
@@ -120,8 +122,8 @@ const ManualStepRow = memo(function ManualStepRow(props: {
         accessibilityLabel={[
           money ? t("Money decision") : null,
           agentCanDo ? t("An agent can do this.") : null,
-          step.step,
-          step.title,
+          text.step,
+          text.title,
           step.machine,
         ]
           .filter(Boolean)

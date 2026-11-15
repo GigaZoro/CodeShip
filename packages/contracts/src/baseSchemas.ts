@@ -32,6 +32,17 @@ export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 export const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 
+/**
+ * The code of the reader's interface language, such as `uk`, that text a model writes for them is
+ * in. Any code, so a server writes for languages added after it shipped.
+ */
+export const ReaderLanguage = Schema.String.check(Schema.isPattern(/^[a-z]{2,3}$/));
+/** What a caller that names no language reads: clients and agents that predate the field. */
+export const DEFAULT_READER_LANGUAGE = "en";
+export const ReaderLanguageField = ReaderLanguage.pipe(
+  Schema.withDecodingDefaultKey(Effect.succeed(DEFAULT_READER_LANGUAGE)),
+);
+
 export const DpopFailureReason = Schema.Literals([
   "time_window",
   "key_mismatch",

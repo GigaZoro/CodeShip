@@ -26,6 +26,7 @@ import * as ReleaseIndex from "./releaseIndex.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { compareExactServiceVersions } from "./serviceProtocol.ts";
+import { whileDraining } from "./updateDrain.ts";
 
 /**
  * Releases land every few minutes, and each install restarts the server. Checking this rarely,
@@ -36,11 +37,16 @@ const AUTO_UPDATE_CHECK_INTERVAL = Duration.minutes(30);
 export const AUTO_UPDATE_RETRY_BASE = Duration.minutes(15);
 export const AUTO_UPDATE_RETRY_MAX = Duration.hours(6);
 /**
- * A machine that always has a chat answering (scheduled runs, autopilot) never reaches a hold with
- * no running turn. After this long the update waits like a user's "Update when it finishes" does:
- * for background work and tool calls only, since a running turn resumes after the restart.
+ * A machine whose chats overlap (scheduled runs, autopilot) rarely reaches a hold with no running
+ * turn. After this long the update drains: new scheduled starts wait, so the running turns can
+ * finish and the install can follow them.
  */
 export const AUTO_UPDATE_IDLE_PATIENCE = Duration.hours(2);
+/**
+ * A drain that has not emptied the machine by now cuts what still runs, like a user's "Update when
+ * it finishes" does: it waits for background work and tool calls, and the cut turns resume.
+ */
+export const AUTO_UPDATE_DRAIN_LIMIT = Duration.hours(3);
 
 export class ServerReleaseLookup extends Context.Service<
   ServerReleaseLookup,
@@ -129,6 +135,8 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
 
   const failedRef = yield* Ref.make<FailedAttempt | undefined>(undefined);
   const reportedSkipRef = yield* Ref.make<string | undefined>(undefined);
+  // Each install restarts the server, so the time since this boot is the time since the last one.
+  const startedAtMillis = yield* Clock.currentTimeMillis;
 
   const enabled = settings.getSettings.pipe(
     Effect.map((current) => current.installUpdatesAutomatically),
@@ -225,13 +233,48 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       }),
     );
     if (idleOrPatienceRanOut === false) return;
-    const afterPatience = idleOrPatienceRanOut === "busy";
-    if (afterPatience) {
-      yield* Effect.logInfo("Automatic update stops waiting for chats to be idle.", {
+    if (idleOrPatienceRanOut === "busy") {
+      yield* Effect.logInfo("Automatic update drains: new scheduled starts wait for it.", {
         targetVersion: version,
+      });
+      // Held until the handoff or the put-off, so no scheduled start begins while it prepares.
+      return yield* whileDraining(drainThenInstall(version, channel, waitFor));
+    }
+    return yield* handOff(version, channel, false);
+  });
+
+  /** Lets running turns finish with scheduled starts held, then cuts only what outlasts the limit. */
+  const drainThenInstall = Effect.fn("cloud.auto_update.drain_then_install")(function* (
+    version: string,
+    channel: CliReleaseChannel,
+    waitFor: (wait: typeof waitUntilIdle) => Effect.Effect<boolean>,
+  ) {
+    const drained = yield* waitFor(waitUntilIdle).pipe(
+      Effect.timeoutOrElse({
+        duration: AUTO_UPDATE_DRAIN_LIMIT,
+        orElse: () => Effect.succeed("busy" as const),
+      }),
+    );
+    if (drained === false) return;
+    if (drained === "busy") {
+      const hold = yield* recovery.restartHold.pipe(Effect.option);
+      yield* Effect.logWarning("Automatic update stops waiting for chats to be idle.", {
+        targetVersion: version,
+        cutThreadIds: Option.match(hold, {
+          onNone: () => [],
+          onSome: (current) => (current.runningTurns ?? []).map((turn) => turn.threadId),
+        }),
       });
       if (!(yield* waitFor(waitForListedWork))) return;
     }
+    return yield* handOff(version, channel, drained === "busy");
+  });
+
+  const handOff = Effect.fn("cloud.auto_update.hand_off")(function* (
+    version: string,
+    channel: CliReleaseChannel,
+    afterPatience: boolean,
+  ) {
     yield* Effect.logInfo("Automatic update starting.", { targetVersion: version });
     // Set when the last check puts the update off, which is not a failed attempt.
     const heldOff = yield* Ref.make<string | undefined>(undefined);
@@ -288,6 +331,15 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       const refusal = managedUpdateRefusal(policy.document, channel);
       if (refusal !== undefined) {
         yield* Effect.logDebug("Automatic update skipped by policy.", { reason: refusal });
+        return;
+      }
+      const { minHoursBetweenAutomaticUpdates } = yield* settings.getSettings;
+      const sinceBootMillis = (yield* Clock.currentTimeMillis) - startedAtMillis;
+      if (sinceBootMillis < Duration.toMillis(Duration.hours(minHoursBetweenAutomaticUpdates))) {
+        yield* Effect.logDebug("Automatic update waits for the minimum time between installs.", {
+          targetVersion: decision.version,
+          minHours: minHoursBetweenAutomaticUpdates,
+        });
         return;
       }
       return yield* install(decision.version, channel);

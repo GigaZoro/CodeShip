@@ -837,6 +837,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "min-hours-between-automatic-updates",
+    title: msg("Time between automatic updates"),
+    to: "/settings/maintenance",
+    searchTerms: ["automatic update install interval wait hours restart release frequency"],
+    scope: "environment-defaults",
+  },
+  {
     id: "continue-threads-after-server-update",
     title: msg("Continue threads after restarts"),
     to: "/settings/threads",

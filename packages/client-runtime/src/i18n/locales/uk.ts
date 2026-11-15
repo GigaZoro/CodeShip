@@ -1307,6 +1307,7 @@ const catalog: MessageCatalog = {
   "{hostLabel} froze for {seconds}s": "{hostLabel} завис на {seconds} с",
   "{hour} today": "{hour} сьогодні",
   "{hour} yesterday": "{hour} учора",
+  "{hours} h": "{hours} год",
   "{hours}h": "{hours} год",
   "{hours}h {minutes}m": "{hours} год {minutes} хв",
   "{hours}h ago": "{hours} год тому",
@@ -2230,6 +2231,8 @@ const catalog: MessageCatalog = {
   "After 5 minutes": "Через 5 хвилин",
   "After a request changes files, each reviewer checks the changes and the agent fixes what they confirm, using turns on the reviewers' accounts.":
     "Після запиту, що змінює файли, кожен рев’юер перевіряє зміни, а агент виправляє підтверджене, витрачаючи ходи на акаунтах рев’юерів.",
+  "After a restart, automatic updates wait this long before installing the next release, so a busy machine restarts less often.":
+    "Після перезапуску автоматичні оновлення чекають стільки часу, перш ніж встановити наступний випуск, тож завантажена машина перезапускається рідше.",
   "After the turn": "Після ходу",
   "After you stop, {environment} sends the recording to OpenRouter. OpenRouter chooses who runs your model. T3.CodeShip requests zero data retention; your OpenRouter account may allow safety retention.":
     "Після зупинки {environment} надсилає запис до OpenRouter. OpenRouter сам вибирає, хто запускає вашу модель. T3.CodeShip запитує нульове зберігання даних; ваш обліковий запис OpenRouter може дозволяти зберігання з міркувань безпеки.",
@@ -3142,6 +3145,8 @@ const catalog: MessageCatalog = {
   },
   "Changed {name}": "Змінено {name}",
   "Changed files": "Змінені файли",
+  "Changed files the tour does not otherwise cover.":
+    "Змінені файли, яких тур не охоплює в інших місцях.",
   Changes: "Зміни",
   "Changes apply to {destination}": "Зміни застосовуються до: {destination}",
   "Changes can be cleanly merged.": "Зміни можна злити без конфліктів.",
@@ -8360,6 +8365,7 @@ const catalog: MessageCatalog = {
     "Цей сертифікат не видав жоден довірений центр сертифікації.",
   "No video received from the device. Reconnect to try again.":
     "Від пристрою не надійшло відео. Перепідключіться й спробуйте ще раз.",
+  "No wait": "Без очікування",
   "No warnings or errors found.": "Попереджень чи помилок не знайдено.",
   "No window was selected.": "Вікно не вибрано.",
   "Nobody else has access to this repository.": "Більше ніхто не має доступу до цього репозиторію.",
@@ -8995,6 +9001,7 @@ const catalog: MessageCatalog = {
   "Other Bluetooth": "Інші Bluetooth",
   "Other entries in this grouped project are unaffected.":
     "Інші записи в цьому згрупованому проєкті не зачіпаються.",
+  "Other files": "Інші файли",
   "Other folders": "Інші папки",
   "Other models": "Інші моделі",
   "Other Models": "Інші моделі",
@@ -13840,6 +13847,7 @@ const catalog: MessageCatalog = {
   "thumbs up": "палець угору",
   Thursday: "Четвер",
   Time: "Час",
+  "Time between automatic updates": "Час між автоматичними оновленнями",
   "time format": "формат часу",
   "Time format": "Формат часу",
   "Time limit": "Ліміт часу",

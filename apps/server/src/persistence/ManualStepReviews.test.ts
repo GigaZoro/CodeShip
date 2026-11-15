@@ -15,21 +15,32 @@ const review = (threadId: string, generatedAt: string): ManualStepReview => ({
   solutions: [
     { title: "Sign in", detail: "Run it.", command: "claude mcp login", agentCanDo: false },
   ],
+  translation: { title: "Sign in to minions", step: "Run the login command." },
   generatedAt,
   modelSelection: { instanceId: "codex", model: "gpt-5" } as ManualStepReview["modelSelection"],
 });
 
-it.effect("stores a review per thread and drops reviews older than 30 days on write", () =>
-  Effect.gen(function* () {
-    const repository = yield* ManualStepReviews.ManualStepReviewRepository;
-    yield* repository.put(review("old", "2026-10-01T00:00:00.000Z"));
-    yield* repository.put(review("recent", "2026-11-10T00:00:00.000Z"));
-    const replacement = { ...review("recent", "2026-11-11T00:00:00.000Z"), summary: "Replaced." };
-    yield* repository.put(replacement);
+it.effect(
+  "stores a review per thread and language and drops reviews older than 30 days on write",
+  () =>
+    Effect.gen(function* () {
+      const repository = yield* ManualStepReviews.ManualStepReviewRepository;
+      yield* repository.put("en", review("old", "2026-10-01T00:00:00.000Z"));
+      yield* repository.put("en", review("recent", "2026-11-10T00:00:00.000Z"));
+      const ukrainian = {
+        ...review("recent", "2026-11-10T00:00:00.000Z"),
+        summary: "Чекає на вхід.",
+      };
+      yield* repository.put("uk", ukrainian);
+      const replacement = { ...review("recent", "2026-11-11T00:00:00.000Z"), summary: "Replaced." };
+      yield* repository.put("en", replacement);
 
-    assert.deepStrictEqual(yield* repository.get("recent"), Option.some(replacement));
-    assert.deepStrictEqual(yield* repository.get("old"), Option.none());
-  }).pipe(
-    Effect.provide(ManualStepReviews.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))),
-  ),
+      assert.deepStrictEqual(yield* repository.get("recent", "en"), Option.some(replacement));
+      assert.deepStrictEqual(yield* repository.get("recent", "uk"), Option.some(ukrainian));
+      assert.deepStrictEqual(yield* repository.get("old", "en"), Option.none());
+    }).pipe(
+      Effect.provide(
+        ManualStepReviews.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+      ),
+    ),
 );

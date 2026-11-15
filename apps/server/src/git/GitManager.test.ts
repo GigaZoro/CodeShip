@@ -1896,6 +1896,27 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
+  it.effect("one branch PR lookup reads the remotes and each config key once", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/local-only"]);
+      const gitCommands: string[] = [];
+      const { manager } = yield* makeManager({ gitCommands });
+
+      yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature/local-only" });
+
+      const startsWith = (prefix: string) =>
+        gitCommands.filter((command) => command.startsWith(prefix));
+      const configReads = startsWith("config --get");
+      expect(startsWith("remote")).toHaveLength(1);
+      expect(configReads).toEqual([...new Set(configReads)]);
+    }),
+  );
+
   // regression: #8600 settle threads server-side
   it.effect("branch PR lookup propagates provider failures", () =>
     Effect.gen(function* () {

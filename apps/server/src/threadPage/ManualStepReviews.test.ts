@@ -38,6 +38,8 @@ interface Harness {
   readonly lookup: Ref.Ref<"listed" | "missing" | "not-connected">;
   readonly stepUpdatedAt: Ref.Ref<string>;
   readonly generations: Ref.Ref<number>;
+  /** The language each generation was asked to write in, in order. */
+  readonly languages: Ref.Ref<ReadonlyArray<string>>;
   readonly gate: Ref.Ref<Deferred.Deferred<void> | null>;
   readonly started: Ref.Ref<Deferred.Deferred<void> | null>;
   readonly failWith: Ref.Ref<TextGenerationError | null>;
@@ -50,6 +52,7 @@ const makeHarness = Effect.gen(function* () {
     lookup: yield* Ref.make<"listed" | "missing" | "not-connected">("listed"),
     stepUpdatedAt: yield* Ref.make(STEP_UPDATED_AT),
     generations: yield* Ref.make(0),
+    languages: yield* Ref.make<ReadonlyArray<string>>([]),
     gate: yield* Ref.make<Deferred.Deferred<void> | null>(null),
     started: yield* Ref.make<Deferred.Deferred<void> | null>(null),
     failWith: yield* Ref.make<TextGenerationError | null>(null),
@@ -64,7 +67,7 @@ const memoryRepository = (harness: Harness) =>
     Effect.gen(function* () {
       const rows = yield* Ref.make(new Map<string, ManualStepReview>());
       return {
-        get: (threadId) =>
+        get: (threadId, language) =>
           Effect.gen(function* () {
             if (yield* Ref.get(harness.decodeFails)) {
               return yield* new PersistenceDecodeError({
@@ -72,9 +75,10 @@ const memoryRepository = (harness: Harness) =>
                 issue: "unreadable row",
               });
             }
-            return Option.fromNullishOr((yield* Ref.get(rows)).get(threadId));
+            return Option.fromNullishOr((yield* Ref.get(rows)).get(`${language}:${threadId}`));
           }),
-        put: (review) => Ref.update(rows, (map) => new Map(map).set(review.threadId, review)),
+        put: (language, review) =>
+          Ref.update(rows, (map) => new Map(map).set(`${language}:${review.threadId}`, review)),
       } satisfies ManualStepReviewRepository.ManualStepReviewRepository["Service"];
     }),
   );
@@ -102,9 +106,10 @@ const layerFor = (harness: Harness) =>
     ),
     Layer.provide(
       Layer.succeed(TextGeneration.TextGeneration, {
-        generateManualStepReview: () =>
+        generateManualStepReview: (input: TextGeneration.ManualStepReviewGenerationInput) =>
           Effect.gen(function* () {
             yield* Ref.update(harness.generations, (count) => count + 1);
+            yield* Ref.update(harness.languages, (languages) => [...languages, input.language]);
             const started = yield* Ref.get(harness.started);
             if (started !== null) yield* Deferred.succeed(started, undefined);
             const gate = yield* Ref.get(harness.gate);
@@ -122,6 +127,10 @@ const layerFor = (harness: Harness) =>
                   agentCanDo: false,
                 },
               ],
+              translation: {
+                title: `${input.language}: ${input.step.title}`,
+                step: `${input.language}: ${input.step.step}`,
+              },
             };
           }),
       } as unknown as TextGeneration.TextGeneration["Service"]),
@@ -145,13 +154,18 @@ describe("ManualStepReviews", () => {
       const harness = yield* makeHarness;
       yield* withReviews(harness, (service) =>
         Effect.gen(function* () {
-          const first = yield* service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT });
+          const first = yield* service.review({
+            threadId: "minions",
+            updatedAt: STEP_UPDATED_AT,
+            language: "en",
+          });
           expect(first.updatedAt).toBe(STEP_UPDATED_AT);
           expect(first.summary).toBe("Waiting for a sign-in.");
           // An older client version is also covered by the stored review.
           const second = yield* service.review({
             threadId: "minions",
             updatedAt: "2026-11-01T00:00:00.000Z",
+            language: "en",
           });
           expect(second).toEqual(first);
         }),
@@ -160,14 +174,40 @@ describe("ManualStepReviews", () => {
     }),
   );
 
+  it.effect("writes and keeps a separate review in each reader's language", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* withReviews(harness, (service) =>
+        Effect.gen(function* () {
+          const input = { threadId: "minions", updatedAt: STEP_UPDATED_AT };
+          const ukrainian = yield* service.review({ ...input, language: "uk" });
+          const english = yield* service.review({ ...input, language: "en" });
+          expect(ukrainian.translation?.title).toBe("uk: Sign in to minions");
+          expect(english.translation?.title).toBe("en: Sign in to minions");
+          // Each language reads its own stored review.
+          expect(yield* service.review({ ...input, language: "uk" })).toEqual(ukrainian);
+        }),
+      );
+      expect(yield* Ref.get(harness.languages)).toEqual(["uk", "en"]);
+    }),
+  );
+
   it.effect("reviews again when the step has a newer note than the stored review", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       yield* withReviews(harness, (service) =>
         Effect.gen(function* () {
-          yield* service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT });
+          yield* service.review({
+            threadId: "minions",
+            updatedAt: STEP_UPDATED_AT,
+            language: "en",
+          });
           yield* Ref.set(harness.stepUpdatedAt, NEWER_UPDATED_AT);
-          const next = yield* service.review({ threadId: "minions", updatedAt: NEWER_UPDATED_AT });
+          const next = yield* service.review({
+            threadId: "minions",
+            updatedAt: NEWER_UPDATED_AT,
+            language: "en",
+          });
           expect(next.updatedAt).toBe(NEWER_UPDATED_AT);
         }),
       );
@@ -175,30 +215,43 @@ describe("ManualStepReviews", () => {
     }),
   );
 
-  it.effect("shares one generation between concurrent requests for a thread", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness;
-      const gate = yield* Deferred.make<void>();
-      const started = yield* Deferred.make<void>();
-      yield* Ref.set(harness.gate, gate);
-      yield* Ref.set(harness.started, started);
-      const reviews = yield* withReviews(harness, (service) =>
-        Effect.gen(function* () {
-          const input = { threadId: "minions", updatedAt: STEP_UPDATED_AT };
-          const first = yield* service
-            .review(input)
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* Deferred.await(started);
-          const second = yield* service
-            .reviewAgain({ threadId: "minions", updatedAt: STEP_UPDATED_AT })
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* Deferred.succeed(gate, undefined);
-          return [yield* Fiber.join(first), yield* Fiber.join(second)] as const;
-        }),
-      );
-      expect(reviews[1]).toEqual(reviews[0]);
-      expect(yield* Ref.get(harness.generations)).toBe(1);
-    }),
+  it.effect(
+    "shares one generation between concurrent requests for a step version, not a newer one",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const gate = yield* Deferred.make<void>();
+        const started = yield* Deferred.make<void>();
+        yield* Ref.set(harness.gate, gate);
+        yield* Ref.set(harness.started, started);
+        const reviews = yield* withReviews(harness, (service) =>
+          Effect.gen(function* () {
+            const input = { threadId: "minions", updatedAt: STEP_UPDATED_AT, language: "en" };
+            const first = yield* service
+              .review(input)
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.await(started);
+            const second = yield* service
+              .reviewAgain(input)
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            // A newer note lands while the first generation still reads the older step.
+            yield* Ref.set(harness.stepUpdatedAt, NEWER_UPDATED_AT);
+            const newer = yield* service
+              .review({ ...input, updatedAt: NEWER_UPDATED_AT })
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.succeed(gate, undefined);
+            return [
+              yield* Fiber.join(first),
+              yield* Fiber.join(second),
+              yield* Fiber.join(newer),
+            ] as const;
+          }),
+        );
+        expect(reviews[1]).toEqual(reviews[0]);
+        expect(reviews[0].updatedAt).toBe(STEP_UPDATED_AT);
+        expect(reviews[2].updatedAt).toBe(NEWER_UPDATED_AT);
+        expect(yield* Ref.get(harness.generations)).toBe(2);
+      }),
   );
 
   it.effect("finishes and stores a review after the requesting client is gone", () =>
@@ -211,13 +264,17 @@ describe("ManualStepReviews", () => {
       yield* withReviews(harness, (service) =>
         Effect.gen(function* () {
           const request = yield* service
-            .review({ threadId: "minions", updatedAt: STEP_UPDATED_AT })
+            .review({ threadId: "minions", updatedAt: STEP_UPDATED_AT, language: "en" })
             .pipe(Effect.forkChild({ startImmediately: true }));
           yield* Deferred.await(started);
           yield* Fiber.interrupt(request);
           yield* Deferred.succeed(gate, undefined);
           // The next request joins the run that is finishing, or reads what it stored.
-          const next = yield* service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT });
+          const next = yield* service.review({
+            threadId: "minions",
+            updatedAt: STEP_UPDATED_AT,
+            language: "en",
+          });
           expect(next.summary).toBe("Waiting for a sign-in.");
         }),
       );
@@ -230,7 +287,7 @@ describe("ManualStepReviews", () => {
       const harness = yield* makeHarness;
       yield* Ref.set(harness.lookup, "missing");
       const error = yield* withReviews(harness, (service) =>
-        service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT }),
+        service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT, language: "en" }),
       ).pipe(Effect.flip);
       expect(error.reason).toBe("not-found");
       expect(yield* Ref.get(harness.generations)).toBe(0);
@@ -242,7 +299,7 @@ describe("ManualStepReviews", () => {
       const harness = yield* makeHarness;
       yield* Ref.set(harness.lookup, "not-connected");
       const error = yield* withReviews(harness, (service) =>
-        service.reviewAgain({ threadId: "minions", updatedAt: STEP_UPDATED_AT }),
+        service.reviewAgain({ threadId: "minions", updatedAt: STEP_UPDATED_AT, language: "en" }),
       ).pipe(Effect.flip);
       expect(error.reason).toBe("not-connected");
     }),
@@ -253,10 +310,22 @@ describe("ManualStepReviews", () => {
       const harness = yield* makeHarness;
       yield* withReviews(harness, (service) =>
         Effect.gen(function* () {
-          yield* service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT });
-          yield* service.reviewAgain({ threadId: "minions", updatedAt: STEP_UPDATED_AT });
+          yield* service.review({
+            threadId: "minions",
+            updatedAt: STEP_UPDATED_AT,
+            language: "en",
+          });
+          yield* service.reviewAgain({
+            threadId: "minions",
+            updatedAt: STEP_UPDATED_AT,
+            language: "en",
+          });
           // The replaced review is what later requests read.
-          yield* service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT });
+          yield* service.review({
+            threadId: "minions",
+            updatedAt: STEP_UPDATED_AT,
+            language: "en",
+          });
         }),
       );
       expect(yield* Ref.get(harness.generations)).toBe(2);
@@ -274,7 +343,7 @@ describe("ManualStepReviews", () => {
         }),
       );
       const error = yield* withReviews(harness, (service) =>
-        service.reviewAgain({ threadId: "minions", updatedAt: STEP_UPDATED_AT }),
+        service.reviewAgain({ threadId: "minions", updatedAt: STEP_UPDATED_AT, language: "en" }),
       ).pipe(Effect.flip);
       expect(error.reason).toBe("generation-failed");
       expect(error.detail).not.toContain("tp_secret_token");
@@ -289,10 +358,15 @@ describe("ManualStepReviews", () => {
           const again = yield* service.reviewAgain({
             threadId: "minions",
             updatedAt: NEWER_UPDATED_AT,
+            language: "en",
           });
           expect(again.updatedAt).toBe(NEWER_UPDATED_AT);
           // The stored review already covers the client's version.
-          yield* service.review({ threadId: "minions", updatedAt: NEWER_UPDATED_AT });
+          yield* service.review({
+            threadId: "minions",
+            updatedAt: NEWER_UPDATED_AT,
+            language: "en",
+          });
         }),
       );
       expect(yield* Ref.get(harness.generations)).toBe(1);
@@ -308,12 +382,14 @@ describe("ManualStepReviews", () => {
           const sourced = yield* service.reviewAgain({
             threadId: "minions",
             updatedAt: STEP_UPDATED_AT,
+            language: "en",
           });
           expect(sourced.solutions[0]?.command).toBe("claude mcp login minions");
           yield* Ref.set(harness.command, "claude mcp login invented --flag");
           const invented = yield* service.reviewAgain({
             threadId: "minions",
             updatedAt: STEP_UPDATED_AT,
+            language: "en",
           });
           expect(invented.solutions[0]?.command).toBeUndefined();
         }),
@@ -326,7 +402,7 @@ describe("ManualStepReviews", () => {
       const harness = yield* makeHarness;
       yield* Ref.set(harness.decodeFails, true);
       const review = yield* withReviews(harness, (service) =>
-        service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT }),
+        service.review({ threadId: "minions", updatedAt: STEP_UPDATED_AT, language: "en" }),
       );
       expect(review.summary).toBe("Waiting for a sign-in.");
       expect(yield* Ref.get(harness.generations)).toBe(1);

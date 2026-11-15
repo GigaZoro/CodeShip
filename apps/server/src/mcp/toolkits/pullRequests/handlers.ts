@@ -1,5 +1,6 @@
 import {
   CommandId,
+  DEFAULT_READER_LANGUAGE,
   type OrchestrationProjectShell,
   type PullRequestState,
   type OrchestrationV2ThreadShell,
@@ -263,11 +264,13 @@ const make = Effect.gen(function* () {
   const guideReference = (
     project: OrchestrationProjectShell,
     target: { readonly host: string; readonly repository: string; readonly number: number },
+    language: string | undefined,
   ) => ({
     projectId: project.id,
     host: target.host,
     repository: target.repository,
     number: target.number,
+    language: language ?? DEFAULT_READER_LANGUAGE,
   });
 
   const guideFailureDetail = (error: { readonly message: string }) =>
@@ -473,20 +476,22 @@ const make = Effect.gen(function* () {
                   }).message,
                 };
               }
-              return yield* reviewGuides.generate(guideReference(entry.project, entry.target)).pipe(
-                Effect.map((result) => ({
-                  ...identity,
-                  outcome: result.started ? ("started" as const) : ("running" as const),
-                  detail: null,
-                })),
-                Effect.catch((error) =>
-                  Effect.succeed({
+              return yield* reviewGuides
+                .generate(guideReference(entry.project, entry.target, input.language))
+                .pipe(
+                  Effect.map((result) => ({
                     ...identity,
-                    outcome: "failed" as const,
-                    detail: guideFailureDetail(error),
-                  }),
-                ),
-              );
+                    outcome: result.started ? ("started" as const) : ("running" as const),
+                    detail: null,
+                  })),
+                  Effect.catch((error) =>
+                    Effect.succeed({
+                      ...identity,
+                      outcome: "failed" as const,
+                      detail: guideFailureDetail(error),
+                    }),
+                  ),
+                );
             }),
           { concurrency: 4 },
         );
@@ -508,18 +513,20 @@ const make = Effect.gen(function* () {
           });
         }
         const target = entry.target;
-        const result = yield* reviewGuides.get(guideReference(project, target)).pipe(
-          Effect.mapError((error) =>
-            entry.project === undefined &&
-            error._tag === "PullRequestUnavailableError" &&
-            error.reason === "provider-unsupported"
-              ? new PullRequestProjectNotFoundError({ repository: target.repository })
-              : new PullRequestGuideFailedError({
-                  detail: guideFailureDetail(error),
-                  cause: error,
-                }),
-          ),
-        );
+        const result = yield* reviewGuides
+          .get(guideReference(project, target, input.language))
+          .pipe(
+            Effect.mapError((error) =>
+              entry.project === undefined &&
+              error._tag === "PullRequestUnavailableError" &&
+              error.reason === "provider-unsupported"
+                ? new PullRequestProjectNotFoundError({ repository: target.repository })
+                : new PullRequestGuideFailedError({
+                    detail: guideFailureDetail(error),
+                    cause: error,
+                  }),
+            ),
+          );
         return {
           host: entry.target.host,
           repository: entry.target.repository,

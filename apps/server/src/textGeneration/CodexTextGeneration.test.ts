@@ -864,6 +864,7 @@ it.effect(
         baseBranch: "main",
         baseCommit: "abc",
         settledReview: "",
+        language: "en",
         modelSelection: { instanceId: ProviderInstanceId.make("openrouter"), model: "some/model" },
       };
       yield* (yield* serviceWith([instance])).generateReviewGuide(input);

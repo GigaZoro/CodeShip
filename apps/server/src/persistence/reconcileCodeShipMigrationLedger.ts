@@ -18,6 +18,8 @@ const legacyNames = [
   "ThreadToolOutputRetention",
   "CompactOrchestrationIds",
   "CommandRuns",
+  "ManualStepReviewLanguages",
+  "PullRequestReviewGuideLanguages",
 ] as const;
 
 type MigrationRow = { readonly id: number; readonly name: string };

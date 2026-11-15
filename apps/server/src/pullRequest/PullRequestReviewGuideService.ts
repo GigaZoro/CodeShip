@@ -15,6 +15,7 @@ import {
   type PullRequestDetail,
   type PullRequestRef,
   type PullRequestReviewGuide,
+  type PullRequestReviewGuideInput,
   type PullRequestReviewGuideResult,
   type PullRequestReviewGuideRun,
   type PullRequestStack,
@@ -44,11 +45,12 @@ const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,64}$/;
 export class PullRequestReviewGuideService extends Context.Service<
   PullRequestReviewGuideService,
   {
+    /** The guide written in the input's language, and that language's run. */
     readonly get: (
-      input: PullRequestRef,
+      input: PullRequestReviewGuideInput,
     ) => Effect.Effect<PullRequestReviewGuideResult, PullRequestService.PullRequestError>;
     readonly generate: (
-      input: PullRequestRef,
+      input: PullRequestReviewGuideInput,
     ) => Effect.Effect<
       PullRequestReviewGuideResult & { readonly started: boolean },
       PullRequestService.PullRequestError
@@ -56,7 +58,9 @@ export class PullRequestReviewGuideService extends Context.Service<
   }
 >()("t3/pullRequest/PullRequestReviewGuideService") {}
 
-const keyString = (key: ThreadPullRequestKey) => `${key.host}/${key.repository}#${key.number}`;
+// A language code has no colon, so the key cannot collide across languages.
+const runKeyOf = (key: ThreadPullRequestKey, language: string) =>
+  `${language}:${key.host}/${key.repository}#${key.number}`;
 
 const nowIso = Clock.currentTimeMillis.pipe(
   Effect.map((millis) => DateTime.formatIso(DateTime.makeUnsafe(millis))),
@@ -123,8 +127,8 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const readStored = (key: ThreadPullRequestKey) =>
-    guides.get(key).pipe(
+  const readStored = (key: ThreadPullRequestKey, language: string) =>
+    guides.get(key, language).pipe(
       Effect.mapError(
         (cause) =>
           new PullRequestOperationError({
@@ -138,15 +142,15 @@ const make = Effect.gen(function* () {
 
   const get: PullRequestReviewGuideService["Service"]["get"] = Effect.fn(
     "PullRequestReviewGuideService.get",
-  )(function* (input) {
-    const { key } = yield* keyFor(input);
+  )(function* ({ language, ...reference }) {
+    const { key } = yield* keyFor(reference);
     const [guide, detail, current] = yield* Effect.all(
-      [readStored(key), pullRequests.detail(input), Ref.get(runs)],
+      [readStored(key, language), pullRequests.detail(reference), Ref.get(runs)],
       { concurrency: "unbounded" },
     );
     return {
       guide,
-      run: current.get(keyString(key)) ?? null,
+      run: current.get(runKeyOf(key, language)) ?? null,
       currentHeadSha: detail.headSha ?? null,
     };
   });
@@ -378,6 +382,7 @@ const make = Effect.gen(function* () {
 
   const write = Effect.fn("PullRequestReviewGuideService.write")(function* (
     input: PullRequestRef,
+    language: string,
     key: ThreadPullRequestKey,
     workspaceRoot: string,
     locator: RepositoryIdentity["locator"],
@@ -419,6 +424,7 @@ const make = Effect.gen(function* () {
               projectId: input.projectId,
               instructions: projectSettings.reviewGuideInstructions,
               stack: checkout.stack,
+              language,
             }),
             change: readChange(checkout.path, checkout.baseCommit),
           },
@@ -435,7 +441,7 @@ const make = Effect.gen(function* () {
     };
     yield* ownership.withPermits(1)(
       Effect.gen(function* () {
-        if (yield* owns) yield* guides.put(key, guide);
+        if (yield* owns) yield* guides.put(key, language, guide);
       }),
     );
   });
@@ -450,7 +456,7 @@ const make = Effect.gen(function* () {
 
   const generate: PullRequestReviewGuideService["Service"]["generate"] = Effect.fn(
     "PullRequestReviewGuideService.generate",
-  )(function* (input) {
+  )(function* ({ language, ...input }) {
     const settings = yield* serverSettings.getSettings.pipe(
       Effect.mapError(
         (cause) =>
@@ -469,11 +475,12 @@ const make = Effect.gen(function* () {
     }
     const { key, workspaceRoot, identity } = yield* keyFor(input);
     const locator = yield* requireOwnRepository(key, identity);
-    const runKey = keyString(key);
+    const runKey = runKeyOf(key, language);
     yield* pullRequests.invalidate({ reference: input });
-    const [detail, stored] = yield* Effect.all([pullRequests.detail(input), readStored(key)], {
-      concurrency: "unbounded",
-    });
+    const [detail, stored] = yield* Effect.all(
+      [pullRequests.detail(input), readStored(key, language)],
+      { concurrency: "unbounded" },
+    );
     const currentHeadSha = detail.headSha ?? null;
     if (currentHeadSha === null) {
       return yield* new PullRequestOperationError({
@@ -519,7 +526,17 @@ const make = Effect.gen(function* () {
         return updated;
       });
     const runId = `${runCounter++}`;
-    yield* write(input, key, workspaceRoot, locator, detail, currentHeadSha, runId, owns).pipe(
+    yield* write(
+      input,
+      language,
+      key,
+      workspaceRoot,
+      locator,
+      detail,
+      currentHeadSha,
+      runId,
+      owns,
+    ).pipe(
       Effect.andThen(finish(null)),
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)

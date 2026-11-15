@@ -1,4 +1,5 @@
 import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
+import { pullRequestReviewGuideInput } from "@t3tools/client-runtime/state/pull-requests";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
@@ -22,7 +23,10 @@ export function useReviewGuideWriter({
   title: string | null;
 }) {
   const query = useEnvironmentQuery(
-    pullRequestEnvironment.reviewGuide({ environmentId, input: reference }),
+    pullRequestEnvironment.reviewGuide({
+      environmentId,
+      input: pullRequestReviewGuideInput(reference),
+    }),
   );
   const canWrite = useAtomValue(
     pullRequestEnvironment.generateReviewGuide.permissionAtom(environmentId),
@@ -46,7 +50,7 @@ export function useReviewGuideWriter({
       previousFailedAt: data?.run?._tag === "Failed" ? data.run.failedAt : null,
       since: Date.now(),
     });
-    const result = await generate({ environmentId, input: reference });
+    const result = await generate({ environmentId, input: pullRequestReviewGuideInput(reference) });
     setStarting(false);
     if (result._tag === "Failure") {
       useGuideRunStore.getState().settle(guideRunKey(environmentId, reference));

@@ -44,7 +44,7 @@ import {
   restartCutCalls,
   restartCutCallsNote,
   restartDelegatedTasksNote,
-  restartHeldBySnooze,
+  restartLeavesThreadAsIs,
   restartRetryNotices,
   supersededRun,
   toldBackgroundWork,
@@ -124,13 +124,7 @@ export function restartContinuationBlocked(
   settled: boolean,
 ): boolean {
   const { thread } = projection;
-  if (
-    thread.archivedAt !== null ||
-    thread.deletedAt !== null ||
-    thread.settledOverride === "settled" ||
-    restartHeldBySnooze(thread, now)
-  )
-    return true;
+  if (restartLeavesThreadAsIs(thread, now)) return true;
   const turn = latestProviderTurnForAttempt(projection.providerTurns, source.activeAttemptId);
   if (
     !settled &&

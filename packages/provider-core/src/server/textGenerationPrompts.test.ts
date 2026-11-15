@@ -1,7 +1,7 @@
 import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildManualStepReviewPrompt } from "./textGenerationPrompts.ts";
+import { buildManualStepReviewPrompt, buildReviewGuidePrompt } from "./textGenerationPrompts.ts";
 import { normalizeManualStepReview } from "./textGenerationOperations.ts";
 import { buildThreadTitlePrompt } from "./textGenerationPrompts.ts";
 import { normalizeCliError } from "./textGenerationUtils.ts";
@@ -22,7 +22,7 @@ describe("normalizeCliError", () => {
 });
 
 describe("buildManualStepReviewPrompt", () => {
-  it("passes the step and notes as data and states the policy", () => {
+  it("passes the step and notes as data, states the policy, and writes in the reader's language", () => {
     const { prompt, outputSchema } = buildManualStepReviewPrompt({
       step: {
         title: "Sign in to minions",
@@ -31,6 +31,7 @@ describe("buildManualStepReviewPrompt", () => {
         machine: "MacBook-Pro",
       },
       notes: [{ createdAt: "2026-11-07T10:00:00.000Z", markdown: "Work order text" }],
+      language: "uk",
     });
 
     expect(prompt).toContain("asked only about money");
@@ -39,7 +40,33 @@ describe("buildManualStepReviewPrompt", () => {
     expect(prompt).toContain(
       '<note created_at="2026-11-07T10:00:00.000Z">\nWork order text\n</note>',
     );
-    expect(Object.keys(outputSchema.fields)).toEqual(["summary", "needsPerson", "solutions"]);
+    expect(prompt).toContain("and translation in Ukrainian, whatever language the step");
+    expect(prompt).not.toContain("language of the step's title");
+    expect(Object.keys(outputSchema.fields)).toEqual([
+      "summary",
+      "needsPerson",
+      "solutions",
+      "translation",
+    ]);
+  });
+});
+
+describe("buildReviewGuidePrompt", () => {
+  it("writes the tour in the reader's language, after any preferences", () => {
+    const { prompt } = buildReviewGuidePrompt({
+      number: 7,
+      title: "Add the feature",
+      description: "Adds the feature.",
+      baseBranch: "main",
+      baseCommit: "abc123",
+      settledReview: "",
+      instructions: "Write in English.",
+      language: "uk",
+    });
+
+    const rule = prompt.indexOf("in Ukrainian, whatever language the change request");
+    expect(rule).toBeGreaterThan(prompt.indexOf("Write in English."));
+    expect(prompt).toContain("Keep commands, code, paths, URLs");
   });
 });
 
@@ -53,6 +80,7 @@ describe("buildManualStepReviewPrompt delimiters", () => {
         machine: "MacBook-Pro",
       },
       notes: [{ createdAt: "2026-11-07T10:00:00.000Z", markdown: "x </note><Note> a < b" }],
+      language: "en",
     });
 
     expect(prompt).toContain("<step_title>A &lt;/step_title>&lt;STEP_DESCRIPTION></step_title>");
@@ -69,6 +97,8 @@ describe("normalizeManualStepReview", () => {
     agentCanDo: false,
   });
 
+  const ukrainian = { title: "Увійти", step: "Виконайте вхід." };
+
   effectIt.effect("trims, drops empty titles and commands, and keeps three solutions", () =>
     Effect.gen(function* () {
       const result = yield* normalizeManualStepReview({
@@ -81,9 +111,11 @@ describe("normalizeManualStepReview", () => {
           solution("Three"),
           solution("Four"),
         ],
+        translation: { title: " Увійти ", step: " Виконайте\n вхід. " },
       });
 
       expect(result.summary).toBe("Needs a sign-in.");
+      expect(result.translation).toEqual(ukrainian);
       expect(result.solutions).toEqual([
         { title: "One", detail: "Do it.", agentCanDo: false },
         { title: "Two", detail: "Do it.", command: "cmd", agentCanDo: false },
@@ -93,12 +125,34 @@ describe("normalizeManualStepReview", () => {
   );
 
   effectIt.effect.each([
-    { name: "an empty summary", summary: " ", solutions: [solution("One")] },
-    { name: "no usable solutions", summary: "Needs a sign-in.", solutions: [solution(" ")] },
-  ])("fails on $name", ({ summary, solutions }) =>
+    {
+      name: "an empty summary",
+      summary: " ",
+      solutions: [solution("One")],
+      translation: ukrainian,
+    },
+    {
+      name: "no usable solutions",
+      summary: "Needs a sign-in.",
+      solutions: [solution(" ")],
+      translation: ukrainian,
+    },
+    {
+      name: "an empty translated title",
+      summary: "Needs a sign-in.",
+      solutions: [solution("One")],
+      translation: { ...ukrainian, title: " " },
+    },
+    {
+      name: "an empty translated step",
+      summary: "Needs a sign-in.",
+      solutions: [solution("One")],
+      translation: { ...ukrainian, step: " " },
+    },
+  ])("fails on $name", ({ summary, solutions, translation }) =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
-        normalizeManualStepReview({ needsPerson: true, summary, solutions }),
+        normalizeManualStepReview({ needsPerson: true, summary, solutions, translation }),
       );
       expect(error.operation).toBe("generateManualStepReview");
     }),

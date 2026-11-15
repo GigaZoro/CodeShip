@@ -3,6 +3,7 @@ import { useContext } from "react";
 import {
   createManualStepsEnvironmentAtoms,
   manualStepAttemptChat,
+  manualStepReviewInput,
   manualStepReviewState,
   manualStepStartChatInput,
   manualStepsEnvironmentIdsKey,
@@ -60,7 +61,7 @@ export function useManualStepReview(
       ? NO_REVIEW_ATOM
       : manualStepsEnvironment.review({
           environmentId: reviewEnvironmentId,
-          input: { threadId: step.threadId, updatedAt: step.updatedAt },
+          input: manualStepReviewInput(step),
         });
   const result = useAtomValue(atom);
   return {
@@ -95,7 +96,7 @@ export function useReviewAgain(
       registry.set(reviewingAtom(step.threadId), true);
       return run({
         environmentId: reviewEnvironmentId,
-        input: { threadId: step.threadId, updatedAt: step.updatedAt },
+        input: manualStepReviewInput(step),
       }).then(
         () => registry.set(reviewingAtom(step.threadId), false),
         (error: unknown) => {

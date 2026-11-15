@@ -1,17 +1,97 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import {
+  EventId,
+  type OrchestrationV2DomainEvent,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
 import * as Sqlite from "./Sqlite.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as EventStore from "../orchestration-v2/EventStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+
+const COMMAND_OUTPUT_BYTES = 1_000_000;
+
+/** An archived chat whose one finished command printed `COMMAND_OUTPUT_BYTES` of output at `at`. */
+function archivedChatWithOutput(key: string, at: DateTime.Utc) {
+  const threadId = ThreadId.make(`thread:${key}`);
+  const instanceId = ProviderInstanceId.make("codex");
+  const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
+    {
+      id: EventId.make(`event:${key}:created`),
+      type: "thread.created",
+      threadId,
+      providerInstanceId: instanceId,
+      occurredAt: at,
+      payload: {
+        id: threadId,
+        projectId: ProjectId.make(`project:${key}`),
+        title: key,
+        providerInstanceId: instanceId,
+        modelSelection: { instanceId, model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: null,
+        lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+        forkedFrom: null,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: at,
+        updatedAt: at,
+        archivedAt: at,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      },
+    },
+    {
+      id: EventId.make(`event:${key}:command`),
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: at,
+      payload: {
+        id: TurnItemId.make(`${threadId}:command`),
+        threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        startedAt: at,
+        completedAt: at,
+        updatedAt: at,
+        title: "cat build.log",
+        type: "command_execution",
+        input: "cat build.log",
+        output: "x".repeat(COMMAND_OUTPUT_BYTES),
+        exitCode: 0,
+      },
+    },
+  ];
+  return { threadId, events };
+}
 
 it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))(
   "DatabaseMaintenance",
@@ -292,6 +372,66 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
           );
         }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })));
       }),
+    );
+
+    it.effect("removes expired tool output before VACUUM and keeps newer output", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-compact-output-" });
+        const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
+        const idle = archivedChatWithOutput(
+          "idle",
+          DateTime.makeUnsafe("2026-10-01T00:00:00.000Z"),
+        );
+        const recent = archivedChatWithOutput(
+          "recent",
+          DateTime.makeUnsafe("2026-11-10T00:00:00.000Z"),
+        );
+        yield* Effect.gen(function* () {
+          const sink = yield* EventSink.EventSinkV2;
+          yield* sink.write({ events: [...idle.events, ...recent.events] });
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
+        }).pipe(
+          Effect.provide(
+            EventSink.layer.pipe(
+              Layer.provideMerge(Layer.mergeAll(EventStore.layer, ProjectionStore.layer)),
+              Layer.provideMerge(Sqlite.layerFromPath(dbPath)),
+            ),
+          ),
+        );
+
+        // Seven days before now falls between the two chats' last activity.
+        yield* TestClock.setTime(
+          DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-13T00:00:00.000Z")),
+        );
+        const result = yield* maintenance.compact(dbPath, { toolOutputAfterDays: 7 });
+
+        yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          assert.deepEqual(
+            yield* sql`
+              SELECT stream_id AS "threadId"
+              FROM orchestration_events
+              WHERE event_type = 'turn-item.updated'
+                AND json_extract(payload_json, '$.output') IS NOT NULL
+            `,
+            [{ threadId: recent.threadId }],
+          );
+          assert.deepEqual(
+            yield* sql`
+              SELECT thread_id AS "threadId"
+              FROM orchestration_v2_projection_turn_items
+              WHERE json_extract(payload_json, '$.output') IS NOT NULL
+            `,
+            [{ threadId: recent.threadId }],
+          );
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })));
+        // VACUUM returns the removed output's pages only when the removal runs before it.
+        assert.isBelow(result.afterBytes, result.beforeBytes - COMMAND_OUTPUT_BYTES);
+      }).pipe(Effect.scoped),
     );
   },
 );

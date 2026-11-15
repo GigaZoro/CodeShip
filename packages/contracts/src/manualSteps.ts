@@ -5,6 +5,7 @@ import {
   CommandId,
   ForwardCompatibleArray,
   IsoDateTime,
+  ReaderLanguageField,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -123,7 +124,7 @@ export const ManualStepSolution = Schema.Struct({
 });
 export type ManualStepSolution = typeof ManualStepSolution.Type;
 
-/** An AI review of one manual step: whether it really needs a person, and ways to get it done. */
+/** An AI review of one manual step, in the reader's language: does it need a person, and how. */
 export const ManualStepReview = Schema.Struct({
   threadId: Schema.String,
   /** The step's `updatedAt` when it was reviewed; a newer note makes the review stale. */
@@ -134,6 +135,8 @@ export const ManualStepReview = Schema.Struct({
   needsPerson: Schema.Boolean,
   /** Best first, one to three. */
   solutions: Schema.Array(ManualStepSolution),
+  /** The step's title and text in the review's language; absent from servers that predate it. */
+  translation: Schema.optionalKey(Schema.Struct({ title: Schema.String, step: Schema.String })),
   generatedAt: Schema.String,
   modelSelection: ModelSelection,
 });
@@ -146,6 +149,8 @@ export const ManualStepReviewInput = Schema.Struct({
    * new review is stored under at least this version so the client finds it under its own key.
    */
   updatedAt: Schema.String,
+  /** Clients that predate it read reviews in English. */
+  language: ReaderLanguageField,
 });
 export type ManualStepReviewInput = typeof ManualStepReviewInput.Type;
 

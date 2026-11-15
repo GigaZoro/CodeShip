@@ -650,6 +650,25 @@ it("stops before any check when the lockfile does not install", () => {
   expect(project.calls().map(({ args }) => args[0])).toEqual(["install"]);
 });
 
+it("installs Chromium before web browser tests and runs none without it", () => {
+  using project = launcherFixture();
+  project.write("apps/web/src/view.browser.test.tsx", "export {};\n");
+  const result = project.run("exec node apps/web/node_modules/playwright/cli.js install");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout + result.stderr).toContain(
+    "check:changed could not install Chromium for the browser tests",
+  );
+  expect(
+    project
+      .calls()
+      .map(({ args }) => args.slice(0, 3).join(" "))
+      .toSorted(),
+  ).toEqual([
+    "exec node apps/web/node_modules/playwright/cli.js",
+    "install --frozen-lockfile --prefer-offline",
+  ]);
+});
+
 it.each([
   ["install", "install --lockfile-only"],
   ["lint", "lint"],

@@ -6,7 +6,7 @@ import {
   type OrchestrationV2ServerCommand as OrchestrationCommand,
   PullRequestOperationError,
   type OrchestrationProjectShell,
-  type PullRequestRef,
+  type PullRequestReviewGuideInput,
   type PullRequestReviewGuideResult,
   type ThreadPullRequestLink,
   SourceControlProviderKind,
@@ -139,7 +139,7 @@ interface HarnessOptions {
   readonly reject?: (command: OrchestrationCommand) => string | null;
   readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
   readonly generate?: (
-    input: PullRequestRef,
+    input: PullRequestReviewGuideInput,
   ) => Effect.Effect<
     PullRequestReviewGuideResult & { started: boolean },
     PullRequestOperationError
@@ -152,7 +152,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   options: HarnessOptions = {},
 ) {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
-  const guideRequests = yield* Ref.make<ReadonlyArray<PullRequestRef>>([]);
+  const guideRequests = yield* Ref.make<ReadonlyArray<PullRequestReviewGuideInput>>([]);
   const thread = options.thread === undefined ? makeThread([]) : options.thread;
   const project = options.project === undefined ? makeProject() : options.project;
   const dispatch: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) =>
@@ -691,6 +691,7 @@ describe("pull request guide tools", () => {
             { repository: "t3tools/t3code", number: 12 },
             { url: "https://github.com/someone/else/pull/1" },
           ],
+          language: "uk",
         });
         expect(
           result.guides.map((guide) => [guide.repository, guide.number, guide.outcome]),
@@ -701,10 +702,14 @@ describe("pull request guide tools", () => {
         ]);
         expect(result.guides[2]?.detail).toContain("No project in this environment");
         expect(
-          (yield* Ref.get(harness.guideRequests)).map((ref) => [ref.projectId, ref.number]),
+          (yield* Ref.get(harness.guideRequests)).map((ref) => [
+            ref.projectId,
+            ref.number,
+            ref.language,
+          ]),
         ).toEqual([
-          ["project-web", 7],
-          [PROJECT_ID, 12],
+          ["project-web", 7, "uk"],
+          [PROJECT_ID, 12, "uk"],
         ]);
       }),
   );
@@ -722,7 +727,9 @@ describe("pull request guide tools", () => {
       expect(result.guides.map((guide) => guide.outcome)).toEqual(["failed", "failed", "started"]);
       expect(result.guides[0]?.detail).toContain("not a recognised pull request URL");
       expect(result.guides[1]?.detail).toContain("Pass either url");
-      expect((yield* Ref.get(harness.guideRequests)).map((ref) => ref.number)).toEqual([5]);
+      expect(
+        (yield* Ref.get(harness.guideRequests)).map((ref) => [ref.number, ref.language]),
+      ).toEqual([[5, "en"]]);
     }),
   );
 

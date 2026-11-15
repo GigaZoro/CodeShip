@@ -261,7 +261,9 @@ vp run --filter <package> typecheck
 
 In `apps/web`, a test that renders React or touches the DOM is named `*.browser.test.{ts,tsx}`
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
-`*.test.ts` files run in Node.
+`*.test.ts` files run in Node. No package install fetches that Chromium: `vp run check:changed`
+installs it, and before running browser tests yourself on a new machine or Playwright version, run
+`node apps/web/node_modules/playwright/cli.js install --only-shell chromium`.
 
 TypeScript workspaces typecheck with `effect-tsgo tsrs --noEmit` from `@effect/tsgo`: the
 [tsrs](https://github.com/oxc-project/tsrs) checker with Effect diagnostics, quick fixes, and

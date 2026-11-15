@@ -263,9 +263,11 @@ Choose **Write guide** to have the **Review guides** model from Settings → Pro
 change in a temporary checkout; without one set, the **Commit and pull request writing** model is used, and without that the **Titles and background text** model. Nothing
 in the checkout is changed, and a large pull request takes a few minutes; you can go elsewhere in
 the app. On web, you are told when the guide is ready; on mobile, return to the guide to check
-its progress. Claude and Codex can write guides. The guide is
-kept for everyone using this server. To write it again, for example after a push or after changing
-the model or instructions, choose **Rewrite guide** from the pull request's **⋯** menu.
+its progress. Claude and Codex can write guides. The guide is written in the app's language
+(**Settings → General → Language**) and kept for everyone using this server in that language; in
+another language, the pull request needs its own guide. To write it again, for example after a push
+or after changing the model or instructions, choose **Rewrite guide** from the pull request's **⋯**
+menu.
 
 On web, while reading a stop, select lines in an excerpt to add a comment to your review or ask an agent
 about them; comments wait with the ones from the **Code** tab until you send the review. Choose a
@@ -273,7 +275,8 @@ suggested question, or **Ask about this stop**, to open a thread that already kn
 are on. **Finish review** on the last stop opens the review with everything you collected.
 
 Agents can write guides too: ask one to prepare guides for a set of pull requests, and it starts
-them for you. Each is read through the project whose checkout has that repository.
+them for you. Each is read through the project whose checkout has that repository. An agent writes
+guides in English unless you tell it your language.
 
 To shape guides to your taste, write **Review guide instructions** in Settings → Source control & worktrees,
 such as what to show first or what to skip; projects can override them. They change emphasis and

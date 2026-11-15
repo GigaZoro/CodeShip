@@ -126,6 +126,8 @@ import CodeShipMigration0012 from "./CodeShipMigrations/012_ScheduledTaskRunFail
 import CodeShipMigration0013 from "./CodeShipMigrations/013_ThreadToolOutputRetention.ts";
 import CodeShipMigration0014 from "./CodeShipMigrations/014_CompactOrchestrationIds.ts";
 import CodeShipMigration0015 from "./CodeShipMigrations/015_CommandRuns.ts";
+import CodeShipMigration0016 from "./CodeShipMigrations/016_ManualStepReviewLanguages.ts";
+import CodeShipMigration0017 from "./CodeShipMigrations/017_PullRequestReviewGuideLanguages.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -241,6 +243,8 @@ const codeShipMigrationEntries = [
   [13, "ThreadToolOutputRetention", CodeShipMigration0013],
   [14, "CompactOrchestrationIds", CodeShipMigration0014],
   [15, "CommandRuns", CodeShipMigration0015],
+  [16, "ManualStepReviewLanguages", CodeShipMigration0016],
+  [17, "PullRequestReviewGuideLanguages", CodeShipMigration0017],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

@@ -16,7 +16,7 @@ import {
   type PullRequestActivity,
   type PullRequestDetail,
   type PullRequestStack,
-  type PullRequestRef,
+  type PullRequestReviewGuideInput,
 } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
@@ -45,11 +45,12 @@ const ACME_APP = {
   name: "app",
 };
 
-const reference: PullRequestRef = {
+const reference: PullRequestReviewGuideInput = {
   projectId,
   host: "github.com",
   repository: "acme/app",
   number: 7,
+  language: "en",
 };
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
@@ -169,9 +170,9 @@ const makeLayer = (input: {
           const repository = yield* PullRequestReviewGuides.PullRequestReviewGuideRepository;
           return {
             get: repository.get,
-            put: (key, guide) =>
+            put: (key, language, guide) =>
               repository
-                .put(key, guide)
+                .put(key, language, guide)
                 .pipe(Effect.tap(() => Deferred.succeed(input.stored, undefined))),
           } satisfies PullRequestReviewGuides.PullRequestReviewGuideRepository["Service"];
         }),
@@ -245,11 +246,11 @@ const watchRuns = Effect.gen(function* () {
   return {
     generate: (
       service: PullRequestReviewGuideService.PullRequestReviewGuideService["Service"],
-      input: PullRequestRef,
+      input: PullRequestReviewGuideInput,
     ) => service.generate(input).pipe(Effect.withTracer(tracer)),
     settled: (
       service: PullRequestReviewGuideService.PullRequestReviewGuideService["Service"],
-      input: PullRequestRef,
+      input: PullRequestReviewGuideInput,
     ) => Queue.take(ended).pipe(Effect.andThen(service.get(input))),
   };
 });
@@ -473,6 +474,48 @@ it.layer(layerBase, { excludeTestServices: true })("PullRequestReviewGuideServic
       assert.strictEqual(result.guide?.headSha, repositories.headSha);
       assert.deepStrictEqual(result.guide?.stops[0]?.files, [{ path: "feature.txt" }]);
     }),
+  );
+
+  it.effect("writes, runs and serves each language's guide apart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const repositories = yield* makeRepositories;
+        const firstAsked = yield* Deferred.make<void>();
+        const asked: Array<string> = [];
+        const context = yield* Layer.build(
+          makeLayer({
+            ...repositories,
+            stored: yield* Deferred.make<void>(),
+            // The first run keeps writing, so the second language asks while it runs.
+            generate: (input) =>
+              Effect.suspend(() =>
+                asked.push(input.language) === 1
+                  ? Deferred.succeed(firstAsked, undefined).pipe(Effect.andThen(Effect.never))
+                  : Effect.void,
+              ).pipe(Effect.as({ stops: [] })),
+          }),
+        );
+        const service = Context.get(
+          context,
+          PullRequestReviewGuideService.PullRequestReviewGuideService,
+        );
+        const runs = yield* watchRuns;
+        // Tests here share one database, so this one keeps to a pull request of its own.
+        const english = { ...reference, number: 21 };
+        const ukrainian = { ...english, language: "uk" };
+        assert.isTrue((yield* service.generate(english)).started);
+        yield* Deferred.await(firstAsked);
+        // The English run is still writing; a Ukrainian reader does not get its answer.
+        assert.isTrue((yield* runs.generate(service, ukrainian)).started);
+        const inUkrainian = yield* runs.settled(service, ukrainian);
+        assert.deepStrictEqual(asked, ["en", "uk"]);
+        assert.strictEqual(inUkrainian.guide?.headSha, repositories.headSha);
+        assert.strictEqual(inUkrainian.run, null);
+        const inEnglish = yield* service.get(english);
+        assert.strictEqual(inEnglish.guide, null);
+        assert.strictEqual(inEnglish.run?._tag, "Running");
+      }),
+    ),
   );
 
   it.effect("keeps excerpts despite the checkout's diff driver and a failing hook", () =>

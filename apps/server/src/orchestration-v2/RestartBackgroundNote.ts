@@ -525,6 +525,24 @@ export function promptNeverDelivered(
   return !providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId);
 }
 
+/**
+ * Every run a restart cut had already finished its provider turn, so the restart lost no work for
+ * a person to review or a continuation to redo.
+ */
+export function cutAfterTurnFinished(
+  cutRuns: ReadonlyArray<Pick<OrchestrationV2Run, "activeAttemptId">>,
+  providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>,
+): boolean {
+  return (
+    cutRuns.length > 0 &&
+    cutRuns.every((run) =>
+      providerTurns.some(
+        (turn) => turn.runAttemptId === run.activeAttemptId && turn.status === "completed",
+      ),
+    )
+  );
+}
+
 /** The run whose message started the work `run` continues, through any server continuations. */
 export function continuationSource(
   run: OrchestrationV2Run,
@@ -647,6 +665,22 @@ export function delegatedTaskResultRun(
     ["preparing", "starting", "running", "waiting"].includes(run.status),
   );
   return executing ?? awaited.find((run) => run.status === "queued") ?? awaited[0] ?? taskRuns[0];
+}
+
+/** A restart wakes nothing in a chat that is archived, deleted, settled or snoozed. */
+export function restartLeavesThreadAsIs(
+  thread: Pick<
+    OrchestrationV2AppThread,
+    "archivedAt" | "deletedAt" | "settledOverride" | "snoozedUntil"
+  >,
+  now: DateTime.Utc,
+): boolean {
+  return (
+    thread.archivedAt !== null ||
+    thread.deletedAt !== null ||
+    thread.settledOverride === "settled" ||
+    restartHeldBySnooze(thread, now)
+  );
 }
 
 /** The provider never accepted this continuation's prompt, so starting it again repeats nothing. */

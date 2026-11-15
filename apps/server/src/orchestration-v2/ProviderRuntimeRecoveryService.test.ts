@@ -1089,6 +1089,92 @@ it.effect(
   },
 );
 
+// A delegated chat's second message stayed held for good: its run had finished its provider turn,
+// so no continuation was scheduled, and only a continuation lifts a restart's hold.
+it.effect.each([
+  ["turn finished", "completed", false],
+  ["turn still running", "running", true],
+] as const)(
+  "holds a queued message after a restart only when a cut run's %s",
+  ([, turnStatus, held]) => {
+    const threadId = ThreadId.make("thread_queued_behind_finished_turn");
+    const cutRunId = RunId.make("run_finished_turn");
+    const queuedRunId = RunId.make("run_queued_behind_finished_turn");
+    const attemptId = RunAttemptId.make("attempt_finished_turn");
+    const rootNodeId = NodeId.make("node_finished_turn");
+    let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
+      null;
+    const projection = {
+      thread: {
+        id: threadId,
+        archivedAt: null,
+        deletedAt: null,
+        settledOverride: null,
+        snoozedUntil: null,
+      },
+      runtimeRequests: [],
+      providerSessions: [],
+      providerThreads: [],
+      providerTurns: [{ id: "turn_finished", runAttemptId: attemptId, status: turnStatus }],
+      runs: [
+        {
+          id: cutRunId,
+          status: "running",
+          activeAttemptId: attemptId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        {
+          id: queuedRunId,
+          status: "queued",
+          queuePosition: 1,
+          userMessageId: "message_queued_behind_finished_turn",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+      ],
+      attempts: [{ id: attemptId, runId: cutRunId, rootNodeId, status: "running" }],
+      nodes: [{ id: rootNodeId, runId: cutRunId, status: "running" }],
+      subagents: [],
+      messages: [{ id: "message_queued_behind_finished_turn", createdBy: "user" }],
+      turnItems: [],
+    } as unknown as OrchestrationV2ThreadProjection;
+    const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+            getThreadRecords: () => Effect.succeed(projection),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
+            commitCommand: (input) => {
+              committedInput = input;
+              return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
+            },
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+            runRecoveryOnce: Effect.succeed(false),
+          }),
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            cancelUnsettled: () => Effect.succeed([]),
+            signalCancellations: () => Effect.void,
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).reconcile("startup");
+      const queuedUpdate = committedInput?.events.find(
+        (event) => event.type === "run.updated" && event.runId === queuedRunId,
+      );
+      assert.equal(queuedUpdate !== undefined, held);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
 it.effect("cancels workflow members and child roots without run ids after restart", () => {
   const parentThreadId = ThreadId.make("thread_recovery_workflow_members");
   const childThreadId = ThreadId.make("thread_recovery_workflow_member_child");

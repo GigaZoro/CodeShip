@@ -8,6 +8,43 @@
 - T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
 
+## 2026-11-15 — Pull request lookups start far fewer git commands
+
+- A pull request lookup used to start about ten `git` commands, each re-reading the repository's remotes and configuration. On a machine short of memory with many open chats this added up to hundreds of commands and slowed the server. A lookup now reads the remotes and each configuration value once and shares them for the whole lookup.
+
+## 2026-11-15 — Automatic updates no longer cut running scheduled runs
+
+- A machine that always has a chat answering used to install an update after a fixed 2-hour wait, which cut every running turn and its delegated chats. Now, after the wait, the update holds new scheduled starts so the running turns can finish, installs when they end, and starts the held runs right after. A turn still running after a further 3 hours is cut and resumes as before, and the log names each chat it cut.
+- New setting **Time between automatic updates** (**Settings → Maintenance**, default 4 hours): after a restart, automatic updates wait this long before installing the next release, so a machine that receives many releases a day restarts a few times instead of at every release. The setting is shared like the other update settings; agents do not set it yet.
+
+## 2026-11-15 — `check:changed` installs the browser its web browser tests run in
+
+- For contributors: on a machine without Playwright's Chromium for the current Playwright version, `vp run check:changed` failed every web browser test with "Executable doesn't exist". When a run includes web browser tests, it now first installs the Chromium build CI installs. Already installed, this takes about two seconds.
+
+## 2026-11-15 — Pull request guides are written in your app's language
+
+- A pull request's review guide is now written in the app's language (**Settings → General → Language**) on web, desktop and mobile. Its closing "Other files" stop is labelled in that language too. Before, it came in English whatever language you chose.
+- Each language keeps its own guide. Guides written before this release stay as the English ones; in another language, choose **Write guide** to have one written in it.
+- Agents writing guides with `write_pull_request_guides` and reading them with `read_pull_request_guide` can pass `language`, such as `uk`; without it they write and read the English guide. Apps that predate this release keep getting English guides.
+
+## 2026-11-15 — Manual steps show in your app's language
+
+- A manual step's AI review is now written in the app's language (**Settings → General → Language**). Before, it followed the language of the step's title, which agents write in English, so the review came in English whatever language you chose.
+- Once its review is ready, a step's text and title show translated into the app's language too, in the thread list, the sidebar and the **Manual steps** page, on web, desktop and mobile. The chat that **Choose** starts still gets the step as it was written.
+- Reviews written before this release are dropped and written again in your language the next time a step is shown. Apps that predate this release keep getting English reviews, and a server that predates it shows steps as written.
+
+## 2026-11-15 — A restart no longer leaves a chat's next message waiting forever
+
+- When a server restart cut a chat whose agent had already finished its turn, a message queued behind it stayed held for a resume that never came, so the chat never ran again. A message queued behind a run whose turn had finished now starts after the restart. A chat a restart already left in that state starts again on the next start. A chat that is snoozed, settled or archived still stays as it was.
+
+## 2026-11-15 — A long database update no longer floods the server's trace files
+
+- While a large database was updated at startup, the server wrote a trace entry for every stored row it rewrote, about 10 MB every 10 seconds, so the trace files lost everything from before the update within minutes. The update now writes one entry per step instead.
+
+## 2026-11-15 — Tests check that `t3 doctor` removes old tool output before it compacts
+
+- Maintenance only, with no change in behavior. A test now runs `t3 doctor`'s compaction on a database file and checks that it removes tool output older than the **Remove old tool output** setting allows, keeps newer output, and returns the removed space to disk.
+
 ## 2026-11-15 — Service updates no longer pile up launchers
 
 - When T3.CodeShip runs as a service, each update handed the service to the new release's launcher but kept the previous launcher running, so every update left about 300 MB behind until the service restarted. A launcher that took over the service now hands it back to the one the service manager started, which starts the newest launcher, so a service runs at most two launchers. A service installed with an earlier release runs at most three until `t3 update` or `t3 service install` on that machine reinstalls it, and launchers that piled up before this release stay until the service restarts.

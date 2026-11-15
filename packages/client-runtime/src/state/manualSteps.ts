@@ -12,6 +12,7 @@ import {
   type ManualStepDecision,
   type ManualStepReview,
   type ManualStepReviewFailure,
+  type ManualStepReviewInput,
   type ManualStepSolution,
   type ManualStepStartChatInput,
   type ManualStepsListFailure,
@@ -20,7 +21,7 @@ import {
   type ScopedThreadRef,
   type ServerConfig,
 } from "@t3tools/contracts";
-import { msg, t, type Message } from "@t3tools/shared/i18n";
+import { getActiveLanguage, msg, t, type Message } from "@t3tools/shared/i18n";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -464,6 +465,25 @@ export type ManualStepReviewState =
       readonly refreshing: boolean;
     };
 
+/** Asks for the review in this client's interface language. */
+export const manualStepReviewInput = (
+  step: Pick<ManualStep, "threadId" | "updatedAt">,
+): ManualStepReviewInput => ({
+  threadId: step.threadId,
+  updatedAt: step.updatedAt,
+  language: getActiveLanguage(),
+});
+
+/** The step's title and text in the reader's language once its review has them, else as written. */
+export function manualStepShownText(
+  step: Pick<ManualStep, "title" | "step">,
+  review: ManualStepReviewState | null,
+): { readonly title: string; readonly step: string } {
+  return review?.status === "ready" && review.review.translation !== undefined
+    ? review.review.translation
+    : { title: step.title, step: step.step };
+}
+
 export function manualStepReviewState(
   result: AsyncResult.AsyncResult<ManualStepReview, unknown>,
 ): ManualStepReviewState {
@@ -554,7 +574,7 @@ export function createManualStepsEnvironmentAtoms<R, E>(
   /** A review of one step version never changes, so it is read once and kept. */
   const review = (target: {
     readonly environmentId: EnvironmentId;
-    readonly input: { readonly threadId: string; readonly updatedAt: string };
+    readonly input: ManualStepReviewInput;
   }) => writable(reviewQuery(target));
   const reviewAgain = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:manual-steps:review-again",

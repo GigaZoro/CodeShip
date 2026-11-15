@@ -172,6 +172,7 @@ export function normalizeReviewGuide(
       files: unplaced.map((path) => ({ path })),
       notes: [],
       questions: [],
+      otherFiles: true,
     });
   }
 

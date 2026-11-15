@@ -2,6 +2,7 @@ import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
   manualStepChatHost,
   manualStepReviewFailureMessage,
+  manualStepShownText,
   manualStepSolutionDecision,
   manualStepStartChatFailureMessage,
   sameManualStepDecision,
@@ -287,6 +288,8 @@ function StepContent(props: {
   const navigation = useNavigation();
   const decision = useStepDecision(step, chatHost);
   const chatShell = useThreadShell(step.chat ?? null);
+  const review = useManualStepReview(step, props.reviewEnvironmentId).state;
+  const text = manualStepShownText(step, review);
   const money = step.kind === "needs-you";
   return (
     <View className="gap-5">
@@ -299,11 +302,11 @@ function StepContent(props: {
             type="monochrome"
           />
           <Text className="min-w-0 flex-1 text-base font-t3-medium text-foreground">
-            {step.step}
+            {text.step}
           </Text>
         </View>
         <Text className="text-xs text-foreground-muted">
-          {[money ? t("Money") : null, step.title, step.machine].filter(Boolean).join(" · ")}
+          {[money ? t("Money") : null, text.title, step.machine].filter(Boolean).join(" · ")}
         </Text>
       </View>
       <ReviewBody step={step} reviewEnvironmentId={props.reviewEnvironmentId} decision={decision} />

@@ -148,6 +148,7 @@ import {
   isSettledRun,
   promptNeverDelivered,
   restartHeldBySnooze,
+  restartLeavesThreadAsIs,
   restartRetryDelivery,
   restartRetryNoticeId,
   restartRetryNotices,
@@ -3711,9 +3712,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           threadId,
           Effect.gen(function* () {
             // The run-update listener does not replay completions a restart cut it off from.
-            const { runs } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
+            const { runs, thread } = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
             const latest = latestExecutedRun(runs);
-            if (latest?.status === "completed") yield* releaseUnattendedHolds(threadId, latest.id);
+            // A restart cut run that nothing resumes leaves its queue held by the restart for good.
+            if (
+              latest?.status === "completed" ||
+              (latest?.status === "cancelled" &&
+                !restartLeavesThreadAsIs(thread, yield* DateTime.now))
+            )
+              yield* releaseUnattendedHolds(threadId, latest.id);
             if (!(yield* projectionStore.canStartQueuedRun(threadId))) return false;
             yield* startNextQueuedRun(threadId);
             return true;

@@ -197,6 +197,12 @@ const PR_LOOKUP_CACHE_CAPACITY = 2_048;
 const AllowCachedPrLookup = Context.Reference<boolean>("t3/git/GitManager/AllowCachedPrLookup", {
   defaultValue: () => true,
 });
+// Set while a pull request lookup runs: its git config and remote reads share one memo per
+// repository instead of each helper spawning its own `git`.
+const MemoizePrLookupGitReads = Context.Reference<boolean>(
+  "t3/git/GitManager/MemoizePrLookupGitReads",
+  { defaultValue: () => false },
+);
 const PR_LOOKUP_GIT_STATE_TTL = Duration.minutes(5);
 const SETTLED_PR_LOOKUP_RECHECK_INTERVAL = Duration.minutes(15);
 // Shared by every background caller (backfill, settlement, cleanup), so startup discovery
@@ -1367,6 +1373,7 @@ export const make = Effect.gen(function* () {
   const getPrLookup = (key: string, allowCached = true) =>
     detachStackFrame(Cache.get(prLookupCache, key)).pipe(
       Effect.provideService(AllowCachedPrLookup, allowCached),
+      Effect.provideService(MemoizePrLookupGitReads, true),
     );
   interface LastKnownPr {
     readonly pr: ReturnType<typeof toStatusPr> | null;
@@ -1428,6 +1435,7 @@ export const make = Effect.gen(function* () {
     const branchKey = `${cwd}\u0000${details.branch}`;
     const cacheKey = prLookupCacheKey(cwd, details);
     if (refreshMissingPullRequest) {
+      yield* forgetPrLookupGitState(cwd);
       const cached = yield* Cache.getOption(prLookupCache, cacheKey).pipe(
         Effect.orElseSucceed(() => Option.none()),
       );
@@ -1560,10 +1568,44 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((cacheKey) => Cache.invalidate(remoteStatusResultCache, cacheKey)),
     );
 
+  // `rememberPrLookupGitState` is declared further down; these run only after it exists.
+  const readConfigValue = Effect.fn("GitManager.readConfigValue")(function* (
+    cwd: string,
+    key: string,
+  ) {
+    const read = gitCore.readConfigValue(cwd, key);
+    return (yield* MemoizePrLookupGitReads)
+      ? yield* rememberPrLookupGitState(cwd, `config\u0000${key}`, false, read)
+      : yield* read;
+  });
   const readConfigValueNullable = (cwd: string, key: string) =>
-    gitCore.readConfigValue(cwd, key).pipe(Effect.orElseSucceed(() => null));
-  const readRemoteUrlNullable = (cwd: string, remoteName: string) =>
-    readRemoteUrl(cwd, remoteName).pipe(Effect.orElseSucceed(() => null));
+    readConfigValue(cwd, key).pipe(Effect.orElseSucceed(() => null));
+  const readRemoteUrlNullable = Effect.fn("GitManager.readRemoteUrlNullable")(function* (
+    cwd: string,
+    remoteName: string,
+  ) {
+    const read = readRemoteUrl(cwd, remoteName);
+    return yield* (
+      (yield* MemoizePrLookupGitReads)
+        ? rememberPrLookupGitState(cwd, `remoteUrl\u0000${remoteName}`, false, read)
+        : read
+    ).pipe(Effect.orElseSucceed(() => null));
+  });
+  const readRemoteNames = Effect.fn("GitManager.readRemoteNames")(function* (
+    cwd: string,
+    operation: string,
+  ) {
+    const read = gitCore
+      .execute({ operation, cwd, args: ["remote"], timeoutMs: 5_000 })
+      .pipe(Effect.map((result) => result.stdout));
+    const stdout = (yield* MemoizePrLookupGitReads)
+      ? yield* rememberPrLookupGitState(cwd, "remotes", false, read)
+      : yield* read;
+    return (stdout ?? "")
+      .split("\n")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+  });
 
   // Whether the remote's host creates change requests in this remote's repository. A host's tools
   // can let configuration, such as gh's default repository, name another one.
@@ -1689,19 +1731,10 @@ export const make = Effect.gen(function* () {
       remoteName !== null &&
       remoteName !== "origin" &&
       originRepository.remoteUrlKey === null &&
-      (yield* gitCore
-        .execute({
-          operation: "GitManager.resolveBranchHeadContext.remotes",
-          cwd,
-          args: ["remote"],
-          timeoutMs: 5_000,
-        })
-        .pipe(
-          Effect.map(
-            (result) => result.stdout.split("\n").filter((name) => name.trim().length > 0).length,
-          ),
-          Effect.orElseSucceed(() => 0),
-        )) === 1 &&
+      (yield* readRemoteNames(cwd, "GitManager.resolveBranchHeadContext.remotes").pipe(
+        Effect.map((names) => names.length),
+        Effect.orElseSucceed(() => 0),
+      )) === 1 &&
       (yield* targetsRemote(cwd, remoteName, remoteRepository));
     const isForeignRemote = remoteName !== null && remoteName !== "origin" && !isOnlyRemote;
 
@@ -1770,15 +1803,10 @@ export const make = Effect.gen(function* () {
   ) {
     if (branch.length === 0) return null;
     return yield* Effect.gen(function* () {
-      const remoteNames = (yield* gitCore.execute({
-        operation: "GitManager.findRemoteTrackingRemote.remotes",
+      const remoteNames = yield* readRemoteNames(
         cwd,
-        args: ["remote"],
-        timeoutMs: 5_000,
-      })).stdout
-        .split("\n")
-        .map((name) => name.trim())
-        .filter((name) => name.length > 0);
+        "GitManager.findRemoteTrackingRemote.remotes",
+      );
       if (remoteNames.length === 0) return null;
       const refs = new Set(
         (yield* gitCore.execute({
@@ -1809,15 +1837,7 @@ export const make = Effect.gen(function* () {
     branch: string,
   ) {
     const localRef = `refs/heads/${branch}`;
-    const remoteNames = (yield* gitCore.execute({
-      operation: "GitManager.findPublishedBranchRemote.remotes",
-      cwd,
-      args: ["remote"],
-      timeoutMs: 5_000,
-    })).stdout
-      .split("\n")
-      .map((name) => name.trim())
-      .filter((name) => name.length > 0);
+    const remoteNames = yield* readRemoteNames(cwd, "GitManager.findPublishedBranchRemote.remotes");
     if (remoteNames.length === 0) return null;
 
     const refs = yield* gitCore.execute({
@@ -1959,8 +1979,8 @@ export const make = Effect.gen(function* () {
     return yield* Effect.gen(function* () {
       const [configuredRemote, configuredMerge] = yield* Effect.all(
         [
-          gitCore.readConfigValue(cwd, `branch.${headContext.localBranch}.remote`),
-          gitCore.readConfigValue(cwd, `branch.${headContext.localBranch}.merge`),
+          readConfigValue(cwd, `branch.${headContext.localBranch}.remote`),
+          readConfigValue(cwd, `branch.${headContext.localBranch}.merge`),
         ],
         { concurrency: "unbounded" },
       );
@@ -2743,22 +2763,15 @@ export const make = Effect.gen(function* () {
     branch: string,
     options: { readonly refresh: boolean; readonly freshGitState: boolean },
   ) {
+    // A round that asks for fresh git state drops the memo once; every read after that,
+    // including the cached lookup's own, shares what this round read.
+    if (options.freshGitState) yield* forgetPrLookupGitState(cacheCwd);
     const remember = <E>(key: string, read: Effect.Effect<string | null, E>) =>
-      rememberPrLookupGitState(cacheCwd, key, options.freshGitState, read);
-    const remotes = yield* remember(
-      "remotes",
-      gitCore
-        .execute({
-          operation: "GitManager.branchPullRequest.remotes",
-          cwd: cacheCwd,
-          args: ["remote"],
-        })
-        .pipe(Effect.map((result) => result.stdout)),
-    );
-    const remoteNames = (remotes ?? "")
-      .split("\n")
-      .map((remoteName) => remoteName.trim())
-      .filter((remoteName) => remoteName.length > 0);
+      rememberPrLookupGitState(cacheCwd, key, false, read);
+    const remoteNames = yield* readRemoteNames(
+      cacheCwd,
+      "GitManager.branchPullRequest.remotes",
+    ).pipe(Effect.provideService(MemoizePrLookupGitReads, true));
     const [firstRemoteName] = remoteNames;
     if (firstRemoteName === undefined) return null;
     const branchRef = yield* readPrLookupBranchRef(cacheCwd, branch, options.freshGitState);
@@ -2846,7 +2859,7 @@ export const make = Effect.gen(function* () {
       cacheCwd,
       branch,
       identityRemoteName(cached.headContext),
-      options.freshGitState,
+      false,
     );
     const canVerifyIdentity = (headContext: BranchHeadContext, identity: typeof currentIdentity) =>
       !(

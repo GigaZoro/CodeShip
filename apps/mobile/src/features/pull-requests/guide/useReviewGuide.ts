@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useFocusEffect } from "@react-navigation/native";
+import { pullRequestReviewGuideInput } from "@t3tools/client-runtime/state/pull-requests";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
@@ -11,6 +12,12 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { pullRequestTarget, type PullRequestParams } from "../usePullRequestDiff";
 import { t } from "../../../lib/i18n";
 
+/** The guide in this device's interface language. */
+export function reviewGuideTarget(params: PullRequestParams) {
+  const { environmentId, input } = pullRequestTarget(params);
+  return { environmentId, input: pullRequestReviewGuideInput(input) };
+}
+
 export function useReviewGuidesEnabled(params: PullRequestParams) {
   const settings = useAtomValue(
     serverEnvironment.settingsValueAtom(pullRequestTarget(params).environmentId),
@@ -19,7 +26,7 @@ export function useReviewGuidesEnabled(params: PullRequestParams) {
 }
 
 export function useReviewGuide(params: PullRequestParams, visible = true) {
-  const target = pullRequestTarget(params);
+  const target = reviewGuideTarget(params);
   const enabled = useReviewGuidesEnabled(params);
   const query = useEnvironmentQuery(enabled ? composerPullRequests.reviewGuide(target) : null);
   const connected = usePullRequestConnected(target.environmentId);

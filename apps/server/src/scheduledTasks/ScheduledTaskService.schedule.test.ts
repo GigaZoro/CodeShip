@@ -35,6 +35,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { UpdateDrain } from "../cloud/updateDrain.ts";
 
 const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 
@@ -443,6 +444,61 @@ it.effect(
         expect(yield* Deferred.await(launched)).toBe(created.task.title);
       }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("holds a due run while an update drains and starts it right after", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-07-01T09:00:00.000Z"));
+    const launched = yield* Deferred.make<string>();
+    const drain = Ref.makeUnsafe(true);
+    const layerDependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      Scheduler.layer,
+      ServerSettings.layerTest(),
+      MemoryAdmission.layerTest(),
+      ManagedPolicy.layerTest(),
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+        launch: (input) =>
+          Deferred.succeed(launched, input.title).pipe(
+            Effect.as({ threadId: "thread-drain", resumed: false } as never),
+          ),
+      }),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
+      }),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+      layerSharedTaskDependencies(),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const created = yield* service.upsert(
+        yield* decodeUpsertInput({
+          title: "Held by drain",
+          prompt: "Review the open pull requests.",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: "project-drain",
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      yield* TestClock.adjust("6 seconds");
+      yield* TestClock.adjust("60 seconds");
+      expect(yield* Deferred.isDone(launched)).toBe(false);
+
+      yield* Ref.set(drain, false);
+      yield* TestClock.adjust("6 seconds");
+      expect(yield* Deferred.await(launched)).toBe(created.task.title);
+    }).pipe(
+      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
+      Effect.provideService(UpdateDrain, drain),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 const runHistoryLayer = (

@@ -44,8 +44,8 @@ vi.mock("../../../state/server", () => ({
 }));
 vi.mock("../../../state/pull-requests", () => ({
   composerPullRequests: {
-    reviewGuide: (target: { number: number; environmentId: string }) =>
-      target.environmentId === "environment" && target.number === 1 ? 1 : 2,
+    reviewGuide: (target: { environmentId: string; input: { number: number } }) =>
+      target.environmentId === "environment" && target.input.number === 1 ? 1 : 2,
     generateReviewGuide: { permissionAtom: () => "permission" },
   },
 }));
@@ -55,7 +55,10 @@ vi.mock("../../../state/query", () => ({
 vi.mock("../../../state/use-atom-command", () => ({ useAtomCommand: () => mocks.generate }));
 vi.mock("../usePullRequestConnected", () => ({ usePullRequestConnected: () => true }));
 vi.mock("../usePullRequestDiff", () => ({
-  pullRequestTarget: (params: unknown) => params,
+  pullRequestTarget: ({ environmentId, ...input }: { environmentId: string }) => ({
+    environmentId,
+    input,
+  }),
 }));
 
 import { useReviewGuide } from "./useReviewGuide";

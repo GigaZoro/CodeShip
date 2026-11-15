@@ -2266,7 +2266,12 @@ it.effect("publishes the accepted guide run before the follow-up read finishes",
     const { atoms, registry } = yield* makeTestRuntime(client);
     const target = {
       environmentId: TARGET.environmentId,
-      input: { projectId: ProjectId.make("project-1"), repository: "acme/web", number: 1 },
+      input: {
+        projectId: ProjectId.make("project-1"),
+        repository: "acme/web",
+        number: 1,
+        language: "en",
+      },
     };
     registry.update(
       grantedSessions(target.environmentId),
