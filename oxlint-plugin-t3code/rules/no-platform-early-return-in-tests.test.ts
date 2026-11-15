@@ -10,8 +10,11 @@ describe("t3code/no-platform-early-return-in-tests", () => {
   rule.valid(
     "allows skipIf/runIf and returns that do not compare the platform",
     `
-      import { it } from "@effect/vitest";
+      import { afterEach, beforeAll, it } from "@effect/vitest";
+      import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
       const unrelated = Effect.succeed(false);
+      beforeAll(() => { if (process.platform !== "win32") return; setupWindowsFixture(); });
+      afterEach(() => { if (!isWindowsHost) return; cleanupWindowsFixture(); });
       it.effect.skipIf(isWindowsHost)("a", () => Effect.gen(function* () {
         if (cases.length === 0) return;
         if (platform === "win32") return yield* Effect.fail("x");
@@ -38,18 +41,22 @@ describe("t3code/no-platform-early-return-in-tests", () => {
   );
 
   rule.invalid(
-    "reports an early return guarded by a helper that wraps the platform check",
+    "reports an early return guarded by a helper that wraps the platform check or a host flag",
     `
+      import { isWindowsHost as onWindows } from "@t3tools/shared/testing/hostPlatform";
+      import * as HostPlatform from "@t3tools/shared/testing/hostPlatform";
       const runsOnWindows = Effect.map(HostProcess.Platform, (platform) => platform === "win32");
       function isMac() { return process.platform === "darwin"; }
       it.effect("a", () => Effect.gen(function* () {
         if (yield* runsOnWindows) return;
         if (isMac()) return;
         if (!(yield* runsOnWindows)) { return; }
+        if (!onWindows) return;
+        if (HostPlatform.isLinuxHost) return;
       }));
     `,
     (output) => {
-      assert.equal(output.match(/no-platform-early-return-in-tests/g)?.length, 3);
+      assert.equal(output.match(/no-platform-early-return-in-tests/g)?.length, 5);
     },
   );
 });

@@ -247,6 +247,18 @@ the version of each file it loaded first, so its result would mix old and new co
 file that the checks themselves rewrite only keeps that pass out of the cache. The test step's
 limit grows by two minutes per selected test file, because server test files run one at a time.
 
+Each pass, a cached one included, records the tree a commit of everything it checked would get:
+tracked changes and untracked files that are not ignored. The receipt lives in the repository's git
+directory, so every worktree shares it. The tracked pre-push hook
+([.vite-hooks/pre-push](../../.vite-hooks/pre-push), through
+[check-changed-receipt.cjs](../../.github/scripts/check-changed-receipt.cjs)) refuses a push to
+`main` unless a pass covers the pushed commit's tree and compared it against the commit the remote's
+`main` is at, so every change the push brings was checked. Land from a worktree with nothing to commit
+and no scratch files: the landing (below) runs the checks after its rebase, against that commit. Git runs these
+hooks itself because `core.hooksPath` is `.vite-hooks`: `machine-config.json` declares that, and
+`node ~/.agents/tools/machine-config.mjs check <checkout> --fix` applies it. A checkout with no
+install still runs the push gate.
+
 While you iterate, run single checks:
 
 ```sh
@@ -269,7 +281,9 @@ Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
 Windows investigation while that suite is not a required gate. A full `apps/server` run there
-splits into eight duration-balanced shards.
+splits into eight duration-balanced shards. In a fork,
+[windows-check-fork.yml](../../.github/workflows/windows-check-fork.yml) runs `check:changed` on
+Windows for every push to `main`, because the push gate runs it only on the machine that pushes.
 
 ### Unused code
 
@@ -291,7 +305,7 @@ Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](
 
 ### Landing on main
 
-A pass of `check:changed` covers only the tree it checked, and main moves faster than a slow machine's check, so landings take turns. `node .github/scripts/landing-turn.cjs land` takes a lease on `refs/heads/landing-lease/main` on origin (it expires after three hours, so a dead lander cannot hold it), rebases onto main, runs the checks once and pushes, then gives the lease back. `.vite-hooks/pre-push` refuses a push to `main` from anyone else, and a `check:changed` run started by the lander takes free budget slots ahead of other runs. `vp run check:changed` for your own work needs none of this.
+A pass of `check:changed` covers only the tree it checked, and main moves faster than a slow machine's check, so landings take turns. `node .github/scripts/landing-turn.cjs land` takes a lease on `refs/heads/landing-lease/main` on origin (it expires after three hours, so a dead lander cannot hold it), rebases onto main, runs the checks once and pushes, then gives the lease back. `.vite-hooks/pre-push` refuses a push to `main` from anyone else, or for a tree no pass covers, and a `check:changed` run started by the lander takes free budget slots ahead of other runs. `vp run check:changed` for your own work needs none of this.
 
 ## Desktop artifacts
 

@@ -236,8 +236,8 @@ test("configure sets the driver in its own repository only", () => {
 test("configure replaces stale values, and warns without failing the install when it cannot set one", () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "release-notes-configure-")));
   try {
-    // A path that only a byte-exact comparison handles.
-    const own = withScript(path.join(root, "checkout "));
+    // A path that only a byte-exact comparison handles. Windows drops a trailing space, but keeps a no-break space.
+    const own = withScript(path.join(root, "checkout "));
     const git = (...args) => execFileSync("git", args, { cwd: own, encoding: "utf8" });
     git("init", "-q", "-b", "main");
     git("config", "--add", "merge.release-notes.driver", "stale");

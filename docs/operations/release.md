@@ -157,7 +157,8 @@ earlier entries by content, so a shipment may also move one back into date order
 The web and desktop header's Release notes dialog bundles this history with the
 client, so an older install never presents newer changes as already installed.
 `vp run check:changed` compares notes against the branch base, a push to `main` runs the same
-check against the remote's `main` (`.vite-hooks/pre-push`), and fork release preflight rejects a
+check against the remote's `main` (`.vite-hooks/pre-push`, which also requires a check:changed
+pass for the pushed tree), and fork release preflight rejects a
 push without new notes before building installers. The GitHub
 release uses the same notes, adding all entries since the previous published release
 when several pushes were combined. Rebuilding the same source uses its latest entry.

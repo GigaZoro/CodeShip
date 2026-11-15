@@ -17,7 +17,10 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+
 import {
+  argumentBatches,
   comparisonBase,
   defaultConcurrency,
   docReaderTests,
@@ -269,6 +272,16 @@ describe("check:changed", () => {
     assert.strictEqual(testStepTimeoutSeconds(5000, 600, true), 600);
   });
 
+  it("splits a path list into steps whose arguments fit a Windows command line", () => {
+    assert.deepStrictEqual(argumentBatches([], 10), []);
+    assert.deepStrictEqual(argumentBatches(["aaaa", "bbbb", "cc", "dddddddddddd", "e"], 10), [
+      ["aaaa", "bbbb"],
+      ["cc"],
+      ["dddddddddddd"],
+      ["e"],
+    ]);
+  });
+
   it("runs the .github/scripts node:test files with node --test, not vitest", () => {
     assert.deepStrictEqual(
       splitTests([
@@ -380,15 +393,16 @@ describe("check:changed", () => {
 });
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config or the default
-// ~/.config/git/ignore can ignore or sign fixture files.
+// ~/.config/git/ignore can ignore or sign fixture files. Git for Windows maps /dev/null to its
+// null device but cannot open NodeOS.devNull (\\.\nul).
 const fixtureConfig = {
-  "core.excludesFile": NodeOS.devNull,
+  "core.excludesFile": "/dev/null",
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
 const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
-  GIT_CONFIG_GLOBAL: NodeOS.devNull,
+  GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_COUNT: String(Object.keys(fixtureConfig).length),
   ...Object.fromEntries(
@@ -479,6 +493,7 @@ function launcherFixture() {
     "scripts/check-changed-command.ts",
     ".github/scripts/ci-changes.cjs",
     ".github/scripts/check-node-runtime.cjs",
+    ".github/scripts/check-changed-receipt.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
   }
@@ -604,6 +619,41 @@ it("fails a run whose files changed while its checks ran", () => {
   expect(result.status, result.stdout + result.stderr).toBe(1);
   expect(result.stdout).toContain("pass  lint");
   expect(result.stdout).toContain("files changed while the checks ran");
+});
+
+it("records no push pass for a tree that changed before a cached result", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n// edited\n");
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run("", "install");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(result.stdout).toContain("Nothing changed since the last passing run");
+  expect(result.stdout).toContain("files changed while the checks ran");
+});
+
+// Git for Windows records no executable bit for an untracked file.
+it.skipIf(isWindowsHost)("checks again after an untracked file's mode changed", () => {
+  using project = launcherFixture();
+  const tool = "packages/example/tool.ts";
+  project.write(tool, "export const tool = 1;\n");
+  const first = project.run();
+  expect(first.status, first.stdout + first.stderr).toBe(0);
+  NodeFS.chmodSync(NodePath.join(project.root, tool), 0o755);
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  expect(result.stdout).not.toContain("Nothing changed since the last passing run");
+});
+
+it("caches no pass for a file that appeared after the files were listed", () => {
+  using project = launcherFixture();
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run("", "install", "packages/example/added.ts");
+  expect(result.status, result.stdout + result.stderr).toBe(1);
+  expect(
+    NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
+  ).toBe(false);
 });
 
 it("rejects a package support range without a development pin", () => {

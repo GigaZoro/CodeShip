@@ -19,7 +19,7 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 ## 2. Stage deliberately
 
 - Read the diff. Stage paths by name, never `git add -A`.
-- Leave out plans, scratch files, screenshots, logs, `.env`, `.t3/`, and secrets. Leave out untracked files you cannot place too, and name them in your report.
+- Leave out plans, scratch files, screenshots, logs, `.env`, `.t3/`, and secrets. Move untracked files you cannot place out of the worktree, to your scratchpad, and name them in your report. The push gate accepts only the tree `check:changed` checked, and that tree includes untracked files.
 - Prepend a dated entry to `docs/release-notes.md` (`## YYYY-MM-DD — Title`, then user-facing bullets), even for docs or maintenance. See [Release notes](../../../docs/operations/release.md#release-notes-for-every-shipment).
 
 ## 3. Pre-check
@@ -38,7 +38,7 @@ Main has one landing turn, so a pass of `vp run check:changed` covers the tree t
 
 `node .github/scripts/landing-turn.cjs land`
 
-It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. `--check "<command>"` replaces the check. Main refuses a push from anyone who does not hold the turn (`.vite-hooks/pre-push`), so never push to main any other way and never use `--force` or `--force-with-lease`.
+It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. A pass records the tree it checked, uncommitted and untracked files included, so `land` refuses to start in a worktree with anything uncommitted or untracked. Main refuses a push from anyone who does not hold the turn, or for a tree no `check:changed` pass covers (`.vite-hooks/pre-push`), so never push to main any other way, never pass `--no-verify`, and never use `--force` or `--force-with-lease`.
 
 - A check that fails ends the landing with exit status 1 and the turn released: fix the cause, commit, and land again.
 - A rebase that conflicts stops the landing with the turn released: resolve it, then land again.

@@ -23,7 +23,8 @@
 // and each prints its output when it finishes. A step's timeout counts from
 // when it gets its slot; a step running past it is killed with its process
 // group, or its process tree on Windows, and reported as TIMEOUT. A rerun on
-// exactly the files of the last passing run prints that run's summary.
+// exactly the files of the last passing run prints that run's summary. Each pass
+// records the tree it checked, and the pre-push hook refuses a push to main without one.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -50,6 +51,7 @@ import * as Stream from "effect/Stream";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { recordPass, workingTree } from "../.github/scripts/check-changed-receipt.cjs";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { checkNodeRuntime } from "../.github/scripts/check-node-runtime.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
@@ -64,6 +66,29 @@ export const testStepTimeoutSeconds = (files: number, timeoutSeconds: number, ex
   explicit
     ? timeoutSeconds
     : Math.min(Math.max(timeoutSeconds, TEST_FILE_SECONDS * files), TEST_STEP_MAX_SECONDS);
+
+// Windows cannot start a process whose command line passes 32,767 characters, and vp passes
+// its arguments on to the tool it starts, so a long list of paths runs in several steps.
+const ARGUMENT_CHARACTERS = 24_000;
+
+export const argumentBatches = (
+  items: ReadonlyArray<string>,
+  limit = ARGUMENT_CHARACTERS,
+): Array<Array<string>> => {
+  const batches: Array<Array<string>> = [];
+  let length = 0;
+  for (const item of items) {
+    const last = batches.at(-1);
+    if (last && length + item.length + 1 <= limit) {
+      last.push(item);
+      length += item.length + 1;
+    } else {
+      batches.push([item]);
+      length = item.length + 1;
+    }
+  }
+  return batches;
+};
 
 // A typecheck or test step can take several cores and gigabytes of memory, so
 // allow one step per two cores and per 6 GiB of available memory.
@@ -100,7 +125,7 @@ const sharedBudget = (directory: string, size: number, landing: boolean) => {
     yield* Deferred.succeed(waiting, undefined);
   });
 
-  // A landing run (the one holding main's landing turn, scripts/landing-turn.cjs) holds a marker file's
+  // A landing run (the one holding main's landing turn, .github/scripts/landing-turn.cjs) holds a marker file's
   // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
   // its process, so a crashed landing blocks nobody.
   const markerPrefix = "landing-wait-";
@@ -642,6 +667,41 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const lines = (...args: Array<string>) => gitLines(root, args);
 
   const { ref, base } = yield* comparisonBase(root, input.ref);
+
+  // .vite-hooks/pre-push lets a push to main through only for a tree with a pass recorded here.
+  // Read before the files are listed, and again before a pass is recorded or cached, so a pass
+  // never covers a tree that differs from the one the checks selected their files from.
+  const checkedTree = Effect.try({
+    try: () => workingTree(root),
+    catch: (cause) => `check:changed cannot read the working tree: ${String(cause)}`,
+  });
+  const tree = yield* checkedTree;
+  const treeUnchanged = Effect.gen(function* () {
+    if ((yield* checkedTree) === tree) return true;
+    yield* Console.log(
+      "  FAIL  files changed while the checks ran, so their results can mix old and new code. Run again.",
+    );
+    return false;
+  });
+  const recordCheckedPass = Effect.gen(function* () {
+    yield* Effect.try({
+      try: () => recordPass(root, tree, base),
+      catch: (cause) =>
+        `check:changed passed but cannot record it for the push gate: ${String(cause)}`,
+    });
+    const head = (yield* git(root, ["rev-parse", "HEAD^{tree}"])).toString().trim();
+    yield* Console.log(
+      head === tree
+        ? "  push gate: recorded this pass for HEAD"
+        : "  push gate: recorded this pass for the working tree, not HEAD: commit every change as it is, untracked files included, or main refuses the push",
+    );
+    return true;
+  });
+  const recordPassForPush = Effect.gen(function* () {
+    if (!(yield* treeUnchanged)) return false;
+    return yield* recordCheckedPass;
+  });
+
   // --no-renames lists a rename as its old and new path, as CI does.
   const changedFiles = lines("diff", "--name-only", "--no-renames", base, "--");
   const untrackedFiles = lines("ls-files", "--others", "--exclude-standard");
@@ -649,7 +709,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
 
   if (files.length === 0) {
     yield* Console.log(`check:changed: no changes since ${base.slice(0, 12)} (${ref}).`);
-    return true;
+    return yield* recordPassForPush;
   }
   yield* Console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)} (${ref})`);
 
@@ -687,8 +747,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           }),
         { discard: true },
       );
-    // CI changes test behavior (vite.config.ts rejects .only under CI).
-    hash.update(`${process.version}\0${base}\0${ci}\0`);
+    // CI changes test behavior (vite.config.ts rejects .only under CI). The tree holds what the
+    // diff and the bytes below leave out, such as an untracked file's mode.
+    hash.update(`${process.version}\0${base}\0${yield* checkedTree}\0${ci}\0`);
     hash.update(
       yield* git(root, [
         "diff",
@@ -732,7 +793,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (Option.isSome(cached) && cached.value.key === key) {
     yield* Console.log("Nothing changed since the last passing run.\n");
     for (const line of cached.value.summary) yield* Console.log(line);
-    return true;
+    return yield* recordPassForPush;
   }
 
   const present = yield* Effect.filter(files, (file) => fs.exists(inRoot(file)));
@@ -917,10 +978,15 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     run: (_slots: number, collect: (chunk: string) => void) => vp(args, root, collect),
   });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
-  // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
-  // so they keep one worker busy however many there are.
-  const serverTests = vitestTests.filter((file) => file.startsWith("apps/server/")).length;
-  const testWorkers = vitestTests.length - serverTests + Math.min(serverTests, 1);
+  const batched = <S>(
+    items: ReadonlyArray<string>,
+    step: (batch: Array<string>, part: string) => S,
+  ) => {
+    const batches = argumentBatches(items);
+    return batches.map((batch, index) =>
+      step(batch, batches.length > 1 ? ` ${index + 1}/${batches.length}` : ""),
+    );
+  };
 
   const steps: Array<Step<never>> = [
     command("release notes", ["exec", "node", ".github/scripts/release-notes.cjs", "check", base]),
@@ -928,10 +994,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     // The web and mobile builds stop on a shipped package without a license notice. Notices come
     // from installed packages and files the license config names anywhere, so this always runs.
     command("third-party licenses", ["run", "licenses:check"]),
-    ...(present.length > 0
-      ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]
-      : []),
-    ...(code.length > 0 ? [command("lint", ["lint", ...code])] : []),
+    ...batched(present, (batch, part) =>
+      command(`format${part}`, ["fmt", "--check", "--no-error-on-unmatched-pattern", ...batch]),
+    ),
+    ...batched(code, (batch, part) => command(`lint${part}`, ["lint", ...batch])),
     ...(code.some((file) => TRANSLATED_SOURCE.test(file))
       ? [command("translations", ["run", "i18n:check"])]
       : []),
@@ -951,52 +1017,41 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       command(`typecheck ${name}`, ["run", "--cache", "--filter", name, "typecheck"]),
     ),
     // From the repo root, the root vite.config.ts hands each file to its package's config.
-    ...(vitestTests.length > 0
-      ? [
-          {
-            name: `test (${vitestTests.length} files)`,
-            run: (slots: number, collect: (chunk: string) => void) =>
-              vp(
-                ["test", "run", "--passWithNoTests", "--maxWorkers", String(slots), ...vitestTests],
-                root,
-                collect,
-              ),
-            workers: testWorkers,
-            serial: true,
-            timeoutSeconds: testStepTimeoutSeconds(
-              vitestTests.length,
-              timeoutSeconds,
-              explicitTimeout,
-            ),
-          },
-        ]
-      : []),
-    ...(nodeTests.length > 0
-      ? [
-          command(`node --test (${nodeTests.length} files)`, [
-            "exec",
-            "node",
-            "--test",
-            ...nodeTests,
-          ]),
-        ]
-      : []),
-    ...(compilerApps.length > 0
-      ? [
-          {
-            ...command(`react compiler (${compilerFiles} files)`, [
-              "test",
-              "run",
-              "--maxWorkers",
-              "1",
-              ...compilerApps.map((app) => app.test),
-              "-t",
-              compilerApps.flatMap((app) => app.pattern).join("|"),
-            ]),
-            serial: true,
-          },
-        ]
-      : []),
+    ...batched(vitestTests, (batch, part) => {
+      // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
+      // so they keep one worker busy however many there are.
+      const serverTests = batch.filter((file) => file.startsWith("apps/server/")).length;
+      return {
+        name: `test (${batch.length} files)${part}`,
+        run: (slots: number, collect: (chunk: string) => void) =>
+          vp(
+            ["test", "run", "--passWithNoTests", "--maxWorkers", String(slots), ...batch],
+            root,
+            collect,
+          ),
+        workers: batch.length - serverTests + Math.min(serverTests, 1),
+        serial: true,
+        timeoutSeconds: testStepTimeoutSeconds(batch.length, timeoutSeconds, explicitTimeout),
+      };
+    }),
+    ...batched(nodeTests, (batch, part) =>
+      command(`node --test (${batch.length} files)${part}`, ["exec", "node", "--test", ...batch]),
+    ),
+    ...batched(
+      compilerApps.flatMap((app) => app.pattern),
+      (batch, part) => ({
+        ...command(`react compiler (${compilerFiles} files)${part}`, [
+          "test",
+          "run",
+          "--maxWorkers",
+          "1",
+          ...compilerApps.map((app) => app.test),
+          "-t",
+          batch.join("|"),
+        ]),
+        serial: true,
+      }),
+    ),
   ];
 
   const slotDirectory = yield* budgetDirectory(root);
@@ -1040,9 +1095,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     return false;
   }
   if (results.some((result) => result.outcome !== "pass")) return false;
+  // The cache key was read after the install, so it can hold a file the checks never selected.
+  if (!(yield* treeUnchanged)) return false;
   if (after.inputs !== key) {
     yield* Console.log("  pass not cached: generated files changed during the run");
-    return true;
+    return yield* recordCheckedPass;
   }
   // Write then rename, so a concurrent run never reads half a file.
   const temp = `${cachePath}.${process.pid}`;
@@ -1051,7 +1108,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     yield* fs.writeFileString(temp, yield* encodeCacheEntry({ key, summary }));
     yield* fs.rename(temp, cachePath);
   }).pipe(Effect.catch((error) => Console.warn(`  pass not cached: ${error.message}`)));
-  return true;
+  return yield* recordCheckedPass;
 });
 
 export const checkChangedCommand = Command.make(

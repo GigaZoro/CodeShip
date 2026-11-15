@@ -7,12 +7,22 @@ const path = require("node:path");
 
 const { TURN_ENV, acquire, land, tryAcquire, verifyPush } = require("./landing-turn.cjs");
 
-const IDENTITY = ["-c", "user.name=t", "-c", "user.email=t@localhost"];
+// `land` runs git itself, so its rebase needs an identity on a runner without one. A hook exports GIT_DIR
+// and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
+for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
+Object.assign(process.env, {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_AUTHOR_NAME: "Fixture",
+  GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+  GIT_COMMITTER_NAME: "Fixture",
+  GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+});
 
 function setup() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "landing-turn-")));
   const git = (cwd, ...args) =>
-    execFileSync("git", [...IDENTITY, "-C", cwd, ...args], { encoding: "utf8" }).trim();
+    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
   const origin = path.join(root, "origin.git");
   git(root, "init", "--bare", "-b", "main", origin);
   const clone = (name) => {
@@ -50,8 +60,9 @@ test("a second lander cannot push to main while the first holds the turn, and th
       cwd: first,
       remote: origin,
       runId: "first",
-      check: (turn) => {
+      check: (turn, base) => {
         checks += 1;
+        assert.equal(base, git(mover, "rev-parse", "HEAD"));
         assert.equal(tryAcquire({ cwd: second, remote: origin, runId: "second" }), null);
         assert.throws(
           () => verifyPush({ cwd: second, remote: origin, env: {}, refs: ["refs/heads/main"] }),
@@ -127,12 +138,23 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
   }
 });
 
-test("a lander whose checks fail gives the turn back without pushing", () => {
+test("a lander with uncommitted files or failing checks does not push and holds no turn afterwards", () => {
   const { root, origin, git, clone, commit } = setup();
   try {
     const dir = clone("lander");
     commit(dir, "change.txt");
     const before = git(origin, "rev-parse", "main");
+
+    fs.writeFileSync(path.join(dir, "scratch.txt"), "scratch\n");
+    const uncommitted = land({
+      cwd: dir,
+      remote: origin,
+      runId: "lander",
+      check: () => assert.fail("checked a tree it cannot push"),
+    });
+    assert.equal(uncommitted.status, "uncommitted");
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    fs.rmSync(path.join(dir, "scratch.txt"));
 
     const result = land({ cwd: dir, remote: origin, runId: "lander", check: () => false });
 

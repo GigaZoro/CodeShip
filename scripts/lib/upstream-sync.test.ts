@@ -11,11 +11,12 @@ const START = new Date("2026-11-16T07:00:00Z");
 const later = (minutes: number) => new Date(START.getTime() + minutes * 60_000);
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config can sign or ignore fixture files.
+// Git for Windows maps /dev/null to its null device but cannot open NodeOS.devNull (\\.\nul).
 function isolateGit() {
   for (const name of Object.keys(process.env)) {
     if (name.startsWith("GIT_")) vi.stubEnv(name, undefined);
   }
-  vi.stubEnv("GIT_CONFIG_GLOBAL", NodeOS.devNull);
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("GIT_AUTHOR_NAME", "Fixture");
   vi.stubEnv("GIT_AUTHOR_EMAIL", "fixture@example.invalid");

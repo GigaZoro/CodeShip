@@ -126,17 +126,23 @@ function verifyPush({ cwd, remote, env = process.env, refs }) {
 
 /**
  * Lands HEAD on main under the turn: rebases onto main, runs `check` once and pushes the checked tree.
- * `check(turn)` returns true when the checks passed.
+ * `check(turn, base)` returns true when the checks passed against `base`, the commit main is at, which the
+ * push gate requires as their base.
  */
 function land({ cwd, remote, check, branch = "main", runId = randomUUID(), ...rest }) {
+  // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
+  // so the pre-push hook would refuse it only after the whole check.
+  const uncommitted = git(cwd, ["status", "--porcelain"]).stdout;
+  if (uncommitted) return { status: "uncommitted", files: uncommitted.split("\n") };
   return withTurn({ cwd, remote, runId, ...rest }, (turn) => {
     git(cwd, ["fetch", "--quiet", "--no-tags", remote, branch]);
-    const contained = git(cwd, ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], {
+    const base = git(cwd, ["rev-parse", "FETCH_HEAD"]).stdout;
+    const contained = git(cwd, ["merge-base", "--is-ancestor", base, "HEAD"], {
       allowFailure: true,
     }).ok;
     // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
-    if (!contained) git(cwd, ["rebase", "FETCH_HEAD"], { config: MERGE_DRIVER_CONFIG });
-    if (!check(turn)) return { status: "check-failed" };
+    if (!contained) git(cwd, ["rebase", base], { config: MERGE_DRIVER_CONFIG });
+    if (!check(turn, base)) return { status: "check-failed" };
     git(cwd, ["push", "--quiet", remote, `HEAD:refs/heads/${branch}`], {
       env: { [TURN_ENV]: turn },
     });
@@ -158,13 +164,11 @@ function main(argv) {
     return 0;
   }
   if (command === "land") {
-    const checkIndex = rest.indexOf("--check");
-    const checkCommand = checkIndex >= 0 ? rest[checkIndex + 1] : "vp run check:changed";
     const result = land({
       cwd,
       remote: "origin",
-      check: (turn) =>
-        spawnSync(checkCommand, {
+      check: (turn, base) =>
+        spawnSync(`vp run check:changed ${base}`, {
           cwd,
           shell: true,
           stdio: "inherit",
@@ -184,7 +188,7 @@ function main(argv) {
     });
     return 0;
   }
-  console.error("usage: landing-turn.cjs land [--check <command>] | push | verify <remote>");
+  console.error("usage: landing-turn.cjs land | push | verify <remote>");
   return 2;
 }
 

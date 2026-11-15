@@ -1,3 +1,9 @@
+## 2026-11-19 — Main takes only changes whose checks passed, on Windows too
+
+- Maintenance only, with no change in the app. A push to the fork's `main` is refused unless the lander holds the landing turn and `vp run check:changed` passed for exactly the files pushed, compared with the commit `main` is at. Each passing run records what it checked, and the tracked pre-push hook, which a checkout runs once the machine check sets `core.hooksPath`, refuses a push without that record. `landing-turn.cjs land` refuses to start in a worktree with uncommitted or untracked files, whose pass could not cover the commit it pushes.
+- `vp run check:changed` passes on Windows. The agent context budget measures the Windows tool list, which adds the Visual Studio tools, beside the one other systems get, and test fixtures give Git `/dev/null`, which Git for Windows reads as its null device, and name only folders Windows can create. A list of changed files too long for one Windows command line runs in several steps. Its Node version check allows a loaded Windows machine more time to start Node. The lint rule that refuses an early return on the host platform also finds one on the shared host flags such as `isWindowsHost`, and leaves setup and cleanup hooks alone.
+- Every push to the fork's `main` also runs `check:changed` on a GitHub-hosted Windows runner, so a change landed from macOS or Linux meets the Windows tests too.
+
 ## 2026-11-19 — Auto stops offering a model its account's login refuses
 
 - When a Codex account's ChatGPT login refuses a model it lists (`The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account`), that model is now held on that account for a few hours, like a model-scoped usage limit. Auto's reviewer and the models it offers then come from another account that can run the model. Before, the refusal was recorded as a plain error, so Auto kept naming the same account and every review on it failed at once.
