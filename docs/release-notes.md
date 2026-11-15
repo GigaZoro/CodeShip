@@ -1,3 +1,7 @@
+## 2026-11-15 — Pull request lookups start far fewer git commands
+
+- A pull request lookup used to start about ten `git` commands, each re-reading the repository's remotes and configuration. On a machine short of memory with many open chats this added up to hundreds of commands and slowed the server. A lookup now reads the remotes and each configuration value once and shares them for the whole lookup.
+
 ## 2026-11-15 — Automatic updates no longer cut running scheduled runs
 
 - A machine that always has a chat answering used to install an update after a fixed 2-hour wait, which cut every running turn and its delegated chats. Now, after the wait, the update holds new scheduled starts so the running turns can finish, installs when they end, and starts the held runs right after. A turn still running after a further 3 hours is cut and resumes as before, and the log names each chat it cut.
