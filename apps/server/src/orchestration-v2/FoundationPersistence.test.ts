@@ -1713,19 +1713,27 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
-  it.effect.each([
-    "write",
-    "writeWithEffects",
-    "writeIfRunCurrent",
-    "writeIfProviderThreadOwner",
-    "writeIfProviderThreadUnchanged",
-    "commitCommand",
-  ] as const)("refuses a %s that puts a finished run back to an earlier read", (writer) =>
+  it.effect.each(
+    (
+      [
+        "write",
+        "writeWithEffects",
+        "writeIfRunCurrent",
+        "writeIfProviderThreadOwner",
+        "writeIfProviderThreadUnchanged",
+        "commitCommand",
+      ] as const
+    ).flatMap((writer) =>
+      (["stale read", "kept checkpoint", "no checkpoint"] as const).map(
+        (variant) => [writer, variant] as const,
+      ),
+    ),
+  )("refuses a %s that puts a finished run back to waiting, %s", ([writer, variant]) =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
-      const name = `foundation-run-regression-${writer}`;
+      const name = `foundation-run-regression-${writer}-${variant.replace(" ", "-")}`;
       const threadId = ThreadId.make(`thread:${name}`);
       const runId = RunId.make(`run:${name}`);
       const attemptId = RunAttemptId.make(`attempt:${name}`);
@@ -1799,11 +1807,19 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             payload: providerThread,
           },
           // Checkpoint capture commits after the stale writer below read the waiting run.
-          runEvent("captured", { ...waiting, status: "completed", completedAt: now, checkpointId }),
+          runEvent("captured", {
+            ...waiting,
+            status: "completed",
+            completedAt: now,
+            checkpointId: variant === "no checkpoint" ? null : checkpointId,
+          }),
         ],
       });
 
-      const events = [runEvent("stale", waiting)];
+      // "kept checkpoint" and "no checkpoint" leave only the status going backwards.
+      const events = [
+        runEvent("stale", variant === "kept checkpoint" ? { ...waiting, checkpointId } : waiting),
+      ];
       const write: Effect.Effect<unknown, EventSink.EventSinkV2Error> =
         writer === "write"
           ? eventSink.write({ commandId, events })
@@ -1854,7 +1870,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       );
       const run = (yield* projectionStore.getThreadRecords(threadId, ["runs"])).runs[0];
       assert.equal(run?.status, "completed");
-      assert.equal(run?.checkpointId, checkpointId);
+      assert.equal(run?.checkpointId, variant === "no checkpoint" ? null : checkpointId);
     }),
   );
 
@@ -1909,6 +1925,12 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         ],
       });
 
+      const unmarked = yield* Effect.flip(
+        eventSink.write({
+          events: [runEvent({ ...failed, status: "preparing", completedAt: null })],
+        }),
+      );
+      assert.instanceOf(unmarked.cause, EventSink.EventSinkRunRegressionError);
       yield* eventSink.write({
         events: [
           runEvent(
