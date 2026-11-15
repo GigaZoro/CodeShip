@@ -218,6 +218,7 @@ it.effect("recovers an admitted continuation after another crash before provider
             getThreadRecords: () => Effect.succeed(running),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) =>
               Effect.sync(() => {
                 commits.push(input);
@@ -1093,6 +1094,7 @@ it.effect.each([
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               commits.push(input);
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
