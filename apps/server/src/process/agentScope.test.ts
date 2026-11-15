@@ -474,6 +474,34 @@ describe("AgentScope service", () => {
     ),
   );
 
+  it.effect("launches macOS agents through the launcher that runs them below the server", () =>
+    Effect.gen(function* () {
+      const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
+      const agentPath = NodePath.join(bin, "agent");
+      NodeFS.writeFileSync(agentPath, "", { mode: 0o755 });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(bin, { recursive: true, force: true })),
+      );
+      const scope = yield* make.pipe(
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Environment, { PATH: bin }),
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          ProcessRunner.ProcessRunner.of({ run: () => Effect.die("macOS needs no systemd") }),
+        ),
+      );
+      const launch = yield* scope.wrap({ command: "agent", args: ["a b"], name: "t" });
+      expect(launch).toEqual(agentScopeCommand({ command: agentPath, args: ["a b"] }));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-scope-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("leaves a quiet slice alone", () =>
     withFakeSystemd(({ scope, calls }) =>
       Effect.gen(function* () {

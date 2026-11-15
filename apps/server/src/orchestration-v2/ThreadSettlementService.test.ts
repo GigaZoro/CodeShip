@@ -22,6 +22,7 @@ import {
   type GitRunStackedActionResult,
   type VcsUnmergedWorkResult,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -648,7 +649,9 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const snapshots = yield* Ref.make(options.snapshot);
   const snapshotReadCount = yield* Ref.make(0);
   const snapshotReads = yield* Queue.unbounded<number>();
-  const candidateReads = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
+  const candidateReads = yield* Ref.make<
+    ReadonlyArray<{ readonly threadId: string | undefined; readonly background: boolean }>
+  >([]);
   const settings = yield* Ref.make(options.settings ?? DEFAULT_SERVER_SETTINGS);
   const settingsReadCount = yield* Ref.make(0);
   const settingsChanges = yield* PubSub.unbounded<ContractServerSettings>();
@@ -746,7 +749,10 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     }),
     Layer.mock(ProjectionStore.ProjectionStoreV2)({
       getSettlementCandidates: (threadId) =>
-        Ref.update(candidateReads, (reads) => [...reads, threadId]).pipe(
+        Effect.gen(function* () {
+          const background = yield* NodeSqliteClient.Background;
+          yield* Ref.update(candidateReads, (reads) => [...reads, { threadId, background }]);
+        }).pipe(
           Effect.andThen(Ref.updateAndGet(snapshotReadCount, (count) => count + 1)),
           Effect.tap((count) => Queue.offer(snapshotReads, count)),
           Effect.andThen(Ref.get(snapshots)),
@@ -1287,6 +1293,15 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* reactor.drain;
           // The startup sweep, the first per-thread sweep, and one coalesced rerun.
           assert.strictEqual(yield* Ref.get(branchLookupCount), 3);
+          // Only full sweeps read on the background readers, behind other scans.
+          assert.deepStrictEqual(
+            new Set(
+              (yield* Ref.get(fixture.candidateReads)).map(
+                (read) => `${read.threadId === undefined ? "full" : "thread"}:${read.background}`,
+              ),
+            ),
+            new Set(["full:true", "thread:false"]),
+          );
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),

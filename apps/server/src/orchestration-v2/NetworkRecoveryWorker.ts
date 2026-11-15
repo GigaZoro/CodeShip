@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   CommandId,
   MessageId,
@@ -223,10 +224,12 @@ const makeSweep = Effect.gen(function* () {
       yield* due.record(readVersion, Infinity, nowMs);
       return;
     }
-    const plans = (yield* projections.getNetworkRecoveryCandidates({
-      now,
-      since: DateTime.makeUnsafe(nowMs - MAX_NETWORK_FAILURE_AGE_MS),
-    }))
+    const plans = (yield* projections
+      .getNetworkRecoveryCandidates({
+        now,
+        since: DateTime.makeUnsafe(nowMs - MAX_NETWORK_FAILURE_AGE_MS),
+      })
+      .pipe(NodeSqliteClient.inBackground))
       .flatMap(
         (candidate) =>
           networkRecoveryPlan(candidate, nowMs, runRetries.get(candidate.run.id) ?? 0) ?? [],

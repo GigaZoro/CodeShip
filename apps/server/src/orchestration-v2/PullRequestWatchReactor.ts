@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   CommandId,
   MessageId,
@@ -579,7 +580,9 @@ export const make = Effect.gen(function* () {
   });
 
   const sweep = Effect.gen(function* () {
-    const threads = yield* projections.getThreadsWithPullRequests();
+    const threads = yield* projections
+      .getThreadsWithPullRequests()
+      .pipe(NodeSqliteClient.inBackground);
     const targets = threads.flatMap((thread) =>
       visibleThreadPullRequests(thread.pullRequests ?? []).flatMap((link) =>
         link.watch === undefined ? [] : [{ thread, link, watch: link.watch }],

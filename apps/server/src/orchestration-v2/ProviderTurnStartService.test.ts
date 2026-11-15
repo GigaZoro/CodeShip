@@ -27,7 +27,6 @@ import {
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -1965,55 +1964,71 @@ effectIt.effect.each(["unavailable", "tooLarge"] as const)(
 effectIt.effect.each([
   {
     message: "DESCRIPTION is not valid ACP JSON",
-    slept: false,
+    pause: undefined,
     class: "provider_error",
     code: null,
   },
   {
     message: "getaddrinfo ENOTFOUND api.anthropic.com",
-    slept: false,
+    pause: undefined,
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
   // A provider's own wall-clock deadline that expired while the computer slept.
   {
     message: "MCP server initialization timed out",
-    slept: true,
+    pause: "sleep",
     class: "transport_error",
     code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   },
-])("terminalizes a starting run when its provider session cannot open: $message", (row) =>
-  Effect.gen(function* () {
-    const mac = yield* sleepingTestClock;
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      openFailure: new Error(row.message),
-      ...(row.slept ? { beforeOpenFailure: () => mac.sleep("8 hours") } : {}),
-    });
+  // Or while the server, which the provider's MCP tools call, was stalled.
+  {
+    message: "MCP server initialization timed out",
+    pause: "stall",
+    class: "transport_error",
+    code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
+    shown:
+      "MCP server initialization timed out. The server stalled while this turn started. Its stalls are logged to event-loop-stalls.ndjson in the server's logs folder, ~/.t3/userdata/logs by default.",
+  },
+] as const)(
+  "terminalizes a starting run when its provider session cannot open: $message after $pause",
+  (row) =>
+    Effect.gen(function* () {
+      const mac = yield* sleepingTestClock;
+      const { pause } = row;
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        openFailure: new Error(row.message),
+        ...(pause === undefined ? {} : { beforeOpenFailure: () => mac[pause]("8 hours") }),
+      });
 
-    yield* harness.start.pipe(Effect.provideService(Clock.Clock, mac.clock));
+      yield* harness.start.pipe(mac.provide);
 
-    expect(harness.open).toHaveBeenCalledOnce();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        activeAttemptId: harness.attemptId,
-        expectedStatus: "starting",
-      }),
-    );
-    const projection = harness.projection();
-    expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
-    expect(harness.settledRuns).toEqual(["failed"]);
-    expect(projection.attempts[0]).toMatchObject({ status: "failed", startedAt: null });
-    expect(projection.nodes[0]).toMatchObject({ status: "failed", startedAt: null });
-    expect(projection.turnItems).toMatchObject([
-      {
-        type: "error",
-        status: "failed",
-        failure: { class: row.class, code: row.code, message: row.message },
-      },
-    ]);
-  }),
+      expect(harness.open).toHaveBeenCalledOnce();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activeAttemptId: harness.attemptId,
+          expectedStatus: "starting",
+        }),
+      );
+      const projection = harness.projection();
+      expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+      expect(harness.settledRuns).toEqual(["failed"]);
+      expect(projection.attempts[0]).toMatchObject({ status: "failed", startedAt: null });
+      expect(projection.nodes[0]).toMatchObject({ status: "failed", startedAt: null });
+      expect(projection.turnItems).toMatchObject([
+        {
+          type: "error",
+          status: "failed",
+          failure: {
+            class: row.class,
+            code: row.code,
+            message: "shown" in row ? row.shown : row.message,
+          },
+        },
+      ]);
+    }),
 );
 
 effectIt.effect("leaves the run starting when a session-open failure will be retried", () =>
@@ -2097,7 +2112,18 @@ it.each([
   },
 );
 
-effectIt.effect("gives a provider start step its full awake time when the computer sleeps", () =>
+effectIt.effect.each([
+  {
+    pause: "sleep",
+    message:
+      "The provider did not resume the conversation within 5 minutes after the computer slept.",
+  },
+  {
+    pause: "stall",
+    message:
+      "The provider did not resume the conversation within 5 minutes while the server stalled. Its stalls are logged to event-loop-stalls.ndjson in the server's logs folder, ~/.t3/userdata/logs by default.",
+  },
+] as const)("gives a provider start step its full awake time across a $pause", (row) =>
   Effect.gen(function* () {
     const resuming = yield* Deferred.make<void>();
     const harness = makeLocalCommandHarness({
@@ -2106,15 +2132,15 @@ effectIt.effect("gives a provider start step its full awake time when the comput
     });
     const mac = yield* sleepingTestClock;
     const startup = yield* harness.start.pipe(
-      Effect.provideService(Clock.Clock, mac.clock),
+      mac.provide,
       Effect.forkChild({ startImmediately: true }),
     );
     yield* Deferred.await(resuming);
 
     yield* TestClock.adjust("1 minute");
-    mac.sleep("8 hours");
+    mac[row.pause]("8 hours");
     yield* TestClock.adjust("4 minutes");
-    // The 5 seconds the sleep interrupted do not count.
+    // The 5 seconds the pause interrupted do not count.
     expect(harness.projection().runs.at(-1)?.status).toBe("starting");
     yield* TestClock.adjust("5 seconds");
     yield* Fiber.join(startup);
@@ -2128,8 +2154,7 @@ effectIt.effect("gives a provider start step its full awake time when the comput
       {
         class: "transport_error",
         code: ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
-        message:
-          "The provider did not resume the conversation within 5 minutes after the computer slept.",
+        message: row.message,
       },
     ]);
   }),

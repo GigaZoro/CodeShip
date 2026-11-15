@@ -3,6 +3,7 @@ import * as NodeOS from "node:os";
 import * as NodePerfHooks from "node:perf_hooks";
 
 import type { ServerEventLoopStall } from "@t3tools/contracts";
+import { eventLoopBlocked } from "@t3tools/shared/AwakeTime";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -27,6 +28,10 @@ const STALL_LOG_MAX_BYTES = 256 * 1024;
 const NOTICEABLE_STALL_MS = 5000;
 // Clients show what they get, so an old stall must not explain a new drop.
 const NOTICEABLE_STALL_MAX_AGE_MS = 5 * 60_000;
+const STALL_LOG_FILE = "event-loop-stalls.ndjson";
+
+/** Tells the user where to find the server's stalls, for a message about one. */
+export const STALL_LOG_NOTE = `Its stalls are logged to ${STALL_LOG_FILE} in the server's logs folder, ~/.t3/userdata/logs by default.`;
 
 export class EventLoopMonitor extends Context.Reference<{
   /**
@@ -110,8 +115,7 @@ const makeNodeSampler = Effect.gen(function* () {
 
 export const stallMs = ({ delayMaxNs, activeMs }: EventLoopReadings) => {
   const delayMs = Math.round(delayMaxNs / 1e6) - RESOLUTION_MS;
-  // libuv clocks run during macOS/Windows sleep; idle poll time distinguishes it from stalls.
-  if (delayMs <= STALL_THRESHOLD_MS || activeMs < delayMs) return undefined;
+  if (delayMs <= STALL_THRESHOLD_MS || !eventLoopBlocked(delayMs, activeMs)) return undefined;
   return delayMs;
 };
 
@@ -237,7 +241,7 @@ export const layer = Layer.unwrap(
     const { serverTracePath } = yield* ServerConfig.ServerConfig;
     const path = yield* Path.Path;
     return layerWith(makeNodeSampler, {
-      filePath: path.join(path.dirname(serverTracePath), "event-loop-stalls.ndjson"),
+      filePath: path.join(path.dirname(serverTracePath), STALL_LOG_FILE),
       maxBytes: STALL_LOG_MAX_BYTES,
     });
   }),

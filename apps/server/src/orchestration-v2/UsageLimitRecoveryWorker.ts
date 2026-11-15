@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   CommandId,
   MessageId,
@@ -468,17 +469,18 @@ const makeSweep = Effect.gen(function* () {
     const preferences = yield* settings.getSettings;
     const switching = preferences.failoverLimitedThreads;
     const resetting = preferences.autoUseResetCredits.length > 0;
-    const candidates = yield* projections.getLimitRecoveryCandidates({
-      now,
-      autoResume: preferences.autoResumeLimitedThreads,
-      snooze: preferences.snoozeLimitedThreads,
-      waiting: switching || resetting,
-    });
+    const candidates = yield* projections
+      .getLimitRecoveryCandidates({
+        now,
+        autoResume: preferences.autoResumeLimitedThreads,
+        snooze: preferences.snoozeLimitedThreads,
+        waiting: switching || resetting,
+      })
+      .pipe(NodeSqliteClient.inBackground);
     const signedOut = switching
-      ? yield* projections.getSignedOutFailoverCandidates({
-          now,
-          maxAgeMs: MAX_SIGNED_OUT_FAILURE_AGE_MS,
-        })
+      ? yield* projections
+          .getSignedOutFailoverCandidates({ now, maxAgeMs: MAX_SIGNED_OUT_FAILURE_AGE_MS })
+          .pipe(NodeSqliteClient.inBackground)
       : [];
     const providers =
       candidates.length > 0 || signedOut.length > 0 ? yield* providerRegistry.getProviders : null;
@@ -488,10 +490,9 @@ const makeSweep = Effect.gen(function* () {
         : {
             settings: preferences,
             providers,
-            recordedLimits: yield* projections.getUsageLimitedProviderInstances(
-              now,
-              runLiftsScope(providers),
-            ),
+            recordedLimits: yield* projections
+              .getUsageLimitedProviderInstances(now, runLiftsScope(providers))
+              .pipe(NodeSqliteClient.inBackground),
             // A sweep must not start providers, so only the MCP state already loaded counts.
             mcpSignInsNeeded: yield* readMcpSignIns(mcp, {
               settings: preferences,
@@ -607,12 +608,14 @@ const makeSweep = Effect.gen(function* () {
     ) {
       if (routing === null) return false;
       const current = yield* settings.getSettings;
-      const waiting = yield* projections.getLimitRecoveryCandidates({
-        now,
-        autoResume: current.autoResumeLimitedThreads,
-        snooze: current.snoozeLimitedThreads,
-        waiting: true,
-      });
+      const waiting = yield* projections
+        .getLimitRecoveryCandidates({
+          now,
+          autoResume: current.autoResumeLimitedThreads,
+          snooze: current.snoozeLimitedThreads,
+          waiting: true,
+        })
+        .pipe(NodeSqliteClient.inBackground);
       return waiting.some(
         (thread) =>
           resetCreditRedemptionAccount({ ...routing, settings: current, thread }) === instanceId,
@@ -638,9 +641,9 @@ const makeSweep = Effect.gen(function* () {
     }
     // A sweep that acted, or failed to, re-checks on the next tick.
     if (acted) return;
-    const wakeAt = yield* projections.getLimitRecoveryWakeAt(now, {
-      waiting: switching || resetting,
-    });
+    const wakeAt = yield* projections
+      .getLimitRecoveryWakeAt(now, { waiting: switching || resetting })
+      .pipe(NodeSqliteClient.inBackground);
     // A waiting or signed-out thread can move to another account the moment its limit ends.
     const accountRoomAt =
       failover === null

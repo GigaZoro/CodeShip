@@ -4,7 +4,7 @@ import { autoCoordinatorBriefInput } from "./autoCoordinatorAccount.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
-import { timeoutAwakeOrElse, watchSleep } from "@t3tools/shared/AwakeTime";
+import { type AwakeWait, timeoutAwakeOrElse, watchWait } from "@t3tools/shared/AwakeTime";
 import {
   CommandId,
   latestProviderTurnForAttempt,
@@ -35,6 +35,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import { STALL_LOG_NOTE } from "../observability/EventLoopMonitor.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -144,11 +145,12 @@ export class HostLoadPerCpu extends Context.Reference<Effect.Effect<number>>(
 
 class ProviderStartStepTimeoutError extends Schema.TaggedError<ProviderStartStepTimeoutError>()(
   "ProviderStartStepTimeoutError",
-  { step: Schema.String, slept: Schema.Boolean, minutes: Schema.Number },
+  { step: Schema.String, slept: Schema.Boolean, stalled: Schema.Boolean, minutes: Schema.Number },
 ) {
   override get message(): string {
-    const after = this.slept ? " after the computer slept" : "";
-    return `The provider did not ${this.step} within ${this.minutes} minutes${after}.`;
+    const missed = `The provider did not ${this.step} within ${this.minutes} minutes`;
+    if (this.stalled) return `${missed} while the server stalled. ${STALL_LOG_NOTE}`;
+    return this.slept ? `${missed} after the computer slept.` : `${missed}.`;
   }
 }
 
@@ -158,8 +160,8 @@ const withStartStepTimeout =
     effect.pipe(
       timeoutAwakeOrElse({
         duration: Duration.minutes(minutes),
-        orElse: ({ slept }) =>
-          Effect.fail(new ProviderStartStepTimeoutError({ step, slept, minutes })),
+        orElse: (wait) =>
+          Effect.fail(new ProviderStartStepTimeoutError({ step, ...wait, minutes })),
       }),
     );
 
@@ -369,11 +371,11 @@ export const layer: Layer.Layer<
           readonly title: string;
           readonly error: Error;
           readonly message?: string;
-          readonly slept?: boolean;
+          readonly wait?: AwakeWait;
         },
       ) {
         const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
-        const message =
+        const providerMessage =
           failed.message ??
           knownProviderFailureMessage(failed.error) ??
           (nestedCause instanceof Error
@@ -381,13 +383,20 @@ export const layer: Layer.Layer<
             : typeof nestedCause === "string"
               ? nestedCause
               : failed.error.message);
+        // A provider's own deadline that the stall expired names only the timeout.
+        const message =
+          failed.wait?.stalled === true && !providerMessage.includes(STALL_LOG_NOTE)
+            ? `${providerMessage}${/[.!?]$/.test(providerMessage) ? "" : "."} The server stalled while this turn started. ${STALL_LOG_NOTE}`
+            : providerMessage;
         // The agent never saw the message, so a start that a sleep, a lost connection or a
         // timeout (a loaded host recovers) stopped can go again on the retry worker's backoff.
-        // Any failure across a sleep counts: a provider's wall-clock deadlines expire on wake.
+        // Any failure across a sleep or a server stall counts: a provider's wall-clock deadlines
+        // expire meanwhile.
         const waitingFixes =
-          failed.slept === true ||
+          failed.wait?.slept === true ||
+          failed.wait?.stalled === true ||
           isProviderStartStepTimeoutError(failed.error) ||
-          providerErrorClass(message) === "transport_error";
+          providerErrorClass(providerMessage) === "transport_error";
         yield* settleUnstartedRun(context, {
           signal: failed.signal,
           status: "failed",
@@ -610,7 +619,7 @@ export const layer: Layer.Layer<
       readonly threadId: ThreadId;
       readonly runId: RunId;
       readonly willRetry?: boolean;
-      readonly sleptDuringStart: Effect.Effect<boolean>;
+      readonly waitDuringStart: Effect.Effect<AwakeWait>;
     }) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
@@ -697,8 +706,8 @@ export const layer: Layer.Layer<
       const settleRunBeforeStart = (settled: Parameters<typeof settleUnstartedRun>[1]) =>
         settleUnstartedRun(unstarted, settled);
       const settleStartFailure = (failed: Parameters<typeof settleUnstartedRunFailure>[1]) =>
-        Effect.flatMap(input.sleptDuringStart, (slept) =>
-          settleUnstartedRunFailure(unstarted, { ...failed, slept }),
+        Effect.flatMap(input.waitDuringStart, (wait) =>
+          settleUnstartedRunFailure(unstarted, { ...failed, wait }),
         );
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
@@ -2009,7 +2018,7 @@ export const layer: Layer.Layer<
           const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
           const providerTurn = yield* Effect.scoped(
             Effect.gen(function* () {
-              const starting = start({ ...input, sleptDuringStart: yield* watchSleep });
+              const starting = start({ ...input, waitDuringStart: yield* watchWait });
               return yield* thread.worktreePath === null
                 ? starting
                 : withWorkspaceLease(path.resolve(thread.worktreePath), starting);

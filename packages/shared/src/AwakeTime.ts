@@ -1,4 +1,7 @@
+import * as NodePerfHooks from "node:perf_hooks";
+
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
@@ -7,33 +10,64 @@ import type * as Scope from "effect/Scope";
 // deadline can expire while the machine sleeps. Awake time is counted in ticks instead.
 const AWAKE_TICK_MS = 5_000;
 // A tick that ends this much later than it should did not run awake.
-const SLEEP_GAP_MS = 5_000;
+const LATE_TICK_MS = 5_000;
 
-const overran = (startedAt: number, now: number, tickMs: number) =>
-  now - startedAt > tickMs + SLEEP_GAP_MS;
+/** How long the event loop has run, rather than waited in its poll, in ms. */
+export const EventLoopActiveMs = Context.Reference<Effect.Effect<number>>(
+  "@t3tools/shared/AwakeTime/EventLoopActiveMs",
+  {
+    defaultValue: () => Effect.sync(() => NodePerfHooks.performance.eventLoopUtilization().active),
+  },
+);
+
+/**
+ * libuv's clock runs during a macOS or Windows sleep, which the loop spends waiting in its poll.
+ * A loop that stayed busy for as long as it was late was blocked on an awake machine.
+ */
+export const eventLoopBlocked = (lateMs: number, activeMs: number) => activeMs >= lateMs;
 
 export interface AwakeWait {
   /** The machine slept, or the process was stopped, during the wait. */
   readonly slept: boolean;
+  /** The event loop was blocked, so the wait's timers fired late, on an awake machine. */
+  readonly stalled: boolean;
 }
 
-/** Waits until `duration` of awake time has passed; time the machine spends asleep does not count. */
+interface Tick {
+  readonly startedAt: number;
+  readonly activeMs: number;
+}
+
+const startTick = Effect.all({
+  startedAt: Clock.currentTimeMillis,
+  activeMs: Effect.flatten(EventLoopActiveMs),
+});
+
+const lateTick = (tick: Tick, tickMs: number) =>
+  Effect.map(startTick, (now): keyof AwakeWait | undefined => {
+    const lateMs = now.startedAt - tick.startedAt - tickMs;
+    if (lateMs <= LATE_TICK_MS) return undefined;
+    return eventLoopBlocked(lateMs, now.activeMs - tick.activeMs) ? "stalled" : "slept";
+  });
+
+/**
+ * Waits until `duration` of awake time has passed. Time the machine spends asleep, and time the
+ * event loop spends blocked, does not count.
+ */
 export const sleepAwake = Effect.fn("AwakeTime.sleepAwake")(function* (
   duration: Duration.Input,
 ): Effect.fn.Return<AwakeWait> {
   let remainingMs = Duration.toMillis(Duration.fromInputUnsafe(duration));
-  let slept = false;
+  const wait = { slept: false, stalled: false };
   while (remainingMs > 0) {
     const tickMs = Math.min(remainingMs, AWAKE_TICK_MS);
-    const startedAt = yield* Clock.currentTimeMillis;
+    const tick = yield* startTick;
     yield* Effect.sleep(tickMs);
-    if (overran(startedAt, yield* Clock.currentTimeMillis, tickMs)) {
-      slept = true;
-    } else {
-      remainingMs -= tickMs;
-    }
+    const late = yield* lateTick(tick, tickMs);
+    if (late === undefined) remainingMs -= tickMs;
+    else wait[late] = true;
   }
-  return { slept };
+  return wait;
 });
 
 /** `Effect.timeoutOrElse` with a deadline that counts awake time only. */
@@ -51,26 +85,29 @@ export const timeoutAwakeOrElse =
     ).pipe(Effect.flatten);
 
 /**
- * Watches for a sleep until the scope closes and returns the check. The check also sees a sleep
- * the machine has just woken from, before the watch's own timer has fired.
+ * Watches for a sleep or a stall until the scope closes and returns the check. The check also sees
+ * one that has just ended, before the watch's own timer has fired.
  */
-export const watchSleep: Effect.Effect<Effect.Effect<boolean>, never, Scope.Scope> = Effect.gen(
+export const watchWait: Effect.Effect<Effect.Effect<AwakeWait>, never, Scope.Scope> = Effect.gen(
   function* () {
-    let slept = false;
-    let tickStartedAt = yield* Clock.currentTimeMillis;
+    const wait = { slept: false, stalled: false };
+    let tick = yield* startTick;
     yield* Effect.forkScoped(
       Effect.gen(function* () {
-        while (!slept) {
+        while (!wait.slept || !wait.stalled) {
           yield* Effect.sleep(AWAKE_TICK_MS);
-          const now = yield* Clock.currentTimeMillis;
-          slept = overran(tickStartedAt, now, AWAKE_TICK_MS);
-          tickStartedAt = now;
+          const late = yield* lateTick(tick, AWAKE_TICK_MS);
+          if (late !== undefined) wait[late] = true;
+          tick = yield* startTick;
         }
       }),
     );
     return Effect.map(
-      Clock.currentTimeMillis,
-      (now) => slept || overran(tickStartedAt, now, AWAKE_TICK_MS),
+      Effect.suspend(() => lateTick(tick, AWAKE_TICK_MS)),
+      (late) => ({
+        slept: wait.slept || late === "slept",
+        stalled: wait.stalled || late === "stalled",
+      }),
     );
   },
 );

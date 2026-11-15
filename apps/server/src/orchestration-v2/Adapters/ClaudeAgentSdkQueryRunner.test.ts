@@ -10,7 +10,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
@@ -23,7 +22,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { AgentScope } from "@t3tools/shared/AgentScope";
+import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -425,7 +424,18 @@ it.effect("does not reuse a fresh session ID after MCP registration times out", 
   ),
 );
 
-it.effect("does not count the time the computer sleeps against MCP registration", () =>
+it.effect.each([
+  {
+    pause: "sleep",
+    message:
+      "Claude timed out while registering its MCP tools after the computer slept. Retry the turn if it does not start again by itself.",
+  },
+  {
+    pause: "stall",
+    message:
+      "Claude timed out while registering its MCP tools because the server stalled. Its stalls are logged to event-loop-stalls.ndjson in the server's logs folder, ~/.t3/userdata/logs by default. Retry the turn if it does not start again by itself.",
+  },
+] as const)("does not count a $pause against MCP registration, and names it", (row) =>
   Effect.scoped(
     Effect.gen(function* () {
       const registrationStarted = Promise.withResolvers<void>();
@@ -445,22 +455,19 @@ it.effect("does not count the time the computer sleeps against MCP registration"
       const { resume, ...options } = resumedMcpQueryInput.options;
       const opening = yield* runner
         .open({ ...resumedMcpQueryInput, options: { ...options, sessionId: resume } })
-        .pipe(Effect.result, Effect.provideService(Clock.Clock, mac.clock), Effect.forkChild);
+        .pipe(Effect.result, mac.provide, Effect.forkChild);
       yield* Effect.promise(() => registrationStarted.promise);
       yield* TestClock.adjust("10 seconds");
-      mac.sleep("15 minutes");
+      mac[row.pause]("15 minutes");
       yield* TestClock.adjust("80 seconds");
-      // 85 awake seconds: the 5 seconds the sleep interrupted do not count.
+      // 85 awake seconds: the 5 seconds the pause interrupted do not count.
       assert.isUndefined(opening.pollUnsafe());
       yield* TestClock.adjust("5 seconds");
       const result = yield* Fiber.join(opening);
 
       assert.equal(result._tag, "Failure");
       if (result._tag !== "Failure") return;
-      assert.equal(
-        makeProviderFailure({ cause: result.failure }).message,
-        "Claude timed out while registering its MCP tools after the computer slept. Retry the turn if it does not start again by itself.",
-      );
+      assert.equal(makeProviderFailure({ cause: result.failure }).message, row.message);
     }).pipe(Effect.provide(realQueryRunner)),
   ),
 );
@@ -670,4 +677,36 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       assert.equal(runningAgents, 0);
     }).pipe(Effect.provide(runner));
   });
+
+  it.effect("runs a script-entry CLI below the server's CPU priority", () =>
+    Effect.gen(function* () {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-cli-"));
+      const cli = NodePath.join(dir, "cli.mjs");
+      NodeFS.writeFileSync(
+        cli,
+        [
+          'import * as NodeFS from "node:fs";',
+          'import * as NodeOS from "node:os";',
+          'NodeFS.writeFileSync(new URL("./priority", import.meta.url), String(NodeOS.getPriority()));',
+          "process.stdin.resume();",
+        ].join("\n"),
+      );
+      NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "priority")]);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+      );
+      const priorityRead = new Promise<string>((resolve) => {
+        let priority = "";
+        NodeFS.createReadStream(NodePath.join(dir, "priority"), "utf8")
+          .on("data", (chunk) => (priority += chunk))
+          .once("end", () => resolve(priority));
+      });
+
+      const session = yield* openFakeCli(cli).pipe(Effect.provide(realQueryRunner));
+      const priority = Number(yield* Effect.promise(() => priorityRead));
+      yield* session.close;
+
+      assert.equal(priority, Math.min(19, NodeOS.getPriority() + AGENT_NICE_INCREMENT));
+    }),
+  );
 });

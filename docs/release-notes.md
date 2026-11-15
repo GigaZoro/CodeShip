@@ -1,3 +1,9 @@
+## 2026-11-15 — The server keeps up while agents load the computer
+
+- Agents, and the commands they run with `t3_command_run` or in a terminal, now run at a lower CPU priority than T3.CodeShip's server on Windows, macOS and Linux, so builds and tests that use every core no longer leave the server too slow to answer its chats or register a Claude chat's MCP tools.
+- The background checks that look for chats to recover after a usage limit or a lost connection, pull requests to sync and runs to settle, along with storage cleanup and maintenance, now read the database on readers of their own, so a slow check no longer delays opening a chat or starting a turn.
+- When a provider's start or a Claude chat's MCP tools time out because the server itself stalled, the error now says so and names the log of the server's stalls, and the same message runs again by itself, as it does when the computer slept.
+
 ## 2026-11-15 — The fork's shared tasks say which machines get no copy
 
 - `machine-config.json` now says that the translation and upstream sync tasks exclude Zoro-PC in their settings and that the job machine gets no copy, because it is not linked to the machines that run them. Before, it said both were excluded in the task settings, which CodeShip refuses for a machine no copy can reach.

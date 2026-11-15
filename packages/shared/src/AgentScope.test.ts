@@ -6,8 +6,30 @@ import * as NodePath from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
 
-import { AGENT_OOM_SCORE_ADJ, agentScopeCommand, agentScopeLauncherScript } from "./AgentScope.ts";
+import {
+  AGENT_NICE_INCREMENT,
+  AGENT_OOM_SCORE_ADJ,
+  agentScopeCommand,
+  agentScopeLauncherScript,
+} from "./AgentScope.ts";
 import * as HostProcess from "./HostProcess.ts";
+
+const MAX_NICE = 19;
+
+describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("agent priority", () => {
+  it("runs the agent, and what it starts, below the server's CPU priority", () => {
+    const launch = agentScopeCommand({
+      command: "/bin/sh",
+      args: ["-c", '/bin/sh -c "ps -o nice= -p \\$\\$"'],
+    });
+    const child = NodeChildProcess.spawnSync(launch.command, [...launch.args], {
+      encoding: "utf8",
+    });
+    expect(Number(child.stdout.trim())).toBe(
+      Math.min(MAX_NICE, NodeOS.getPriority() + AGENT_NICE_INCREMENT),
+    );
+  });
+});
 
 describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("agentScopeCommand", () => {
   it("raises the OOM score and execs the command with its arguments in the same process", () => {

@@ -414,7 +414,9 @@ const make = Effect.gen(function* () {
 
   // Large snapshots take seconds; use the reader worker instead of blocking the event loop.
   const readThreads = Effect.fn("StorageCleanup.readThreads")(function* () {
-    const snapshot = yield* projections.getShellSnapshot().pipe(NodeSqliteClient.readOnly);
+    const snapshot = yield* projections
+      .getShellSnapshot()
+      .pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
     const projects = yield* projectStore.listShells();
     return { projects, threads: [...snapshot.threads, ...snapshot.archivedThreads] };
   });
@@ -445,7 +447,7 @@ const make = Effect.gen(function* () {
       SELECT DISTINCT json_extract(payload_json, '$.worktreePath') AS "worktreePath"
       FROM orchestration_v2_projection_threads
       WHERE json_extract(payload_json, '$.worktreePath') IS NOT NULL
-    `.pipe(NodeSqliteClient.readOnly);
+    `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
     const referenced = new Set<string>();
     for (const row of rows) {
       const resolved = path.resolve(row.worktreePath);
@@ -814,7 +816,7 @@ const make = Effect.gen(function* () {
           FROM orchestration_v2_projection_threads t
           JOIN projection_projects p ON p.project_id = t.project_id
           WHERE t.deleted_at IS NOT NULL
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
     const deletedThreads = (yield* Effect.forEach(deletedRows, (row) =>
       decodeCleanupThread(row.payload_json).pipe(
         Effect.map((thread) => ({ ...thread, workspaceRoot: row.workspaceRoot })),
@@ -1055,6 +1057,7 @@ const make = Effect.gen(function* () {
                   : "has commits beyond the default branch",
           );
         // Re-read this path's threads and sessions so new activity cancels removal; full per-worktree snapshots take seconds.
+        // Runs under the workspace lease a turn start waits for, so it reads on interactive readers.
         const blockedSinceCheck = Effect.fnUntraced(function* () {
           const latestProjects = yield* projectStore.listShells();
           if (yield* containsProjectRoot(worktreePath, [project, ...latestProjects]))

@@ -38,6 +38,7 @@ import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as CommandRunner from "./commandRunner/CommandRunner.ts";
 import * as AgentScopeLive from "./process/agentScope.ts";
+import * as ServerPriority from "./process/serverPriority.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
 import * as PullRequestHttp from "./pullRequest/http.ts";
@@ -985,6 +986,7 @@ const layerMakeServer = Layer.unwrap(
     const layerLauncher = ServiceLauncherClient.layer;
 
     yield* fixPath({ shellEnvironmentPrepared: config.shellEnvironmentPrepared });
+    yield* ServerPriority.raiseAboveChildren();
 
     const layerHttpListening = Layer.effectDiscard(
       Effect.gen(function* () {

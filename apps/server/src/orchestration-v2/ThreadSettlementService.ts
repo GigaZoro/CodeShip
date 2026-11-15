@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   backgroundWorkHoldsCompletion,
   turnItemUpdateCanEndBackgroundWork,
@@ -439,7 +440,11 @@ export const make = Effect.gen(function* () {
     if (!autoSettlementConfigured(settings)) {
       return;
     }
-    const threads = yield* projections.getSettlementCandidates(threadId);
+    const readCandidates = projections.getSettlementCandidates(threadId);
+    // A stopped thread's own lookup must not queue behind full scans (see threadSweeps).
+    const threads = yield* threadId === undefined
+      ? NodeSqliteClient.inBackground(readCandidates)
+      : readCandidates;
     if (threads.length === 0) return;
     const projectShells = yield* projectStore.listShells();
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);

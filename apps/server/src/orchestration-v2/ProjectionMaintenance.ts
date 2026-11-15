@@ -291,7 +291,7 @@ export const layer: Layer.Layer<
         SELECT
           COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS event_sequence,
           COALESCE((SELECT MAX(rowid) FROM orchestration_command_receipts), 0) AS receipt_row_id
-      `.pipe(NodeSqliteClient.readOnly);
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
       let throughSequence = bounds[0]?.event_sequence ?? 0;
       let throughReceiptRowId = bounds[0]?.receipt_row_id ?? 0;
       const retainedThreadIds = new Set<string>();
@@ -348,7 +348,7 @@ export const layer: Layer.Layer<
           WHERE event.sequence <= ${throughSequence}
           ORDER BY event.sequence DESC
           LIMIT ${COMPACTION_PAGE_SIZE + 1}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const page = rows.slice(0, COMPACTION_PAGE_SIZE);
         const obsolete: number[] = [];
         for (const row of page) {
@@ -444,7 +444,7 @@ export const layer: Layer.Layer<
           WHERE receipt.rowid <= ${throughReceiptRowId}
           ORDER BY receipt.rowid DESC
           LIMIT ${COMPACTION_PAGE_SIZE + 1}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const page = rows.slice(0, COMPACTION_PAGE_SIZE);
         const obsolete = page
           .filter((row) => row.imported_legacy_thread === 1)
@@ -530,13 +530,14 @@ export const layer: Layer.Layer<
         sql.withTransaction(
           Effect.flatMap(cold, (isCold) => (isCold ? Effect.asSome(write) : Effect.succeedNone)),
         );
-      if (!(yield* cold.pipe(NodeSqliteClient.readOnly))) return done(false);
+      if (!(yield* cold.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground)))
+        return done(false);
       // Events appended after this read belong to new activity and stay as written.
       const [stream] = yield* sql<{ readonly last_sequence: number | null }>`
         SELECT MAX(sequence) AS last_sequence
         FROM orchestration_events
         WHERE aggregate_kind = 'thread' AND stream_id = ${input.threadId}
-      `.pipe(NodeSqliteClient.readOnly);
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
       const lastSequence = stream?.last_sequence ?? 0;
 
       const prunedItemIds = new Set<string>();
@@ -566,7 +567,7 @@ export const layer: Layer.Layer<
             AND (ordinal, turn_item_id) > (${ordinalCursor}, ${itemCursor})
           ORDER BY ordinal, turn_item_id
           LIMIT ${COMPACTION_PAGE_SIZE}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const updates: Array<{
           readonly row: (typeof items)[number];
           readonly json: string;
@@ -628,7 +629,7 @@ export const layer: Layer.Layer<
             AND sequence <= ${lastSequence}
           ORDER BY sequence
           LIMIT ${COMPACTION_PAGE_SIZE}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const matched = events
           .filter((event) => event.item_id !== null && prunedItemIds.has(event.item_id))
           .map((event) => event.sequence);
@@ -640,7 +641,7 @@ export const layer: Layer.Layer<
             SELECT sequence, payload_json
             FROM orchestration_events
             WHERE sequence IN ${sql.in(matched)}
-          `.pipe(NodeSqliteClient.readOnly);
+          `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
           const updates: Array<{ readonly sequence: number; readonly json: string }> = [];
           for (const event of payloads) {
             const pruned = yield* prunedItemPayload(event.payload_json);
@@ -729,7 +730,7 @@ export const layer: Layer.Layer<
             LEFT JOIN orchestration_v2_thread_output_retention AS retention
               ON retention.thread_id = page.thread_id
             ORDER BY page.thread_id
-          `.pipe(NodeSqliteClient.readOnly);
+          `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
 
           for (const thread of threads) {
             if (thread.candidate !== 1 || thread.root_thread_id === null) continue;

@@ -67,7 +67,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
-import { AgentScope } from "@t3tools/shared/AgentScope";
+import { AgentScope, agentScopeCommand } from "@t3tools/shared/AgentScope";
 import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
@@ -141,6 +141,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { STALL_LOG_NOTE } from "../../observability/EventLoopMonitor.ts";
 import { resolveClaudeSdkExecutablePath } from "../../provider/Drivers/ClaudeExecutable.ts";
 import {
   planClaudeSkillDispatch,
@@ -595,12 +596,16 @@ export class ClaudePromptQueueClosedError extends Schema.TaggedError<ClaudePromp
 
 export class ClaudeMcpRegistrationTimeoutError extends Schema.TaggedError<ClaudeMcpRegistrationTimeoutError>()(
   "ClaudeMcpRegistrationTimeoutError",
-  // The computer slept during the wait, which can drop the connections the tools need.
-  { slept: Schema.Boolean },
+  // A sleep can drop the connections the tools need; a stalled server cannot answer them.
+  { slept: Schema.Boolean, stalled: Schema.Boolean },
 ) {
   override get message(): string {
+    const retry = "Retry the turn if it does not start again by itself.";
+    if (this.stalled) {
+      return `Claude timed out while registering its MCP tools because the server stalled. ${STALL_LOG_NOTE} ${retry}`;
+    }
     return this.slept
-      ? "Claude timed out while registering its MCP tools after the computer slept. Retry the turn if it does not start again by itself."
+      ? `Claude timed out while registering its MCP tools after the computer slept. ${retry}`
       : "Claude timed out while registering its MCP tools. Retry the turn; if it keeps failing, check Claude and the server logs.";
   }
 }
@@ -1020,7 +1025,14 @@ export const layerQueryRunner: Layer.Layer<
             options.spawnClaudeCodeProcess ??
             ((spawnOptions: ClaudeSpawnOptions) => {
               if (platform !== "win32") {
-                return spawnClaudeProcessGroup(spawnOptions, stopScope, appendStderr);
+                // A script entry's runtime is known only here, so it gets the unscoped launcher.
+                const scoped =
+                  launch === undefined ? agentScopeCommand(spawnOptions) : spawnOptions;
+                return spawnClaudeProcessGroup(
+                  { ...spawnOptions, command: scoped.command, args: [...scoped.args] },
+                  stopScope,
+                  appendStderr,
+                );
               }
               const child = NodeChildProcess.spawn(spawnOptions.command, spawnOptions.args, {
                 cwd: spawnOptions.cwd,
@@ -1082,16 +1094,16 @@ export const layerQueryRunner: Layer.Layer<
                         Effect.orElseSucceed(() => Object.keys(mcpServers)),
                         timeoutAwakeOrElse({
                           duration: CLAUDE_MCP_REGISTRATION_TIMEOUT,
-                          orElse: ({ slept }) =>
+                          orElse: (wait) =>
                             Effect.logWarning("orchestration-v2.claude-mcp-registration-timeout", {
                               threadId: input.threadId,
                               providerSessionId: input.providerSessionId,
-                              slept,
+                              ...wait,
                             }).pipe(
                               Effect.andThen(
                                 Effect.fail(
                                   queryRunnerError(
-                                    new ClaudeMcpRegistrationTimeoutError({ slept }),
+                                    new ClaudeMcpRegistrationTimeoutError(wait),
                                     "setMcpServers",
                                   ),
                                 ),
@@ -10773,7 +10785,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 Effect.gen(function* () {
                   const failure =
                     claudeStartupUsageFailure(cause, yield* DateTime.now) ??
-                    (isClaudeMcpRegistrationTimeoutError(cause.cause) && cause.cause.slept
+                    (isClaudeMcpRegistrationTimeoutError(cause.cause) &&
+                    (cause.cause.slept || cause.cause.stalled)
                       ? promptNotSentFailure(cause.cause.message)
                       : undefined);
                   return yield* failure === undefined

@@ -20,6 +20,7 @@ import {
   type TerminalSummary,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -346,6 +347,7 @@ const cleanupFixture = (
     let sessionLive = true;
     let onLiveCheck: Effect.Effect<void> = Effect.void;
     let outboxStatus: string | null = null;
+    const sqlReads: Array<{ readonly query: string; readonly background: boolean }> = [];
     let fullStatusCalls = 0;
     let snapshotReads = 0;
     let terminalListener: ((event: TerminalMetadataStreamEvent) => Effect.Effect<void>) | undefined;
@@ -452,6 +454,12 @@ const cleanupFixture = (
                       ...storedWorktreePaths,
                     ].map((worktreePath) => ({ worktreePath }))
                   : [],
+        ).pipe(
+          Effect.tap(() =>
+            Effect.map(NodeSqliteClient.Background, (background) => {
+              sqlReads.push({ query: strings.join(""), background });
+            }),
+          ),
         )) as unknown as SqlClient.SqlClient),
       Effect.provideService(GitManager.GitManager, {
         invalidateStatus: () => Effect.void,
@@ -532,6 +540,7 @@ const cleanupFixture = (
       setOpenSessionCwd: (cwd: string | null) => {
         openSessionCwd = cwd;
       },
+      sqlReads: () => sqlReads,
       openTerminal: (paths: { cwd: string; worktreePath: string | null }) =>
         terminalListener?.({
           type: "upsert",
@@ -1256,6 +1265,12 @@ describe("deleted thread worktrees", () => {
       );
       expect(reads).toBeGreaterThan(0);
       expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      // These rechecks hold the workspace lease a turn start waits for.
+      const recheckLanes = fixture
+        .sqlReads()
+        .filter((read) => /projection_provider_sessions|effect_outbox/.test(read.query))
+        .map((read) => read.background);
+      expect(new Set(recheckLanes)).toEqual(new Set([false]));
     }).pipe(Effect.provide(cleanupTestLayer), Effect.scoped),
   );
 

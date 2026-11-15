@@ -123,10 +123,10 @@ separately. Signing out of T3 Connect does not stop or uninstall the service.
 
 ## Keep the server responsive when agents use all memory
 
-On Linux, agents already run with lower priority than the server. When they
-fill the machine's memory, though, the kernel may still slow down or stop the
-server, because only an administrator can reserve memory for it. Run, as your
-normal user:
+Agents and the commands they run already have a lower CPU priority than the
+server. When they fill a Linux machine's memory, though, the kernel may still
+slow down or stop the server, because only an administrator can reserve memory
+for it. Run, as your normal user:
 
 ```sh
 t3 service protect

@@ -3728,7 +3728,7 @@ it.effect.each(["events", "receipts"] as const)(
         yield* Deferred.succeed(releaseReader, undefined);
         yield* Fiber.join(reader);
         const result = yield* Fiber.join(compaction);
-        assert.equal(discoverySpan.attributes.get("db.connection"), "reader");
+        assert.equal(discoverySpan.attributes.get("db.connection"), "background-reader");
         assert.equal(result.deletedEventCount, kind === "events" ? 1 : 0);
         assert.equal(result.deletedReceiptCount, kind === "receipts" ? 1 : 0);
         const retained =

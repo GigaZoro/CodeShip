@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
@@ -377,7 +378,9 @@ export const make = Effect.gen(function* () {
       Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.logWarning(message, fields);
 
   const sweep = Effect.fn("PullRequestSyncReactor.sweep")(function* (scope: "all" | "requested") {
-    const threads = yield* projections.getThreadsWithPullRequests();
+    const threads = yield* projections
+      .getThreadsWithPullRequests()
+      .pipe(NodeSqliteClient.inBackground);
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
     const nowIso = DateTime.formatIso(now);

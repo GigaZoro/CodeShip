@@ -289,6 +289,39 @@ it.effect("serves another read while a read-only transaction is open", () =>
   ),
 );
 
+it.effect(
+  "serves a read while background scans hold more transactions than there are readers",
+  () =>
+    withReaderClient((sql) =>
+      Effect.gen(function* () {
+        const release = yield* Deferred.make<void>();
+        const opened = yield* Deferred.make<void>();
+        const scans = yield* Effect.forEach(Array.from({ length: 8 }), () =>
+          Effect.forkChild(
+            sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const count = yield* countEntries(sql);
+                  yield* Deferred.succeed(opened, undefined);
+                  yield* Deferred.await(release);
+                  return count;
+                }),
+              )
+              .pipe(SqliteClient.readOnly, SqliteClient.inBackground),
+          ),
+        );
+        yield* Deferred.await(opened);
+
+        assert.equal(yield* countEntries(sql).pipe(SqliteClient.readOnly), 1);
+        yield* Deferred.succeed(release, undefined);
+        assert.deepEqual(
+          yield* Fiber.joinAll(scans),
+          Array.from({ length: 8 }, () => 1),
+        );
+      }),
+    ),
+);
+
 // regression: #19226 read-only transactions run on the separate reader connection
 it.effect("rejects a write in a read-only transaction", () =>
   withReaderClient((sql) =>

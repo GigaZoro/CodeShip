@@ -51,8 +51,22 @@ export const readOnly = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect
     restore(Effect.provideService(effect, ReadOnly, restore)),
   );
 
+export const Background = Context.Reference<boolean>(
+  "@t3tools/shared/nodeSqliteClient/Background",
+  {
+    defaultValue: () => false,
+  },
+);
+
+/**
+ * Sends the effect's read-only reads to readers of their own. A scan can hold its reader for
+ * minutes on a loaded machine; point lookups never queue behind it. Writes keep the writer.
+ */
+export const inBackground = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+  Effect.provideService(effect, Background, true);
+
 interface Acquired {
-  readonly connection: "writer" | "reader";
+  readonly connection: "writer" | "reader" | "background-reader";
   readonly lockWaitMs: number;
 }
 
@@ -295,6 +309,7 @@ const endsReadTransaction = (sql: string) => /^\s*ROLLBACK\b|^\s*COMMIT\b/i.test
 
 // WAL readers run concurrently; one worker serialized every read behind the slowest transaction.
 const READER_POOL_SIZE = 4;
+const BACKGROUND_READER_POOL_SIZE = 2;
 
 // Bind transactions to one worker; fail after its exit instead of resuming outside the transaction on a replacement.
 const makeReader = Effect.fnUntraced(function* (
@@ -1086,9 +1101,9 @@ const make = Effect.fn("makeWithDatabase")(function* (
   const connection = yield* makeConnection;
   // A reader that cannot start turns off the whole pool, so routing never picks a dead slot.
   const readerPool = { unavailable: false };
-  const readers =
+  const makeLane = (size: number) =>
     options.readerWorker && isFileDatabase
-      ? yield* Effect.forEach(Array.from({ length: READER_POOL_SIZE }), () =>
+      ? Effect.forEach(Array.from({ length: size }), () =>
           Effect.map(
             Effect.all([makeReader(options, readerPool), Semaphore.make(1)]),
             ([acquire, lock]) => ({
@@ -1098,13 +1113,21 @@ const make = Effect.fn("makeWithDatabase")(function* (
             }),
           ),
         )
-      : [];
+      : Effect.succeed([]);
+  const lanes = {
+    reader: yield* makeLane(READER_POOL_SIZE),
+    "background-reader": yield* makeLane(BACKGROUND_READER_POOL_SIZE),
+  };
 
   const writer = { name: "writer" as const, lock: semaphore, connection };
   let activeWriter: ConnectionOwner | undefined;
   // Callers must run route uninterruptibly and pass `claimed` a finalizer that runs `release` once.
   const route = (claimed: (release: Effect.Effect<void>) => Effect.Effect<void>) =>
     Effect.withFiber((fiber) => {
+      const name: keyof typeof lanes = Context.get(fiber.context, Background)
+        ? "background-reader"
+        : "reader";
+      const readers = lanes[name];
       if (readers.length === 0 || readerPool.unavailable || !Context.get(fiber.context, ReadOnly)) {
         return Effect.succeed(writer);
       }
@@ -1122,7 +1145,7 @@ const make = Effect.fn("makeWithDatabase")(function* (
         Effect.map(reader.acquire, (readerConnection) =>
           readerConnection === undefined
             ? writer
-            : { name: "reader" as const, lock: reader.lock, connection: readerConnection },
+            : { name, lock: reader.lock, connection: readerConnection },
         ),
       );
     });

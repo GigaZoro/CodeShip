@@ -5,27 +5,45 @@ import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
-import { sleepAwake, timeoutAwakeOrElse, watchSleep } from "./AwakeTime.ts";
+import { EventLoopActiveMs, sleepAwake, timeoutAwakeOrElse, watchWait } from "./AwakeTime.ts";
 
-// A macOS clock that sleeps from `sleepAt` for `sleepMs`: timers due while it sleeps fire on wake.
-const sleepingMacClock = (sleepAt: number, sleepMs: number): Clock.Clock => {
-  let now = 0;
-  const nanos = () => BigInt(now) * 1_000_000n;
-  return {
-    currentTimeMillisUnsafe: () => now,
-    currentTimeMillis: Effect.sync(() => now),
-    currentTimeNanosUnsafe: nanos,
-    currentTimeNanos: Effect.sync(nanos),
-    monotonicTimeNanosUnsafe: nanos,
-    monotonicTimeNanos: Effect.sync(nanos),
-    sleep: (duration) =>
-      Effect.sync(() => {
-        const end = now + Duration.toMillis(duration);
-        const wake = sleepAt + sleepMs;
-        now = end > sleepAt && end < wake ? wake : end;
-      }),
+type Pause = "sleep" | "stall";
+
+// A macOS clock that pauses from `pauseAt` for `pauseMs`: timers due meanwhile fire when it ends.
+// A sleep leaves the event loop waiting in its poll; a stall keeps it running.
+const onPausingMac =
+  (pauseAt: number, pauseMs: number, pause: Pause = "sleep") =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+    let now = 0;
+    let activeMs = 0;
+    const nanos = () => BigInt(now) * 1_000_000n;
+    const clock: Clock.Clock = {
+      currentTimeMillisUnsafe: () => now,
+      currentTimeMillis: Effect.sync(() => now),
+      currentTimeNanosUnsafe: nanos,
+      currentTimeNanos: Effect.sync(nanos),
+      monotonicTimeNanosUnsafe: nanos,
+      monotonicTimeNanos: Effect.sync(nanos),
+      sleep: (duration) =>
+        Effect.sync(() => {
+          const end = now + Duration.toMillis(duration);
+          const resume = pauseAt + pauseMs;
+          if (end <= pauseAt || end >= resume) {
+            now = end;
+            return;
+          }
+          if (pause === "stall") activeMs += resume - now;
+          now = resume;
+        }),
+    };
+    return effect.pipe(
+      Effect.provideService(Clock.Clock, clock),
+      Effect.provideService(
+        EventLoopActiveMs,
+        Effect.sync(() => activeMs),
+      ),
+    );
   };
-};
 
 const sleepAt = 16_000;
 const sleepMs = 15 * 60_000;
@@ -38,10 +56,13 @@ describe("AwakeTime", () => {
         Effect.timeoutOrElse({ duration: "90 seconds", orElse: () => Clock.currentTimeMillis }),
       );
       expect(firedAt).toBe(wake);
-    }).pipe(Effect.provideService(Clock.Clock, sleepingMacClock(sleepAt, sleepMs))),
+    }).pipe(onPausingMac(sleepAt, sleepMs)),
   );
 
-  it.effect("an awake deadline counts only the time the machine was awake", () =>
+  it.effect.each<{ pause: Pause; wait: { slept: boolean; stalled: boolean } }>([
+    { pause: "sleep", wait: { slept: true, stalled: false } },
+    { pause: "stall", wait: { slept: false, stalled: true } },
+  ])("an awake deadline counts only awake time, and names a $pause", ({ pause, wait }) =>
     Effect.gen(function* () {
       const fired = yield* Effect.never.pipe(
         timeoutAwakeOrElse({
@@ -49,19 +70,19 @@ describe("AwakeTime", () => {
           orElse: (wait) => Effect.map(Clock.currentTimeMillis, (at) => ({ at, ...wait })),
         }),
       );
-      // 15 awake seconds before the sleep; the tick it interrupted does not count.
-      expect(fired).toEqual({ at: wake + 75_000, slept: true });
-    }).pipe(Effect.provideService(Clock.Clock, sleepingMacClock(sleepAt, sleepMs))),
+      // 15 awake seconds before the pause; the tick it interrupted does not count.
+      expect(fired).toEqual({ at: wake + 75_000, ...wait });
+    }).pipe(onPausingMac(sleepAt, sleepMs, pause)),
   );
 
   it.effect("an awake wait without a sleep says so", () =>
     sleepAwake("90 seconds").pipe(
       Effect.flatMap((wait) =>
         Effect.map(Clock.currentTimeMillis, (at) =>
-          expect({ at, ...wait }).toEqual({ at: 90_000, slept: false }),
+          expect({ at, ...wait }).toEqual({ at: 90_000, slept: false, stalled: false }),
         ),
       ),
-      Effect.provideService(Clock.Clock, sleepingMacClock(Number.POSITIVE_INFINITY, 0)),
+      onPausingMac(Number.POSITIVE_INFINITY, 0),
     ),
   );
 
@@ -69,31 +90,46 @@ describe("AwakeTime", () => {
     Effect.succeed("done").pipe(
       timeoutAwakeOrElse({ duration: "90 seconds", orElse: () => Effect.succeed("timed out") }),
       Effect.map((result) => expect(result).toBe("done")),
-      Effect.provideService(Clock.Clock, sleepingMacClock(sleepAt, sleepMs)),
+      onPausingMac(sleepAt, sleepMs),
     ),
   );
 
-  it.effect("a sleep watch counts a sleep only when the machine slept", () =>
+  it.effect.each<{ pause: Pause; wait: { slept: boolean; stalled: boolean } }>([
+    { pause: "sleep", wait: { slept: true, stalled: false } },
+    { pause: "stall", wait: { slept: false, stalled: true } },
+  ])("a wait watch reports a $pause only once there was one", ({ pause, wait }) =>
     Effect.gen(function* () {
-      // The TestClock fires timers; the wall clock also jumps ahead over a sleep.
+      // The TestClock fires timers; the wall clock also jumps ahead over a pause.
       const testClock = yield* Clock.Clock;
-      let sleptMs = 0;
-      const millis = () => testClock.currentTimeMillisUnsafe() + sleptMs;
-      const mac: Clock.Clock = {
-        ...testClock,
-        currentTimeMillisUnsafe: millis,
-        currentTimeMillis: Effect.sync(millis),
-      };
-      const slept = yield* watchSleep.pipe(Effect.provideService(Clock.Clock, mac));
-      const check = slept.pipe(Effect.provideService(Clock.Clock, mac));
+      let pausedMs = 0;
+      let activeMs = 0;
+      const millis = () => testClock.currentTimeMillisUnsafe() + pausedMs;
+      const mac = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(Clock.Clock, {
+            ...testClock,
+            currentTimeMillisUnsafe: millis,
+            currentTimeMillis: Effect.sync(millis),
+          }),
+          Effect.provideService(
+            EventLoopActiveMs,
+            Effect.sync(() => activeMs),
+          ),
+        );
+      const check = mac(yield* mac(watchWait));
 
       yield* TestClock.adjust("10 minutes");
       const awake = yield* check;
-      sleptMs = 8 * 60 * 60_000;
-      const justWoke = yield* check;
+      pausedMs = 8 * 60 * 60_000;
+      if (pause === "stall") activeMs = pausedMs;
+      const justEnded = yield* check;
       yield* TestClock.adjust("1 minute");
 
-      expect([awake, justWoke, yield* check]).toEqual([false, true, true]);
+      expect([awake, justEnded, yield* check]).toEqual([
+        { slept: false, stalled: false },
+        wait,
+        wait,
+      ]);
     }).pipe(Effect.scoped),
   );
 });

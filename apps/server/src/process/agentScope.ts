@@ -100,15 +100,12 @@ const MAX_TRACKED_THREADS = 500;
 
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
-  if (platform !== "linux") return AgentScope.defaultValue();
+  // Windows starts children at normal priority, below the server (serverPriority.ts).
+  if (platform === "win32") return AgentScope.defaultValue();
 
-  const runner = yield* ProcessRunner.ProcessRunner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const hostEnvironment = yield* HostProcess.Environment;
-  const { stateDir } = yield* ServerConfig.ServerConfig;
-  const ownedSlice = ownedAgentSlice(stateDir);
-  const layerScope = yield* Effect.scope;
 
   const resolve = (command: string, env: NodeJS.ProcessEnv) =>
     resolveCommandPath(command, { env }).pipe(
@@ -116,6 +113,23 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
       Effect.provideService(HostProcess.Platform, platform),
     );
+
+  if (platform !== "linux") {
+    return {
+      ...AgentScope.defaultValue(),
+      wrap: Effect.fn("AgentScope.wrap")(function* ({ command, args, env }) {
+        const resolved = yield* resolve(command, env ?? hostEnvironment);
+        return resolved === null
+          ? { command, args }
+          : agentScopeCommand({ command: resolved, args });
+      }),
+    } satisfies AgentScopeShape;
+  }
+
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const { stateDir } = yield* ServerConfig.ServerConfig;
+  const ownedSlice = ownedAgentSlice(stateDir);
+  const layerScope = yield* Effect.scope;
 
   const run = (command: string, args: ReadonlyArray<string>) =>
     runner.run({ command, args, timeout: "5 seconds" }).pipe(Effect.option);

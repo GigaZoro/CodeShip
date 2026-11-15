@@ -1,3 +1,4 @@
+import { EventLoopActiveMs } from "@t3tools/shared/AwakeTime";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -16,12 +17,14 @@ export function provideDeterministicTestRuntime<A, E, R>(
 
 /**
  * The TestClock with a wall clock that `sleep` moves ahead, the way a Mac's moves over a sleep.
- * Timers still fire on the TestClock, so one that is running during `sleep` ends late.
+ * Timers still fire on the TestClock, so one that is running during `sleep` ends late. `stall`
+ * moves it the same way while the event loop runs, as when the server blocks on an awake machine.
  */
 export const sleepingTestClock = Effect.gen(function* () {
   const testClock = yield* Clock.Clock;
-  let sleptMs = 0;
-  const millis = () => testClock.currentTimeMillisUnsafe() + sleptMs;
+  let skippedMs = 0;
+  let activeMs = 0;
+  const millis = () => testClock.currentTimeMillisUnsafe() + skippedMs;
   const nanos = () => BigInt(millis()) * 1_000_000n;
   const clock: Clock.Clock = {
     ...testClock,
@@ -30,10 +33,25 @@ export const sleepingTestClock = Effect.gen(function* () {
     currentTimeNanosUnsafe: nanos,
     currentTimeNanos: Effect.sync(nanos),
   };
+  const skip = (duration: Duration.Input) => {
+    const ms = Duration.toMillis(Duration.fromInputUnsafe(duration));
+    skippedMs += ms;
+    return ms;
+  };
   return {
-    clock,
+    provide: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(Clock.Clock, clock),
+        Effect.provideService(
+          EventLoopActiveMs,
+          Effect.sync(() => activeMs),
+        ),
+      ),
     sleep: (duration: Duration.Input) => {
-      sleptMs += Duration.toMillis(Duration.fromInputUnsafe(duration));
+      skip(duration);
+    },
+    stall: (duration: Duration.Input) => {
+      activeMs += skip(duration);
     },
   };
 });

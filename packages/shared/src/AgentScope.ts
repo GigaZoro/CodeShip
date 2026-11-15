@@ -62,7 +62,15 @@ export const AGENT_OOM_SCORE_ADJ = 800;
 
 export const RAISE_OOM_SCORE_LINE = `{ echo ${AGENT_OOM_SCORE_ADJ} >/proc/self/oom_score_adj; } 2>/dev/null`;
 
-const LAUNCH_SCRIPT = [RAISE_OOM_SCORE_LINE, 'exec "$@"'].join("\n");
+/** Agents, their builds and their commands yield CPU to the server, so its event loop keeps up. */
+export const AGENT_NICE_INCREMENT = 10;
+
+export const EXEC_BELOW_SERVER: ReadonlyArray<string> = [
+  `command -v nice >/dev/null 2>&1 && exec nice -n ${AGENT_NICE_INCREMENT} "$@"`,
+  'exec "$@"',
+];
+
+const LAUNCH_SCRIPT = [RAISE_OOM_SCORE_LINE, ...EXEC_BELOW_SERVER].join("\n");
 
 // systemd-run needs XDG_RUNTIME_DIR to reach this user's manager.
 const SCOPED_LAUNCH_SCRIPT = [
@@ -70,7 +78,7 @@ const SCOPED_LAUNCH_SCRIPT = [
   ': "${XDG_RUNTIME_DIR:=$1}"',
   "export XDG_RUNTIME_DIR",
   "shift",
-  'exec "$@"',
+  ...EXEC_BELOW_SERVER,
 ].join("\n");
 
 export interface AgentSystemdScope {

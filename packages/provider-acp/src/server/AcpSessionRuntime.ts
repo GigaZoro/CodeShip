@@ -28,7 +28,12 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import { AgentScope, AgentScopeThreadId, RAISE_OOM_SCORE_LINE } from "@t3tools/shared/AgentScope";
+import {
+  AgentScope,
+  AgentScopeThreadId,
+  EXEC_BELOW_SERVER,
+  RAISE_OOM_SCORE_LINE,
+} from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 
@@ -277,7 +282,7 @@ export function wrapCommandForLinuxCgroup(
         "trap 'exit 125' 0",
         // Bash can skip EXIT traps on failed exec; reject invalid targets with path and exit 125.
         '[ -f "$1" ] && [ -x "$1" ] || { printf "%s: %s: not an executable file\\n" "$0" "$1" >&2; exit 125; }',
-        'exec "$@"',
+        ...EXEC_BELOW_SERVER,
       ].join("\n"),
       "t3-acp-cgroup-wrapper",
       lease.path,
