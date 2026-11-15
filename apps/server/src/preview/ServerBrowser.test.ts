@@ -1387,7 +1387,8 @@ it.live("stopping a recording encodes the newest frame still waiting on the enco
         });
       }
       yield* broker.invoke({ scope, tabId, operation: "recordingStop", input: {} });
-      expect(encodedAtStop?.slice(-2)).toEqual(["decoding", "latest"]);
+      // "frame" is the final page state the stop captures after the screencast drains.
+      expect(encodedAtStop?.slice(-3)).toEqual(["decoding", "latest", "frame"]);
     }),
   ).pipe(Effect.provide(layer)),
 );

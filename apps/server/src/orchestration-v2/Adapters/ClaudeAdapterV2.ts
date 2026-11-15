@@ -183,6 +183,7 @@ import {
   readClaudeSettingsEnv,
 } from "../../provider/Drivers/ClaudeSkills.ts";
 import {
+  claudeLaunchArgParseOptions,
   claudeProjectConfigRoot,
   claudeSdkShapedSettings,
   claudeSettingSources,
@@ -380,8 +381,6 @@ function mergeClaudeStreamUsage(
   };
 }
 export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROVIDER);
-// The Claude CLI takes the next token as this flag's value even when it starts with `--`.
-const claudeLaunchArgParseOptions = { valueFlags: ["append-system-prompt"] };
 
 const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK has no control-request deadline; the CLI waits up to 30 s per MCP server.
@@ -4936,15 +4935,20 @@ function providerFailureFromApiRetry(
 
 const UNATTRIBUTED_RATE_LIMIT_TYPE = "unknown";
 
-/** When every window blocking the turn reopens, or null while one has no reported reset. */
+/**
+ * When every window blocking the turn reopens, or null while one has no reported reset. A gateway
+ * cooldown read from the result text counts as one more window.
+ */
 function blockedUsageLimitResetAt(
   context: Pick<ActiveClaudeTurnContext, "rateLimitResetTimes" | "latestAssistantRateLimit">,
+  resultResetAt?: string | null,
 ): string | null {
   const resetTimes = Array.from(context.rateLimitResetTimes.values());
   const assistantLimit = context.latestAssistantRateLimit;
   if (assistantLimit?.type != null && !context.rateLimitResetTimes.has(assistantLimit.type)) {
     resetTimes.push(assistantLimit.resetAt);
   }
+  if (resultResetAt != null) resetTimes.push(resultResetAt);
   return resetTimes.length > 0 && resetTimes.every((time) => time !== null)
     ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
     : null;
@@ -12075,7 +12079,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               usageLimited && message.subtype === "success" && message.local_command === "compact"
                 ? context.compactionFailure
                 : null;
-            const resetAt = blockedUsageLimitResetAt(context);
             const modelScope = blockedUsageLimitModelScope(
               context,
               adapterOptions.scopedLimitNames
@@ -12101,7 +12104,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               resultFailure?.class === "usage_limit"
                 ? {
                     ...resultFailure,
-                    resetAt: resetAt ?? resultFailure.resetAt ?? null,
+                    resetAt: blockedUsageLimitResetAt(context, resultFailure.resetAt),
                     ...(modelScope === undefined ? {} : { modelScope }),
                   }
                 : resultFailure;
@@ -13834,6 +13837,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   });
                   const completedAt = yield* DateTime.now;
                   yield* finalizeActiveTurn({ context, status: "completed", completedAt });
+                  if (leavesLaterWake) yield* offerBufferedWake(nativeThreadId);
                   return;
                 }
                 if (wakeAbsorbed || (hasOpaqueTaskNotification && !context.nativeWakeStarted)) {

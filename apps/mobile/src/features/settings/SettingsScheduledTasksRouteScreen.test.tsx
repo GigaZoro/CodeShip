@@ -102,16 +102,26 @@ vi.mock("../../state/entities", () => ({
   useEnvironmentServerConfig: () => null,
   useThreadShell: () => null,
 }));
-vi.mock("./settings-environment-filter", () => ({
-  useSettingsEnvironmentFilter: () => ({
-    selectedTargets: [{ environmentId: "environment", label: "Environment" }],
-    availableTargets: [
-      { environmentId: "environment", label: "Environment" },
-      { environmentId: "target", label: "Target" },
-    ],
-    selectedProjectKey: null,
-    projectGroups: [],
-  }),
+vi.mock("./settings-environment-filter", () => {
+  const serverConfig = { environment: { capabilities: {}, platform: {} } };
+  return {
+    useSettingsEnvironmentFilter: () => ({
+      selectedTargets: [{ environmentId: "environment", label: "Environment", serverConfig }],
+      availableTargets: [
+        { environmentId: "environment", label: "Environment", serverConfig },
+        { environmentId: "target", label: "Target", serverConfig },
+      ],
+      selectedProjectKey: null,
+      projectGroups: [],
+    }),
+  };
+});
+vi.mock("../../state/sharedScheduledTasks", () => ({
+  useSharedScheduledTaskSnapshots: () => [],
+}));
+vi.mock("../../state/preferences", () => ({
+  mobilePreferencesAtom: {},
+  updateMobilePreferencesAtom: {},
 }));
 vi.mock("../../lib/modelOptions", () => ({
   buildModelOptions: () => [],

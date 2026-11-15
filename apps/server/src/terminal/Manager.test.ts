@@ -914,7 +914,6 @@ it.layer(
       process.emitData("discarded");
       process.emitExit({ exitCode: 7, signal: 0 });
       yield* manager.clear({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
-      expect(yield* readFileString(yield* historyLogPath(logsDir))).toBe("");
       const drained = yield* Deferred.make<void>();
       yield* manager.subscribe((event) =>
         event.type === "exited" || (event.type === "output" && event.data === "barrier")
@@ -940,6 +939,8 @@ it.layer(
       expect(observed).toMatchObject([
         { type: "snapshot", snapshot: { status: "exited", exitCode: 7, history: "" } },
       ]);
+      // Clear saves in the background; closing flushes the saved history.
+      yield* manager.close({ threadId: "thread-1" });
       expect(yield* readFileString(yield* historyLogPath(logsDir))).toBe("");
     }),
   );

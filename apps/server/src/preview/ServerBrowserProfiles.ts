@@ -61,18 +61,29 @@ export const make = Effect.fn("ServerBrowserProfiles.make")(function* (stateDir:
   const path = yield* Path.Path;
   const profilesDir = NodePath.join(stateDir, "server-browser", "profiles");
   const savedPath = NodePath.join(stateDir, "server-browser", "reported-profiles.json");
-  const lock = yield* Semaphore.make(1);
+  // The catalog lock never waits on a save, so a disconnect is never stuck behind a slow disk.
+  const catalogLock = yield* Semaphore.make(1);
+  const saveLock = yield* Semaphore.make(1);
 
-  const saved = yield* fs.readFileString(savedPath).pipe(
-    Effect.flatMap(decodeSavedReport),
-    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)),
+  const savedText = yield* fs.readFileString(savedPath).pipe(
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed("")),
     Effect.catch((cause) =>
-      Effect.logError("server browser ignored its unreadable saved profiles", {
-        path: savedPath,
-        cause,
-      }).pipe(Effect.as(null)),
+      Effect.logWarning("failed to read saved browser profiles", { path: savedPath, cause }).pipe(
+        Effect.as(""),
+      ),
     ),
   );
+  const saved =
+    savedText === ""
+      ? null
+      : yield* decodeSavedReport(savedText).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("ignoring invalid saved browser profiles", {
+              path: savedPath,
+              cause,
+            }).pipe(Effect.as(null)),
+          ),
+        );
   let catalog: Catalog | null = null;
   if (saved !== null) {
     const profiles = resolveBrowserProfiles(saved.profiles);
@@ -82,9 +93,12 @@ export const make = Effect.fn("ServerBrowserProfiles.make")(function* (stateDir:
         findBrowserProfile(profiles, saved.defaultProfileId)?.id ?? DEFAULT_BROWSER_PROFILE_ID,
     };
   }
+  // Only reports change what is saved, so the order apps disconnect in at shutdown, even while
+  // a save waits for its turn, cannot shrink the saved catalog.
+  let catalogToSave = catalog;
   // Agent recordings encode on the server, so they need the rate the user chose in an app.
   let recordingFrameRate = saved?.recordingFrameRate ?? DEFAULT_BROWSER_RECORDING_FRAME_RATE;
-  let savedContents: string | undefined;
+  let savedContents = saved === null ? undefined : savedText;
 
   const hasData = (profileId: string) =>
     fs.exists(profileDirectory(profilesDir, profileId)).pipe(
@@ -97,10 +111,10 @@ export const make = Effect.fn("ServerBrowserProfiles.make")(function* (stateDir:
     );
 
   const save = Effect.suspend(() => {
-    if (catalog === null) return Effect.void;
+    if (catalogToSave === null) return Effect.void;
     const contents = encodeSavedReport({
-      profiles: catalog.profiles.filter((profile) => !isBuiltInBrowserProfileId(profile.id)),
-      defaultProfileId: catalog.defaultProfileId,
+      profiles: catalogToSave.profiles.filter((profile) => !isBuiltInBrowserProfileId(profile.id)),
+      defaultProfileId: catalogToSave.defaultProfileId,
       recordingFrameRate,
     });
     if (contents === savedContents) return Effect.void;
@@ -113,13 +127,10 @@ export const make = Effect.fn("ServerBrowserProfiles.make")(function* (stateDir:
         }),
       ),
       Effect.catch((cause) =>
-        Effect.logError("server browser could not save the reported profiles", {
-          path: savedPath,
-          cause,
-        }),
+        Effect.logWarning("failed to save reported browser profiles", { path: savedPath, cause }),
       ),
     );
-  });
+  }).pipe(saveLock.withPermits(1));
 
   const reports = new Map<number, PreviewReportProfilesInput>();
   let nextClient = 0;
@@ -127,51 +138,54 @@ export const make = Effect.fn("ServerBrowserProfiles.make")(function* (stateDir:
   // Each app reports only the profiles in its own settings. A profile that no connected app
   // reports stays while its folder exists, since that holds its sign-in; removing a profile in
   // an app's settings deletes that folder on every server first.
-  const rebuild = Effect.gen(function* () {
-    const reported = new Map<string, BrowserProfile>();
-    let latest: PreviewReportProfilesInput | undefined;
-    for (const report of reports.values()) {
-      for (const profile of report.profiles) reported.set(profile.id, profile);
-      latest = report;
-    }
-    // The last catalog stays usable after every app disconnects.
-    if (latest === undefined) return;
-    const kept = yield* Effect.filter(
-      (catalog?.profiles ?? []).filter(
-        (profile) => !reported.has(profile.id) && !isBuiltInBrowserProfileId(profile.id),
-      ),
-      (profile) => hasData(profile.id),
+  const rebuild = (reason: "report" | "disconnect") =>
+    catalogLock.withPermits(1)(
+      Effect.gen(function* () {
+        const reported = new Map<string, BrowserProfile>();
+        let latest: PreviewReportProfilesInput | undefined;
+        for (const report of reports.values()) {
+          for (const profile of report.profiles) reported.set(profile.id, profile);
+          latest = report;
+        }
+        // The last catalog stays usable after every app disconnects.
+        if (latest === undefined) return;
+        const kept = yield* Effect.filter(
+          (catalog?.profiles ?? []).filter(
+            (profile) => !reported.has(profile.id) && !isBuiltInBrowserProfileId(profile.id),
+          ),
+          (profile) => hasData(profile.id),
+        );
+        const profiles = resolveBrowserProfiles([...reported.values(), ...kept]);
+        catalog = {
+          profiles,
+          defaultProfileId:
+            findBrowserProfile(profiles, latest.defaultProfileId)?.id ?? DEFAULT_BROWSER_PROFILE_ID,
+        };
+        if (reason === "report") catalogToSave = catalog;
+      }),
     );
-    const profiles = resolveBrowserProfiles([...reported.values(), ...kept]);
-    catalog = {
-      profiles,
-      defaultProfileId:
-        findBrowserProfile(profiles, latest.defaultProfileId)?.id ?? DEFAULT_BROWSER_PROFILE_ID,
-    };
-    yield* save;
-  });
 
   const reporter: Effect.Effect<ProfileReporter, never, Scope.Scope> = Effect.acquireRelease(
     Effect.sync(() => nextClient++),
     (client) =>
-      lock.withPermits(1)(
-        Effect.suspend(() => {
-          reports.delete(client);
-          return rebuild;
-        }),
-      ),
+      Effect.suspend(() => {
+        reports.delete(client);
+        return rebuild("disconnect");
+      }),
   ).pipe(
     Effect.map(
       (client): ProfileReporter =>
         (input) =>
-          lock.withPermits(1)(
-            Effect.suspend(() => {
-              if (input.recordingFrameRate !== undefined)
-                recordingFrameRate = input.recordingFrameRate;
-              reports.delete(client);
-              reports.set(client, input);
-              return rebuild;
-            }),
+          Effect.suspend(() => {
+            if (input.recordingFrameRate !== undefined)
+              recordingFrameRate = input.recordingFrameRate;
+            reports.delete(client);
+            reports.set(client, input);
+            return rebuild("report").pipe(Effect.andThen(save));
+          }).pipe(
+            // A disconnect, even while an earlier save holds the lock, must not drop this
+            // report's save.
+            Effect.uninterruptible,
           ),
     ),
   );

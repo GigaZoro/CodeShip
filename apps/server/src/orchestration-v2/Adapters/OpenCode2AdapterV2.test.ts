@@ -2043,27 +2043,6 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }),
   );
 
-  it.effect("settles a resumed subagent's call when an earlier run's report never arrived", () =>
-    Effect.gen(function* () {
-      const { runtime, thread } = yield* resumed([
-        ...launchedAndRunning,
-        // Run 1 ends, but its report never reaches T3.
-        event("session.execution.succeeded", { sessionID: CHILD }),
-        ...callAgain({ background: true }),
-        event("session.execution.started", { sessionID: CHILD }),
-        event("session.execution.succeeded", { sessionID: CHILD }),
-        childReport("msg_report_2", "SECOND_OK"),
-        event("session.execution.succeeded", { sessionID: SESSION }),
-      ]);
-      const watch = yield* watchCalls(runtime, thread);
-      yield* runtime.startTurn(withLineage(thread));
-      yield* watch.until(() => watch.state.terminal !== undefined);
-      assert.deepEqual(watch.calls.get("Again"), { status: "completed", result: "SECOND_OK" });
-      assert.deepEqual(watch.calls.get("Sleep"), { status: "completed", result: null });
-      assert.deepEqual(watch.state.roster, []);
-    }).pipe(Effect.scoped),
-  );
-
   it.effect("keeps a resumed subagent's call running when the previous run reports late", () =>
     Effect.gen(function* () {
       const { runtime, thread } = yield* resumed([

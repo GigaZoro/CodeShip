@@ -3268,7 +3268,11 @@ const make = Effect.gen(function* () {
     } satisfies ServerBrowserViewer;
   });
 
-  yield* manager.events.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
+  // Subscribed before startup ends, so a tab opened right after it still gets its page.
+  yield* Stream.fromSubscription(yield* manager.subscribeEvents).pipe(
+    Stream.runForEach(mirrorManagerEvent),
+    Effect.forkScoped,
+  );
   // Forked: the probe may spawn the browser to read its version, and startup must not wait for it.
   yield* hostSetupProblem.pipe(
     Effect.flatMap((problem) => (problem ? Effect.logWarning(problem.message) : Effect.void)),
