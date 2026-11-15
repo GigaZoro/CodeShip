@@ -101,6 +101,7 @@ import Migration0091 from "./Migrations/091_CompactOrchestrationIds.ts";
 import Migration0092 from "./Migrations/092_CommandRuns.ts";
 import Migration0093 from "./Migrations/093_ManualStepReviewLanguages.ts";
 import Migration0094 from "./Migrations/094_PullRequestReviewGuideLanguages.ts";
+import Migration0095 from "./Migrations/095_CommandRunLossEvidence.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -198,6 +199,7 @@ const migrationEntries = [
   [92, "CommandRuns", Migration0092],
   [93, "ManualStepReviewLanguages", Migration0093],
   [94, "PullRequestReviewGuideLanguages", Migration0094],
+  [95, "CommandRunLossEvidence", Migration0095],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

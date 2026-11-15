@@ -1,3 +1,9 @@
+## 2026-11-16 — A lost agent command keeps a record of how it ended
+
+- When CodeShip's check of a running command's process fails for a reason other than "no such process", it checks again on its next pass instead of reporting the command lost and stopping what the command started.
+- A command reported lost (`t3_command_run`'s "Ended without an exit status") now keeps on its record why: its process ended without one, the machine restarted, or its process id now names a later process. The record also keeps when the command was last seen running, what the failed check reported, and its last output. When more than half the running commands are lost within a minute, CodeShip logs one warning and writes the lost commands to `logs/command-losses.ndjson` in its data folder.
+- On Windows, stopping a command no longer stops a process that an earlier holder of one of the command's process ids started.
+
 ## 2026-11-16 — The server stays responsive while it looks up pull requests on Windows
 
 - On Windows, every git process the server started froze it for about 130 ms, and the pull request lookups of a sweep started about 14 per thread. With many threads the server stalled for minutes: git commands timed out at 30 s, and Machine health runs and scheduled runs failed to register MCP or prepare their worktrees. The lookups now read a repository's configuration and refs once, with two git processes shared by all of its threads and worktrees, instead of per thread.

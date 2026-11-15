@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -128,16 +129,6 @@ const removeDatabaseFiles = Effect.fn("removeDatabaseFiles")(function* (database
 
 const ServerRuntimeState = Schema.fromJsonString(Schema.Struct({ pid: Schema.Number }));
 const decodeServerRuntimeState = Schema.decodeEffect(ServerRuntimeState);
-
-const isProcessAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the process exists but belongs to someone else.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
 
 // The runtime PID catches idle servers; leftover -shm files can come from read-only connections.
 const ensureNotInUse = Effect.fn("ensureDevDbNotInUse")(function* (databasePath: string) {

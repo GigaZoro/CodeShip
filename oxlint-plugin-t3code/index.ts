@@ -22,6 +22,7 @@ import noOutsetStateIndicators from "./rules/no-outset-state-indicators.ts";
 import noPlatformEarlyReturnInTests from "./rules/no-platform-early-return-in-tests.ts";
 import noPollingLoopInTests from "./rules/no-polling-loop-in-tests.ts";
 import noRawMcpRegistration from "./rules/no-raw-mcp-registration.ts";
+import noRawProcessProbe from "./rules/no-raw-process-probe.ts";
 import noRemoteGitThroughExecute from "./rules/no-remote-git-through-execute.ts";
 import noRawResizeObserver from "./rules/no-raw-resize-observer.ts";
 import noRealTimeWaitInTests from "./rules/no-real-time-wait-in-tests.ts";
@@ -65,6 +66,7 @@ export default definePlugin({
     "no-platform-early-return-in-tests": noPlatformEarlyReturnInTests,
     "no-polling-loop-in-tests": noPollingLoopInTests,
     "no-raw-mcp-registration": noRawMcpRegistration,
+    "no-raw-process-probe": noRawProcessProbe,
     "no-remote-git-through-execute": noRemoteGitThroughExecute,
     "no-raw-resize-observer": noRawResizeObserver,
     "no-real-time-wait-in-tests": noRealTimeWaitInTests,

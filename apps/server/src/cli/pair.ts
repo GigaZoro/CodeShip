@@ -35,9 +35,9 @@ import * as ServerConfig from "../config.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { resolveBaseDir } from "../os-jank.ts";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import {
   type PersistedServerRuntimeState,
-  isProcessAlive,
   readPersistedServerRuntimeState,
 } from "../serverRuntimeState.ts";
 import {

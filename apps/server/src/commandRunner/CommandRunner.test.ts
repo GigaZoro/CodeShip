@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   CommandId,
   EnvironmentId,
@@ -22,6 +23,7 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -166,6 +168,18 @@ const awaitFile = (file: string) =>
     return Effect.sync(() => watcher.close());
   });
 
+/** Resolves once each of `threadIds` has been offered a wake. */
+const wakesOf = (threadIds: ReadonlyArray<ThreadId>) =>
+  Offers.pipe(
+    Effect.flatMap((offers) => {
+      const waiting = new Set<string>(threadIds);
+      return Queue.take(offers).pipe(
+        Effect.tap((request) => Effect.sync(() => waiting.delete(request.threadId))),
+        Effect.repeat({ until: () => waiting.size === 0 }),
+      );
+    }),
+  );
+
 /** The next wake offered to `threadId`. */
 const nextWake = (threadId: ThreadId) =>
   Offers.pipe(
@@ -182,8 +196,13 @@ const commandRow = (taskId: string) =>
       readonly pid: number | null;
       readonly started_at: string;
       readonly delivered_at: string | null;
+      readonly last_alive_at: string | null;
+      readonly probe_error: string | null;
+      readonly lost_reason: string | null;
+      readonly lost_output: string | null;
     }>`
-      SELECT status, pid, started_at, delivered_at FROM command_runs WHERE task_id = ${taskId}
+      SELECT status, pid, started_at, delivered_at, last_alive_at, probe_error, lost_reason, lost_output
+      FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
   });
@@ -193,7 +212,8 @@ const forgetPid = (taskId: string) =>
   Effect.flatMap(
     SqlClient.SqlClient,
     (sql) => sql`
-      UPDATE command_runs SET pid = NULL, process_started_at = NULL WHERE task_id = ${taskId}
+      UPDATE command_runs SET pid = NULL, process_started_at = NULL, last_alive_at = NULL
+      WHERE task_id = ${taskId}
     `,
   );
 
@@ -260,7 +280,7 @@ const cancellationOf = (threadId: ThreadId, taskId: string) =>
 /** Starts a child that writes `ready` once it can note a stop signal, and `stopped` on one. */
 const STOP_NOTING_CHILD = `sh -c 'trap "echo > stopped; exit 0" TERM; echo > ready; while :; do sleep 1; done' &`;
 /** Once `go` exists it kills its wrapper, leaving no exit status, then writes `orphaned`. */
-const ORPHANING_COMMAND = `${STOP_NOTING_CHILD} until [ -e go ]; do sleep 0.05; done; kill -9 $PPID; echo > orphaned; wait`;
+const ORPHANING_COMMAND = `echo orphaning; ${STOP_NOTING_CHILD} until [ -e go ]; do sleep 0.05; done; kill -9 $PPID; echo > orphaned; wait`;
 
 // Tests of sh, kill and process groups skip on Windows, which lacks them. Its wrapper's stop and lost paths are
 // tested in "a Windows command whose wrapper ended".
@@ -605,9 +625,101 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const task = yield* taskOf(chat.threadId, started.taskId);
           assert.equal(task?.status, "failed");
           assert.match(task?.result ?? "", /without an exit status/);
-          assert.equal((yield* commandRow(started.taskId))?.status, "lost");
+          const row = yield* commandRow(started.taskId);
+          assert.equal(row?.status, "lost");
+          // How it ended stays on its record.
+          assert.equal(row?.lost_reason, "gone");
+          assert.equal(row?.probe_error, "ESRCH");
+          assert.equal(row?.last_alive_at === null, pidUnrecorded);
+          assert.include(row?.lost_output ?? "", "orphaning");
           assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         }),
+    );
+
+    it.effect("waits while a probe cannot tell whether its wrapper runs, and stops nothing", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-probe-unknown");
+        const probes = yield* Queue.unbounded<void>();
+        const kill = process.kill.bind(process);
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const started = yield* runner.run(callerOf(chat.threadId), {
+              command: ORPHANING_COMMAND,
+            });
+            yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+            const wrapperPid = (yield* commandRow(started.taskId))!.pid!;
+            // A probe failure that is not ESRCH, as an overloaded or restricted host can give.
+            const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+              if (pid !== wrapperPid || signal !== 0) return kill(pid, signal);
+              Queue.offerUnsafe(probes, undefined);
+              throw Object.assign(new Error(`kill EIO ${pid}`), { code: "EIO" });
+            });
+            yield* Effect.addFinalizer(() => Effect.sync(() => probe.mockRestore()));
+            NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
+            yield* awaitFile(NodePath.join(chat.workspace, "orphaned"));
+            // Its wrapper is gone, and the check that made the first later probe has finished.
+            yield* Queue.clear(probes);
+            yield* Queue.take(probes);
+            yield* Queue.take(probes);
+            const waiting = yield* commandRow(started.taskId);
+            assert.equal(waiting?.status, "running");
+            assert.equal(waiting?.probe_error, "EIO");
+            assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+            probe.mockRestore();
+            yield* nextWake(chat.threadId);
+            const lost = yield* commandRow(started.taskId);
+            assert.equal(lost?.lost_reason, "gone");
+            assert.equal(lost?.probe_error, "ESRCH");
+            assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+          }),
+        );
+      }),
+    );
+
+    it.effect("logs commands lost together once, as a wave, in the losses log", () =>
+      Effect.gen(function* () {
+        const chats = yield* Effect.forEach(["one", "two", "three"], (name) =>
+          liveChat(`command-wave-${name}`),
+        );
+        const { logsDir } = yield* ServerConfig.ServerConfig;
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            yield* Effect.forEach(chats, (chat) =>
+              runner.run(callerOf(chat.threadId), {
+                command: "until [ -e go ]; do sleep 0.05; done; kill -9 $PPID",
+              }),
+            );
+            for (const chat of chats) NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
+            yield* wakesOf(chats.map((chat) => chat.threadId));
+            // Checked in a pass after the one that lost the last of them, which logged the wave.
+            yield* runner.run(callerOf(chats[0]!.threadId), { command: "true" });
+            yield* nextWake(chats[0]!.threadId);
+          }),
+        );
+        const entries = NodeFS.readFileSync(
+          NodePath.join(logsDir, CommandRunner.LOSS_LOG_FILE),
+          "utf8",
+        )
+          .trim()
+          .split("\n")
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                readonly lost: number;
+                readonly runs: ReadonlyArray<{
+                  readonly threadId: string;
+                  readonly lostReason: string;
+                }>;
+              },
+          )
+          .filter((entry) =>
+            entry.runs.some((run) => chats.some((chat) => chat.threadId === run.threadId)),
+          );
+        assert.lengthOf(entries, 1);
+        // Logged once more than half the running commands were lost, which two of three already are.
+        assert.isAtLeast(entries[0]!.lost, 2);
+        assert.deepEqual([...new Set(entries[0]!.runs.map((run) => run.lostReason))], ["gone"]);
+      }),
     );
   });
 
@@ -871,7 +983,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           WHERE task_id = ${started.taskId}
         `;
           yield* withServer(() => nextWake(chat.threadId));
-          assert.equal((yield* commandRow(started.taskId))?.status, "lost");
+          const row = yield* commandRow(started.taskId);
+          assert.equal(row?.status, "lost");
+          assert.equal(row?.lost_reason, "rebooted");
           assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         }),
     );
@@ -906,6 +1020,24 @@ describe("the shell a command runs in", () => {
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {
+  it("stops, at every level, only processes created after the parent they name", () => {
+    const script = [
+      CommandRunner.WINDOWS_COMMAND_TREE_FUNCTION,
+      "$t = [DateTime]::UtcNow",
+      "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
+      // 10 is the wrapper, 20 its command, 30 what that started. 40 names 20 as its parent but is
+      // older, so an earlier holder of that pid started it; 50 is older than the command.
+      "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1))",
+      "(Get-T3CommandTree $all 10 (Ms $t) (Ms $t)).Keys | Sort-Object",
+    ].join("\n");
+    const tree = NodeChildProcess.execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8" },
+    );
+    assert.deepEqual(tree.trim().split(/\r?\n/), ["10", "20", "30"]);
+  });
+
   it.layer(layerTest, { excludeTestServices: true })(
     "a Windows command whose wrapper ended",
     (it) => {
@@ -937,7 +1069,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             String((yield* commandRow(started.taskId))!.pid),
             "/F",
           ]);
-          assert.isTrue(process.kill(childPid, 0));
+          assert.isTrue(isProcessAlive(childPid));
           if (cancelled) {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));

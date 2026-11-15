@@ -28,9 +28,9 @@ import {
   serviceStateActiveVersion,
 } from "./cloud/serviceProtocol.ts";
 import * as ProcessRunner from "./processRunner.ts";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import {
   clearPersistedServerRuntimeState,
-  isProcessAlive,
   persistServerRuntimeState,
   readPersistedServerRuntimeState,
   readProcessStartedAt,

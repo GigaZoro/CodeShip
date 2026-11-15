@@ -8,7 +8,8 @@ import { Argument, Command, GlobalFlag } from "effect/cli";
 import * as CliError from "effect/cli/CliError";
 
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
-import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
+import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
 const describePolicy = (

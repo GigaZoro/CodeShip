@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
@@ -220,16 +221,9 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
     }
   };
 
-  const hasExited = (): boolean => {
-    if (childExited) return true;
-    try {
-      if (platform === "win32") process.kill(Number(child.pid), 0);
-      else signalProcessGroup(Number(child.pid), 0);
-      return false;
-    } catch {
-      return true;
-    }
-  };
+  const hasExited = (): boolean =>
+    childExited ||
+    !isProcessAlive(Number(child.pid), platform === "win32" ? undefined : signalProcessGroup);
 
   // Windows process.kill leaves extension children and pipes alive; taskkill /T reaps the tree.
   const terminateWindowsTree = Effect.gen(function* () {

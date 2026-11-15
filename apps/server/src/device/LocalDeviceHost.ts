@@ -15,6 +15,7 @@ import {
   type NodeRuntimeUnavailableError,
 } from "@t3tools/shared/nodeRuntime";
 import * as NetService from "@t3tools/shared/Net";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isCommandAvailable } from "@t3tools/shared/shell";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
@@ -315,7 +316,7 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
       ? yield* running.hub.child.isRunning.pipe(Effect.orElseSucceed(() => false))
       : false;
     const agentAlive =
-      Option.isSome(daemon) && daemon.value.pid ? yield* isProcessAlive(daemon.value.pid) : false;
+      Option.isSome(daemon) && daemon.value.pid ? isProcessAlive(daemon.value.pid) : false;
     const tools = yield* deviceToolVersions(config.baseDir, {
       ...(hubAlive ? { hub: DEVICE_HUB_VERSION } : {}),
       ...(agentAlive && Option.isSome(daemon) && daemon.value.version
@@ -341,23 +342,13 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
 
   const hubStatePath = () => path.join(agentDeviceStateDir(path, config.stateDir), "hub.json");
 
-  const isProcessAlive = (pid: number) =>
-    Effect.sync(() => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-
   // Check PID and entry path before reaping; the PID may have been recycled.
   const reapStaleHub = Effect.gen(function* () {
     const previous = yield* fs
       .readFileString(hubStatePath())
       .pipe(Effect.flatMap(decodeHubStateFile), Effect.option);
     if (previous._tag === "None") return;
-    const alive = yield* isProcessAlive(previous.value.pid);
+    const alive = isProcessAlive(previous.value.pid);
     if (alive) {
       const commandLine = yield* runner
         .run({

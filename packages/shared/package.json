@@ -367,6 +367,10 @@
       "types": "./src/HostProcess.ts",
       "import": "./src/HostProcess.ts"
     },
+    "./processProbe": {
+      "types": "./src/processProbe.ts",
+      "import": "./src/processProbe.ts"
+    },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",
       "import": "./src/testing/longTempDir.ts"

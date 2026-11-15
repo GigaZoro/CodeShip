@@ -35,6 +35,7 @@ import {
   RAISE_OOM_SCORE_LINE,
 } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive as isProcessAliveByProbe } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -333,15 +334,6 @@ export interface SweepStaleLinuxCgroupSiblingsOptions {
   readonly remove?: (siblingPath: string) => void;
 }
 
-function defaultCgroupOwnerIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (cause) {
-    return (cause as NodeJS.ErrnoException | undefined)?.code !== "ESRCH";
-  }
-}
-
 function defaultReadCgroupPopulated(siblingPath: string): "0" | "1" | undefined {
   const state = /(?:^|\n)populated ([01])(?:\n|$)/.exec(
     NodeFS.readFileSync(NodePath.join(siblingPath, "cgroup.events"), "utf8"),
@@ -354,7 +346,7 @@ export function sweepStaleLinuxCgroupSiblings(
   options: SweepStaleLinuxCgroupSiblingsOptions = {},
 ): void {
   const currentPid = options.currentPid ?? process.pid;
-  const isProcessAlive = options.isProcessAlive ?? defaultCgroupOwnerIsAlive;
+  const isProcessAlive = options.isProcessAlive ?? isProcessAliveByProbe;
   const readPopulated = options.readPopulated ?? defaultReadCgroupPopulated;
   const remove = options.remove ?? ((siblingPath: string) => NodeFS.rmdirSync(siblingPath));
   try {

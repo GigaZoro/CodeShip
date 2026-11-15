@@ -1,6 +1,7 @@
 import type { BrowserImportSourceId, BrowserImportSourceProfile } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -530,26 +531,8 @@ const databaseFileExists = Effect.fnUntraced(function* (path: string) {
 
 type ProcessLivenessProbe = (pid: number) => Effect.Effect<boolean>;
 
-export const chromiumProcessIsAlive = (
-  pid: number,
-  signalProcess: (pid: number, signal: 0) => unknown = process.kill.bind(process),
-) =>
-  Effect.sync(() => {
-    try {
-      signalProcess(pid, 0);
-      return true;
-    } catch (cause) {
-      // Only ESRCH proves a stale lock; permission and unknown failures may still hide an active browser.
-      return !(
-        typeof cause === "object" &&
-        cause !== null &&
-        "code" in cause &&
-        cause.code === "ESRCH"
-      );
-    }
-  });
-
-const processIsAlive: ProcessLivenessProbe = (pid) => chromiumProcessIsAlive(pid);
+// Only a proven-gone owner makes a lock stale; an unreadable one may still be an active browser.
+const processIsAlive: ProcessLivenessProbe = (pid) => Effect.sync(() => isProcessAlive(pid));
 
 export const chromiumSingletonLockIsHeld = Effect.fnUntraced(function* (
   target: string,

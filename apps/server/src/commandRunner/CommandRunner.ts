@@ -17,7 +17,9 @@ import {
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { RotatingFileSink } from "@t3tools/shared/logging";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
 import { asciiUpperCase, overrideEnvironment } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -46,7 +48,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
-import { isProcessAlive, readProcessStartedAt } from "../serverRuntimeState.ts";
+import { readProcessStartedAt } from "../serverRuntimeState.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
 
 /** How often running commands are checked; tests shorten it. */
@@ -65,6 +67,11 @@ const RESULT_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
+/** More than half the running commands lost within this window is a wave, logged once. */
+const WAVE_WINDOW_MS = 60_000;
+export const LOSS_LOG_FILE = "command-losses.ndjson";
+// A wave's entry is a few KB, so this keeps far more than the week a diagnosis looks back.
+const LOSS_LOG_MAX_BYTES = 1024 * 1024;
 const COMMAND_DRIVER = ProviderDriverKind.make("command");
 const TRIMMED_MARKER = "[CodeShip removed earlier output to keep this log small]\n";
 // Win32_ProcessStartup's Create_Unicode_Environment; without it the block is ANSI.
@@ -113,6 +120,26 @@ interface CommandRunRow {
   readonly deadline_at: string;
   readonly ended_at: string | null;
   readonly delivered_at: string | null;
+  /** The last check that found its process alive, written about once a minute while it runs. */
+  readonly last_alive_at: string | null;
+  /** What the last probe of its pid that did not find it alive reported. */
+  readonly probe_error: string | null;
+  readonly lost_reason: LostReason | null;
+  /** Its output's tail when it was lost. */
+  readonly lost_output: string | null;
+}
+
+/**
+ * Why a command counts as lost: its record names no process, its process is gone, the machine
+ * restarted since it started, or its pid now names a later process.
+ */
+type LostReason = "no-pid" | "gone" | "rebooted" | "pid-reused";
+
+const encodeLossLine = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+
+interface Loss {
+  readonly lost_reason: LostReason;
+  readonly probe_error: string | null;
 }
 
 /**
@@ -205,38 +232,44 @@ const posixLaunchEnvironment = (
 };
 
 /**
- * Walks `ParentProcessId` from the wrapper, which outlives it (a named Job object does not).
- * Only processes created after the command started count; if the pid now names another process,
- * only children created before it do.
+ * Ids under the wrapper by `ParentProcessId`, which outlives it (a named Job object does not). A
+ * child older than its parent belongs to an earlier holder of that pid; the wrapper's children
+ * also start after the command, and before the pid's holder when that is no longer the wrapper.
  */
+export const WINDOWS_COMMAND_TREE_FUNCTION = [
+  "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
+  "function Get-T3CommandTree($all, $root, $since, $identity) {",
+  "  $targets = @{}",
+  "  $before = [long]::MaxValue",
+  "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
+  "  if ($holder) {",
+  "    $made = Ms $holder.CreationDate",
+  "    if ($identity -ge 0 -and [math]::Abs($made - $identity) -gt 1000) { $before = $made } else { $targets[$root] = $true }",
+  "  }",
+  "  $queue = New-Object System.Collections.Queue",
+  "  $queue.Enqueue(@($root, $since, $before))",
+  "  $seen = @{ $root = $true }",
+  "  while ($queue.Count -gt 0) {",
+  "    $id, $after, $limit = $queue.Dequeue()",
+  "    foreach ($child in $all) {",
+  "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
+  "      $made = Ms $child.CreationDate",
+  "      if ($made -ge $after -and $made -lt $limit) {",
+  "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $true",
+  "        $queue.Enqueue(@($child.ProcessId, $made, [long]::MaxValue))",
+  "      }",
+  "    }",
+  "  }",
+  "  return $targets",
+  "}",
+].join("\n");
+
 const windowsStopScript = (pid: number, sinceMs: number, identityMs: number | null) =>
   [
     "$ErrorActionPreference = 'Stop'",
-    "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
-    `$root = ${pid}; $since = ${sinceMs}; $identity = ${identityMs ?? -1}`,
+    WINDOWS_COMMAND_TREE_FUNCTION,
     "for ($pass = 0; $pass -lt 5; $pass++) {",
-    "  $all = @(Get-CimInstance Win32_Process)",
-    "  $upper = [long]::MaxValue",
-    "  $targets = @{}",
-    "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
-    "  if ($holder) {",
-    "    $made = Ms $holder.CreationDate",
-    "    if ($identity -ge 0 -and [math]::Abs($made - $identity) -gt 1000) { $upper = $made } else { $targets[$root] = $true }",
-    "  }",
-    "  $queue = New-Object System.Collections.Queue",
-    "  $queue.Enqueue($root)",
-    "  $seen = @{ $root = $true }",
-    "  while ($queue.Count -gt 0) {",
-    "    $id = $queue.Dequeue()",
-    "    foreach ($child in $all) {",
-    "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
-    "      $made = Ms $child.CreationDate",
-    "      $limit = if ($id -eq $root) { $upper } else { [long]::MaxValue }",
-    "      if ($made -ge $since -and $made -lt $limit) {",
-    "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $true; $queue.Enqueue($child.ProcessId)",
-    "      }",
-    "    }",
-    "  }",
+    `  $targets = Get-T3CommandTree @(Get-CimInstance Win32_Process) ${pid} ${sinceMs} ${identityMs ?? -1}`,
     "  if ($targets.Count -eq 0) { break }",
     "  foreach ($id in $targets.Keys) {",
     "    try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { throw } }",
@@ -323,14 +356,24 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** Whether `pid` is still the process this command started, not a later one reusing it. */
-  const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (row: CommandRunRow) {
-    if (row.pid === null || !isProcessAlive(row.pid) || (yield* rebootedSince(row))) return false;
-    if (row.process_started_at === null) return true;
+  /** Why `pid` no longer names the process this command started; undefined while it does. */
+  const lossOf = Effect.fn("CommandRunner.lossOf")(function* (
+    row: CommandRunRow,
+  ): Effect.fn.Return<Loss | undefined> {
+    const probe_error = row.probe_error;
+    if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
+    if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
+    const probe = probeProcess(row.pid);
+    if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
+    if (row.process_started_at === null) return undefined;
     const startedAt = yield* startedAtOf(row.pid);
     // ps reports whole seconds. Unknown identity stays conservative.
-    return startedAt === undefined || Math.abs(startedAt - row.process_started_at) <= 1_000;
+    return startedAt === undefined || Math.abs(startedAt - row.process_started_at) <= 1_000
+      ? undefined
+      : { lost_reason: "pid-reused", probe_error };
   });
+  const isSameProcess = (row: CommandRunRow) =>
+    lossOf(row).pipe(Effect.map((loss) => loss === undefined));
 
   /** SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period. */
   const killGroup = Effect.fn("CommandRunner.killGroup")(function* (pid: number) {
@@ -386,7 +429,9 @@ const make = Effect.gen(function* () {
       UPDATE command_runs
       SET pid = ${row.pid}, process_started_at = ${row.process_started_at}, unit = ${row.unit},
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
-        delivered_at = ${row.delivered_at}
+        delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
+        probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
+        lost_output = ${row.lost_output}
       WHERE task_id = ${row.task_id}
     `;
 
@@ -396,6 +441,24 @@ const make = Effect.gen(function* () {
     if (row.delivered_at === null) watched.set(row.task_id, row);
     else watched.delete(row.task_id);
   });
+
+  const readTail = (row: CommandRunRow) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fs.open(logPathOf(row), { flag: "r" });
+        const size = Number((yield* file.stat).size);
+        const start = Math.max(0, size - RESULT_TAIL_BYTES);
+        yield* file.seek(BigInt(start), "start");
+        const bytes = yield* file.readAlloc(size - start);
+        return Option.match(bytes, {
+          onNone: () => "",
+          onSome: (read) => decodeTail(read, start > 0),
+        });
+      }),
+    ).pipe(
+      Effect.map((tail) => tail.trimEnd()),
+      Effect.orElseSucceed(() => ""),
+    );
 
   const resultText = Effect.fn("CommandRunner.resultText")(function* (row: CommandRunRow) {
     const elapsed = formatDuration(
@@ -410,20 +473,7 @@ const make = Effect.gen(function* () {
             ? `Ended after ${elapsed} with an unreadable exit status.`
             : `Exited with code ${row.exit_code} after ${elapsed}.`;
     const logPath = logPathOf(row);
-    const tail = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const file = yield* fs.open(logPath, { flag: "r" });
-        const size = Number((yield* file.stat).size);
-        const start = Math.max(0, size - RESULT_TAIL_BYTES);
-        yield* file.seek(BigInt(start), "start");
-        const bytes = yield* file.readAlloc(size - start);
-        return Option.match(bytes, {
-          onNone: () => "",
-          onSome: (read) => decodeTail(read, start > 0),
-        });
-      }),
-    ).pipe(Effect.orElseSucceed(() => ""));
-    const output = tail.trimEnd();
+    const output = yield* readTail(row);
     return [
       ending,
       output === "" ? "No output." : `Last output:\n${output}`,
@@ -506,6 +556,87 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.ignore({ log: true }));
   });
 
+  /** Losses within the last WAVE_WINDOW_MS, and whether they were logged as a wave. */
+  const recentLosses: Array<{ readonly at: number; readonly row: CommandRunRow }> = [];
+  let waveLogged = false;
+  const lossLogPath = path.join(logsDir, LOSS_LOG_FILE);
+  const lossLog = yield* Effect.try(
+    () =>
+      new RotatingFileSink({
+        filePath: lossLogPath,
+        maxBytes: LOSS_LOG_MAX_BYTES,
+        maxFiles: 1,
+        throwOnError: true,
+      }),
+  ).pipe(
+    Effect.catch(() =>
+      Effect.logWarning("command-runner.loss-log-unavailable", { filePath: lossLogPath }).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+
+  /**
+   * Ends a command gone without an exit status, keeping what shows how: its output before
+   * anything is stopped, and when it was last seen alive. What it started is not left running.
+   */
+  const recordLoss = Effect.fn("CommandRunner.recordLoss")(function* (
+    row: CommandRunRow,
+    loss: Loss,
+  ) {
+    const output = yield* readTail(row);
+    yield* killTree(row);
+    const now = yield* DateTime.now;
+    const lost: CommandRunRow = {
+      ...row,
+      ...loss,
+      status: "lost",
+      ended_at: DateTime.formatIso(now),
+      lost_output: output === "" ? null : output,
+    };
+    yield* settle(lost);
+    recentLosses.push({ at: DateTime.toEpochMillis(now), row: lost });
+    return lost;
+  });
+
+  /** More than half the running commands lost within a minute share a cause; logged once. */
+  const noteWave = Effect.fn("CommandRunner.noteWave")(function* () {
+    const now = yield* DateTime.now;
+    const cutoff = DateTime.toEpochMillis(now) - WAVE_WINDOW_MS;
+    recentLosses.splice(0, recentLosses.length, ...recentLosses.filter(({ at }) => at > cutoff));
+    if (recentLosses.length === 0) waveLogged = false;
+    const running = [...watched.values()].filter((row) => row.status === "running").length;
+    if (waveLogged || recentLosses.length < 2 || recentLosses.length <= running) return;
+    waveLogged = true;
+    yield* Effect.logWarning("command-runner.loss-wave", {
+      lost: recentLosses.length,
+      running,
+      filePath: lossLogPath,
+    });
+    if (lossLog === undefined) return;
+    const entry = {
+      time: DateTime.formatIso(now),
+      lost: recentLosses.length,
+      running,
+      runs: recentLosses.map(({ row }) => ({
+        taskId: row.task_id,
+        threadId: row.thread_id,
+        pid: row.pid,
+        lostReason: row.lost_reason,
+        probeError: row.probe_error,
+        startedAt: row.started_at,
+        lastAliveAt: row.last_alive_at,
+        endedAt: row.ended_at,
+      })),
+    };
+    yield* encodeLossLine(entry).pipe(
+      Effect.flatMap((line) => Effect.try(() => lossLog.write(`${line}\n`))),
+      Effect.catch(() =>
+        Effect.logWarning("command-runner.loss-log-write-failed", { filePath: lossLogPath }),
+      ),
+    );
+  });
+
   /** Moves a running command on: its end, its deadline, or its process gone without a status. */
   const check = Effect.fn("CommandRunner.check")(function* (row: CommandRunRow) {
     // stopForTask is still stopping it, and records it once it has.
@@ -518,6 +649,12 @@ const make = Effect.gen(function* () {
           return settle(next).pipe(Effect.andThen(deliver(next)));
         }),
       );
+    const lose = Effect.fn("CommandRunner.lose")(function* (loss: Loss) {
+      // Its wrapper writes the status just before it exits.
+      const late = yield* readExitStatus(row);
+      if (late !== undefined) return yield* ended("exited", late.code, late.endedAt);
+      yield* deliver(yield* recordLoss(row, loss));
+    });
     const exit = yield* readExitStatus(row);
     if (exit !== undefined) {
       yield* trimLog(row);
@@ -528,13 +665,31 @@ const make = Effect.gen(function* () {
       yield* killTree(row);
       return yield* ended("timed_out", null);
     }
-    if (row.pid === null || !isProcessAlive(row.pid)) {
-      // Its wrapper writes the status just before it exits.
-      const late = yield* readExitStatus(row);
-      if (late !== undefined) return yield* ended("exited", late.code, late.endedAt);
-      // Its wrapper was killed; what it started is not left running unwatched.
-      yield* killTree(row);
-      return yield* ended("lost", null);
+    if (row.pid === null) return yield* lose({ lost_reason: "no-pid", probe_error: null });
+    const probe = probeProcess(row.pid);
+    if (probe.state === "gone") {
+      return yield* lose({ lost_reason: "gone", probe_error: probe.code });
+    }
+    if (probe.state === "unknown") {
+      // A probe that cannot tell proves nothing gone, so the next check asks again.
+      if (row.probe_error !== probe.code) {
+        yield* Effect.logWarning("command-runner.probe-failed", {
+          taskId: row.task_id,
+          pid: row.pid,
+          code: probe.code,
+        });
+        yield* settle({ ...row, probe_error: probe.code });
+      }
+      return;
+    }
+    // Written once a wall-clock minute, for the next server; a loss writes the exact time.
+    const seen: CommandRunRow = { ...row, last_alive_at: yield* nowIso };
+    const minuteOf = (at: string | null) =>
+      at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
+    if (minuteOf(row.last_alive_at) === minuteOf(seen.last_alive_at)) {
+      watched.set(row.task_id, seen);
+    } else {
+      yield* settle(seen);
     }
     if (!windows) yield* trimLog(row);
   });
@@ -548,7 +703,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       ),
-    ),
+    ).pipe(Effect.andThen(noteWave())),
   );
 
   /**
@@ -963,6 +1118,10 @@ const make = Effect.gen(function* () {
                   deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
                   ended_at: null,
                   delivered_at: null,
+                  last_alive_at: null,
+                  probe_error: null,
+                  lost_reason: null,
+                  lost_output: null,
                 };
                 // Recorded before it starts, so a server that stops in between leaves the next one
                 // a record to adopt it by, never a command nothing watches.
@@ -1005,6 +1164,7 @@ const make = Effect.gen(function* () {
                   pid,
                   process_started_at: (yield* startedAtOf(pid)) ?? null,
                   unit,
+                  last_alive_at: yield* nowIso,
                 };
                 watched.set(taskId, launched);
                 // Its pid file names it to the next server if this write is lost.
@@ -1049,7 +1209,7 @@ const make = Effect.gen(function* () {
     // It started before it wrote the file; a later process reusing the pid did not. ps reports
     // whole seconds.
     if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
-      return row;
+      return { ...row, lost_reason: "pid-reused" as const };
     }
     const recovered: CommandRunRow = { ...row, pid, process_started_at: startedAt ?? null };
     yield* writeRow(recovered);
@@ -1095,12 +1255,12 @@ const make = Effect.gen(function* () {
       return;
     }
     // A pid reused by another process means this command ended while no server watched it.
-    if (yield* isSameProcess(row)) {
+    const loss = yield* lossOf(row);
+    if (loss === undefined) {
       watched.set(row.task_id, row);
       return;
     }
-    yield* killTree(row);
-    yield* settle({ ...row, status: "lost", ended_at: yield* nowIso });
+    yield* recordLoss(row, loss);
   });
 
   /**

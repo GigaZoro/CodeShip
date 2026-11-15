@@ -1,5 +1,6 @@
 import * as NodeSqlite from "node:sqlite";
 
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -13,16 +14,6 @@ export class V2DatabaseImportError extends Schema.TaggedError<V2DatabaseImportEr
     return `Could not copy the V1 database at ${this.sourcePath} to ${this.destinationPath}. The V1 database has not been migrated.`;
   }
 }
-
-const isProcessAlive = (pid: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
-  }
-};
 
 // Legacy names have no PID; newer copies stay while their process is alive.
 const removeAbandonedCopies = Effect.fn("removeAbandonedCopies")(function* (directory: string) {
