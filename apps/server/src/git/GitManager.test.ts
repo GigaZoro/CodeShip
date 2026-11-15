@@ -3090,6 +3090,13 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
                         }),
                         { stderr: "HTTP/1.1 200 OK" },
                       );
+                    // A remembered match is read again before it is returned.
+                    const single = /^\/api\/v1\/repos\/acme\/web\/pulls\/(\d+)$/.exec(url.pathname);
+                    if (single !== null)
+                      return output(
+                        JSON.stringify(pulls.find((pull) => pull.number === Number(single[1]))),
+                        { stderr: "HTTP/1.1 200 OK" },
+                      );
                     expect(url.pathname).toBe("/api/v1/repos/acme/web/pulls");
                     paths.push(url.pathname + url.search);
                     const page = Number(url.searchParams.get("page"));
@@ -3104,15 +3111,24 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       );
       const { manager } = yield* makeManager({ sourceControlProvider: sourceControl });
       expect(yield* manager.branchPullRequest({ cwd: repoDir, branch: "missing" })).toBeNull();
+      // #71 and #72 were updated at the same time; the newer pull request wins.
       expect(yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature" })).toMatchObject({
-        number: 71,
+        number: 72,
         state: "open",
         baseRef: "release/arbitrary",
       });
-      expect(paths).toHaveLength(4);
-      pulls[70] = { ...pulls[70]!, state: "closed", merged: true };
-      pulls[71] = { ...pulls[71]!, state: "closed", merged: true };
-      pulls.push({ ...pulls[70]!, number: 76, state: "open", merged: false });
+      // The ignored `head=` probe doubles as the first page of the one scan both branches share.
+      expect(paths).toEqual([
+        "/api/v1/repos/acme/web/pulls?state=all&head=missing&sort=recentupdate&limit=50&page=1",
+        "/api/v1/repos/acme/web/pulls?state=all&sort=recentupdate&limit=50&page=2",
+        "/api/v1/repos/acme/web/pulls?state=all&sort=recentupdate&limit=50&page=3",
+      ]);
+      // Closing or opening a pull request bumps its update time, which moves it to the list's front.
+      const updated_at = "2026-10-26T00:00:00Z";
+      const merged = pulls
+        .splice(70, 2)
+        .map((pull) => ({ ...pull, state: "closed", merged: true, updated_at }));
+      pulls.unshift({ ...merged[0]!, number: 76, state: "open", merged: false }, ...merged);
       expect(
         yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature" }, { refresh: true }),
       ).toMatchObject({ number: 76, state: "open" });
