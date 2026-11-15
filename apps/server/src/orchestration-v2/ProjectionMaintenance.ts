@@ -131,7 +131,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
             AND sequence <= ${windowEnd}
             AND event_type IN ('subagent.updated', 'turn-item.updated')
             AND json_type(payload_json, '$.promptSequence') = 'integer'
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         for (const row of rows) referenced.add(row.prompt_sequence);
         cursor = windowEnd;
         yield* betweenPages;
@@ -156,7 +156,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         WHERE heads.sequence <= ${throughSequence}
           AND event.event_type IN ('subagent.updated', 'turn-item.updated')
           AND json_type(event.payload_json, '$.promptSequence') = 'integer'
-      `.pipe(NodeSqliteClient.readOnly);
+      `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
       for (const row of keptHeadReferences) referenced.add(row.prompt_sequence);
       yield* betweenPages;
       let referencesThrough = head;
@@ -186,7 +186,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
             AND event.sequence <= ${throughSequence}
           ORDER BY event.sequence ASC
           LIMIT ${PAGE_SIZE}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const candidates = rows.filter((row) => row.prunable === 1).map((row) => row.sequence);
         // Never hold a transaction or the reader lock across a yield or a rest.
         yield* Effect.yieldNow;
@@ -252,7 +252,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
             AND event.sequence <= ${throughSequence}
           ORDER BY event.sequence ASC
           LIMIT ${PAGE_SIZE}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const obsolete = rows.filter((row) => row.imported === 1).map((row) => row.sequence);
         yield* Effect.yieldNow;
         if (obsolete.length > 0) {
@@ -282,7 +282,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           WHERE receipt.rowid > ${cursor} AND receipt.rowid <= ${throughReceiptRowId}
           ORDER BY receipt.rowid ASC
           LIMIT ${PAGE_SIZE}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const obsolete = rows.filter((row) => row.imported === 1).map((row) => row.command_id);
         yield* Effect.yieldNow;
         if (obsolete.length > 0) {
@@ -308,7 +308,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           WHERE projection_name IN (
             'thread-projections', ${EVENT_LOG_PRUNE_MARK}, ${EVENT_LOG_PRUNED_THROUGH}
           )
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const read = (name: string) => metadata.find((row) => row.projection_name === name);
         const projected = read("thread-projections")?.last_sequence ?? 0;
         const mark = read(EVENT_LOG_PRUNE_MARK);
@@ -318,7 +318,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           SELECT
             COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS sequence,
             COALESCE((SELECT MAX(rowid) FROM orchestration_command_receipts), 0) AS receipt_row_id
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, NodeSqliteClient.inBackground);
         const head = bounds[0]?.sequence ?? 0;
 
         let deletedEventCount = 0;
