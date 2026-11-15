@@ -23,7 +23,7 @@ function withLanguage(catalog: MessageCatalog, run: () => void) {
   try {
     run();
   } finally {
-    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+    activateLanguage({ language: "en", catalog: {}, formattingLocale: "en-US" });
   }
 }
 

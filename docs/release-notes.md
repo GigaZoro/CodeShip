@@ -1,3 +1,9 @@
+## 2026-11-16 — Windows test runs check command environments and every platform's agent tools
+
+- Maintainers: the four tests of what a `t3_command_run` command gets from its agent's shell and the host environment, PATH included, run on Windows again, in PowerShell, instead of skipping there. The ACP terminal test runs its pipe in the host's shell too, cmd.exe on Windows.
+- The agent context budget test measures the tools an agent is offered on Linux, macOS and Windows on every host, so it passes on Windows and catches growth in Windows' own tools. `agentContextBudget.json` has a separate value for Windows, which adds the Visual Studio tools.
+- The i18n, Claude attachment and Antigravity attachment tests no longer depend on the machine's number format or its path separators.
+
 ## 2026-11-16 — `bash` in a Windows agent command runs Git Bash, not WSL
 
 - On Windows, a `bash` or `sh` in a command an agent runs with `t3_command_run` now starts Git Bash, which reads `C:/` paths and finds node, instead of WSL's bash, which can do neither. CodeShip finds Git Bash through the `git` on the command's PATH or in the standard install folders, and leaves that PATH as it is, so `git` in the command is still the one it names. Without Git Bash, `bash` fails with an error that says where CodeShip looked; WSL's bash stays reachable through `wsl`. A program the command starts that runs `bash` itself can still get WSL's, so give it Git Bash's full path.
