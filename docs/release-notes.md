@@ -1,3 +1,7 @@
+## 2026-11-16 — `check:changed` starts its checks in seconds on Windows
+
+- Maintainers: before its first check, `vp run check:changed` lists the ignored generated sources, declarations and env files its cache depends on. On Windows, Git followed pnpm's `node_modules` links into every package's dependencies, so that listing could take over an hour. It now skips `node_modules` and never follows links, and the run prints how long the listing took.
+
 ## 2026-11-16 — Windows test runs check command environments and every platform's agent tools
 
 - Maintainers: the four tests of what a `t3_command_run` command gets from its agent's shell and the host environment, PATH included, run on Windows again, in PowerShell, instead of skipping there. The ACP terminal test runs its pipe in the host's shell too, cmd.exe on Windows.

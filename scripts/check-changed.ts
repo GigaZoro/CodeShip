@@ -23,6 +23,7 @@
 // group and reported as TIMEOUT. A rerun on exactly the files of the last
 // passing run prints that run's summary.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
@@ -276,6 +277,56 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 });
 
 const CODE = /\.[cm]?[jt]sx?$/;
+export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (root: string) {
+  // Pathspec exclusions filter output, but do not prune Git for Windows' junction traversal.
+  const output = yield* git(root, [
+    "ls-files",
+    "--others",
+    "--ignored",
+    "--exclude-standard",
+    "--directory",
+    "-z",
+  ]);
+  return yield* Effect.tryPromise(async () => {
+    const files = new Set<string>();
+    const matches = (file: string) =>
+      /(?:^|\/)(?:\.generated|\.astro)\//.test(file) ||
+      /(?:^|\/)(?:[^/]*\.d\.ts|\.env[^/]*)$/.test(file);
+    // A path removed since Git listed it is no input, as for `add` in checkChanged.
+    const unlessRemoved = <A>(read: Promise<A>) =>
+      read.catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+    // Git can list a folder together with folders inside it; each is read once.
+    const seen = new Set<string>();
+    const walk = async (file: string): Promise<void> => {
+      if (seen.has(file) || file.split("/").includes("node_modules")) return;
+      seen.add(file);
+      const absolute = NodePath.join(root, file);
+      const info = await unlessRemoved(NodeFSP.lstat(absolute));
+      if (info === undefined) return;
+      if (info.isDirectory() && !info.isSymbolicLink()) {
+        const entries =
+          (await unlessRemoved(NodeFSP.readdir(absolute, { withFileTypes: true }))) ?? [];
+        // Git stops at a nested repository and lists its folder, so the walk does too.
+        if (entries.some((entry) => entry.name === ".git")) {
+          if (matches(`${file}/`)) files.add(`${file}/`);
+          return;
+        }
+        for (const entry of entries) {
+          const child = `${file}/${entry.name}`;
+          if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(child);
+          else if (matches(child)) files.add(child);
+        }
+      } else if (matches(file)) files.add(file);
+    };
+    for (const entry of output.toString().split("\0").filter(Boolean)) {
+      await walk(entry.replace(/\/$/, ""));
+    }
+    return [...files].sort();
+  });
+});
 // Directories `scripts/i18n-catalog.ts` reads messages from.
 const TRANSLATED_SOURCE = /^(apps\/(web|mobile|desktop)|packages\/(client-runtime|shared))\/src\//;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
@@ -543,24 +594,17 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     yield* add([...(yield* changedFiles), ...(yield* untrackedFiles)]);
     const source = hash.copy().digest("hex");
     yield* add([
-      ...(yield* lines(
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--",
-        ":(glob)**/.generated/**",
-        ":(glob)**/.astro/**",
-        ":(glob)**/*.d.ts",
-        ":(glob)**/.env*",
-        ":(exclude,glob)**/node_modules/**",
-      )),
+      ...(yield* ignoredInputs(root)),
       "node_modules/.modules.yaml",
       "node_modules/.pnpm/lock.yaml",
     ]);
     return { source, inputs: hash.digest("hex") };
   });
+  const fingerprintStarted = yield* Clock.currentTimeMillis;
   const before = yield* fingerprints;
+  yield* Console.log(
+    `check:changed: fingerprinted inputs in ${(((yield* Clock.currentTimeMillis) - fingerprintStarted) / 1000).toFixed(1)}s`,
+  );
   const key = before.inputs;
   const cachePath = inRoot("node_modules/.cache/check-changed.json");
   // A missing or unreadable cache is a miss, never a failure.
