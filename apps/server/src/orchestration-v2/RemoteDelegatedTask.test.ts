@@ -2,16 +2,19 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -112,6 +115,25 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       const index = yield* (yield* ProjectionStore.ProjectionStoreV2).listActiveShellIndex();
       assert.isTrue(index.find((entry) => entry.id === parent.threadId)?.hasRemoteTasks);
       assert.isFalse(index.find((entry) => entry.id === other.threadId)?.hasRemoteTasks);
+      // A live turn here blocks archiving on its own, so end the parent's turn first.
+      const [parentRun] = (yield* orchestrator.getThreadProjection(parent.threadId)).runs;
+      assert.isDefined(parentRun);
+      const endedAt = yield* DateTime.now;
+      yield* (yield* EventSink.EventSinkV2).write({
+        commandId: CommandId.make("command:end-run:records"),
+        events: [
+          {
+            id: EventId.make("event:end-run:records"),
+            type: "run.updated",
+            threadId: parent.threadId,
+            runId: parent.runId,
+            nodeId: parent.rootNodeId,
+            providerInstanceId: instanceId,
+            occurredAt: endedAt,
+            payload: { ...parentRun, status: "completed", completedAt: endedAt },
+          },
+        ],
+      });
       // Nothing here can cancel the task there, so it must not block archiving.
       yield* orchestrator.dispatch({
         type: "thread.archive",
