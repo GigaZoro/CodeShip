@@ -880,18 +880,21 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
       providerThreadId: preparedProviderThreadId,
       restartContinuationOfRunId: RunId.make("run:recovery:source"),
     });
+    // Cut before it had a session; the restart starts it again with its own message.
+    const unsent = yield* createThread("unsent");
+    yield* createRun(unsent, "preparing");
     assert.deepEqual(
       new Set(yield* projections.getRecoveryThreadIds("runtime")),
-      new Set([first, second, roster, prepared]),
+      new Set([first, second, roster, prepared, unsent]),
     );
     // A shared Codex session binds every chat that used it; a restart cuts nothing of theirs.
     assert.deepEqual(
       new Set(yield* projections.getRecoveryThreadIds("restart-hold")),
-      new Set([roster, prepared]),
+      new Set([roster, prepared, unsent]),
     );
     assert.deepEqual(
       new Set(yield* projections.getRecoveryThreadIds("restart-continuations")),
-      new Set([first, second, prepared]),
+      new Set([first, second, prepared, unsent]),
     );
     assert.deepEqual(
       yield* projections.getRecoveryThreadIds("restart-continuations", { include: [] }),
@@ -909,7 +912,7 @@ it.effect("includes shared sessions and provider-owned background rosters in rec
           include: ["project:recovery"],
         }),
       ),
-      new Set([first, second, prepared]),
+      new Set([first, second, prepared, unsent]),
     );
     const preparedState = yield* projections.getRuntimeRecoveryProjection(prepared);
     assert.deepEqual(
@@ -1292,7 +1295,7 @@ it.effect.each([
         lastError: null,
       },
     });
-    yield* createRun(threadId, "completed", { providerThreadId });
+    const settledRun = yield* createRun(threadId, "completed", { providerThreadId });
     const cutWake = yield* createRun(threadId, later.status, {
       ordinal: 2,
       providerThreadId,
@@ -1333,12 +1336,15 @@ it.effect.each([
     const effects = yield* sql<{ readonly effect_id: string }>`
       SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}
     `;
-    // The provider never saw the wake. Started again, it also delivers the note recorded below.
+    // The provider never saw the wake. Started again, it also delivers the note recorded below,
+    // which a wake that had started records on itself.
     assert.deepEqual(effects, [{ effect_id: `effect:restart-continuation:${cutWake}` }]);
     const projection = yield* projections.getThreadProjection(threadId);
-    assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
-      { kind: "subagent", label: "sleep 150 (subagent agent)", id: "agent" },
-    ]);
+    const noted = later.status === "running" ? cutWake : settledRun;
+    assert.deepEqual(
+      projection.runs.find((run) => run.id === noted)?.restartCancelledBackgroundWork,
+      [{ kind: "subagent", label: "sleep 150 (subagent agent)", id: "agent" }],
+    );
   }).pipe(Effect.provide(layerRecoveryTest)),
 );
 

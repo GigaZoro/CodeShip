@@ -5544,11 +5544,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     WHERE bindings.provider_session_id = sessions.provider_session_id
                   )
                 UNION
+                -- Neither a run cut before its provider took the prompt nor a continuation not yet
+                -- started needs a live session to start again.
                 SELECT thread_id FROM orchestration_v2_projection_runs
-                WHERE status = 'starting'
-                  AND CASE WHEN json_valid(payload_json)
-                    THEN json_extract(payload_json, '$.restartContinuationOfRunId') IS NOT NULL
-                    ELSE 0 END
+                WHERE status IN ('preparing', 'starting', 'running')
               `;
             // The chats with work a restart cuts. Unlike "runtime", a live session alone does
             // not count: one shared Codex session binds every chat that ever used it.

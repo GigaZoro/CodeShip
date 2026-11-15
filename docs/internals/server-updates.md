@@ -307,12 +307,16 @@ Shutdown reconciles the roster itself. Claude refuses to replace a process that 
 runs background work for its chat, so a new turn never reaches that close with a roster.
 
 A run is marked running before its provider accepts the prompt, so recovery treats a run
-without a provider turn as never started. A user's prompt the provider never received
-joins the held queue. With restart continuation on, a delegated, agent-sent, or scheduled
-prompt has nobody to review it, so recovery starts it again under the same run. The resend
-skips every thread and Stop that a continuation skips, and gives up after three tries so a
-start that crashes the server cannot loop. A crash after the provider received the prompt
-but before its turn was recorded can repeat that prompt.
+without a provider turn as never started. The latest such run on the thread's provider is
+the restart's to start again, as above: it is cancelled as stored, so a run cut while running
+keeps the doubt that its prompt may have arrived. Any other prompt the provider never
+received stays with recovery. A user's joins the front of the queue, held, and the queue
+behind it waits as the person's own hold. With restart continuation on, a delegated,
+agent-sent, or scheduled prompt has nobody to review it, so recovery starts it again under
+the same run. That resend skips every thread and Stop that a continuation skips, and gives
+up after three tries so a start that crashes the server cannot loop. A cut usage-limit
+resume is left to the usage-limit worker, which sends it again. A crash after the provider
+received the prompt but before its turn was recorded can repeat that prompt.
 
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.

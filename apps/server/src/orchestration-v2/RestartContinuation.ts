@@ -221,14 +221,12 @@ type ResumeProjection = Pick<
 >;
 
 /**
- * A run a restart cuts before its provider accepted the prompt: still preparing its workspace,
- * starting its session, or running before its first provider turn. It starts again with its own
- * message, so the provider's session and native thread do not matter. Restart continuations keep
- * their own path.
+ * The latest run a restart cut before its provider accepted the prompt, read from a projection
+ * whose unaccepted runs are rewound, so a start left on a run means a provider accepted a prompt.
+ * Restart continuations keep their own path; the usage-limit worker resends a cut resume itself.
  */
-export function restartRetryRun(
-  projection: ResumeProjection,
-  now: DateTime.Utc,
+export function restartRerunRun(
+  projection: Pick<ResumeProjection, "thread" | "runs" | "providerThreads" | "providerTurns">,
 ): OrchestrationV2Run | undefined {
   const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
     (latest, candidate) =>
@@ -243,8 +241,9 @@ export function restartRetryRun(
   );
   if (
     run === undefined ||
+    run.startedAt !== null ||
+    run.usageLimitContinuationOfRunId !== undefined ||
     !promptNeverDelivered(run, projection.providerTurns) ||
-    restartContinuationBlocked(projection, run, now, false) ||
     projection.thread.providerInstanceId !== run.providerInstanceId
   )
     return;
@@ -258,6 +257,17 @@ export function restartRetryRun(
   )
     return;
   return run;
+}
+
+/** The cut run a restart starts again now; its provider's session and native thread do not matter. */
+export function restartRetryRun(
+  projection: ResumeProjection,
+  now: DateTime.Utc,
+): OrchestrationV2Run | undefined {
+  const run = restartRerunRun(projection);
+  return run === undefined || restartContinuationBlocked(projection, run, now, false)
+    ? undefined
+    : run;
 }
 
 /** The run to resume after a restart: started again, or continued where its turn was cut. */
