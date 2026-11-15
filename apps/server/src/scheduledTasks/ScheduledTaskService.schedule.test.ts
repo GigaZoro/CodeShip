@@ -452,8 +452,10 @@ it.effect(
           threadId: "thread-caught-up",
           failover: null,
         });
-        // Startup recovery finds a cut run's prompt by its record.
-        expect(yield* Ref.get(prompts)).toEqual([`scheduled-task-message:${caughtUp?.id}`]);
+        // It launches under its scheduled fire's key, where startup recovery looks for its prompt.
+        expect(yield* Ref.get(prompts)).toEqual([
+          `scheduled-task-message:${caughtUp?.id.replace(/:catch_up$/, ":scheduled")}`,
+        ]);
         expect((yield* service.listRuns({ id: off.id })).runs).toMatchObject([
           { outcome: "skipped", skipReason: "missed", scheduledFor: isoAt(13, 7) },
         ]);

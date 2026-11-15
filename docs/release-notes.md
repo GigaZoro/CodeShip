@@ -1,6 +1,6 @@
 ## 2026-11-15 — A scheduled run a restart cut before its prompt no longer leaves an empty chat
 
-- When a restart cut a scheduled run after its chat was made but before the task's prompt reached it, the run was shown as failed but its empty chat stayed in the sidebar. The next startup now deletes that chat and shows the run as interrupted in its history; the task runs again at its next time. A chat you wrote in or moved to another folder is kept.
+- When a restart cut a scheduled run after its chat was made but before the task's prompt reached it, the run was shown as failed but its empty chat stayed in the sidebar. The next startup now deletes that chat and shows the run as interrupted in its history; a recurring task runs again at its next time, as after any missed run. A chat you wrote in or moved to another folder is kept.
 - A restart-cut run whose chat had only your own message in it was counted as succeeded. Startup now checks for the task's own prompt, so such a run is shown as interrupted.
 
 ## 2026-11-15 — Workspace preparation errors say why Git detection failed

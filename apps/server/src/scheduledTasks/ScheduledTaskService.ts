@@ -603,7 +603,8 @@ function iso(value: DateTime.DateTime): string {
   return DateTime.formatIso(DateTime.toUtc(value));
 }
 
-/** A launched run's key is its run record's id, so startup recovery can find the run's own prompt. */
+/** A catch-up run launches under the key of the scheduled fire it makes up. */
+const launchKey = (runRecordId: string) => runRecordId.replace(/:catch_up$/, ":scheduled");
 const promptMessageId = (fireKey: string) => MessageId.make(`scheduled-task-message:${fireKey}`);
 
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
@@ -2167,7 +2168,9 @@ export const layer = Layer.effect(
         yield* notifyChanged;
 
         const fireKey =
-          webhook === undefined ? runRecordId : `${active.id}:webhook:${webhook.deliveryId}`;
+          webhook === undefined
+            ? launchKey(runRecordId)
+            : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = promptMessageId(fireKey);
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
@@ -3811,16 +3814,21 @@ export const layer = Layer.effect(
             const shell = yield* threadManagement.getThreadShell(threadId);
             if (shell === null || shell.deletedAt !== null) return { run, chat: null };
             const prompt = yield* threadManagement.getThreadRecords(threadId, ["messages"], {
-              messageIds: [promptMessageId(run.run_id)],
+              messageIds: [promptMessageId(launchKey(run.run_id))],
             });
             if (prompt.messages.length > 0) return { run, chat: threadId };
             if (
               (yield* threadManagement.getMessageCount(threadId)) === 0 &&
               sameThreadFolder(shell.folder, run.chat_folder)
             ) {
+              // A rejected command id is refused for good, so each startup tries under a new one.
+              // A chat already deleted reads as deleted above and is never deleted again.
+              const attempt = yield* crypto.randomUUIDv4();
               yield* threadManagement.dispatch({
                 type: "thread.delete",
-                commandId: CommandId.make(`scheduled-task-unprompted-chat:${run.run_id}`),
+                commandId: CommandId.make(
+                  `scheduled-task-unprompted-chat:${run.run_id}:${attempt}`,
+                ),
                 threadId,
                 onlyIfUnused: true,
               });

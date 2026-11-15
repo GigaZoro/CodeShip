@@ -197,6 +197,7 @@ it.effect(
         { id: "stuck-huge", next: now, status: "running", scheduleJson: hugeInterval },
         { id: null, next: now, status: "running" },
         { id: "stuck-prompted", next: now, status: "running" },
+        { id: "stuck-caught-up", next: now, status: "running" },
         { id: "stuck-unprompted", next: now, status: "running" },
         { id: "stuck-user-only", next: now, status: "running" },
         { id: "stuck-moved", next: now, status: "running" },
@@ -209,12 +210,13 @@ it.effect(
       ]) {
         yield* insertRow(sql, { ...row, enabled: 1 }, now);
       }
-      // A restart cut these runs after their chats were named: one chat got its prompt, one is
-      // empty, the user wrote in one that never got it, moved another, and one cannot be read.
+      // A restart cut these runs after their chats were named: one chat got its prompt, so did a
+      // catch-up run's, one is empty, the user wrote in one that never got it, moved another, and
+      // one cannot be read.
       yield* sql`
         UPDATE scheduled_tasks SET last_run_at = ${cutAt}
-        WHERE task_id IN ('stuck-valid', 'stuck-prompted', 'stuck-unprompted', 'stuck-user-only',
-          'stuck-moved', 'stuck-unread')
+        WHERE task_id IN ('stuck-valid', 'stuck-prompted', 'stuck-caught-up', 'stuck-unprompted',
+          'stuck-user-only', 'stuck-moved', 'stuck-unread')
       `;
       // The service adds this column at startup; these runs were recorded by one that had it.
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN chat_folder TEXT`;
@@ -224,6 +226,7 @@ it.effect(
         VALUES
           ('run:cut-unnamed', 'stuck-valid', 'scheduled', ${cutAt}, 'running', NULL, NULL),
           ('run:cut-prompted', 'stuck-prompted', 'scheduled', ${cutAt}, 'running', 'thread:prompted', NULL),
+          ('run:cut-caught-up:catch_up', 'stuck-caught-up', 'catch_up', ${cutAt}, 'running', 'thread:caught-up', NULL),
           ('run:cut-unprompted', 'stuck-unprompted', 'scheduled', ${cutAt}, 'running', 'thread:unprompted', 'Reports'),
           ('run:cut-user-only', 'stuck-user-only', 'scheduled', ${cutAt}, 'running', 'thread:user-only', NULL),
           ('run:cut-moved', 'stuck-moved', 'scheduled', ${cutAt}, 'running', 'thread:moved', 'Reports'),
@@ -233,6 +236,10 @@ it.effect(
         [
           "thread:prompted",
           { folder: null, messageIds: ["scheduled-task-message:run:cut-prompted"] },
+        ],
+        [
+          "thread:caught-up",
+          { folder: null, messageIds: ["scheduled-task-message:run:cut-caught-up:scheduled"] },
         ],
         ["thread:unprompted", { folder: "reports", messageIds: [] }],
         ["thread:user-only", { folder: null, messageIds: ["message:typed-by-user"] }],
@@ -247,7 +254,7 @@ it.effect(
           ? Effect.die(new Error("test read failure"))
           : Effect.succeed(read(chat) as never);
       };
-      const dispatchedCommands = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const dispatchedCommands = yield* Ref.make<ReadonlyArray<{ readonly commandId: string }>>([]);
 
       yield* TestClock.setTime(Date.parse(now) + 1_000);
       const dispatched = yield* Ref.make(0);
@@ -343,7 +350,7 @@ it.effect(
       }>`SELECT task_id, last_run_status, last_run_error, next_run_at, run_count
        FROM scheduled_tasks ORDER BY task_id`;
       const byId = new Map(rows.map((row) => [row.task_id, row]));
-      assert.equal(rows.length, 14);
+      assert.equal(rows.length, 15);
       assert.equal(byId.get("stuck-valid")?.last_run_status, "failed");
       assert.isNotNull(byId.get("stuck-valid")?.next_run_at);
       assert.equal(byId.get("stuck-corrupt")?.last_run_status, "failed");
@@ -367,17 +374,26 @@ it.effect(
         assert.equal(row?.last_run_error, "Run was interrupted by a server restart.");
         assert.equal(row?.run_count, 1);
       }
-      const prompted = byId.get("stuck-prompted");
-      assert.equal(prompted?.last_run_status, "succeeded");
-      assert.isNull(prompted?.last_run_error);
-      assert.isNotNull(prompted?.next_run_at);
-      assert.equal(prompted?.run_count, 1);
+      for (const id of ["stuck-prompted", "stuck-caught-up"]) {
+        const prompted = byId.get(id);
+        assert.equal(prompted?.last_run_status, "succeeded");
+        assert.isNull(prompted?.last_run_error);
+        assert.isNotNull(prompted?.next_run_at);
+        assert.equal(prompted?.run_count, 1);
+      }
       assert.deepEqual(
         yield* sql`
           SELECT run_id, outcome, thread_id, error, completed_at IS NOT NULL AS completed
           FROM scheduled_task_runs WHERE run_id LIKE 'run:cut-%' ORDER BY run_id
         `,
         [
+          {
+            run_id: "run:cut-caught-up:catch_up",
+            outcome: "succeeded",
+            thread_id: "thread:caught-up",
+            error: null,
+            completed: 1,
+          },
           {
             run_id: "run:cut-moved",
             outcome: "failed",
@@ -424,16 +440,15 @@ it.effect(
       );
       assert.deepEqual(
         yield* sql`SELECT task_id, last_run_thread_id FROM scheduled_task_sidebar ORDER BY task_id`,
-        [{ task_id: "stuck-prompted", last_run_thread_id: "thread:prompted" }],
+        [
+          { task_id: "stuck-caught-up", last_run_thread_id: "thread:caught-up" },
+          { task_id: "stuck-prompted", last_run_thread_id: "thread:prompted" },
+        ],
       );
-      assert.deepEqual(yield* Ref.get(dispatchedCommands), [
-        {
-          type: "thread.delete",
-          commandId: "scheduled-task-unprompted-chat:run:cut-unprompted",
-          threadId: "thread:unprompted",
-          onlyIfUnused: true,
-        },
-      ]);
+      assert.deepEqual(
+        (yield* Ref.get(dispatchedCommands)).map(({ commandId: _, ...command }) => command),
+        [{ type: "thread.delete", threadId: "thread:unprompted", onlyIfUnused: true }],
+      );
       assert.deepEqual(yield* Ref.get(namedBeforeLaunch), [true, true, true, true]);
       for (const id of ["due-healthy", "due-huge", "due-second"]) {
         const row = byId.get(id);
@@ -2513,10 +2528,16 @@ it.effect(
               MemoryAdmission.layerTest(),
               Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
               Layer.mock(ThreadManagementService.ThreadManagementService)({
-                getThreadRecords: (_threadId, _fields, filter) =>
-                  Effect.succeed({
-                    messages: (filter?.messageIds ?? []).map((id) => ({ id })),
-                  } as never),
+                // Each chat holds its own run's prompt.
+                getThreadRecords: (threadId, _fields, filter) => {
+                  const prompt = MessageId.make(
+                    `scheduled-task-message:${threadId.replace("thread:", "run:")}`,
+                  );
+                  return Effect.succeed({
+                    messages:
+                      (filter?.messageIds?.includes(prompt) ?? true) ? [{ id: prompt }] : [],
+                  } as never);
+                },
                 // The user moved the chat out of the task's group before the restart.
                 getThreadShell: () => Effect.succeed({ deletedAt: null, folder: "Mine" } as never),
                 dispatch: (command) =>
@@ -2637,6 +2658,7 @@ it.effect(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const launched = yield* Deferred.make<ThreadId | undefined>();
+      const prompts = yield* Ref.make<ReadonlyArray<MessageId>>([]);
       const makeLayer = () =>
         ScheduledTaskService.layer.pipe(
           Layer.provide(
@@ -2647,13 +2669,27 @@ it.effect(
               // The prompt landed, and the launch is still finishing when the server stops.
               Layer.mock(ThreadLaunchService.ThreadLaunchService)({
                 launch: (input) =>
-                  Deferred.succeed(launched, input.threadId).pipe(Effect.andThen(Effect.never)),
+                  Ref.update(prompts, (ids) =>
+                    input.initialMessage?.messageId == null
+                      ? ids
+                      : [...ids, input.initialMessage.messageId],
+                  ).pipe(
+                    Effect.andThen(Deferred.succeed(launched, input.threadId)),
+                    Effect.andThen(Effect.never),
+                  ),
               }),
               Layer.mock(ThreadManagementService.ThreadManagementService)({
                 getThreadRecords: (_threadId, _fields, filter) =>
-                  Effect.succeed({
-                    messages: (filter?.messageIds ?? []).map((id) => ({ id })),
-                  } as never),
+                  Ref.get(prompts).pipe(
+                    Effect.map(
+                      (ids) =>
+                        ({
+                          messages: ids
+                            .filter((id) => filter?.messageIds?.includes(id) ?? true)
+                            .map((id) => ({ id })),
+                        }) as never,
+                    ),
+                  ),
                 getThreadShell: () =>
                   Effect.succeed({ deletedAt: null, folder: "Autopilot" } as never),
               }),
@@ -2701,6 +2737,95 @@ it.effect(
           afterRestart: [
             { outcome: "succeeded", thread_id: threadId, last_run_status: "succeeded" },
           ],
+        },
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a startup that cannot delete a cut run's unprompted chat moves its task on but leaves the run running, and a later startup deletes the chat and settles the run",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const cutAt = "2026-11-10T12:00:00.000Z";
+      const deleted = yield* Ref.make(false);
+      const tried = yield* Ref.make<ReadonlyArray<string>>([]);
+      const makeLayer = () =>
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              ManagedPolicy.layerTest(),
+              ServerSettings.layerTest(),
+              MemoryAdmission.layerTest(),
+              Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getThreadShell: () =>
+                  Ref.get(deleted).pipe(
+                    Effect.map(
+                      (gone) => ({ deletedAt: gone ? cutAt : null, folder: "Autopilot" }) as never,
+                    ),
+                  ),
+                getThreadRecords: () => Effect.succeed({ messages: [] } as never),
+                getMessageCount: () => Effect.succeed(0),
+                // As the orchestrator's receipts do: the first delete is rejected, and a rejected
+                // command id is refused for good.
+                dispatch: (command) =>
+                  Effect.gen(function* () {
+                    const earlier = yield* Ref.getAndUpdate(tried, (ids) => [
+                      ...ids,
+                      command.commandId,
+                    ]);
+                    if (earlier.length === 0 || earlier.includes(command.commandId)) {
+                      return yield* Effect.die(new Error("test delete rejected"));
+                    }
+                    yield* Ref.set(deleted, true);
+                    return {} as never;
+                  }),
+              }),
+              layerSharedTaskDependencies(),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+                namedProjectsRoot: "/projects",
+                isScratchProject: () => Effect.succeed(false),
+              }),
+              NodeCrypto.layer,
+              Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+            ),
+          ),
+        );
+      const stored = sql`
+        SELECT r.outcome, r.thread_id, t.last_run_status
+        FROM scheduled_task_runs r JOIN scheduled_tasks t USING (task_id)
+      `;
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        yield* service.upsert(
+          conditionTask({
+            id: ScheduledTaskId.make("task:empty"),
+            group: "Autopilot",
+            runCondition: null,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        // A restart cut the run after its chat was made, before the prompt reached it.
+        yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running', last_run_at = ${cutAt}`;
+        yield* sql`
+          INSERT INTO scheduled_task_runs
+            (run_id, task_id, trigger, started_at, outcome, thread_id, chat_folder)
+          VALUES
+            ('run:empty', 'task:empty', 'scheduled', ${cutAt}, 'running', 'thread:empty', 'Autopilot')
+        `;
+      }).pipe(Effect.provide(makeLayer()));
+      const afterRejection = yield* stored.pipe(Effect.provide(makeLayer()));
+      const afterRetry = yield* stored.pipe(Effect.provide(makeLayer()));
+      assert.deepEqual(
+        { afterRejection, afterRetry, deleted: yield* Ref.get(deleted) },
+        {
+          afterRejection: [
+            { outcome: "running", thread_id: "thread:empty", last_run_status: "failed" },
+          ],
+          afterRetry: [{ outcome: "failed", thread_id: null, last_run_status: "failed" }],
+          deleted: true,
         },
       );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
