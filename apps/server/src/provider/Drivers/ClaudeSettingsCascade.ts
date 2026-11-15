@@ -156,7 +156,7 @@ function claudeSdkBypassSettings(settings: typeof ClaudeBypassSettings.Type) {
 }
 
 // The SDK's settings type only allows "disable" for these switches, where false means unset.
-// Shapes the schema rejects pass through unchanged, so Claude Code's validation drops them.
+// Shapes the schema rejects pass through unchanged, so Claude Code's own validation judges them.
 const decodeClaudeBypassSettingsOption = Schema.decodeUnknownOption(ClaudeBypassSettings);
 export function claudeSdkShapedSettings(settings: ClaudeSdkSettings): ClaudeSdkSettings {
   const decoded = decodeClaudeBypassSettingsOption(settings);

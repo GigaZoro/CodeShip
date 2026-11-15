@@ -4984,8 +4984,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           remoteFile,
           JSON.stringify({ permissions: { disableBypassPermissionsMode: true } }),
         );
-        // Claude Code's engine drops a switch value it does not accept, which then turns nothing off.
-        assert.equal((yield* open).permissionMode, "bypassPermissions");
+        // Claude Code's engine reads any other set value of a switch as "disable".
+        assert.equal((yield* open).permissionMode, "auto");
         // A policy helper, or organization settings Claude Code fetches in place of an unreadable
         // cache, may turn bypass off.
         yield* fileSystem.writeFileString(
