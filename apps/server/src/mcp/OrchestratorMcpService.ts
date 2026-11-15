@@ -2710,6 +2710,8 @@ const make = Effect.gen(function* () {
         readonly machineOrders?: ReadonlyArray<ScheduledTaskProjectMachineOrder>;
         /** Only a list that asked for prompts returns them; a write result never echoes the prompt. */
         readonly includePrompt?: boolean;
+        /** Only creation returns the URL; lists and updates leave it to Settings. */
+        readonly revealsWebhookUrl?: boolean;
       },
       task: ScheduledTask,
     ) {
@@ -2721,18 +2723,19 @@ const make = Effect.gen(function* () {
               Effect.orElseSucceed((): ReadonlyArray<ScheduledTaskProjectMachineOrder> => []),
             )
           : []);
-      const live =
-        caller.parent === undefined
-          ? scope.client?.access !== "read-only"
-          : Exit.isSuccess(yield* Effect.exit(assertLiveCaller(scope, caller.parent)));
       const modes = yield* scheduledTaskRunModes(task).pipe(Effect.option);
+      const mayRun =
+        caller.revealsWebhookUrl === true &&
+        Option.isSome(modes) &&
+        modes.value.every((mode) => withinLimits(caller.limits, mode)) &&
+        (caller.parent === undefined
+          ? scope.client?.access !== "read-only"
+          : Exit.isSuccess(yield* Effect.exit(assertLiveCaller(scope, caller.parent))));
       return scheduledTaskSummary(
         Option.isNone(modes)
           ? task
           : { ...task, modelSelection: modes.value.at(-1)?.modelSelection ?? task.modelSelection },
-        live &&
-          Option.isSome(modes) &&
-          modes.value.every((mode) => withinLimits(caller.limits, mode)),
+        mayRun,
         yield* lastRunOf(task),
         yield* scheduledTasks.liveRuns(task).pipe(
           Effect.catch((error) =>
@@ -3004,7 +3007,11 @@ const make = Effect.gen(function* () {
             failure("orchestration_error", `Could not schedule task: ${error.message}`),
           ),
         );
-      return yield* summarizeScheduledTask(scope, { parent, limits }, task);
+      return yield* summarizeScheduledTask(
+        scope,
+        { parent, limits, revealsWebhookUrl: true },
+        task,
+      );
     }),
     listScheduledTasks: Effect.fn("OrchestratorMcpService.listScheduledTasks")(
       function* (scope, input) {

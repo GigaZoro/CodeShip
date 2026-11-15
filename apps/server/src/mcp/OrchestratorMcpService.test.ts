@@ -3885,20 +3885,11 @@ describe("OrchestratorMcpService provider resolution", () => {
         const upserted = yield* Ref.make(0);
         const listed = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
           Effect.flatMap((mcp) => mcp.listScheduledTasks(supervisedClient, { projectId })),
-          Effect.provide(
-            service(
-              [
-                task({ runtimeMode: "full-access" }),
-                task({ id: ScheduledTaskId.make("scheduled-task:supervised") }),
-              ],
-              null,
-              upserted,
-            ),
-          ),
+          Effect.provide(service([task({})], null, upserted)),
         );
         assert.deepEqual(
-          listed.tasks.map((summary) => summary.webhookUrl),
-          [undefined, "https://t3.example/hooks/secret"],
+          listed.tasks.map((summary) => [summary.webhookUrl, summary.webhookSignature]),
+          [[undefined, "none"]],
         );
       }),
     );
@@ -4207,29 +4198,6 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.equal(yield* Ref.get(upserted), 1);
         assert.equal(updated.scheduledTaskId, bound.id);
         assert.equal(updated.webhookUrl, undefined);
-      }),
-    );
-
-    it.effect("hides a webhook URL from a caller below the task's modes", () =>
-      Effect.gen(function* () {
-        const upserted = yield* Ref.make(0);
-        const listed = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
-          Effect.flatMap((mcp) => mcp.listScheduledTasks(supervisedClient, { projectId })),
-          Effect.provide(
-            service(
-              [
-                task({ runtimeMode: "full-access" }),
-                task({ id: ScheduledTaskId.make("scheduled-task:supervised") }),
-              ],
-              null,
-              upserted,
-            ),
-          ),
-        );
-        assert.deepEqual(
-          listed.tasks.map((summary) => summary.webhookUrl),
-          [undefined, "https://t3.example/hooks/secret"],
-        );
       }),
     );
   });
