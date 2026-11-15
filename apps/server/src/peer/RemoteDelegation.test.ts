@@ -270,6 +270,7 @@ const boxProjects: ReadonlyArray<Project> = [
 
 /** The box's own accounts: its codex instance is not named like the laptop's. */
 const boxCodex = ProviderInstanceId.make("codex_box");
+const boxClaude = ProviderInstanceId.make("claudeAgent_box");
 const readyProvider = {
   enabled: true,
   installed: true,
@@ -280,11 +281,7 @@ const readyProvider = {
 };
 const boxProviders = [
   { ...readyProvider, instanceId: boxCodex, driver },
-  {
-    ...readyProvider,
-    instanceId: ProviderInstanceId.make("claudeAgent_box"),
-    driver: ProviderDriverKind.make("claudeAgent"),
-  },
+  { ...readyProvider, instanceId: boxClaude, driver: ProviderDriverKind.make("claudeAgent") },
 ] as unknown as ReadonlyArray<ServerProvider>;
 
 const serveBox = (thread: BoxThread) => {
@@ -798,23 +795,6 @@ const mcpClient = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-
-/** The box's only provider: a Claude instance, under its own id. */
-const boxClaude: ServerProvider = {
-  instanceId: ProviderInstanceId.make("claude-box"),
-  driver: ProviderDriverKind.make("claudeAgent"),
-  enabled: true,
-  installed: true,
-  version: "test",
-  status: "ready",
-  auth: { status: "authenticated" },
-  checkedAt: "2026-09-13T00:00:00.000Z",
-  models: [
-    { slug: "claude-sonnet-4-6", name: "Claude Sonnet", isCustom: false, capabilities: null },
-  ],
-  slashCommands: [],
-  skills: [],
-};
 
 const adapter = {
   instanceId,
@@ -3115,9 +3095,7 @@ it.effect("a task naming another driver there never runs its model on the parent
         },
       });
       expect(result.isError).toBe(false);
-      expect((yield* Ref.get(thread.launchedWith))?.modelSelection.instanceId).toBe(
-        boxClaude.instanceId,
-      );
+      expect((yield* Ref.get(thread.launchedWith))?.modelSelection.instanceId).toBe(boxClaude);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
