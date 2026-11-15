@@ -1055,6 +1055,8 @@ it.effect("a fixed-time slot missed while the server was off shows on the task",
             prompt: "Update yesterday's notes.",
             enabled: true,
             schedule: { type: "fixed_time", timeOfDay: "09:00" },
+            // Fixed-time tasks catch up by default; this one skips the missed slot.
+            catchUpMissedRun: false,
             projectId: "project-missed-slot",
             workspaceStrategy: { type: "root" },
             modelSelection: { instanceId: "codex", model: "gpt-5.4" },

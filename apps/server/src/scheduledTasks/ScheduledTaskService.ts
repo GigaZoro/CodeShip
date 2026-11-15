@@ -3887,6 +3887,7 @@ export const layer = Layer.effect(
           now,
           missedAt,
           catchUp ? "next_run_sooner" : "missed",
+          "Missed a scheduled run because the server was not running at that time.",
         );
       }
       // Several missed times run once, for the latest; the one-machine check judges that one.
