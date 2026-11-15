@@ -24,6 +24,8 @@ it("names the shell t3_command_run uses on each platform and how to chain on Win
   expect(description).toContain("Windows PowerShell 5.1");
   expect(description).toContain("no `&&` or `||`");
   expect(description).toContain("$LASTEXITCODE");
+  expect(description).toContain("WSL's bash");
+  expect(description).toContain("Git\\bin\\bash.exe");
 });
 
 it("refuses a t3_thread_update whose fields do not fit its action", () => {

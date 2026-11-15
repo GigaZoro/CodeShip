@@ -1,3 +1,7 @@
+## 2026-11-15 — Agents on Windows are told that `bash` there is WSL
+
+- `t3_command_run`'s description now says that on Windows `bash` reaches WSL's bash (no node, its own home folder) and gives the Git Bash path, so an agent no longer lands in the wrong environment.
+
 ## 2026-11-15 — A manual step is decided only on the machine whose list holds it
 
 - Choosing a solution for a manual step starts its chat only on that step's own machine. When the app is not connected to it, the card says so and offers no choice, and the step stays on the machine's pending list instead of running on another machine.

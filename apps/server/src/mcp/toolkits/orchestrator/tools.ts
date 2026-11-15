@@ -156,7 +156,7 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
 
 const CommandRunTool = Tool.make("t3_command_run", {
   description:
-    "Run a shell command that ends (tests, build, install, deploy) apart from you. The shell is bash or zsh on macOS and Linux (/bin/sh when the user's shell is neither), so `&&` and `||` work. On Windows it is Windows PowerShell 5.1, which has no `&&` or `||`: chain steps with `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }` between them, or run each step in its own call. Only in Full access and the default mode; otherwise use your shell. It keeps running through a restart. Its end wakes you with the exit code and the last output. Not for dev servers or watchers. `task_cancel` stops it.",
+    "Run a shell command that ends (tests, build, install, deploy) apart from you. The shell is bash or zsh on macOS and Linux (/bin/sh when the user's shell is neither), so `&&` and `||` work. On Windows it is Windows PowerShell 5.1, which has no `&&` or `||`: chain steps with `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }` between them, or run each step in its own call. Do not escape with `bash`: on Windows it is WSL's bash, which has no node and its own home folder. For Git Bash run `& 'C:\\Program Files\\Git\\bin\\bash.exe' -lc '<command>'`. Only in Full access and the default mode; otherwise use your shell. It keeps running through a restart. Its end wakes you with the exit code and the last output. Not for dev servers or watchers. `task_cancel` stops it.",
   parameters: OrchestratorMcpRunCommandInput,
   success: OrchestratorMcpRunCommandResult,
   failure: OrchestratorMcpFailure,
