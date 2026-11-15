@@ -263,23 +263,16 @@ export function manualStepStartChatFailureMessage(cause: Cause.Cause<unknown>): 
 }
 
 /**
- * Where a step's chat runs: its own machine when this client may start chats there, because the
- * work often has to happen on that machine; otherwise the machine that reviews steps, which reads
- * ThreadPage and so is one of the user's own. Null when neither can run it.
+ * Where a step's chat runs: only on the machine whose pending list holds the step, because only
+ * that machine can do the work. Null when this client is not connected to it; the step then
+ * stays on its list for that machine's Machine inbox, and no other machine runs it.
  */
 export function manualStepChatHost(
-  view: {
-    readonly chatHosts: ReadonlyArray<ManualStepChatHost>;
-    readonly reviewEnvironmentId: EnvironmentId | null;
-  },
+  view: { readonly chatHosts: ReadonlyArray<ManualStepChatHost> },
   machine: string,
 ): ManualStepChatHost | null {
   const key = machineKey(machine);
-  return (
-    view.chatHosts.find((host) => machineKey(host.machine) === key) ??
-    view.chatHosts.find((host) => host.environmentId === view.reviewEnvironmentId) ??
-    null
-  );
+  return view.chatHosts.find((host) => machineKey(host.machine) === key) ?? null;
 }
 
 const byUrgency = (left: ManualStep, right: ManualStep) =>

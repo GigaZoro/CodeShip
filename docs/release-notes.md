@@ -1,3 +1,7 @@
+## 2026-11-15 — A manual step is decided only on the machine whose list holds it
+
+- Choosing a solution for a manual step starts its chat only on that step's own machine. When the app is not connected to it, the card says so and offers no choice, and the step stays on the machine's pending list instead of running on another machine.
+
 ## 2026-11-15 — Windows and POSIX-only tests now report a skip, not a pass
 
 - 19 tests that returned early on the wrong platform reported a pass without running. They now skip, so a test run shows what ran on each platform, and a lint rule refuses new early returns on the host platform.

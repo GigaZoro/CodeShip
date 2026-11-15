@@ -123,12 +123,15 @@ describe("manualStepChatHost", () => {
   ];
   it.each([
     ["the step's own machine, however its folder spells it", hosts, vps, "MacBook-Pro-Andrii", mac],
-    ["the reviewing machine when the step's machine is not connected", hosts, mac, "Zoro-PC", mac],
-    ["no machine when the reviewer cannot start chats either", [hosts[1]!], mac, "Zoro-PC", null],
-  ])("runs the chat on %s", (_case, chatHosts, reviewEnvironmentId, machine, expected) => {
-    expect(
-      manualStepChatHost({ chatHosts, reviewEnvironmentId }, machine)?.environmentId ?? null,
-    ).toBe(expected);
+    [
+      "no machine when the step's machine is not connected, even with a reviewer",
+      hosts,
+      mac,
+      "Zoro-PC",
+      null,
+    ],
+  ])("runs the chat on %s", (_case, chatHosts, _reviewEnvironmentId, machine, expected) => {
+    expect(manualStepChatHost({ chatHosts }, machine)?.environmentId ?? null).toBe(expected);
   });
 
   const config = (

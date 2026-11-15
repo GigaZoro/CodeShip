@@ -3720,6 +3720,8 @@ const catalog: MessageCatalog = {
   confused: "збентеження",
   connect: "підключити",
   Connect: "Підключити",
+  "Connect to {machine} to decide here. The step stays on its pending list.":
+    "Підключіться до {machine}, щоб вирішити тут. Крок залишається в його списку очікування.",
   "Connect {apps} before using it.": "Підключіть {apps} перед використанням.",
   "Connect {clientName}": "Підключити {clientName}",
   "Connect {environment} and try again.": "Підключіть {environment} і спробуйте ще раз.",

@@ -63,8 +63,9 @@ the chat that **Choose** starts gets the step as it was written.
 To act on a step from that page, press **Choose** on a suggested solution, or **Other…** to write
 your own decision. Either one starts a chat under **No project** and opens it: its first message is
 the step and your decision, and it asks the agent to carry the decision out and record the result in
-the step's ThreadPage thread. The chat runs on the step's own machine when the app is connected to
-it, otherwise on the machine that reviews steps. For a money decision, the agent may spend only what
+the step's ThreadPage thread. The chat runs only on the step's own machine, because only that machine can do the step. When
+the app is not connected to that machine, the card says so and offers no choice; the step stays on
+the machine's pending list. For a money decision, the agent may spend only what
 your decision explicitly approves. If a start fails, choosing the same option again continues that
 start instead of opening a second chat; once a chat has started, choosing again starts another one.
 
