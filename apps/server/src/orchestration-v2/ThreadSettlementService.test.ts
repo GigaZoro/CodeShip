@@ -1913,7 +1913,8 @@ describe("ThreadSettlementServiceV2 worker", () => {
         const fixture = yield* makeHarness({
           snapshot: makeSnapshot([thread]),
           settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleOpensPullRequests: false },
-          existingWorktreePaths: ["/worktrees/feature"],
+          // Branch lookups run in the worktree only while it has .git.
+          existingWorktreePaths: ["/worktrees/feature", "/worktrees/feature/.git"],
           unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
           branchPullRequest: (_input, lookupOptions) =>
             Effect.sync(() => lookups.push(lookupOptions)).pipe(
