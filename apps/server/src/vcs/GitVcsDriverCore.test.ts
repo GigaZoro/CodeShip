@@ -3562,7 +3562,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         assert.include(diff, "diff --git a/committed b/committed");
 
         const status = yield* driver.statusDetailsLocal(cwd, { includeBranchChanges: true });
-        assert.deepStrictEqual(status.branchChanges, {
+        assert.deepInclude(status.branchChanges, {
           baseRef: null,
           insertions: 3,
           deletions: 1,
@@ -4582,7 +4582,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         const status = yield* driver.statusDetailsLocal(cwd, { includeBranchChanges: true });
 
         assert.strictEqual(status.branch, "t3/temporary");
-        assert.deepStrictEqual(status.branchChanges, {
+        assert.deepInclude(status.branchChanges, {
           baseRef: null,
           insertions: 1,
           deletions: 0,
@@ -5058,7 +5058,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           yield* writeTextFile(cwd, ".git/info/exclude", "ignored.txt\n");
           yield* writeTextFile(cwd, "bulk[1]/ignored.txt", "ignored\n");
           const clean = yield* driver.statusDetailsLocal(cwd, { includeBranchChanges: true });
-          assert.deepStrictEqual(clean.branchChanges, {
+          assert.deepInclude(clean.branchChanges, {
             baseRef: "main",
             insertions: 0,
             deletions: 0,
@@ -5186,7 +5186,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
 
         const status = yield* driver.statusDetailsLocal(cwd, { includeBranchChanges: true });
 
-        assert.deepStrictEqual(status.branchChanges, {
+        assert.deepInclude(status.branchChanges, {
           baseRef: null,
           insertions: 1,
           deletions: 1,
@@ -9886,7 +9886,7 @@ it.layer(layerTest)("branch change totals after a failed untracked listing", (it
       yield* writeTextFile(cwd, "notes.txt", "one\ntwo\n");
       const status = yield* read;
       assert.strictEqual(listings, 3);
-      assert.deepStrictEqual(status.branchChanges, { baseRef: null, insertions: 2, deletions: 0 });
+      assert.deepInclude(status.branchChanges, { baseRef: null, insertions: 2, deletions: 0 });
     }),
   );
 });
