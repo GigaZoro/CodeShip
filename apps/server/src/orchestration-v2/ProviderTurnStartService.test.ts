@@ -1236,7 +1236,12 @@ function makeLocalCommandHarness(input: {
               ...runInput,
               messageId: runInput.message.messageId,
             } as never)
-          : runInput.session.startTurn(runInput as never)
+          : runInput.session.startTurn({
+              ...runInput,
+              ...(runInput.run.restartContinuationOfRunId === undefined
+                ? {}
+                : { restartContinuationOfRunId: runInput.run.restartContinuationOfRunId }),
+            } as never)
         ).pipe(Effect.orDie)
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
