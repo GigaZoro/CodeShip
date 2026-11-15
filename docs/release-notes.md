@@ -1,3 +1,7 @@
+## 2026-11-15 — Signing in to an account you just added no longer fails with "no longer available"
+
+- Adding a provider account (**Settings → Providers → Add**) could stop at the sign-in step with "This provider instance is no longer available.", most often for a Claude account. The account had been saved, but the save answered before the server had loaded it, and the sign-in step asked for it in between. A save that adds, changes or removes an account now answers once the server has loaded it, so the sign-in step opens straight away. An account added before this release can be signed in from its row in **Settings → Providers**.
+
 ## 2026-11-15 — A chat no longer keeps a queued message held after an old restart bug
 
 - A message queued behind a run that a restart cut could stay held for days, with the chat showing as finished. With "continue threads after an update" on, the next server start now starts it, and a chat with a held queue is marked `queueHeld` in the thread list and the thread summary.

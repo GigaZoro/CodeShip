@@ -11,9 +11,13 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as ManagedProviders from "../policy/managedProviders.ts";
@@ -22,6 +26,7 @@ import * as SecretResolver from "../secrets/SecretResolver.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "./builtInDrivers.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
+import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "./ProviderOrchestrationAdapterInfrastructure.ts";
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as ProviderHostLive from "./ProviderHostLive.ts";
@@ -122,32 +127,73 @@ export const seedDevReplayInstance = Effect.fn(
   });
 });
 
-const layerSettingsWatcher = (settingsChanges: Stream.Stream<ServerSettings>) =>
-  Layer.effectDiscard(
+/**
+ * Reconciles the registry with the current settings on every saved change, and on a writer's
+ * `catchUp`. Both read the settings under one lock, so the last to run applies the newest
+ * instances and an older map never replaces a newer one.
+ */
+export const layerSettingsSync = (
+  settingsChanges: Stream.Stream<ServerSettings>,
+  initialConfigMap: ProviderInstanceConfigMap,
+) =>
+  Layer.effect(
+    ProviderInstanceRegistrySync.ProviderInstanceRegistrySync,
     Effect.gen(function* () {
       const mutator = yield* ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator;
       const serverSettings = yield* Settings.ServerSettingsService;
+      const layerScope = yield* Effect.scope;
+      const lock = yield* Semaphore.make(1);
+      const applied = yield* Ref.make(initialConfigMap);
+      const currentConfigMap = serverSettings.getSettings.pipe(
+        Effect.map(deriveProviderInstanceConfigMap),
+      );
+      const isApplied = (configMap: ProviderInstanceConfigMap) =>
+        Ref.get(applied).pipe(Effect.map((last) => Equal.equals(configMap, last)));
+      const logFailure = Effect.catchCause((cause) =>
+        Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
+      );
+      // A failed current read must leave the registry intact.
+      const reconcileCurrent = (skipWhenApplied: boolean) =>
+        lock
+          .withPermits(1)(
+            Effect.gen(function* () {
+              const configMap = yield* currentConfigMap;
+              if (skipWhenApplied && (yield* isApplied(configMap))) return;
+              yield* mutator.reconcile(configMap);
+              yield* Ref.set(applied, configMap);
+            }),
+          )
+          .pipe(logFailure);
+
+      // The subscription predates the seed read, so a queued change can be older than the seed.
+      // Every change reconciles, as a reconcile also retries instances still waiting for secrets.
       yield* settingsChanges.pipe(
-        Stream.runForEach(() =>
-          // The subscription predates the seed read, so a queued change can be
-          // older than the seed. A failed current read must leave the registry intact.
-          serverSettings.getSettings.pipe(
-            Effect.flatMap((current) =>
-              mutator.reconcile(deriveProviderInstanceConfigMap(current)),
-            ),
-            Effect.catchCause((cause) =>
-              Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
-            ),
-          ),
-        ),
+        Stream.runForEach(() => reconcileCurrent(false)),
         Effect.forkScoped,
       );
+
+      return ProviderInstanceRegistrySync.ProviderInstanceRegistrySync.of({
+        // A write that leaves the instances as applied returns without the lock, so it does not
+        // wait behind a reconcile that waits for a vault to unlock. The reconcile runs in this
+        // layer's scope, as the watcher's do: a writer that goes away stops waiting, but cannot
+        // cut a build between creating an instance and recording it.
+        catchUp: currentConfigMap.pipe(
+          Effect.flatMap(isApplied),
+          Effect.flatMap((upToDate) =>
+            upToDate
+              ? Effect.void
+              : reconcileCurrent(true).pipe(Effect.forkIn(layerScope), Effect.flatMap(Fiber.join)),
+          ),
+          logFailure,
+        ),
+      });
     }),
   );
 
 export const layer: Layer.Layer<
   | ProviderInstanceRegistry.ProviderInstanceRegistry
-  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator
+  | ProviderInstanceRegistrySync.ProviderInstanceRegistrySync,
   never,
   ProviderInstanceRegistryHydrationEnv
 > = Layer.unwrap(
@@ -186,11 +232,14 @@ export const layer: Layer.Layer<
       Layer.provide(SecretResolver.layer),
     );
 
-    return layerSettingsWatcher(settingsChanges).pipe(Layer.provideMerge(layerMutable));
+    return layerSettingsSync(settingsChanges, initialConfigMap).pipe(
+      Layer.provideMerge(layerMutable),
+    );
   }),
 ) as Layer.Layer<
   | ProviderInstanceRegistry.ProviderInstanceRegistry
-  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator
+  | ProviderInstanceRegistrySync.ProviderInstanceRegistrySync,
   never,
   ProviderInstanceRegistryHydrationEnv
 >;

@@ -30,6 +30,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ProviderInstanceRegistrySync from "../provider/ProviderInstanceRegistrySync.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SharedSettings from "./SharedSettings.ts";
@@ -69,6 +70,11 @@ const version = (
 });
 
 type SettingsService = Settings.ServerSettingsService["Service"];
+
+/** These machines run no provider instances, so the registry always matches their settings. */
+const layerRegistryInSync = Layer.mock(ProviderInstanceRegistrySync.ProviderInstanceRegistrySync)({
+  catchUp: Effect.void,
+});
 
 /**
  * Settings whose reads outside the write lock still say the machine follows shared settings, as
@@ -125,6 +131,7 @@ const machine = (
         ),
       }),
     ),
+    Layer.provideMerge(layerRegistryInSync),
     Layer.provideMerge(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(environmentId),
@@ -1693,6 +1700,7 @@ const machineWithSecretStore = (environmentId: EnvironmentId, policy?: ManagedPo
     Layer.provideMerge(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
     ),
+    Layer.provideMerge(layerRegistryInSync),
     Layer.provideMerge(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(environmentId),

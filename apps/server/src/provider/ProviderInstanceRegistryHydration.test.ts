@@ -7,8 +7,11 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -16,8 +19,11 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import {
   DEV_REPLAY_INSTANCE_ID,
   deriveProviderInstanceConfigMap,
+  layerSettingsSync,
   seedDevReplayInstance,
 } from "./ProviderInstanceRegistryHydration.ts";
+import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
+import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 
 const projectId = ProjectId.make("project-a");
 const instanceId = ProviderInstanceId.make("codex_work");
@@ -139,5 +145,53 @@ describe("seedDevReplayInstance", () => {
         });
       }),
     ),
+  );
+});
+
+describe("layerSettingsSync", () => {
+  effectIt.effect("finishes a catch-up reconcile when the writer waiting on it goes away", () =>
+    Effect.gen(function* () {
+      const reconcileStarted = yield* Deferred.make<void>();
+      const releaseReconcile = yield* Deferred.make<void>();
+      const reconcileOutcome = yield* Deferred.make<"finished" | "interrupted">();
+      // A reconcile cut between creating an instance and recording it would leave that instance
+      // running outside the registry.
+      const layerMutator = Layer.mock(
+        ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+      )({
+        reconcile: () =>
+          Deferred.succeed(reconcileStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseReconcile)),
+            Effect.andThen(Deferred.succeed(reconcileOutcome, "finished")),
+            Effect.onInterrupt(() => Deferred.succeed(reconcileOutcome, "interrupted")),
+          ),
+      });
+
+      yield* Effect.gen(function* () {
+        const settings = yield* ServerSettingsService;
+        const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+        yield* settings.updateProviderInstance({
+          operation: "create",
+          instanceId,
+          instance: { driver: ProviderDriverKind.make("codex") },
+        });
+        const writer = yield* Effect.forkChild(sync.catchUp);
+        yield* Deferred.await(reconcileStarted);
+        yield* Fiber.interrupt(writer);
+        yield* Deferred.succeed(releaseReconcile, undefined);
+
+        expect(yield* Deferred.await(reconcileOutcome)).toBe("finished");
+      }).pipe(
+        Effect.provide(
+          layerSettingsSync(
+            Stream.never,
+            deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS),
+          ).pipe(
+            Layer.provideMerge(layerMutator),
+            Layer.provideMerge(ServerSettingsService.layerTest()),
+          ),
+        ),
+      );
+    }),
   );
 });
