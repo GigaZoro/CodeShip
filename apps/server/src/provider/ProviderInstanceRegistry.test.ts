@@ -1089,7 +1089,18 @@ describe("ProviderInstanceRegistry secret environment", () => {
       yield* PubSub.take(changes);
       return built;
     });
-    return { vault, reads, invalidated, created, configs, make, makeGated, gate, holdCreates };
+    return {
+      vault,
+      reads,
+      invalidated,
+      created,
+      configs,
+      configMap,
+      make,
+      makeGated,
+      gate,
+      holdCreates,
+    };
   }
 
   it.effect("starts an instance with the secret its environment points at", () => {
@@ -1198,7 +1209,7 @@ describe("ProviderInstanceRegistry secret environment", () => {
     }).pipe(Effect.scoped);
   });
 
-  it.effect("settles once a secret reload has rebuilt the instance it retired", () => {
+  it.effect("rebuilds the instance a secret reload retired when its caller goes away", () => {
     const fixture = setup({ [secret.reference]: "sk-live" });
     return Effect.gen(function* () {
       const { registry, mutator } = yield* fixture.make;
@@ -1214,14 +1225,33 @@ describe("ProviderInstanceRegistry secret environment", () => {
       const reload = yield* Effect.forkChild(mutator.reloadSecrets(instanceId));
       yield* Deferred.await(buildStarted);
       expect(yield* registry.getInstance(instanceId)).toBeUndefined();
-      const settled = yield* Effect.forkChild(
-        mutator.settled.pipe(Effect.andThen(registry.getInstance(instanceId))),
-        { startImmediately: true },
-      );
+      yield* Fiber.interrupt(reload);
       yield* Deferred.succeed(releaseBuild, undefined);
-      yield* Fiber.join(reload);
+      // Another change waits for the registry's lock and rebuilds nothing itself.
+      yield* mutator.reloadSecrets(ProviderInstanceId.make("fake_other"));
 
-      expect(yield* Fiber.join(settled)).toBeDefined();
+      expect(yield* registry.getInstance(instanceId)).toBeDefined();
+      expect(fixture.created.map((environment) => environment[0]?.value)).toEqual([
+        "sk-live",
+        "sk-rotated",
+      ]);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("a reconcile of unchanged settings waits for the startup secret read", () => {
+    const fixture = setup({ [secret.reference]: "sk-live" });
+    return Effect.gen(function* () {
+      const { registry, mutator } = yield* fixture.makeGated;
+      const reconcile = yield* Effect.forkChild(mutator.reconcile({ ...fixture.configMap }), {
+        startImmediately: true,
+      });
+      expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+
+      yield* Deferred.succeed(fixture.gate, undefined);
+      yield* Fiber.join(reconcile);
+
+      expect(yield* registry.getInstance(instanceId)).toBeDefined();
+      expect(fixture.created).toHaveLength(1);
     }).pipe(Effect.scoped);
   });
 

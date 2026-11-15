@@ -167,40 +167,31 @@ const initialConfigMap = deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS
 const layerSync = (
   changes: Queue.Queue<ServerSettings>,
   reconcile: (configMap: ProviderInstanceConfigMap) => Effect.Effect<void>,
-  settled: Effect.Effect<void> = Effect.void,
 ) =>
-  layerSettingsSync(Stream.fromQueue(changes), initialConfigMap).pipe(
+  layerSettingsSync(Stream.fromQueue(changes)).pipe(
     Layer.provideMerge(
-      Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({
-        reconcile,
-        settled,
-      }),
+      Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({ reconcile }),
     ),
     Layer.provideMerge(ServerSettingsService.layerTest()),
   );
 
 describe("layerSettingsSync", () => {
-  effectIt.effect("a catch-up of applied settings waits for the registry's own rebuilds", () =>
+  // The registry can lack an instance its settings name, after a rebuild that failed or while its
+  // startup secret read waits on a vault, so unchanged settings are no proof that it runs them.
+  effectIt.effect("a catch-up reconciles settings that have not changed", () =>
     Effect.gen(function* () {
       const reconciled: Array<ProviderInstanceConfigMap> = [];
-      let settledCalls = 0;
       const reconcile = (configMap: ProviderInstanceConfigMap) =>
         Effect.sync(() => {
           reconciled.push(configMap);
         });
-      const settled = Effect.sync(() => {
-        settledCalls += 1;
-      });
 
       yield* Effect.gen(function* () {
         const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
         yield* sync.catchUp;
 
-        expect(reconciled).toEqual([]);
-        expect(settledCalls).toBe(1);
-      }).pipe(
-        Effect.provide(layerSync(yield* Queue.unbounded<ServerSettings>(), reconcile, settled)),
-      );
+        expect(reconciled).toEqual([initialConfigMap]);
+      }).pipe(Effect.provide(layerSync(yield* Queue.unbounded<ServerSettings>(), reconcile)));
     }),
   );
 

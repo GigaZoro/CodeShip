@@ -3,12 +3,14 @@ import type { ProviderInstanceConfigMap, ProviderInstanceId } from "@t3tools/con
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
+/**
+ * Each change runs to its end in the registry's scope: a caller that goes away stops waiting, but
+ * cannot leave an instance retired and not rebuilt.
+ */
 export interface ProviderInstanceRegistryMutatorShape {
   readonly reconcile: (configMap: ProviderInstanceConfigMap) => Effect.Effect<void>;
   /** Re-reads the secrets of every instance, or one, and rebuilds those whose secrets changed. */
   readonly reloadSecrets: (instanceId?: ProviderInstanceId) => Effect.Effect<void>;
-  /** Waits for a rebuild in progress, such as a secret reload, to finish. */
-  readonly settled: Effect.Effect<void>;
 }
 
 export class ProviderInstanceRegistryMutator extends Context.Service<
