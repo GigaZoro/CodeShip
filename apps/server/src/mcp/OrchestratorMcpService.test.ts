@@ -2168,7 +2168,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const projectDisabled = byId.get(projectDisabledInstanceId);
           assert.isDefined(projectDisabled);
           assert.isFalse(projectDisabled!.canRunChildTask);
-          assert.deepEqual(projectDisabled!.constraints, ["Provider instance is disabled."]);
+          assert.deepEqual(projectDisabled!.constraints, ["Disabled for this project."]);
 
           const disabledWithoutAdapter = byId.get(disabledWithoutAdapterInstanceId);
           assert.isDefined(disabledWithoutAdapter);
