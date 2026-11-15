@@ -289,11 +289,23 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  // The registry reads a repository Git cannot read as none; a Git workflow needs Git's reason.
+  const resolveRepository = (cwd: string) =>
+    registry.resolve({ cwd }).pipe(
+      Effect.catchTags({
+        VcsUnsupportedOperationError: (unsupported) =>
+          registry.get("git").pipe(
+            Effect.flatMap((driver) => driver.detectRepository(cwd)),
+            Effect.andThen(Effect.fail(unsupported)),
+          ),
+      }),
+    );
+
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
     cwd: string,
   ) {
-    const handle = yield* registry.resolve({ cwd }).pipe(
+    const handle = yield* resolveRepository(cwd).pipe(
       Effect.mapError(
         (cause) =>
           new GitManagerError({
@@ -314,7 +326,7 @@ export const make = Effect.gen(function* () {
     operation: string,
     cwd: string,
   ) {
-    const handle = yield* registry.resolve({ cwd }).pipe(
+    const handle = yield* resolveRepository(cwd).pipe(
       Effect.mapError(
         (cause) =>
           new GitCommandError({

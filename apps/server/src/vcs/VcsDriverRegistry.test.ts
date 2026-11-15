@@ -169,21 +169,6 @@ describe("VcsDriverRegistry", () => {
       );
       assert.equal(probeFailure, null);
 
-      // Resolving needs a repository, so it says why Git could not read this one.
-      const resolveFailure = yield* VcsDriverRegistry.VcsDriverRegistry.pipe(
-        Effect.flatMap((registry) => registry.resolve({ cwd: process.cwd() })),
-        Effect.provide(
-          makeFailingLayer({
-            ...processOutput(""),
-            exitCode: ChildProcessSpawner.ExitCode(128),
-            stderr: "fatal: bad config line 1 in file .git/config",
-          }),
-        ),
-        Effect.flip,
-      );
-      assert.equal(resolveFailure._tag, "VcsProcessExitError");
-      assert.include(resolveFailure.message, "fatal: bad config line 1 in file .git/config");
-
       // A newline in the root path makes detection ask for it again, and main surfaced that failure.
       const fallbackFailure = yield* VcsDriverRegistry.VcsDriverRegistry.pipe(
         Effect.flatMap((registry) => registry.detect({ cwd: "/repo" })),

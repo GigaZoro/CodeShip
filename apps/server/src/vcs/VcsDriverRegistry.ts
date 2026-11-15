@@ -190,10 +190,6 @@ export const make = Effect.gen(function* () {
       }
 
       const requestedKind = input.requestedKind ?? "auto";
-      // Detection reads a repository Git cannot read as none; a caller that needs one gets Git's reason.
-      if (requestedKind === "auto" || requestedKind === "git") {
-        yield* git.detectRepository(input.cwd);
-      }
       return yield* new VcsUnsupportedOperationError({
         operation: "VcsDriverRegistry.resolve",
         kind: requestedKind === "auto" ? "unknown" : requestedKind,

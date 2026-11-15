@@ -84,6 +84,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
     ),
   );
 
+  const layerWithRegistry = <E, R>(
+    registry: Layer.Layer<VcsDriverRegistry.VcsDriverRegistry, E, R>,
+  ) =>
+    GitWorkflowService.layer.pipe(
+      Layer.provide(registry),
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+      Layer.provide(layerActiveTurns()),
+      Layer.provideMerge(GitVcsDriver.layer),
+      Layer.provideMerge(VcsProcess.layer),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-resolve-failure-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
   it.effect("keeps why the VCS driver could not be resolved in the Git command error", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
@@ -94,33 +111,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       assert.include(error.message, "5000ms");
     }).pipe(
       Effect.provide(
-        GitWorkflowService.layer.pipe(
-          Layer.provide(
-            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
-              resolve: () =>
-                Effect.fail(
-                  new VcsProcessTimeoutError({
-                    operation: "GitVcsDriver.detectRepository",
-                    command: "git",
-                    cwd: "/repo",
-                    timeoutMs: 5000,
-                  }),
-                ),
-            }),
-          ),
-          Layer.provide(Layer.mock(GitManager.GitManager)({})),
-          Layer.provide(layerActiveTurns()),
-          Layer.provideMerge(GitVcsDriver.layer),
-          Layer.provideMerge(VcsProcess.layer),
-          Layer.provideMerge(
-            ServerConfig.layerTest(process.cwd(), { prefix: "t3-resolve-failure-" }).pipe(
-              Layer.provide(NodeServices.layer),
-            ),
-          ),
-          Layer.provideMerge(NodeServices.layer),
+        layerWithRegistry(
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+            resolve: () =>
+              Effect.fail(
+                new VcsProcessTimeoutError({
+                  operation: "GitVcsDriver.detectRepository",
+                  command: "git",
+                  cwd: "/repo",
+                  timeoutMs: 5000,
+                }),
+              ),
+          }),
         ),
       ),
     ),
+  );
+
+  it.effect("says why Git could not read a folder the registry finds no repository in", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const broken = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-broken-config-" });
+      yield* fileSystem.makeDirectory(`${broken}/.git/objects`, { recursive: true });
+      yield* fileSystem.makeDirectory(`${broken}/.git/refs`);
+      yield* fileSystem.writeFileString(`${broken}/.git/HEAD`, "ref: refs/heads/main\n");
+      yield* fileSystem.writeFileString(`${broken}/.git/config`, "[core\n");
+      const brokenError = yield* Effect.flip(
+        workflow.hasRefNamed({ cwd: broken, refName: "main" }),
+      );
+      assert.include(brokenError.message, "fatal: bad config line 1 in file .git/config");
+
+      const plain = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-no-repo-" });
+      const plainError = yield* Effect.flip(workflow.hasRefNamed({ cwd: plain, refName: "main" }));
+      assert.include(plainError.message, "No supported VCS repository was detected");
+    }).pipe(Effect.scoped, Effect.provide(layerWithRegistry(VcsDriverRegistry.layer))),
   );
 
   it.effect("counts uncommitted files and commits the default branch lacks", () => {
