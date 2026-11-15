@@ -859,27 +859,6 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       ...Object.values(MessageToolkit.tools),
     ]
       .filter((tool) => Context.get(tool.annotations, Tool.Readonly))
-      .map((tool) => `mcp__t3-code__${tool.name}`)
-      .sort();
-
-    // regression: #32022 Claude Plan mode asks before every non-read-only MCP call
-    assert.deepEqual(
-      [...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS].sort(),
-      readOnlyToolNames,
-    );
-  });
-
-  it("matches the read-only allowlist to the orchestrator toolkit annotations (fork regression)", () => {
-    const readOnlyToolNames = [
-      ...Object.values(OrchestratorToolkit.tools),
-      ...Object.values(ThreadToolkit.tools),
-      ...Object.values(WorktreeToolkit.tools),
-      ...Object.values(ProjectToolkit.tools),
-      ...Object.values(EnvironmentToolkit.tools),
-      ...Object.values(PreviewControlsToolkit.tools),
-      ...Object.values(HtmlToolkit.tools),
-    ]
-      .filter((tool) => Context.get(tool.annotations, Tool.Readonly))
       // Agents never see a tool only peer links may call, so it needs no pre-approval.
       .filter(
         (tool) =>
@@ -889,6 +868,7 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       .map((tool) => `mcp__t3-code__${tool.name}`)
       .sort();
 
+    // regression: #32022 Claude Plan mode asks before every non-read-only MCP call
     assert.deepEqual(
       [...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS].sort(),
       readOnlyToolNames,
@@ -1591,37 +1571,6 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
     `--settings '{"skillOverrides":{"lint":"off"},"showThinkingSummaries":false}'`,
     "--settings user-settings.json",
   ])("merges %s beneath T3's settings", (launchArgs) =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-settings-" });
-      yield* fileSystem.writeFileString(
-        NodePath.join(cwd, "user-settings.json"),
-        '{"skillOverrides":{"lint":"off"},"showThinkingSummaries":false}',
-      );
-      const { exit, opened } = yield* startTurnWithLaunchArgs(launchArgs, cwd);
-      assert.isTrue(Exit.isSuccess(exit));
-      assert.deepInclude(opened[0]!.settings, {
-        skillOverrides: { lint: "off" },
-        showThinkingSummaries: true,
-      });
-      assert.isUndefined(opened[0]!.extraArgs?.["settings"]);
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
-  );
-
-  // regression: #15073 the SDK replaced the --settings launch argument with T3's settings
-  it.effect.each([
-    `--settings '{"skillOverrides":{"lint":"off"},"showThinkingSummaries":false}'`,
-    "--settings user-settings.json",
-  ])("merges %s beneath T3's settings (fork regression)", (launchArgs) =>
     Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -4969,12 +4918,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-remote-" });
-        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-remote-cwd-" });
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-remote-cwd-",
+        });
         const remoteFile = path.join(home, "remote-settings.json");
-        const sdk = yield* Effect.promise(() =>
-          vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-        );
-        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        yield* useRealResolver();
         const openWith = (launchArgs: string) =>
           Effect.scoped(
             Effect.gen(function* () {
@@ -5036,6 +4984,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           remoteFile,
           JSON.stringify({ permissions: { disableBypassPermissionsMode: true } }),
         );
+        // Claude Code's engine drops a switch value it does not accept, which then turns nothing off.
+        assert.equal((yield* open).permissionMode, "bypassPermissions");
+        // A policy helper, or organization settings Claude Code fetches in place of an unreadable
+        // cache, may turn bypass off.
+        yield* fileSystem.writeFileString(
+          remoteFile,
+          JSON.stringify({ policyHelper: { path: "/opt/org/policy-helper" } }),
+        );
+        assert.equal((yield* open).permissionMode, "auto");
+        yield* fileSystem.writeFileString(remoteFile, "{");
         assert.equal((yield* open).permissionMode, "auto");
         yield* fileSystem.remove(remoteFile);
         assert.equal((yield* open).permissionMode, "bypassPermissions");
@@ -5059,114 +5017,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
-    );
-
-    it.effect(
-      "resolves cached managed policy from the configured home through the real SDK (fork regression)",
-      () =>
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-remote-" });
-          const cwd = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "t3-claude-remote-cwd-",
-          });
-          const remoteFile = path.join(home, "remote-settings.json");
-          yield* useRealResolver();
-          const openWith = (launchArgs: string) =>
-            Effect.scoped(
-              Effect.gen(function* () {
-                const harness = yield* makeWakeHarnessWithOptions({
-                  settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home, launchArgs },
-                });
-                yield* harness.runtime.startTurn(
-                  makeClaudeTestTurnInput({
-                    threadId: harness.threadId,
-                    providerThread: harness.providerThread,
-                    now: yield* DateTime.now,
-                    attemptId: RunAttemptId.make("attempt-cached-managed-policy"),
-                    text: "Run git status.",
-                    attachments: [],
-                    runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-                      runtimeMode: "full-access",
-                      interactionMode: "default",
-                      cwd,
-                    }),
-                  }),
-                );
-                return harness.getOpenedOptions()!;
-              }),
-            );
-          const open = openWith("");
-          yield* fileSystem.writeFileString(
-            remoteFile,
-            JSON.stringify({
-              permissions: { disableBypassPermissionsMode: "disable" },
-              disableAutoMode: "disable",
-              managedSourcesBehavior: "merge",
-            }),
-          );
-          const restricted = yield* open;
-          assert.equal(restricted.permissionMode, "default");
-          assert.isUndefined(restricted.allowDangerouslySkipPermissions);
-          yield* fileSystem.writeFileString(
-            remoteFile,
-            JSON.stringify({
-              permissions: { disableBypassPermissionsMode: false, disableAutoMode: false },
-              disableAutoMode: false,
-              managedSourcesBehavior: "merge",
-            }),
-          );
-          const unrestricted = yield* open;
-          assert.equal(unrestricted.permissionMode, "bypassPermissions");
-          assert.equal(unrestricted.allowDangerouslySkipPermissions, true);
-          yield* fileSystem.writeFileString(
-            remoteFile,
-            JSON.stringify({
-              permissions: { disableBypassPermissionsMode: "disable", disableAutoMode: "disable" },
-              disableAutoMode: false,
-            }),
-          );
-          const mixed = yield* open;
-          assert.equal(mixed.permissionMode, "default");
-          assert.isUndefined(mixed.allowDangerouslySkipPermissions);
-          yield* fileSystem.writeFileString(
-            remoteFile,
-            JSON.stringify({ permissions: { disableBypassPermissionsMode: true } }),
-          );
-          // Claude Code's engine drops a switch value it does not accept, which then turns nothing off.
-          assert.equal((yield* open).permissionMode, "bypassPermissions");
-          // A policy helper, or organization settings Claude Code fetches in place of an unreadable
-          // cache, may turn bypass off.
-          yield* fileSystem.writeFileString(
-            remoteFile,
-            JSON.stringify({ policyHelper: { path: "/opt/org/policy-helper" } }),
-          );
-          assert.equal((yield* open).permissionMode, "auto");
-          yield* fileSystem.writeFileString(remoteFile, "{");
-          assert.equal((yield* open).permissionMode, "auto");
-          yield* fileSystem.remove(remoteFile);
-          assert.equal((yield* open).permissionMode, "bypassPermissions");
-          const launchRestricted = yield* openWith(
-            `--settings '{"permissions":{"disableBypassPermissionsMode":"disable"}}'`,
-          );
-          assert.equal(launchRestricted.permissionMode, "auto");
-          assert.isUndefined(launchRestricted.allowDangerouslySkipPermissions);
-          yield* fileSystem.writeFileString(remoteFile, "{ invalid json");
-          assert.equal((yield* open).permissionMode, "auto");
-          yield* fileSystem.remove(remoteFile);
-          yield* fileSystem.makeDirectory(remoteFile);
-          assert.equal((yield* open).permissionMode, "auto");
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
     );
 
     it.effect("drops false bypass switches from --settings before they reach the SDK", () =>
@@ -5324,23 +5174,29 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
     it.effect("asks before restricted Full access tools and follows policy across turns", () =>
       Effect.gen(function* () {
-        const resolveSettings = vi
+        const resolver = vi
           .mocked(ClaudeSdk.resolveSettings)
-          .mockImplementation(async (options) => ({
-            effective:
-              options?.cwd === "/unrestricted"
-                ? {}
-                : {
+          .mockImplementation(async (options) => {
+            const settings =
+              options?.cwd === "/restricted" || options?.cwd === "/restricted-worktree"
+                ? {
                     permissions: {
-                      disableBypassPermissionsMode: "disable",
-                      ...(options?.cwd === "/restricted-worktree"
+                      disableBypassPermissionsMode: "disable" as const,
+                      ...(options.cwd === "/restricted-worktree"
                         ? { disableAutoMode: "disable" as const }
                         : {}),
                     },
-                  },
-            provenance: {},
-            sources: [],
-          }));
+                  }
+                : {};
+            return {
+              effective: settings,
+              provenance: {},
+              sources: [{ source: "project", settings }],
+            };
+          });
+        // Opening a query reads its folder's settings once, which Full access shares.
+        const folderReads = (cwd: string) =>
+          resolver.mock.calls.filter(([options]) => options?.cwd === cwd).length;
         const harness = yield* makeWakeHarnessWithOptions({
           close: Queue.shutdown,
           freshQueueOnReopen: true,
@@ -5391,7 +5247,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(harness.getOpenedOptions()?.permissionMode, "auto");
         yield* finish;
         assert.equal(notices().length, 0);
-        assert.equal(resolveSettings.mock.calls.length, 0);
+        assert.equal(folderReads("/restricted-worktree"), 1);
 
         yield* start("/restricted");
         const openedOptions = harness.getOpenedOptions()!;
@@ -5444,13 +5300,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* start("/restricted");
         assert.strictEqual(harness.getOpenedOptions(), openedOptions);
         assert.deepEqual(harness.permissionModeChanges, ["auto"]);
-        assert.equal(resolveSettings.mock.calls.length, 1);
+        assert.equal(folderReads("/restricted"), 1);
         yield* finish;
 
         yield* start("/restricted-worktree");
         assert.equal(harness.getOpenedOptions()?.permissionMode, "default");
         assert.isUndefined(harness.getOpenedOptions()?.allowDangerouslySkipPermissions);
-        assert.equal(resolveSettings.mock.calls.length, 2);
+        assert.equal(folderReads("/restricted-worktree"), 2);
         yield* finish;
 
         yield* start("/unrestricted");
@@ -5549,7 +5405,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ["auto"],
           "A CLI policy downgrade must not be restored to bypass on the next turn",
         );
-        assert.equal(resolveSettings.mock.calls.length, 3);
+        assert.equal(folderReads("/unrestricted"), 1);
         yield* harness.offerAndWait(
           claudeSdkFrame({
             type: "system",
@@ -5615,368 +5471,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
     );
 
-    it.effect(
-      "asks before restricted Full access tools and follows policy across turns (fork regression)",
-      () =>
-        Effect.gen(function* () {
-          const resolver = vi
-            .mocked(ClaudeSdk.resolveSettings)
-            .mockImplementation(async (options) => {
-              const settings =
-                options?.cwd === "/restricted" || options?.cwd === "/restricted-worktree"
-                  ? {
-                      permissions: {
-                        disableBypassPermissionsMode: "disable" as const,
-                        ...(options.cwd === "/restricted-worktree"
-                          ? { disableAutoMode: "disable" as const }
-                          : {}),
-                      },
-                    }
-                  : {};
-              return {
-                effective: settings,
-                provenance: {},
-                sources: [{ source: "project", settings }],
-              };
-            });
-          // Opening a query reads its folder's settings once, which Full access shares.
-          const folderReads = (cwd: string) =>
-            resolver.mock.calls.filter(([options]) => options?.cwd === cwd).length;
-          const harness = yield* makeWakeHarnessWithOptions({
-            close: Queue.shutdown,
-            freshQueueOnReopen: true,
-            setPermissionMode: (mode) =>
-              mode === "bypassPermissions"
-                ? Effect.fail(
-                    new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
-                      method: "setPermissionMode",
-                      cause: new Error(
-                        "Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration",
-                      ),
-                    }),
-                  )
-                : Effect.void,
-          });
-          const now = yield* DateTime.now;
-          let ordinal = 0;
-          const start = (cwd: string, runtimeMode: "full-access" | "auto" = "full-access") =>
-            harness.runtime.startTurn(
-              makeClaudeTestTurnInput({
-                threadId: harness.threadId,
-                providerThread: harness.providerThread,
-                now,
-                attemptId: RunAttemptId.make(`attempt-policy-${++ordinal}`),
-                providerTurnOrdinal: ordinal,
-                text: "Run git status.",
-                attachments: [],
-                runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-                  runtimeMode,
-                  interactionMode: "default",
-                  cwd,
-                }),
-              }),
-            );
-          const finish = Effect.gen(function* () {
-            yield* harness.offerAndWait(
-              makeResultFrame({ uuid: `policy-result-${ordinal}`, result: "Done." }),
-            );
-            yield* Queue.take(harness.terminalReceipts);
-          });
-          const notices = () =>
-            harness.events.filter(
-              (event) =>
-                event.type === "turn_item.updated" && event.turnItem.type === "system_notice",
-            );
-
-          yield* start("/restricted-worktree", "auto");
-          assert.equal(harness.getOpenedOptions()?.permissionMode, "auto");
-          yield* finish;
-          assert.equal(notices().length, 0);
-          assert.equal(folderReads("/restricted-worktree"), 1);
-
-          yield* start("/restricted");
-          const openedOptions = harness.getOpenedOptions()!;
-          const decision = yield* Effect.promise(() =>
-            openedOptions.canUseTool!(
-              "Bash",
-              { command: "git status" },
-              {
-                signal: new AbortController().signal,
-                toolUseID: "policy-command",
-                requestId: "request-policy-command",
-              },
-            ),
-          ).pipe(Effect.forkScoped);
-          const first = yield* Effect.raceFirst(
-            Queue.take(harness.runtimeRequestReceipts).pipe(
-              Effect.map((event) => ({ type: "request", event }) as const),
-            ),
-            Fiber.join(decision).pipe(
-              Effect.map((result) => ({ type: "decision", result }) as const),
-            ),
-          );
-          assert.equal(
-            first.type,
-            "request",
-            "Full access must not auto-allow a policy-restricted command",
-          );
-          if (first.type !== "request") return;
-          assert.equal(first.event.runtimeRequest.kind, "command");
-          yield* harness.runtime.respondToRuntimeRequest({
-            requestId: first.event.runtimeRequest.id,
-            decision: "decline",
-          });
-          assert.equal((yield* Fiber.join(decision))?.behavior, "deny");
-          assert.equal(openedOptions.permissionMode, "auto");
-          assert.isUndefined(openedOptions.allowDangerouslySkipPermissions);
-
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              type: "system",
-              subtype: "status",
-              status: null,
-              permissionMode: "plan",
-              uuid: "policy-enter-plan",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          );
-          yield* finish;
-          assert.equal(notices().length, 1);
-          yield* start("/restricted");
-          assert.strictEqual(harness.getOpenedOptions(), openedOptions);
-          assert.deepEqual(harness.permissionModeChanges, ["auto"]);
-          assert.equal(folderReads("/restricted"), 1);
-          yield* finish;
-
-          yield* start("/restricted-worktree");
-          assert.equal(harness.getOpenedOptions()?.permissionMode, "default");
-          assert.isUndefined(harness.getOpenedOptions()?.allowDangerouslySkipPermissions);
-          assert.equal(folderReads("/restricted-worktree"), 2);
-          yield* finish;
-
-          yield* start("/unrestricted");
-          assert.equal(harness.getOpenedOptions()?.permissionMode, "bypassPermissions");
-          assert.equal(harness.getOpenedOptions()?.allowDangerouslySkipPermissions, true);
-          // Forwarded asks (including ask rules and settings fallback) still need a decision
-          // before queued init/status frames arrive.
-          for (const { phase, frame } of [
-            {
-              phase: "init",
-              frame: claudeSdkFrame({
-                type: "system",
-                subtype: "init",
-                permissionMode: "bypassPermissions",
-                uuid: "policy-cli-init",
-                session_id: WAKE_NATIVE_SESSION,
-              }),
-            },
-            {
-              phase: "status",
-              frame: claudeSdkFrame({
-                type: "system",
-                subtype: "status",
-                status: null,
-                permissionMode: "default",
-                uuid: "policy-cli-downgrade",
-                session_id: WAKE_NATIVE_SESSION,
-              }),
-            },
-          ]) {
-            const forwardedDecision = yield* Effect.promise(() =>
-              harness.getOpenedOptions()!.canUseTool!(
-                "Bash",
-                { command: "git status" },
-                {
-                  signal: new AbortController().signal,
-                  toolUseID: `forwarded-before-${phase}`,
-                  requestId: `request-forwarded-before-${phase}`,
-                },
-              ),
-            ).pipe(Effect.forkScoped);
-            const forwardedFirst = yield* Effect.raceFirst(
-              Queue.take(harness.runtimeRequestReceipts).pipe(
-                Effect.map((event) => ({ type: "request", event }) as const),
-              ),
-              Fiber.join(forwardedDecision).pipe(
-                Effect.map((result) => ({ type: "decision", result }) as const),
-              ),
-            );
-            assert.equal(
-              forwardedFirst.type,
-              "request",
-              `CLI-forwarded Bash must ask before the queued ${phase} frame reaches the adapter`,
-            );
-            if (forwardedFirst.type !== "request") return;
-            assert.equal(forwardedFirst.event.runtimeRequest.kind, "command");
-            yield* harness.runtime.respondToRuntimeRequest({
-              requestId: forwardedFirst.event.runtimeRequest.id,
-              decision: "decline",
-            });
-            assert.equal((yield* Fiber.join(forwardedDecision))?.behavior, "deny");
-            yield* harness.offerAndWait(frame);
-          }
-          const fallbackDecision = yield* Effect.promise(() =>
-            harness.getOpenedOptions()!.canUseTool!(
-              "Bash",
-              { command: "echo checked" },
-              {
-                signal: new AbortController().signal,
-                toolUseID: "safety-check-after-downgrade",
-                requestId: "request-safety-check-after-downgrade",
-                decisionReason:
-                  "Dangerous rm operation not ruled out — the shell may read this command differently than it was parsed",
-              },
-            ),
-          ).pipe(Effect.forkScoped);
-          const fallbackFirst = yield* Effect.raceFirst(
-            Queue.take(harness.runtimeRequestReceipts).pipe(
-              Effect.map((event) => ({ type: "request", event }) as const),
-            ),
-            Fiber.join(fallbackDecision).pipe(Effect.map(() => ({ type: "decision" }) as const)),
-          );
-          assert.equal(fallbackFirst.type, "request");
-          if (fallbackFirst.type !== "request") return;
-          yield* harness.runtime.respondToRuntimeRequest({
-            requestId: fallbackFirst.event.runtimeRequest.id,
-            decision: "decline",
-          });
-          assert.equal((yield* Fiber.join(fallbackDecision))?.behavior, "deny");
-          yield* finish;
-          const unrestrictedOptions = harness.getOpenedOptions();
-          yield* start("/unrestricted");
-          assert.strictEqual(harness.getOpenedOptions(), unrestrictedOptions);
-          assert.deepEqual(
-            harness.permissionModeChanges,
-            ["auto"],
-            "A CLI policy downgrade must not be restored to bypass on the next turn",
-          );
-          assert.equal(folderReads("/unrestricted"), 1);
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              type: "system",
-              subtype: "status",
-              status: null,
-              permissionMode: "plan",
-              uuid: "policy-restricted-enter-plan",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          );
-          yield* finish;
-          assert.equal(notices().length, 1);
-
-          for (const phase of ["restore", "reuse"]) {
-            const started = yield* start("/unrestricted").pipe(Effect.exit);
-            assert.isTrue(
-              Exit.isSuccess(started),
-              `A rejected bypass restore must not fail the ${phase} turn`,
-            );
-            assert.strictEqual(harness.getOpenedOptions(), unrestrictedOptions);
-            assert.deepEqual(harness.permissionModeChanges, [
-              "auto",
-              "bypassPermissions",
-              "default",
-            ]);
-            assert.equal(harness.offeredMessages.length, ordinal);
-            const restoredDecision = yield* Effect.promise(() =>
-              harness.getOpenedOptions()!.canUseTool!(
-                "Bash",
-                { command: "git status" },
-                {
-                  signal: new AbortController().signal,
-                  toolUseID: `forwarded-after-plan-${phase}`,
-                  requestId: `request-after-plan-${phase}`,
-                },
-              ),
-            ).pipe(Effect.forkScoped);
-            const restoredFirst = yield* Effect.raceFirst(
-              Queue.take(harness.runtimeRequestReceipts).pipe(
-                Effect.map((event) => ({ type: "request", event }) as const),
-              ),
-              Fiber.join(restoredDecision).pipe(
-                Effect.map((result) => ({ type: "decision", result }) as const),
-              ),
-            );
-            assert.equal(restoredFirst.type, "request");
-            if (restoredFirst.type !== "request") return;
-            assert.equal(restoredFirst.event.runtimeRequest.kind, "command");
-            yield* harness.runtime.respondToRuntimeRequest({
-              requestId: restoredFirst.event.runtimeRequest.id,
-              decision: "decline",
-            });
-            assert.equal((yield* Fiber.join(restoredDecision))?.behavior, "deny");
-            yield* finish;
-            assert.equal(harness.terminalEvents().at(-1)?.status, "completed");
-          }
-          assert.equal(notices().length, 1);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
     // regression: #21806 bypass policy reads the custom home and project, never ambient ~/.claude
     it.effect(
       "combines a normalized custom home with project policy without reading the ambient user tier",
-      () =>
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const home = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "t3-claude-policy-home-",
-          });
-          yield* fileSystem.makeDirectory(path.join(home, "profile"));
-          yield* fileSystem.writeFileString(
-            path.join(home, "profile", "settings.json"),
-            `{
-          // Claude accepts comments and trailing commas.
-          "permissions": { "disableBypassPermissionsMode": "disable", },
-        }`,
-          );
-          const resolveSettings = vi.mocked(ClaudeSdk.resolveSettings).mockResolvedValue({
-            effective: { disableAutoMode: "disable" },
-            provenance: {},
-            sources: [{ source: "project", settings: { disableAutoMode: "disable" } }],
-          });
-          const harness = yield* makeWakeHarnessWithOptions({
-            settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: " ~/profile " },
-          }).pipe(Effect.provideService(HostProcess.HomeDirectory, home));
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-custom-home"),
-              text: "Run git status.",
-              attachments: [],
-            }),
-          );
-          assert.equal(harness.getOpenedOptions()?.permissionMode, "default");
-          assert.isUndefined(harness.getOpenedOptions()?.allowDangerouslySkipPermissions);
-          assert.deepEqual(resolveSettings.mock.calls[0]?.[0]?.settingSources, [
-            "project",
-            "local",
-          ]);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
-    // regression: #21806 bypass policy reads the custom home and project, never ambient ~/.claude
-    it.effect(
-      "combines a normalized custom home with project policy without reading the ambient user tier (fork regression)",
       () =>
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
@@ -6032,101 +5529,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
     );
 
-    // regression: #21806 only a missing custom settings file is benign; bad policy fails
-    it.effect(
-      "distinguishes missing custom settings from unreadable, malformed, or unresolved policy",
-      () =>
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const home = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "t3-claude-policy-failure-",
-          });
-          const settingsFile = path.join(home, "settings.json");
-          const open = Effect.scoped(
-            Effect.gen(function* () {
-              const harness = yield* makeWakeHarnessWithOptions({
-                settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home },
-              });
-              yield* harness.runtime.startTurn(
-                makeClaudeTestTurnInput({
-                  threadId: harness.threadId,
-                  providerThread: harness.providerThread,
-                  now: yield* DateTime.now,
-                  attemptId: RunAttemptId.make("attempt-settings-failure"),
-                  text: "Run git status.",
-                  attachments: [],
-                }),
-              );
-              return harness.getOpenedOptions()!;
-            }),
-          );
-          assert.equal((yield* open).permissionMode, "bypassPermissions");
-          yield* fileSystem.makeDirectory(settingsFile);
-          const unreadable = yield* open;
-          assert.equal(unreadable.permissionMode, "auto");
-          assert.isUndefined(unreadable.allowDangerouslySkipPermissions);
-          yield* fileSystem.remove(settingsFile, { recursive: true });
-          yield* fileSystem.writeFileString(settingsFile, "{ invalid json");
-          assert.equal((yield* open).permissionMode, "auto");
-          yield* fileSystem.remove(settingsFile);
-          const resolveSettings = vi
-            .mocked(ClaudeSdk.resolveSettings)
-            .mockClear()
-            .mockRejectedValueOnce(new Error("Cannot resolve managed settings"))
-            .mockResolvedValue({ effective: {}, provenance: {}, sources: [] });
-          const harness = yield* makeWakeHarnessWithOptions({
-            settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home },
-            close: Queue.shutdown,
-            freshQueueOnReopen: true,
-          });
-          for (const ordinal of [1, 2]) {
-            yield* harness.runtime.startTurn(
-              makeClaudeTestTurnInput({
-                threadId: harness.threadId,
-                providerThread: harness.providerThread,
-                now: yield* DateTime.now,
-                attemptId: RunAttemptId.make(`attempt-settings-recovery-${ordinal}`),
-                providerTurnOrdinal: ordinal,
-                text: "Run git status.",
-                attachments: [],
-              }),
-            );
-            const options = harness.getOpenedOptions()!;
-            assert.equal(
-              options.permissionMode,
-              ordinal === 1 ? "auto" : "bypassPermissions",
-              "A transient resolver failure must only downgrade the failing turn",
-            );
-            if (ordinal === 1) assert.isUndefined(options.allowDangerouslySkipPermissions);
-            else assert.equal(options.allowDangerouslySkipPermissions, true);
-            assert.equal(resolveSettings.mock.calls.length, ordinal);
-            yield* harness.offerAndWait(
-              makeResultFrame({ uuid: `settings-recovery-result-${ordinal}`, result: "Done." }),
-            );
-            assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
-          }
-          assert.equal(harness.offeredMessages.length, 2);
-          assert.equal(
-            resolveSettings.mock.calls[0]?.[0]?.cwd,
-            resolveSettings.mock.calls[1]?.[0]?.cwd,
-          );
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
     it.effect("pins tool search on when the user's Claude settings choose auto", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
+        // --settings counts only once Claude's own engine accepts it.
+        yield* useRealResolver();
         const home = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-claude-tool-search-",
         });
@@ -6239,121 +5647,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
-    );
-
-    it.effect(
-      "pins tool search on when the user's Claude settings choose auto (fork regression)",
-      () =>
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const sdk = yield* Effect.promise(() =>
-            vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
-          );
-          // --settings counts only once Claude's own engine accepts it.
-          vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
-          const home = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "t3-claude-tool-search-",
-          });
-          const openedToolSearch = (
-            settingsJson: string,
-            cwd = CLAUDE_TEST_RUNTIME_POLICY.cwd,
-            environment?: NodeJS.ProcessEnv,
-            launchArgs = "",
-          ) =>
-            Effect.scoped(
-              Effect.gen(function* () {
-                yield* fileSystem.writeFileString(path.join(home, "settings.json"), settingsJson);
-                const harness = yield* makeWakeHarnessWithOptions({
-                  settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: home, launchArgs },
-                  ...(environment === undefined ? {} : { environment }),
-                });
-                yield* harness.runtime.startTurn(
-                  makeClaudeTestTurnInput({
-                    threadId: harness.threadId,
-                    providerThread: harness.providerThread,
-                    now: yield* DateTime.now,
-                    attemptId: RunAttemptId.make("attempt-tool-search"),
-                    text: "Run git status.",
-                    attachments: [],
-                    runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-                      ...CLAUDE_TEST_RUNTIME_POLICY,
-                      cwd,
-                    }),
-                  }),
-                );
-                const settings = harness.getOpenedOptions()?.settings;
-                return typeof settings === "object" ? settings.env?.ENABLE_TOOL_SEARCH : undefined;
-              }),
-            );
-          assert.equal(yield* openedToolSearch('{"env":{"ENABLE_TOOL_SEARCH":"auto"}}'), "true");
-          assert.isUndefined(yield* openedToolSearch('{"env":{"ENABLE_TOOL_SEARCH":"false"}}'));
-          assert.isUndefined(yield* openedToolSearch("{}"));
-          // --settings beats local, project, and user settings.
-          assert.equal(
-            yield* openedToolSearch(
-              '{"env":{"ENABLE_TOOL_SEARCH":"auto"}}',
-              CLAUDE_TEST_RUNTIME_POLICY.cwd,
-              undefined,
-              `--settings '{"env":{"ENABLE_TOOL_SEARCH":"false"}}'`,
-            ),
-            "false",
-          );
-
-          // Claude Code keeps the local file at the repository root, the main checkout's root in a
-          // worktree, and that file beats the user's settings.
-          const repo = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-repo-" });
-          const worktree = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-wt-" });
-          const worktreeGitDir = path.join(repo, ".git", "worktrees", "wt");
-          yield* fileSystem.makeDirectory(worktreeGitDir, { recursive: true });
-          yield* fileSystem.writeFileString(path.join(worktreeGitDir, "commondir"), "../..\n");
-          yield* fileSystem.writeFileString(
-            path.join(worktree, ".git"),
-            `gitdir: ${worktreeGitDir}\n`,
-          );
-          yield* fileSystem.makeDirectory(path.join(repo, ".claude"));
-          yield* fileSystem.makeDirectory(path.join(repo, "packages", "app"), { recursive: true });
-          const rootLocal = (value: string) =>
-            fileSystem.writeFileString(
-              path.join(repo, ".claude", "settings.local.json"),
-              `{"env":{"ENABLE_TOOL_SEARCH":"${value}"}}`,
-            );
-          const userAuto = '{"env":{"ENABLE_TOOL_SEARCH":"auto"}}';
-          yield* rootLocal("auto");
-          assert.equal(yield* openedToolSearch("{}", worktree), "true");
-          yield* rootLocal("false");
-          assert.isUndefined(yield* openedToolSearch(userAuto, worktree));
-          assert.isUndefined(yield* openedToolSearch(userAuto, path.join(repo, "packages", "app")));
-
-          // Project settings beat user settings, and the process env applies only when no file sets it.
-          const project = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "t3-claude-project-",
-          });
-          yield* fileSystem.makeDirectory(path.join(project, ".claude"));
-          yield* fileSystem.writeFileString(
-            path.join(project, ".claude", "settings.json"),
-            '{"env":{"ENABLE_TOOL_SEARCH":"auto"}}',
-          );
-          assert.equal(
-            yield* openedToolSearch('{"env":{"ENABLE_TOOL_SEARCH":"false"}}', project),
-            "true",
-          );
-          assert.equal(
-            yield* openedToolSearch("{}", CLAUDE_TEST_RUNTIME_POLICY.cwd, {
-              ENABLE_TOOL_SEARCH: "auto",
-            }),
-            "true",
-          );
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
     );
 
     // regression: #21806 an unresolved policy restricts bypass without caching the failed result
@@ -14577,155 +13870,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect(
-    "keeps a running Claude monitor typed after many newer monitors end (fork regression)",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarness;
-          const now = yield* DateTime.now;
-          let frameNumber = 0;
-          const nextUuid = () =>
-            `00000000-0000-4000-8000-${String(++frameNumber).padStart(12, "0")}`;
-          const monitorFrames = (index: number) => {
-            const taskId = `monitor-task-${index}`;
-            const toolUseId = `toolu_monitor_${index}`;
-            const description = `Monitor ${index}`;
-            return {
-              taskId,
-              start: [
-                claudeSdkFrame({
-                  type: "assistant",
-                  message: {
-                    model: "claude-sonnet-4-6",
-                    id: `msg_monitor_${index}`,
-                    type: "message",
-                    role: "assistant",
-                    content: [
-                      {
-                        type: "tool_use",
-                        id: toolUseId,
-                        name: "Monitor",
-                        input: { description, command: "sleep 8 && echo MONITOR_DONE" },
-                      },
-                    ],
-                    stop_reason: null,
-                    stop_sequence: null,
-                    usage: { input_tokens: 1, output_tokens: 1 },
-                  },
-                  parent_tool_use_id: null,
-                  uuid: nextUuid(),
-                  session_id: WAKE_NATIVE_SESSION,
-                }),
-                claudeSdkFrame({
-                  type: "system",
-                  subtype: "task_started",
-                  task_id: taskId,
-                  tool_use_id: toolUseId,
-                  description,
-                  is_backgrounded: true,
-                  task_type: "local_bash",
-                  uuid: nextUuid(),
-                  session_id: WAKE_NATIVE_SESSION,
-                }),
-                claudeSdkFrame({
-                  type: "user",
-                  message: {
-                    role: "user",
-                    content: [
-                      {
-                        type: "tool_result",
-                        tool_use_id: toolUseId,
-                        content: `Monitor started (task ${taskId}).`,
-                      },
-                    ],
-                  },
-                  parent_tool_use_id: null,
-                  uuid: nextUuid(),
-                  session_id: WAKE_NATIVE_SESSION,
-                  tool_use_result: { taskId, persistent: false },
-                }),
-              ],
-              end: claudeSdkFrame({
-                type: "system",
-                subtype: "task_notification",
-                task_id: taskId,
-                tool_use_id: toolUseId,
-                status: "completed",
-                output_file: `/tmp/claude-replay/tasks/${taskId}.output`,
-                summary: `Monitor "${description}" stream ended`,
-                uuid: nextUuid(),
-                session_id: WAKE_NATIVE_SESSION,
-              }),
-            };
-          };
-
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now,
-              attemptId: RunAttemptId.make("attempt-claude-many-monitors"),
-              text: "Watch the deploy, then re-arm short watches.",
-              attachments: [],
-            }),
-          );
-          const longRunning = monitorFrames(0);
-          for (const frame of longRunning.start) {
-            yield* Queue.offer(harness.sdkMessages, frame);
-          }
-          for (let index = 1; index <= 65; index++) {
-            const monitor = monitorFrames(index);
-            for (const frame of monitor.start) {
-              yield* Queue.offer(harness.sdkMessages, frame);
-            }
-            yield* Queue.offer(harness.sdkMessages, monitor.end);
-          }
-          yield* Queue.offer(
-            harness.sdkMessages,
-            claudeSdkFrame({
-              type: "system",
-              subtype: "background_tasks_changed",
-              tasks: [
-                {
-                  task_id: longRunning.taskId,
-                  task_type: "local_bash",
-                  description: "Monitor 0",
-                },
-              ],
-              uuid: nextUuid(),
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          );
-          yield* Queue.offer(
-            harness.sdkMessages,
-            makeResultFrame({ uuid: nextUuid(), result: "Watching." }),
-          );
-          yield* harness.awaitTerminal(1);
-
-          const roster = providerThreadRosterEvents(harness.events).at(-1)?.providerThread
-            .pendingBackgroundTasks;
-          assert.deepEqual(roster, [
-            {
-              taskId: longRunning.taskId,
-              kind: "monitor",
-              description: "Monitor 0",
-              nativeItemId: "toolu_monitor_0",
-            },
-          ]);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-      ),
-  );
-
   // Claude 2.1.323 wakes a session per Monitor event with only init, assistant and a
   // task-notification result; just the Monitor's end sends a task_notification frame.
   it.effect.each([
@@ -19546,39 +18690,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
-  );
-
-  it.effect("settles a continuation turn immediately when no wake output is buffered", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeWakeHarness;
-      const now = yield* DateTime.now;
-
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now,
-          attemptId: RunAttemptId.make("attempt-claude-wake-3"),
-          text: "Background task completed.",
-          attachments: [],
-          messageCreatedBy: "agent",
-          messageCreationSource: "provider",
-        }),
-      );
-
-      yield* harness.awaitTerminal(1);
-      assert.equal(harness.terminalEvents()[0]?.status, "completed");
-      assert.lengthOf(harness.offeredMessages, 0);
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
-        ),
-      ),
-    ),
   );
 
   const makeSubagentAssistantFrames = (input: {
@@ -27599,117 +26710,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(stopped?.id, held?.id);
           assert.equal(stopped?.status, "failed");
           assert.equal(stopped?.failure.resetAt, held?.failure.resetAt);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-      ),
-  );
-
-  it.effect(
-    "uses task_started as an incremental roster fallback, keeps its tool call, and clears on empty snapshot",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarness;
-          const now = yield* DateTime.now;
-          const emptyRoster = claudeSdkFrame({
-            type: "system",
-            subtype: "background_tasks_changed",
-            tasks: [],
-            uuid: "00000000-0000-4000-8000-000000000202",
-            session_id: WAKE_NATIVE_SESSION,
-          });
-
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now,
-              attemptId: RunAttemptId.make("attempt-claude-roster-fallback"),
-              text: "Run the build in the background.",
-              attachments: [],
-            }),
-          );
-          yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
-          yield* Queue.offer(harness.sdkMessages, turnOneResult);
-          yield* harness.awaitTerminal(1);
-
-          const afterStart = providerThreadRosterEvents(harness.events).filter(
-            (event) => (event.providerThread.pendingBackgroundTasks?.length ?? 0) > 0,
-          );
-          assert.isAtLeast(afterStart.length, 1);
-          const started = (afterStart.at(-1)?.providerThread.pendingBackgroundTasks ?? [])[0];
-          assert.equal(started?.taskId, WAKE_TASK_ID);
-          assert.equal(started?.nativeItemId, WAKE_TOOL_USE_ID);
-
-          // A foreground command that later moves to the background keeps its tool call too.
-          yield* Queue.offer(
-            harness.sdkMessages,
-            claudeSdkFrame({
-              type: "system",
-              subtype: "task_started",
-              task_id: "moved-shell",
-              tool_use_id: "toolu_moved_shell",
-              description: "Foreground build",
-              is_backgrounded: false,
-              task_type: "local_bash",
-              uuid: "00000000-0000-4000-8000-000000000204",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          );
-          yield* Queue.offer(
-            harness.sdkMessages,
-            claudeSdkFrame({
-              type: "system",
-              subtype: "background_tasks_changed",
-              tasks: [
-                {
-                  task_id: "subagent-shell",
-                  task_type: "local_bash",
-                  description: "sleep 150",
-                  parent_task_id: "agent-1",
-                },
-                {
-                  task_id: WAKE_TASK_ID,
-                  task_type: "local_bash",
-                  description: WAKE_TASK_DESCRIPTION,
-                },
-                {
-                  task_id: "moved-shell",
-                  task_type: "local_bash",
-                  description: "Foreground build",
-                },
-              ],
-              uuid: "00000000-0000-4000-8000-000000000203",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          );
-          yield* harness.until(() =>
-            providerThreadRosterEvents(harness.events).some(
-              (event) =>
-                event.providerThread.pendingBackgroundTasks?.[0]?.parentTaskId === "agent-1" &&
-                event.providerThread.pendingBackgroundTasks[1]?.nativeItemId === WAKE_TOOL_USE_ID &&
-                event.providerThread.pendingBackgroundTasks[2]?.nativeItemId ===
-                  "toolu_moved_shell",
-            ),
-          );
-
-          yield* Queue.offer(harness.sdkMessages, emptyRoster);
-          yield* harness.until(() =>
-            providerThreadRosterEvents(harness.events).some(
-              (event) =>
-                event.providerThread.status === "idle" &&
-                (event.providerThread.pendingBackgroundTasks?.length ?? 0) === 0,
-            ),
-          );
-          assert.isFalse(yield* harness.hasPendingBackgroundWork);
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
