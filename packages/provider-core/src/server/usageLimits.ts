@@ -88,6 +88,28 @@ function trackExhaustion(
   return since === undefined ? rest : { ...rest, exhaustedSince: since };
 }
 
+/** The reset fields of `limits`, which are read apart from its usage windows. */
+function resetFieldsOf(limits: ServerProviderUsageLimits | undefined) {
+  return {
+    ...(limits?.resetCredits !== undefined ? { resetCredits: limits.resetCredits } : {}),
+    ...(limits?.resetCreditsError !== undefined
+      ? { resetCreditsError: limits.resetCreditsError }
+      : {}),
+    ...(limits?.resetPrograms !== undefined ? { resetPrograms: limits.resetPrograms } : {}),
+  };
+}
+
+/** `limits` without its reset fields, as after a reset was used and before they are read again. */
+export function withoutResetFields(limits: ServerProviderUsageLimits): ServerProviderUsageLimits {
+  const {
+    resetCredits: _credits,
+    resetCreditsError: _error,
+    resetPrograms: _programs,
+    ...usage
+  } = limits;
+  return Object.keys(resetFieldsOf(limits)).length === 0 ? limits : usage;
+}
+
 export function applyUsageLimitsUpdate(input: {
   readonly previous: ServerProviderUsageLimits | undefined;
   readonly update: ProviderUsageLimitsUpdate;
@@ -157,7 +179,7 @@ export function applyUsageLimitsUpdate(input: {
     ...(previous?.plan !== undefined ? { plan: previous.plan } : {}),
     ...(credits !== undefined ? { credits } : {}),
     ...(usageAllowed !== undefined ? { usageAllowed } : {}),
-    ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
+    ...resetFieldsOf(previous),
     ...(unavailable !== undefined ? { unavailable } : {}),
   };
 }
@@ -209,7 +231,11 @@ export function resolveUsageLimitsAfterProbe(input: {
 }): ServerProviderUsageLimits | undefined {
   const { published, probed } = input;
   if (probed?.unavailable?.reason === "probeFailed" && published && !published.unavailable) {
-    return published;
+    // A probe that read the reset fields although its usage failed knows them better.
+    const resetFields = resetFieldsOf(probed);
+    return Object.keys(resetFields).length === 0
+      ? published
+      : { ...withoutResetFields(published), ...resetFields };
   }
   if (
     published &&

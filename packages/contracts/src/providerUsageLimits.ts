@@ -31,7 +31,8 @@ export type ServerProviderResetKind = typeof ServerProviderResetKind.Type;
 /** One banked reset or grant, without the provider's id for it. */
 export const ServerProviderResetCredit = Schema.Struct({
   program: TrimmedNonEmptyString,
-  kind: ServerProviderResetKind,
+  /** Absent when the provider names only a total over its resets (Claude's held grants). */
+  kind: Schema.optional(ServerProviderResetKind),
   status: Schema.optional(TrimmedNonEmptyString),
   grantedAt: Schema.optional(IsoDateTime),
   expiresAt: Schema.optional(IsoDateTime),
@@ -61,6 +62,25 @@ export const ServerProviderResetCredits = Schema.Struct({
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
+/** Which of Claude's reset programs the account's flags turn on. */
+export const ServerProviderResetPrograms = Schema.Struct({
+  /** Banked grants (`tengu_cedar_ember`), listed in `resetCredits`. */
+  granted: Schema.Boolean,
+  /** The weekly 5-hour reset (`tengu_nifty_lemur`), which Claude shows only at the 5-hour limit. */
+  weeklySession: Schema.Boolean,
+  /** When the weekly 5-hour reset is next available, as Claude said when it was last used. */
+  weeklySessionAvailableAt: Schema.optional(IsoDateTime),
+});
+export type ServerProviderResetPrograms = typeof ServerProviderResetPrograms.Type;
+
+/** Why `resetCredits` is absent although the account has banked resets to read. */
+export const ServerProviderResetCreditsError = Schema.Literals([
+  "signedOut",
+  "unrecognizedScreen",
+  "readFailed",
+]);
+export type ServerProviderResetCreditsError = typeof ServerProviderResetCreditsError.Type;
+
 /** Clear bars for unavailable accounts; retain last good bars after a failed probe. */
 export const ServerProviderUsageLimits = Schema.Struct({
   checkedAt: IsoDateTime,
@@ -82,6 +102,8 @@ export const ServerProviderUsageLimits = Schema.Struct({
    */
   accountReadAt: Schema.optional(IsoDateTime),
   resetCredits: Schema.optional(ServerProviderResetCredits),
+  resetCreditsError: Schema.optional(ServerProviderResetCreditsError),
+  resetPrograms: Schema.optional(ServerProviderResetPrograms),
   externalUsage: Schema.optional(
     Schema.Struct({
       label: TrimmedNonEmptyString,

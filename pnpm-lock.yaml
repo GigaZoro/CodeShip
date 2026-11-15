@@ -902,6 +902,9 @@ importers:
       '@t3tools/source-control-gitlab':
         specifier: workspace:*
         version: link:../../packages/source-control-gitlab
+      '@xterm/headless':
+        specifier: 5.5.0
+        version: 5.5.0
       character-entities:
         specifier: 2.0.2
         version: 2.0.2
@@ -7334,6 +7337,9 @@ packages:
   '@xmldom/xmldom@0.9.12':
     resolution: {integrity: sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A==}
     engines: {node: '>=14.6'}
+
+  '@xterm/headless@5.5.0':
+    resolution: {integrity: sha512-5xXB7kdQlFBP82ViMJTwwEc3gKCLGKR/eoxQm4zge7GPBl86tCdI0IdPJjoKd8mUSFXz5V7i/25sfsEkP4j46g==}
 
   '@yuku-core/binding-android-arm64@0.19.0':
     resolution: {integrity: sha512-wdL2XmTiZixAOaHk9Z0JJZ8u9Qm8d333Zjpc6gaxXFX+UR5BlsfxZ7a2+2Rm71pamppsPYGUGFq2oVLbh6DISw==}
@@ -16992,6 +16998,8 @@ snapshots:
   '@xmldom/xmldom@0.8.15': {}
 
   '@xmldom/xmldom@0.9.12': {}
+
+  '@xterm/headless@5.5.0': {}
 
   '@yuku-core/binding-android-arm64@0.19.0':
     optional: true

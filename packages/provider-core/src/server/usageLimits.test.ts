@@ -137,10 +137,11 @@ describe("applyUsageLimitsUpdate", () => {
     ).toEqual({ ...weekly, usedPercent: 80 });
   });
 
-  it("preserves reset credits when a streamed window update changes usage", () => {
+  it("preserves reset credits and programs when a streamed window update changes usage", () => {
     const resetCredits = { availableCount: 2, nextExpiresAt: "2026-10-01T00:00:00.000Z" };
+    const resetPrograms = { granted: true, weeklySession: false };
     const next = applyUsageLimitsUpdate({
-      previous: { ...published, resetCredits },
+      previous: { ...published, resetCredits, resetPrograms },
       checkedAt: "2026-09-03T12:00:05.000Z",
       update: { windows: [{ ...session, usedPercent: 55 }] },
     });
@@ -150,7 +151,15 @@ describe("applyUsageLimitsUpdate", () => {
       accountReadAt: checkedAt,
       windows: [{ ...session, usedPercent: 55 }, weekly],
       resetCredits,
+      resetPrograms,
     });
+    expect(
+      applyUsageLimitsUpdate({
+        previous: { ...published, resetCreditsError: "unrecognizedScreen", resetPrograms },
+        checkedAt: "2026-09-03T12:00:05.000Z",
+        update: { windows: [{ ...session, usedPercent: 55 }] },
+      }),
+    ).toMatchObject({ resetCreditsError: "unrecognizedScreen", resetPrograms });
   });
 
   it("drops the credits when an update says the account has none", () => {
@@ -306,5 +315,24 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published, probed: failed })).toBe(published);
     expect(resolveUsageLimitsAfterProbe({ published, probed: unsupported })).toBe(unsupported);
     expect(resolveUsageLimitsAfterProbe({ published: undefined, probed: failed })).toBe(failed);
+  });
+
+  it("takes the reset fields a failed probe read, dropping the ones it no longer has", () => {
+    const resetPrograms = { granted: true, weeklySession: false };
+    const withGrants = {
+      ...published,
+      resetCredits: { availableCount: 1, credits: [] },
+      resetPrograms,
+    };
+    const failed = {
+      checkedAt,
+      windows: [],
+      unavailable: { reason: "probeFailed" as const },
+      resetPrograms,
+    };
+    expect(resolveUsageLimitsAfterProbe({ published: withGrants, probed: failed })).toEqual({
+      ...published,
+      resetPrograms,
+    });
   });
 });

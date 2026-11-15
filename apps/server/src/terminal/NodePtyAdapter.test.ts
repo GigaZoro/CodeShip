@@ -4,9 +4,12 @@ import * as NodeNet from "node:net";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Scheduler from "effect/Scheduler";
 import { vi } from "vite-plus/test";
 
@@ -129,11 +132,20 @@ it.effect.each(["exit", "close", "error", "invalid-pid"] as const)(
     }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("cancels the Windows connection without waiting for output", () =>
+it.effect.each([
+  ["a spawn", (adapter: PtyAdapter.PtyAdapter["Service"]) => adapter.spawn(spawnInput)],
+  [
+    "a scoped spawn",
+    (adapter: PtyAdapter.PtyAdapter["Service"]) =>
+      Effect.scoped(
+        PtyAdapter.spawnScoped(adapter, spawnInput, { onData: () => {}, onExit: () => {} }),
+      ),
+  ],
+] as const)("cancels the Windows connection of %s without waiting for output", ([, start]) =>
   Effect.gen(function* () {
     const { nativeProcess, subscribed } = preparePendingProcess();
     const adapter = yield* PtyAdapter.PtyAdapter;
-    const fiber = yield* adapter.spawn(spawnInput).pipe(Effect.forkChild);
+    const fiber = yield* start(adapter).pipe(Effect.forkChild);
     yield* subscribed;
     yield* Fiber.interrupt(fiber);
     assert.equal(nativeProcess._agent.kill.mock.calls.length, 1);
@@ -141,6 +153,38 @@ it.effect("cancels the Windows connection without waiting for output", () =>
     assert.equal(nativeProcess._socket.listenerCount("ready_datapipe"), 0);
     assert.equal(nativeProcess.events.listenerCount("exit"), 0);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("stops a scoped spawn while the spawn helper check never finishes", () =>
+  Effect.gen(function* () {
+    const checking = yield* Deferred.make<void>();
+    const stalledCheck = NodePtyAdapter.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          FileSystem.layerNoop({
+            exists: () => Deferred.succeed(checking, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+          Path.layer,
+          Layer.succeed(HostProcess.Platform, "linux"),
+          Layer.succeed(HostProcess.Architecture, "x64"),
+          Layer.succeed(NodePtyAdapter.NodePtyModuleLoaderRef, () => Promise.resolve(fakeNodePty)),
+        ),
+      ),
+    );
+    const spawned = spawn.mock.calls.length;
+    const fiber = yield* PtyAdapter.PtyAdapter.pipe(
+      Effect.flatMap((adapter) =>
+        Effect.scoped(
+          PtyAdapter.spawnScoped(adapter, spawnInput, { onData: () => {}, onExit: () => {} }),
+        ),
+      ),
+      Effect.provide(stalledCheck),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(checking);
+    yield* Fiber.interrupt(fiber);
+    assert.equal(spawn.mock.calls.length, spawned);
+  }),
 );
 
 it.effect("reports an incompatible Windows readiness API instead of hanging", () =>

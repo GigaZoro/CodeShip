@@ -1,26 +1,42 @@
 import type {
-  ProviderConsumeResetCreditOutcome,
   ServerProviderResetCredits,
+  ServerProviderResetCreditsError,
+  ServerProviderResetKind,
+  ServerProviderResetPrograms,
+  ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
-const API_BASE = "https://api.anthropic.com";
-const PROGRAM = "cedar_ember";
-const GRANT_ID = /^[a-z0-9_-]{1,40}$/;
-const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const COMPLETE_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+import {
+  claimClaudeGrantedReset,
+  claimClaudeWeeklySessionReset,
+  ClaudeLimitResetError,
+  readClaudeLimitResets,
+  type ClaudeLimitResetPrograms,
+  type ClaudeLimitResetTerminalOptions,
+} from "./claudeLimitResetTerminal.ts";
+import {
+  GRANTED_TEXTS,
+  WEEKLY_SESSION_TEXTS,
+  withTextOverrides,
+  type ClaudeClaimAnswer,
+  type ClaudeLimitResetGrant,
+  type ClaudeUsableGrant,
+  type GrantedTexts,
+} from "./claudeLimitResetText.ts";
+import { ResetCreditCoordinator } from "./resetCreditCoordinator.ts";
 
-const Credentials = Schema.Struct({
-  claudeAiOauth: Schema.optional(Schema.Struct({ accessToken: Schema.optional(Schema.String) })),
-});
 const Config = Schema.Struct({
   oauthAccount: Schema.optional(
     Schema.Struct({
@@ -29,100 +45,18 @@ const Config = Schema.Struct({
     }),
   ),
 });
-const Grant = Schema.Struct({
-  id: Schema.String.check(Schema.isPattern(GRANT_ID)),
-  resets_left: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  ends_at: Schema.optional(Schema.NullOr(Schema.String)),
-  paused: Schema.optional(Schema.Boolean),
-  usable_now: Schema.optional(Schema.Boolean),
-});
-const decodeGrant = Schema.decodeUnknownOption(Grant);
-const CedarEmber = Schema.Struct({
-  eligible: Schema.Boolean,
-  grants: Schema.optional(Schema.Array(Schema.Unknown)),
-  next_grant_id: Schema.optional(Schema.NullOr(Schema.String)),
-});
-const UsageResponse = Schema.Struct({
-  cedar_ember: Schema.optional(Schema.NullOr(Schema.Unknown)),
-});
-const decodeCedarEmber = Schema.decodeUnknownOption(CedarEmber);
-const ClaimResponse = Schema.Struct({
-  result: Schema.Literals([
-    "reset",
-    "already_used",
-    "not_limited",
-    "cooldown",
-    "ineligible",
-    "unavailable",
-  ]),
+const FlagsConfig = Schema.Struct({
+  cachedGrowthBookFeatures: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
-const RESET_CREDIT_FAILURES = {
-  malformedCredit: "Claude returned a malformed reset credit.",
-  loginUnreadable: "Claude could not read its login.",
-  accountUnreadable: "Claude could not read its account.",
-  signedOut: "Sign in to Claude again to redeem resets.",
-  rateLimited: "Claude is rate limiting resets. Try again soon.",
-  coolingDown: "Claude resets are cooling down. Try again later.",
-  unconfirmed:
-    "Claude could not confirm the reset. If you are still limited in a moment, try again.",
-  requestFailed: "Claude could not redeem the reset.",
-} as const;
-
-class ClaudeResetCreditError extends Schema.TaggedError<ClaudeResetCreditError>()(
-  "ClaudeResetCreditError",
-  {
-    reason: Schema.Literals(
-      Object.keys(RESET_CREDIT_FAILURES) as Array<keyof typeof RESET_CREDIT_FAILURES>,
-    ),
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return RESET_CREDIT_FAILURES[this.reason];
-  }
-}
-
-const isClaudeResetCreditError = Schema.is(ClaudeResetCreditError);
-
-/** Retry unanswered or unconfirmed claims with the same request ID. */
-export const isSettledClaudeResetCreditFailure = (error: unknown) =>
-  isClaudeResetCreditError(error) &&
-  error.reason !== "requestFailed" &&
-  error.reason !== "unconfirmed";
-
-const isFutureTimestamp = (value: string, nowMs: number) => {
-  if (!COMPLETE_TIMESTAMP.test(value)) return false;
-  const [year, month, day] = value.slice(0, 10).split("-").map(Number);
-  return (
-    Date.parse(value) > nowMs && Date.UTC(year!, month! - 1, day!) <= Date.UTC(year!, month!, 0)
-  );
-};
-
-export function claudeResetCreditsToContract(
-  block: unknown,
-  nowMs: number,
-): ServerProviderResetCredits | undefined {
-  const parsed = decodeCedarEmber(block);
-  if (Option.isNone(parsed) || !parsed.value.eligible) return undefined;
-  const live = (parsed.value.grants ?? [])
-    .flatMap((raw) => Option.toArray(decodeGrant(raw)))
-    .filter(
-      (grant) =>
-        !grant.paused &&
-        grant.usable_now &&
-        (grant.ends_at == null || isFutureTimestamp(grant.ends_at, nowMs)),
-    );
-  const next = live.find((grant) => grant.id === parsed.value.next_grant_id);
-  const nextExpiresAt = next?.ends_at ? DateTime.make(next.ends_at) : Option.none();
-  return {
-    availableCount: next ? live.reduce((sum, grant) => sum + grant.resets_left, 0) : 0,
-    ...(Option.isSome(nextExpiresAt)
-      ? { nextExpiresAt: DateTime.formatIso(nextExpiresAt.value) }
-      : {}),
-    ...(next ? { nextCreditId: next.id } : {}),
-  };
-}
+/** Claude's flags for banked grants and for the weekly 5-hour reset, as it caches them. */
+const GRANTED_FLAG = "tengu_cedar_ember";
+const WEEKLY_SESSION_FLAG = "tengu_nifty_lemur";
+const GRANTED_PROGRAM = "cedar_ember";
+/** Grants change only when Anthropic hands out or expires one, or when one is used. */
+const READ_INTERVAL = Duration.toMillis(Duration.hours(6));
+/** A failed read is retried after this, doubling while it keeps failing, up to `READ_INTERVAL`. */
+const FAILED_READ_RETRY = Duration.toMillis(Duration.minutes(10));
 
 const readJson = Effect.fn("claudeResetCredits.readJson")(function* <S extends Schema.Top>(
   schema: S,
@@ -137,44 +71,6 @@ const readJson = Effect.fn("claudeResetCredits.readJson")(function* <S extends S
     Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(schema))),
   );
 });
-
-const readAccessToken = Effect.fn("claudeResetCredits.readAccessToken")(function* (
-  configDir: string,
-) {
-  if ((yield* HostProcess.Platform) === "darwin") return undefined;
-  const path = yield* Path.Path;
-  const credentials = yield* readJson(Credentials, path.join(configDir, ".credentials.json"));
-  return credentials.claudeAiOauth?.accessToken?.trim() || undefined;
-});
-
-const withClaudeHeaders = (token: string, version: string) =>
-  HttpClientRequest.setHeaders({
-    authorization: `Bearer ${token}`,
-    "anthropic-beta": "oauth-2025-04-20",
-    "user-agent": `claude-cli/${version} (external, cli)`,
-  });
-
-export const readClaudeResetCredits = Effect.fn("readClaudeResetCredits")(
-  function* (configDir: string, version: string) {
-    const token = yield* readAccessToken(configDir);
-    if (!token) return undefined;
-    const client = yield* HttpClient.HttpClient;
-    const response = yield* client.execute(
-      HttpClientRequest.get(`${API_BASE}/api/oauth/usage`, {
-        urlParams: { cedar_ember: "1", skip_spend: "1" },
-      }).pipe(withClaudeHeaders(token, version)),
-    );
-    const body = yield* HttpClientResponse.schemaBodyJson(UsageResponse)(
-      yield* HttpClientResponse.filterStatusOk(response),
-    );
-    return claudeResetCreditsToContract(
-      body.cedar_ember,
-      DateTime.toEpochMillis(yield* DateTime.now),
-    );
-  },
-  Effect.timeout("10 seconds"),
-  Effect.orElseSucceed(() => undefined),
-);
 
 export interface ClaudeAccountIdentity {
   readonly workspaceId?: string;
@@ -205,72 +101,344 @@ export const claudeAccountConfigPath = Effect.fn("claudeAccountConfigPath")(func
     : path.join(yield* HostProcess.HomeDirectory, ".claude.json");
 });
 
-const CLAIM_OUTCOMES = {
-  reset: "reset",
-  not_limited: "nothingToReset",
-  already_used: "alreadyRedeemed",
-  ineligible: "noCredit",
-} as const satisfies Record<string, ProviderConsumeResetCreditOutcome>;
+/** A flag counts only as Claude reads it: an object whose `enabled` is true. */
+const enabledFlag = (value: unknown) =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  (value as { readonly enabled?: unknown }).enabled === true
+    ? value
+    : undefined;
 
-/** requestId is the claim's idempotency key. */
-export const consumeClaudeResetCredit = Effect.fn("consumeClaudeResetCredit")(function* (input: {
-  readonly configDir: string;
-  readonly accountConfigPath: string;
-  readonly version: string;
-  readonly grantId: string;
-  readonly requestId: string;
-}) {
-  if (!GRANT_ID.test(input.grantId) || !REQUEST_ID.test(input.requestId)) {
-    return yield* new ClaudeResetCreditError({ reason: "malformedCredit" });
-  }
-  const token = yield* readAccessToken(input.configDir).pipe(
-    Effect.mapError((cause) => new ClaudeResetCreditError({ reason: "loginUnreadable", cause })),
-  );
-  const config = yield* readJson(Config, input.accountConfigPath).pipe(
-    Effect.mapError((cause) => new ClaudeResetCreditError({ reason: "accountUnreadable", cause })),
-  );
-  const organization = config.oauthAccount?.organizationUuid?.trim();
-  if (!token || !organization) {
-    return yield* new ClaudeResetCreditError({ reason: "signedOut" });
-  }
-  const client = yield* HttpClient.HttpClient;
-  const response = yield* client
-    .execute(
-      HttpClientRequest.post(
-        new URL(
-          `/api/organizations/${encodeURIComponent(organization)}/reset_rate_limits`,
-          API_BASE,
-        ),
-      ).pipe(
-        withClaudeHeaders(token, input.version),
-        HttpClientRequest.bodyJsonUnsafe({
-          program: PROGRAM,
-          grant_id: input.grantId,
-          request_id: input.requestId,
+/**
+ * The reset programs the account's cached flags turn on, with the texts Claude shows for each. A
+ * missing config turns none on; one that cannot be read fails, so it never reads as "off".
+ */
+export const readClaudeLimitResetPrograms = (accountConfigPath: string) =>
+  readJson(FlagsConfig, accountConfigPath).pipe(
+    Effect.map((config): ClaudeLimitResetPrograms => {
+      const features = config.cachedGrowthBookFeatures ?? {};
+      const granted = enabledFlag(features[GRANTED_FLAG]);
+      const weeklySession = enabledFlag(features[WEEKLY_SESSION_FLAG]);
+      return {
+        ...(granted ? { granted: withTextOverrides(GRANTED_TEXTS, granted) } : {}),
+        ...(weeklySession
+          ? { weeklySession: withTextOverrides(WEEKLY_SESSION_TEXTS, weeklySession) }
+          : {}),
+      };
+    }),
+    // A parse error can quote the config, which holds the account's e-mail, so only file errors
+    // go along as the cause.
+    Effect.mapError(
+      (cause) =>
+        new ClaudeLimitResetError({
+          reason: "readFailed",
+          ...(cause._tag === "PlatformError" ? { cause } : {}),
         }),
-      ),
-    )
-    .pipe(
-      Effect.timeout("25 seconds"),
-      Effect.mapError((cause) => new ClaudeResetCreditError({ reason: "requestFailed", cause })),
-    );
-  if (response.status === 429) {
-    return yield* new ClaudeResetCreditError({ reason: "rateLimited" });
-  }
-  if (response.status === 401 || response.status === 403) {
-    return yield* new ClaudeResetCreditError({ reason: "signedOut" });
-  }
-  const body = yield* HttpClientResponse.filterStatusOk(response).pipe(
-    Effect.flatMap(HttpClientResponse.schemaBodyJson(ClaimResponse)),
-    Effect.timeout("25 seconds"),
-    Effect.mapError((cause) => new ClaudeResetCreditError({ reason: "requestFailed", cause })),
+    ),
   );
-  if (body.result === "cooldown") {
-    return yield* new ClaudeResetCreditError({ reason: "coolingDown" });
+
+/** The reset fields of one usage read. */
+export interface ClaudeLimitResetFields {
+  readonly resetCredits?: ServerProviderResetCredits;
+  readonly resetCreditsError?: ServerProviderResetCreditsError;
+  /** Absent when the account's config could not be read. */
+  readonly resetPrograms?: ServerProviderResetPrograms;
+}
+
+export interface ClaudeLimitResetReadState {
+  readonly reading?: {
+    readonly at: number;
+    /** The account the grants belong to; usage of another account does not show them. */
+    readonly accountKey?: string;
+    /** The login's redemption count at the read; a later redemption may have changed the grants. */
+    readonly redemptions: number;
+    readonly grants: ReadonlyArray<ClaudeLimitResetGrant>;
+  };
+  readonly failure?: {
+    readonly at: number;
+    readonly reason: ServerProviderResetCreditsError;
+    readonly attempts: number;
+    readonly redemptions: number;
+  };
+  /** Whether the last usage seen was at a limit, so the next read waits for the next limit. */
+  readonly limited: boolean;
+  /** `checkedAt` of the newest usage seen; older usage that arrives late changes nothing. */
+  readonly usageCheckedAt?: number;
+  readonly weeklySessionAvailableAt?: string;
+}
+
+/** What the usage being published says, and how many redemptions its login has seen. */
+export interface ClaudeLimitResetUsage {
+  readonly now: number;
+  readonly limited: boolean;
+  readonly accountKey?: string;
+  readonly redemptions: number;
+}
+
+const isAtLimit = (usageLimits: ServerProviderUsageLimits) =>
+  usageLimits.usageAllowed === false ||
+  usageLimits.windows.some((window) => window.usedPercent >= 100);
+
+const failureReason = (error: ClaudeLimitResetError): ServerProviderResetCreditsError =>
+  error.reason === "signedOut" || error.reason === "readFailed"
+    ? error.reason
+    : error.reason === "unrecognizedScreen" || error.reason === "programChanged"
+      ? "unrecognizedScreen"
+      : "readFailed";
+
+/** `state` once `usageLimits` is seen; unread usage, or older than the newest seen, changes nothing. */
+export function withUsage(
+  state: ClaudeLimitResetReadState,
+  usageLimits: ServerProviderUsageLimits,
+): ClaudeLimitResetReadState {
+  if (usageLimits.unavailable !== undefined) return state;
+  const checkedAt = Date.parse(usageLimits.checkedAt);
+  if (state.usageCheckedAt !== undefined && checkedAt < state.usageCheckedAt) return state;
+  return { ...state, limited: isAtLimit(usageLimits), usageCheckedAt: checkedAt };
+}
+
+/** Whether `reading` still describes the account `usage` belongs to. */
+const describes = (
+  reading: NonNullable<ClaudeLimitResetReadState["reading"]>,
+  usage: Pick<ClaudeLimitResetUsage, "accountKey" | "redemptions">,
+) => reading.redemptions === usage.redemptions && reading.accountKey === usage.accountKey;
+
+/**
+ * Whether the grants are due for another read: the first time, six hours after the last, when the
+ * account newly reaches a limit, after any redemption on its login, after a failure once its
+ * backoff has passed, and for another account no sooner than a failed read would be retried.
+ */
+export function isLimitResetReadDue(
+  state: ClaudeLimitResetReadState,
+  usage: ClaudeLimitResetUsage,
+): boolean {
+  if (state.failure !== undefined) {
+    if (state.failure.redemptions !== usage.redemptions) return true;
+    const backoff = FAILED_READ_RETRY * 2 ** (state.failure.attempts - 1);
+    return usage.now - state.failure.at >= Math.min(backoff, READ_INTERVAL);
   }
-  // Unknown outcomes retain the request ID so retries address the same claim.
-  if (body.result === "unavailable") {
-    return yield* new ClaudeResetCreditError({ reason: "unconfirmed" });
-  }
-  return CLAIM_OUTCOMES[body.result];
+  if (state.reading === undefined || state.reading.redemptions !== usage.redemptions) return true;
+  const age = usage.now - state.reading.at;
+  return (
+    age >= READ_INTERVAL ||
+    (usage.limited && !state.limited) ||
+    (state.reading.accountKey !== usage.accountKey && age >= FAILED_READ_RETRY)
+  );
+}
+
+const usableGrants = (grants: ReadonlyArray<ClaudeLimitResetGrant>) =>
+  grants.filter((grant): grant is ClaudeUsableGrant => grant.usableNow);
+
+function toResetCredits(grants: ReadonlyArray<ClaudeLimitResetGrant>): ServerProviderResetCredits {
+  const usable = usableGrants(grants);
+  const nextExpiresAt = usable
+    .flatMap((grant) => (grant.expiresAt === undefined ? [] : [grant.expiresAt]))
+    .toSorted()[0];
+  return {
+    availableCount: usable.reduce((sum, grant) => sum + grant.resetsLeft, 0),
+    ...(nextExpiresAt === undefined ? {} : { nextExpiresAt }),
+    credits: grants.map((grant) => ({ program: GRANTED_PROGRAM, ...grant })),
+  };
+}
+
+/** The usable grant Claude should spend first: the one that expires first. */
+function firstToExpire(grants: ReadonlyArray<ClaudeLimitResetGrant>) {
+  return usableGrants(grants).toSorted((a, b) =>
+    (a.expiresAt ?? "\uffff").localeCompare(b.expiresAt ?? "\uffff"),
+  )[0]?.kind;
+}
+
+export interface ClaudeLimitResetsOptions {
+  readonly accountConfigPath: string;
+  /** The login's folder: instances sharing it share its grants and one lock on its terminal. */
+  readonly loginKey: string;
+  readonly terminal: Omit<ClaudeLimitResetTerminalOptions, "programs">;
+  /** Publishes a finished read; the next usage read picks it up. */
+  readonly onRead: Effect.Effect<void>;
+}
+
+/**
+ * One account's Claude limit resets: reads them in a hidden terminal at most every six hours and
+ * again when the account reaches a limit or a reset was used, and uses one only when asked. Reads
+ * and claims of every instance on the same login take turns on the reset coordinator's lock.
+ */
+export const makeClaudeLimitResets = Effect.fn("makeClaudeLimitResets")(function* (
+  options: ClaudeLimitResetsOptions,
+) {
+  const scope = yield* Scope.Scope;
+  // Reads and claims run with the driver's services (its PTY adapter), whoever asks for them.
+  const context = yield* Effect.context<never>();
+  const coordinator = yield* ResetCreditCoordinator;
+  const state = yield* Ref.make<ClaudeLimitResetReadState>({ limited: false });
+  const fs = yield* FileSystem.FileSystem;
+  const programs = readClaudeLimitResetPrograms(options.accountConfigPath).pipe(
+    Effect.provideService(FileSystem.FileSystem, fs),
+  );
+  const accountKey = readClaudeAccountIdentity(options.accountConfigPath).pipe(
+    Effect.map((identity) => identity.accountKey),
+    Effect.provideService(FileSystem.FileSystem, fs),
+  );
+  const redemptions = coordinator.redemptions(options.loginKey);
+  const terminalOptions: ClaudeLimitResetTerminalOptions = { ...options.terminal, programs };
+
+  const ensureCwd = fs
+    .makeDirectory(options.terminal.cwd, { recursive: true })
+    .pipe(Effect.mapError((cause) => new ClaudeLimitResetError({ reason: "readFailed", cause })));
+
+  /** The grants and the account they belong to; a login changed meanwhile fails the read. */
+  const readGrants = Effect.fn("ClaudeLimitResets.readGrants")(function* (texts: GrantedTexts) {
+    const before = yield* accountKey;
+    yield* ensureCwd;
+    const grants = yield* readClaudeLimitResets(terminalOptions, texts);
+    if ((yield* accountKey) !== before) {
+      return yield* new ClaudeLimitResetError({ reason: "readFailed" });
+    }
+    return { grants, ...(before === undefined ? {} : { accountKey: before }) };
+  });
+
+  const read = Effect.gen(function* () {
+    const count = yield* redemptions;
+    const result = yield* programs.pipe(
+      Effect.flatMap(({ granted }) =>
+        granted === undefined ? Effect.succeedNone : Effect.asSome(readGrants(granted)),
+      ),
+      Effect.result,
+    );
+    const at = yield* Clock.currentTimeMillis;
+    if (result._tag === "Failure") {
+      const reason = failureReason(result.failure);
+      yield* Effect.logWarning("Claude limit resets could not be read.", { reason });
+      yield* Ref.update(state, ({ reading: _reading, failure, ...current }) => ({
+        ...current,
+        failure: { at, reason, attempts: (failure?.attempts ?? 0) + 1, redemptions: count },
+      }));
+    } else if (Option.isSome(result.success)) {
+      const reading = { at, redemptions: count, ...result.success.value };
+      yield* Ref.update(state, ({ failure: _failure, ...current }) => ({ ...current, reading }));
+    }
+  });
+
+  // A read due while this instance's read waits for the login's lock or runs is that same read.
+  const readQueued = yield* Semaphore.make(1);
+  const startRead = readQueued
+    .withPermitsIfAvailable(1)(coordinator.runLocked(options.loginKey, read))
+    .pipe(
+      Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: () => options.onRead })),
+      Effect.provideContext(context),
+      Effect.ignoreCause({ log: true }),
+      Effect.forkIn(scope),
+      Effect.asVoid,
+    );
+
+  /** The reset fields to publish with `usageLimits`; starts a read when one is due. */
+  const current = Effect.fn("ClaudeLimitResets.current")(function* (
+    usageLimits: ServerProviderUsageLimits,
+  ) {
+    const enabled = yield* Effect.result(programs);
+    if (enabled._tag === "Failure") {
+      return { resetCreditsError: "readFailed" } satisfies ClaudeLimitResetFields;
+    }
+    const now = yield* Clock.currentTimeMillis;
+    const before = yield* Ref.getAndUpdate(state, (current) => withUsage(current, usageLimits));
+    const usage: ClaudeLimitResetUsage = {
+      now,
+      limited: withUsage(before, usageLimits).limited,
+      redemptions: yield* redemptions,
+      ...(usageLimits.accountKey === undefined ? {} : { accountKey: usageLimits.accountKey }),
+    };
+    const weeklySessionAvailableAt =
+      before.weeklySessionAvailableAt !== undefined &&
+      Date.parse(before.weeklySessionAvailableAt) > now
+        ? before.weeklySessionAvailableAt
+        : undefined;
+    const resetPrograms: ServerProviderResetPrograms = {
+      granted: enabled.success.granted !== undefined,
+      weeklySession: enabled.success.weeklySession !== undefined,
+      ...(weeklySessionAvailableAt === undefined ? {} : { weeklySessionAvailableAt }),
+    };
+    // Without banked grants there is nothing to read; the weekly 5-hour reset shows only at a limit.
+    if (enabled.success.granted === undefined) return { resetPrograms };
+    if (isLimitResetReadDue(before, usage)) yield* startRead;
+    if (before.failure !== undefined) {
+      return { resetCreditsError: before.failure.reason, resetPrograms };
+    }
+    return {
+      ...(before.reading === undefined || !describes(before.reading, usage)
+        ? {}
+        : { resetCredits: toResetCredits(before.reading.grants) }),
+      resetPrograms,
+    };
+  });
+
+  /** The grants to choose from: the last reading while it still describes this login's account. */
+  const knownGrants = Effect.fn("ClaudeLimitResets.knownGrants")(function* (texts: GrantedTexts) {
+    const { reading } = yield* Ref.get(state);
+    const key = yield* accountKey;
+    const now = {
+      redemptions: yield* redemptions,
+      ...(key === undefined ? {} : { accountKey: key }),
+    };
+    if (reading !== undefined && describes(reading, now)) return reading.grants;
+    return (yield* readGrants(texts)).grants;
+  });
+
+  const claimOnce = Effect.fn("ClaudeLimitResets.claimOnce")(function* (
+    forAccount: string | undefined,
+    kind: ServerProviderResetKind | undefined,
+  ) {
+    const holdsAccount = Effect.flatMap(accountKey, (key) =>
+      key === forAccount
+        ? Effect.void
+        : Effect.fail(new ClaudeLimitResetError({ reason: "accountChanged" })),
+    );
+    yield* holdsAccount;
+    const claimOptions = { ...terminalOptions, holdsAccount };
+    const enabled = yield* programs;
+    if (enabled.granted !== undefined) {
+      const chosen = kind ?? firstToExpire(yield* knownGrants(enabled.granted));
+      if (chosen === undefined) {
+        return { _tag: "outcome", outcome: "noCredit" } satisfies ClaudeClaimAnswer;
+      }
+      yield* ensureCwd;
+      return yield* claimClaudeGrantedReset(claimOptions, enabled.granted, chosen);
+    }
+    if (enabled.weeklySession !== undefined && (kind === undefined || kind === "five_hour")) {
+      yield* ensureCwd;
+      return yield* claimClaudeWeeklySessionReset(claimOptions, enabled.weeklySession);
+    }
+    return { _tag: "outcome", outcome: "noCredit" } satisfies ClaudeClaimAnswer;
+  });
+
+  /**
+   * Uses one reset of `forAccount`, the account key of the usage it was chosen from, and none once
+   * the login holds another account: of `kind`, or the usable grant that expires first, or the
+   * weekly 5-hour one. Fails with why when Claude gave no outcome; every claim, however it ends,
+   * counts as a redemption, so the grants are read again before they are shown or chosen from.
+   */
+  const claim = Effect.fn("ClaudeLimitResets.claim")(function* (
+    forAccount: string | undefined,
+    kind?: ServerProviderResetKind,
+  ) {
+    return yield* coordinator.redeem(options.loginKey, () =>
+      claimOnce(forAccount, kind).pipe(
+        Effect.flatMap((answer) => {
+          if (answer._tag !== "outcome") {
+            return Effect.fail(new ClaudeLimitResetError({ reason: answer._tag }));
+          }
+          const availableAt = answer.weeklySessionAvailableAt;
+          return Ref.update(state, (current) =>
+            availableAt === undefined
+              ? current
+              : { ...current, weeklySessionAvailableAt: availableAt },
+          ).pipe(Effect.as(answer.outcome));
+        }),
+        Effect.provideContext(context),
+      ),
+    );
+  });
+
+  return { current, claim };
 });
+
+export type ClaudeLimitResets = Effect.Success<ReturnType<typeof makeClaudeLimitResets>>;

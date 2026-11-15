@@ -6,7 +6,7 @@ import {
   type ModelCapabilities,
   type ServerProvider,
   type ServerProviderSlashCommand,
-  type ServerProviderResetCredits,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -567,7 +567,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   modelCatalog: ClaudeModelCatalog = BUNDLED_CLAUDE_MODEL_CATALOG,
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
-  resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
+  /** The account's limit resets, read beside its usage; subscription logins only. */
+  resolveResetCredits?: (
+    usageLimits: ServerProviderUsageLimits,
+  ) => Effect.Effect<
+    Pick<ServerProviderUsageLimits, "resetCredits" | "resetCreditsError" | "resetPrograms">
+  >,
   /** When the saved subscription login stops renewing; undefined when unknown. */
   resolveLoginExpiry?: Effect.Effect<string | undefined>,
 ): Effect.fn.Return<
@@ -827,12 +832,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     resolveLoginExpiry && loginProfileId?.startsWith("claude.ai:")
       ? yield* resolveLoginExpiry
       : undefined;
-  const resetCredits =
+  const resetFields =
     resolveResetCredits &&
     capabilities.subscriptionType &&
-    !usageLimits.unavailable &&
-    parsedVersion
-      ? yield* resolveResetCredits(parsedVersion)
+    usageLimits.unavailable?.reason !== "unsupported"
+      ? yield* resolveResetCredits(usageLimits)
       : undefined;
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
@@ -855,7 +859,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(authMetadata ? authMetadata : {}),
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
-      usageLimits: resetCredits ? { ...usageLimits, resetCredits } : usageLimits,
+      usageLimits: resetFields ? { ...usageLimits, ...resetFields } : usageLimits,
     },
   });
 });

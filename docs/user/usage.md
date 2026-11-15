@@ -156,8 +156,9 @@ one hidden by **Hide limited threads until the limit resets** continues and show
 limited threads do not resume at the reset. After a redemption,
 that machine leaves the account alone for 15 minutes, and a thread still waiting then follows your
 usage-limit recovery choice.
-Claude resets are not available when the server runs on macOS, where Claude keeps its login in the
-Keychain. On narrow screens, numbered rows below
+Claude accounts list the resets Claude's own `/limit-reset` shows. CodeShip asks it in a hidden
+terminal at most every six hours and again when the account reaches a limit, and asking never uses
+a reset. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
 The same account signed in on more than one environment, or reported by a hub as well, counts once.

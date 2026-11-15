@@ -3,6 +3,8 @@ import * as CodexInstallation from "./CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "./CodexManagedTokenBroker.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- The fake terminal uses a reset synchronously, inside a key press.
+import * as NodeFS from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -32,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
@@ -39,6 +42,12 @@ import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
+import {
+  answeringClaim,
+  GRANTS_REACTIONS,
+  makeFakeClaude,
+  withFakeClaude,
+} from "./claudeLimitResetTerminal.testkit.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
@@ -781,81 +790,71 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  const redeemClaudeReset = (claim: { result: string; usageFailsAfterClaim: boolean }) =>
+  const redeemClaudeReset = (claim: { answer?: string; usageFailsAfterClaim: boolean }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const fixtures = yield* makeTildeProviderFixtures();
       const marker = path.join(fixtures.claudeHomePath, "redeemed");
       yield* fs.writeFileString(
-        path.join(fixtures.claudeHomePath, ".credentials.json"),
-        '{"claudeAiOauth":{"accessToken":"fake-token"}}',
-      );
-      yield* fs.writeFileString(
         path.join(fixtures.claudeHomePath, ".claude.json"),
-        '{"oauthAccount":{"organizationUuid":"fake-org"}}',
-      );
-      const client = HttpClient.make((request) =>
-        Effect.gen(function* () {
-          if (request.url.endsWith("/api/oauth/usage")) {
-            return HttpClientResponse.fromWeb(
-              request,
-              Response.json({
-                cedar_ember: {
-                  eligible: true,
-                  next_grant_id: "grant_a",
-                  grants: [{ id: "grant_a", resets_left: 1, usable_now: true }],
-                },
-              }),
-            );
-          }
-          if (request.url.endsWith("/reset_rate_limits")) {
-            yield* fs.writeFileString(marker, "redeemed").pipe(Effect.orDie);
-            return HttpClientResponse.fromWeb(request, Response.json({ result: claim.result }));
-          }
-          return HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }));
+        JSON.stringify({
+          oauthAccount: { organizationUuid: "fake-org" },
+          cachedGrowthBookFeatures: { tengu_cedar_ember: { enabled: true } },
         }),
       );
+      // The fixture's usage reads 0% once the marker exists, as after a reset.
+      const fake = makeFakeClaude({
+        reactions:
+          claim.answer === undefined
+            ? GRANTS_REACTIONS
+            : answeringClaim(GRANTS_REACTIONS, "/limit-reset full", claim.answer),
+        onUse: () => NodeFS.writeFileSync(marker, "redeemed"),
+      });
       const instanceId = ProviderInstanceId.make("claude_reset");
-      const { registry } = yield* makeProviderInstanceRegistry({
-        drivers: [ClaudeDriver],
-        configMap: {
-          [instanceId]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
-            enabled: true,
-            environment: [
-              { name: "T3_CLAUDE_RESET_MARKER", value: marker, sensitive: false },
-              ...(claim.usageFailsAfterClaim
-                ? [{ name: "T3_CLAUDE_USAGE_FAILS_AFTER_CLAIM", value: "1", sensitive: false }]
-                : []),
-            ],
-            config: makeClaudeConfig({
+      const { registry } = yield* withFakeClaude(
+        fake,
+        makeProviderInstanceRegistry({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
               enabled: true,
-              binaryPath: fixtures.claudeBinaryPath,
-              homePath: fixtures.claudeHomePath,
-            }),
+              environment: [
+                { name: "T3_CLAUDE_RESET_MARKER", value: marker, sensitive: false },
+                ...(claim.usageFailsAfterClaim
+                  ? [{ name: "T3_CLAUDE_USAGE_FAILS_AFTER_CLAIM", value: "1", sensitive: false }]
+                  : []),
+              ],
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
+            },
           },
-        },
-      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+        }),
+      );
       const instance = yield* registry.getInstance(instanceId);
       expect(instance).toBeDefined();
+      const grantsShown = yield* instance!.snapshot.streamChanges.pipe(
+        Stream.filter((snapshot) => snapshot.usageLimits?.resetCredits !== undefined),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
       const before = yield* instance!.snapshot.refresh;
       expect(before.usageLimits?.windows[0]?.usedPercent).toBe(100);
-      expect(before.usageLimits?.resetCredits?.nextCreditId).toBe("grant_a");
+      yield* Fiber.join(grantsShown);
       const outcome = yield* instance!.consumeResetCredit!().pipe(Effect.result);
+      // The grant that expires first, used through its confirm dialog.
+      expect(fake.used).toEqual(["/limit-reset full"]);
       return { outcome, after: yield* instance!.snapshot.getSnapshot };
-    }).pipe(
-      // macOS logins live in the Keychain, where resets are never read.
-      Effect.provideService(HostProcess.Platform, "linux"),
-      Effect.provide(layerTest),
-    );
+    }).pipe(Effect.provide(layerTest));
 
   it.live.skipIf(windowsHost)("refreshes Claude usage after redeeming a reset", () =>
     Effect.gen(function* () {
-      const { outcome, after } = yield* redeemClaudeReset({
-        result: "reset",
-        usageFailsAfterClaim: false,
-      });
+      const { outcome, after } = yield* redeemClaudeReset({ usageFailsAfterClaim: false });
       expect(outcome).toMatchObject({ _tag: "Success", success: { outcome: "reset" } });
       expect(after.usageLimits?.windows[0]?.usedPercent).toBe(0);
     }),
@@ -866,7 +865,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     () =>
       Effect.gen(function* () {
         const { outcome } = yield* redeemClaudeReset({
-          result: "already_used",
+          answer: "That reset was already used · nothing changed just now",
           usageFailsAfterClaim: true,
         });
         expect(outcome).toMatchObject({
@@ -877,13 +876,23 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
   );
 
   it.live.skipIf(windowsHost)(
+    "refreshes Claude usage after a claim that pressed Yes but got no answer it knows",
+    () =>
+      Effect.gen(function* () {
+        const { outcome, after } = yield* redeemClaudeReset({
+          answer: "Something went differently this time",
+          usageFailsAfterClaim: false,
+        });
+        expect(outcome).toMatchObject({ _tag: "Failure" });
+        expect(after.usageLimits?.windows[0]?.usedPercent).toBe(0);
+      }),
+  );
+
+  it.live.skipIf(windowsHost)(
     "a Claude reset whose re-probe fails still succeeds, saying it was not confirmed",
     () =>
       Effect.gen(function* () {
-        const { outcome } = yield* redeemClaudeReset({
-          result: "reset",
-          usageFailsAfterClaim: true,
-        });
+        const { outcome } = yield* redeemClaudeReset({ usageFailsAfterClaim: true });
         expect(outcome).toMatchObject({
           _tag: "Success",
           success: {

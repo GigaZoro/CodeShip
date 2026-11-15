@@ -74,22 +74,14 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
       : { shell: executable, args: [...args] };
     const exited = yield* Deferred.make<number>();
     const { CLAUDE_CODE_OAUTH_TOKEN: _token, ...environment } = options.environment;
-    const process = yield* pty.value
-      .spawn({ ...launch, cwd: options.cwd, ...size, env: environment })
-      .pipe(Effect.mapError((cause) => failure("start", "Could not start Claude sign-in.", cause)));
-    const detachData = process.onData(onOutput);
-    const detachExit = process.onExit(({ exitCode }) => {
-      Deferred.doneUnsafe(exited, Effect.succeed(exitCode));
-    });
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        detachData();
-        detachExit();
-        try {
-          process.kill();
-        } catch {}
-      }),
-    );
+    const process = yield* PtyAdapter.spawnScoped(
+      pty.value,
+      { ...launch, cwd: options.cwd, ...size, env: environment },
+      {
+        onData: onOutput,
+        onExit: ({ exitCode }) => Deferred.doneUnsafe(exited, Effect.succeed(exitCode)),
+      },
+    ).pipe(Effect.mapError((cause) => failure("start", "Could not start Claude sign-in.", cause)));
     return { process, exitCode: Deferred.await(exited) };
   });
 

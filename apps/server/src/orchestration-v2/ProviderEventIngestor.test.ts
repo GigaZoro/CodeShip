@@ -268,6 +268,7 @@ it.effect("refreshes the failing instance snapshot after a committed usage_limit
           refresh: Effect.die("unused"),
           resolveMaintenance: () => Effect.die("unused"),
           applyUsageLimits: () => Effect.die("unused"),
+          refreshAfterRedemption: Effect.die("unused"),
           streamChanges: Stream.empty,
         },
       };

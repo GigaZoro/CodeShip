@@ -98,7 +98,7 @@ describe("providerUsageFields", () => {
         ],
         credits: { balance: "453.69", currency: "USD", unlimited: false },
         bankedResets: null,
-        bankedResetsError: "unsupported",
+        bankedResetsError: "not_read",
         usageAllowed: true,
       },
     });
@@ -142,6 +142,86 @@ describe("providerUsageFields", () => {
     });
     expect(fields.usage?.usageAllowed).toBe(false);
     expect(JSON.stringify(fields)).not.toContain("credit-1");
+  });
+
+  it("lists Claude's grants and reset programs, and names a read that showed an unknown screen", () => {
+    const resetPrograms = {
+      granted: true,
+      weeklySession: true,
+      weeklySessionAvailableAt: "2026-09-08T00:00:00.000Z",
+    };
+    const fields = providerUsageFields(
+      provider("claudeAgent", {
+        usageLimits: {
+          ...claudeLimits,
+          resetCredits: {
+            availableCount: 2,
+            nextExpiresAt: "2026-09-20T00:00:00.000Z",
+            credits: [
+              {
+                program: "cedar_ember",
+                kind: "weekly",
+                resetsLeft: 2,
+                expiresAt: "2026-09-20T00:00:00.000Z",
+                usableNow: true,
+                requiresLimit: true,
+              },
+              { program: "cedar_ember", usableNow: false, paused: true },
+            ],
+          },
+          resetPrograms,
+        },
+      }),
+      false,
+    );
+    expect(fields.usage?.bankedResets).toEqual({
+      available: 2,
+      resets: [
+        {
+          status: null,
+          grantedAt: null,
+          expiresAt: "2026-09-20T00:00:00.000Z",
+          program: "cedar_ember",
+          kind: "weekly",
+          resetsLeft: 2,
+          usableNow: true,
+          requiresLimit: true,
+        },
+        {
+          status: null,
+          grantedAt: null,
+          expiresAt: null,
+          program: "cedar_ember",
+          kind: null,
+          usableNow: false,
+          paused: true,
+        },
+      ],
+    });
+    expect(fields.usage?.resetPrograms).toEqual(resetPrograms);
+    const unknown = providerUsageFields(
+      provider("claudeAgent", {
+        usageLimits: {
+          ...claudeLimits,
+          resetCreditsError: "unrecognizedScreen",
+          resetPrograms: { granted: true, weeklySession: false },
+        },
+      }),
+      false,
+    ).usage;
+    expect(unknown).toMatchObject({
+      bankedResets: null,
+      bankedResetsError: "unrecognized_screen",
+      resetPrograms: { granted: true, weeklySession: false, weeklySessionAvailableAt: null },
+    });
+    const noGrants = providerUsageFields(
+      provider("claudeAgent", {
+        usageLimits: { ...claudeLimits, resetPrograms: { granted: false, weeklySession: false } },
+      }),
+      false,
+    ).usage;
+    expect(noGrants).toMatchObject({ bankedResets: { available: 0, resets: [] } });
+    expect(noGrants).not.toHaveProperty("bankedResetsError");
   });
 
   it("withholds usage while the account is held, though its meters show room", () => {

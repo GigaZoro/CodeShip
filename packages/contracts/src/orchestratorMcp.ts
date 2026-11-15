@@ -669,7 +669,8 @@ export const OrchestratorMcpBankedReset = Schema.Struct({
   grantedAt: Schema.NullOr(Schema.String),
   expiresAt: Schema.NullOr(Schema.String),
   program: Schema.String,
-  kind: ServerProviderResetKind,
+  /** Null when the provider names only a total over its resets. */
+  kind: Schema.NullOr(ServerProviderResetKind),
   resetsLeft: Schema.optional(Schema.Number),
   usableNow: Schema.optional(Schema.Boolean),
   requiresLimit: Schema.optional(Schema.Boolean),
@@ -683,6 +684,8 @@ export const OrchestratorMcpUsageError = Schema.Literals([
   "unsupported",
   "not_read",
   "read_failed",
+  /** The provider's terminal showed a screen this server does not know, so nothing was guessed. */
+  "unrecognized_screen",
 ]);
 export type OrchestratorMcpUsageError = typeof OrchestratorMcpUsageError.Type;
 
@@ -706,6 +709,14 @@ export const OrchestratorMcpProviderUsage = Schema.Struct({
     }),
   ),
   bankedResetsError: Schema.optional(OrchestratorMcpUsageError),
+  /** Claude only: which reset programs the account's flags turn on. */
+  resetPrograms: Schema.optional(
+    Schema.Struct({
+      granted: Schema.Boolean,
+      weeklySession: Schema.Boolean,
+      weeklySessionAvailableAt: Schema.NullOr(Schema.String),
+    }),
+  ),
   /** False while the account is usageLimited or its provider says it may not run (Codex). */
   usageAllowed: Schema.Boolean,
 });

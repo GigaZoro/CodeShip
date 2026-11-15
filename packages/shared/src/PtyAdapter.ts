@@ -44,6 +44,42 @@ export interface PtySpawnInput {
 export class PtyAdapter extends Context.Service<
   PtyAdapter,
   {
+    /**
+     * A start that can stall stays interruptible even under an uninterruptible caller, and an
+     * interrupt there stops the process.
+     */
     readonly spawn: (input: PtySpawnInput) => Effect.Effect<PtyProcess, PtySpawnError>;
   }
 >()("@t3tools/shared/PtyAdapter") {}
+
+export interface PtyListeners {
+  readonly onData: (data: string) => void;
+  readonly onExit: (event: PtyExitEvent) => void;
+}
+
+/**
+ * Spawns a process that the current scope stops. The start is uninterruptible, apart from the
+ * adapter's own stoppable waits, and attaches the listeners before any output, so a run
+ * interrupted while it starts still stops its process.
+ */
+export const spawnScoped = (
+  adapter: PtyAdapter["Service"],
+  input: PtySpawnInput,
+  listeners: PtyListeners,
+) =>
+  Effect.acquireRelease(
+    adapter.spawn(input).pipe(
+      Effect.map((process) => {
+        const detachData = process.onData(listeners.onData);
+        const detachExit = process.onExit(listeners.onExit);
+        return { process, detach: () => (detachData(), detachExit()) };
+      }),
+    ),
+    ({ process, detach }) =>
+      Effect.sync(detach).pipe(
+        Effect.andThen(Effect.try(() => process.kill())),
+        Effect.catch((cause) =>
+          Effect.logWarning("A terminal process could not be stopped.", { cause }),
+        ),
+      ),
+  ).pipe(Effect.map(({ process }) => process));

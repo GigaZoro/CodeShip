@@ -3,6 +3,7 @@ import type {
   OrchestratorMcpUsageError,
   OrchestratorMcpUsageMeter,
   ServerProvider,
+  ServerProviderResetCreditsError,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 /** How old a usage reading may be before `orchestrator_capabilities` with `usage` reads it again. */
@@ -40,12 +41,23 @@ function meter(window: ServerProviderUsageWindow): OrchestratorMcpUsageMeter {
   };
 }
 
+const RESET_READ_ERRORS = {
+  signedOut: "signed_out",
+  unrecognizedScreen: "unrecognized_screen",
+  readFailed: "read_failed",
+} as const satisfies Record<ServerProviderResetCreditsError, OrchestratorMcpUsageError>;
+
 function bankedResets(
   provider: ServerProvider,
 ): Pick<OrchestratorMcpProviderUsage, "bankedResets" | "bankedResetsError"> {
-  // Claude's grants are read from its CLI's `/limit-reset` screen, which this server does not drive yet.
-  if (provider.driver !== "codex") return { bankedResets: null, bankedResetsError: "unsupported" };
-  const summary = provider.usageLimits?.resetCredits;
+  const limits = provider.usageLimits;
+  if (limits?.resetCreditsError !== undefined) {
+    return { bankedResets: null, bankedResetsError: RESET_READ_ERRORS[limits.resetCreditsError] };
+  }
+  // A Claude account whose flags turn banked grants off has none, though nothing was read.
+  const summary =
+    limits?.resetCredits ??
+    (limits?.resetPrograms?.granted === false ? { availableCount: 0, credits: [] } : undefined);
   if (summary === undefined) return { bankedResets: null, bankedResetsError: "not_read" };
   return {
     bankedResets: {
@@ -55,7 +67,7 @@ function bankedResets(
         grantedAt: credit.grantedAt ?? null,
         expiresAt: credit.expiresAt ?? null,
         program: credit.program,
-        kind: credit.kind,
+        kind: credit.kind ?? null,
         ...(credit.resetsLeft === undefined ? {} : { resetsLeft: credit.resetsLeft }),
         ...(credit.usableNow === undefined ? {} : { usableNow: credit.usableNow }),
         ...(credit.requiresLimit === undefined ? {} : { requiresLimit: credit.requiresLimit }),
@@ -108,6 +120,15 @@ export function providerUsageFields(
                 : { currency: limits.credits.currency }),
             },
       ...bankedResets(provider),
+      ...(limits.resetPrograms === undefined
+        ? {}
+        : {
+            resetPrograms: {
+              granted: limits.resetPrograms.granted,
+              weeklySession: limits.resetPrograms.weeklySession,
+              weeklySessionAvailableAt: limits.resetPrograms.weeklySessionAvailableAt ?? null,
+            },
+          }),
       usageAllowed: !limited && limits.usageAllowed !== false,
     },
   };
