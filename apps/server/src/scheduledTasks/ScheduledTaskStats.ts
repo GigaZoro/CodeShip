@@ -91,9 +91,9 @@ const toOrchestrationRun = (row: OrchestrationRunRow): OrchestrationRun => ({
 });
 
 /**
- * Each scheduled run's own orchestration run in one thread. An exact message id wins; a webhook or
- * catch-up run, whose message id differs from its record, takes the earliest unclaimed run of its
- * task requested from its start on. Both lists are in time order, so one pass matches them.
+ * Each scheduled run's own orchestration run in one thread. An exact message id wins; a run whose
+ * message id differs from its record, such as a webhook run, takes the earliest unclaimed run of
+ * its task requested from its start on. Both lists are in time order, so one pass matches them.
  */
 const matchOrigins = (
   threadRuns: ReadonlyArray<OrchestrationRun>,

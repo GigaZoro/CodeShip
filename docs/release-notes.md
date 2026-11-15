@@ -1,3 +1,8 @@
+## 2026-11-15 — A scheduled run a restart cut before its prompt no longer leaves an empty chat
+
+- When a restart cut a scheduled run after its chat was made but before the task's prompt reached it, the run was shown as failed but its empty chat stayed in the sidebar. The next startup now deletes that chat and shows the run as interrupted in its history; the task runs again at its next time. A chat you wrote in or moved to another folder is kept.
+- A restart-cut run whose chat had only your own message in it was counted as succeeded. Startup now checks for the task's own prompt, so such a run is shown as interrupted.
+
 ## 2026-11-15 — Workspace preparation errors say why Git detection failed
 
 - When a workspace could not be prepared because CodeShip could not tell whether a folder is a Git repository, the error only said "Failed to resolve the VCS driver". It now adds the cause: a timeout (and how long), or Git's exit code and its last error lines, such as a broken `.git/config`. A folder that is simply not a repository is still treated as one.

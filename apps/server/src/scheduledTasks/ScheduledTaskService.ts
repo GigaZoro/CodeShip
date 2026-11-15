@@ -603,6 +603,9 @@ function iso(value: DateTime.DateTime): string {
   return DateTime.formatIso(DateTime.toUtc(value));
 }
 
+/** A launched run's key is its run record's id, so startup recovery can find the run's own prompt. */
+const promptMessageId = (fireKey: string) => MessageId.make(`scheduled-task-message:${fireKey}`);
+
 const localNow = DateTime.withCurrentZoneLocal(DateTime.nowInCurrentZone);
 
 interface OneMachineWatch {
@@ -2164,11 +2167,9 @@ export const layer = Layer.effect(
         yield* notifyChanged;
 
         const fireKey =
-          webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
-            : `${active.id}:webhook:${webhook.deliveryId}`;
+          webhook === undefined ? runRecordId : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
-        const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
+        const messageId = promptMessageId(fireKey);
         // A webhook prompt was rendered from the row when the request arrived. A prompt file is
         // read for each run, and a failed read fails the run: it never runs an earlier read's text.
         const read: Result.Result<
@@ -3788,7 +3789,8 @@ export const layer = Layer.effect(
 
     // Nothing runs before startup finishes, so a run record still running was cut off. A cut run
     // whose chat got its prompt goes on after the restart: it keeps its chat, so the chat counts
-    // toward the live-run limit and is filed with the task.
+    // toward the live-run limit and is filed with the task. A chat its launch made but never
+    // prompted is deleted before the run settles as cut, unless the user wrote in it or moved it.
     yield* Effect.gen(function* () {
       const cut = yield* sql<{
         readonly run_id: string;
@@ -3806,16 +3808,29 @@ export const layer = Layer.effect(
           if (run.thread_id === null) return Effect.succeed({ run, chat: null });
           const threadId = ThreadId.make(run.thread_id);
           return Effect.gen(function* () {
-            if ((yield* threadManagement.getMessageCount(threadId)) === 0) {
-              return { run, chat: null };
-            }
             const shell = yield* threadManagement.getThreadShell(threadId);
-            return { run, chat: shell === null || shell.deletedAt !== null ? null : threadId };
+            if (shell === null || shell.deletedAt !== null) return { run, chat: null };
+            const prompt = yield* threadManagement.getThreadRecords(threadId, ["messages"], {
+              messageIds: [promptMessageId(run.run_id)],
+            });
+            if (prompt.messages.length > 0) return { run, chat: threadId };
+            if (
+              (yield* threadManagement.getMessageCount(threadId)) === 0 &&
+              sameThreadFolder(shell.folder, run.chat_folder)
+            ) {
+              yield* threadManagement.dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make(`scheduled-task-unprompted-chat:${run.run_id}`),
+                threadId,
+                onlyIfUnused: true,
+              });
+            }
+            return { run, chat: null };
           }).pipe(
-            // Unread is not absent: the run keeps its chat, which still counts toward the live-run
-            // limit, and stays running for a later startup to settle.
+            // A chat it could not read or delete is not gone: the run keeps it, so it still counts
+            // toward the live-run limit, and stays running for a later startup to settle.
             Effect.catchCause((cause) =>
-              Effect.logWarning("Could not read the chat of an interrupted scheduled task run", {
+              Effect.logWarning("Could not settle the chat of an interrupted scheduled task run", {
                 taskId: run.task_id,
                 threadId,
                 cause,

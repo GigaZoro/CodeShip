@@ -6,6 +6,7 @@ import { assert, it, vi } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   type MemoryShortage,
+  MessageId,
   type ModelSelection,
   type OrchestrationV2RunStatus,
   ProjectId,
@@ -179,7 +180,7 @@ it.effect("loads only due tasks and skips corrupt due rows without decoding sett
 );
 
 it.effect(
-  "releases interrupted runs, keeps the chat of one whose prompt landed, leaves one whose chat it cannot read running, and renames old live-run skips on startup, and still executes due tasks, naming each chat before launching it, skipping corrupt rows",
+  "releases interrupted runs, keeps the chat of one whose prompt landed, deletes the empty chat of one whose prompt never landed unless the user wrote in it or moved it, leaves one whose chat it cannot read running, and renames old live-run skips on startup, and still executes due tasks, naming each chat before launching it, skipping corrupt rows",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -197,6 +198,8 @@ it.effect(
         { id: null, next: now, status: "running" },
         { id: "stuck-prompted", next: now, status: "running" },
         { id: "stuck-unprompted", next: now, status: "running" },
+        { id: "stuck-user-only", next: now, status: "running" },
+        { id: "stuck-moved", next: now, status: "running" },
         { id: "stuck-unread", next: now, status: "running" },
         { id: "due-bad-date", next: "", status: "never" },
         { id: "due-healthy", next: now, status: "never" },
@@ -206,20 +209,45 @@ it.effect(
       ]) {
         yield* insertRow(sql, { ...row, enabled: 1 }, now);
       }
-      // A restart cut these runs after their chats were named: one chat got its prompt, and one
-      // cannot be read.
+      // A restart cut these runs after their chats were named: one chat got its prompt, one is
+      // empty, the user wrote in one that never got it, moved another, and one cannot be read.
       yield* sql`
         UPDATE scheduled_tasks SET last_run_at = ${cutAt}
-        WHERE task_id IN ('stuck-valid', 'stuck-prompted', 'stuck-unprompted', 'stuck-unread')
+        WHERE task_id IN ('stuck-valid', 'stuck-prompted', 'stuck-unprompted', 'stuck-user-only',
+          'stuck-moved', 'stuck-unread')
       `;
+      // The service adds this column at startup; these runs were recorded by one that had it.
+      yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN chat_folder TEXT`;
       yield* sql`
-        INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome, thread_id)
+        INSERT INTO scheduled_task_runs
+          (run_id, task_id, trigger, started_at, outcome, thread_id, chat_folder)
         VALUES
-          ('run:cut-unnamed', 'stuck-valid', 'scheduled', ${cutAt}, 'running', NULL),
-          ('run:cut-prompted', 'stuck-prompted', 'scheduled', ${cutAt}, 'running', 'thread:prompted'),
-          ('run:cut-unprompted', 'stuck-unprompted', 'scheduled', ${cutAt}, 'running', 'thread:unprompted'),
-          ('run:cut-unread', 'stuck-unread', 'scheduled', ${cutAt}, 'running', 'thread:unread')
+          ('run:cut-unnamed', 'stuck-valid', 'scheduled', ${cutAt}, 'running', NULL, NULL),
+          ('run:cut-prompted', 'stuck-prompted', 'scheduled', ${cutAt}, 'running', 'thread:prompted', NULL),
+          ('run:cut-unprompted', 'stuck-unprompted', 'scheduled', ${cutAt}, 'running', 'thread:unprompted', 'Reports'),
+          ('run:cut-user-only', 'stuck-user-only', 'scheduled', ${cutAt}, 'running', 'thread:user-only', NULL),
+          ('run:cut-moved', 'stuck-moved', 'scheduled', ${cutAt}, 'running', 'thread:moved', 'Reports'),
+          ('run:cut-unread', 'stuck-unread', 'scheduled', ${cutAt}, 'running', 'thread:unread', NULL)
       `;
+      const chats = new Map<string, { folder: string | null; messageIds: ReadonlyArray<string> }>([
+        [
+          "thread:prompted",
+          { folder: null, messageIds: ["scheduled-task-message:run:cut-prompted"] },
+        ],
+        ["thread:unprompted", { folder: "reports", messageIds: [] }],
+        ["thread:user-only", { folder: null, messageIds: ["message:typed-by-user"] }],
+        ["thread:moved", { folder: "Mine", messageIds: [] }],
+      ]);
+      const readChat = (
+        threadId: ThreadId,
+        read: (chat: { folder: string | null; messageIds: ReadonlyArray<string> }) => unknown,
+      ) => {
+        const chat = chats.get(threadId);
+        return chat === undefined
+          ? Effect.die(new Error("test read failure"))
+          : Effect.succeed(read(chat) as never);
+      };
+      const dispatchedCommands = yield* Ref.make<ReadonlyArray<unknown>>([]);
 
       yield* TestClock.setTime(Date.parse(now) + 1_000);
       const dispatched = yield* Ref.make(0);
@@ -237,8 +265,8 @@ it.effect(
                 MemoryAdmission.layerTest(),
                 Layer.mock(ThreadLaunchService.ThreadLaunchService)({
                   launch: (input) =>
-                    sql<{ readonly thread_id: string | null }>`
-                      SELECT thread_id FROM scheduled_task_runs
+                    sql<{ readonly run_id: string; readonly thread_id: string | null }>`
+                      SELECT run_id, thread_id FROM scheduled_task_runs
                       WHERE task_id = ${input.initialMessage?.scheduledTaskId ?? null}
                         AND outcome = 'running'
                     `.pipe(
@@ -248,7 +276,9 @@ it.effect(
                           ...named,
                           input.threadId !== undefined &&
                             records.length === 1 &&
-                            records[0]?.thread_id === input.threadId,
+                            records[0]?.thread_id === input.threadId &&
+                            input.initialMessage?.messageId ===
+                              `scheduled-task-message:${records[0]?.run_id}`,
                         ]),
                       ),
                       Effect.andThen(Ref.updateAndGet(dispatched, (n) => n + 1)),
@@ -267,12 +297,24 @@ it.effect(
                   isScratchProject: () => Effect.succeed(false),
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({
-                  getMessageCount: (threadId) =>
-                    threadId === "thread:unread"
-                      ? Effect.die(new Error("test read failure"))
-                      : Effect.succeed(threadId === "thread:prompted" ? 1 : 0),
                   getThreadShell: (threadId) =>
-                    Effect.succeed({ id: threadId, deletedAt: null } as never),
+                    readChat(threadId, (chat) => ({
+                      id: threadId,
+                      folder: chat.folder,
+                      deletedAt: null,
+                    })),
+                  getThreadRecords: (threadId, _fields, filter) =>
+                    readChat(threadId, (chat) => ({
+                      messages: chat.messageIds
+                        .filter((id) => filter?.messageIds?.includes(MessageId.make(id)) ?? true)
+                        .map((id) => ({ id })),
+                    })),
+                  getMessageCount: (threadId) =>
+                    readChat(threadId, (chat) => chat.messageIds.length),
+                  dispatch: (command) =>
+                    Ref.update(dispatchedCommands, (commands) => [...commands, command]).pipe(
+                      Effect.as({ sequence: 1, storedEvents: [] } as never),
+                    ),
                 }),
                 layerSharedTaskDependencies(),
                 Layer.mock(SecretRequests.SecretRequests)({}),
@@ -301,7 +343,7 @@ it.effect(
       }>`SELECT task_id, last_run_status, last_run_error, next_run_at, run_count
        FROM scheduled_tasks ORDER BY task_id`;
       const byId = new Map(rows.map((row) => [row.task_id, row]));
-      assert.equal(rows.length, 12);
+      assert.equal(rows.length, 14);
       assert.equal(byId.get("stuck-valid")?.last_run_status, "failed");
       assert.isNotNull(byId.get("stuck-valid")?.next_run_at);
       assert.equal(byId.get("stuck-corrupt")?.last_run_status, "failed");
@@ -316,6 +358,8 @@ it.effect(
         "stuck-huge",
         null,
         "stuck-unprompted",
+        "stuck-user-only",
+        "stuck-moved",
         "stuck-unread",
       ]) {
         const row = byId.get(id);
@@ -334,6 +378,13 @@ it.effect(
           FROM scheduled_task_runs WHERE run_id LIKE 'run:cut-%' ORDER BY run_id
         `,
         [
+          {
+            run_id: "run:cut-moved",
+            outcome: "failed",
+            thread_id: null,
+            error: "Run was interrupted by a server restart.",
+            completed: 1,
+          },
           {
             run_id: "run:cut-prompted",
             outcome: "succeeded",
@@ -362,12 +413,27 @@ it.effect(
             error: null,
             completed: 0,
           },
+          {
+            run_id: "run:cut-user-only",
+            outcome: "failed",
+            thread_id: null,
+            error: "Run was interrupted by a server restart.",
+            completed: 1,
+          },
         ],
       );
       assert.deepEqual(
         yield* sql`SELECT task_id, last_run_thread_id FROM scheduled_task_sidebar ORDER BY task_id`,
         [{ task_id: "stuck-prompted", last_run_thread_id: "thread:prompted" }],
       );
+      assert.deepEqual(yield* Ref.get(dispatchedCommands), [
+        {
+          type: "thread.delete",
+          commandId: "scheduled-task-unprompted-chat:run:cut-unprompted",
+          threadId: "thread:unprompted",
+          onlyIfUnused: true,
+        },
+      ]);
       assert.deepEqual(yield* Ref.get(namedBeforeLaunch), [true, true, true, true]);
       for (const id of ["due-healthy", "due-huge", "due-second"]) {
         const row = byId.get(id);
@@ -2447,7 +2513,10 @@ it.effect(
               MemoryAdmission.layerTest(),
               Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
               Layer.mock(ThreadManagementService.ThreadManagementService)({
-                getMessageCount: () => Effect.succeed(1),
+                getThreadRecords: (_threadId, _fields, filter) =>
+                  Effect.succeed({
+                    messages: (filter?.messageIds ?? []).map((id) => ({ id })),
+                  } as never),
                 // The user moved the chat out of the task's group before the restart.
                 getThreadShell: () => Effect.succeed({ deletedAt: null, folder: "Mine" } as never),
                 dispatch: (command) =>
@@ -2581,7 +2650,10 @@ it.effect(
                   Deferred.succeed(launched, input.threadId).pipe(Effect.andThen(Effect.never)),
               }),
               Layer.mock(ThreadManagementService.ThreadManagementService)({
-                getMessageCount: () => Effect.succeed(1),
+                getThreadRecords: (_threadId, _fields, filter) =>
+                  Effect.succeed({
+                    messages: (filter?.messageIds ?? []).map((id) => ({ id })),
+                  } as never),
                 getThreadShell: () =>
                   Effect.succeed({ deletedAt: null, folder: "Autopilot" } as never),
               }),
