@@ -8075,11 +8075,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : undefined;
     // A steer re-dispatched after it could not join its turn was sent before any Stop since, and
     // was meant to go before the queue. If a Stop reached its run, it waits held, even once that
-    // run has ended.
+    // run has ended. A declined steer keeps its place in the queue instead.
     const redispatchedMessage = projection.messages.find(
       (message) => message.id === command.messageId,
     );
-    const redispatchedSteer = redispatchedMessage !== undefined;
+    const redispatchedSteer =
+      redispatchedMessage !== undefined && command.steerFollowUpOfRunId === undefined;
     const steerRunId = redispatchedMessage?.runId ?? null;
     const stoppedSteerRun =
       steerRunId !== null && (yield* stopReachedRun(command, command.threadId, steerRunId))
