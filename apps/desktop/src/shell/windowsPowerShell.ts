@@ -17,12 +17,13 @@ export const runWindowsPowerShell = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
   script: string,
   env?: Record<string, string>,
+  hostEnvironment: Parameters<typeof windowsPowerShellPath>[0] = process.env,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
         ChildProcess.make(
-          windowsPowerShellPath(process.env),
+          windowsPowerShellPath(hostEnvironment),
           ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
           {
             stdin: "ignore",

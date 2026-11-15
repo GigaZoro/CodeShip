@@ -2,7 +2,6 @@ import {
   CommandId,
   type EnvironmentId,
   type ModelSelection,
-  type ProviderInteractionMode,
   type ScopedThreadRef,
   type ThreadId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -17,14 +16,14 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { readLocalApi } from "../../localApi";
-import { getUploadedAttachments } from "../../lib/attachmentUploadQueue";
+import { awaitAttachmentUploads, getUploadedAttachments } from "../../lib/attachmentUploadQueue";
 import {
   findRevertCheckpoint,
   waitForRevertedMessage,
 } from "@t3tools/client-runtime/state/thread-rewind";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentThreadDetails } from "../../state/threads";
-import { type ChatMessage } from "../../types";
+import { type ChatMessage, DEFAULT_INTERACTION_MODE } from "../../types";
 import { randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { newThreadId } from "~/lib/utils";
@@ -276,7 +275,8 @@ export function restoreComposerDraft(
 ): ComposerImageAttachment[] {
   const store = useComposerDraftStore.getState();
   const images = snapshot.images.map(cloneComposerImageForRetry);
-  store.setPrompt(draftTarget, snapshot.messageText);
+  store.setPrompt(draftTarget, snapshot.draftText);
+  store.setReplyTo(draftTarget, snapshot.replyTo);
   store.addImages(draftTarget, images);
   store.addFiles(draftTarget, snapshot.files);
   store.setTerminalContexts(draftTarget, snapshot.terminalContexts);
@@ -290,7 +290,6 @@ export function restoreComposerDraft(
 export interface MultipleModelTarget {
   readonly selection: ModelSelection;
   readonly text: string;
-  readonly interactionMode: ProviderInteractionMode;
 }
 
 /**
@@ -301,7 +300,6 @@ export function resolveMultipleModelTargets(input: {
   readonly selections: ReadonlyArray<ModelSelection>;
   readonly providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   readonly messageText: string;
-  readonly interactionMode: ProviderInteractionMode;
 }): Array<MultipleModelTarget | { readonly error: string }> {
   const { messageText } = input;
   return input.selections.map((selection) => {
@@ -333,14 +331,14 @@ export function resolveMultipleModelTargets(input: {
         effort: providerState.promptEffort,
         text: messageText || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
       }),
-      interactionMode: input.interactionMode,
+      interactionMode: DEFAULT_INTERACTION_MODE,
     };
   });
 }
 
 /**
  * The attachments a turn sends: the server's upload records when it takes uploads, otherwise
- * images inlined as data URLs. Rejects when an attachment cannot go out.
+ * images inlined as data URLs. Waits for in-flight uploads; rejects when one cannot go out.
  */
 export function prepareTurnAttachments(input: {
   readonly environmentId: EnvironmentId;
@@ -351,6 +349,7 @@ export function prepareTurnAttachments(input: {
   return Promise.all(
     input.attachments.map(async (attachment) => {
       if (usesAttachmentUploads) {
+        await awaitAttachmentUploads([attachment.id]);
         const uploaded = getUploadedAttachments({ environmentId, images: [attachment] })?.[0];
         if (!uploaded) {
           throw new Error(

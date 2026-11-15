@@ -30,51 +30,61 @@ function areShortcutModifierStatesEqual(
 function createShortcutModifierStore(ignoreEditable: boolean) {
   let state = EMPTY_SHORTCUT_MODIFIER_STATE;
   const listeners = new Set<() => void>();
-  const update = (next: ShortcutModifierState) => {
+  let stopTracking: (() => void) | null = null;
+
+  const updateState = (next: ShortcutModifierState) => {
     if (areShortcutModifierStatesEqual(state, next)) return;
     state = next;
     for (const listener of listeners) listener();
   };
   const onKeyboardEvent = (event: KeyboardEvent) => {
-    update(
+    updateState(
       ignoreEditable && isEditableFocused(event.target)
         ? EMPTY_SHORTCUT_MODIFIER_STATE
         : shortcutModifierStateAfterKeyboardEvent(state, event),
     );
   };
   // Dictation tools can omit Meta keyup after synthetic paste, leaving jump hints stuck.
-  const onResetEvent = () => update(EMPTY_SHORTCUT_MODIFIER_STATE);
+  const onResetEvent = () => {
+    updateState(EMPTY_SHORTCUT_MODIFIER_STATE);
+  };
   const onFocus = (event: FocusEvent) => {
     if (ignoreEditable && isEditableFocused(event.target)) onResetEvent();
   };
+  const startTracking = () => {
+    window.addEventListener("focusin", onFocus);
+    window.addEventListener("keydown", onKeyboardEvent, true);
+    window.addEventListener("keyup", onKeyboardEvent, true);
+    window.addEventListener("paste", onResetEvent, true);
+    window.addEventListener("blur", onResetEvent);
+    return () => {
+      window.removeEventListener("focusin", onFocus);
+      window.removeEventListener("keydown", onKeyboardEvent, true);
+      window.removeEventListener("keyup", onKeyboardEvent, true);
+      window.removeEventListener("paste", onResetEvent, true);
+      window.removeEventListener("blur", onResetEvent);
+      state = EMPTY_SHORTCUT_MODIFIER_STATE;
+    };
+  };
+
   return {
-    getSnapshot: () => state,
-    subscribe(listener: () => void): () => void {
+    subscribe: (listener: () => void) => {
       listeners.add(listener);
-      if (listeners.size === 1) {
-        window.addEventListener("focusin", onFocus);
-        window.addEventListener("keydown", onKeyboardEvent, true);
-        window.addEventListener("keyup", onKeyboardEvent, true);
-        window.addEventListener("paste", onResetEvent, true);
-        window.addEventListener("blur", onResetEvent);
-      }
+      stopTracking ??= startTracking();
       return () => {
         listeners.delete(listener);
         if (listeners.size > 0) return;
-        window.removeEventListener("focusin", onFocus);
-        window.removeEventListener("keydown", onKeyboardEvent, true);
-        window.removeEventListener("keyup", onKeyboardEvent, true);
-        window.removeEventListener("paste", onResetEvent, true);
-        window.removeEventListener("blur", onResetEvent);
-        // Keys pressed while nobody listens go unseen, so the next subscriber starts clean.
-        state = EMPTY_SHORTCUT_MODIFIER_STATE;
+        stopTracking?.();
+        stopTracking = null;
       };
     },
+    getSnapshot: () => state,
   };
 }
 
-const shortcutModifierStore = createShortcutModifierStore(false);
-const outsideEditableShortcutModifierStore = createShortcutModifierStore(true);
+/** Shared by every subscriber; read it from a snapshot to re-render only when a derived value changes. */
+export const shortcutModifierStore = createShortcutModifierStore(false);
+const editableIgnoringShortcutModifierStore = createShortcutModifierStore(true);
 
 /**
  * Re-renders only when `select` returns a different value, so a large component that needs one
@@ -85,7 +95,7 @@ export function useShortcutModifierSelection<T>(
   select: (state: ShortcutModifierState) => T,
   ignoreEditable = false,
 ): T {
-  const store = ignoreEditable ? outsideEditableShortcutModifierStore : shortcutModifierStore;
+  const store = ignoreEditable ? editableIgnoringShortcutModifierStore : shortcutModifierStore;
   return useSyncExternalStore(store.subscribe, () => select(store.getSnapshot()));
 }
 

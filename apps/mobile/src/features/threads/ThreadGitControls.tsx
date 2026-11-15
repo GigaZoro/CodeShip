@@ -84,20 +84,13 @@ function gitStatusMenuRow(
   };
 }
 
-type HeaderItem = Record<string, unknown>;
-type HeaderItems = HeaderItem[];
-type ThreadGitHeaderActionItems = {
-  readonly terminal: HeaderItem;
-  readonly files: HeaderItem;
-  readonly git: HeaderItem;
-};
 type QuickActionIcon =
   | "arrow.down.circle"
   | "arrow.up.right.circle"
   | "checkmark.circle"
   | "arrow.up.circle";
 
-type ThreadGitMenuProps = {
+export type ThreadGitMenuProps = {
   readonly environmentId: EnvironmentId | string;
   readonly threadId: ThreadId | string;
   readonly currentBranch: string | null;
@@ -244,17 +237,6 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
     }
   };
 
-  const openFiles = () => {
-    if (props.onOpenFilesInspector) {
-      props.onOpenFilesInspector();
-      return;
-    }
-    navigation.navigate("ThreadFiles", {
-      environmentId: String(environmentId),
-      threadId: String(threadId),
-    });
-  };
-
   const openReview = () => {
     navigation.navigate("ThreadReview", {
       environmentId: EnvironmentId.make(String(environmentId)),
@@ -276,7 +258,6 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   return {
     statusRow,
     isRepo,
-    openFiles,
     openGitInspector,
     openReview,
     quickAction,
@@ -286,168 +267,66 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   };
 }
 
-function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGitHeaderActionItems {
-  const model = useThreadGitControlModel(props);
+export function useThreadTerminalMenu(props: ThreadGitControlsProps): AppBarMenu | null {
   const canEditProjectScripts = useEnvironmentScope(
     props.environmentId ? EnvironmentId.make(String(props.environmentId)) : null,
     AuthSettingsWriteScope,
   );
-
+  if (!props.canOpenTerminal) return null;
   return {
-    terminal: {
-      accessibilityLabel: t("Open terminal"),
-      disabled: !props.canOpenTerminal,
-      icon: { name: "terminal", type: "sfSymbol" },
-      identifier: "thread-right-terminal",
-      label: t("Terminal"),
-      menu: {
-        items: [
-          ...props.projectScripts.map((script) => ({
-            description: script.command,
+    title: t("Terminal"),
+    icon: "terminal",
+    separateBackground: false,
+    items: [
+      ...(props.projectScripts.length > 0
+        ? props.projectScripts.map((script) => ({
+            id: `script-${script.id}`,
+            title: projectScriptMenuLabel(script, { setup: t("setup"), settle: t("on settle") }),
+            icon: projectScriptMenuIcon(script.icon),
+            subtitle: script.command,
             disabled: !props.canOperateTerminal,
-            icon: { name: projectScriptMenuIcon(script.icon), type: "sfSymbol" as const },
-            label: projectScriptMenuLabel(script, { setup: t("setup"), settle: t("on settle") }),
             onPress: () => void props.onRunProjectScript(script),
-            type: "action" as const,
-          })),
-          ...(props.projectScripts.length === 0
-            ? [
-                {
-                  description: canEditProjectScripts
-                    ? t("This project has no actions yet")
-                    : t("This connection cannot change project actions."),
-                  disabled: !canEditProjectScripts,
-                  icon: { name: "plus", type: "sfSymbol" as const },
-                  label: t("Add action"),
-                  onPress: props.onAddProjectScript,
-                  type: "action" as const,
-                },
-              ]
-            : []),
-          ...props.terminalSessions.map((session) => ({
-            description: [
-              getTerminalStatusLabel({
-                status: session.status,
-                hasRunningSubprocess: session.hasRunningSubprocess,
-              }),
-              basename(session.cwd),
-            ]
-              .filter(Boolean)
-              .join(" · "),
-            icon: { name: "terminal", type: "sfSymbol" as const },
-            label: session.displayLabel,
-            onPress: () => props.onOpenTerminal(session.terminalId),
-            type: "action" as const,
-          })),
-          {
-            description: t("Start another shell for this thread"),
-            disabled: !props.canOperateTerminal,
-            icon: { name: "plus", type: "sfSymbol" },
-            label: t("Open new terminal"),
-            onPress: props.onOpenNewTerminal,
-            type: "action",
-          },
-        ],
-        title: t("Terminal"),
-      },
-      sharesBackground: true,
-      type: "menu",
-      variant: "plain",
-    },
-    files: {
-      accessibilityLabel: t("Open files"),
-      disabled: !props.canOpenFiles,
-      icon: { name: "folder", type: "sfSymbol" },
-      identifier: "thread-right-files",
-      label: t("Files"),
-      onPress: model.openFiles,
-      sharesBackground: true,
-      type: "button",
-      variant: "plain",
-    },
-    git: {
-      accessibilityLabel: t("Git actions"),
-      icon: { name: "point.topleft.down.curvedto.point.bottomright.up", type: "sfSymbol" },
-      identifier: "thread-right-git",
-      label: "Git",
-      menu: {
-        items: [
-          {
-            description: model.statusRow.subtitle,
-            disabled: true,
-            icon: {
-              name: "point.topleft.down.curvedto.point.bottomright.up",
-              type: "sfSymbol",
+          }))
+        : [
+            {
+              id: "script-add",
+              title: t("Add action"),
+              icon: "plus",
+              subtitle: canEditProjectScripts
+                ? t("This project has no actions yet")
+                : t("This connection cannot change project actions."),
+              disabled: !canEditProjectScripts,
+              onPress: props.onAddProjectScript,
             },
-            label: model.statusRow.title,
-            onPress: (): void => {},
-            type: "action",
-          },
-          {
-            description: model.quickActionHint ?? undefined,
-            disabled: model.quickAction.disabled,
-            icon: { name: model.quickActionIcon, type: "sfSymbol" },
-            label: model.quickAction.label,
-            onPress: (): void => void model.runQuickAction(),
-            type: "action",
-          },
-          {
-            description:
-              props.hasThread === false
-                ? t("Available after the first message")
-                : t("Turn diffs and worktree changes"),
-            disabled: !model.isRepo || props.hasThread === false,
-            icon: { name: "text.bubble", type: "sfSymbol" },
-            label: t("Review changes"),
-            onPress: model.openReview,
-            type: "action",
-          },
-          ...(props.onMergeBack
-            ? [
-                {
-                  description: props.mergingBack
-                    ? t("Merging back…")
-                    : t("Bring this thread's latest turn into its source"),
-                  disabled: props.mergingBack === true,
-                  icon: { name: PullRequestGlyph.merged, type: "sfSymbol" as const },
-                  label: t("Merge back to source"),
-                  onPress: props.onMergeBack,
-                  type: "action" as const,
-                },
-              ]
-            : []),
-          {
-            description:
-              props.hasThread === false
-                ? t("Available after the first message")
-                : t("Commit, files, branches"),
-            disabled: props.hasThread === false,
-            icon: { name: "ellipsis", type: "sfSymbol" },
-            label: t("More"),
-            onPress: model.openGitInspector,
-            type: "action",
-          },
-        ],
-        title: "Git",
+          ]),
+      ...props.terminalSessions.map((session) => ({
+        id: `terminal-${session.terminalId}`,
+        title: session.displayLabel,
+        icon: "terminal",
+        subtitle: [
+          getTerminalStatusLabel({
+            status: session.status,
+            hasRunningSubprocess: session.hasRunningSubprocess,
+          }),
+          basename(session.cwd),
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        onPress: () => props.onOpenTerminal(session.terminalId),
+      })),
+      {
+        id: "terminal-new",
+        title: t("Open new terminal"),
+        icon: "plus",
+        subtitle: t("Start another shell for this thread"),
+        disabled: !props.canOperateTerminal,
+        onPress: props.onOpenNewTerminal,
       },
-      sharesBackground: true,
-      type: "menu",
-      variant: "plain",
-    },
+    ],
   };
 }
 
-export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): HeaderItems {
-  const actionItems = useThreadGitHeaderActionItems(props);
-  return [actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems;
-}
-
-export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): HeaderItems {
-  const actionItems = useThreadGitHeaderActionItems(props);
-  return [actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems;
-}
-
-/** Returns menu data because native toolbars serialize direct items rather than rendering component children. */
+/** The thread's git menu, shared by the thread bar and Review. */
 export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): AppBarMenu | null {
   const model = useThreadGitControlModel(props);
   return {
@@ -484,6 +363,20 @@ export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): AppBarMen
             : t("Turn diffs and worktree changes"),
         onPress: model.openReview,
       },
+      ...(props.onMergeBack
+        ? [
+            {
+              id: "git-merge-back",
+              title: t("Merge back to source"),
+              icon: PullRequestGlyph.merged,
+              disabled: props.mergingBack === true,
+              subtitle: props.mergingBack
+                ? t("Merging back…")
+                : t("Bring this thread's latest turn into its source"),
+              onPress: props.onMergeBack,
+            },
+          ]
+        : []),
       {
         id: "git-more",
         title: t("More"),

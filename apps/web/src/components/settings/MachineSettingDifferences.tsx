@@ -96,12 +96,9 @@ function MachineSettingDifferences() {
                     // The chosen machine's value becomes the shared version, attributed to that machine.
                     onClick={() =>
                       runPlan(
-                        planScopedSettingsPatch(
-                          scope,
-                          environments,
-                          value.patch,
-                          value.environmentId,
-                        ),
+                        planScopedSettingsPatch(scope, environments, value.patch, {
+                          origin: value.environmentId,
+                        }),
                       )
                     }
                   >

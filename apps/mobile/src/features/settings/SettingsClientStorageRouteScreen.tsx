@@ -22,6 +22,7 @@ import { useSavedRemoteConnections } from "../../state/use-remote-environment-re
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsScreen } from "./components/SettingsScreen";
+import { formatBytes } from "../../lib/formatBytes";
 
 export function SettingsClientStorageRouteScreen() {
   const insets = useSafeAreaInsets();
@@ -190,14 +191,4 @@ function CacheEnvironmentRow(props: {
       />
     </View>
   );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return t("{size} B", { size: bytes });
-  if (bytes < 1024 * 1024) {
-    return t("{size} KB", { size: (bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0) });
-  }
-  return t("{size} MB", {
-    size: (bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0),
-  });
 }

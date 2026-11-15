@@ -20,7 +20,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { readLocalApi } from "../../localApi";
@@ -77,19 +77,35 @@ function ArchivedThreadRow(props: {
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
   const canOperate = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
-  const unarchive = async () => {
-    const result = await unarchiveThread(threadRef);
-    if (result._tag === "Success") props.onChanged();
-    showFailure(result, t("Failed to unarchive thread"));
+  // A context menu can outlive its render, so the guard lives in a ref, not in state alone.
+  const pendingRef = useRef(false);
+  const [pending, setPending] = useState(false);
+  const runExclusive = async (
+    title: string,
+    action: () => Promise<AtomCommandResult<unknown, unknown>>,
+  ) => {
+    if (pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    const result = await settlePromise(async () => {
+      const result = await action();
+      if (result._tag === "Success") props.onChanged();
+      return result;
+    }).finally(() => {
+      pendingRef.current = false;
+      setPending(false);
+    });
+    showFailure(result._tag === "Failure" ? result : result.value, title);
   };
-  const remove = async () => {
-    const result = await confirmAndDeleteThread(threadRef, { title: thread.title });
-    if (result._tag === "Success") props.onChanged();
-    showFailure(result, t("Failed to delete thread"));
-  };
+  const unarchive = () =>
+    runExclusive(t("Failed to unarchive thread"), () => unarchiveThread(threadRef));
+  const remove = () =>
+    runExclusive(t("Failed to delete thread"), () =>
+      confirmAndDeleteThread(threadRef, { title: thread.title }),
+    );
   const openContextMenu = async (position: { x: number; y: number }) => {
     const api = readLocalApi();
-    if (!api) return;
+    if (!api || pendingRef.current) return;
     const clicked = await api.contextMenu.show(
       [
         { id: "open", label: t("Open") },
@@ -160,7 +176,7 @@ function ArchivedThreadRow(props: {
             type="button"
             variant="outline"
             size="sm"
-            disabled={!canOperate}
+            disabled={!canOperate || pending}
             onClick={() => void unarchive()}
           >
             <ArchiveRestoreIcon aria-hidden />
@@ -173,7 +189,7 @@ function ArchivedThreadRow(props: {
                   type="button"
                   variant="ghost-destructive"
                   size="icon-sm"
-                  disabled={!canOperate}
+                  disabled={!canOperate || pending}
                   aria-label={t('Delete "{title}"', { title: thread.title })}
                   onClick={() => void remove()}
                 />

@@ -129,7 +129,9 @@ describe("project action editor save lifecycle", () => {
     await using screen = await render(null);
     onSubmit
       .mockResolvedValueOnce(
-        AsyncResult.failure(Cause.fail(new ProjectScriptShortcutError("build", "Offline."))),
+        AsyncResult.failure(
+          Cause.fail(new ProjectScriptShortcutError({ scriptId: "build", reason: "Offline." })),
+        ),
       )
       .mockResolvedValueOnce(AsyncResult.success(undefined));
     await open(screen, addRequest("build"));

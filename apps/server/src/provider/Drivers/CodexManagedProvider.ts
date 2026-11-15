@@ -383,10 +383,10 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     openClient: limits.openClient,
     snapshot,
   });
-  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = () =>
+  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (creditId) =>
     limits.signedIn.pipe(
       Effect.flatMap((present) =>
-        present ? consumeThroughLimitsLogin() : consumeThroughOwnHome(),
+        present ? consumeThroughLimitsLogin(creditId) : consumeThroughOwnHome(creditId),
       ),
     );
   const removeLimitsLogin = limits.controller
@@ -419,6 +419,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   }).pipe(Effect.provideService(HttpClient.HttpClient, http));
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
+  const models = snapshot.getSnapshot.pipe(Effect.map((value) => value.models));
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
     // The check renews a rejected token once and signs the account out when ChatGPT refuses.
@@ -430,6 +431,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         Effect.logError("Could not read the ChatGPT sign-in.", { cause }).pipe(Effect.as(false)),
       ),
     ),
+    models,
     resolveRuntime: runtime.resolve,
     // Reading now also shows the stop on the Limits bar.
     chatGptSharingLimitReading: snapshot.refresh.pipe(
@@ -456,7 +458,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const nativeGeneration = yield* makeCodexTextGeneration(
     config,
     undefined,
-    snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+    models,
     resolveRuntime,
   );
   const protect = <A>(operation: string, effect: Effect.Effect<A, TextGenerationError>) =>
@@ -483,6 +485,11 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       protect("generateReviewGuide", nativeGeneration.generateReviewGuide(value)),
     generateManualStepReview: (value) =>
       protect("generateManualStepReview", nativeGeneration.generateManualStepReview(value)),
+    generateTranscriptionPostProcessing: (value) =>
+      protect(
+        "generateTranscriptionPostProcessing",
+        nativeGeneration.generateTranscriptionPostProcessing(value),
+      ),
   };
   return {
     instanceId,

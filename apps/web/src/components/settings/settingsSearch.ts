@@ -21,6 +21,7 @@ export type SettingsPath =
   | "/settings/projects"
   | "/settings/general"
   | "/settings/diagnostics"
+  | "/settings/voice"
   | "/settings/appearance"
   | "/settings/chat"
   | "/settings/keybindings"
@@ -61,12 +62,14 @@ export interface SettingsSearchItem {
   readonly cloudOnly?: boolean;
   readonly environmentOnly?: boolean;
   readonly providerSettingsOnly?: boolean;
-  readonly macProviderSettingsOnly?: boolean;
   readonly localBackendManagementOnly?: boolean;
   readonly localEnvironmentOnly?: boolean;
+  readonly primaryEnvironmentOnly?: boolean;
   readonly wslAvailableOnly?: boolean;
   readonly managedTunnelOnly?: boolean;
   readonly peerLinksOnly?: boolean;
+  readonly fastWorktreeCheckoutOnly?: boolean;
+  readonly textGeneratorsOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
 }
@@ -82,18 +85,22 @@ export interface SettingsSearchAvailability {
   readonly hasCloudPublicConfig: boolean;
   readonly hasEnvironment: boolean;
   readonly hasProviderSettingsEnvironment: boolean;
-  readonly hasMacProviderSettingsEnvironment: boolean;
   readonly canManageLocalBackend: boolean;
   readonly isWslSettingsRowVisible: boolean;
   readonly hasThreadAutoSettlement: boolean;
   readonly managedTunnelActive?: boolean;
   readonly hasPeerLinkHost?: boolean;
+  readonly hasFastWorktreeCheckoutEnvironment?: boolean;
+  /** An environment without a provider allow-list, which hides text generators. */
+  readonly hasTextGeneratorsEnvironment?: boolean;
+  readonly hasPrimaryEnvironment?: boolean;
 }
 
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, Message>> = {
   "/settings/diagnostics": msg("Diagnostics"),
   "/settings/projects": msg("Projects"),
   "/settings/general": msg("General"),
+  "/settings/voice": msg("Voice"),
   "/settings/appearance": msg("Appearance"),
   "/settings/chat": msg("Chat & diffs"),
   "/settings/keybindings": msg("Keybindings"),
@@ -118,14 +125,22 @@ export function settingsSearchSectionLabel(to: SettingsSearchItem["to"]): Messag
     : SETTINGS_SEARCH_APP_PAGE_LABELS[to as SettingsSearchAppPage];
 }
 
-/** Sidebar order. A group without a heading is set apart by space alone. */
+/** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
 export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
-  readonly heading: Message | null;
+  readonly heading: Message;
+  readonly headingHidden?: true;
   readonly paths: ReadonlyArray<SettingsPath>;
 }> = [
   {
-    heading: null,
-    paths: ["/settings/general", "/settings/appearance", "/settings/chat", "/settings/keybindings"],
+    heading: msg("Preferences"),
+    headingHidden: true,
+    paths: [
+      "/settings/general",
+      "/settings/appearance",
+      "/settings/chat",
+      "/settings/keybindings",
+      "/settings/voice",
+    ],
   },
   {
     heading: msg("Agents"),
@@ -143,7 +158,8 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     ],
   },
   {
-    heading: null,
+    heading: msg("More"),
+    headingHidden: true,
     paths: ["/settings/maintenance"],
   },
 ];
@@ -440,7 +456,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "project-grouping",
-    title: msg("Combine matching projects"),
+    title: msg("Project grouping"),
     to: "/settings/general",
     searchTerms: [
       "project grouping merge same repository machines environments paths monorepo sidebar",
@@ -507,6 +523,30 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["beta grouped sidebar folder rows multiline branch pull request details"],
   },
   {
+    id: "tool-call-visibility",
+    title: msg("Tool calls in chat"),
+    to: "/settings/chat",
+    searchTerms: [
+      "hide tool calls commands edits searches work log activity quiet chat zen final answers only",
+    ],
+  },
+  {
+    id: "screen-reader-announcements",
+    title: msg("Screen reader announcements"),
+    to: "/settings/chat",
+    searchTerms: [
+      "accessibility a11y screen reader nvda jaws voiceover orca narrator speech announce read aloud messages activity steps",
+    ],
+  },
+  {
+    id: "screen-reader-window-title",
+    title: msg("Screen reader window title"),
+    to: "/settings/chat",
+    searchTerms: [
+      "accessibility a11y screen reader nvda jaws voiceover orca narrator window title tab title alt tab taskbar thread status order working approval",
+    ],
+  },
+  {
     id: "guest-links",
     title: msg("Guest links"),
     to: "/settings/connections",
@@ -528,11 +568,124 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["sync all machines catch up offline same settings every machine global default"],
   },
   {
+    id: "prompt-suggestions-beta",
+    title: msg("Suggest next prompt"),
+    to: "/settings/chat",
+    scope: "environment",
+    searchTerms: ["beta tab autocomplete predict next message claude codex ghost text"],
+  },
+  {
     id: "simlock-hosts",
     title: msg("Simlock device hosts (alpha)"),
     to: "/settings/browser",
     scope: "environment",
     searchTerms: ["beta alpha simlock callstack simulator emulator ios android pool lease gateway"],
+  },
+  {
+    id: "worktree-fast-checkout",
+    title: msg("Fast worktree checkout"),
+    to: "/settings/source-control",
+    scope: "environment",
+    fastWorktreeCheckoutOnly: true,
+    searchTerms: ["beta fast worktree checkout clone apfs copy-on-write cache macos speed"],
+  },
+  {
+    id: "voice-transcription-destination",
+    title: msg("Transcribe with"),
+    to: "/settings/voice",
+    searchTerms: [
+      "send microphone audio dictation destination speech voice stt transcription environment machine consent privacy cloud OpenAI Grok OpenRouter",
+    ],
+  },
+  {
+    id: "voice-microphone",
+    title: msg("Microphone"),
+    to: "/settings/voice",
+    searchTerms: ["mic input audio device order priority preferred"],
+  },
+  {
+    id: "dictation-shortcut-mode",
+    title: msg("Dictation shortcut"),
+    to: "/settings/voice",
+    searchTerms: ["speech voice keyboard hotkey hold toggle auto"],
+  },
+  {
+    id: "speech-language",
+    title: msg("Transcription language"),
+    to: "/settings/voice",
+    searchTerms: ["speech voice translate english auto detect"],
+  },
+  {
+    id: "speech-dictionary",
+    title: msg("Dictionary"),
+    to: "/settings/voice",
+    searchTerms: ["speech voice transcription vocabulary names glossary alias"],
+  },
+  {
+    id: "speech-project-dictionary",
+    title: msg("Project dictionary"),
+    to: "/settings/voice",
+    scope: "project-defaults",
+    searchTerms: [
+      "speech voice transcription vocabulary shared dictionary team environment glossary",
+    ],
+  },
+  {
+    id: "speech-post-processing-model",
+    title: msg("Cleanup model"),
+    to: "/settings/voice",
+    scope: "environment",
+    searchTerms: ["speech voice transcript cleanup provider model post-processing"],
+  },
+  {
+    id: "speech-correction-word",
+    title: msg("Correction cue"),
+    to: "/settings/voice",
+    searchTerms: ["speech voice cleanup sorry scratch that fix mistake"],
+  },
+  {
+    id: "speech-silence-filtering",
+    title: msg("Silence filtering"),
+    to: "/settings/voice",
+    searchTerms: ["voice speech vad silero pauses noise"],
+  },
+  {
+    id: "remove-filler-words",
+    title: msg("Remove filler words"),
+    to: "/settings/voice",
+    searchTerms: ["voice speech transcription hesitation um uh cleanup"],
+  },
+  {
+    id: "speech-post-processing",
+    title: msg("Clean up transcripts"),
+    to: "/settings/voice",
+    searchTerms: ["speech transcription polish clean provider prompt post-processing"],
+  },
+  {
+    id: "speech-models",
+    title: msg("Transcription models"),
+    to: "/settings/voice",
+    searchTerms: [
+      "speech voice stt download whisper parakeet canary moonshine accuracy speed benchmark languages",
+    ],
+  },
+  {
+    id: "speech-hardware",
+    title: msg("Transcription hardware and model unloading"),
+    to: "/settings/voice",
+    searchTerms: ["speech voice stt advanced gpu cpu acceleration memory unload idle"],
+  },
+  {
+    id: "microphone-test",
+    title: msg("Test microphone"),
+    to: "/settings/voice",
+    searchTerms: ["test mic audio playback loopback record input level"],
+  },
+  {
+    id: "transcription-test",
+    title: msg("Test model"),
+    to: "/settings/voice",
+    searchTerms: ["test voice speech model transcription recognition"],
   },
   {
     id: "auto-settle-inactive-threads",
@@ -593,7 +746,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "language",
     title: msg("Language"),
     to: "/settings/general",
-    searchTerms: ["locale translation ukrainian english interface display"],
+    searchTerms: [
+      "locale translation interface display ukrainian українська english deutsch german español spanish français french português portuguese brasil brazilian chinese 中文 japanese 日本語 korean 한국어 russian русский sprache idioma langue 语言 言語 언어 язык",
+    ],
   },
   {
     id: "time-format",
@@ -668,7 +823,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Provider updates"),
     to: "/settings/maintenance",
     searchTerms: [
-      "check notify automatically install update provider cli launch startup model catalog versions",
+      "check notify automatically install update provider cli launch startup model catalog versions installed newer available codex claude cursor grok fx kiro opencode",
     ],
     scope: "environment-defaults",
   },
@@ -697,6 +852,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "resume continue failed work internet connection offline outage power cut wifi dns lost network automatically",
     ],
+  },
+  {
+    id: "keep-awake-while-agents-work",
+    title: msg("Keep awake while agents work"),
+    to: "/settings/maintenance",
+    scope: "environment-defaults",
+    searchTerms: ["caffeinate sleep prevent stay awake power laptop lid inhibit"],
   },
   {
     id: "background-activity",
@@ -835,6 +997,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["phone tablet iPhone iPad iOS Android App Store Google Play QR"],
   },
   {
+    id: "welcome-page",
+    title: msg("Welcome page"),
+    to: "/settings/maintenance",
+    primaryEnvironmentOnly: true,
+    searchTerms: ["onboarding setup first run getting started agents import projects"],
+  },
+  {
     id: "privacy-policy",
     title: msg("Privacy policy"),
     to: "/settings/maintenance",
@@ -921,7 +1090,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Providers"),
     to: "/settings/providers",
     searchTerms: [
-      "agents cli codex claude cursor grok fx opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
+      "agents cli codex claude cursor grok fx kiro opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
     ],
   },
   {
@@ -970,12 +1139,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     providerSettingsOnly: true,
   },
   {
-    id: "cursor-keychain-usage",
-    title: msg("Cursor account usage"),
+    id: "text-generators",
+    title: msg("Text generators"),
     to: "/settings/providers",
-    searchTerms: ["cursor macOS keychain usage tokens cost limits permission"],
+    searchTerms: [
+      "model api api key openai openrouter anthropic ollama lm studio custom endpoint base url thread titles commit messages",
+    ],
     providerSettingsOnly: true,
-    macProviderSettingsOnly: true,
+    textGeneratorsOnly: true,
   },
   {
     id: "provider-health-check-interval",
@@ -1192,23 +1363,23 @@ export const SETTINGS_SEARCH_ITEMS = [
   ...sourceControlHostSearchItems(sourceControlClients.definitions),
   {
     id: "source-control-writing-style",
-    title: msg("Source control writing style"),
+    title: msg("Commit and pull request writing"),
     to: "/settings/source-control",
     searchTerms: [
-      "repository conventions conventional commits custom instructions change descriptions request titles",
+      "repository conventions conventional commits custom instructions commit messages change pr pull request merge request titles descriptions body style prompt write my own",
     ],
     environmentOnly: true,
   },
   {
     id: "follow-change-request-templates",
-    title: msg("Follow change request templates"),
+    title: msg("Follow pull request templates"),
     to: "/settings/source-control",
-    searchTerms: ["repository pr pull request description structure"],
+    searchTerms: ["repository pr pull request merge request change request description structure"],
     environmentOnly: true,
   },
   {
     id: "source-control-writer-model",
-    title: msg("Commit and pull request writing"),
+    title: msg("Commit and pull request writing model"),
     to: "/settings/providers",
     searchTerms: [
       "source control writer model override generated commit change request pr titles descriptions branch bookmark",
@@ -1298,6 +1469,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["managed tunnel cloud other devices remote tunnels limit t3 chat"],
     desktopOnly: true,
     cloudOnly: true,
+  },
+  {
+    id: "connect-device-approval",
+    title: msg("Require approval for new devices"),
+    to: "/settings/connections",
+    targetId: "connections-environment",
+    searchTerms: ["t3 connect devices approve deny trust revoke pairing code security account"],
+    cloudOnly: true,
+    managedTunnelOnly: true,
   },
   {
     id: "hold-webhooks-while-offline",
@@ -1433,6 +1613,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/diagnostics": "environment",
   "/settings/projects": "project",
   "/settings/general": null,
+  "/settings/voice": null,
   "/settings/appearance": null,
   "/settings/chat": null,
   "/settings/keybindings": null,
@@ -1608,13 +1789,16 @@ export function filterAvailableSettingsSearchItems(
       (!item.cloudOnly || availability.hasCloudPublicConfig) &&
       (!item.environmentOnly || availability.hasEnvironment) &&
       (!item.providerSettingsOnly || availability.hasProviderSettingsEnvironment) &&
-      (!item.macProviderSettingsOnly || availability.hasMacProviderSettingsEnvironment) &&
       (!item.localBackendManagementOnly || availability.canManageLocalBackend) &&
       (!item.localEnvironmentOnly || !availability.localEnvironmentDisabled) &&
+      (!item.primaryEnvironmentOnly || availability.hasPrimaryEnvironment === true) &&
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
       (!item.requiresThreadAutoSettlement || availability.hasThreadAutoSettlement) &&
       (!item.managedTunnelOnly || availability.managedTunnelActive === true) &&
-      (!item.peerLinksOnly || availability.hasPeerLinkHost === true),
+      (!item.peerLinksOnly || availability.hasPeerLinkHost === true) &&
+      (!item.fastWorktreeCheckoutOnly ||
+        availability.hasFastWorktreeCheckoutEnvironment === true) &&
+      (!item.textGeneratorsOnly || availability.hasTextGeneratorsEnvironment === true),
   );
 }
 

@@ -1,5 +1,5 @@
-import { t } from "~/i18n";
-import { isWebhookDedupeTemplate } from "@t3tools/contracts";
+import { getFormattingLocale, msg, t } from "~/i18n";
+import { isListedThreadLineage, isWebhookDedupeTemplate } from "@t3tools/contracts";
 import {
   EnvironmentId,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
@@ -8,13 +8,17 @@ import {
   ScheduledTaskId,
   type ScheduledTask,
   type ScheduledTaskSharedRunOn,
+  type ScheduledTaskSchedule,
+  type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertSchedule,
+  scheduledTaskThreadMode,
   type ModelSelection,
   type RuntimeMode,
   type ProviderInteractionMode,
   type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   parseMaxDeliveryAge,
   parseWebhookFilterDrafts,
@@ -31,6 +35,7 @@ import {
   runConditionDraft,
   type RunConditionDraft,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
+import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 
 import {
   resolveScheduledTaskDefaultModelSelection,
@@ -40,6 +45,47 @@ import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../..
 
 import type { ResolvedSettingsScope } from "./settingsScope";
 import { validateSettingsRouteSearch } from "./settingsScopeNavigation";
+
+export const WEEKDAY_LABELS = [
+  msg("Sun"),
+  msg("Mon"),
+  msg("Tue"),
+  msg("Wed"),
+  msg("Thu"),
+  msg("Fri"),
+  msg("Sat"),
+] as const;
+
+const formatOnce = (runAt: string) =>
+  new Intl.DateTimeFormat(getFormattingLocale(), {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(runAt));
+
+export function scheduleLabel(
+  schedule: ScheduledTaskSchedule,
+  timeZone?: string,
+  runAt?: string | null,
+): string {
+  if (schedule.type === "webhook") return t("On webhook");
+  if (schedule.type === "once") return t("Once, {when}", { when: formatOnce(schedule.runAt) });
+  if (schedule.type === "interval") {
+    const minutes = schedule.everyMs / 60_000;
+    return Number.isInteger(minutes)
+      ? t("Every {minutes} min", { minutes })
+      : t("Every {seconds} sec", { seconds: Math.round(schedule.everyMs / 1000) });
+  }
+  const weekdays = schedule.weekdays ?? [];
+  const days =
+    weekdays.length === 0
+      ? t("Daily")
+      : weekdays.length === 5 && weekdays.every((day) => day >= 1 && day <= 5)
+        ? t("Weekdays")
+        : weekdays.map((day) => t(WEEKDAY_LABELS[day]!)).join(", ");
+  const zone = scheduleTimeZoneLabel(timeZone, runAt);
+  const label = t("{days} at {time}", { days, time: schedule.timeOfDay });
+  return zone === undefined ? label : `${label} ${zone}`;
+}
 
 export function matchesScheduledTaskScope(
   scope: ResolvedSettingsScope,
@@ -115,6 +161,7 @@ export interface DraftState extends PromptFileDraft {
   readonly weekdays: ReadonlySet<number>;
   readonly projectId: string;
   readonly threadId: string;
+  readonly threadMode: ScheduledTaskThreadMode;
   readonly workspaceMode: WorkspaceMode;
   readonly baseRef: string;
   readonly startFromOrigin: boolean;
@@ -192,6 +239,8 @@ export function scheduleDraftErrors(draft: DraftState) {
       ];
     return [];
   }
+  if (draft.scheduleMode === "fixed" && !draft.timeOfDay)
+    return [{ title: t("Invalid run time"), description: t("Pick a time.") }];
   if (draft.scheduleMode !== "webhook") return [];
   if (parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes) === undefined)
     return [
@@ -302,7 +351,7 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
   const selectedEveryDay = draft.weekdays.size === 0 || draft.weekdays.size === 7;
   return {
     type: "fixed_time",
-    timeOfDay: draft.timeOfDay || "09:00",
+    timeOfDay: draft.timeOfDay,
     ...(selectedEveryDay ? {} : { weekdays: [...draft.weekdays].toSorted() }),
   };
 }
@@ -325,12 +374,14 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     scheduleMode: schedule.type === "fixed_time" ? "fixed" : schedule.type,
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
-    timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay : "09:00",
+    // A time input shows nothing for an unpadded hour such as 9:05, which agents may save.
+    timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay.padStart(5, "0") : "09:00",
     runAt: schedule.type === "once" ? toDateTimeLocalValue(new Date(schedule.runAt)) : "",
     savedRunAt: schedule.type === "once" ? schedule.runAt : "",
     weekdays,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
+    threadMode: scheduledTaskThreadMode(task),
     workspaceMode: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     startFromOrigin:
@@ -414,6 +465,59 @@ export function matchingProjectId(
       open.find((project) => project.title === source.title)
     )?.id ?? ""
   );
+}
+
+export function moveDraftToThread(
+  draft: DraftState,
+  thread: { readonly id: ThreadId; readonly projectId: ProjectId },
+): DraftState {
+  return {
+    ...draft,
+    threadId: thread.id,
+    projectId: thread.projectId,
+    threadMode: draft.threadMode === "new_thread" ? "continue" : draft.threadMode,
+  };
+}
+
+/** Leaves the thread but keeps the mode. Matches MCP: new threads stay out of the shared checkout. */
+export function unbindDraftFromThread(draft: DraftState): DraftState {
+  if (!draft.threadId) return draft;
+  return {
+    ...draft,
+    threadId: "",
+    ...(draft.workspaceMode === "root"
+      ? { workspaceMode: "worktree" as const, startFromOrigin: true }
+      : {}),
+  };
+}
+
+export function changeDraftProject(draft: DraftState, projectId: string): DraftState {
+  if (projectId === draft.projectId) return draft;
+  return { ...unbindDraftFromThread(draft), projectId };
+}
+
+/** Threads a task can move to. The current one is left out; the picker always shows it. */
+export function scheduledTaskDestinationThreads(
+  threads: ReadonlyArray<EnvironmentThreadShell>,
+  target: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: string;
+    readonly currentThreadId: ThreadId | null;
+    readonly query: string;
+  },
+): ReadonlyArray<EnvironmentThreadShell> {
+  const search = target.query.trim().toLocaleLowerCase();
+  return threads
+    .filter(
+      (thread) =>
+        thread.environmentId === target.environmentId &&
+        thread.projectId === target.projectId &&
+        thread.id !== target.currentThreadId &&
+        thread.archivedAt === null &&
+        isListedThreadLineage(thread.lineage) &&
+        thread.title.toLocaleLowerCase().includes(search),
+    )
+    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 export function scheduledTaskDefaultModel(

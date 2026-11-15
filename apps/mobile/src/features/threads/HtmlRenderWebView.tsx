@@ -21,6 +21,7 @@ import { useAssetUrlState, useRefreshAssetUrl } from "../../state/assets";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import type { AttachmentFileRouteParams } from "../../lib/attachmentFileRoute";
 import { t } from "../../lib/i18n";
+import { webViewDecelerationRate } from "../../lib/webViewDecelerationRate";
 
 const ROW_BOTTOM_MARGIN = 8;
 const ACTION_ROW_HEIGHT = 32;
@@ -149,7 +150,9 @@ export function HtmlRenderWebView(props: {
         showsVerticalScrollIndicator={!props.nested}
         showsHorizontalScrollIndicator={!props.nested}
         scrollEnabled={scrollable}
-        // Patched Android WebView hands vertical drags to the feed at its edges; horizontal-only overflow leaves them to the feed.
+        decelerationRate={webViewDecelerationRate}
+        // Android's patched WebView always keeps horizontal drags. Only pages
+        // with vertical overflow hold vertical drags until they reach an edge.
         nestedScrollEnabled={props.nested && overflow.y}
         overScrollMode={props.nested ? "never" : "always"}
         onShouldStartLoadWithRequest={(request) =>

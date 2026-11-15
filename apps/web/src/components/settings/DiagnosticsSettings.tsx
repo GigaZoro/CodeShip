@@ -5,8 +5,14 @@ import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { AuthEnvironmentMaintainScope } from "@t3tools/contracts";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { AlertTriangleIcon, CopyIcon, FolderOpenIcon, InfoIcon } from "lucide-react";
-import { ChevronDown, ChevronRight } from "lucide";
+import {
+  AlertTriangleIcon,
+  CopyIcon,
+  FolderOpenIcon,
+  InfoIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+} from "lucide-react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -29,13 +35,14 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { Button } from "../ui/button";
-import { MorphIcon } from "~/components/MorphIcon";
 import { ScrollArea } from "../ui/scroll-area";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
+import { formatDiagnosticsDuration } from "./DiagnosticsSettings.logic";
 import { ExpandableText } from "./ExpandableText";
 import { ResourceTelemetryDiagnostics } from "./ResourceTelemetryDiagnostics";
+import { formatCpuTime } from "./ResourceTelemetryDiagnostics.logic";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -44,13 +51,6 @@ import { getFormattingLocale, msg, t, tx } from "~/i18n";
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat(getFormattingLocale()).format(value);
-}
-
-function formatDuration(value: number): string {
-  if (value < 1_000) return t("{value} ms", { value: Math.round(value) });
-  return t("{value} s", {
-    value: (value / 1_000).toFixed(value >= 10_000 ? 1 : 2).replace(/\.0+$/, ""),
-  });
 }
 
 function RelativeTimeNoWrap(props: { value: DateTime.Utc }) {
@@ -268,7 +268,11 @@ function ProcessNameCell({
           aria-label={isExpanded ? t("Collapse {name}", { name }) : t("Expand {name}", { name })}
           onClick={() => onToggle(process.pid)}
         >
-          <MorphIcon className="size-3.5" icon={isExpanded ? ChevronDown : ChevronRight} />
+          {isExpanded ? (
+            <ChevronDownIcon className="size-3.5" />
+          ) : (
+            <ChevronRightIcon className="size-3.5" />
+          )}
         </Button>
       ) : (
         <span className="size-5 shrink-0" aria-hidden="true" />
@@ -426,15 +430,6 @@ const RESOURCE_HISTORY_WINDOWS = [
   { label: msg("30m"), windowMs: 30 * 60_000, bucketMs: 2 * 60_000 },
   { label: msg("1h"), windowMs: 60 * 60_000, bucketMs: 5 * 60_000 },
 ] as const;
-
-function formatCpuTime(seconds: number): string {
-  if (seconds < 60)
-    return t("{value}s", { value: seconds.toFixed(seconds >= 10 ? 1 : 2).replace(/\.0+$/, "") });
-  const minutes = seconds / 60;
-  if (minutes < 60)
-    return t("{value}m", { value: minutes.toFixed(minutes >= 10 ? 1 : 2).replace(/\.0+$/, "") });
-  return t("{value}h", { value: (minutes / 60).toFixed(2).replace(/\.0+$/, "") });
-}
 
 function formatShortProcessName(command: string): string {
   const name = formatProcessName(command);
@@ -1038,7 +1033,7 @@ function DiagnosticsSettingsBody() {
               resourceData
                 ? resourceData.sampleIntervalMs === 0
                   ? t("On demand")
-                  : formatDuration(resourceData.sampleIntervalMs)
+                  : formatDiagnosticsDuration(resourceData.sampleIntervalMs)
                 : "..."
             }
           />
@@ -1120,7 +1115,7 @@ function DiagnosticsSettingsBody() {
             tooltip={
               data
                 ? t("Spans with a duration of {duration} or longer.", {
-                    duration: formatDuration(data.slowSpanThresholdMs),
+                    duration: formatDiagnosticsDuration(data.slowSpanThresholdMs),
                   })
                 : t("Spans at or above the configured slow-span threshold.")
             }
@@ -1182,7 +1177,7 @@ function DiagnosticsSettingsBody() {
                   <ExpandableText text={failure.cause} />
                 </td>
                 <td className="px-4 py-3 align-top font-mono tabular-nums">
-                  {formatDuration(failure.durationMs)}
+                  {formatDiagnosticsDuration(failure.durationMs)}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground last:sm:pr-5">
                   <RelativeTimeNoWrap value={failure.endedAt} />
@@ -1242,7 +1237,7 @@ function DiagnosticsSettingsBody() {
                   {span.name}
                 </td>
                 <td className="px-4 py-3 align-top font-mono tabular-nums">
-                  {formatDuration(span.durationMs)}
+                  {formatDiagnosticsDuration(span.durationMs)}
                 </td>
                 <td className="w-px whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums text-muted-foreground">
                   <RelativeTimeNoWrap value={span.endedAt} />
@@ -1348,10 +1343,10 @@ function DiagnosticsSettingsBody() {
                   {formatCount(span.failureCount)}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums">
-                  {formatDuration(span.averageDurationMs)}
+                  {formatDiagnosticsDuration(span.averageDurationMs)}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 align-top font-mono tabular-nums last:sm:pr-5">
-                  {formatDuration(span.maxDurationMs)}
+                  {formatDiagnosticsDuration(span.maxDurationMs)}
                 </td>
               </tr>
             ))}

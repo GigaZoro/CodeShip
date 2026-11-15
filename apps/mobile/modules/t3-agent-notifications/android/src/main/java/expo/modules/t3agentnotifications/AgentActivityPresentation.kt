@@ -124,8 +124,11 @@ internal class ActivityPresentation(
     else -> strings.getString(R.string.agent_activity_all_finished)
   }
 
-  val chip: String? = when {
-    !active -> null
+  val chip: String = when {
+    !active -> strings.getString(
+      if (phase == ActivityPhase.FAILED) R.string.agent_activity_chip_failed
+      else R.string.agent_activity_chip_done
+    )
     phase == null -> data["activity_chip"]?.takeIf { it.isNotBlank() }?.take(7)
       ?: strings.getString(R.string.agent_activity_chip_active)
     phase == ActivityPhase.RUNNING && activeCount > 1 ->
@@ -143,7 +146,6 @@ internal class ActivityPresentation(
 
   fun applyTo(builder: NotificationCompat.Builder, context: Context) {
     val tint = phase?.let { ContextCompat.getColor(context, it.color) }
-    builder.setSmallIcon(R.drawable.agent_activity_mark)
     if (tint != null) builder.setColor(tint)
     // Tint the summary only when it names an outcome or a request; a plain
     // "3 working" stays neutral so the accent keeps meaning something.

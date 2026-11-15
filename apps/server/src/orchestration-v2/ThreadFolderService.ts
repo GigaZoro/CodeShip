@@ -13,7 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -46,7 +46,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const settings = yield* ServerSettings.ServerSettingsService;
 
   const fail = (message: string) => (cause: unknown) => new ThreadFolderError({ message, cause });
@@ -98,7 +98,7 @@ const make = Effect.gen(function* () {
         if (!sameThreadFolder(candidate.folder, input.from)) continue;
         const threadId = ThreadId.make(candidate.thread_id);
         // `from` leaves a thread that was moved out of the folder since the read where it went.
-        const dispatched = yield* crypto.randomUUIDv4().pipe(
+        const dispatched = yield* random.uuidV4().pipe(
           Effect.flatMap((uuid) =>
             threads.dispatch({
               type: "thread.folder.set",

@@ -40,17 +40,15 @@ import { ProjectActionsSection } from "./components/ProjectActionsSection";
 import { SettingsSection } from "./components/SettingsSection";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
-import {
-  AndroidSettingsEnvironmentFilter,
-  SettingsEnvironmentFilterHeader,
-} from "./components/SettingsEnvironmentFilterHeader";
+import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 import { leaveSettingsPage } from "./settings-navigation";
-import { workspaceHasColumns } from "../workspace/workspace-selection-store";
-import { DEFAULT_SETTINGS_PAGE } from "../workspace/workspace-tab-navigation";
+import { workspaceHasColumns } from "../layout/workspace/workspace-selection-store";
+import { DEFAULT_SETTINGS_PAGE } from "../layout/workspace/workspace-tab-navigation";
 import { readUnloadedThreadCount } from "../../state/olderSettledShelf";
 
 export function SettingsProjectOverviewRouteScreen() {
+  const environmentMenu = useSettingsEnvironmentMenu();
   const insets = useSafeAreaInsets();
   const [isRemoving, setIsRemoving] = useState(false);
   const removalPending = useRef(false);
@@ -88,47 +86,44 @@ export function SettingsProjectOverviewRouteScreen() {
       .filter((project) => selectedEnvironmentIds.has(project.environmentId)) ?? [];
 
   return (
-    <>
-      <SettingsEnvironmentFilterHeader />
-      <SettingsScreen title={t("Projects")} trailing={<AndroidSettingsEnvironmentFilter />}>
-        <ScrollView
-          contentInsetAdjustmentBehavior="automatic"
-          showsVerticalScrollIndicator={false}
-          className="flex-1"
-          contentContainerClassName="gap-6 px-5 pt-4"
-          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        >
-          {selectedProjectKey === null ? (
-            <Text className="px-2 text-base text-foreground-muted">
-              {t(
-                "Choose a project with the filter above to manage its name, actions, checkouts and removal.",
-              )}
-            </Text>
-          ) : !group || members.length === 0 ? (
-            <Text className="px-2 text-base text-foreground-muted">
-              {t(
-                "This project has no checkout on the selected connected environments. Change the filter above.",
-              )}
-            </Text>
-          ) : (
-            <ProjectOverviewContent
-              key={`${selectedProjectKey}:${members.map((member) => member.id).join(",")}`}
-              members={members}
-              group={group}
-              connectedTargets={availableTargets}
-              environments={selectedTargets}
-              hasOtherMembers={members.length < (group?.members.length ?? 0)}
-              isRemoving={isRemoving}
-              setIsRemoving={setIsRemoving}
-              startRemoval={startRemoval}
-              finishRemoval={finishRemoval}
-              projectKey={selectedProjectKey}
-              onProjectRemoved={finishProjectRemoval}
-            />
-          )}
-        </ScrollView>
-      </SettingsScreen>
-    </>
+    <SettingsScreen title={t("Projects")} menus={[environmentMenu]}>
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        className="flex-1"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+      >
+        {selectedProjectKey === null ? (
+          <Text className="px-2 text-base text-foreground-muted">
+            {t(
+              "Choose a project with the filter above to manage its name, actions, checkouts and removal.",
+            )}
+          </Text>
+        ) : !group || members.length === 0 ? (
+          <Text className="px-2 text-base text-foreground-muted">
+            {t(
+              "This project has no checkout on the selected connected environments. Change the filter above.",
+            )}
+          </Text>
+        ) : (
+          <ProjectOverviewContent
+            key={`${selectedProjectKey}:${members.map((member) => member.id).join(",")}`}
+            members={members}
+            group={group}
+            connectedTargets={availableTargets}
+            environments={selectedTargets}
+            hasOtherMembers={members.length < (group?.members.length ?? 0)}
+            isRemoving={isRemoving}
+            setIsRemoving={setIsRemoving}
+            startRemoval={startRemoval}
+            finishRemoval={finishRemoval}
+            projectKey={selectedProjectKey}
+            onProjectRemoved={finishProjectRemoval}
+          />
+        )}
+      </ScrollView>
+    </SettingsScreen>
   );
 }
 
@@ -148,7 +143,11 @@ function ProjectOverviewContent(props: {
 }) {
   const { isRemoving, setIsRemoving, startRemoval, finishRemoval } = props;
   const representative = props.members[0]!;
-  const displayName = deriveProjectGroupLabel({ representative, members: props.members });
+  const displayName = deriveProjectGroupLabel({
+    groupKey: props.group.key,
+    representative,
+    members: props.members,
+  });
   const [draftName, setDraftName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const threads = useThreadShells();

@@ -30,7 +30,6 @@ export function SidebarNeedsYouPanel(props: {
       </ul>
       <ul
         ref={attachSidebarTree}
-        role="tree"
         aria-label={t("Threads needing you")}
         className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
       >
@@ -44,8 +43,8 @@ export function SidebarNeedsYouPanel(props: {
               )}
             >
               <div
-                role="treeitem"
-                tabIndex={-1}
+                role="button"
+                tabIndex={0}
                 data-sidebar-row={NEEDS_YOU_LATER_ROW_ID}
                 aria-expanded={laterOpen}
                 onClick={toggleLater}

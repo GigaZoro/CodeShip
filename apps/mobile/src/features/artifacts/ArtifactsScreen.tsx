@@ -1,7 +1,8 @@
 import { LegendList } from "@legendapp/list/react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useAtomValue } from "@effect/atom-react";
-import { Platform, Pressable, RefreshControl, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
+import { RefreshControl } from "../../components/ui/RefreshControl";
 import { useCallback, useState } from "react";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -110,7 +111,6 @@ export function ArtifactsScreen() {
     <View collapsable={false} className="flex-1 bg-sheet">
       <AppBar
         title={t("Artifacts")}
-        sidebar={false}
         onBack={() => navigation.goBack()}
         search={{
           value: searchQuery,

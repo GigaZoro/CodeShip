@@ -34,6 +34,7 @@ import { shareGeneratedAttachment } from "../../lib/attachmentDownload";
 import { mobileHtmlRenderTheme } from "../../lib/htmlRenderTheme";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { uuidv4 } from "../../lib/uuid";
+import { webViewDecelerationRate } from "../../lib/webViewDecelerationRate";
 import { useAssetUrlState } from "../../state/assets";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useThreadShell } from "../../state/entities";
@@ -70,9 +71,11 @@ const commandFailure = (result: {
   readonly cause: Parameters<typeof squashAtomCommandFailure>[0]["cause"];
 }) => {
   const error = squashAtomCommandFailure(result);
-  return new McpAppHostRefusal(
-    error instanceof Error && error.message.trim() !== "" ? error.message : "Request failed.",
-  );
+  return new McpAppHostRefusal({
+    message:
+      // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+      error instanceof Error && error.message.trim() !== "" ? error.message : "Request failed.",
+  });
 };
 
 const confirm = (title: string, message: string, action: string) =>
@@ -263,6 +266,8 @@ export function ThreadMcpApp(props: {
     );
   }, [host, detailAtom]);
   const userActive = useRef(false);
+  // Teardown completions check this so a replaced document's late callback is ignored.
+  const currentHost = useRef<McpAppHost | null>(null);
 
   // Each WebView document gets its own host: the view is keyed by document,
   // restart generation and URL, and a changed app re-attaches this callback.
@@ -321,7 +326,9 @@ export function ThreadMcpApp(props: {
         const { environmentId, input } = scope();
         const info = await latest.current.toolInfo({ environmentId, input: { ...input, name } });
         if (info._tag !== "Success") throw commandFailure(info);
-        if (!info.value.callable) throw new McpAppHostRefusal("This app cannot call that tool.");
+        if (!info.value.callable)
+          // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+          throw new McpAppHostRefusal({ message: "This app cannot call that tool." });
         if (
           !info.value.readOnly &&
           !(await confirm(
@@ -333,7 +340,8 @@ export function ThreadMcpApp(props: {
             t("Allow"),
           ))
         ) {
-          throw new McpAppHostRefusal("Declined by the user.");
+          // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+          throw new McpAppHostRefusal({ message: "Declined by the user." });
         }
         const result = await latest.current.callTool({
           environmentId,
@@ -356,10 +364,12 @@ export function ThreadMcpApp(props: {
         if (
           !(await confirm(t("Open a link from {server}?", { server: app.server }), url, t("Open")))
         ) {
-          throw new McpAppHostRefusal("Declined by the user.");
+          // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+          throw new McpAppHostRefusal({ message: "Declined by the user." });
         }
         if (!(await tryOpenExternalUrl(url, "mcp-app"))) {
-          throw new McpAppHostRefusal("The link could not be opened.");
+          // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+          throw new McpAppHostRefusal({ message: "The link could not be opened." });
         }
       },
       sendMessage: async (text) => {
@@ -370,7 +380,8 @@ export function ThreadMcpApp(props: {
             t("Send"),
           ))
         ) {
-          throw new McpAppHostRefusal("Declined by the user.");
+          // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+          throw new McpAppHostRefusal({ message: "Declined by the user." });
         }
         await enqueueThreadOutboxMessage({
           environmentId: latest.current.props.environmentId,
@@ -408,6 +419,8 @@ export function ThreadMcpApp(props: {
         }
         if (mode === "fullscreen" && current.displayMode !== "fullscreen") {
           await documentHost.teardown();
+          // A crash restart or reload during the wait already replaced this document.
+          if (currentHost.current !== documentHost) return "inline";
           // Approval arrival or navigation during the wait requires reloading inline.
           const navigation = latest.current.navigation;
           if (latest.current.awaitingUser || !navigation.isFocused()) {
@@ -426,7 +439,7 @@ export function ThreadMcpApp(props: {
         }
         if (mode === "inline" && current.displayMode === "fullscreen") {
           await documentHost.teardown();
-          current.onExitFullscreen?.();
+          if (currentHost.current === documentHost) current.onExitFullscreen?.();
           return "inline";
         }
         return current.displayMode ?? "inline";
@@ -440,7 +453,8 @@ export function ThreadMcpApp(props: {
             t("Save"),
           ))
         ) {
-          throw new McpAppHostRefusal("Declined by the user.");
+          // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+          throw new McpAppHostRefusal({ message: "Declined by the user." });
         }
         for (const file of files) {
           let bytes: Uint8Array | undefined;
@@ -459,25 +473,30 @@ export function ThreadMcpApp(props: {
             const declared = (content as { readonly mimeType?: unknown } | undefined)?.mimeType;
             if (typeof declared === "string") mimeType = declared;
           }
-          if (bytes === undefined) throw new McpAppHostRefusal(`${file.name} has no contents.`);
+          if (bytes === undefined)
+            // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+            throw new McpAppHostRefusal({ message: `${file.name} has no contents.` });
           if (bytes.byteLength > MAX_DOWNLOAD_BYTES) {
-            throw new McpAppHostRefusal(`${file.name} is too large to save.`);
+            // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+            throw new McpAppHostRefusal({ message: `${file.name} is too large to save.` });
           }
           const shared = await shareGeneratedAttachment({
             bytes,
             attachment: { name: file.name, mimeType },
             signal: new AbortController().signal,
           });
-          if (!shared) throw new McpAppHostRefusal("Sharing is not available on this device.");
+          if (!shared)
+            // oxlint-disable-next-line t3code/no-untranslated-text -- error text returned to the MCP app over its protocol, not shown to the user
+            throw new McpAppHostRefusal({ message: "Sharing is not available on this device." });
         }
       },
       onRequestTeardown: () => {
         const current = latest.current.props;
-        if (current.displayMode === "fullscreen") {
-          void documentHost.teardown().then(() => current.onExitFullscreen?.());
-        } else {
-          void documentHost.teardown().then(() => setClosed(true));
-        }
+        void documentHost.teardown().then(() => {
+          if (currentHost.current !== documentHost) return;
+          if (current.displayMode === "fullscreen") current.onExitFullscreen?.();
+          else setClosed(true);
+        });
       },
       onSizeChanged: (size) => {
         if (latest.current.props.displayMode === "fullscreen") return;
@@ -486,7 +505,9 @@ export function ThreadMcpApp(props: {
       },
     });
     setHost(documentHost);
+    currentHost.current = documentHost;
     return () => {
+      if (currentHost.current === documentHost) currentHost.current = null;
       // An unmount cannot wait: the request goes out before the view does.
       void documentHost.teardown();
       setHost((current) => (current === documentHost ? null : current));
@@ -552,6 +573,7 @@ export function ThreadMcpApp(props: {
           accessibilityLabel={t("{server} app", { server: app.server })}
           style={{ flex: 1, backgroundColor: "transparent" }}
           nestedScrollEnabled
+          decelerationRate={webViewDecelerationRate}
           originWhitelist={["*"]}
           // Android misreports nested frames as top-level; rely on iframe sandboxing there and gate navigation elsewhere.
           onShouldStartLoadWithRequest={(request) =>

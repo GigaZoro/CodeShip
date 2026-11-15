@@ -48,7 +48,7 @@ const MIN_RESET_CREDIT_WAIT_MS = 30 * 60_000;
 // claim is not repeated every tick and a limit a reset does not lift cannot spend credit after credit.
 const RESET_CREDIT_RETRY_MS = 15 * 60_000;
 
-const MAX_OVERDUE_ARM_MS = 24 * 60 * 60 * 1000;
+export const MAX_OVERDUE_ARM_MS = 24 * 60 * 60 * 1000;
 
 // No event announces a lift (Try again, or a run that got an answer), so a resume waiting on one
 // checks again this often.
@@ -137,7 +137,7 @@ export function limitRecoveryCommand(
     text: "Continue where you left off.",
     attachments: [],
     dispatchMode: { type: "start_immediately" },
-    createdBy: "user",
+    createdBy: "agent",
     creationSource: "server",
   };
 }

@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -15,7 +16,7 @@ import {
 import * as NetAddress from "effect/net/NetAddress";
 
 import * as Settings from "../serverSettings.ts";
-import { localUrlHostForAddress } from "../startupAccess.ts";
+import { loopbackUrlHostForAddress } from "../startupAccess.ts";
 import {
   readThreadPagePages,
   THREADPAGE_API_URL,
@@ -163,9 +164,6 @@ const describeFailure = (error: unknown): Effect.Effect<ThreadPageCheckAccessErr
   return Effect.succeed(threadPageFailed("Could not reach ThreadPage."));
 };
 
-const bytesToHex = (bytes: Uint8Array): string =>
-  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-
 /**
  * Lets a scheduled task's check command use the server's ThreadPage connection without seeing
  * its token: the check gets a local URL and a token of its own that stops working when it ends.
@@ -203,26 +201,24 @@ export class ThreadPageCheckAccess extends Context.Service<
 
 const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
   const settingsService = yield* Settings.ServerSettingsService;
   const httpServer = yield* HttpServer.HttpServer;
   const grants = yield* Ref.make<ReadonlySet<string>>(new Set());
   const address = httpServer.address;
   const localUrl = NetAddress.isInetAddress(address)
-    ? `http://${localUrlHostForAddress(address)}:${address.port}${THREADPAGE_CHECK_ROUTE_PREFIX}`
+    ? `http://${loopbackUrlHostForAddress(address)}:${address.port}${THREADPAGE_CHECK_ROUTE_PREFIX}`
     : null;
 
   const hashToken = (token: string) =>
-    crypto
-      .digest("SHA-256", new TextEncoder().encode(token))
-      .pipe(Effect.map(bytesToHex), Effect.orDie);
+    digest.digestHex(Digest.sha256, new TextEncoder().encode(token));
 
   const grant = Effect.gen(function* () {
     if (localUrl === null) return {};
-    const token = yield* crypto.randomBytes(32).pipe(
-      Effect.map((bytes) => Buffer.from(bytes).toString("base64url")),
-      Effect.orDie,
-    );
+    const token = yield* random
+      .randomBytes(32)
+      .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("base64url")));
     const tokenHash = yield* hashToken(token);
     yield* Effect.acquireRelease(
       Ref.update(grants, (current) => new Set(current).add(tokenHash)),
@@ -316,7 +312,7 @@ const make = Effect.gen(function* () {
     "ThreadPageCheckAccess.addNote",
   )(function* (input) {
     const token = yield* connectionToken;
-    const operationId = input.operationId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+    const operationId = input.operationId ?? (yield* random.uuidV4());
     const { status, value: receipt } = yield* send(
       token,
       HttpClientRequest.post(
@@ -342,7 +338,7 @@ const make = Effect.gen(function* () {
   )(function* (input) {
     const token = yield* connectionToken;
     const threadUrl = `${THREADPAGE_API_URL}/threads/${encodeURIComponent(input.threadId)}`;
-    const operationId = input.operationId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+    const operationId = input.operationId ?? (yield* random.uuidV4());
     // ThreadPage's thread update takes no revision, so it is compared here just before the update;
     // only a change landing between these two calls goes unseen.
     const { value: current } = yield* send(token, HttpClientRequest.get(threadUrl), decodeThread);

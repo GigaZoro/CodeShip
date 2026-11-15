@@ -1,6 +1,6 @@
 import { GitCommandError, PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -65,7 +65,7 @@ export class PromptFileReader extends Context.Service<
 
 const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
 
   const read: PromptFileReader["Service"]["read"] = Effect.fn("PromptFileReader.read")(function* ({
     cwd,
@@ -107,7 +107,7 @@ const make = Effect.gen(function* () {
     const ref = `${remote}/${branch}`;
 
     // A ref of this read's own, so it never races the user's or the status poll's fetches.
-    const ownRef = `refs/t3/prompt-files/${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`;
+    const ownRef = `refs/t3/prompt-files/${yield* random.uuidV4()}`;
     yield* Effect.acquireRelease(
       runRemote(
         ref,

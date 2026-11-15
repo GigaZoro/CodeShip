@@ -19,6 +19,7 @@ export interface LoopbackAuthRequest {
 }
 
 /** The redirect port is taken on this computer, so the browser's return cannot be caught here. */
+// @effect-diagnostics-next-line extendsNativeError:off - a Promise API with no Effect runtime; the desktop caller matches it with instanceof.
 export class LoopbackPortBusyError extends Error {}
 
 const CANCELLED = "Sign-in cancelled on this computer.";

@@ -1,5 +1,20 @@
-import type { PullRequestReaction, PullRequestReactionContent } from "@t3tools/contracts";
 import { msg, t, tn, type Message } from "@t3tools/shared/i18n";
+import type {
+  PullRequestComment,
+  PullRequestDetail,
+  PullRequestReaction,
+  PullRequestReactionContent,
+} from "@t3tools/contracts";
+
+export function canReactPullRequestComment(
+  detail: Pick<PullRequestDetail, "provider" | "capabilities">,
+  comment: Pick<PullRequestComment, "kind">,
+): boolean {
+  return (
+    detail.capabilities.reactions === true &&
+    !(detail.provider === "gitcafe" && comment.kind === "review")
+  );
+}
 
 export const PULL_REQUEST_REACTION_ORDER: ReadonlyArray<PullRequestReactionContent> = [
   "thumbs-up",

@@ -1,8 +1,10 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -65,7 +67,7 @@ it.effect("offers Codex's login page and finishes when Codex reports success", (
     yield* h.complete({ success: true, loginId: "other-login" });
     yield* h.complete({ success: true, loginId: "login-1" });
     yield* h.state((value) => value.phase === "succeeded");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("reports a sign-in that Codex rejected", () =>
@@ -76,7 +78,7 @@ it.effect("reports a sign-in that Codex rejected", () =>
     yield* h.complete({ success: false, loginId: "login-1", error: "denied" });
     const failed = yield* h.state((value) => value.phase === "failed");
     assert.equal(failed.message, "denied");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("forwards only this sign-in's pasted callback to Codex's loopback page", () =>
@@ -94,5 +96,5 @@ it.effect("forwards only this sign-in's pasted callback to Codex's loopback page
     assert.deepEqual(yield* Ref.get(h.forwarded), [
       "http://localhost:1455/auth/callback?code=abc&state=s7Ate",
     ]);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

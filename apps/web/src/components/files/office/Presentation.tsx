@@ -8,12 +8,8 @@ import {
 } from "../fileSurfaceChrome";
 import { OfficePages, type PaintPage } from "./OfficePages";
 import { createWorkerClient } from "./worker-rpc";
-import {
-  maxImageSide,
-  type SlideMethods,
-  type SlideSummary,
-  type VectorRequest,
-} from "./slide-protocol";
+import type { SlideMethods, SlideSummary } from "./slide-protocol";
+import { rasterize } from "./vector-pictures";
 import { msg, t } from "~/i18n";
 
 type Opened = { slides: readonly SlideSummary[]; paint: PaintPage };
@@ -84,7 +80,7 @@ export default function Presentation(props: {
         if (slides.length === 0 || slides.length > 500)
           throw new Error(t("Preview limited to presentations with 1 to 500 slides."));
         setOpened({ slides, paint });
-        onDetails(`${slides.length} slides`);
+        onDetails(`${slides.length} slide${slides.length === 1 ? "" : "s"}`);
       })
       .catch(fail);
     return () => {
@@ -160,29 +156,4 @@ export default function Presentation(props: {
       />
     </div>
   );
-}
-async function rasterize(request: VectorRequest) {
-  const url = URL.createObjectURL(request.blob);
-  const image = new Image();
-  image.src = url;
-  try {
-    await image.decode();
-    const shrink = Math.min(1, maxImageSide / Math.max(image.naturalWidth, image.naturalHeight));
-    const size = request.size ?? {
-      width: Math.max(1, Math.round(image.naturalWidth * shrink)),
-      height: Math.max(1, Math.round(image.naturalHeight * shrink)),
-    };
-    return {
-      asset: request.asset,
-      bitmap: await createImageBitmap(image, {
-        resizeWidth: size.width,
-        resizeHeight: size.height,
-        resizeQuality: "high",
-      }),
-    };
-  } catch {
-    return { asset: request.asset, bitmap: undefined };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 }

@@ -33,7 +33,6 @@ export function PullRequestLabelPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [pending, setPending] = useState<string | null>(null);
 
   const candidatesQuery = useEnvironmentQuery(
     open ? pullRequestEnvironment.labelCandidates({ environmentId, input: reference }) : null,
@@ -46,14 +45,12 @@ export function PullRequestLabelPicker({
     matches(entry, query),
   );
 
+  // Each change shows at once and queues behind the one before it on the host.
   const toggle = async (candidate: PullRequestLabelCandidate) => {
-    if (pending !== null) return;
-    setPending(candidate.name);
     const result = await setLabels({
       environmentId,
       input: { ...reference, labels: [candidate.name], applied: !candidate.isApplied },
     });
-    setPending(null);
     if (result._tag === "Failure") {
       toastManager.add({
         type: "error",
@@ -91,7 +88,7 @@ export function PullRequestLabelPicker({
         "This repository has more labels than are listed here. Apply the rest on the host.",
       )}
       candidateKey={(candidate) => candidate.name}
-      disabled={pending !== null}
+      disabled={false}
       onSelect={(candidate) => void toggle(candidate)}
     >
       {(candidate) => {

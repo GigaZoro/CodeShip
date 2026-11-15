@@ -13,6 +13,7 @@ interface CanvasEdges {
 
 export interface ChatCanvasMeasurements {
   readonly width: number;
+  readonly narrowestWidth?: number;
   readonly height: number;
   readonly padding: number;
   readonly maxChatWidth: number;
@@ -50,6 +51,7 @@ const sameEdges = (a: CanvasEdges | null, b: CanvasEdges | null) =>
 
 const sameMeasurements = (a: ChatCanvasMeasurements, b: ChatCanvasMeasurements) =>
   a.width === b.width &&
+  a.narrowestWidth === b.narrowestWidth &&
   a.height === b.height &&
   a.padding === b.padding &&
   a.maxChatWidth === b.maxChatWidth &&
@@ -87,6 +89,7 @@ export type ChatCanvasStore = ReturnType<typeof createChatCanvasStore>;
 function resolveDetailsColumn(measurements: ChatCanvasMeasurements) {
   return resolveThreadDetailsCardLayout({
     container: { width: measurements.width, height: measurements.height },
+    narrowestWidth: measurements.narrowestWidth ?? measurements.width,
     lane: { padding: measurements.padding, minChatWidth: measurements.minChatWidth },
     frame: null,
     topInset: measurements.findBar?.bottom ?? 0,
@@ -158,6 +161,7 @@ export function resolveChatCanvasModel({
   });
   const detailsCardPlacement = resolveThreadDetailsCardLayout({
     container,
+    narrowestWidth: measurements.narrowestWidth ?? measurements.width,
     lane,
     frame: layout.frame,
     overlapsDetailsCard: layout.overlapsDetailsCard,

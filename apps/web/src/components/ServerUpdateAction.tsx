@@ -212,6 +212,7 @@ export function ServerUpdatesAction({
               "Update the T3.CodeShip desktop apps on {machines}? They will close and relaunch on those machines.",
               { machines: desktopTargets.map((target) => target.serverLabel).join(", ") },
             ),
+            { initialFocus: "confirm" },
           )) ?? true;
         if (!confirmed) return;
       }
@@ -320,25 +321,23 @@ export function ServerUpdateAction({
   const canUpdate = useAtomValue(sessionStateAtom, canUpdateServer);
   const updatesDenial = managedUpdatesDenial(useManagedPolicy(environmentId));
   const update = useServerUpdate();
+  const updatesInstall =
+    installation?.kind === "npm-global" || installation?.kind === "t3-launcher";
   const { copyToClipboard } = useCopyToClipboard<{ command: string }>({
-    target: installation?.kind === "npm-global" ? t("update command") : t("relaunch command"),
+    target: updatesInstall ? t("update command") : t("relaunch command"),
     onCopy: ({ command }) => {
       toastManager.add({
         type: "success",
-        title:
-          installation?.kind === "npm-global"
-            ? t("Update command copied")
-            : t("Relaunch command copied"),
-        description:
-          installation?.kind === "npm-global"
-            ? t("Run `{command}` on {server}, then restart t3 with your usual options.", {
-                command,
-                server: serverLabel,
-              })
-            : t(
-                "Stop t3 on {server}, then relaunch with `{command}` using the same subcommand and options. This does not update an installed t3 command.",
-                { command, server: serverLabel },
-              ),
+        title: updatesInstall ? t("Update command copied") : t("Relaunch command copied"),
+        description: updatesInstall
+          ? t("Run `{command}` on {server}, then restart t3 with your usual options.", {
+              command,
+              server: serverLabel,
+            })
+          : t(
+              "Stop t3 on {server}, then relaunch with `{command}` using the same subcommand and options. This does not update an installed t3 command.",
+              { command, server: serverLabel },
+            ),
       });
     },
     onError: (error) => {
@@ -364,6 +363,7 @@ export function ServerUpdateAction({
             "Update the T3.CodeShip desktop app that runs the {server}? It will close and relaunch on that machine.",
             { server: serverLabel },
           ),
+          { initialFocus: "confirm" },
         )) ?? true;
       if (!confirmed) {
         return;
@@ -407,7 +407,7 @@ export function ServerUpdateAction({
     selfUpdate === null ? manualServerUpdateCommand(targetVersion, installation) : null;
   const actionLabel =
     manualCommand !== null
-      ? installation?.kind === "npm-global"
+      ? updatesInstall
         ? t("Copy update command")
         : t("Copy relaunch command")
       : label;

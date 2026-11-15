@@ -1,15 +1,26 @@
 import { cliInstallCommand } from "@t3tools/shared/cliRelease";
 
 import packageJson from "../../package.json" with { type: "json" };
-import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
-import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import {
+  BUILD_MIGRATION_HEAD,
+  BUILD_CODESHIP_MIGRATION_HEAD,
+  recordedMigrations,
+} from "../persistence/databaseMigrationHead.ts";
+import { reconciledCodeShipMigrationHistory } from "../persistence/reconcileCodeShipMigrationLedger.ts";
+import { skippedV2Migrations } from "../persistence/Migrations.ts";
+import { reconciledV2PreviewHistory } from "../persistence/reconcileV2PreviewMigration.ts";
+import {
+  isSupportedLauncherProtocol,
+  SERVICE_LAUNCHER_PROTOCOL,
+  type SupportedLauncherProtocol,
+} from "./serviceProtocol.ts";
 
 export type ServicePreflightResult =
   | {
       readonly status: "ready";
       readonly version: string;
-      readonly launcherProtocol: typeof SERVICE_LAUNCHER_PROTOCOL;
-      /** Whether starting this build would apply a migration to the database. */
+      /** The launcher protocol the server named; it accepts no other in reply. */
+      readonly launcherProtocol: SupportedLauncherProtocol;
       readonly migratesDatabase: boolean;
     }
   | {
@@ -24,14 +35,15 @@ export function runServicePreflight(input: {
   readonly version?: string;
 }): ServicePreflightResult {
   const version = input.version ?? packageJson.version;
-  if (input.launcherProtocol !== SERVICE_LAUNCHER_PROTOCOL) {
+  const { launcherProtocol } = input;
+  if (!isSupportedLauncherProtocol(launcherProtocol)) {
     return {
       status: "blocked",
       version,
       // A stale `t3` earlier on PATH (an old npm/nvm global) makes `t3 service install`
       // reinstall itself and report success, so name the exact install and the path check.
       reason: [
-        `The installed service launcher speaks protocol ${input.launcherProtocol}, but t3@${version} requires protocol ${SERVICE_LAUNCHER_PROTOCOL}.`,
+        `The installed service launcher speaks protocol ${launcherProtocol}, but t3@${version} requires protocol ${SERVICE_LAUNCHER_PROTOCOL}.`,
         `On the server machine, install this exact CLI: \`${cliInstallCommand(version)}\`.`,
         `Check that \`t3 --version\` prints ${version} and that \`which -a t3\` lists no older t3 (such as an npm or nvm install) first, then run \`~/.local/bin/t3 service install\` (the installer's default path).`,
         "Updating the desktop app does not update this CLI, and `t3 service update` only repairs the service with whichever CLI runs it.",
@@ -39,14 +51,24 @@ export function runServicePreflight(input: {
     };
   }
 
-  const newer = newerRecordedMigrations(input.databasePath);
-  if (newer === null) {
+  const recorded = recordedMigrations(input.databasePath);
+  const fork = recordedMigrations(input.databasePath, "codeship_migrations");
+  if (recorded === null || fork === null) {
     return {
       status: "blocked",
       version,
       reason: `Could not read this database to confirm t3@${version} supports it.`,
     };
   }
+  const ledgers = reconciledCodeShipMigrationHistory(recorded, fork);
+  const newer = [
+    ...ledgers.upstream
+      .filter(({ id }) => id > BUILD_MIGRATION_HEAD)
+      .map(({ id, name }) => `${id}_${name}`),
+    ...ledgers.fork
+      .filter(({ id }) => id > BUILD_CODESHIP_MIGRATION_HEAD)
+      .map(({ id, name }) => `codeship:${id}_${name}`),
+  ];
   if (newer.length > 0) {
     return {
       status: "blocked",
@@ -55,44 +77,50 @@ export function runServicePreflight(input: {
     };
   }
 
+  // Startup reconciles V2 preview ids before it checks the history, so check what it will see.
+  const reconciled = reconciledV2PreviewHistory(ledgers.upstream);
+  const incompatible = [
+    ...ledgers.conflicts,
+    ...(reconciled === null
+      ? ["an unexpected V2 preview history"]
+      : skippedV2Migrations(reconciled)),
+  ];
+  if (incompatible.length > 0) {
+    return {
+      status: "blocked",
+      version,
+      reason: `This database has incompatible migration history: ${incompatible.join(", ")}. Start the build that wrote it, or report this migration history so an upgrade path can be added.`,
+    };
+  }
+
   return {
     status: "ready",
     version,
-    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-    migratesDatabase: willMigrate(input.databasePath),
+    launcherProtocol,
+    migratesDatabase:
+      ledgers.moved.length > 0 ||
+      Math.max(0, ...(reconciled ?? []).map(({ id }) => id)) < BUILD_MIGRATION_HEAD ||
+      Math.max(0, ...ledgers.fork.map(({ id }) => id)) < BUILD_CODESHIP_MIGRATION_HEAD,
   };
 }
 
-/** Startup's migrator runs every migration above the highest recorded id, so an empty history or
- * one below this build's head migrates; an unreadable one was already blocked. */
-function willMigrate(databasePath: string): boolean {
-  const recorded = recordedMigrations(databasePath) ?? [];
-  return Math.max(0, ...recorded.map(({ id }) => id)) < BUILD_MIGRATION_HEAD;
-}
-
-/** Migrations a newer build recorded, or null when the database exists but cannot be read.
- * Startup already handles renamed ids this build knows. */
-function newerRecordedMigrations(databasePath: string): ReadonlyArray<string> | null {
-  const recorded = recordedMigrations(databasePath);
-  return recorded === null
-    ? null
-    : recorded.filter(({ id }) => id > BUILD_MIGRATION_HEAD).map(({ id, name }) => `${id}_${name}`);
-}
-
-export function decodeServicePreflightResult(value: unknown): ServicePreflightResult | undefined {
+export function decodeServicePreflightResult(
+  value: unknown,
+  launcherProtocol: SupportedLauncherProtocol,
+): ServicePreflightResult | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
   }
   const record = value as Record<string, unknown>;
   if (
     record.status === "ready" &&
-    record.launcherProtocol === SERVICE_LAUNCHER_PROTOCOL &&
+    record.launcherProtocol === launcherProtocol &&
     typeof record.version === "string"
   ) {
     return {
       status: "ready",
       version: record.version,
-      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      launcherProtocol,
       // Builds from before this field migrate whenever they need to, so assume they do.
       migratesDatabase: record.migratesDatabase !== false,
     };

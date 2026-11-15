@@ -9,7 +9,11 @@ import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { dispatchPreviewAction, type PreviewAction } from "../components/preview/previewActionBus";
 import { newThreadAsksForProject } from "../components/Sidebar.logic";
-import { createNewThreadHandler, resolveDefaultProjectRef } from "../hooks/useHandleNewThread";
+import {
+  createNewThreadHandler,
+  readLastUsedProjectKey,
+  resolveDefaultProjectRef,
+} from "../hooks/useHandleNewThread";
 import { createScratchProjectActions } from "../hooks/useScratchProject";
 import { getClientSettings } from "../hooks/useSettings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -18,6 +22,7 @@ import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { readProjects, readThreadShell } from "../state/entities";
+import { defaultProjectFallbackReadyAtom } from "../state/projects";
 import { environmentPresentations } from "../state/presentation";
 import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { readEnvironmentScope } from "../state/session";
@@ -50,6 +55,13 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
     const target = readRouteTarget();
     return target?.kind === "server" ? target.threadRef : null;
   };
+  const readRouteEnvironmentId = () => {
+    const target = readRouteTarget();
+    if (!target) return null;
+    return target.kind === "server"
+      ? target.threadRef.environmentId
+      : (useComposerDraftStore.getState().getDraftSession(target.draftId)?.environmentId ?? null);
+  };
   const readPreviewOpen = () => {
     const threadRef = readRouteThreadRef();
     // Store-only on purpose: the URL-aware arbitration lives in ChatView's
@@ -59,6 +71,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       : false;
   };
   const readThreadContext = () => {
+    const lastUsedProjectKey = readLastUsedProjectKey();
     const target = readRouteTarget();
     const drafts = useComposerDraftStore.getState();
     const activeThread = target?.kind === "server" ? readThreadShell(target.threadRef) : null;
@@ -70,7 +83,11 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
     return {
       activeDraftThread,
       activeThread: activeThread ?? undefined,
-      defaultProjectRef: resolveDefaultProjectRef(readProjects()),
+      defaultProjectRef: resolveDefaultProjectRef(
+        readProjects(),
+        lastUsedProjectKey,
+        appAtomRegistry.get(defaultProjectFallbackReadyAtom(lastUsedProjectKey)),
+      ),
       handleNewThread,
     };
   };
@@ -119,8 +136,8 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
     (action: PreviewAction): CommandHandler =>
     (event) => {
       claim(event);
-      const threadRef = readRouteThreadRef();
-      if (threadRef && canOperatePreview(threadRef.environmentId)) dispatchPreviewAction(action);
+      const environmentId = readRouteEnvironmentId();
+      if (environmentId && canOperatePreview(environmentId)) dispatchPreviewAction(action);
     };
 
   const disposeMenuAction = registerMenuAction("chat.new", () => {
@@ -168,6 +185,7 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       "preview.zoomIn": previewCommand("zoom-in"),
       "preview.zoomOut": previewCommand("zoom-out"),
       "preview.resetZoom": previewCommand("reset-zoom"),
+      "preview.find": previewCommand("find"),
     },
     {
       when: isLive,

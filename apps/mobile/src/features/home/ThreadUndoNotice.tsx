@@ -11,9 +11,9 @@ import {
   useNativeColumnLayoutMetrics,
 } from "../../native/native-layout-metrics";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
-import { workspaceSearchBottomClearance } from "../workspace/workspace-tabs-state";
+import { workspaceSearchBottomClearance } from "../layout/workspace/workspace-tabs-state";
 import { androidHomeFabPosition } from "./AndroidHomeFab.shared";
-import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
+import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import {
   dismissThreadUndoNotice,
   readThreadUndoNotice,

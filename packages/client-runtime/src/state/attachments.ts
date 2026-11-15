@@ -195,9 +195,10 @@ export function clampFileAttachmentUploadBytes(advertisedMaxUploadBytes: number)
 }
 
 export function formatAttachmentSize(sizeBytes: number): string {
-  return sizeBytes >= 1024 * 1024
+  const kilobytes = Math.max(1, Math.ceil(sizeBytes / 1024));
+  return kilobytes >= 1024
     ? t("{size} MB", { size: (sizeBytes / (1024 * 1024)).toFixed(1) })
-    : t("{size} KB", { size: Math.max(1, Math.ceil(sizeBytes / 1024)) });
+    : t("{size} KB", { size: kilobytes });
 }
 
 export function fileAttachmentTooLargeMessage(name: string, maxUploadBytes: number): string {

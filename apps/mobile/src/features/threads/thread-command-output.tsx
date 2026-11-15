@@ -56,11 +56,6 @@ export function ThreadCommandOutput(props: {
   }
   return (
     <View className="pt-1.5">
-      {data?.output.truncated ? (
-        <Text className="pb-0.5 text-3xs text-foreground-subtle">
-          {t("Earlier output not shown")}
-        </Text>
-      ) : null}
       <ScrollView
         ref={scrollRef}
         nestedScrollEnabled
@@ -78,6 +73,11 @@ export function ThreadCommandOutput(props: {
           if (followRef.current) scrollRef.current?.scrollToEnd({ animated: false });
         }}
       >
+        {data?.output.truncated ? (
+          <Text className="pb-0.5 text-3xs text-foreground-subtle">
+            {t("Earlier output not shown")}
+          </Text>
+        ) : null}
         <Text selectable className="font-mono text-2xs leading-normal text-foreground-muted">
           {spans.map((span, index) =>
             span.style === null ? (

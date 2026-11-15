@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -1704,7 +1705,7 @@ const machineWithSecretStore = (environmentId: EnvironmentId, policy?: ManagedPo
         ServerConfig.layerTest(process.cwd(), { prefix: "t3code-shared-settings-test-" }),
       ),
     ),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
 it.effect("a removal turns off an account that holds this machine's own keys or paths", () =>

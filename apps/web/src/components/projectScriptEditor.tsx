@@ -17,6 +17,7 @@ import {
   type ProjectScriptSaveResult,
 } from "@t3tools/client-runtime/state/projectScriptSaves";
 import { keybindingValueForCommand, parseKeybindingShortcut } from "@t3tools/shared/keybindings";
+import * as Schema from "effect/Schema";
 import {
   commandForProjectScript,
   decodeProjectScriptKeybindingRule,
@@ -68,6 +69,8 @@ import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
 
+const isProjectScriptShortcutError = Schema.is(ProjectScriptShortcutError);
+
 const SCRIPT_ICONS: Array<{ id: ProjectScriptIcon; label: Message }> = [
   { id: "play", label: msg("Play") },
   { id: "test", label: msg("Test") },
@@ -94,6 +97,7 @@ export function ScriptIcon({
 
 export const EMPTY_PROJECT_SCRIPT_INPUT: ProjectScriptSaveInput = {
   ...EMPTY_SCRIPT_INPUT,
+  stopOnSettle: false,
   keybinding: null,
 };
 
@@ -314,6 +318,7 @@ function ProjectScriptEditorForm({
   );
   const [waitForSetup, setWaitForSetup] = useState(request.initial.waitForSetup);
   const [runOnSettle, setRunOnSettle] = useState(request.initial.runOnSettle);
+  const [stopOnSettle, setStopOnSettle] = useState(request.initial.stopOnSettle ?? false);
   const [keybinding, setKeybinding] = useState(request.initial.keybinding ?? "");
   const [previewUrl, setPreviewUrl] = useState(request.initial.previewUrl ?? "");
   const [autoOpenPreview, setAutoOpenPreview] = useState(request.initial.autoOpenPreview);
@@ -458,6 +463,7 @@ function ProjectScriptEditorForm({
         runOnWorktreeCreate,
         waitForSetup: runOnWorktreeCreate && waitForSetup,
         runOnSettle,
+        stopOnSettle,
         ...((scriptId === null && canChangeKeybinding) || changesKeybinding
           ? { keybinding: keybindingRule?.key ?? null }
           : {}),
@@ -482,12 +488,12 @@ function ProjectScriptEditorForm({
         if (result._tag === "Failure") {
           if (!isAtomCommandInterrupted(result)) {
             const error = squashAtomCommandFailure(result);
-            if (error instanceof ProjectScriptShortcutError) {
+            if (isProjectScriptShortcutError(error)) {
               setSavedScript({ id: error.scriptId, name: payload.name });
             }
             setValidationError({
               message: error instanceof Error ? error.message : t("Failed to save action."),
-              field: error instanceof ProjectScriptShortcutError ? "keybinding" : null,
+              field: isProjectScriptShortcutError(error) ? "keybinding" : null,
             });
           }
         } else {
@@ -672,6 +678,13 @@ function ProjectScriptEditorForm({
               <Switch
                 checked={runOnSettle}
                 onCheckedChange={(checked) => setRunOnSettle(Boolean(checked))}
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-sm dark:border-transparent dark:bg-white/[0.035]">
+              <span>{t("Stop this action when the thread settles")}</span>
+              <Switch
+                checked={stopOnSettle}
+                onCheckedChange={(checked) => setStopOnSettle(Boolean(checked))}
               />
             </label>
             <label

@@ -5,6 +5,7 @@ import {
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { UNKNOWN_SOURCE_CONTROL_CLIENT } from "@t3tools/client-runtime/source-control-clients";
+import { activateLanguage } from "@t3tools/shared/i18n";
 import { msg } from "~/i18n";
 import * as Schema from "effect/Schema";
 
@@ -85,6 +86,16 @@ describe("searchSettings", () => {
     expect(searchSettings("machines", ITEMS).map((item) => item.id)).toEqual(["network-access"]);
     expect(searchSettings("claude", ITEMS).map((item) => item.id)).toEqual(["providers"]);
     expect(searchSettings("long lines", ITEMS).map((item) => item.id)).toEqual(["word-wrap"]);
+    activateLanguage({
+      language: "uk",
+      catalog: { "Word wrap": "Ajuste de línea" },
+      formattingLocale: undefined,
+    });
+    try {
+      expect(searchSettings("ajuste", ITEMS).map((item) => item.id)).toEqual(["word-wrap"]);
+    } finally {
+      activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+    }
     for (const query of ["fallback", "fallback agent", "fallback model"]) {
       expect(searchSettings(query)[0]).toMatchObject({
         id: "fallback-model",
@@ -122,6 +133,13 @@ describe("searchSettings", () => {
   it("hides the Secrets page from nav and search while the secrets feature is disabled", () => {
     expect(SETTINGS_NAV_GROUPS.flatMap((group) => group.paths)).not.toContain("/settings/secrets");
     expect(searchSettings("1password").map((item) => item.to)).not.toContain("/settings/secrets");
+  });
+
+  it("finds the Scheduled tasks page", () => {
+    expect(searchSettings("scheduled tasks")[0]).toMatchObject({
+      id: "scheduled-tasks-page",
+      to: "/scheduled-tasks",
+    });
   });
 
   it("matches normalized title substrings", () => {
@@ -162,7 +180,6 @@ describe("searchSettings", () => {
       hasCloudPublicConfig: false,
       hasEnvironment: false,
       hasProviderSettingsEnvironment: false,
-      hasMacProviderSettingsEnvironment: false,
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: false,
@@ -174,7 +191,6 @@ describe("searchSettings", () => {
       "network-access",
       "publish-agent-activity",
       "provider-health-check-interval",
-      "cursor-keychain-usage",
       "source-control-writer-model",
       "review-guide-model",
       "review-guide-instructions",
@@ -196,7 +212,6 @@ describe("searchSettings", () => {
       hasCloudPublicConfig: false,
       hasEnvironment: true,
       hasProviderSettingsEnvironment: true,
-      hasMacProviderSettingsEnvironment: false,
       canManageLocalBackend: false,
       localEnvironmentDisabled: true,
       isWslSettingsRowVisible: false,
@@ -215,6 +230,25 @@ describe("searchSettings", () => {
         targetId: "linked-environments",
       }),
     );
+  });
+
+  it("finds the Welcome page only where a primary computer can open it", () => {
+    const availability = {
+      hasCloudPublicConfig: true,
+      hasEnvironment: true,
+      hasProviderSettingsEnvironment: true,
+      canManageLocalBackend: false,
+      isWslSettingsRowVisible: false,
+      hasThreadAutoSettlement: false,
+    };
+    const ids = (hasPrimaryEnvironment: boolean) =>
+      searchSettings(
+        "welcome page",
+        filterAvailableSettingsSearchItems({ ...availability, hasPrimaryEnvironment }),
+      ).map((item) => item.id);
+    // Hosted web reaches remote computers but has no primary one to set up.
+    expect(ids(false)).not.toContain("welcome-page");
+    expect(ids(true)).toContain("welcome-page");
   });
 
   it("finds keybinding commands by label, command id, and default key", () => {
@@ -250,7 +284,8 @@ describe("searchSettings", () => {
       ["Fallback model", "fallback-model"],
       ["Auto mode", "auto-mode"],
       ["Titles and background text", "text-generation-model"],
-      ["Commit and pull request writing", "source-control-writer-model"],
+      ["Commit and pull request writing", "source-control-writing-style"],
+      ["Commit and pull request writing model", "source-control-writer-model"],
       ["Final review", "final-review"],
       ["Delegated tasks", "delegated-task-models"],
     ] as const) {
@@ -286,13 +321,17 @@ describe("settings search targets", () => {
     expect(isSettingsSearchScopeAvailable(fallback.scope, "environment")).toBe(true);
     expect(isSettingsSearchScopeAvailable(fallback.scope, "all")).toBe(true);
     expect(isSettingsSearchScopeAvailable(fallback.scope, "project")).toBe(false);
-    for (const id of ["response-streaming", "skill-availability"]) {
+    for (const id of ["response-streaming", "skill-availability", "speech-project-dictionary"]) {
       const setting = getSettingsSearchTargetScope(id)!;
       expect(setting.scope).toBe("project-defaults");
       expect(isSettingsSearchScopeAvailable(setting.scope, "project")).toBe(true);
     }
+    for (const scope of ["all", "environment", "project"] as const) {
+      expect(isSettingsSearchScopeAvailable("project-defaults", scope)).toBe(true);
+    }
     for (const id of [
       "pull-request-links-open-in-app",
+      "tool-call-visibility",
       "sidebar-grouping",
       "sidebar-group-by-machine",
     ]) {
@@ -322,7 +361,6 @@ describe("auto-settlement search availability", () => {
       hasCloudPublicConfig: false,
       hasEnvironment: true,
       hasProviderSettingsEnvironment: true,
-      hasMacProviderSettingsEnvironment: false,
       canManageLocalBackend: false,
       isWslSettingsRowVisible: false,
       hasThreadAutoSettlement: availability.eligibleEnvironmentIds.length > 0,

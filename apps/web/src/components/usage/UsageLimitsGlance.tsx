@@ -40,7 +40,7 @@ export function limitPoolLabel(pool: LimitPool): string {
 
 export function limitWindowLabel(pool: LimitPool, window: LimitPoolWindow): string {
   return (
-    (pool.driver === "cursor" ? cursorUsageWindowDetails(window.id)?.label : undefined) ??
+    (pool.driver === "cursor" ? cursorUsageWindowDetails(window.id, pool)?.label : undefined) ??
     window.label
   );
 }

@@ -17,12 +17,12 @@ import {
   terminalOutputPlainText,
 } from "@t3tools/shared/terminalOutput";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 
-import { FORWARDED_WAIT_CHUNK_MS } from "../../../peer/PeerForwarding.ts";
+import { MAX_WAIT_TIMEOUT_MS as FORWARDED_MAX_WAIT_MS } from "../../../peer/PeerForwarding.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";
@@ -197,7 +197,7 @@ const describeTerminals = (sessions: ReadonlyArray<TerminalManager.TerminalThrea
   sessions.map((session) => `${session.terminalId} (${session.label})`).join(", ");
 
 /** A link's request goes idle while the terminal is watched, and T3 Connect drops idle ones. */
-const LINKED_MAX_WAIT_SECONDS = FORWARDED_WAIT_CHUNK_MS / 1000;
+const LINKED_MAX_WAIT_SECONDS = FORWARDED_MAX_WAIT_MS / 1000;
 
 const watchTerminal = (
   terminals: TerminalManager.TerminalManager["Service"],
@@ -261,7 +261,7 @@ const openThreadTerminal = Effect.fn("mcp.terminalOpenForAgent")(function* (
   };
   const cwd = projectScriptCwd(folder);
   // Unique, as the panel's are when it cannot see every terminal: another agent may open one now.
-  const unique = yield* (yield* Crypto.Crypto).randomUUIDv4().pipe(Effect.orDie);
+  const unique = yield* (yield* SecureRandom.SecureRandom).uuidV4();
   const target = { threadId: thread.id, terminalId: nextTerminalId(existingTerminalIds, unique) };
   const failure = yield* Effect.scoped(
     Effect.gen(function* () {
@@ -303,7 +303,12 @@ export const layer = McpToolAccess.toLayer(TerminalToolkit, {
         .getThreadShell(threadId)
         .pipe(Effect.mapError(unavailable));
       if (thread === null || thread.deletedAt !== null) {
-        return yield* threadNotFound(context.threads, threadId, "The thread was not found.");
+        return yield* threadNotFound(
+          context.threads,
+          context.scope,
+          threadId,
+          "The thread was not found.",
+        );
       }
       if ((yield* accessLevel(thread.projectId)) === "none") return yield* readOff(context);
       const terminals = yield* TerminalManager.TerminalManager;
@@ -344,7 +349,12 @@ export const layer = McpToolAccess.toLayer(TerminalToolkit, {
             ? context.caller
             : yield* context.threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         if (thread === null || thread.deletedAt !== null) {
-          return yield* threadNotFound(context.threads, threadId, "The thread was not found.");
+          return yield* threadNotFound(
+            context.threads,
+            context.scope,
+            threadId,
+            "The thread was not found.",
+          );
         }
         if (thread.archivedAt !== null) {
           return yield* invalid(

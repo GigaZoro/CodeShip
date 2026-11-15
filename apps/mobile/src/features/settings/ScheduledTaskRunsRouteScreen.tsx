@@ -15,7 +15,8 @@ import type {
   ScheduledTaskRunRecord,
   ThreadId,
 } from "@t3tools/contracts";
-import { Platform, Pressable, RefreshControl, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
+import { RefreshControl } from "../../components/ui/RefreshControl";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -25,7 +26,7 @@ import { t } from "../../lib/i18n";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { usePullToRefresh } from "../../state/use-pull-to-refresh";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";

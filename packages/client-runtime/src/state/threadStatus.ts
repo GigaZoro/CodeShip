@@ -82,6 +82,7 @@ export const THREAD_STATUS_DISPLAY = {
   failed: { label: msg("Failed"), summary: msg("Thread failed"), tone: "error" },
   limited: { label: msg("Limited"), summary: msg("Usage limit reached"), tone: "attention" },
   starting: { label: msg("Starting"), tone: "active" },
+  settingUp: { label: msg("Setting up"), tone: "active" },
   working: { label: msg("Working"), summary: msg("Working"), tone: "active" },
   goal: { label: msg("Goal"), tone: "active" },
   waiting: { label: msg("Waiting"), tone: "muted" },

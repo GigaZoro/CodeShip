@@ -4,7 +4,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronDownIcon, SettingsIcon, SparklesIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, SettingsIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
 import {
@@ -34,7 +34,7 @@ export function ThreadAssistantsControl(props: {
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const only = props.assistants.length === 1 ? props.assistants[0] : undefined;
-  const PrimaryIcon = only ? BROWSER_ASSISTANTS[only.kind].Icon : SparklesIcon;
+  const PrimaryIcon = only ? BROWSER_ASSISTANTS[only.kind].Icon : BotIcon;
   const primaryLabel = only ? browserAssistantLabel(only) : t("Web assistants");
 
   return (

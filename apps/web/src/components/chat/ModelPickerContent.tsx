@@ -1,4 +1,5 @@
 import { t } from "~/i18n";
+import { useLegendListRef } from "~/hooks/useLegendListRef";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
@@ -24,6 +25,7 @@ import {
 } from "react";
 import { ModelListRow } from "./ModelListRow";
 import { type ModelPickerTab, ModelPickerSidebar } from "./ModelPickerSidebar";
+import { useProviderWorkspaceSnapshotRefresh } from "./useProviderWorkspaceSnapshotRefresh";
 import { getProviderStatusMessage, hasProviderSetup } from "./ProviderStatusBanner";
 import {
   modelPickerLegacySectionKey,
@@ -31,7 +33,7 @@ import {
   parseModelPickerLegacySectionKey,
   parseModelPickerModelKey,
 } from "./modelPickerKeys";
-import { rankModelPickerSearch } from "./modelPickerSearch";
+import { rankModelPickerSearch } from "@t3tools/client-runtime/model-search";
 import {
   Combobox,
   ComboboxEmpty,
@@ -58,7 +60,7 @@ import { cn } from "~/lib/utils";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
 import { TooltipProvider } from "../ui/tooltip";
 import { InlineButton } from "../ui/button";
-import { CheckIcon, SparklesIcon } from "lucide-react";
+import { CheckIcon, RouteIcon } from "lucide-react";
 import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
@@ -113,7 +115,9 @@ function shouldIncludeModelPickerOption(input: {
   if (isProviderInstancePickerReady(input.entry)) return true;
   return (
     input.entry.enabled &&
-    (input.entry.driverKind === "opencode" || input.entry.driverKind === "antigravity") &&
+    (input.entry.driverKind === "opencode" ||
+      input.entry.driverKind === "antigravity" ||
+      input.entry.driverKind === "cursor") &&
     input.entry.instanceId === input.activeInstanceId &&
     input.option.slug === input.activeModel &&
     input.option.isUnavailable === true
@@ -318,37 +322,12 @@ function ModelPickerList({
   const [showTopScrollFade, setShowTopScrollFade] = useState(false);
   const [showBottomScrollFade, setShowBottomScrollFade] = useState(false);
   const updateScrollFades = () => {
-    const scrollElement = listRef.current?.getScrollableNode();
-    if (!(scrollElement instanceof HTMLElement)) {
-      return;
-    }
-    const maxScrollOffset = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
-    setShowTopScrollFade(scrollElement.scrollTop > 1);
-    setShowBottomScrollFade(maxScrollOffset - scrollElement.scrollTop > 1);
+    const metrics = listRef.current?.getState();
+    if (!metrics) return;
+    setShowTopScrollFade(!metrics.isAtStart);
+    setShowBottomScrollFade(!metrics.isAtEnd);
   };
-
-  // Disabled-reason closures rebuild identical key arrays; compare contents.
-  const itemListKey = JSON.stringify(itemKeys);
-  const [fadesResetFor, setFadesResetFor] = useState(itemListKey);
-  if (fadesResetFor !== itemListKey) {
-    setFadesResetFor(itemListKey);
-    setShowTopScrollFade(false);
-    setShowBottomScrollFade(itemKeys.length > 5);
-  }
-  const measureScrollFades = useEffectEvent(updateScrollFades);
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the list scroller in animation frames after a new list lays out to set scroll fades
-  useLayoutEffect(() => {
-    let nestedFrame = 0;
-    const frame = window.requestAnimationFrame(() => {
-      measureScrollFades();
-      nestedFrame = window.requestAnimationFrame(() => measureScrollFades());
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.cancelAnimationFrame(nestedFrame);
-    };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A new list re-measures its scroll fades once it has laid out.
-  }, [itemListKey]);
+  const scrollRef = useLegendListRef(listRef, updateScrollFades);
 
   return (
     <div
@@ -359,7 +338,7 @@ function ModelPickerList({
     >
       <ComboboxListVirtualized>
         <LegendList<string>
-          ref={listRef}
+          ref={scrollRef}
           data={itemKeys}
           extraData={extraData}
           keyExtractor={(modelKey) => modelKey}
@@ -371,6 +350,7 @@ function ModelPickerList({
           ItemSeparatorComponent={ModelListSeparator}
           onLayout={updateScrollFades}
           onScroll={updateScrollFades}
+          onReady={updateScrollFades}
           className={cn(
             "scrollbar-gutter-stable h-full overflow-x-hidden overscroll-y-contain py-1.5 [&::-webkit-scrollbar-track]:my-2",
             getVirtualizedScrollFadeClassName({
@@ -400,6 +380,8 @@ function WindowKeyDownListener({ onKeyDown }: { onKeyDown: (event: KeyboardEvent
 
 export const ModelPickerContent = memo(function ModelPickerContent(props: {
   environmentId: EnvironmentId | null;
+  /** Keeps the open provider tab's catalog fresh for this directory. */
+  workspaceCwd?: string | null;
   activeInstanceId: ProviderInstanceId;
   model: string;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
@@ -518,7 +500,34 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ) {
       return props.activeInstanceId;
     }
-    return favorites.length > 0 ? "favorites" : props.activeInstanceId;
+    const hasPickableFavorite = favorites.some((favorite) => {
+      const entry = instanceEntries.find((entry) => entry.instanceId === favorite.provider);
+      return (
+        entry !== undefined &&
+        (modelOptionsByInstance.get(favorite.provider) ?? []).some(
+          (option) =>
+            option.slug === favorite.model &&
+            shouldIncludeModelPickerOption({
+              entry,
+              option,
+              activeInstanceId: props.activeInstanceId,
+              activeModel: activeModelSlug,
+            }),
+        )
+      );
+    });
+    return hasPickableFavorite ? "favorites" : props.activeInstanceId;
+  });
+  const { scanning: workspaceModelsScanning } = useProviderWorkspaceSnapshotRefresh({
+    environmentId: props.environmentId,
+    gitCwd: props.workspaceCwd ?? null,
+    instanceId:
+      selectedInstanceId === "favorites" || selectedInstanceId === "auto"
+        ? undefined
+        : selectedInstanceId,
+    providers: instanceEntries.map((entry) => entry.snapshot),
+    // Only the open tab's catalog matters here, whatever the skills setting shares.
+    availability: "provider",
   });
   const favoritesSet = new Set(favorites.map((fav) => providerModelKey(fav.provider, fav.model)));
   const [expandedLegacyInstances, setExpandedLegacyInstances] = useState(
@@ -541,6 +550,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const handleSelectInstance = (instanceId: ModelPickerTab) => {
     setSelectedInstanceId(instanceId);
+    // Focusing the search on touch raises the on-screen keyboard on every provider tap.
+    if (window.matchMedia("(pointer: coarse)").matches) return;
     window.requestAnimationFrame(() => {
       focusSearchInput();
     });
@@ -1130,7 +1141,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       value={AUTO_KEY}
                       className="group w-full !min-w-0 max-w-full cursor-pointer"
                     >
-                      <SparklesIcon className="size-4 shrink-0" aria-hidden />
+                      <RouteIcon className="size-4 shrink-0" aria-hidden />
                       <span className="shrink-0 text-sm leading-snug">{t("Auto")}</span>
                       <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                         {props.auto.detail}
@@ -1201,7 +1212,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   ? t("Auto mode is off")
                   : selectedInstanceId === "favorites" && !isSearching
                     ? t("No favorites yet")
-                    : t("No models found")
+                    : workspaceModelsScanning
+                      ? t("Searching project models...")
+                      : t("No models found")
               }
               onRequestClose={onRequestClose}
               onOpenProviderSetup={onOpenProviderSetup}

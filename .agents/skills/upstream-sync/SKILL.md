@@ -30,6 +30,9 @@ new text is translatable and translated, as well as merged.
   wrapper to take upstream's raw string.
 - Model-facing text (agent instructions, MCP tool descriptions, prompts) stays English; check
   `evals/README.md` when it changes.
+- `apps/server/src/persistence/Migrations/` is upstream's alone. A fork migration found there is
+  moved into `CodeShipMigrations/` with an upgrade step, never renumbered: the migrator skips every
+  id up to the highest recorded one.
 
 ## 3. Make new upstream text translatable
 

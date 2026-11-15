@@ -1,4 +1,9 @@
-import { AuthOrchestrationOperateScope, EnvironmentId, type EditorId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  EnvironmentId,
+  REMOTE_CAPABLE_EDITOR_IDS,
+  type EditorId,
+} from "@t3tools/contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { Cause } from "effect";
 import { AsyncResult } from "effect/reactivity";
@@ -11,6 +16,7 @@ import type { RemoteOpenState } from "../../remoteOpen";
 const state = vi.hoisted(() => ({
   allowed: new Set<string>(),
   remote: { mode: "local-exec" } as RemoteOpenState,
+  clientEditors: ["vscode"] as readonly EditorId[],
   run: vi.fn(),
   openUrl: vi.fn(),
   setPreferred: vi.fn(),
@@ -60,6 +66,7 @@ vi.mock(import("../../editorPreferences"), async (importOriginal) => {
 vi.mock(import("../../remoteOpen"), async (importOriginal) => ({
   ...(await importOriginal()),
   useRemoteOpenState: () => state.remote,
+  useRemoteCapableEditors: () => state.clientEditors,
   useRemoteOpenHint: () => [false, state.markHintSeen] as const,
   openRemoteEditorUrl: state.openUrl,
 }));
@@ -77,6 +84,7 @@ const editors: readonly EditorId[] = ["vscode"];
 async function setup() {
   state.allowed.clear();
   state.remote = { mode: "local-exec" };
+  state.clientEditors = editors;
   state.run.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   state.openUrl.mockReset().mockResolvedValue(true);
   state.setPreferred.mockReset();
@@ -192,11 +200,32 @@ describe("remote editor links", () => {
     await using fixture = await setup();
     const { screen, pressOpenFavorite, FavoriteEditorFallback } = fixture;
     state.remote = { mode: "remote-links", host: { kind: "ssh-alias", host: "sol" } };
+    // A successful open would announce on a real timer that fires in the next test.
+    state.openUrl.mockResolvedValueOnce(false);
     await act(async () => screen.rerender(<FavoriteEditorFallback />));
 
     expect((await pressOpenFavorite()).defaultPrevented).toBe(true);
     expect(state.openUrl).toHaveBeenCalledWith(expect.stringContaining("ssh-remote+sol"));
     expect(state.run).not.toHaveBeenCalled();
+  });
+
+  it("explains why a phone or tablet browser has no editor to open", async () => {
+    await using fixture = await setup();
+    const { renderPicker, byLabel, primaryButton, menuItems, click, pressOpenFavorite } = fixture;
+    state.remote = { mode: "remote-links", host: { kind: "ssh-alias", host: "sol" } };
+    state.clientEditors = [];
+    await renderPicker();
+
+    expect(primaryButton().disabled).toBe(true);
+    expect((await pressOpenFavorite()).defaultPrevented).toBe(false);
+    await click(byLabel("Choose editor"));
+    await vi.waitFor(() =>
+      expect(menuItems().map((item) => item.textContent)).toEqual([
+        "Open from a computer to edit on Test host",
+      ]),
+    );
+    expect(menuItems()[0]!.getAttribute("aria-disabled")).toBe("true");
+    expect(state.openUrl).not.toHaveBeenCalled();
   });
 });
 
@@ -236,6 +265,7 @@ describe("open in editor announcement", () => {
 it("offers remote browser editors without changing the default or forgetting a selection", async () => {
   await using fixture = await setup();
   state.remote = { mode: "remote-links", host: { kind: "mdns", host: "test.local" } };
+  state.clientEditors = REMOTE_CAPABLE_EDITOR_IDS;
   await fixture.renderPicker();
   await fixture.click(fixture.primaryButton());
   expect(state.openUrl).toHaveBeenLastCalledWith(

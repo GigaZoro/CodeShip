@@ -14,7 +14,6 @@ const state = vi.hoisted(() => ({ environments: [] as readonly EnvironmentUsageS
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.environments }));
 vi.mock("@t3tools/client-runtime/state/usage", () => ({
-  needsCursorKeychainAccess: () => false,
   refreshUsage: vi.fn(),
   usageSummaryInput: (input: unknown) => input,
 }));
@@ -48,7 +47,6 @@ function setup() {
     canReadDiagnostics: true,
     error: null,
     summary,
-    needsCursorKeychainAccess: false,
   };
   state.environments = [answered];
   return { window, answered };

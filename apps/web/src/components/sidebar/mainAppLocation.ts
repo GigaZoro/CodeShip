@@ -2,6 +2,7 @@ import { useLocation, useNavigate, type AnyRouter } from "@tanstack/react-router
 
 import { GUEST_PAGE_PATH } from "../../guestPage";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { withoutAssistantCitationHash } from "../../lib/assistantCitationNavigation";
 
 export function isSettingsPage(pathname: string) {
   return pathname === "/settings" || pathname.startsWith("/settings/");
@@ -54,7 +55,7 @@ export function startMainAppLocationTracking(router: AnyRouter): () => void {
   const record = () => {
     const { pathname, href } = router.state.location;
     if (isSidebarSectionPage(pathname) || SHELL_LESS_PATHS.has(pathname)) return;
-    mainAppHref = href;
+    mainAppHref = withoutAssistantCitationHash(href);
   };
   record();
   return router.subscribe("onResolved", record);

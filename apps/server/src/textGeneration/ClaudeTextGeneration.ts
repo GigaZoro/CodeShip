@@ -3,11 +3,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { type ClaudeSettings, TextGenerationError } from "@t3tools/contracts";
-import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
@@ -34,6 +34,7 @@ import {
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
+import { readClaudeLaunchArgSettings } from "../provider/Drivers/ClaudeSettingsCascade.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -68,11 +69,14 @@ const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
 
-const ClaudeErrorResult = Schema.Struct({ is_error: Schema.Literal(true), result: Schema.String });
+// Only `success` results carry `result`; error subtypes such as
+// error_max_structured_output_retries report through `errors` instead.
+const ClaudeErrorResult = Schema.Struct({
+  is_error: Schema.Literal(true),
+  result: Schema.optionalKey(Schema.String),
+  errors: Schema.optionalKey(Schema.Array(Schema.String)),
+});
 const isClaudeErrorResult = Schema.is(ClaudeErrorResult);
-const decodeLaunchSettings = Schema.decodeEffect(
-  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
-);
 const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 // Claude reports JSON errors on stdout; stderr may contain only wrapper notices.
@@ -81,7 +85,14 @@ function claudeErrorResult(stdout: string): string | undefined {
   const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
   return messages
     .filter(isClaudeErrorResult)
-    .map((message) => message.result.trim())
+    .map((message) =>
+      (
+        message.result ??
+        // error_during_execution mixes CLI telemetry into the list.
+        message.errors?.filter((error) => !error.startsWith("[ede_diagnostic]")).join("\n") ??
+        ""
+      ).trim(),
+    )
     .findLast((result) => result.length > 0);
 }
 
@@ -89,6 +100,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
   modelCatalog: Effect.Effect<ClaudeModelCatalog> = Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG),
+  routeModelCatalog: (
+    catalog: ClaudeModelCatalog,
+    cwd: string,
+  ) => Effect.Effect<ClaudeModelCatalog> = Effect.succeed,
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -129,34 +144,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ),
     );
 
-  // Claude passes one --settings flag, so ours has to carry the launch-arg settings too.
-  // Like the CLI, a value starting with "{" is JSON and anything else is a file path.
-  const readLaunchSettings = Effect.fn("readLaunchSettings")(function* (
-    operation: TextGenerationOperations.Operation,
-    cwd: string,
-  ) {
-    const raw = parseCliArgs(claudeSettings.launchArgs).flags.settings;
-    if (raw === undefined) return {};
-    const value = raw?.trim() ?? "";
-    const fail = (detail: string) => (cause: unknown) =>
-      new TextGenerationError({ operation, detail, cause });
-    if (value.length === 0) {
-      return yield* new TextGenerationError({
-        operation,
-        detail: "The --settings launch argument needs a JSON object or file path.",
-      });
-    }
-    const filePath = path.resolve(cwd, value);
-    const json = value.startsWith("{")
-      ? value
-      : yield* fileSystem
-          .readFileString(filePath)
-          .pipe(Effect.mapError(fail(`Failed to read Claude settings file ${filePath}.`)));
-    return yield* decodeLaunchSettings(json).pipe(
-      Effect.mapError(fail("The --settings launch argument is not a JSON object.")),
-    );
-  });
-
   const runClaudeJson = Effect.fn("runClaudeJson")(function* <S extends Schema.Top>({
     operation,
     cwd,
@@ -167,9 +154,19 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   }: TextGenerationOperations.Request<S>): Effect.fn.Return<
     S["Type"],
     TextGenerationError,
-    S["DecodingServices"]
+    S["DecodingServices"] | Scope.Scope
   > {
-    const catalog = yield* scopedModelCatalog;
+    const workingDirectory =
+      operation === "generateThreadTitle"
+        ? yield* fileSystem
+            .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
+            .pipe(
+              Effect.mapError((cause) =>
+                normalizeCliError("claude", operation, cause, "Failed to create title directory"),
+              ),
+            )
+        : cwd;
+    const catalog = yield* routeModelCatalog(yield* scopedModelCatalog, workingDirectory);
     const resolvedModelSelection = {
       ...modelSelection,
       model: resolveClaudeModelSlug(catalog, modelSelection.model),
@@ -196,7 +193,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       resolvedEffort,
       resolvedModelSelection.model,
     );
-    const ultracode = findDescriptor("ultracode")?.currentValue === true;
+    const ultracode = findDescriptor("ultracode")?.currentValue;
     const thinkingDescriptor = findDescriptor("thinking");
     const fastModeDescriptor = findDescriptor("fastMode");
     // Only a chosen value; otherwise Claude Code's own default applies, as in chat turns.
@@ -206,12 +203,22 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
+    const launchArgSettings = yield* readClaudeLaunchArgSettings({
+      settings: claudeSettings,
+      cwd,
+      fileSystem,
+      path,
+    }).pipe(
+      Effect.mapError(
+        (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+      ),
+    );
     const settings = {
-      ...(yield* readLaunchSettings(operation, cwd)),
+      ...launchArgSettings,
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
-      ...(ultracode ? { ultracode: true } : {}),
+      ...(typeof ultracode === "boolean" ? { ultracode } : {}),
     };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
@@ -222,16 +229,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
       noSessionPersistence: boolean,
     ) {
-      const workingDirectory =
-        operation === "generateThreadTitle"
-          ? yield* fileSystem
-              .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
-              .pipe(
-                Effect.mapError((cause) =>
-                  normalizeCliError("claude", operation, cause, "Failed to create title directory"),
-                ),
-              )
-          : cwd;
       const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
       const spawnCommand = yield* resolveSpawnCommand(
         claudeSettings.binaryPath || "claude",
@@ -366,5 +363,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
   });
 
-  return TextGenerationOperations.fromRunner("ClaudeTextGeneration", runClaudeJson);
+  return TextGenerationOperations.fromRunner(
+    "ClaudeTextGeneration",
+    <S extends Schema.Top>(request: TextGenerationOperations.Request<S>) =>
+      Effect.scoped(runClaudeJson(request)),
+  );
 });

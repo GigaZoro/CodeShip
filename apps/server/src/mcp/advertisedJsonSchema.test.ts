@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
 import { OrchestratorMcpSaveScheduledTaskInput } from "@t3tools/contracts";
+import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 
 import { advertisedJsonSchema, unknownArguments } from "./advertisedJsonSchema.ts";
 
@@ -110,4 +111,19 @@ it("finds the arguments a schema does not take, but none under a shape that keep
   expect(unknownArguments(advertisedJsonSchema(tool), args)).toEqual(unknown);
   expect(unknownArguments(Tool.getJsonSchema(tool), args)).toEqual(unknown);
   expect(unknownArguments(Tool.getJsonSchema(Tool.make("none")), { added: 1 })).toEqual(["added"]);
+});
+
+it("advertises only string enum values, which Gemini requires", () => {
+  const enumValues: Array<unknown> = [];
+  const collect = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(collect);
+    if (typeof node !== "object" || node === null) return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "enum" && Array.isArray(value)) enumValues.push(...value);
+      else collect(value);
+    }
+  };
+  collect(advertisedJsonSchema(ThemeToolkit.tools.t3_theme_set));
+
+  expect(enumValues.filter((value) => typeof value !== "string")).toEqual([]);
 });

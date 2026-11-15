@@ -1,7 +1,6 @@
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useState } from "react";
-import { Platform, View } from "react-native";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { PullRequestCardGroup, PullRequestCardRow } from "./PullRequestControls";
 import { pullRequestLayerParams } from "./pullRequestStack";
@@ -10,13 +9,13 @@ import type { PullRequestParams } from "./usePullRequestDiff";
 import type { PullRequestStackState } from "./usePullRequestStack";
 import { PullRequestGlyph } from "./pullRequestGlyphs";
 import { t } from "../../lib/i18n";
+import { withKnownPullRequestSummary } from "../../state/use-thread-pr";
 
 export function PullRequestStackCard(props: {
   readonly params: PullRequestParams;
   readonly state: PullRequestStackState;
 }) {
   const navigation = useNavigation();
-  const selectDetail = useSelectWorkspaceDetail();
   const [expanded, setExpanded] = useState(false);
   const stack = props.state.stack;
   if (!stack) {
@@ -78,12 +77,15 @@ export function PullRequestStackCard(props: {
                   onPress={
                     selected
                       ? undefined
-                      : () => {
-                          const params = pullRequestLayerParams(props.params, layer.number);
-                          if (Platform.OS === "android")
-                            selectDetail({ name: "PullRequest", params });
-                          else navigation.dispatch(StackActions.push("PullRequest", params));
-                        }
+                      : () =>
+                          navigation.dispatch(
+                            StackActions.push(
+                              "PullRequest",
+                              withKnownPullRequestSummary(
+                                pullRequestLayerParams(props.params, layer.number),
+                              ),
+                            ),
+                          )
                   }
                   last={index === stack.layers.length - 1}
                 />

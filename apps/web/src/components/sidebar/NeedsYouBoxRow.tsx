@@ -267,8 +267,8 @@ export const NeedsYouBoxRow = memo(function NeedsYouBoxRow(props: {
   return (
     <li className="list-none">
       <div
-        role="treeitem"
-        tabIndex={-1}
+        role="button"
+        tabIndex={0}
         data-sidebar-row={`needs-you:${scopedThreadKey(threadRef)}`}
         data-sidebar-parent={later ? NEEDS_YOU_LATER_ROW_ID : undefined}
         aria-label={accessibility.label}

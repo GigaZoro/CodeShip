@@ -41,7 +41,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           instanceId: instanceIdSource,
           model: raw.model,
         };
-        if (raw.options !== undefined) base.options = raw.options;
+        if (raw.options !== undefined && raw.options !== null) base.options = raw.options;
         if (raw.autoAccount !== undefined) base.autoAccount = raw.autoAccount;
         return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
       },

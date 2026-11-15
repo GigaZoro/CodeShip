@@ -57,6 +57,20 @@ export function createOptimisticThreadLifecycle(
     }),
   );
 
+  // Until the durable snapshot catches up, an older pending update can still replace what shows.
+  const pendingThreadIdsAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get): ReadonlySet<ThreadId> =>
+        new Set(
+          get(pendingAtom(environmentId)).flatMap((update) =>
+            update.threadId === undefined
+              ? (get(sourceSnapshotAtom(environmentId))?.threads.map((thread) => thread.id) ?? [])
+              : [update.threadId],
+          ),
+        ),
+    ),
+  );
+
   /** Shows the update until the snapshot reaches the command's sequence; a failure drops it. */
   function track<Input, E, C extends SequencedCommand<Input, E>>(
     command: Wrappable<C, Input, E>,
@@ -130,5 +144,5 @@ export function createOptimisticThreadLifecycle(
     return track(command, () => undefined, apply);
   }
 
-  return { snapshotAtom, wrap, wrapEveryThread };
+  return { snapshotAtom, pendingThreadIdsAtom, wrap, wrapEveryThread };
 }

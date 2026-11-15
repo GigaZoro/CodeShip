@@ -7,11 +7,9 @@ import {
 } from "@t3tools/client-runtime/source-control-clients";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
-import { Check, Copy } from "lucide";
-import { CheckIcon, ExternalLinkIcon } from "lucide-react";
+import { CheckIcon, ExternalLinkIcon, CopyIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
-import { MorphIcon } from "~/components/MorphIcon";
 import { CodeShipAppIcon } from "~/components/CodeShipAppIcon";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
@@ -105,7 +103,9 @@ export function SourceControlAppSignInSettings({
     readHostCredentialSettings(settings, definition.kind),
   );
   const signedIn = (signIns[host] ?? "").length > 0;
-  const tokenOverrides = (tokens[host] ?? "").length > 0;
+  const token = tokens[host];
+  // A token read from a secret provider overrides the sign-in like a saved one.
+  const tokenOverrides = typeof token === "string" ? token.length > 0 : token !== undefined;
   const canSignIn = useAtomValue(
     sourceControlEnvironment.startSignIn.permissionAtom(environmentId),
   );
@@ -176,7 +176,7 @@ export function SourceControlAppSignInSettings({
           })}
         </span>
       ) : tokenOverrides ? (
-        t("Signed in, but the token saved below is used until you remove it.")
+        t("Signed in, but the token saved below is used while it can be read.")
       ) : (
         t("Signed in")
       );
@@ -239,7 +239,7 @@ export function SourceControlAppSignInSettings({
               aria-label={t("Copy code")}
               onClick={() => copyToClipboard(waiting.userCode, undefined)}
             >
-              <MorphIcon className="size-3.5" icon={isCopied ? Check : Copy} />
+              {isCopied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
             </Button>
           </div>
           <div className="grid gap-2 sm:justify-items-end">

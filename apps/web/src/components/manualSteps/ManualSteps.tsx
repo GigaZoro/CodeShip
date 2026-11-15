@@ -104,8 +104,8 @@ function ManualStepRow(props: {
   return (
     <li className="list-none">
       <div
-        role="treeitem"
-        tabIndex={-1}
+        role="button"
+        tabIndex={0}
         data-sidebar-row={`manual-step:${step.threadId}`}
         data-sidebar-parent={props.parentRowId}
         aria-label={[
@@ -192,8 +192,8 @@ function DetectedStepRow(props: {
   return (
     <li className="list-none">
       <div
-        role="treeitem"
-        tabIndex={-1}
+        role="button"
+        tabIndex={0}
         data-sidebar-row={`detected-step:${detectedManualStepKey(entry)}`}
         data-sidebar-parent={props.parentRowId}
         aria-label={[text.step, text.detail, machine].filter(Boolean).join(", ")}
@@ -257,8 +257,8 @@ function SignInAllRow(props: {
   return (
     <li className="list-none">
       <div
-        role="treeitem"
-        tabIndex={-1}
+        role="button"
+        tabIndex={0}
         data-sidebar-row={`sign-in-all:${props.entries[0]?.environmentId ?? ""}:${props.entries[0]?.step.machine ?? ""}`}
         data-sidebar-parent={props.parentRowId}
         aria-label={[label, machine].filter(Boolean).join(", ")}
@@ -356,7 +356,6 @@ function ManualStepsBody(props: {
     <>
       <ul
         ref={attachSidebarTree}
-        role="tree"
         aria-label={t("Manual steps")}
         className="flex min-h-0 flex-col gap-px overflow-y-auto overscroll-contain"
       >
@@ -520,8 +519,6 @@ export function ManualStepsSidebarSection() {
     <>
       <li className="mx-0.5 h-8 shrink-0 list-none">
         <CollapsibleSectionHeader
-          role="treeitem"
-          tabIndex={-1}
           data-sidebar-row={MANUAL_STEPS_ROW_ID}
           {...hideManualStepsMenu}
           expanded={expanded}
@@ -588,7 +585,6 @@ function ManualStepsMachineSection(props: {
       {group.detected.length > 0 ? (
         <ul
           ref={attachSidebarTree}
-          role="tree"
           aria-label={t("Sign-ins on {machine}", { machine: group.machine })}
           className="mb-3 flex flex-col gap-px rounded-2xl border border-border/70 bg-sidebar p-1.5 text-sidebar-foreground"
         >

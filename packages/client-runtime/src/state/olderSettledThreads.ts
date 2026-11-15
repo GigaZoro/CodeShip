@@ -95,7 +95,7 @@ export function sortOlderSettledScopes(
 
 /**
  * Changes whenever the older counts can: any removal (by largest sequence, so a repeat counts), an
- * older row that arrives, unsettles or moves to another folder. Threads created after the cut never
+ * older row that arrives, unsettles or moves to another project or folder. Threads created after the cut never
  * enter it, as threads settle after creation; archiving arrives as a removal.
  */
 export function olderSettledCountKey(
@@ -110,7 +110,9 @@ export function olderSettledCountKey(
     if (!isListedThreadLineage(thread.lineage)) continue;
     const older = isOlderSettledThreadShell(thread, beforeMs);
     if (older || DateTime.toEpochMillis(thread.createdAt) < beforeMs) {
-      rows.push(`${thread.id}:${older ? `1:${threadFolderKeyOf(thread.folder) ?? ""}` : 0}`);
+      rows.push(
+        `${thread.id}:${thread.projectId}:${older ? `1:${threadFolderKeyOf(thread.folder) ?? ""}` : 0}`,
+      );
     }
   }
   return `${lastRemoval}|${rows.sort().join(",")}`;
@@ -479,7 +481,8 @@ export function createOlderSettledThreadAtoms<R, ER, E>(
   );
   const searchReadAtom = createEnvironmentQueryAtomFamily(runtime, {
     label: "environment-data:orchestration:older-settled-search",
-    idleTtlMs: 60_000,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
     execute: Effect.fn("OlderSettledThreads.search")(function* (input: {
       readonly generation: number;
       readonly search: OrchestrationV2SearchThreadsInput;

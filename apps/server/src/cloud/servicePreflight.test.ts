@@ -10,7 +10,7 @@ import {
   BUILD_MIGRATION_HEAD,
   databaseMigrationHead,
 } from "../persistence/databaseMigrationHead.ts";
-import { migrationManifest } from "../persistence/Migrations.ts";
+import { codeShipMigrationManifest, migrationManifest } from "../persistence/Migrations.ts";
 
 import { decodeServicePreflightResult, runServicePreflight } from "./servicePreflight.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
@@ -33,6 +33,21 @@ it.each([1])("blocks legacy launcher protocol %i with exact recovery steps", (la
   expect(reason).toContain("which -a t3");
 });
 
+// regression: #34502 every installed launcher was protocol 3, so protocol 4 blocked every remote update
+it.each([3, SERVICE_LAUNCHER_PROTOCOL])(
+  "is ready under launcher protocol %i and reports it back",
+  (launcherProtocol) => {
+    // A released server accepts a ready result only when it names that server's own protocol.
+    expect(
+      runServicePreflight({
+        databasePath: "/missing/state.sqlite",
+        launcherProtocol,
+        version: "9.8.7",
+      }),
+    ).toEqual({ status: "ready", version: "9.8.7", launcherProtocol, migratesDatabase: true });
+  },
+);
+
 it.layer(NodeServices.layer)("service preflight database", (it) => {
   it.effect("blocks a database that a newer build migrated", () =>
     Effect.gen(function* () {
@@ -46,6 +61,9 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       db.exec("CREATE TABLE effect_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)");
       const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
       for (const [id, name] of migrationManifest) insert.run(id, name);
+      db.exec("CREATE TABLE codeship_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)");
+      const insertFork = db.prepare("INSERT INTO codeship_migrations VALUES (?, ?)");
+      for (const [id, name] of codeShipMigrationManifest) insertFork.run(id, name);
       const preflight = () =>
         runServicePreflight({ databasePath, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL });
 
@@ -57,7 +75,7 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
         BUILD_MIGRATION_HEAD,
       );
       expect(preflight()).toMatchObject({ status: "ready", migratesDatabase: true });
-      insert.run(BUILD_MIGRATION_HEAD, "Restored");
+      insert.run(BUILD_MIGRATION_HEAD, migrationManifest.at(-1)![1]);
       expect(
         runServicePreflight({
           databasePath: path.join(path.dirname(databasePath), "fresh.sqlite"),
@@ -66,12 +84,60 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       ).toMatchObject({ status: "ready", migratesDatabase: true });
       // Builds that predate the field report nothing, which must read as "migrates".
       expect(
-        decodeServicePreflightResult({
-          status: "ready",
-          version: "1.0.0",
-          launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-        }),
+        decodeServicePreflightResult(
+          {
+            status: "ready",
+            version: "1.0.0",
+            launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+          },
+          SERVICE_LAUNCHER_PROTOCOL,
+        ),
       ).toMatchObject({ migratesDatabase: true });
+      db.prepare("UPDATE effect_sql_migrations SET name = ? WHERE migration_id = ?").run(
+        "ForkMigration",
+        BUILD_MIGRATION_HEAD,
+      );
+      const conflict = preflight();
+      expect(conflict.status).toBe("blocked");
+      expect(conflict.status === "blocked" ? conflict.reason : "").toContain("ForkMigration");
+      db.prepare("UPDATE effect_sql_migrations SET name = ? WHERE migration_id = ?").run(
+        migrationManifest.at(-1)![1],
+        BUILD_MIGRATION_HEAD,
+      );
+
+      // Startup reconciles this V2 preview history, so it must not block an update.
+      const preview = path.join(path.dirname(databasePath), "preview.sqlite");
+      const previewDb = new NodeSqlite.DatabaseSync(preview);
+      previewDb.exec(
+        "CREATE TABLE effect_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)",
+      );
+      const insertPreview = previewDb.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of migrationManifest.filter(([id]) => id < 53)) {
+        insertPreview.run(id, name);
+      }
+      insertPreview.run(53, "PullRequestFilesViewed");
+      insertPreview.run(54, "OrchestrationV2");
+      insertPreview.run(55, "RemoveRedundantProjectionIndexes");
+      previewDb.close();
+      expect(
+        runServicePreflight({ databasePath: preview, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL })
+          .status,
+      ).toBe("ready");
+
+      db.exec(
+        "DELETE FROM effect_sql_migrations WHERE migration_id >= 78; DELETE FROM codeship_migrations",
+      );
+      for (const [id, name] of codeShipMigrationManifest) insert.run(id + 77, name);
+      expect(preflight()).toMatchObject({ status: "ready", migratesDatabase: true });
+      expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM codeship_migrations").get()?.count).toBe(0);
+      insertFork.run(codeShipMigrationManifest.at(-1)![0] + 1, "FutureCodeShip");
+      const newerFork = preflight();
+      expect(newerFork.status).toBe("blocked");
+      expect(newerFork.status === "blocked" ? newerFork.reason : "").toContain("FutureCodeShip");
+      db.exec("DELETE FROM codeship_migrations");
+      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id >= 78");
+      for (const [id, name] of migrationManifest.filter(([id]) => id >= 78)) insert.run(id, name);
 
       const newerId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
       insert.run(newerId, "FromNightly");

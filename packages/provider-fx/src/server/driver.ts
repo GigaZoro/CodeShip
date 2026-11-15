@@ -1,7 +1,7 @@
 import { TextGenerationError } from "@t3tools/contracts";
 import { FxSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import type * as Crypto from "effect/Crypto";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -24,6 +24,7 @@ import {
 } from "@t3tools/provider-core/server/driver";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { discoverFxSkills } from "./skills.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
 import {
@@ -58,13 +59,14 @@ const unsupportedTextGeneration: ProviderTextGeneration = (() => {
     generateThreadTitle: () => unsupported("generateThreadTitle"),
     generateReviewGuide: () => unsupported("generateReviewGuide"),
     generateManualStepReview: () => unsupported("generateManualStepReview"),
+    generateTranscriptionPostProcessing: () => unsupported("generateTranscriptionPostProcessing"),
   };
 })();
 
 export type FxDriverEnv =
   | FxAdapterV2DriverEnv
   | ChildProcessSpawner.ChildProcessSpawner
-  | Crypto.Crypto
+  | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | Path.Path
   | ProviderHost.ProviderHost;
@@ -103,7 +105,11 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
       accentColor,
       continuationGroupKey: continuationIdentity.continuationKey,
     });
-    const effectiveConfig = { ...config, enabled } satisfies FxSettings;
+    const effectiveConfig = {
+      ...config,
+      enabled,
+      binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
+    } satisfies FxSettings;
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<FxSettings>>({
       resolveMaintenance: () => Effect.succeed(MAINTENANCE),
@@ -132,7 +138,14 @@ export const FxDriver: ProviderDriver<FxSettings, FxDriverEnv> = {
     const orchestrationAdapter = yield* makeFxAdapterV2Driver(
       snapshot.getSnapshot.pipe(Effect.map((current) => fxDefaultModelId(current.models))),
     )
-      .create({ instanceId, displayName, accentColor, environment, enabled, config })
+      .create({
+        instanceId,
+        displayName,
+        accentColor,
+        environment,
+        enabled,
+        config: effectiveConfig,
+      })
       .pipe(
         Effect.mapError(
           (cause) =>

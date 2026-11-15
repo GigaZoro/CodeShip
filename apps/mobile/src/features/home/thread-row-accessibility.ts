@@ -18,6 +18,7 @@ export interface ThreadRowSpeech {
   readonly searchExcerpt: string | null;
   readonly project: string | null;
   readonly environment: string | null;
+  readonly providerName?: string | null;
   readonly pullRequest: string | null;
 }
 
@@ -46,6 +47,7 @@ export function threadRowAccessibilityLabel(row: ThreadRowSpeech): string {
     row.searchExcerpt,
     row.project,
     row.environment,
+    row.providerName,
     row.pullRequest,
   ]
     .filter(Boolean)

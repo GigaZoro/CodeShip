@@ -46,7 +46,12 @@ export interface ProviderDriverMetadata {
 }
 
 export type ProviderWorkspaceSnapshot = ServerProvider &
-  Pick<ServerProviderWorkspaceSnapshot, "slashCommandsPending" | "optionDescriptors">;
+  Pick<ServerProviderWorkspaceSnapshot, "slashCommandsPending" | "optionDescriptors"> & {
+    /** Set only when the directory's catalog differs from the machine snapshot's. */
+    readonly workspaceModels?: ServerProviderWorkspaceSnapshot["models"];
+    /** The directory's catalog could not be read, so keep the models found before. */
+    readonly workspaceModelsPending?: boolean;
+  };
 
 /** The folder a provider keeps its login in; `secret` when it came from a secret, so it is never written out. */
 export type ProviderConfigFolder =
@@ -69,11 +74,11 @@ export interface ProviderInstance {
   ) => Effect.Effect<ProviderWorkspaceSnapshot, ProviderDriverError>;
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
   readonly invalidateCaches?: Effect.Effect<void>;
-  /** A redeemed reset whose new limits could not be read back succeeds with a `warning`. */
-  readonly consumeResetCredit?: () => Effect.Effect<
-    ProviderConsumeResetCreditResult,
-    ProviderDriverError
-  >;
+  /** Moves a long-lived service onto a newly updated binary before its version is read back. */
+  readonly afterUpdate?: Effect.Effect<void, ProviderDriverError>;
+  readonly consumeResetCredit?: (
+    creditId: string | undefined,
+  ) => Effect.Effect<ProviderConsumeResetCreditResult, ProviderDriverError>;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;

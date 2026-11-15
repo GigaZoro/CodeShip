@@ -13,6 +13,7 @@ import { useClientSettings } from "../../hooks/useSettings";
 import {
   defaultModelSelectionsAreMixed,
   getCustomModelOptionsByInstance,
+  getTextGenerationModelOptionsByInstance,
   resolveAppModelSelectionState,
   resolveEffectiveDefaultModelSelection,
 } from "../../modelSelection";
@@ -24,6 +25,7 @@ import {
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { useInheritedDefaultModelSelection } from "../../state/inheritedDefaultModel";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
+import { useTextGenerationTargets } from "../../textGenerators";
 import { Switch } from "../ui/switch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import {
@@ -34,6 +36,7 @@ import {
 } from "./MachineModelRows";
 import { ModelSelectionControl } from "./ModelSelectionControl";
 import { ModelSubRow } from "./ModelSubRow";
+import { resolveDefaultModelSettingsPresentation } from "./ProjectDefaultsSettings.logic";
 import {
   reviewGuideModelInheritance,
   scheduledTaskModelInheritance,
@@ -160,8 +163,19 @@ export function DefaultModelRow() {
   const supportsLastPicked = useEveryEnvironmentSupports("lastPickedModel");
   const unavailable = state.connectedEnvironments.length === 0;
   const storedAuto = state.storedSelection?.autoAccount === true && autoPick !== null;
-  const effortDisabledReason = selection
-    ? modelDisabledReason(selection.instanceId, selection.model)
+  const providerNote =
+    settings.defaultModelSelection === null
+      ? null
+      : resolveDefaultModelSettingsPresentation({
+          entries,
+          providers,
+          settings,
+          projectId: state.projectId,
+        }).providerNote;
+  // A saved model whose provider cannot run stays shown, with the reason, instead of a stand-in.
+  const shownSelection = providerNote ? settings.defaultModelSelection : selection;
+  const effortDisabledReason = shownSelection
+    ? modelDisabledReason(shownSelection.instanceId, shownSelection.model)
     : null;
   const storedFallback = settings.fallbackModelSelection;
   const fallbackAuto = storedFallback?.autoAccount === true && autoPick !== null;
@@ -193,7 +207,7 @@ export function DefaultModelRow() {
                 "Automatic defaults differ. Select one environment or choose a shared model to edit effort.",
               )
             : t("Defaults differ. Select one environment or choose a shared model to edit effort.")
-          : effortDisabledReason
+          : (providerNote ?? effortDisabledReason)
       }
       resetAction={
         settings.defaultModelSelection !== null ? (
@@ -201,22 +215,22 @@ export function DefaultModelRow() {
         ) : null
       }
       control={
-        selection && entries.length > 0 ? (
+        shownSelection && entries.length > 0 ? (
           <ModelSelectionControl
             environmentId={representative?.environmentId ?? null}
             label={t("Default model")}
-            shown={selection}
+            shown={shownSelection}
             entries={entries}
             modelOptionsByInstance={getCustomModelOptionsByInstance(
               settings,
               providers,
-              selection.instanceId,
-              selection.model,
+              shownSelection.instanceId,
+              shownSelection.model,
             )}
             {...(mixedModel
               ? { triggerLabel: automaticModel ? t("Automatic (mixed)") : t("Mixed") }
               : {})}
-            showEffort={!mixedModel && !effortDisabledReason}
+            showEffort={!mixedModel && !providerNote && !effortDisabledReason}
             auto={{ pick: autoPick, checked: !mixedModel && storedAuto }}
             disabledReason={modelDisabledReason}
             failureTitle={t("Default model not saved")}
@@ -407,6 +421,8 @@ function TextGenerationModelControl({
   failureTitle,
   shown,
   providers,
+  entries,
+  disabledReason,
   triggerLabel,
   showEffort,
   unavailableMessage,
@@ -417,6 +433,9 @@ function TextGenerationModelControl({
   readonly failureTitle: string;
   readonly shown: ModelSelection;
   readonly providers: TextGenerationState["textGenerationProviders"];
+  /** Replaces the scope's agent instances, for a row that also offers text generators. */
+  readonly entries?: TextGenerationState["entries"];
+  readonly disabledReason?: TextGenerationState["disabledReason"];
   readonly triggerLabel: string | undefined;
   readonly showEffort: boolean;
   readonly unavailableMessage: string;
@@ -438,8 +457,8 @@ function TextGenerationModelControl({
       environmentId={state.environmentId}
       label={label}
       shown={shown}
-      entries={state.entries}
-      modelOptionsByInstance={getCustomModelOptionsByInstance(
+      entries={entries ?? state.entries}
+      modelOptionsByInstance={getTextGenerationModelOptionsByInstance(
         state.settings,
         providers,
         shown.instanceId,
@@ -447,7 +466,7 @@ function TextGenerationModelControl({
       )}
       {...(triggerLabel !== undefined ? { triggerLabel } : {})}
       showEffort={showEffort}
-      disabledReason={state.disabledReason}
+      disabledReason={disabledReason ?? state.disabledReason}
       failureTitle={failureTitle}
       {...(openProviderSetup ? { onOpenProviderSetup: openProviderSetup } : {})}
       onChange={onChange}
@@ -513,7 +532,24 @@ function TitlesModelRow() {
 /** The model that writes commit messages, pull request text, and branch or bookmark names. */
 function SourceControlWriterModelRow() {
   const state = useTextGenerationState();
-  const { settings, updateSettings, projectEffectiveProviders, projectId } = state;
+  const { settings, updateSettings, textGenerationProviders, projectId } = state;
+  // Text generators may write source control text, but never review guides.
+  const writerTargets = useTextGenerationTargets({
+    environmentId: state.environmentId,
+    settings,
+    providers: textGenerationProviders,
+    projectId,
+    selections: [settings.sourceControlWriterModelSelection, settings.textGenerationModelSelection],
+  });
+  const writerEnabledIds = new Set(
+    writerTargets.entries
+      .filter((entry) => entry.enabled && entry.isAvailable)
+      .map((entry) => entry.instanceId),
+  );
+  const writerProviders = writerTargets.providers.filter((provider) =>
+    writerEnabledIds.has(provider.instanceId),
+  );
+  const writerDisabledReason = useScopedModelDisabledReason(settings, writerTargets.entries, true);
   const mixed = useScopedSettingsMixed(["sourceControlWriterModelSelection"]);
   const inheritance = sourceControlWriterModelInheritance(settings);
   const { scope } = useSettingsScope();
@@ -525,11 +561,11 @@ function SourceControlWriterModelRow() {
       ...settings,
       textGenerationModelSelection: resolveSourceControlWriterModelSelection(
         settings,
-        projectEffectiveProviders,
+        writerProviders,
         projectId,
       ),
     },
-    projectEffectiveProviders,
+    writerProviders,
   );
 
   return (
@@ -539,7 +575,7 @@ function SourceControlWriterModelRow() {
       mixed={mixed}
       {...searchableSetting("source-control-writer-model")}
       description={t(
-        "Writes commit messages, pull request titles and descriptions, and branch or bookmark names.",
+        "Model for commit messages, pull request text, and branch or bookmark names. When disabled, use the text generation model configured for this environment.",
       )}
       resetAction={
         mixed || settings.sourceControlWriterModelSelection !== null ? (
@@ -564,7 +600,9 @@ function SourceControlWriterModelRow() {
             label={t("Commit and pull request writing model")}
             failureTitle={t("Commit and pull request writing model not saved")}
             shown={shown}
-            providers={projectEffectiveProviders}
+            providers={writerProviders}
+            entries={writerTargets.entries}
+            disabledReason={writerDisabledReason}
             triggerLabel={mixed ? t("Mixed") : inheritance ? t(inheritance.label) : undefined}
             showEffort={inheritance === null && !mixed}
             unavailableMessage={t("Connect an environment to choose its writing model.")}
@@ -579,7 +617,7 @@ function SourceControlWriterModelRow() {
 /** The model that reads a pull request to write its review guide. */
 function ReviewGuideModelRow() {
   const state = useTextGenerationState();
-  const { settings, updateSettings, textGenerationProviders, projectId } = state;
+  const { settings, updateSettings, projectEffectiveProviders, projectId } = state;
   const mixed = useScopedSettingsMixed(["reviewGuideModelSelection"]);
   const mixedEnabled = useScopedSettingsMixed(["reviewGuidesEnabled"]);
   const inheritance = reviewGuideModelInheritance(settings);
@@ -590,13 +628,14 @@ function ReviewGuideModelRow() {
   const shown = resolveAppModelSelectionState(
     {
       ...settings,
+      // Resolve against agents this project can use, so the fallback never lands on one it turned off.
       textGenerationModelSelection: resolveReviewGuideModelSelection(
         settings,
-        textGenerationProviders,
+        projectEffectiveProviders,
         projectId,
       ),
     },
-    textGenerationProviders,
+    projectEffectiveProviders,
   );
 
   return (
@@ -606,7 +645,7 @@ function ReviewGuideModelRow() {
       mixed={mixed}
       {...searchableSetting("review-guide-model")}
       description={t(
-        "Reads a pull request over many steps to write its review guide, so a stronger model helps.",
+        "Must be a coding agent: it reads the pull request over many steps. Off uses the writer model, or Codex or Claude if that model is a text generator.",
       )}
       status={
         !settings.reviewGuidesEnabled && !mixedEnabled
@@ -636,7 +675,7 @@ function ReviewGuideModelRow() {
             label={t("Review guide model")}
             failureTitle={t("Review guide model not saved")}
             shown={shown}
-            providers={textGenerationProviders}
+            providers={projectEffectiveProviders}
             triggerLabel={mixed ? t("Mixed") : inheritance ? t(inheritance.label) : undefined}
             showEffort={inheritance === null && !mixed}
             unavailableMessage={t("Connect an environment to choose its review guide model.")}

@@ -102,6 +102,10 @@ describe("olderSettledCountKey", () => {
     expect(key([row("kept-old", { settledDay: 10, folder: "Autopilot" }), base[1]!])).not.toBe(
       start,
     );
+    // An older row that moves to another project.
+    expect(key([{ ...base[0]!, projectId: ProjectId.make("project-b") }, base[1]!])).not.toBe(
+      start,
+    );
   });
 
   it("stays put for new threads and subagents", () => {

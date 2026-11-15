@@ -132,6 +132,12 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
      */
     update(animate: boolean, sizeKey: string) {
       if (disposed) return;
+      // A hidden list (the closed narrow sheet stays mounted) reports zero
+      // offsets, which would make the first pass after it opens animate every row.
+      if (parent.getClientRects().length === 0) {
+        suspend();
+        return;
+      }
       const rows = Array.from(parent.children).filter(
         (node): node is HTMLElement => node instanceof HTMLElement && !exiting.has(node),
       );

@@ -142,7 +142,7 @@ function AudioChip(props: AudioPreviewProps) {
             });
         }}
       >
-        {Icon === LoaderCircleIcon && props.src ? <Spinner aria-hidden /> : <Icon aria-hidden />}
+        {loading && props.src ? <Spinner aria-hidden /> : <Icon aria-hidden />}
       </ContextChipAction>
       <ContextChipLabel className={props.variant === "bubble" ? "flex-1" : "max-w-72"}>
         {open ? (

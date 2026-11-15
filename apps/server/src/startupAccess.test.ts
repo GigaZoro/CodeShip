@@ -1,12 +1,11 @@
 import type * as NodeOS from "node:os";
 
 import { describe, expect, it } from "@effect/vitest";
-
 import * as NetAddress from "effect/net/NetAddress";
 
 import {
   acceptsPrivateNetworkConnection,
-  localUrlHostForAddress,
+  loopbackUrlHostForAddress,
   resolveHeadlessConnectionString,
 } from "./startupAccess.ts";
 
@@ -22,6 +21,7 @@ const ipv4 = (address: string, internal = false): NodeOS.NetworkInterfaceInfo =>
 it("resolves wildcard hosts to a concrete external interface when one is available", () => {
   const connectionString = resolveHeadlessConnectionString("0.0.0.0", 3773, {
     interfaces: { en0: [ipv4("192.168.1.42")], lo0: [ipv4("127.0.0.1", true)] },
+    platform: "linux",
   });
 
   expect(connectionString).toBe("http://192.168.1.42:3773");
@@ -35,16 +35,21 @@ it("skips public and container addresses for a private-network listener", () => 
     eth1: [ipv4("10.0.0.5")],
   };
 
-  expect(resolveHeadlessConnectionString("0.0.0.0", 3773, { interfaces })).toBe(
+  expect(resolveHeadlessConnectionString("0.0.0.0", 3773, { interfaces, platform: "linux" })).toBe(
     "http://203.0.113.7:3773",
   );
   expect(
-    resolveHeadlessConnectionString("0.0.0.0", 3773, { interfaces, privateNetworkOnly: true }),
+    resolveHeadlessConnectionString("0.0.0.0", 3773, {
+      interfaces,
+      privateNetworkOnly: true,
+      platform: "linux",
+    }),
   ).toBe("http://10.0.0.5:3773");
   expect(
     resolveHeadlessConnectionString("0.0.0.0", 3773, {
       interfaces: { eth0: [ipv4("203.0.113.7")] },
       privateNetworkOnly: true,
+      platform: "linux",
     }),
   ).toBe("http://localhost:3773");
 });
@@ -54,8 +59,32 @@ it("prefers a LAN address over a tailnet one for a private-network pairing URL",
     resolveHeadlessConnectionString("0.0.0.0", 3773, {
       interfaces: { tailscale0: [ipv4("100.101.102.103")], en0: [ipv4("192.168.1.42")] },
       privateNetworkOnly: true,
+      platform: "linux",
     }),
   ).toBe("http://192.168.1.42:3773");
+});
+
+it("skips NixOS container and systemd-nspawn veths for a private-network pairing URL", () => {
+  expect(
+    resolveHeadlessConnectionString("0.0.0.0", 3773, {
+      interfaces: { "ve-jellyfin": [ipv4("192.168.53.193")], eth0: [ipv4("192.168.0.18")] },
+      privateNetworkOnly: true,
+      platform: "linux",
+    }),
+  ).toBe("http://192.168.0.18:3773");
+});
+
+it("targets the bound interface when the listener binds a specific address", () => {
+  const hostFor = (ip: string) =>
+    loopbackUrlHostForAddress(NetAddress.inetAddressFromIpStringUnsafe(ip, 3773));
+
+  expect(hostFor("0.0.0.0")).toBe("127.0.0.1");
+  expect(hostFor("::")).toBe("127.0.0.1");
+  expect(hostFor("::1")).toBe("[::1]");
+  expect(hostFor("127.0.0.1")).toBe("127.0.0.1");
+  expect(hostFor("127.0.0.2")).toBe("127.0.0.2");
+  expect(hostFor("100.101.102.103")).toBe("100.101.102.103");
+  expect(hostFor("fd7a:115c:a1e0::1")).toBe("[fd7a:115c:a1e0::1]");
 });
 
 describe("acceptsPrivateNetworkConnection", () => {
@@ -74,19 +103,5 @@ describe("acceptsPrivateNetworkConnection", () => {
     expect(accepts("203.0.113.7", "192.168.1.31")).toBe(false);
     expect(accepts("169.254.10.1", "169.254.10.2")).toBe(false);
     expect(accepts(undefined, "192.168.1.31")).toBe(false);
-  });
-});
-
-describe("localUrlHostForAddress", () => {
-  it("reaches a wildcard listener on loopback and any other on its own address", () => {
-    const host = (ip: string) =>
-      localUrlHostForAddress(NetAddress.inetAddressFromIpStringUnsafe(ip, 3773));
-    expect(host("0.0.0.0")).toBe("127.0.0.1");
-    expect(host("::")).toBe("127.0.0.1");
-    expect(host("127.0.0.1")).toBe("127.0.0.1");
-    expect(host("::1")).toBe("[::1]");
-    // `t3 serve --host <tailnet IP>` listens on that address only.
-    expect(host("100.101.102.103")).toBe("100.101.102.103");
-    expect(host("fd7a:115c:a1e0::1")).toBe("[fd7a:115c:a1e0::1]");
   });
 });

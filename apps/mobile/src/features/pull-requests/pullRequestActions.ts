@@ -40,6 +40,10 @@ export const MERGE_METHODS = {
     title: msg("Rebase and merge"),
     description: msg("Add the commits without a merge commit."),
   },
+  "fast-forward": {
+    title: msg("Fast-forward merge"),
+    description: msg("Add the commits as they are. Needs the branch to contain the base."),
+  },
 } as const satisfies Record<PullRequestMergeMethod, { title: string; description: string }>;
 
 export function pullRequestActionLabel(
@@ -90,6 +94,20 @@ export function allowedMergeMethods(pr: ActionDetail) {
   return pr.capabilities.mergeMethods.filter((method) => pr.mergeCapabilities[method]);
 }
 
+export function resolveMergeMethod(
+  pr: ActionDetail,
+  selected: PullRequestMergeMethod | null,
+  projectDefault: PullRequestMergeMethod | null,
+  lastUsed: PullRequestMergeMethod | undefined,
+) {
+  const methods = allowedMergeMethods(pr);
+  return (
+    [selected, projectDefault, lastUsed, "squash" as const].find(
+      (method) => method != null && methods.includes(method),
+    ) ?? methods[0]
+  );
+}
+
 export function allowedUpdateMethods(pr: ActionDetail) {
   return (pr.capabilities.updateMethods ?? []).filter((method) =>
     pr.viewerPermissions.updateMethods?.includes(method),
@@ -124,8 +142,6 @@ export function canPerformPullRequestAction(pr: ActionDetail, action: PullReques
   }
 }
 
-export const mergeConflictReason = () => t("Resolve the branch conflicts before merging.");
-
 export function mergeUnavailableReason(
   pr: ActionDetail,
   connectionAllowsWrites: boolean,
@@ -141,7 +157,7 @@ export function mergeUnavailableReason(
   if (!pr.viewerPermissions.actions.includes("merge"))
     return t("Your account cannot merge this {term}.", { term: terminology.singular });
   if (pr.isDraft) return t("Mark this draft ready for review before merging.");
-  if (pr.mergeability === "conflicting") return mergeConflictReason();
+  if (pr.mergeability === "conflicting") return t("Resolve the branch conflicts before merging.");
   if (!allowedMergeMethods(pr).length) return t("This repository has no available merge methods.");
   return null;
 }

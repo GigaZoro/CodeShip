@@ -2,7 +2,17 @@ import type { StatusTone } from "../../components/StatusPill";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { t } from "../../lib/i18n";
 
-export function connectionTone(state: RemoteClientConnectionState): StatusTone {
+export function connectionTone(
+  state: RemoteClientConnectionState,
+  awaitingApproval?: boolean,
+): StatusTone {
+  if (state === "reconnecting" && awaitingApproval) {
+    return {
+      label: t("Waiting for approval"),
+      pillClassName: "bg-update",
+      textClassName: "text-update-foreground",
+    };
+  }
   switch (state) {
     case "connected":
       return {

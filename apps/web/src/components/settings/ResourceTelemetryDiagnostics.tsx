@@ -10,8 +10,9 @@ import {
   GaugeIcon,
   HardDriveIcon,
   MemoryStickIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
 } from "lucide-react";
-import { ChevronDown, ChevronRight } from "lucide";
 import type {
   BackgroundBooleanState,
   EnvironmentId,
@@ -47,12 +48,13 @@ import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useRelativeTimeState } from "../../hooks/useRelativeTimeState";
 import { Button } from "../ui/button";
-import { MorphIcon } from "~/components/MorphIcon";
 import { ScrollArea } from "../ui/scroll-area";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
+  formatCpuTime,
+  formatSamplingStatus,
   hasLiveResourceCounters,
   processIdentityKey,
   resourceHistoryBarHeight,
@@ -74,29 +76,12 @@ function formatRate(value: number): string {
   return t("{value}/s", { value: formatBytes(value) });
 }
 
-function formatCpuTime(valueMs: number): string {
-  const seconds = valueMs / 1_000;
-  if (seconds < 60) {
-    return t("{value}s", { value: seconds.toFixed(seconds >= 10 ? 1 : 2).replace(/\.0+$/, "") });
-  }
-  const minutes = seconds / 60;
-  if (minutes < 60) {
-    return t("{value}m", { value: minutes.toFixed(minutes >= 10 ? 1 : 2).replace(/\.0+$/, "") });
-  }
-  return t("{value}h", { value: (minutes / 60).toFixed(2).replace(/\.0+$/, "") });
-}
-
 function formatDurationMicros(value: number): string {
   if (value < 1_000) return t("{value} µs", { value: Math.round(value) });
   if (value < 1_000_000) {
     return t("{value} ms", { value: (value / 1_000).toFixed(2).replace(/\.0+$/, "") });
   }
   return t("{value} s", { value: (value / 1_000_000).toFixed(2).replace(/\.0+$/, "") });
-}
-
-function formatSampleInterval(valueMs: number): string {
-  if (valueMs < 1_000) return t("{value} ms", { value: Math.max(0, Math.round(valueMs)) });
-  return tn(Math.round(valueMs / 100) / 10, "{count} second", "{count} seconds");
 }
 
 function formatProcessName(process: Pick<ResourceTelemetryProcess, "command" | "name">): string {
@@ -484,7 +469,11 @@ function ProcessTreeName({
           onClick={() => onToggle(process)}
           aria-label={collapsed ? t("Expand {name}", { name }) : t("Collapse {name}", { name })}
         >
-          <MorphIcon className="size-3.5" icon={collapsed ? ChevronRight : ChevronDown} />
+          {collapsed ? (
+            <ChevronRightIcon className="size-3.5" />
+          ) : (
+            <ChevronDownIcon className="size-3.5" />
+          )}
         </Button>
       ) : (
         <span className="size-5" aria-hidden />
@@ -620,7 +609,7 @@ function ProcessTable({
                   {process.cpuPercent.toFixed(1)}%
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {formatCpuTime(process.cpuTimeMs)}
+                  {formatCpuTime(process.cpuTimeMs / 1_000)}
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">
                   {formatBytes(process.residentBytes)}
@@ -726,7 +715,7 @@ function HistoryProcessTable({
                   {categoryLabel(process.category)}
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {formatCpuTime(process.cpuTimeMs)}
+                  {formatCpuTime(process.cpuTimeMs / 1_000)}
                 </td>
                 <td className="px-3 py-2 text-right font-mono tabular-nums">
                   {process.maxCpuPercent.toFixed(1)}%
@@ -1025,12 +1014,15 @@ function ResourceTelemetryDiagnosticsBody({
                 )}
               </p>
             </div>
-            {liveCounters && snapshot ? (
+            {snapshot ? (
               <div className="flex items-center gap-2 text-3xs text-muted-foreground/65">
-                <span className="size-1.5 rounded-full bg-success" />
-                {t("Sampling every {interval}", {
-                  interval: formatSampleInterval(snapshot.sampleIntervalMs),
-                })}
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    snapshot.sampleIntervalMs > 0 ? "bg-success" : "bg-muted-foreground/55",
+                  )}
+                />
+                {formatSamplingStatus(snapshot.sampleIntervalMs)}
               </div>
             ) : null}
           </div>
@@ -1042,7 +1034,9 @@ function ResourceTelemetryDiagnosticsBody({
                 value={allT3 ? `${allT3.currentCpuPercent.toFixed(1)}%` : "..."}
                 detail={
                   allT3
-                    ? t("{time} observed CPU time", { time: formatCpuTime(allT3.cpuTimeMs) })
+                    ? t("{time} observed CPU time", {
+                        time: formatCpuTime(allT3.cpuTimeMs / 1_000),
+                      })
                     : undefined
                 }
               />

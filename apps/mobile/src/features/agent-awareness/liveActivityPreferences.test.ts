@@ -13,7 +13,10 @@ import {
   linkEnvironmentToCloudWithPreference,
 } from "../cloud/linkEnvironment";
 import { setLiveActivityUpdatesEnabled } from "./liveActivityPreferences";
-import { updateAgentAwarenessRegistrationPreferences } from "./remoteRegistration";
+import {
+  AgentAwarenessOperationError,
+  updateAgentAwarenessRegistrationPreferences,
+} from "./remoteRegistration";
 
 vi.mock("expo-secure-store", () => ({
   deleteItemAsync: vi.fn(),
@@ -108,7 +111,12 @@ describe("liveActivityPreferences", () => {
 
   it.effect("keeps updates off when the relay and environments cannot be reached", () => {
     vi.mocked(updateAgentAwarenessRegistrationPreferences).mockImplementationOnce(() =>
-      Effect.fail(new CloudEnvironmentLinkError({ message: "relay unreachable" })),
+      Effect.fail(
+        new AgentAwarenessOperationError({
+          operation: "load-device-registration-preferences",
+          cause: new Error("relay unreachable"),
+        }),
+      ),
     );
     vi.mocked(linkEnvironmentToCloudWithPreference).mockImplementationOnce(() =>
       Effect.fail(new CloudEnvironmentLinkError({ message: "environment update failed" })),

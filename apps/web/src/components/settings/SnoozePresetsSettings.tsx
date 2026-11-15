@@ -404,7 +404,7 @@ function SnoozePresetFields(props: {
           onChange={(minutes) => onChange({ ...preset, minutes })}
         />
       ) : (
-        <>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground">{t("at")}</span>
           <Input
             nativeInput
@@ -419,7 +419,7 @@ function SnoozePresetFields(props: {
               }
             }}
           />
-        </>
+        </div>
       )}
     </div>
   );
@@ -442,7 +442,7 @@ function DurationFields(props: { minutes: number; onChange: (minutes: number) =>
     setDraft(amount);
   }
   return (
-    <>
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <NumberField
         size="sm"
         className="w-32"
@@ -497,7 +497,7 @@ function DurationFields(props: { minutes: number; onChange: (minutes: number) =>
           ))}
         </SelectPopup>
       </Select>
-    </>
+    </div>
   );
 }
 

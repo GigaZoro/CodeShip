@@ -139,11 +139,13 @@ export function findProjectByPath<T extends { workspaceRoot?: string; cwd?: stri
 export const SCRATCH_PROJECT_TITLE = "No project";
 
 export function isScratchProject(
-  project: { readonly workspaceRoot: string },
+  project: { readonly workspaceRoot: string; readonly isScratch?: true },
   scratchWorkspaceRoot: string | null | undefined,
 ): boolean {
   return (
-    scratchWorkspaceRoot != null && findProjectByPath([project], scratchWorkspaceRoot) !== undefined
+    project.isScratch === true ||
+    (scratchWorkspaceRoot != null &&
+      findProjectByPath([project], scratchWorkspaceRoot) !== undefined)
   );
 }
 

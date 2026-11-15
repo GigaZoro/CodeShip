@@ -5,7 +5,7 @@ import {
   TerminalToolWriteInput,
   TerminalToolWriteResult,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -25,7 +25,11 @@ const shared = {
   ],
 };
 
-const writeDependencies = [...shared.dependencies, Project.ProjectService, Crypto.Crypto];
+const writeDependencies = [
+  ...shared.dependencies,
+  Project.ProjectService,
+  SecureRandom.SecureRandom,
+];
 
 const TerminalReadTool = Tool.make("terminal_read", {
   description:

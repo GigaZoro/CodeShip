@@ -2,7 +2,7 @@ import { t } from "~/i18n";
 import { Toolbar } from "@base-ui/react/toolbar";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { memo, type ReactNode, useLayoutEffect, useRef, useState } from "react";
-import { SparklesIcon, StarIcon } from "lucide-react";
+import { RouteIcon, StarIcon } from "lucide-react";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
@@ -145,7 +145,7 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
               selected={props.selectedInstanceId === "auto"}
               onSelect={() => handleSelect("auto")}
             >
-              <SparklesIcon className="size-5 shrink-0" aria-hidden />
+              <RouteIcon className="size-5 shrink-0" aria-hidden />
             </RailTab>
           ) : null}
           {showFavorites ? (

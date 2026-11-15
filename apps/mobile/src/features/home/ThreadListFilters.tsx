@@ -5,29 +5,29 @@ import { Chip } from "../../components/ui/Chip";
 import { useOpenArchivedThreads } from "../archive/useOpenArchivedThreads";
 import { useOpenArtifacts } from "../artifacts/useOpenArtifacts";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
-import { ListFilterMenu } from "../workspace/ListFilterMenu";
-import type { HomeHeaderProps } from "./HomeHeader.types";
+import { ListFilterMenu } from "../layout/workspace/ListFilterMenu";
+import type { EnvironmentId } from "@t3tools/contracts";
+import type { SidebarGrouping } from "@t3tools/contracts/settings";
 import {
   handleGroupByMenuEvent,
   machineGroupingMenuItem,
   projectGroupingMenuItems,
   threadListGroupingLabel,
+  type HomeListFilterMenuEnvironment,
+  type HomeListFilterMenuProject,
+  type ThreadListGroupingHandlers,
 } from "./home-list-filter-menu";
 import { t } from "../../lib/i18n";
 
 export function ThreadListFilters(
-  props: Pick<
-    HomeHeaderProps,
-    | "environments"
-    | "projects"
-    | "selectedEnvironmentId"
-    | "selectedProjectKey"
-    | "onEnvironmentChange"
-    | "onProjectChange"
-    | "grouping"
-    | "onProjectGroupingChange"
-    | "onMachineGroupingToggle"
-  > & {
+  props: ThreadListGroupingHandlers & {
+    readonly environments: ReadonlyArray<HomeListFilterMenuEnvironment>;
+    readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
+    readonly selectedEnvironmentId: EnvironmentId | null;
+    readonly selectedProjectKey: string | null;
+    readonly grouping: SidebarGrouping;
+    readonly onEnvironmentChange: (environmentId: EnvironmentId | null) => void;
+    readonly onProjectChange: (projectKey: string | null) => void;
     /** List padding the scroller bleeds through so pills start where row content does. */
     readonly gutter: number;
   },
@@ -45,7 +45,7 @@ export function ThreadListFilters(
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      style={{ marginHorizontal: -props.gutter }}
+      style={{ marginHorizontal: -props.gutter, overflow: "visible" }}
       contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 10, gap: 8 }}
     >
       <ListFilterMenu

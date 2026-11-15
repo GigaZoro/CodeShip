@@ -28,6 +28,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
+import { incompleteListings } from "../device/DeviceSetup";
 import { DeviceHostEditor } from "./DeviceHostEditor";
 import { updateDeviceHosts, groupDeviceHosts } from "./deviceHostsSettings.logic";
 import { EasDeviceHostEditor } from "./EasDeviceHostEditor";
@@ -84,7 +85,7 @@ interface SourceRow {
   readonly description: ReactNode;
   readonly environments: ReadonlyArray<SourceEnvironment>;
   /**
-   * One machine or account every environment reaches the same way (an SSH host, EAS, a Simlock
+   * One machine or account every environment reaches the same way (an SSH host, Expo, a Simlock
    * pool), so its platforms are the same for all of them. Local simulators differ per machine.
    */
   readonly shared: boolean;
@@ -116,14 +117,17 @@ function hostStatus(
   if (!state) return { tone: "pending", label: t("Loading") };
   const status = state.hostStatuses[hostId];
   switch (status?.status) {
-    case "ready":
-      return status.androidDiscoveryIncomplete
-        ? {
-            tone: "warning",
-            label: t("Android list may be incomplete"),
-            detail: status.detail,
-          }
-        : undefined;
+    case "ready": {
+      const incomplete = incompleteListings(status);
+      if (incomplete.length === 0) return undefined;
+      const label =
+        incomplete.length > 1
+          ? t("Device list may be incomplete")
+          : incomplete[0] === "ios"
+            ? t("iOS list may be incomplete")
+            : t("Android list may be incomplete");
+      return { tone: "warning", label, detail: status.detail };
+    }
     case "installing":
     case "starting":
       return { tone: "pending", label: t("Starting"), detail: status.detail };
@@ -266,7 +270,7 @@ export function DeviceSourcesSettings(props: {
           ),
         },
       })),
-      remove ? t("EAS host not removed everywhere") : t("EAS host not saved everywhere"),
+      remove ? t("Expo host not removed everywhere") : t("Expo host not saved everywhere"),
     );
     if (saved) setEditing(null);
   };
@@ -476,7 +480,7 @@ export function DeviceSourcesSettings(props: {
         key: `eas:${host.id}`,
         shared: true,
         title: host.label,
-        kind: "EAS",
+        kind: "Expo",
         description: easSessionLimits(host),
         environments: active.map((member) => {
           const added = (member.settings?.easDeviceHosts ?? []).some(
@@ -567,7 +571,7 @@ export function DeviceSourcesSettings(props: {
               })
             }
           >
-            {t("EAS Simulator")}
+            {t("Expo Simulators")}
           </MenuItem>
         ) : null}
         {props.supportsSimlock && simlockEnabled ? (
@@ -803,10 +807,20 @@ function DeviceSourceRow(props: { row: SourceRow }) {
           >
             <span className="min-w-0 break-words">
               {several ? `${environment.label}: ` : ""}
-              {!several && environment.status.detail
+              {environment.status.tone === "error" && !several && environment.status.detail
                 ? environment.status.detail
                 : environment.status.label}
             </span>
+            {environment.status.tone === "warning" && environment.status.detail ? (
+              <Popover>
+                <PopoverTrigger render={<InlineButton />}>{t("Details")}</PopoverTrigger>
+                <PopoverPopup side="bottom" align="start" width="lg" padding="compact">
+                  <p className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
+                    {environment.status.detail}
+                  </p>
+                </PopoverPopup>
+              </Popover>
+            ) : null}
             {environment.status.action ? (
               <InlineButton onClick={environment.status.action.run}>
                 {environment.status.action.label}

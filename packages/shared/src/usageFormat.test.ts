@@ -6,6 +6,7 @@ import {
   enumerateHourStarts,
   formatDateTimeShort,
   formatHourShort,
+  formatTokens,
   makeWindow,
   usageSourceMessages,
 } from "./usageFormat.ts";
@@ -122,12 +123,11 @@ describe("usage source messages", () => {
     ]);
   });
 
-  it("omits empty missing sources, healthy sources, and diagnostics handled by an action", () => {
+  it("omits empty missing sources and healthy sources", () => {
     expect(
       usageSourceMessages([
         malformedSource(0, { status: "missing" }),
         malformedSource(1, { status: "ok" }),
-        malformedSource(1, { action: "enableCursorKeychain" }),
       ]),
     ).toEqual([]);
     expect(usageSourceMessages([])).toEqual([]);
@@ -201,5 +201,13 @@ describe("hourly usage formatting", () => {
     } finally {
       resolvedOptions.mockRestore();
     }
+  });
+});
+
+describe("token formatting", () => {
+  it("moves to the next unit when rounding reaches it", () => {
+    expect(formatTokens(999_999)).toBe("1M");
+    expect(formatTokens(999_999_999)).toBe("1B");
+    expect(formatTokens(-999_999)).toBe("-1M");
   });
 });

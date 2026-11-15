@@ -1,6 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { offersSidebarMachineGrouping, type SidebarGrouping } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
+import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
 import { msg, t } from "../../lib/i18n";
 
 const PROJECT_GROUPING_LABELS = { none: msg("None"), project: msg("Project") } as const;
@@ -106,26 +107,7 @@ export interface HomeListFilterMenuProject {
   readonly label: string;
 }
 
-type HomeListFilterMenuAction = {
-  readonly type: "action";
-  readonly title: string;
-  readonly subtitle?: string;
-  readonly state?: "on" | "off";
-  readonly onPress: () => void;
-};
-
-type HomeListFilterMenuSubmenu = {
-  readonly type: "submenu";
-  readonly title: string;
-  readonly items: HomeListFilterMenuAction[];
-};
-
-export interface HomeListFilterMenu {
-  readonly title: string;
-  readonly items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu>;
-}
-
-export function buildHomeListFilterMenu(
+export function buildHomeListFilterMenuItems(
   props: {
     readonly environments: ReadonlyArray<HomeListFilterMenuEnvironment>;
     readonly projects: ReadonlyArray<HomeListFilterMenuProject>;
@@ -137,12 +119,12 @@ export function buildHomeListFilterMenu(
     readonly onOpenArchived: () => void;
     readonly onOpenArtifacts: () => void;
   } & ThreadListGroupingHandlers,
-): HomeListFilterMenu {
-  const items: Array<HomeListFilterMenuAction | HomeListFilterMenuSubmenu> = [];
+): AppBarMenuItem[] {
+  const items: AppBarMenuItem[] = [];
 
   if (props.selectedEnvironmentId !== null || props.selectedProjectKey !== null) {
     items.push({
-      type: "action",
+      id: "show-all-threads",
       title: t("Show all threads"),
       onPress: () => {
         props.onEnvironmentChange(null);
@@ -152,23 +134,20 @@ export function buildHomeListFilterMenu(
   }
 
   items.push({
-    type: "submenu",
+    id: "environment",
     title: t("Environment"),
     items: [
       {
-        type: "action",
+        id: "environment:all",
         title: t("All environments"),
         subtitle: t("Show threads from every environment"),
-        state: props.selectedEnvironmentId === null ? "on" : "off",
+        selected: props.selectedEnvironmentId === null,
         onPress: () => props.onEnvironmentChange(null),
       },
       ...props.environments.map((environment) => ({
-        type: "action" as const,
+        id: `environment:${environment.environmentId}`,
         title: environment.label,
-        state:
-          props.selectedEnvironmentId === environment.environmentId
-            ? ("on" as const)
-            : ("off" as const),
+        selected: props.selectedEnvironmentId === environment.environmentId,
         onPress: () => props.onEnvironmentChange(environment.environmentId),
       })),
     ],
@@ -176,20 +155,20 @@ export function buildHomeListFilterMenu(
 
   if (props.projects.length > 0) {
     items.push({
-      type: "submenu",
+      id: "project",
       title: t("Project"),
       items: [
         {
-          type: "action",
+          id: "project:all",
           title: t("All projects"),
           subtitle: t("Show threads from every project"),
-          state: props.selectedProjectKey === null ? "on" : "off",
+          selected: props.selectedProjectKey === null,
           onPress: () => props.onProjectChange(null),
         },
         ...props.projects.map((project) => ({
-          type: "action" as const,
+          id: `project:${project.key}`,
           title: project.label,
-          state: props.selectedProjectKey === project.key ? ("on" as const) : ("off" as const),
+          selected: props.selectedProjectKey === project.key,
           onPress: () => props.onProjectChange(project.key),
         })),
       ],
@@ -197,29 +176,26 @@ export function buildHomeListFilterMenu(
   }
 
   items.push({
-    type: "submenu",
+    id: "group-by",
     title: t("Group by"),
     items: (["none", "project"] as const).map((value) => ({
-      type: "action" as const,
+      id: `group-by:${value}`,
       title: t(PROJECT_GROUPING_LABELS[value]),
-      state: props.grouping.project === (value === "project") ? ("on" as const) : ("off" as const),
+      selected: props.grouping.project === (value === "project"),
       onPress: () => props.onProjectGroupingChange(value === "project"),
     })),
   });
   if (offersSidebarMachineGrouping(props.environments.length, props.grouping)) {
     items.push({
-      type: "action",
+      id: "group-by-machine",
       title: t("Group by machine"),
-      state: props.grouping.machine ? "on" : "off",
+      selected: props.grouping.machine,
       onPress: props.onMachineGroupingToggle,
     });
   }
 
-  items.push({ type: "action", title: t("Archived"), onPress: props.onOpenArchived });
-  items.push({ type: "action", title: t("Artifacts"), onPress: props.onOpenArtifacts });
+  items.push({ id: "archived", title: t("Archived"), onPress: props.onOpenArchived });
+  items.push({ id: "artifacts", title: t("Artifacts"), onPress: props.onOpenArtifacts });
 
-  return {
-    title: t("Thread list options"),
-    items,
-  };
+  return items;
 }

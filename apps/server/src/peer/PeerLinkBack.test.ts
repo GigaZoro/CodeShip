@@ -82,6 +82,11 @@ const layerBack = <E, R>(
     Layer.provide(auth),
     Layer.provide(
       Layer.succeed(DirectEndpoints.DirectEndpoints, {
+        resolveAvailable: Effect.fn("test.availableDirectEndpoints")(() =>
+          Effect.succeed(
+            addresses.map((httpBaseUrl) => ({ kind: "tailnet" as const, httpBaseUrl })),
+          ),
+        ),
         resolve: Effect.fn("test.directEndpoints")(() =>
           Effect.succeed(
             addresses.map((httpBaseUrl) => ({ kind: "tailnet" as const, httpBaseUrl })),
@@ -491,6 +496,11 @@ it.effect("revokes the code when the call carrying it is interrupted", () =>
                 Ref.update(revoked, (all) => [...all, id]).pipe(Effect.as(true)),
             }),
             Layer.succeed(DirectEndpoints.DirectEndpoints, {
+              resolveAvailable: Effect.fn("test.availableDirectEndpoints")(() =>
+                Effect.succeed([
+                  { kind: "tailnet" as const, httpBaseUrl: "https://laptop.ts.net" },
+                ]),
+              ),
               resolve: Effect.fn("test.directEndpoints")(() =>
                 Effect.succeed([
                   { kind: "tailnet" as const, httpBaseUrl: "https://laptop.ts.net" },

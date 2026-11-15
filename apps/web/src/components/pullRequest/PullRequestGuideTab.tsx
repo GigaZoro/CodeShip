@@ -1,5 +1,5 @@
 import type { EnvironmentId, PullRequestRef, PullRequestReviewGuideStop } from "@t3tools/contracts";
-import { SparklesIcon, TriangleAlertIcon } from "lucide-react";
+import { ScrollTextIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useEffectEvent } from "react";
 
 import type { ReviewCommentContext } from "~/reviewCommentContext";
@@ -18,6 +18,7 @@ import {
   usePullRequestReviewStore,
 } from "./pullRequestReviewStore";
 import { msg, t } from "~/i18n";
+import type { PullRequestCompletionScope } from "./PullRequestMarkdownTextarea";
 
 export function PullRequestGuideTab({
   environmentId,
@@ -27,6 +28,7 @@ export function PullRequestGuideTab({
   active,
   canComment,
   rangeComments,
+  completionScope,
   onAskAboutLines,
   onAskAboutStop,
   onFinishReview,
@@ -40,6 +42,7 @@ export function PullRequestGuideTab({
   active: boolean;
   canComment: boolean;
   rangeComments: boolean;
+  completionScope: PullRequestCompletionScope | null;
   onAskAboutLines: ((comment: ReviewCommentContext, request: string) => void) | null;
   onAskAboutStop:
     | ((stop: PullRequestReviewGuideStop, index: number, question: string) => void)
@@ -64,6 +67,7 @@ export function PullRequestGuideTab({
       : {
           canComment,
           rangeComments,
+          completionScope,
           pending,
           onComment: ({ path, oldPath, position, startPosition, body }) =>
             addComment(reviewKey, {
@@ -93,7 +97,7 @@ export function PullRequestGuideTab({
   const writeButton = (label: string, size: "sm" | "xs") =>
     canWrite ? (
       <Button size={size} variant="outline" disabled={running} onClick={() => void write()}>
-        {running ? <Spinner /> : <SparklesIcon aria-hidden className="size-3.5" />}
+        {running ? <Spinner /> : <ScrollTextIcon aria-hidden className="size-3.5" />}
         {running ? t("Reading the change...") : label}
       </Button>
     ) : null;

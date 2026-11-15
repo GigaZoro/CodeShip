@@ -185,19 +185,22 @@ const claudeUserOwnsRoot = Effect.fn("ClaudeAdapterV2.userOwnsRoot")(function* (
 ) {
   const uid = yield* HostProcess.EffectiveUserId;
   if (uid === undefined) return false;
-  return yield* Effect.tryPromise(async () => {
-    const [rootInfo, gitInfo, claudeUid] = await Promise.all([
-      NodeFSP.stat(root),
-      NodeFSP.lstat(path.join(root, ".git")),
-      NodeFSP.lstat(path.join(root, ".claude")).then(
-        (info) => info.uid,
-        (error: NodeJS.ErrnoException) => {
-          if (error.code === "ENOENT") return uid;
-          throw error;
-        },
-      ),
-    ]);
-    return rootInfo.uid === uid && gitInfo.uid === uid && claudeUid === uid;
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const [rootInfo, gitInfo, claudeUid] = await Promise.all([
+        NodeFSP.stat(root),
+        NodeFSP.lstat(path.join(root, ".git")),
+        NodeFSP.lstat(path.join(root, ".claude")).then(
+          (info) => info.uid,
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return uid;
+            throw error;
+          },
+        ),
+      ]);
+      return rootInfo.uid === uid && gitInfo.uid === uid && claudeUid === uid;
+    },
+    catch: (cause) => new ClaudeSettingsResolveError({ cause }),
   }).pipe(Effect.orElseSucceed(() => false));
 });
 
@@ -223,7 +226,16 @@ const claudeLocalSettingsDirectory = Effect.fn("ClaudeAdapterV2.localSettingsDir
   }
 });
 
-const CLAUDE_SETTINGS_FILE_SOURCES: ReadonlySet<string> = new Set(CLAUDE_SETTING_SOURCES);
+/** Where a tier comes from: a settings file, the --settings launch argument, or policy. */
+export type ClaudeSettingsTierSource = ClaudeSettingSource | "flag" | "policy";
+
+export interface ClaudeSettingsTier {
+  readonly source: ClaudeSettingsTierSource;
+  readonly settings: ClaudeSdkSettings;
+}
+
+const isClaudeSettingsFileSource = (source: string): source is ClaudeSettingSource =>
+  (CLAUDE_SETTING_SOURCES as ReadonlyArray<string>).includes(source);
 const decodeClaudeSettingsReadSources = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Array(
@@ -268,10 +280,12 @@ const resolveClaudeSettingsFiles = Effect.fn("ClaudeAdapterV2.resolveSettingsFil
         Effect.flatMap(decodeClaudeSettingsReadSources),
         Effect.mapError((cause) => new ClaudeSettingsResolveError({ cause })),
       );
-  return sources
-    .flat()
-    .filter((entry) => CLAUDE_SETTINGS_FILE_SOURCES.has(entry.source))
-    .map((entry) => entry.settings as ClaudeSdkSettings);
+  return sources.flat().flatMap((entry): ReadonlyArray<ClaudeSettingsTier> => {
+    const { source } = entry;
+    return isClaudeSettingsFileSource(source)
+      ? [{ source, settings: entry.settings as ClaudeSdkSettings }]
+      : [];
+  });
 });
 
 // Claude Code's own check: it refuses to start unless the folder lists, and reads it at its native
@@ -282,11 +296,14 @@ const checkClaudeProjectConfigRoot = Effect.fn("ClaudeAdapterV2.checkProjectConf
   root: string,
 ) {
   if (!path.isAbsolute(root)) return yield* new ClaudeProjectConfigRootError({ path: root });
-  return yield* Effect.tryPromise(async () => {
-    const realRoot = await NodeFSP.realpath(root);
-    await (await NodeFSP.opendir(realRoot)).close();
-    return realRoot;
-  }).pipe(Effect.mapError(() => new ClaudeProjectConfigRootError({ path: root })));
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const realRoot = await NodeFSP.realpath(root);
+      await (await NodeFSP.opendir(realRoot)).close();
+      return realRoot;
+    },
+    catch: () => new ClaudeProjectConfigRootError({ path: root }),
+  });
 });
 
 /**
@@ -393,7 +410,7 @@ export interface ClaudeSettingsCascadeInput {
 
 export interface ClaudeSettingsCascade {
   /** Lowest precedence first: user, project, local, --settings, then the policy tier. */
-  readonly tiers: ReadonlyArray<ClaudeSdkSettings>;
+  readonly tiers: ReadonlyArray<ClaudeSettingsTier>;
   /**
    * Why Claude Code's policy tier may hold settings `tiers` lacks: a policy helper applies, or the
    * organization's cache cannot be read, so Claude Code fetches what it holds.
@@ -446,10 +463,10 @@ export const readClaudeSettingsCascade = Effect.fn("ClaudeSettingsCascade.read")
       }),
     catch: (cause) => new ClaudeSettingsResolveError({ cause }),
   });
-  const tiers: ReadonlyArray<ClaudeSdkSettings> = [
+  const tiers: ReadonlyArray<ClaudeSettingsTier> = [
     ...files,
-    ...(flag === undefined ? [] : [flag]),
-    policy.effective,
+    ...(flag === undefined ? [] : [{ source: "flag" as const, settings: flag }]),
+    { source: "policy", settings: policy.effective },
   ];
   return {
     tiers,
@@ -499,7 +516,7 @@ export const readConfirmedClaudeSettings = Effect.fn("ClaudeSettingsCascade.read
       ),
       Effect.catch((error) =>
         Effect.logWarning("Claude's settings could not be read.", { reason: error.message }).pipe(
-          Effect.as(Option.none<ReadonlyArray<ClaudeSdkSettings>>()),
+          Effect.as(Option.none<ReadonlyArray<ClaudeSettingsTier>>()),
         ),
       ),
     );
@@ -510,10 +527,12 @@ export const readConfirmedClaudeSettings = Effect.fn("ClaudeSettingsCascade.read
  * The `env` the tiers give Claude Code, later tiers winning. Claude Code coerces each value as
  * String() does: 600 becomes "600", true becomes "true".
  */
-export const claudeSettingsEnvironment = (tiers: ReadonlyArray<ClaudeSdkSettings>) => {
+export const claudeSettingsEnvironment = (tiers: ReadonlyArray<ClaudeSettingsTier>) => {
   const environment: Record<string, string> = {};
-  for (const tier of tiers) {
-    for (const [name, value] of Object.entries(tier.env ?? {})) environment[name] = String(value);
+  for (const { settings } of tiers) {
+    for (const [name, value] of Object.entries(settings.env ?? {})) {
+      environment[name] = String(value);
+    }
   }
   return environment;
 };

@@ -59,8 +59,6 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const warning = options.find((option) => option.warning)?.warning;
   const canRespond = props.approval.responseCapability === "live";
   const disabled = !canRespond || props.respondingApprovalId === props.approval.requestId;
-  // Several long labels reflow unpredictably in a wrapping row, so they stack at full width.
-  const stacked = options.length > 2;
   const [explanationOpen, setExplanationOpen] = useState(false);
   const [detailExpanded, setDetailExpanded] = useState(false);
   const detail = props.approval.detail;
@@ -148,12 +146,11 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
       {warning ? (
         <Text className="font-sans text-xs leading-normal text-warning-foreground">{warning}</Text>
       ) : null}
-      <View className={stacked ? "gap-2.5" : "flex-row flex-wrap gap-2.5"}>
+      <View className="gap-2">
         {options.map((option) => (
           <Button
             key={option.decision}
             label={option.label}
-            fullWidth={stacked}
             tone={
               option.decision === "accept"
                 ? "primary"
@@ -163,6 +160,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
             }
             disabled={disabled || !props.canOperateThread}
             onPress={() => void props.onRespond(props.approval.requestId, option.decision)}
+            fullWidth
           />
         ))}
       </View>

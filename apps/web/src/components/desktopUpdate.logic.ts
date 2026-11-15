@@ -122,6 +122,15 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     });
   }
   if (state.status === "checking") return t("Checking for updates…");
+  if (
+    (state.status === "available" || state.status === "error") &&
+    state.errorContext === "download" &&
+    state.availableVersion
+  ) {
+    return t("Download failed for {version}. Click to retry.", {
+      version: state.availableVersion,
+    });
+  }
   if (state.status === "available") {
     return t("Update {version} ready to download", {
       version: state.availableVersion ?? t("available"),
@@ -138,11 +147,6 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     });
   }
   if (state.status === "error") {
-    if (state.errorContext === "download" && state.availableVersion) {
-      return t("Download failed for {version}. Click to retry.", {
-        version: state.availableVersion,
-      });
-    }
     if (state.errorContext === "install" && state.downloadedVersion) {
       return t("Install failed for {version}. Click to retry.", {
         version: state.downloadedVersion,

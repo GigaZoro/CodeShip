@@ -1,4 +1,4 @@
-// Line editors (zsh, fish, bash 5.1+) enable bracketed paste when they start reading a command.
+// Line editors (zsh, fish, nu, bash 5.1+) enable bracketed paste when they start reading a command.
 export const BRACKETED_PASTE_ON = "\x1b[?2004h";
 const BRACKETED_PASTE_OFF = "\x1b[?2004l";
 

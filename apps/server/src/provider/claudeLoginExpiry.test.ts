@@ -68,7 +68,7 @@ describe("parseClaudeLoginExpiry", () => {
 });
 
 const keychain = (reply: { readonly stdout: string; readonly code: number } | "hang") => {
-  const requests: Array<ReadonlyArray<string>> = [];
+  const requests: Array<ReadonlyArray<unknown>> = [];
   const spawner = ChildProcessSpawner.make((command) => {
     if (!ChildProcess.isStandardCommand(command)) {
       return Effect.fail(

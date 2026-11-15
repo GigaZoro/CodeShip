@@ -13,6 +13,7 @@ import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
+  settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -43,6 +44,7 @@ import {
   useToggleEnvironmentModelFavorite,
 } from "../../hooks/useSettings";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { ensureLocalApi } from "../../localApi";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { cn } from "../../lib/utils";
 import { resolveAppModelSelectionState } from "../../modelSelection";
@@ -85,6 +87,7 @@ import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { AccountFailoverSettings } from "./AccountFailoverSettings";
 import { useSecretSources } from "./SecretSourceInput";
+import { TextGeneratorsSettings } from "./TextGeneratorsSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
@@ -117,6 +120,25 @@ import {
   type ProviderOperateAccess,
   resolveRemoteOperateAccess,
 } from "./ProviderSettingsPanel.logic";
+
+function providerInstanceName(instance: ProviderInstanceConfig): string {
+  return (
+    instance.displayName?.trim() ||
+    providerClients.get(instance.driver)?.label ||
+    String(instance.driver)
+  );
+}
+
+async function confirmProviderInstanceRemoval(
+  question: string,
+  consequence = "",
+): Promise<boolean> {
+  const message = `${question}\n${t("Its saved settings, including any custom binary path, will be removed.")}${consequence}`;
+  const confirmed = await settlePromise(() =>
+    ensureLocalApi().dialogs.confirm(message, { variant: "destructive" }),
+  );
+  return confirmed._tag === "Success" && confirmed.value;
+}
 
 function modelListChanges(current: ReadonlyArray<string>, next: ReadonlyArray<string>) {
   const currentSet = new Set(current);
@@ -683,6 +705,7 @@ export function EnvironmentProviderSettings({
         description: error instanceof Error ? error.message : t("The settings update failed."),
       });
     }
+    return result._tag !== "Failure";
   };
 
   const updateInstance = useStableCallback(
@@ -696,7 +719,7 @@ export function EnvironmentProviderSettings({
         isDisabling &&
         resolveAppModelSelectionState(settings, serverProviders).instanceId === instanceId &&
         readEnvironmentScope(environmentId, AuthSettingsWriteScope);
-      void persistInstance(
+      return persistInstance(
         instanceId,
         next,
         shouldClearTextGen ? DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection : undefined,
@@ -715,6 +738,10 @@ export function EnvironmentProviderSettings({
       instance: ProviderInstanceConfig,
       sharesAddedAccounts: boolean,
     ) => {
+      const confirmed = await confirmProviderInstanceRemoval(
+        t("Remove the {name} provider instance?", { name: providerInstanceName(instance) }),
+      );
+      if (!confirmed) return;
       const updateResult = await persistProviderInstance({
         operation: "remove",
         instanceId,
@@ -761,10 +788,17 @@ export function EnvironmentProviderSettings({
   );
 
   const resetDefaultInstance = useStableCallback(async (driverKind: ProviderDriverKind) => {
-    const result = await persistProviderInstance({
-      operation: "remove",
-      instanceId: defaultInstanceIdForDriver(driverKind),
-    });
+    const instanceId = defaultInstanceIdForDriver(driverKind);
+    const instance = settings.providerInstances?.[instanceId] ?? { driver: driverKind };
+    const turnsOff =
+      resolveProviderInstanceEnabled(instance) &&
+      !resolveProviderInstanceEnabled({ driver: driverKind });
+    const confirmed = await confirmProviderInstanceRemoval(
+      t("Reset the {name} provider to its defaults?", { name: providerInstanceName(instance) }),
+      turnsOff ? ` ${t("It will also be turned off.")}` : "",
+    );
+    if (!confirmed) return;
+    const result = await persistProviderInstance({ operation: "remove", instanceId });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
       toastManager.add({
@@ -1002,7 +1036,17 @@ export function EnvironmentProviderSettings({
           environmentId={environmentId}
           environmentLabel={environmentLabel}
           sources={settings.usageLimitSources}
-          cursorKeychainUsageEnabled={settings.cursorKeychainUsageEnabled}
+          readOnly={readOnly}
+        />
+      ) : null}
+
+      {/* The server drops text generators under a provider allow-list. */}
+      {showsProviders && managedPolicy?.limits?.providers?.allowedDrivers === undefined ? (
+        <TextGeneratorsSettings
+          key={`text-generators:${environmentId}`}
+          environmentId={environmentId}
+          environmentLabel={environmentLabel}
+          providers={serverProviders}
           readOnly={readOnly}
         />
       ) : null}
@@ -1059,11 +1103,11 @@ interface ProviderInstanceRowActions {
     instanceId: ProviderInstanceId,
     previous: ProviderInstanceConfig,
     next: ProviderInstanceConfig,
-  ) => void;
+  ) => Promise<boolean>;
   readonly enableInstance: (
     instanceId: ProviderInstanceId,
     next: ProviderInstanceConfig,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   readonly deleteInstance: (
     instanceId: ProviderInstanceId,
     instance: ProviderInstanceConfig,

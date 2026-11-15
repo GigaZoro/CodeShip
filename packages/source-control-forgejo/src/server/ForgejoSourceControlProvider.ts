@@ -1,14 +1,12 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Cache from "effect/Cache";
-import * as Duration from "effect/Duration";
-import * as Equal from "effect/Equal";
-import * as Exit from "effect/Exit";
-import * as Hash from "effect/Hash";
-import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
+import * as Semaphore from "effect/Semaphore";
 import { SourceControlProviderError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
@@ -121,11 +119,18 @@ export const makeDiscovery = Effect.gen(function* () {
                     account: login.user,
                     host: ForgejoCli.parseForgejoRemote(login.url)?.host,
                   })
-                : providerAuth({
-                    status: "unauthenticated",
-                    detail:
-                      "Authenticate this server with `fj --host <server-url> auth add-token`.",
-                  }),
+                : // fj prints this for transport failures (TLS, connect, DNS), never for a rejected token.
+                  login && result.stderr.includes("error sending request for url")
+                  ? providerAuth({
+                      status: "unknown",
+                      detail: `Could not reach ${login.url} to verify the fj login.`,
+                      host: ForgejoCli.parseForgejoRemote(login.url)?.host,
+                    })
+                  : providerAuth({
+                      status: "unauthenticated",
+                      detail:
+                        "Authenticate this server with `fj --host <server-url> auth add-token`. For a server under a URL subpath, such as `https://example.com/forgejo`, use `tea login add` instead.",
+                    }),
         },
       });
       if (fj.status === "available" && (login || Result.isFailure(credentials))) {
@@ -149,7 +154,10 @@ export const makeDiscovery = Effect.gen(function* () {
         return fj;
       }
       const tea = yield* probeSourceControlProvider({ cwd, process, spec: discovery });
-      return tea.status === "available" || fj.status === "missing" ? tea : fj;
+      // Discovery keeps the install hint only for an absent executable; a slow or broken fj
+      // explains itself better than tea's install advice.
+      const fjAbsent = fj.status === "missing" && fj.installHint === discovery.installHint;
+      return tea.status === "available" || fjAbsent ? tea : fj;
     }),
     refineUnknownRemote: Effect.fn("ForgejoSourceControlProvider.refineUnknownRemote")(
       function* (input: {
@@ -274,24 +282,19 @@ const cloneUrls = (raw: typeof RepositorySchema.Type) => ({
 const repositoryPath = (repository: string) =>
   `repos/${repository.split("/").map(encodeURIComponent).join("/")}`;
 
-type Pulls = ReadonlyArray<ReturnType<typeof toForgejoChangeRequest>>;
-
-class RepositoryPullsLookup {
-  readonly key: string;
-  readonly lookup: Effect.Effect<Pulls, ForgejoCli.ForgejoCliError>;
-  constructor(
-    repo: ForgejoCli.ForgejoRepository,
-    lookup: Effect.Effect<Pulls, ForgejoCli.ForgejoCliError>,
-  ) {
-    this.key = JSON.stringify([repo.command, repo.baseUrl, repo.login, repo.repository]);
-    this.lookup = lookup;
-  }
-  [Equal.symbol](that: unknown): boolean {
-    return that instanceof RepositoryPullsLookup && this.key === that.key;
-  }
-  [Hash.symbol](): number {
-    return Hash.string(this.key);
-  }
+type ForgejoPull = typeof ForgejoPullRequestSchema.Type;
+const updatedMillis = (pull: ForgejoPull) =>
+  pull.updated_at?.pipe(Option.map(DateTime.toEpochMillis), Option.getOrUndefined);
+// Renaming a fork or deleting a pull request moves nothing in the list, so it is re-read in full.
+const UNFILTERED_PULLS_MAX_AGE_MS = 60 * 60_000;
+/** Every pull request of a repository whose server ignores `head=` (Gitea, Forgejo before 16). */
+interface UnfilteredPulls {
+  readonly lock: Semaphore.Semaphore;
+  pulls: Map<number, ForgejoPull> | undefined;
+  /** The newest `updated_at` on the list's first page when it was last read. */
+  newest: number | undefined;
+  scannedAt: number;
+  refreshedAt: number;
 }
 
 export const make = Effect.gen(function* () {
@@ -348,27 +351,50 @@ export const make = Effect.gen(function* () {
       ForgejoPullRequestSchema,
     );
   });
-  const repositoryPulls = yield* Cache.makeWith((key: RepositoryPullsLookup) => key.lookup, {
-    capacity: 16,
-    timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.minutes(1) : Duration.zero),
-  });
-  const scanPulls = Effect.fn("ForgejoSourceControlProvider.scanPulls")(function* (
-    input: ForgejoCli.ForgejoRepositoryInput,
-    repo: ForgejoCli.ForgejoRepository,
-  ) {
-    const pulls: Array<ReturnType<typeof toForgejoChangeRequest>> = [];
-    for (let page = 1; ; page++) {
-      const items = yield* request(
-        {
-          ...input,
-          path: `${repositoryPath(repo.repository)}/pulls?state=all&sort=recentupdate&limit=50&page=${page}`,
-        },
-        Schema.Array(ForgejoPullRequestSchema),
-      );
-      if (items.length === 0) return pulls;
-      pulls.push(...items.map(toForgejoChangeRequest));
-    }
-  });
+  const unfilteredPulls = new Map<string, UnfilteredPulls>();
+  // Call holding `state.lock`. The list is sorted newest update first, so after one full read
+  // everything that changed since sits ahead of the first pull request older than `newest`.
+  const readUnfilteredPulls = Effect.fn("ForgejoSourceControlProvider.readUnfilteredPulls")(
+    function* (
+      input: ForgejoCli.ForgejoRepositoryInput & { readonly allowCached?: boolean },
+      repository: string,
+      state: UnfilteredPulls,
+      firstPage: ReadonlyArray<ForgejoPull> | undefined,
+    ) {
+      const now = yield* Clock.currentTimeMillis;
+      if (input.allowCached && state.pulls && now - state.refreshedAt < 60_000) return state.pulls;
+      const since =
+        state.pulls && now - state.scannedAt < UNFILTERED_PULLS_MAX_AGE_MS
+          ? state.newest
+          : undefined;
+      const pulls =
+        since !== undefined && state.pulls ? state.pulls : new Map<number, ForgejoPull>();
+      let newest = since;
+      for (let page = 1; ; page++) {
+        const items =
+          page === 1 && firstPage && !state.pulls
+            ? firstPage
+            : yield* request(
+                {
+                  ...input,
+                  path: `${repositoryPath(repository)}/pulls?state=all&sort=recentupdate&limit=50&page=${page}`,
+                },
+                Schema.Array(ForgejoPullRequestSchema),
+              );
+        const updated = items.flatMap((item) => updatedMillis(item) ?? []);
+        for (const item of items) pulls.set(item.number, item);
+        // Later pages can hold newer updates than a first page read before them, and a mark past
+        // the first page's would skip the updates that pushed them down.
+        if (page === 1 && updated.length > 0) newest = Math.max(...updated);
+        if (items.length === 0 || (since !== undefined && updated.some((at) => at < since))) break;
+      }
+      if (since === undefined) state.scannedAt = now;
+      state.pulls = pulls;
+      state.newest = newest;
+      state.refreshedAt = now;
+      return pulls;
+    },
+  );
   return SourceControlProvider.SourceControlProvider.of({
     kind: SourceControlProviderKind.make("forgejo"),
     repositoryNameFromRemoteUrl,
@@ -379,39 +405,91 @@ export const make = Effect.gen(function* () {
         const repo = yield* cli.resolveRepository(input);
         const source = SourceControlProvider.sourceControlRefFromInput(input);
         const branch = SourceControlProvider.sourceBranch(input);
-        const results: ReturnType<typeof toForgejoChangeRequest>[] = [];
         const limit = input.limit ?? 20;
-        if (limit <= 0) return results;
-        const matches = (pr: ReturnType<typeof toForgejoChangeRequest>) =>
-          pr.headRefName === branch &&
-          (!source?.repository || pr.headRepositoryNameWithOwner === source.repository) &&
-          (!source?.owner || pr.headRepositoryOwnerLogin === source.owner) &&
-          (input.state === "all" || pr.state === input.state);
-        const lookup = new RepositoryPullsLookup(repo, scanPulls(input, repo));
-        if (input.allowCached) {
-          const cached = yield* Cache.getOption(repositoryPulls, lookup);
-          if (Option.isSome(cached)) return cached.value.filter(matches).slice(0, limit);
-        } else {
-          yield* Cache.invalidate(repositoryPulls, lookup);
-        }
-        for (let page = 1; results.length < limit; page++) {
-          const items = yield* request(
-            {
-              ...input,
-              path: `${repositoryPath(repo.repository)}/pulls?state=${input.state === "merged" ? "closed" : input.state}&head=${encodeURIComponent(branch)}&sort=recentupdate&limit=50&page=${page}`,
-            },
-            Schema.Array(ForgejoPullRequestSchema),
-          );
-          if (input.allowCached && items.some((item) => item.head.ref !== branch)) {
-            return (yield* Cache.get(repositoryPulls, lookup)).filter(matches).slice(0, limit);
-          }
+        if (limit <= 0) return [];
+        const matching = (items: Iterable<ForgejoPull>) => {
+          const results: ReturnType<typeof toForgejoChangeRequest>[] = [];
           for (const item of items) {
             const normalized = toForgejoChangeRequest(item);
-            if (matches(normalized)) results.push(normalized);
+            if (
+              normalized.headRefName !== branch ||
+              (source?.repository && item.head.repo?.full_name !== source.repository) ||
+              (source?.owner && item.head.repo?.owner.login !== source.owner)
+            )
+              continue;
+            if (input.state === "all" || normalized.state === input.state) results.push(normalized);
           }
-          if (items.length === 0) break;
+          return results;
+        };
+        const key = JSON.stringify([repo.command, repo.baseUrl, repo.login, repo.repository]);
+        let unfiltered = unfilteredPulls.get(key);
+        let firstPage: ReadonlyArray<ForgejoPull> | undefined;
+        if (!unfiltered) {
+          const results: ReturnType<typeof toForgejoChangeRequest>[] = [];
+          for (let page = 1; results.length < limit; page++) {
+            const items = yield* request(
+              {
+                ...input,
+                path: `${repositoryPath(repo.repository)}/pulls?state=${input.state === "merged" ? "closed" : input.state}&head=${encodeURIComponent(branch)}&sort=recentupdate&limit=50&page=${page}`,
+              },
+              Schema.Array(ForgejoPullRequestSchema),
+            );
+            // A deleted head branch keeps its name only in `label`.
+            if (items.some((item) => item.head.ref !== branch && item.head.label !== branch)) {
+              unfiltered = unfilteredPulls.get(key) ?? {
+                lock: Semaphore.makeUnsafe(1),
+                pulls: undefined,
+                newest: undefined,
+                scannedAt: 0,
+                refreshedAt: 0,
+              };
+              if (!unfilteredPulls.has(key) && unfilteredPulls.size >= 16) {
+                const oldest = unfilteredPulls.keys().next().value;
+                if (oldest !== undefined) unfilteredPulls.delete(oldest);
+              }
+              unfilteredPulls.set(key, unfiltered);
+              if (page === 1 && input.state === "all") firstPage = items;
+              break;
+            }
+            results.push(...matching(items));
+            if (items.length === 0) break;
+          }
+          if (!unfiltered) return results.slice(0, limit);
         }
-        return results.slice(0, limit);
+        const pulls = yield* unfiltered.lock.withPermits(1)(
+          readUnfilteredPulls(input, repo.repository, unfiltered, firstPage),
+        );
+        const candidates = matching(pulls.values()).toSorted(
+          (left, right) =>
+            Option.getOrElse(Option.map(right.updatedAt, DateTime.toEpochMillis), () => 0) -
+              Option.getOrElse(Option.map(left.updatedAt, DateTime.toEpochMillis), () => 0) ||
+            right.number - left.number,
+        );
+        // A deleted pull request leaves the list without moving anything in it, so a remembered
+        // match is read again before it is returned.
+        const results: ReturnType<typeof toForgejoChangeRequest>[] = [];
+        for (const candidate of candidates) {
+          if (results.length >= limit) break;
+          const current = yield* request(
+            {
+              ...input,
+              path: `${repositoryPath(repo.repository)}/pulls/${candidate.number}`,
+            },
+            ForgejoPullRequestSchema,
+          ).pipe(
+            Effect.catchIf(
+              (error) => isForgejoCliError(error) && error.httpStatus === 404,
+              () => Effect.undefined,
+            ),
+          );
+          if (current?.number !== candidate.number) {
+            pulls.delete(candidate.number);
+            continue;
+          }
+          // Not written back: a refresh may have stored a newer copy while this was read.
+          results.push(...matching([current]));
+        }
+        return results;
       },
       (effect, input) => effect.pipe(mapError("listChangeRequests", input.cwd)),
     ),

@@ -79,7 +79,7 @@ it.effect("validates IPC, keeps the count through focus, and clears on quit and 
       Effect.provideService(HostProcess.Platform, "linux"),
       Effect.provide([
         ElectronApp.layer,
-        DesktopIpc.layer({
+        DesktopIpc.layerTest({
           handle: (channel, handler) => {
             handlers.set(channel, handler);
           },

@@ -25,17 +25,19 @@ const MODE_OPTIONS: Record<
   repo_conventions: {
     label: msg("Repository conventions"),
     description: msg(
-      "In each project, matches recent change descriptions and change request titles.",
+      "Commit messages and pull request titles and descriptions match each project's history.",
     ),
   },
   conventional_commits: {
     label: msg("Conventional Commits"),
-    description: msg("Use Conventional Commit prefixes and keep change request text concise."),
+    description: msg(
+      "Conventional Commit prefixes, with short pull request titles and descriptions.",
+    ),
   },
   custom: {
     label: msg("Custom instructions"),
     description: msg(
-      "Use your instructions for change descriptions and change requests in every project.",
+      "Your instructions shape commit messages and pull request titles and descriptions.",
     ),
   },
 };
@@ -76,7 +78,7 @@ export function SourceControlWritingSettingsSection() {
   const reviewGuidesShown = settings.reviewGuidesEnabled || mixedReviewGuidesEnabled;
 
   return (
-    <SettingsSection id="source-control-text-generation" title={t("Writing & review")}>
+    <SettingsSection id="source-control-text-generation" title={t("Commits & pull requests")}>
       <SettingsRow
         serverScoped
         settingKeys={["sourceControlWritingStyle"]}
@@ -86,7 +88,7 @@ export function SourceControlWritingSettingsSection() {
         resetAction={
           isSourceControlWritingStyleDirty ? (
             <SettingResetButton
-              label={t("source control writing style")}
+              label={t("commit and pull request writing")}
               onClick={() =>
                 updateSettings({
                   sourceControlWritingStyle: {
@@ -114,7 +116,7 @@ export function SourceControlWritingSettingsSection() {
             <SelectTrigger
               size="sm"
               className="w-full sm:w-56"
-              aria-label={t("Source control writing style")}
+              aria-label={t("Commit and pull request writing")}
             >
               <SelectValue>
                 {(value: SourceControlWritingStyleMode | null) =>
@@ -140,7 +142,9 @@ export function SourceControlWritingSettingsSection() {
                   value={allInstructions ?? ""}
                   onChange={(event) => setAllInstructions(event.target.value)}
                   rows={4}
-                  aria-label={t("Custom source control instructions for all selected environments")}
+                  aria-label={t(
+                    "Custom commit and pull request instructions for all selected environments",
+                  )}
                   placeholder={t("Write the instructions each selected environment should use.")}
                 />
                 <Button
@@ -187,8 +191,10 @@ export function SourceControlWritingSettingsSection() {
                 }
               }}
               rows={4}
-              placeholder={t("Keep titles concise. Use short bullet points in descriptions.")}
-              aria-label={t("Custom source control writing instructions")}
+              placeholder={t(
+                "Keep commit subjects under 60 characters. Keep pull request descriptions short and plain.",
+              )}
+              aria-label={t("Custom commit and pull request instructions")}
             />
           </div>
         ) : null}
@@ -269,14 +275,12 @@ export function SourceControlWritingSettingsSection() {
           settingKeys={["sourceControlWritingStyle"]}
           mixed={templatesMixed}
           {...searchableSetting("follow-change-request-templates")}
-          description={t(
-            "Use the repository's template for change request descriptions when available.",
-          )}
+          description={t("Use the repository's pull request template when it has one.")}
           resetAction={
             templatesMixed ||
             style.followChangeRequestTemplates !== defaults.followChangeRequestTemplates ? (
               <SettingResetButton
-                label={t("change request templates")}
+                label={t("pull request templates")}
                 onClick={() =>
                   updateSettings({
                     sourceControlWritingStyle: {
@@ -298,7 +302,7 @@ export function SourceControlWritingSettingsSection() {
                   },
                 })
               }
-              aria-label={t("Follow change request templates")}
+              aria-label={t("Follow pull request templates")}
             />
           }
         />

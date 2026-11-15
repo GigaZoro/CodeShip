@@ -4,7 +4,7 @@ import {
   usageLimitRecoveryPatch,
 } from "@t3tools/contracts/settings";
 import { SettingsMenuRow } from "./components/SettingsMenuRow";
-import { msg, t } from "../../lib/i18n";
+import { msg, t, type Message } from "../../lib/i18n";
 import { Button } from "../../components/ui/Button";
 import {
   scheduledTaskPlacementOptions,
@@ -24,6 +24,7 @@ import { useEnvironmentsWithScope } from "../../state/session";
 import { AutoSettleDaysField } from "./components/AutoSettleDaysField";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
+import type { ComponentProps } from "react";
 import { View } from "react-native";
 import { useState } from "react";
 
@@ -53,7 +54,7 @@ const recoveryLabels = {
   custom: msg("Custom"),
 };
 
-const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
+const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 7;
 
 /**
  * Usage-limit and auto-settle rows. The Threads page owns their writes, so they share its queue
@@ -393,30 +394,44 @@ export function NewThreadSettingsSection() {
   );
 }
 
-/** Per machine, since each machine's own setting decides whether it links and answers links. */
-export function LinkedEnvironmentsSettingsSection() {
+type MachineBetaSetting = "linkedEnvironmentsEnabled" | "fastWorktreeCheckout";
+
+/** One switch per connected machine that offers the beta, since each machine's own setting decides. */
+function MachineBetaSection({
+  title,
+  icon,
+  capability,
+  setting,
+  description,
+}: {
+  readonly title: Message;
+  readonly icon: ComponentProps<typeof SettingsSwitchRow>["icon"];
+  readonly capability: "peerLinks" | "fastWorktreeCheckout";
+  readonly setting: MachineBetaSetting;
+  readonly description: Message;
+}) {
   const { environments } = useEnvironments();
   const supported = environments.filter(
     (environment) =>
       environment.connection.phase === "connected" &&
-      environment.serverConfig?.environment.capabilities.peerLinks === true,
+      environment.serverConfig?.environment.capabilities[capability] === true,
   );
   const writable = useEnvironmentsWithScope(supported, AuthSettingsWriteScope);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: "linked environments beta update",
+    label: `${setting} beta update`,
     reportFailure: true,
   });
   if (supported.length === 0) return null;
   return (
     <View className="gap-3">
-      <SettingsSection title={t("Beta: Linked environments")}>
+      <SettingsSection title={t("Beta: {title}", { title: t(title) })}>
         {supported.map((environment) => {
           const policy = environment.serverConfig?.managedPolicy;
-          const managed = isManagedSettingPath(policy, "linkedEnvironmentsEnabled");
+          const managed = isManagedSettingPath(policy, setting);
           return (
             <SettingsSwitchRow
               key={environment.environmentId}
-              icon="link"
+              icon={icon}
               label={environment.label}
               {...(managed
                 ? {
@@ -425,23 +440,52 @@ export function LinkedEnvironmentsSettingsSection() {
                     }),
                   }
                 : {})}
-              value={environment.serverConfig?.settings.linkedEnvironmentsEnabled === true}
+              value={environment.serverConfig?.settings[setting] === true}
               disabled={managed || !writable.has(environment.environmentId)}
               onValueChange={(value) =>
                 void updateSettings({
                   environmentId: environment.environmentId,
-                  input: { patch: { linkedEnvironmentsEnabled: value } },
+                  input: {
+                    patch:
+                      setting === "linkedEnvironmentsEnabled"
+                        ? { linkedEnvironmentsEnabled: value }
+                        : { fastWorktreeCheckout: value },
+                  },
                 })
               }
             />
           );
         })}
       </SettingsSection>
-      <Text className="px-2 text-sm text-foreground-muted">
-        {t(
-          "Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While it is off, nothing new starts over a link; tasks already running finish.",
-        )}
-      </Text>
+      <Text className="px-2 text-sm text-foreground-muted">{t(description)}</Text>
     </View>
+  );
+}
+
+export function LinkedEnvironmentsSettingsSection() {
+  return (
+    <MachineBetaSection
+      title={msg("Linked environments")}
+      icon="link"
+      capability="peerLinks"
+      setting="linkedEnvironmentsEnabled"
+      description={msg(
+        "Let agents on a machine work on your other machines, and theirs on it. Turn it on for each machine. While off, nothing new starts over a link; running tasks finish.",
+      )}
+    />
+  );
+}
+
+export function FastWorktreeCheckoutSettingsSection() {
+  return (
+    <MachineBetaSection
+      title={msg("Fast worktree checkout")}
+      icon="bolt.circle"
+      capability="fastWorktreeCheckout"
+      setting="fastWorktreeCheckout"
+      description={msg(
+        "On a Mac, clone new worktrees from a checkout cached in the T3 home folder instead of writing every file. Uses Git’s normal checkout when it can’t. Turning it off deletes the cache.",
+      )}
+    />
   );
 }

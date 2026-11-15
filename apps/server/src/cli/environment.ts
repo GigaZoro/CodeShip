@@ -51,7 +51,7 @@ const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A,
         Layer.provide(
           Layer.mergeAll(
             ServerSecretStore.layer,
-            SqlitePersistence.layerConfig,
+            SqlitePersistence.layerCliConfig,
             FetchHttpClient.layer,
           ),
         ),
@@ -61,7 +61,7 @@ const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A,
             Layer.provide(
               Layer.mergeAll(
                 ServerSecretStore.layer,
-                SqlitePersistence.layerConfig,
+                SqlitePersistence.layerCliConfig,
                 ManagedPolicy.layer,
               ),
             ),
@@ -89,6 +89,7 @@ const runLinkingBothWays = Effect.fn("environment.runLinkingBothWays")(function*
   const config = yield* resolveCliAuthConfig(flags, logLevel);
   // The terminal has no network scan: the other environment links back at the addresses given.
   const noDirectEndpoints = Layer.succeed(DirectEndpoints.DirectEndpoints, {
+    resolveAvailable: Effect.fn("environment.noAvailableDirectEndpoints")(() => Effect.succeed([])),
     resolve: Effect.fn("environment.noDirectEndpoints")(() => Effect.succeed([])),
   });
   const peerLinks = PeerLinks.layer.pipe(
@@ -268,7 +269,7 @@ const environmentUnlinkCommand = Command.make("unlink", {
   ),
 }).pipe(
   Command.withDescription(
-    "Forget a linked environment here. Revoke it in that environment's Connections to end its session there too.",
+    "Forget a linked environment here. Revoke it in that environment's Sharing & access to end its session there too.",
   ),
   Command.withHandler((flags) =>
     runWithPeerLinks(flags, (links) =>
@@ -276,7 +277,7 @@ const environmentUnlinkCommand = Command.make("unlink", {
         const removed = yield* links.unlink(EnvironmentId.make(flags.environmentId));
         yield* Console.log(
           removed
-            ? `Forgot ${flags.environmentId}. Revoke it in that environment's Connections to end its session there.\n`
+            ? `Forgot ${flags.environmentId}. Revoke it in that environment's Sharing & access to end its session there.\n`
             : `No linked environment ${flags.environmentId}.\n`,
         );
       }),

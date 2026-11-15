@@ -1,5 +1,6 @@
 import type { ScheduledTask } from "@t3tools/contracts";
 import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
+import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 import {
   noWorkSkipText,
   shownNoWorkSkip,
@@ -87,13 +88,10 @@ export function formatNextScheduledTaskRun(nextRunAt: string, now: number): stri
   const time = next.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
   if (days === 0) {
     if (remaining < MINUTE) return t("Next run in less than a minute");
+    const minutes = Math.round(remaining / MINUTE);
     const when =
-      remaining < HOUR
-        ? tn(
-            Math.round(remaining / MINUTE),
-            "Next run in {count} minute",
-            "Next run in {count} minutes",
-          )
+      minutes < 60
+        ? tn(minutes, "Next run in {count} minute", "Next run in {count} minutes")
         : tn(Math.round(remaining / HOUR), "Next run in {count} hour", "Next run in {count} hours");
     return t("{when}, at {time}", { when, time });
   }
@@ -135,7 +133,10 @@ export function formatRunAtTime(value: Date): string {
   return value.toLocaleTimeString(getFormattingLocale(), { hour: "numeric", minute: "2-digit" });
 }
 
-export function describeSchedule(task: Pick<ScheduledTask, "schedule">): string {
+export function describeSchedule(
+  task: Pick<ScheduledTask, "schedule" | "nextRunAt">,
+  timeZone?: string,
+): string {
   if (task.schedule.type === "webhook") return t("On webhook");
   if (task.schedule.type === "once") {
     const runAt = new Date(task.schedule.runAt);
@@ -148,10 +149,12 @@ export function describeSchedule(task: Pick<ScheduledTask, "schedule">): string 
   const days = task.schedule.weekdays?.length
     ? repeatLabel(task.schedule.weekdays)
     : t("Every day");
-  return t("{days} at {time}", {
+  const zone = scheduleTimeZoneLabel(timeZone, task.nextRunAt);
+  const at = t("{days} at {time}", {
     days,
     time: formatScheduledTaskTime(task.schedule.timeOfDay),
   });
+  return zone === undefined ? at : `${at} ${zone}`;
 }
 
 export function formatScheduledTaskTime(value: string): string {

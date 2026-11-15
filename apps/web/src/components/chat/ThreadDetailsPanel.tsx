@@ -8,7 +8,10 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 
-import type { DraftId } from "../../composerDraftStore";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+
+import type { ComposerThreadTarget, DraftId } from "../../composerDraftStore";
 import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
 import { type EnvMode, type EnvironmentOption } from "../BranchToolbar.logic";
 import { BranchToolbar } from "../BranchToolbar";
@@ -44,6 +47,8 @@ import { useBrowserAssistants } from "../../browser/browserAssistants";
 import { usePreviewAvailable } from "../../browser/previewRuntime";
 import { useEnvironmentScope } from "../../state/session";
 import { ThreadAssistantsControl } from "./ThreadAssistantsControl";
+import { useProject, useServerConfigs } from "../../state/entities";
+import { ThreadDetailsThreadPrRows } from "./ThreadDetailsPrRows";
 import { cn } from "../../lib/utils";
 import { SlidersHorizontalIcon } from "lucide-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
@@ -69,6 +74,7 @@ interface ThreadDetailsPanelProps extends Pick<
   worktreePath: string | null;
   isServerThread: boolean;
   draftId?: DraftId;
+  composerDraftTarget: ComposerThreadTarget;
   activeProjectName: string | undefined;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
   preferredScriptId: string | null;
@@ -77,6 +83,7 @@ interface ThreadDetailsPanelProps extends Pick<
   showOpenInPicker: boolean;
   openInShortcutEnabled: boolean;
   gitCwd: string | null;
+  workspaceMutationId: string | null;
   isGitRepo: boolean;
   envLocked: boolean;
   availableEnvironments: readonly EnvironmentOption[];
@@ -138,6 +145,15 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const assistants = useBrowserAssistants();
   const previewAvailable = usePreviewAvailable(props.environmentId);
   const canOperatePreview = useEnvironmentScope(props.environmentId, AuthPreviewOperateScope);
+  const project = useProject(scopeProjectRef(props.environmentId, props.projectId));
+  const serverConfig = useServerConfigs().get(props.environmentId);
+  // A No project thread's folder sits inside the shared scratch root, so it must never get git.
+  // Until the config and project load, a No project thread looks like any other folder.
+  const offersGit =
+    props.gitCwd !== null &&
+    serverConfig !== undefined &&
+    project !== null &&
+    !isScratchProject(project, serverConfig.scratchWorkspaceRoot);
   const branchToolbarProps = {
     showGitControls: props.isGitRepo,
     environmentId: props.environmentId,
@@ -204,9 +220,11 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
             assistants.length > 0 &&
             previewAvailable &&
             canOperatePreview,
-          branch: props.gitCwd !== null && props.isGitRepo && visible.branch,
+          branch: offersGit && props.isGitRepo && visible.branch,
+          // Without a branch selector, linked pull requests still need somewhere to show.
+          pullRequests: !(offersGit && props.isGitRepo) && visible.branch,
           git:
-            props.gitCwd !== null &&
+            offersGit &&
             props.activeProjectName !== undefined &&
             (visible.gitActions || (visible.changes && props.isGitRepo)),
         };
@@ -288,7 +306,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 </ThreadDetailsSection>
               ) : null}
 
-              {showControls && props.gitCwd && (show.branch || show.git) ? (
+              {showControls && (show.branch || show.pullRequests || show.git) ? (
                 <ThreadDetailsSection
                   headingId="thread-details-version-control-heading"
                   title={t("Version Control")}
@@ -299,12 +317,20 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                     {show.branch ? (
                       <BranchToolbar layout="panel" panelSection="branch" {...branchToolbarProps} />
                     ) : null}
-                    {show.git ? (
+                    {show.pullRequests ? (
+                      <ThreadDetailsThreadPrRows
+                        threadRef={activeThreadRef}
+                        project={project}
+                        composerTarget={props.composerDraftTarget}
+                      />
+                    ) : null}
+                    {show.git && props.gitCwd ? (
                       <GitActionsControl
                         compact={density !== "full"}
                         showActions={visible.gitActions}
                         showChanges={visible.changes}
                         gitCwd={props.gitCwd}
+                        workspaceMutationId={props.workspaceMutationId}
                         activeThreadRef={activeThreadRef}
                         {...(props.draftId ? { draftId: props.draftId } : {})}
                         {...(props.onOpenChanges ? { onOpenChanges: props.onOpenChanges } : {})}

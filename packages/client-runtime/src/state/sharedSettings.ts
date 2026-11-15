@@ -18,6 +18,7 @@ import {
 } from "@t3tools/shared/serverSettings";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
 import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
@@ -306,14 +307,14 @@ export type SettingsWriteResult<A> =
   | { readonly _tag: "Failure"; readonly cause: Cause.Cause<unknown> };
 
 /** A follower's write that was not sent, because the authority could not save the change first. */
-class SharedSettingsNotSavedError extends Error {
-  constructor(authority: string) {
-    super(
-      t("{machine} could not save this change first, so it was not sent here.", {
-        machine: authority,
-      }),
-    );
-    this.name = "SharedSettingsNotSavedError";
+class SharedSettingsNotSavedError extends Schema.TaggedError<SharedSettingsNotSavedError>()(
+  "SharedSettingsNotSavedError",
+  { authority: Schema.String },
+) {
+  override get message(): string {
+    return t("{machine} could not save this change first, so it was not sent here.", {
+      machine: this.authority,
+    });
   }
 }
 
@@ -321,10 +322,12 @@ class SharedSettingsNotSavedError extends Error {
  * A seed for a group in which no follower stamps changes. Stamped by this client it would carry the
  * same stamp as another device's seed, and each follower would keep whichever arrived first.
  */
-class SharedSettingsSeedNotSentError extends Error {
-  constructor() {
-    super(t("Update older servers to save this setting."));
-    this.name = "SharedSettingsSeedNotSentError";
+class SharedSettingsSeedNotSentError extends Schema.TaggedError<SharedSettingsSeedNotSentError>()(
+  "SharedSettingsSeedNotSentError",
+  {},
+) {
+  override get message(): string {
+    return t("Update older servers to save this setting.");
   }
 }
 
@@ -460,7 +463,9 @@ export async function persistSharedSettingsWrites<W extends MachineSettingsWrite
           result: {
             _tag: "Failure",
             cause: Cause.fail(
-              new SharedSettingsNotSavedError(authorityWrite?.label ?? share.authority),
+              new SharedSettingsNotSavedError({
+                authority: authorityWrite?.label ?? share.authority,
+              }),
             ),
           },
         };

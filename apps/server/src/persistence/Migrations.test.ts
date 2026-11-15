@@ -7,8 +7,16 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "./Migrations.ts";
-import ScheduledTaskRunHistory from "./Migrations/081_ScheduledTaskRunHistory.ts";
+import {
+  codeShipMigrationManifest,
+  hasPendingMigrations,
+  migrationManifest,
+  runMigrations,
+} from "./Migrations.ts";
+import { seedLegacyCodeShipDatabase } from "./codeShipMigration.testkit.ts";
+import CompactOrchestrationIds from "./CodeShipMigrations/014_CompactOrchestrationIds.ts";
+import { reconcileCodeShipMigrationLedger } from "./reconcileCodeShipMigrationLedger.ts";
+import ScheduledTaskRunHistory from "./CodeShipMigrations/004_ScheduledTaskRunHistory.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -90,9 +98,50 @@ describe("runMigrations", () => {
   it.effect("upgrades a database at exactly 54", () =>
     Effect.gen(function* () {
       yield* runMigrations({ toMigrationInclusive: 54 });
-      assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        ...v2Migrations,
+        ...codeShipMigrationManifest,
+      ]);
       assert.deepStrictEqual(yield* history, migrationManifest);
       assert.isAbove(yield* v2TableCount, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("drops the unused correlation index and keeps correlation values", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        VALUES (
+          'event-1', 'thread', 'thread-1', 0, 'thread.created', '2026-01-01T00:00:00.000Z',
+          'command-1', NULL, 'correlation-1', 'client', '{}', '{}'
+        )
+      `;
+
+      yield* runMigrations();
+
+      const indexes = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND tbl_name = 'orchestration_events' AND sql IS NOT NULL
+      `;
+      const indexNames = indexes.map((row) => row.name);
+      assert.notInclude(indexNames, "idx_orch_events_correlation_id");
+      for (const kept of [
+        "idx_orch_events_stream_version",
+        "idx_orch_events_stream_sequence",
+        "idx_orch_events_command_id",
+        "idx_orchestration_events_agent_stream_sequence",
+      ]) {
+        assert.include(indexNames, kept);
+      }
+      const events = yield* sql<{ readonly correlation_id: string | null }>`
+        SELECT correlation_id FROM orchestration_events WHERE event_id = 'event-1'
+      `;
+      assert.deepStrictEqual(events, [{ correlation_id: "correlation-1" }]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -104,7 +153,10 @@ describe("runMigrations", () => {
         UPDATE effect_sql_migrations SET name = 'SiteLocalMigration' WHERE migration_id = ${id}
       `;
 
-      assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        ...v2Migrations,
+        ...codeShipMigrationManifest,
+      ]);
       assert.isAbove(yield* v2TableCount, 0);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -131,18 +183,32 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("keeps the migrations that finished before a later one failed", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 81 });
+      yield* sql`CREATE TABLE orchestration_v2_projection_turn_item_counts (thread_id TEXT)`;
+
+      const exit = yield* Effect.exit(runMigrations());
+
+      assert.isTrue(Exit.isFailure(exit));
+      assert.deepStrictEqual(
+        yield* history,
+        migrationManifest.filter(([id]) => id <= 84),
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("reapplies peer link migrations whose ledger rows are missing", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      // A recorded later migration would make the migrator skip 70-72 instead of rerunning them.
       yield* runMigrations({ toMigrationInclusive: 72 });
       yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id BETWEEN 70 AND 72`;
 
-      assert.deepStrictEqual(
-        yield* runMigrations({ toMigrationInclusive: 72 }),
-        migrationManifest.filter(([id]) => id >= 70 && id <= 72),
-      );
-      yield* runMigrations();
+      assert.deepStrictEqual(yield* runMigrations(), [
+        ...migrationManifest.filter(([id]) => id >= 70),
+        ...codeShipMigrationManifest,
+      ]);
       assert.deepStrictEqual(yield* history, migrationManifest);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -166,14 +232,161 @@ it.effect("registers every migration file", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const dir = path.join(import.meta.dirname, "Migrations");
-    const files = (yield* fs.readDirectory(dir)).flatMap((name) => {
-      const match = /^(\d+)_(\w+)\.ts$/.exec(name);
-      return match ? [[Number(match[1]), match[2]] as const] : [];
-    });
-    assert.deepStrictEqual(
-      files.toSorted(([a], [b]) => a - b),
-      migrationManifest,
-    );
+    for (const [directory, manifest] of [
+      ["Migrations", migrationManifest],
+      ["CodeShipMigrations", codeShipMigrationManifest],
+    ] as const) {
+      const dir = path.join(import.meta.dirname, directory);
+      const files = (yield* fs.readDirectory(dir)).flatMap((name) => {
+        const match = /^(\d+)_(\w+)\.ts$/.exec(name);
+        return match ? [[Number(match[1]), match[2]] as const] : [];
+      });
+      assert.deepStrictEqual(
+        files.toSorted(([a], [b]) => a - b),
+        manifest,
+      );
+    }
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([85, 92])(
+  "upgrades released fork history through %s without replaying fork migrations",
+  (throughId) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedLegacyCodeShipDatabase(throughId);
+      yield* sql`UPDATE effect_sql_migrations SET created_at = '2026-11-10 01:02:03' WHERE migration_id >= 78`;
+      yield* sql`INSERT INTO peer_scheduled_task_snapshots (environment_id, tasks_json, checked_at)
+      VALUES ('peer', '[{"title":"keep"}]', '2026-11-10')`;
+      yield* sql`INSERT INTO shared_setting_versions (setting_key, kind, value_json, updated_at, origin)
+      VALUES ('chatWidth', 'shared', '"wide"', '2026-11-10', 'mac')`;
+      const snapshots = yield* sql`SELECT * FROM peer_scheduled_task_snapshots`;
+      const settings = yield* sql`SELECT * FROM shared_setting_versions`;
+      assert.isTrue(yield* hasPendingMigrations());
+      assert.deepEqual(yield* runMigrations(), [
+        ...migrationManifest.filter(([id]) => id >= 78),
+        ...codeShipMigrationManifest.filter(([id]) => id > throughId - 77),
+      ]);
+      assert.deepEqual(yield* history, migrationManifest);
+      assert.deepEqual(
+        yield* sql`SELECT migration_id, name, created_at FROM codeship_migrations WHERE migration_id <= ${throughId - 77} ORDER BY migration_id`,
+        codeShipMigrationManifest
+          .filter(([id]) => id <= throughId - 77)
+          .map(([migration_id, name]) => ({
+            migration_id,
+            name,
+            created_at: "2026-11-10 01:02:03",
+          })),
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM peer_scheduled_task_snapshots`, snapshots);
+      assert.deepEqual(yield* sql`SELECT * FROM shared_setting_versions`, settings);
+      assert.include(
+        (yield* sql<{ readonly name: string }>`PRAGMA table_info(scheduled_tasks)`).map(
+          ({ name }) => name,
+        ),
+        "thread_mode",
+      );
+      assert.include(
+        (yield* sql<{
+          readonly name: string;
+        }>`PRAGMA table_info(orchestration_v2_projection_messages)`).map(({ name }) => name),
+        "search_text",
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM auth_connect_devices`, []);
+      assert.isFalse(yield* hasPendingMigrations());
+      assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect(
+  "runs upstream then fork migrations on a new database, with no fork work in a limited run",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepEqual(
+        yield* runMigrations({ toMigrationInclusive: 1 }),
+        migrationManifest.slice(0, 1),
+      );
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'codeship_migrations'`,
+        [],
+      );
+      assert.deepEqual(yield* runMigrations(), [
+        ...migrationManifest.slice(1),
+        ...codeShipMigrationManifest,
+      ]);
+      assert.deepEqual(yield* history, migrationManifest);
+      assert.deepEqual(
+        yield* sql`SELECT migration_id AS id, name FROM codeship_migrations ORDER BY migration_id`,
+        codeShipMigrationManifest.map(([id, name]) => ({ id, name })),
+      );
+      assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect(
+  "moves an interrupted legacy compaction cursor and resumes after its committed rows",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedLegacyCodeShipDatabase(90);
+      const insert = (eventId: string, version: number) => sql`INSERT INTO orchestration_events
+      (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json)
+      VALUES (${eventId}, 'thread', 'thread', ${version}, 'node.updated', '2026-11-14', 'system',
+        '{"id":"run:thread:mcp%3Alaunch%3Aabc:ordinal:1"}', '{}')`;
+      yield* insert("first", 1);
+      const step = yield* sql.withTransaction(
+        CompactOrchestrationIds.step(JSON.stringify({ table: "orchestration_events", rowid: 0 })),
+      );
+      assert.isDefined(step.next);
+      yield* sql`CREATE TABLE migration_progress (migration_id INTEGER PRIMARY KEY NOT NULL, cursor_json TEXT NOT NULL)`;
+      yield* sql`INSERT INTO migration_progress VALUES (91, ${step.next!})`;
+      yield* insert("after-kill", 2);
+      yield* reconcileCodeShipMigrationLedger();
+      assert.deepEqual(yield* sql`SELECT * FROM codeship_migration_progress`, [
+        { migration_id: 14, cursor_json: step.next },
+      ]);
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'migration_progress'`,
+        [],
+      );
+      assert.deepEqual(yield* reconcileCodeShipMigrationLedger(), []);
+      yield* runMigrations();
+      assert.deepEqual(
+        yield* sql`SELECT event_id, json_extract(payload_json, '$.id') AS id FROM orchestration_events ORDER BY sequence`,
+        [
+          { event_id: "first", id: "run:thread:mcp:launch:abc:ordinal:1" },
+          { event_id: "after-kill", id: "run:thread:mcp%3Alaunch%3Aabc:ordinal:1" },
+        ],
+      );
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'codeship_migration_progress'`,
+        [],
+      );
+      assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect("rolls back ledger reconciliation if a destination row conflicts", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seedLegacyCodeShipDatabase(85);
+    const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+    yield* sql`CREATE TABLE codeship_migrations (migration_id INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT current_timestamp)`;
+    yield* sql`INSERT INTO codeship_migrations (migration_id, name) VALUES (8, 'UnknownFork')`;
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(reconcileCodeShipMigrationLedger())));
+    assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, before);
+    assert.deepEqual(yield* sql`SELECT migration_id, name FROM codeship_migrations`, [
+      { migration_id: 8, name: "UnknownFork" },
+    ]);
+    yield* sql`DROP TABLE codeship_migrations`;
+    yield* sql`CREATE TRIGGER fail_ledger_move BEFORE DELETE ON effect_sql_migrations
+      WHEN old.migration_id = 80 BEGIN SELECT RAISE(ABORT, 'injected failure'); END`;
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(reconcileCodeShipMigrationLedger())));
+    assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, before);
+    assert.deepEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE name = 'codeship_migrations'`,
+      [],
+    );
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

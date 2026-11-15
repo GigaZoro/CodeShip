@@ -15,6 +15,8 @@ import {
   type ModelSelection as ModelSelectionType,
   type ProjectId as ProjectIdType,
   type RuntimeMode as RuntimeModeType,
+  type ServerProvider,
+  type ServerProviderModel,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import {
@@ -23,6 +25,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-outbox";
 
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
+import { withImplicitFastModeSelection } from "../lib/providerOptions";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
@@ -54,6 +57,8 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
+  compactBeforeSend: Schema.optional(Schema.Boolean),
+  freshContext: Schema.optional(Schema.Boolean),
   runtimeMode: Schema.optional(RuntimeMode),
   creation: Schema.optional(QueuedThreadCreationSchema),
   createdAt: IsoDateTime,
@@ -85,6 +90,10 @@ export interface QueuedThreadMessage {
   readonly runtimeMode?: RuntimeModeType;
   /** Captured at enqueue because draining may occur long after the tap. */
   readonly dispatchMode?: ComposerDispatchMode;
+  /** Sends "When you return"'s `/compact` ahead of the message, which queues behind it. */
+  readonly compactBeforeSend?: boolean;
+  /** Starts a new provider session (`/clear`). */
+  readonly freshContext?: boolean;
   readonly creation?: QueuedThreadCreation;
   readonly createdAt: string;
 }
@@ -97,9 +106,17 @@ export interface ThreadSettingsSnapshot {
 export function resolveQueuedThreadSettings(
   message: QueuedThreadMessage,
   thread: ThreadSettingsSnapshot,
+  providers: ReadonlyArray<
+    Pick<ServerProvider, "instanceId"> & {
+      readonly models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "capabilities">>;
+    }
+  > = [],
 ): ThreadSettingsSnapshot {
   return {
-    modelSelection: message.modelSelection ?? thread.modelSelection,
+    modelSelection: withImplicitFastModeSelection(
+      message.modelSelection ?? thread.modelSelection,
+      providers,
+    ),
     runtimeMode: message.runtimeMode ?? thread.runtimeMode,
   };
 }

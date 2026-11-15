@@ -259,8 +259,6 @@ function SidebarFolderHeader(props: {
       ) : null}
       <button
         type="button"
-        role="treeitem"
-        tabIndex={-1}
         data-sidebar-row={rowId}
         data-sidebar-parent={parentRowId}
         aria-expanded={!collapsed}
@@ -297,7 +295,7 @@ function SidebarFolderHeader(props: {
           </span>
         ) : null}
         {collapsed && closedCount > 0 ? (
-          <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible pointer-coarse:invisible">
+          <span className="shrink-0 text-xs tabular-nums text-sidebar-muted-foreground group-hover/project-folder:invisible group-has-[[data-sidebar-action-for]:focus]/project-folder:invisible pointer-coarse:invisible">
             {closedCount}
           </span>
         ) : null}
@@ -310,7 +308,7 @@ function SidebarFolderHeader(props: {
         />
       </button>
       {newThread ? (
-        // Sits over the count, which hides on hover, and left of the chevron.
+        // Sits over the count, which hides on hover or focus, and left of the chevron.
         <span className="absolute inset-y-0 right-6 flex items-center opacity-0 focus-within:opacity-100 group-hover/project-folder:opacity-100 pointer-coarse:opacity-100">
           <Tooltip>
             <TooltipTrigger
@@ -351,8 +349,6 @@ export const SidebarFolderMoreRow = memo(function SidebarFolderMoreRow(props: {
     <li className="list-none">
       <button
         type="button"
-        role="treeitem"
-        tabIndex={-1}
         data-sidebar-row={sidebarFolderMoreRowId(folderKey)}
         data-sidebar-parent={sidebarFolderRowId(folderKey)}
         disabled={state === "loading"}

@@ -111,7 +111,6 @@ export function ArtifactViewerScreen({ route }: ArtifactViewerProps) {
       <AppBar
         title={artifact?.title ?? t("Artifact")}
         {...(artifact ? { subtitle: artifact.threadTitle } : undefined)}
-        sidebar={false}
         onBack={goBack}
         menus={
           artifact

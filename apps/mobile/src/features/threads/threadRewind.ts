@@ -54,7 +54,7 @@ export function deriveThreadRewindTargets(input: {
             },
           ],
     ),
-    threadStartCheckpointReady:
+    threadStartCheckpointAvailable:
       !input.hasMoreHistory && findRevertCheckpoint(structure.checkpoints, 0) !== undefined,
     availableRevertTurnCounts: deriveAvailableRevertTurnCounts(structure),
     unsettledRunId: input.unsettledRunId,

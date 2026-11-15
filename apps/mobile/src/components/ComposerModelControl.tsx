@@ -7,7 +7,7 @@ import type { ModelOption } from "../lib/modelOptions";
 import { resolveProviderOptionDescriptors } from "../lib/providerOptions";
 import { AppText as Text } from "./ui/AppText";
 import { ComposerInlineControl } from "./ComposerToolbar";
-import { ProviderIcon, ProviderInstanceIcon } from "./ProviderIcon";
+import { ProviderIcon, ProviderInstanceIcon, providerInstanceNameLabel } from "./ProviderIcon";
 import { t } from "../lib/i18n";
 
 export function ComposerModelControl(props: {
@@ -29,7 +29,6 @@ export function ComposerModelControl(props: {
   const promptTraits = getPromptControlledTraits(descriptors, props.prompt);
   const summary = props.provider
     ? buildTraitsTriggerDisplay({
-        provider: props.provider,
         descriptors,
         primarySelectDescriptorId: promptTraits.primarySelectDescriptor?.id ?? null,
         ultrathinkPromptControlled: promptTraits.ultrathinkPromptControlled,
@@ -39,6 +38,15 @@ export function ComposerModelControl(props: {
     : "";
   const badge = props.modelOption?.providerBadge;
   const label = props.modelOption?.label ?? props.selection?.model ?? t("Choose model");
+  const providerNameLabel = badge
+    ? providerInstanceNameLabel({
+        provider: props.modelOption?.providerDriver,
+        iconUrl: props.modelOption?.providerIconUrl,
+        displayName: badge.displayName,
+        showBadge: badge.showBadge,
+      })
+    : null;
+  const shortLabel = props.modelOption?.shortName ?? label;
   return (
     <ComposerInlineControl
       accessibilityLabel={[
@@ -71,10 +79,24 @@ export function ComposerModelControl(props: {
           />
         )
       }
-      label={props.modelOption?.shortName ?? label}
+      label={providerNameLabel ?? shortLabel}
+      labelEllipsizeMode={providerNameLabel ? "middle" : undefined}
       iconOnly={props.iconOnly}
+      suffixWidth={providerNameLabel ? 96 : undefined}
       suffix={
-        summary ? (
+        providerNameLabel ? (
+          <Text
+            className={
+              props.size === "large"
+                ? "text-sm text-foreground-muted"
+                : "text-xs text-foreground-muted"
+            }
+            numberOfLines={1}
+          >
+            {shortLabel}
+            {summary ? ` · ${summary}` : ""}
+          </Text>
+        ) : summary ? (
           <Text
             className={
               props.size === "large"

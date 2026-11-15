@@ -2,6 +2,7 @@ import {
   sourceControlClients,
   type ChangeRequestTerminology,
 } from "@t3tools/client-runtime/source-control-clients";
+import type { MenuAction } from "@react-native-menu/menu";
 import type { PullRequestDetail, PullRequestLinkedThreadsResult } from "@t3tools/contracts";
 import { t } from "../../lib/i18n";
 
@@ -12,7 +13,39 @@ export function pullRequestAgentThread(
   threadId?: string,
 ) {
   if (threadId) return threads.find((thread) => thread.id === threadId);
-  return threads.length === 1 ? threads[0] : undefined;
+  return threads.length === 1 && !threads[0]?.settled && !threads[0]?.archivedAt
+    ? threads[0]
+    : undefined;
+}
+
+export function pullRequestAgentThreadActions(
+  threads: PullRequestLinkedThreadsResult["threads"],
+  task: PullRequestAgentTask,
+  canAsk: boolean,
+): MenuAction[] {
+  const active: MenuAction[] = [];
+  const settled: MenuAction[] = [];
+  for (const thread of threads) {
+    const action = {
+      id: `${task}:${thread.id}`,
+      title: thread.title,
+      subtitle: thread.archivedAt
+        ? t("Archived thread")
+        : thread.settled
+          ? t("Settled thread")
+          : t("Continue thread"),
+      image: "bubble.left.and.bubble.right",
+      attributes: { disabled: task !== "ask" && Boolean(thread.archivedAt) },
+    };
+    (thread.settled ? settled : active).push(action);
+  }
+  return [
+    ...(canAsk ? [{ id: `${task}:new`, title: t("Start a new thread"), image: "plus" }] : []),
+    ...active,
+    ...(settled.length
+      ? [{ id: `${task}:settled`, title: t("Settled threads"), subactions: settled }]
+      : []),
+  ];
 }
 
 export function pullRequestAgentPrompt(

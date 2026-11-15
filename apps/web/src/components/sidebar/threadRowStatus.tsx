@@ -74,6 +74,8 @@ function rowStatus(key: ThreadStatusDisplayKey, icon: ThreadRowStatusIconName): 
 /** The short status a thread row shows in place of its age, or null when it has none. */
 export function resolveThreadRowStatus(input: {
   readonly status: ThreadStatus;
+  /** The run is still preparing its worktree, which counts as working. */
+  readonly settingUp?: boolean;
   readonly goalActive: boolean;
   readonly isWoke: boolean;
   readonly isUnread: boolean;
@@ -114,13 +116,17 @@ const LIVE_ICONS: ReadonlySet<ThreadRowStatusIconName> = new Set([
 
 function resolveLiveThreadRowStatus(input: {
   readonly status: ThreadStatus;
+  readonly settingUp?: boolean;
   readonly goalActive: boolean;
   readonly isWoke: boolean;
   readonly isUnread: boolean;
 }): ThreadRowStatus | null {
   switch (input.status) {
     case "working":
-      return rowStatus(input.goalActive ? "goal" : "working", "working");
+      return rowStatus(
+        input.settingUp === true ? "settingUp" : input.goalActive ? "goal" : "working",
+        "working",
+      );
     case "waiting":
       return rowStatus("waiting", "waiting");
     case "approval":

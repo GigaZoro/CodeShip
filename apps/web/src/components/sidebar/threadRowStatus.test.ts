@@ -27,3 +27,9 @@ describe("resolveThreadRowStatus on an unreachable machine", () => {
     );
   });
 });
+
+it("shows worktree setup as Setting up, even on an active goal", () => {
+  expect(
+    resolveThreadRowStatus({ ...base, status: "working", settingUp: true, goalActive: true }),
+  ).toMatchObject({ label: "Setting up", icon: "working" });
+});

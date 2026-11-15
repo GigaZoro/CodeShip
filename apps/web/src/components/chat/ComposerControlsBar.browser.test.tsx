@@ -113,6 +113,7 @@ it("keeps Auto's displayed model and effort in sync with its settings instead of
       >
         <ComposerControlsBar
           environmentId={environmentId}
+          workspaceCwd={null}
           routeKind="server"
           routeThreadRef={{ environmentId, threadId: ThreadId.make("auto-thread") }}
           draftId={null}

@@ -44,6 +44,21 @@ export function threadUndoNoticeSummary(notice: Pick<UndoNotice, "action" | "cou
   }
 }
 
+function undoneSummary(action: UndoOptions["action"], count: number): string {
+  switch (action) {
+    case "Settled":
+      return tn(count, "Undid settling {count} thread", "Undid settling {count} threads");
+    case "Snoozed":
+      return tn(count, "Undid snoozing {count} thread", "Undid snoozing {count} threads");
+    case "Unpinned":
+      return tn(count, "Undid unpinning {count} thread", "Undid unpinning {count} threads");
+    case "Archived":
+      return tn(count, "Undid archiving {count} thread", "Undid archiving {count} threads");
+    case "Discarded":
+      return tn(count, "Undid discarding {count} draft", "Undid discarding {count} drafts");
+  }
+}
+
 export function threadUndoLabel(keybindings: Parameters<typeof shortcutLabelForCommand>[0]) {
   const shortcut = shortcutLabelForCommand(keybindings, "thread.undo");
   return shortcut ? t("{shortcut} to undo", { shortcut }) : t("Undo");
@@ -98,6 +113,7 @@ function refreshNotice() {
       // Claim before awaiting to prevent repeated actions restoring a group twice.
       for (const entry of current) entry.claim.finish();
       refreshNotice();
+      let undone = 0;
       await Promise.all(
         current.map(async ({ undo, failureTitle }) => {
           const reportFailure = (error: unknown) => {
@@ -111,7 +127,8 @@ function refreshNotice() {
           };
           try {
             const result = await undo();
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            if (result._tag === "Success") undone++;
+            else if (!isAtomCommandInterrupted(result)) {
               reportFailure(squashAtomCommandFailure(result));
             }
           } catch (error) {
@@ -119,6 +136,10 @@ function refreshNotice() {
           }
         }),
       );
+      // Failures already raise a toast, so only what was actually restored is spoken.
+      if (undone > 0) {
+        announce(undoneSummary(latest.action, undone));
+      }
     },
   });
 }

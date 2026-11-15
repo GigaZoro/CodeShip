@@ -6,7 +6,7 @@ import {
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -187,46 +187,40 @@ const writeClientSettings = Effect.fnUntraced(function* (input: {
         }),
     ),
   );
-  yield* input.fileSystem.writeFileString(tempPath, `${encoded}\n`).pipe(
-    Effect.mapError(
-      (cause) =>
-        new DesktopClientSettingsWriteError({
-          operation: "write-temporary-file",
-          path: tempPath,
-          cause,
-        }),
-    ),
-  );
-  yield* input.fileSystem.rename(tempPath, targetPath).pipe(
-    Effect.mapError(
-      (cause) =>
-        new DesktopClientSettingsWriteError({
-          operation: "replace-settings-file",
-          path: input.settingsPath,
-          cause,
-        }),
-    ),
-  );
+  yield* Effect.gen(function* () {
+    yield* input.fileSystem.writeFileString(tempPath, `${encoded}\n`).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DesktopClientSettingsWriteError({
+            operation: "write-temporary-file",
+            path: tempPath,
+            cause,
+          }),
+      ),
+    );
+    yield* input.fileSystem.rename(tempPath, targetPath).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DesktopClientSettingsWriteError({
+            operation: "replace-settings-file",
+            path: input.settingsPath,
+            cause,
+          }),
+      ),
+    );
+  }).pipe(Effect.ensuring(input.fileSystem.remove(tempPath, { force: true }).pipe(Effect.ignore)));
 });
 
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const mutex = yield* Semaphore.make(1);
 
   const persist = Effect.fn("desktop.clientSettings.persist")(function (settings: ClientSettings) {
-    return crypto.randomUUIDv4().pipe(
+    return random.uuidV4().pipe(
       Effect.map((uuid) => uuid.replace(/-/g, "")),
-      Effect.mapError(
-        (cause) =>
-          new DesktopClientSettingsWriteError({
-            operation: "create-temporary-file-name",
-            path: environment.clientSettingsPath,
-            cause,
-          }),
-      ),
       Effect.flatMap((suffix) =>
         writeClientSettings({
           fileSystem,

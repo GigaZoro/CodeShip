@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import { AsyncResult } from "effect/reactivity";
-import { Platform, View } from "react-native";
+import { Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "../../components/ui/Button";
@@ -24,10 +24,7 @@ import {
   uniformMobileSetting,
 } from "./settings-scoped-server";
 import { useEnvironments } from "../../state/environments";
-import {
-  AndroidSettingsEnvironmentFilter,
-  SettingsEnvironmentFilterHeader,
-} from "./components/SettingsEnvironmentFilterHeader";
+import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { AppText as Text } from "../../components/ui/AppText";
 import { DEFAULT_FOLLOW_UP_BEHAVIOR, type FollowUpBehavior } from "../../lib/followUpBehavior";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -60,6 +57,7 @@ const FOLLOW_UP_OPTIONS: ReadonlyArray<{
 ];
 
 export function SettingsFollowUpRouteScreen() {
+  const environmentMenu = useSettingsEnvironmentMenu();
   const insets = useSafeAreaInsets();
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
@@ -143,7 +141,8 @@ export function SettingsFollowUpRouteScreen() {
       </SettingsSection>
       <Text className="px-2 text-sm text-foreground-muted">
         {t(
-          "Long-press the send button to choose another option for a single message. With a hardware keyboard, hold Command while sending to queue, or to steer when your default is Queue.",
+          "Long-press the send button to choose another option for a single message. With a hardware keyboard, hold {modifier} while sending to queue, or to steer when your default is Queue.",
+          { modifier: Platform.OS === "android" ? "Ctrl" : "Command" },
         )}
       </Text>
       <SettingsSection
@@ -213,17 +212,8 @@ export function SettingsFollowUpRouteScreen() {
   );
 
   return (
-    <>
-      <SettingsEnvironmentFilterHeader />
-      {Platform.OS === "android" ? (
-        <SettingsScreen title={t("Chat")} trailing={<AndroidSettingsEnvironmentFilter />}>
-          {content}
-        </SettingsScreen>
-      ) : (
-        <View collapsable={false} className="flex-1 bg-sheet">
-          {content}
-        </View>
-      )}
-    </>
+    <SettingsScreen title={t("Chat")} menus={[environmentMenu]}>
+      {content}
+    </SettingsScreen>
   );
 }

@@ -23,6 +23,7 @@ import * as Settings from "../serverSettings.ts";
 import * as AutoUpdate from "./autoUpdate.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 const NEWER = "999.0.0";
 const NEWEST_AFTER = "999.0.1";
@@ -68,10 +69,11 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
           ServiceLauncherClient.ServiceLauncherClient,
           ServiceLauncherClient.ServiceLauncherClient.of({
             managed: true,
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
             settledOutcome: options.settledOutcome,
             requestUpdate: () =>
               Effect.die("the launcher is asked through the self-update service"),
-            prepareTrial: Effect.undefined,
+            prepareTrial: () => Effect.undefined,
             reportPreparing: Effect.void,
           }),
         ),

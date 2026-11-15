@@ -120,6 +120,7 @@ export default function ProjectScriptsControl({
       runOnWorktreeCreate: fileScript.runOnWorktreeCreate ?? false,
       waitForSetup: fileScript.runOnWorktreeCreate === true && fileScript.async === false,
       runOnSettle: fileScript.runOnSettle ?? false,
+      stopOnSettle: fileScript.stopOnSettle ?? false,
       ...(readEnvironmentScope(environmentId, AuthSettingsWriteScope) ? { keybinding: null } : {}),
       previewUrl: fileScript.previewUrl ?? null,
       autoOpenPreview: fileScript.previewUrl ? (fileScript.autoOpenPreview ?? false) : false,
@@ -232,18 +233,26 @@ export default function ProjectScriptsControl({
           </Tooltip>
           <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
           <Menu open={menuOpen} onOpenChange={setMenuOpen}>
-            <MenuTrigger
-              render={
-                <ThreadDetailsControl
-                  size="sm"
-                  variant="ghost"
-                  part="secondary"
-                  aria-label={t("More project actions")}
-                />
-              }
-            >
-              <ChevronDownIcon className={THREAD_DETAILS_PANEL_CHEVRON_CLASS} />
-            </MenuTrigger>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <MenuTrigger
+                    render={
+                      <ThreadDetailsControl
+                        size="sm"
+                        variant="ghost"
+                        part="secondary"
+                        aria-label={t("More project actions")}
+                        data-toolbar-control=""
+                      />
+                    }
+                  />
+                }
+              >
+                <ChevronDownIcon className={THREAD_DETAILS_PANEL_CHEVRON_CLASS} />
+              </TooltipTrigger>
+              <TooltipPopup side="top">{t("More project actions")}</TooltipPopup>
+            </Tooltip>
             <MenuPopup align="end" anchor={anchorRef} className="w-(--anchor-width)">
               {menuItems}
             </MenuPopup>

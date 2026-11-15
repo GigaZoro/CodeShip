@@ -61,6 +61,7 @@ export type KeybindingCommandOption = KeybindingCommand;
 const CORE_WHEN_VARIABLES = [
   "terminalFocus",
   "terminalOpen",
+  "previewOpen",
   "isWeb",
   "isDesktop",
   "true",
@@ -433,6 +434,7 @@ export function commandLabel(command: KeybindingCommand): string {
   if (command === "composer.sendAlternate") return t("Composer: Opposite Queue or Steer Action");
   if (command === "composer.sendBackground") return t("Composer: Start in Background");
   if (command === "composer.sendAndNewThread") return t("Composer: Send and Start New Thread");
+  if (command === "composer.dictation") return t("Composer: Start or Finish Dictation");
   if (command === "thread.steerQueuedMessage") return t("Queue: Send First Queued Message");
   if (command === "thread.editQueuedMessage") return t("Queue: Edit Last Queued Message");
   if (command === "thread.copyReference") return t("Pull Request: Copy Link or Thread");
@@ -442,6 +444,7 @@ export function commandLabel(command: KeybindingCommand): string {
   if (usagePeriod) return t("Usage: Period: {period}", { period: t(usagePeriod.label) });
   if (command === "view.reopenClosed") return t("Reopen Closed Tab");
   if (command === "preview.focusUrl") return t("Preview: Focus URL");
+  if (command === "preview.find") return t("Preview: Find on Page");
   const raw = String(command);
   if (raw.startsWith("script.") && raw.endsWith(".run")) {
     return t("Run Script: {script}", {

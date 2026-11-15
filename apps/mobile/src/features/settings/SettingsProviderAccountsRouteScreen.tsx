@@ -35,13 +35,12 @@ import { serverEnvironment } from "../../state/server";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ListActionRow as SettingsActionRow } from "../../components/ui/ListActionRow";
-import {
-  AndroidSettingsEnvironmentFilter,
-  SettingsEnvironmentFilterHeader,
-} from "./components/SettingsEnvironmentFilterHeader";
+import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
+import { AddClaudeAccount, ClaudeAccount } from "./ClaudeAccounts";
+import { CLAUDE_DRIVER } from "./claude-accounts";
 import { useSettingsEnvironmentFilter, type SettingsTarget } from "./settings-environment-filter";
 import {
   isCapabilitiesFocused,
@@ -57,6 +56,7 @@ type Props = StaticScreenProps<CapabilitiesFocus | undefined>;
  * until "Show all providers".
  */
 export function SettingsProviderAccountsRouteScreen({ route }: Props) {
+  const environmentMenu = useSettingsEnvironmentMenu();
   const { selectedTargets, availableTargets } = useSettingsEnvironmentFilter();
   const [showAll, setShowAll] = useState(false);
   const focus = showAll ? undefined : route.params;
@@ -75,94 +75,125 @@ export function SettingsProviderAccountsRouteScreen({ route }: Props) {
       ? undefined
       : (environments.find((environment) => environment.environmentId === origin)?.label ?? null);
   };
+  return (
+    <SettingsScreen title={t("Providers")} menus={[environmentMenu]}>
+      <ScreenScrollView
+        className="flex-1"
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+      >
+        {targets.length === 0 ? (
+          <Text className="text-foreground-muted">{t("Select a connected environment.")}</Text>
+        ) : (
+          targets.map((environment) => (
+            <SettingsSection key={environment.environmentId} title={environment.label}>
+              {!permittedEnvironments.has(environment.environmentId) ? (
+                <View className="gap-1 p-4">
+                  <Text className="text-base text-foreground">{t("Limited permissions")}</Text>
+                  <Text className="text-sm text-foreground-muted">
+                    {t(
+                      "This session can view {environment}'s providers but can't change their settings.",
+                      { environment: environment.label },
+                    )}
+                  </Text>
+                </View>
+              ) : (
+                <EnvironmentProviders
+                  environment={environment}
+                  providers={managedProviders(environment, providersByEnvironment)}
+                  focus={focus}
+                  sharedFrom={sharedFrom}
+                />
+              )}
+            </SettingsSection>
+          ))
+        )}
+        {focused ? (
+          <SettingsSection>
+            <SettingsActionRow label={t("Show all providers")} onPress={() => setShowAll(true)} />
+          </SettingsSection>
+        ) : null}
+        {targets.length > 0 ? (
+          <SettingsSection>
+            <SettingsRow
+              icon="wrench.and.screwdriver"
+              label={t("Capabilities")}
+              value={t("MCP servers and skills")}
+              target="SettingsCapabilities"
+            />
+          </SettingsSection>
+        ) : null}
+      </ScreenScrollView>
+    </SettingsScreen>
+  );
+}
+
+function EnvironmentProviders({
+  environment,
+  providers,
+  focus,
+  sharedFrom,
+}: {
+  readonly environment: SettingsTarget;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly focus: CapabilitiesFocus | undefined;
+  readonly sharedFrom: (
+    target: SettingsTarget,
+    provider: ServerProvider,
+  ) => string | null | undefined;
+}) {
+  const focusedProvider = (provider: ServerProvider) =>
+    matchesCapabilitiesFocus(focus, {
+      environmentId: environment.environmentId,
+      instanceId: provider.instanceId,
+    });
   // Codex accounts show their sign-in choice even when the app cannot sign them in itself.
-  const accounts = (environment: SettingsTarget) =>
-    managedProviders(environment, providersByEnvironment).filter(
-      (provider) =>
-        (canManageProvider(provider) || provider.driver === "codex") &&
-        matchesCapabilitiesFocus(focus, {
-          environmentId: environment.environmentId,
-          instanceId: provider.instanceId,
-        }),
-    );
+  const accounts = providers.filter(
+    (provider) =>
+      (canManageProvider(provider) || provider.driver === "codex") && focusedProvider(provider),
+  );
+  // Claude has no in-app sign-in; each account is its own instance on a signed-in config folder.
+  const claudeAccounts = providers.filter(
+    (provider) =>
+      provider.driver === CLAUDE_DRIVER &&
+      !canManageProvider(provider) &&
+      focusedProvider(provider),
+  );
+  const canAddClaude =
+    !isCapabilitiesFocused(focus) &&
+    isManagedDriverAllowed(environment.serverConfig.managedPolicy, CLAUDE_DRIVER);
   return (
     <>
-      <SettingsEnvironmentFilterHeader />
-      <SettingsScreen title={t("Providers")} trailing={<AndroidSettingsEnvironmentFilter />}>
-        <ScreenScrollView
-          className="flex-1"
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerClassName="gap-6 px-5 pt-4"
-          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        >
-          {targets.length === 0 ? (
-            <Text className="text-foreground-muted">{t("Select a connected environment.")}</Text>
-          ) : (
-            targets.map((environment) => (
-              <SettingsSection key={environment.environmentId} title={environment.label}>
-                {!permittedEnvironments.has(environment.environmentId) ? (
-                  <View className="gap-1 p-4">
-                    <Text className="text-base text-foreground">{t("Limited permissions")}</Text>
-                    <Text className="text-sm text-foreground-muted">
-                      {t(
-                        "This session can view {environment}'s providers but can't change their settings.",
-                        { environment: environment.label },
-                      )}
-                    </Text>
-                  </View>
-                ) : (
-                  <>
-                    {accounts(environment).map((provider, index) => (
-                      <Fragment key={provider.instanceId}>
-                        {canManageProvider(provider) ? (
-                          <ProviderAccount
-                            environment={environment}
-                            provider={provider}
-                            sharedFrom={sharedFrom(environment, provider)}
-                            divider={index > 0}
-                          />
-                        ) : null}
-                        {provider.driver === "codex" ? (
-                          <CodexSignInRows
-                            environmentId={environment.environmentId}
-                            provider={provider}
-                            instance={
-                              environment.serverConfig.settings.providerInstances[
-                                provider.instanceId
-                              ]
-                            }
-                            managedPolicy={environment.serverConfig.managedPolicy}
-                          />
-                        ) : null}
-                      </Fragment>
-                    ))}
-                    {accounts(environment).length === 0 ? (
-                      <Text className="p-4 text-foreground-muted">
-                        {t("Configure a provider with in-app sign-in in web or desktop Settings.")}
-                      </Text>
-                    ) : null}
-                  </>
-                )}
-              </SettingsSection>
-            ))
-          )}
-          {focused ? (
-            <SettingsSection>
-              <SettingsActionRow label={t("Show all providers")} onPress={() => setShowAll(true)} />
-            </SettingsSection>
+      {accounts.map((provider, index) => (
+        <Fragment key={provider.instanceId}>
+          {canManageProvider(provider) ? (
+            <ProviderAccount
+              environment={environment}
+              provider={provider}
+              sharedFrom={sharedFrom(environment, provider)}
+              divider={index > 0}
+            />
           ) : null}
-          {targets.length > 0 ? (
-            <SettingsSection>
-              <SettingsRow
-                icon="sparkles"
-                label={t("Capabilities")}
-                value={t("MCP servers and skills")}
-                target="SettingsCapabilities"
-              />
-            </SettingsSection>
+          {provider.driver === "codex" ? (
+            <CodexSignInRows
+              environmentId={environment.environmentId}
+              provider={provider}
+              instance={environment.serverConfig.settings.providerInstances[provider.instanceId]}
+              managedPolicy={environment.serverConfig.managedPolicy}
+            />
           ) : null}
-        </ScreenScrollView>
-      </SettingsScreen>
+        </Fragment>
+      ))}
+      {accounts.length === 0 ? (
+        <Text className="p-4 text-foreground-muted">
+          {t("Configure a provider with in-app sign-in in web or desktop Settings.")}
+        </Text>
+      ) : null}
+      {claudeAccounts.map((provider) => (
+        <ClaudeAccount key={provider.instanceId} environment={environment} provider={provider} />
+      ))}
+      {canAddClaude ? <AddClaudeAccount environment={environment} /> : null}
     </>
   );
 }
@@ -210,6 +241,10 @@ export function ProviderAccount({
   const complete = useAtomCommand(serverEnvironment.completeProviderAuth, options);
   const cancel = useAtomCommand(serverEnvironment.cancelProviderAuth, options);
   const logout = useAtomCommand(serverEnvironment.logoutProviderAuth, options);
+  const removeMethod = useAtomCommand(serverEnvironment.removeProviderAuthMethod, options);
+  const canRemoveMethod = useAtomValue(
+    serverEnvironment.removeProviderAuthMethod.permissionAtom(environmentId),
+  );
   // Matches ListRowLayout: large text stacks the action below instead of squeezing the status.
   const stacked = useWindowDimensions().fontScale >= 1.5;
   const [pending, setPending] = useState(false);
@@ -333,6 +368,21 @@ export function ProviderAccount({
     title: method.name,
     ...(method.description ? { subtitle: method.description } : {}),
   }));
+  const removableMethods = methods.filter((method) => method.canRemove);
+  const removeActions: MenuAction[] = removableMethods.length
+    ? [
+        {
+          id: "remove",
+          title: t("Remove incomplete connection"),
+          attributes: { disabled: disabled || active || !canRemoveMethod },
+          subactions: removableMethods.map((method) => ({
+            id: `remove:${method.id}`,
+            title: method.name,
+            attributes: { destructive: true, disabled: disabled || active || !canRemoveMethod },
+          })),
+        },
+      ]
+    : [];
   function startSignIn(methodId?: string) {
     void run(() => start(methodId ? { environmentId, input: { instanceId, methodId } } : target));
   }
@@ -359,10 +409,16 @@ export function ProviderAccount({
     if (id === "signOut") signOut();
     // iOS keeps a disabled submenu's children selectable, so sign-in guards here too.
     else if (signInDisabled) return;
-    else if (id.startsWith("method:")) startSignIn(id.slice("method:".length));
+    else if (id.startsWith("remove:")) {
+      if (active || !canRemoveMethod) return;
+      const methodId = id.slice("remove:".length);
+      if (!removableMethods.some((method) => method.id === methodId)) return;
+      void run(() => removeMethod({ environmentId, input: { instanceId, methodId } }));
+    } else if (id.startsWith("method:")) startSignIn(id.slice("method:".length));
     else if (id === "change") startSignIn();
   }
   const accountActions: MenuAction[] = [
+    ...removeActions,
     ...(canSignIn
       ? [
           {
@@ -433,7 +489,7 @@ export function ProviderAccount({
       accessibilityRole="button"
       accessibilityLabel={t("Sign in to {name}", { name })}
       title={t("Sign in with")}
-      actions={methodActions}
+      actions={[...methodActions, ...removeActions]}
       onPressAction={({ nativeEvent }) => onMenuAction(nativeEvent.event)}
     >
       <ControlPill

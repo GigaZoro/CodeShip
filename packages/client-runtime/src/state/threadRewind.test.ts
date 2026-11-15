@@ -96,7 +96,7 @@ describe("revert targets from visible turn items", () => {
       deriveRevertTurnCountByUserMessageId({
         runMarkers: revertRunMarkersFromVisibleTurnItems(rows),
         checkpoints: [1, 2, 3, 4].map(checkpoint),
-        threadStartCheckpointReady: true,
+        threadStartCheckpointAvailable: true,
       }),
     );
 

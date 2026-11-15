@@ -1,5 +1,7 @@
 import type { ResourceTelemetryProcess, ResourceTelemetrySourceStatus } from "@t3tools/contracts";
 
+import { t, tn } from "~/i18n";
+
 export function processIdentityKey(process: Pick<ResourceTelemetryProcess, "identity">): string {
   return `${process.identity.pid}:${process.identity.startTimeMs}`;
 }
@@ -67,4 +69,23 @@ export function resourceHistoryCpuScaleMax(
   buckets: ReadonlyArray<{ readonly avgCpuPercent: number }>,
 ): number {
   return Math.max(1, ...buckets.map((bucket) => bucket.avgCpuPercent));
+}
+
+export function formatCpuTime(seconds: number): string {
+  const format = (value: number) => value.toFixed(value >= 10 ? 1 : 2).replace(/\.0+$/, "");
+  // Pick the unit after rounding so 59.97 seconds never renders as "60s".
+  const shortSeconds = format(seconds);
+  if (Number(shortSeconds) < 60) return t("{value}s", { value: shortSeconds });
+  const shortMinutes = format(seconds / 60);
+  if (Number(shortMinutes) < 60) return t("{value}m", { value: shortMinutes });
+  return t("{value}h", { value: (seconds / 3_600).toFixed(2).replace(/\.0+$/, "") });
+}
+
+export function formatSamplingStatus(intervalMs: number): string {
+  // The server reports 0 while the native monitor is idle and samples only on request.
+  if (intervalMs <= 0) return t("Sampling on demand");
+  if (intervalMs < 1_000) return t("Sampling every {value} ms", { value: Math.round(intervalMs) });
+  return t("Sampling every {interval}", {
+    interval: tn(Math.round(intervalMs / 100) / 10, "{count} second", "{count} seconds"),
+  });
 }

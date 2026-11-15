@@ -28,7 +28,7 @@ const idleRefreshAtom = Atom.make(false).pipe(
  * the cwd's skills are still being scanned.
  */
 export function useProviderWorkspaceSnapshotRefresh(input: {
-  readonly environmentId: EnvironmentId;
+  readonly environmentId: EnvironmentId | null;
   readonly gitCwd: string | null;
   readonly instanceId: ProviderInstanceId | undefined;
   readonly providers: readonly ServerProvider[];
@@ -37,7 +37,7 @@ export function useProviderWorkspaceSnapshotRefresh(input: {
   const { environmentId, gitCwd } = input;
   const instanceIds = resolveSkillInventoryInstanceIds(input);
   const atom =
-    gitCwd && instanceIds.length > 0
+    environmentId && gitCwd && instanceIds.length > 0
       ? providerWorkspaceSnapshotRefresh({ environmentId, instanceIds, cwd: gitCwd })
       : idleRefreshAtom;
   return {

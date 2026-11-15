@@ -1,7 +1,7 @@
 import type { EnvironmentId, ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
-import { createModelSelection, withModelSelectionOptions } from "@t3tools/shared/model";
+import { pickModelSelection, withModelSelectionOptions } from "@t3tools/shared/model";
 
-import type { getCustomModelOptionsByInstance } from "../../modelSelection";
+import { type getCustomModelOptionsByInstance, selectsPlanAgent } from "../../modelSelection";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
@@ -78,7 +78,15 @@ export function ModelSelectionControl({
         {...(triggerLabel !== undefined ? { triggerLabel } : {})}
         {...(disabledReason ? { getModelDisabledReason: disabledReason } : {})}
         {...(onOpenProviderSetup ? { onOpenProviderSetup } : {})}
-        onInstanceModelChange={(instanceId, model) => save(createModelSelection(instanceId, model))}
+        onInstanceModelChange={(instanceId, model) =>
+          save(
+            pickModelSelection(
+              triggerLabel !== undefined || auto?.checked === true ? null : shown,
+              instanceId,
+              model,
+            ),
+          )
+        }
         {...(auto
           ? {
               auto: {
@@ -98,6 +106,7 @@ export function ModelSelectionControl({
           model={shown.model}
           modelOptions={shown.options ?? []}
           allowPromptInjectedEffort={false}
+          includePlanAgent={selectsPlanAgent(shown.options)}
           disabled={disabled}
           triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
           onModelOptionsChange={(options) => save(withModelSelectionOptions(shown, options))}

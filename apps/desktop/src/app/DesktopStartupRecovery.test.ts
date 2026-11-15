@@ -76,6 +76,19 @@ describe("resolveStartupRecoveryOffer", () => {
     ).toEqual({ _tag: "Reinstall", version: "0.1.2" });
   });
 
+  it("blames the managed policy unless a newer version can read it", () => {
+    expect(
+      resolveStartupRecoveryOffer(
+        updateState({ status: "available", availableVersion: "0.1.4" }),
+        "0.1.2",
+        true,
+      ),
+    ).toEqual({ _tag: "Update", version: "0.1.4" });
+    expect(
+      resolveStartupRecoveryOffer(updateState({ status: "up-to-date" }), "0.1.2", true),
+    ).toEqual({ _tag: "ManagedPolicy" });
+  });
+
   it("falls back to the releases page when this version never started", () => {
     expect(resolveStartupRecoveryOffer(updateState({ status: "disabled" }), "0.1.3")).toEqual({
       _tag: "Releases",
@@ -89,6 +102,7 @@ describe("resolveStartupRecoveryOffer", () => {
 const failing = {
   _tag: "Failing",
   reason: "Server failed before readiness",
+  managedPolicy: false,
   output: "Failure details",
 } as const;
 

@@ -1,5 +1,6 @@
 import type { EnvironmentId, ManagedPolicySummary } from "@t3tools/contracts";
 
+import { t } from "~/i18n";
 import { useServerConfigs } from "./entities";
 import { usePrimaryEnvironmentId } from "./environments";
 
@@ -35,6 +36,6 @@ export function managedTelemetryOffMessage(
   policy: ManagedPolicySummary | undefined,
 ): string | undefined {
   return policy?.limits?.telemetry === false
-    ? `${policy.organization} turned off anonymous usage data.`
+    ? t("{organization} turned off anonymous usage data.", { organization: policy.organization })
     : undefined;
 }

@@ -114,9 +114,11 @@ export function useMediaActions(source: MediaActionSource) {
 export function MediaActions({
   source,
   children,
+  showTooltip = true,
 }: {
   source: MediaActionSource;
   children: ReactElement;
+  showTooltip?: boolean;
 }) {
   const { save, copyImage, canReadMedia, assertCanReadMedia } = useMediaActions(source);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -163,14 +165,17 @@ export function MediaActions({
 
       const action = await api.contextMenu.show(items, position);
       if (!action) return;
-      failureTitle = {
-        "copy-full-path": t("Could not copy full path"),
-        "copy-relative-path": t("Could not copy relative path"),
-        "copy-url": t("Could not copy URL"),
-        "open-file": t("Could not open in file viewer"),
-        save: isImage ? t("Could not save image") : t("Could not save video"),
-        "copy-image": t("Could not copy image"),
-      }[action];
+      failureTitle = (
+        {
+          "copy-full-path": t("Could not copy full path"),
+          "copy-relative-path": t("Could not copy relative path"),
+          "copy-url": t("Could not copy URL"),
+          "open-file": t("Could not open in file viewer"),
+          save: isImage ? t("Could not save image") : t("Could not save video"),
+          "save-image": t("Could not save image"),
+          "copy-image": t("Could not copy image"),
+        } satisfies Record<MediaActionId, string>
+      )[action];
       const text =
         action === "copy-full-path" && reference?.kind === "file"
           ? reference.path
@@ -186,10 +191,6 @@ export function MediaActions({
           clipboardText,
           reference?.kind === "file" ? t("file path") : t("URL"),
         );
-        toastManager.add({
-          type: "success",
-          title: action === "copy-url" ? t("URL copied") : t("Path copied"),
-        });
       } else if (action === "open-file") {
         assertCanReadMedia();
         source.onOpenFile?.();
@@ -204,10 +205,7 @@ export function MediaActions({
               : t("Copying image…"),
         });
         await (action === "save" ? save() : copyImage());
-        toastManager.update(progressToast, {
-          type: "success",
-          title: action === "save" ? t("Download started") : t("Image copied"),
-        });
+        toastManager.close(progressToast);
       }
     });
     if (AsyncResult.isFailure(result)) {
@@ -224,7 +222,7 @@ export function MediaActions({
   };
 
   return (
-    <Tooltip open={tooltipOpen} onOpenChange={setTooltipOpen}>
+    <Tooltip disabled={!showTooltip} open={tooltipOpen} onOpenChange={setTooltipOpen}>
       <TooltipTrigger
         render={children}
         tabIndex={0}

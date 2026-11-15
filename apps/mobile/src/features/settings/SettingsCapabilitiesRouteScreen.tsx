@@ -25,10 +25,7 @@ import { environmentPresentations } from "../../state/presentation";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import {
-  AndroidSettingsEnvironmentFilter,
-  SettingsEnvironmentFilterHeader,
-} from "./components/SettingsEnvironmentFilterHeader";
+import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import {
   focusedServerFirst,
   isCapabilitiesFocused,
@@ -60,6 +57,7 @@ type Props = StaticScreenProps<CapabilitiesFocus | undefined>;
  */
 export function SettingsCapabilitiesRouteScreen({ route }: Props) {
   const { selectedTargets, availableTargets } = useSettingsEnvironmentFilter();
+  const environmentMenu = useSettingsEnvironmentMenu();
   const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
   const insets = useSafeAreaInsets();
   const [showAll, setShowAll] = useState(false);
@@ -69,57 +67,52 @@ export function SettingsCapabilitiesRouteScreen({ route }: Props) {
     ? availableTargets.filter((entry) => matchesCapabilitiesFocus(focus, entry))
     : selectedTargets;
   return (
-    <>
-      <SettingsEnvironmentFilterHeader />
-      <SettingsScreen title={t("Capabilities")} trailing={<AndroidSettingsEnvironmentFilter />}>
-        <ScreenScrollView
-          className="flex-1"
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerClassName="gap-6 px-5 pt-4"
-          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        >
-          {targets.length === 0 ? (
-            <Text className="text-foreground-muted">{t("Select a connected environment.")}</Text>
-          ) : (
-            targets.flatMap((environment) => {
-              const providers = (
-                providersByEnvironment.get(environment.environmentId) ?? []
-              ).filter(
-                (provider) =>
-                  provider.enabled &&
-                  provider.installed &&
-                  isManagedDriverAllowed(environment.serverConfig.managedPolicy, provider.driver) &&
-                  matchesCapabilitiesFocus(focus, {
-                    environmentId: environment.environmentId,
-                    instanceId: provider.instanceId,
-                  }),
-              );
-              return providers.length === 0
-                ? [
-                    <SettingsSection key={environment.environmentId} title={environment.label}>
-                      <Text className="p-4 text-foreground-muted">
-                        {t("No agents are available.")}
-                      </Text>
-                    </SettingsSection>,
-                  ]
-                : providers.map((provider) => (
-                    <ProviderCapabilities
-                      key={`${environment.environmentId}:${provider.instanceId}`}
-                      environment={environment}
-                      provider={provider}
-                      focus={focus}
-                    />
-                  ));
-            })
-          )}
-          {focused ? (
-            <SettingsSection>
-              <ListActionRow label={t("Show all capabilities")} onPress={() => setShowAll(true)} />
-            </SettingsSection>
-          ) : null}
-        </ScreenScrollView>
-      </SettingsScreen>
-    </>
+    <SettingsScreen title={t("Capabilities")} menus={[environmentMenu]}>
+      <ScreenScrollView
+        className="flex-1"
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+      >
+        {targets.length === 0 ? (
+          <Text className="text-foreground-muted">{t("Select a connected environment.")}</Text>
+        ) : (
+          targets.flatMap((environment) => {
+            const providers = (providersByEnvironment.get(environment.environmentId) ?? []).filter(
+              (provider) =>
+                provider.enabled &&
+                provider.installed &&
+                isManagedDriverAllowed(environment.serverConfig.managedPolicy, provider.driver) &&
+                matchesCapabilitiesFocus(focus, {
+                  environmentId: environment.environmentId,
+                  instanceId: provider.instanceId,
+                }),
+            );
+            return providers.length === 0
+              ? [
+                  <SettingsSection key={environment.environmentId} title={environment.label}>
+                    <Text className="p-4 text-foreground-muted">
+                      {t("No agents are available.")}
+                    </Text>
+                  </SettingsSection>,
+                ]
+              : providers.map((provider) => (
+                  <ProviderCapabilities
+                    key={`${environment.environmentId}:${provider.instanceId}`}
+                    environment={environment}
+                    provider={provider}
+                    focus={focus}
+                  />
+                ));
+          })
+        )}
+        {focused ? (
+          <SettingsSection>
+            <ListActionRow label={t("Show all capabilities")} onPress={() => setShowAll(true)} />
+          </SettingsSection>
+        ) : null}
+      </ScreenScrollView>
+    </SettingsScreen>
   );
 }
 
@@ -148,7 +141,7 @@ function ProviderCapabilities(props: {
       {visibleSkills.map((skill) => (
         <CapabilityRow
           key={`${skill.scope ?? ""}:${skill.path}`}
-          icon="sparkles"
+          icon="doc.text"
           label={skillLabel(skill)}
           description={skill.shortDescription ?? skill.description}
           detail={t("Skill")}
@@ -294,7 +287,7 @@ function McpServerRows(props: {
 const skillLabel = (skill: ServerProviderSkill) => skill.displayName ?? skill.name;
 
 function CapabilityRow(props: {
-  readonly icon: "server.rack" | "sparkles";
+  readonly icon: "server.rack" | "doc.text";
   readonly label: string;
   readonly description: string | undefined;
   readonly detail: string;

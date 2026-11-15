@@ -1,9 +1,11 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -122,7 +124,7 @@ it.effect("signs the account's own folder in with claude auth login", () =>
     );
     h.exit(0);
     yield* h.state((value) => value.phase === "succeeded");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("opens Claude after sign-in when the account must review Anthropic's terms", () =>
@@ -149,7 +151,7 @@ it.effect("opens Claude after sign-in when the account must review Anthropic's t
       "spawn ",
       "check terms",
     ]);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("fails a sign-in whose account still has Anthropic's terms to review", () =>
@@ -162,7 +164,7 @@ it.effect("fails a sign-in whose account still has Anthropic's terms to review",
     h.exit(0);
     const failed = yield* h.state((value) => value.phase === "failed");
     assert.include(failed.message, "Consumer Terms");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("reports a sign-in that Claude did not finish", () =>
@@ -173,7 +175,7 @@ it.effect("reports a sign-in that Claude did not finish", () =>
     h.exit(1);
     const failed = yield* h.state((value) => value.phase === "failed");
     assert.include(failed.message, "Claude sign-in did not finish");
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("signs the account's own folder out with claude auth logout", () =>
@@ -185,7 +187,7 @@ it.effect("signs the account's own folder out with claude auth logout", () =>
     yield* Fiber.join(logout);
     assert.deepEqual(h.events, ["prepare", "spawn auth logout"]);
     assert.deepEqual(h.spawnedInputs[0]?.env, environment);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("offers regular sign-in and token renewal while a token overrides the saved login", () =>
@@ -211,7 +213,7 @@ it.effect("offers regular sign-in and token renewal while a token overrides the 
       ready.methods?.map((method) => method.name),
       ["One-year token", "Use regular sign-in instead"],
     );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -248,7 +250,7 @@ it.effect(
       harness.exit(0);
       yield* harness.state((state) => state.phase === "succeeded");
       assert.deepEqual(harness.tokens, [token]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("does not save a token from a failed setup or succeed without a token", () =>
@@ -262,7 +264,7 @@ it.effect("does not save a token from a failed setup or succeed without a token"
       yield* harness.state((state) => state.phase === "failed");
       assert.deepEqual(harness.tokens, []);
     }
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -284,7 +286,7 @@ it.effect(
       harness.exit(0);
       yield* harness.state((state) => state.phase === "succeeded");
       assert.deepEqual(harness.tokens, [undefined]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("leaves credentials unchanged when token setup is cancelled", () =>
@@ -295,5 +297,5 @@ it.effect("leaves credentials unchanged when token setup is cancelled", () =>
     harness.print("sk-ant-oat01-synthetic-cancelled-token\r\n");
     yield* harness.auth.controller.cancel("owner", started.flowId!);
     assert.deepEqual(harness.tokens, []);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

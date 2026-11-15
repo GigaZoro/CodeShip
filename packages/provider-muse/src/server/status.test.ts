@@ -78,39 +78,49 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
     ),
   );
 
+  it.effect("tells the user to finish setup when the launcher has not installed its runtime", () =>
+    Effect.gen(function* () {
+      // What Muse's launcher prints when a fresh install runs under MUSE_NO_AUTO_UPDATE=1.
+      const binaryPath = yield* fakeCli(
+        'process.stderr.write("muse: installed binary is missing; rerun the installer\\n");process.exit(1);',
+      );
+      const snapshot = yield* checkMuseProviderStatus(settings({ enabled: true, binaryPath }));
+      expect(snapshot.status).toBe("error");
+      expect(snapshot.message).toContain("muse --version");
+    }),
+  );
+
   it.effect("discovers the Meta catalog without treating it as authentication proof", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const binaryPath = yield* fakeCli();
-        const host = makeHost(metaCatalog);
-        const snapshot = yield* checkMuseProviderStatus(
-          settings({ enabled: true, binaryPath, customModels: ["muse-custom"] }),
-          undefined,
-          undefined,
-          async () => host,
-        );
-        expect(snapshot.status).toBe("ready");
-        expect(snapshot.message).toBeUndefined();
-        expect(snapshot.slashCommands).toEqual([COMPACT_SLASH_COMMAND]);
-        expect(snapshot.auth).toEqual({ status: "unknown" });
-        expect(snapshot.version).toBe("1.0.3-R2198.1");
-        expect(snapshot.models.map((model) => model.slug)).toEqual([
-          "muse-wonder-1.0",
-          "muse-custom",
-        ]);
-        expect(snapshot.models.map((model) => model.name)).toEqual([
-          "Muse Wonder 1.0",
-          "muse-custom",
-        ]);
-        const descriptor = snapshot.models[0]?.capabilities?.optionDescriptors?.[0];
-        expect(
-          descriptor?.type === "select" && descriptor.options.map((option) => option.id),
-        ).toEqual(["low", "medium", "high", "xhigh", "max"]);
-        expect(host.connection.request).toHaveBeenCalledWith("model/list", {});
-        expect(host.connection.command).not.toHaveBeenCalled();
-        expect(host.close).toHaveBeenCalledOnce();
-      }),
-    ),
+    Effect.gen(function* () {
+      const binaryPath = yield* fakeCli();
+      const host = makeHost(metaCatalog);
+      const snapshot = yield* checkMuseProviderStatus(
+        settings({ enabled: true, binaryPath, customModels: ["muse-custom"] }),
+        undefined,
+        undefined,
+        async () => host,
+      );
+      expect(snapshot.status).toBe("ready");
+      expect(snapshot.message).toBeUndefined();
+      expect(snapshot.slashCommands).toEqual([COMPACT_SLASH_COMMAND]);
+      expect(snapshot.auth).toEqual({ status: "unknown" });
+      expect(snapshot.version).toBe("1.0.3-R2198.1");
+      expect(snapshot.models.map((model) => model.slug)).toEqual([
+        "muse-wonder-1.0",
+        "muse-custom",
+      ]);
+      expect(snapshot.models.map((model) => model.name)).toEqual([
+        "Muse Wonder 1.0",
+        "muse-custom",
+      ]);
+      const descriptor = snapshot.models[0]?.capabilities?.optionDescriptors?.[0];
+      expect(
+        descriptor?.type === "select" && descriptor.options.map((option) => option.id),
+      ).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(host.connection.request).toHaveBeenCalledWith("model/list", {});
+      expect(host.connection.command).not.toHaveBeenCalled();
+      expect(host.close).toHaveBeenCalledOnce();
+    }),
   );
 
   // Muse falls back to its compiled-in catalog when the server rejects its login.
@@ -140,20 +150,18 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
   );
 
   it.effect("keeps an empty discovered catalog empty instead of advertising a fallback model", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const binaryPath = yield* fakeCli();
-        const host = makeHost({ providerId: "meta", models: [] });
-        const snapshot = yield* checkMuseProviderStatus(
-          settings({ enabled: true, binaryPath }),
-          undefined,
-          undefined,
-          async () => host,
-        );
-        expect(snapshot.status).toBe("warning");
-        expect(snapshot.models).toEqual([]);
-        expect(host.close).toHaveBeenCalledOnce();
-      }),
-    ),
+    Effect.gen(function* () {
+      const binaryPath = yield* fakeCli();
+      const host = makeHost({ providerId: "meta", models: [] });
+      const snapshot = yield* checkMuseProviderStatus(
+        settings({ enabled: true, binaryPath }),
+        undefined,
+        undefined,
+        async () => host,
+      );
+      expect(snapshot.status).toBe("warning");
+      expect(snapshot.models).toEqual([]);
+      expect(host.close).toHaveBeenCalledOnce();
+    }),
   );
 });

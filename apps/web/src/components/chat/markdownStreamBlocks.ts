@@ -2,7 +2,8 @@
 // blocks together, also from inside a block quote or list item.
 const CROSS_BLOCK_LINE_PATTERN =
   /^(?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$)))* {0,3}(?:\[[^\]\n]+\]:|<[A-Za-z!?/]|:::|\$\$)/;
-const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+// A backtick fence's info string cannot contain a backtick, so "```a``` is inline" is a code span.
+const FENCE_PATTERN = /^ {0,3}(`{3,}(?![^`\n]*`)|~{3,})/;
 // After a blank line these still continue the previous block: a list item or indented content.
 const CONTINUATION_PATTERN = /^(?:[ \t]|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
 const CODE_SPAN_PATTERN = /(?<![\\`])(`+)[^`][\s\S]*?(?<!`)\1(?!`)/g;
@@ -12,6 +13,9 @@ const INLINE_TAG_PATTERN =
 const VOID_ELEMENTS = new Set(
   "area base br col embed hr img input link meta param source track wbr".split(" "),
 );
+// Claude insight fences render as one callout, so they stay in one block until the closing rule.
+const INSIGHT_OPEN_PATTERN = /^( {0,3})(`?)★ Insight[ \t]+─{3,}\2[ \t]*$/u;
+const INSIGHT_CLOSE_PATTERN = /^( {0,3})(`?)─{3,}\2[ \t]*$/u;
 
 /** Inline tags left open on a line; the HTML parser carries an open `<b>` into later paragraphs. */
 function trackOpenTags(line: string, open: Map<string, number>) {
@@ -40,6 +44,7 @@ export function splitMarkdownBlocks(text: string): string[] | null {
   let fenceIndent = 0;
   let afterBlankLine = false;
   let tracking = true;
+  let insightIndent: string | null = null;
   for (const line of text.split("\n")) {
     // A line left of an indented fence may end the list item holding it, which isn't tracked, so
     // the rest stays one block and every line of it counts as outside a fence.
@@ -59,11 +64,15 @@ export function splitMarkdownBlocks(text: string): string[] | null {
       }
     } else if (CROSS_BLOCK_LINE_PATTERN.test(line)) {
       return null;
+    } else if (insightIndent !== null && INSIGHT_CLOSE_PATTERN.exec(line)?.[1] === insightIndent) {
+      insightIndent = null;
+      afterBlankLine = false;
     } else if (tracking && line.trim() === "") {
       afterBlankLine = true;
     } else if (tracking) {
       if (
         afterBlankLine &&
+        insightIndent === null &&
         lineStart > blockStart &&
         openTags.size === 0 &&
         !CONTINUATION_PATTERN.test(line)
@@ -72,6 +81,7 @@ export function splitMarkdownBlocks(text: string): string[] | null {
         blockStart = lineStart;
       }
       afterBlankLine = false;
+      if (insightIndent === null) insightIndent = INSIGHT_OPEN_PATTERN.exec(line)?.[1] ?? null;
       const opener = FENCE_PATTERN.exec(line)?.[1];
       fence = opener ?? null;
       if (opener) fenceIndent = line.indexOf(opener);

@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -79,7 +80,8 @@ const CLONE_ENV = {
   // Force piped progress immediately; refuse credential prompts that would hang without a tty.
   GIT_PROGRESS_DELAY: "0",
   GIT_TERMINAL_PROMPT: "0",
-  LC_ALL: "C",
+  // English progress without overriding LC_CTYPE, which a global post-checkout hook inherits.
+  LANGUAGE: "C",
 } satisfies NodeJS.ProcessEnv;
 
 function mapRepositoryError(operation: string, provider: SourceControlProviderKind) {
@@ -348,13 +350,16 @@ export const make = Effect.gen(function* () {
     };
     // Git misreads @ in a pathless URL's query as userinfo and echoes its suffix as the host.
     const normalizedCloneUrl = cloneUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]+)\?/i, "$1/?");
-    yield* git
+    const provider = input.provider ?? SourceControlProviderKind.make("unknown");
+    const timeoutMs = options?.timeoutMs === undefined ? CLONE_TIMEOUT_MS : options.timeoutMs;
+    const clone = git
       // oxlint-disable-next-line t3code/no-remote-git-through-execute -- streams clone progress and keeps its own stderr tail, which executeRemote does not offer
       .execute({
         operation: "SourceControlRepositoryService.cloneRepository",
         cwd: path.dirname(destinationPath),
         args: ["clone", "--progress", "--", normalizedCloneUrl, path.basename(destinationPath)],
-        timeoutMs: options?.timeoutMs === undefined ? CLONE_TIMEOUT_MS : options.timeoutMs,
+        // The deadline is applied below so a timeout is reported as one, not as git's last line.
+        timeoutMs: null,
         // Buffered output is unused and progress can be huge; cap it while retaining line callbacks.
         maxOutputBytes: 256 * 1024,
         appendTruncationMarker: true,
@@ -367,7 +372,7 @@ export const make = Effect.gen(function* () {
           (cause) =>
             new SourceControlRepositoryError({
               operation: "cloneRepository",
-              provider: input.provider ?? SourceControlProviderKind.make("unknown"),
+              provider,
               detail:
                 stderrTail.length > 0
                   ? stderrTail.join(" ")
@@ -376,6 +381,21 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
+    if (timeoutMs === null) return yield* clone;
+    // Interrupting the clone closes the scope that owns git, which kills it.
+    return yield* clone.pipe(
+      Effect.timeoutOrElse({
+        duration: timeoutMs,
+        orElse: () =>
+          Effect.fail(
+            new SourceControlRepositoryError({
+              operation: "cloneRepository",
+              provider,
+              detail: `The clone timed out after ${Duration.format(Duration.millis(timeoutMs))}.`,
+            }),
+          ),
+      }),
+    );
   });
 
   const cloneRepository = Effect.fn("SourceControlRepositoryService.cloneRepository")(function* (
@@ -410,6 +430,8 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+    // A ref list read while the clone ran saw an unborn HEAD and no refs.
+    yield* git.invalidateRefs(prepared.destinationPath);
     return {
       cwd: prepared.destinationPath,
       remoteUrl,
@@ -488,7 +510,7 @@ export const make = Effect.gen(function* () {
           args: ["rev-parse", "--verify", "HEAD"],
         })
         .pipe(
-          Effect.map(() => true),
+          Effect.as(true),
           Effect.orElseSucceed(() => false),
         );
       if (!hasCommits) {
@@ -502,28 +524,50 @@ export const make = Effect.gen(function* () {
         };
       }
 
-      const pushResult = yield* git.pushCurrentBranch(input.cwd, null, { remoteName }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new SourceControlRepositoryError({
-              operation: "publishRepository",
-              provider: providerKind,
-              detail: publishPushFailureDetail({
-                urls,
-                remoteName,
-                remoteUrl,
-                reason: cause.reason,
+      const push = (pushUrl: string) =>
+        git.pushCurrentBranch(input.cwd, null, { remoteName }).pipe(
+          Effect.map((result) => ({ branch: result.branch, remoteUrl: pushUrl })),
+          Effect.mapError(
+            (cause) =>
+              new SourceControlRepositoryError({
+                operation: "publishRepository",
+                provider: providerKind,
+                detail: publishPushFailureDetail({
+                  urls,
+                  remoteName,
+                  remoteUrl: pushUrl,
+                  reason: cause.reason,
+                }),
+                cause,
               }),
-              cause,
-            }),
+          ),
+        );
+
+      // Like clone, an auto-selected SSH remote switches to HTTPS when SSH is refused;
+      // otherwise the remote keeps failing every later fetch and push.
+      const canSwitchToHttps = input.protocol !== "ssh" && remoteUrl === urls.sshUrl;
+      const pushed = yield* push(remoteUrl).pipe(
+        Effect.catchIf(
+          (error) => canSwitchToHttps && isSshRejection(error),
+          (sshError) =>
+            git
+              .execute({
+                operation: "SourceControlRepositoryService.publishRepository.switchToHttps",
+                cwd: input.cwd,
+                args: ["remote", "set-url", remoteName, urls.url],
+              })
+              .pipe(
+                Effect.mapError(() => sshError),
+                Effect.andThen(push(urls.url)),
+              ),
         ),
       );
 
       return {
         repository: toRepositoryInfo(providerKind, urls),
         remoteName,
-        remoteUrl,
-        branch: pushResult.branch,
+        remoteUrl: pushed.remoteUrl,
+        branch: pushed.branch,
         status: "pushed" as const,
       };
     },

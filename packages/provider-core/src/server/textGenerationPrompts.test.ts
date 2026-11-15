@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { buildManualStepReviewPrompt } from "./textGenerationPrompts.ts";
 import { normalizeManualStepReview } from "./textGenerationOperations.ts";
+import { buildThreadTitlePrompt } from "./textGenerationPrompts.ts";
 import { normalizeCliError } from "./textGenerationUtils.ts";
 import * as Effect from "effect/Effect";
 
@@ -102,4 +103,17 @@ describe("normalizeManualStepReview", () => {
       expect(error.operation).toBe("generateManualStepReview");
     }),
   );
+});
+
+describe("buildThreadTitlePrompt", () => {
+  it("names the project to leave out of initial and regenerated titles", () => {
+    for (const previousTitle of [undefined, "Hyperdrive Config Crash"]) {
+      const { prompt } = buildThreadTitlePrompt({
+        message: "hyperdrive init crashes without a config",
+        previousTitle,
+        projectTitle: "Hyperdrive",
+      });
+      expect(prompt).toContain('Never include the project name ("Hyperdrive")');
+    }
+  });
 });

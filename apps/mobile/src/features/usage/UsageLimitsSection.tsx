@@ -11,7 +11,8 @@ import {
   type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
 import {
-  formatDuration,
+  type ResetCreditChoice,
+  resetCreditChoices,
   formatResetsIn,
   limitsNotice,
   paceOf,
@@ -36,7 +37,7 @@ import {
   refreshEnvironmentLimits,
 } from "./usageLimitsRefresh";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
-import { t, tn, msg, type Message } from "../../lib/i18n";
+import { t, msg, type Message } from "../../lib/i18n";
 
 const PACE_LABEL = {
   ahead: msg("ahead of pace"),
@@ -252,28 +253,11 @@ export function ResetCredits(props: {
   const [status, setStatus] = useState<string | null>(null);
   if (dense && credits.availableCount === 0 && status === null) return null;
 
-  const expiresIn = credits.nextExpiresAt
-    ? formatDuration(Date.parse(credits.nextExpiresAt) - now)
-    : null;
-  const summary =
-    credits.availableCount === 0
-      ? t("No reset credits banked")
-      : expiresIn
-        ? t("{credits} · next expires in {duration}", {
-            credits: tn(
-              credits.availableCount,
-              "{count} reset credit banked",
-              "{count} reset credits banked",
-            ),
-            duration: expiresIn,
-          })
-        : tn(credits.availableCount, "{count} reset credit banked", "{count} reset credits banked");
-
-  const redeem = async () => {
+  const redeem = async (choice: ResetCreditChoice) => {
     if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
     setBusy(true);
     setStatus(null);
-    const result = await consume({ environmentId, input });
+    const result = await consume({ environmentId, input: choice.input });
     setBusy(false);
     if (result._tag === "Success") {
       setStatus(result.value.warning ?? t(OUTCOME_TEXT[result.value.outcome]));
@@ -286,46 +270,44 @@ export function ResetCredits(props: {
     );
   };
 
-  const confirm = () => {
+  const confirm = (choice: ResetCreditChoice) => {
     if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
-    Dialog.alert(
-      t("Use a reset credit?"),
-      t(
-        "This redeems one credit on your account and clears the current rate-limit windows. It cannot be undone.",
-      ),
-      [
-        { text: t("Cancel"), style: "cancel" },
-        { text: t("Use credit"), onPress: () => void redeem() },
-      ],
-    );
+    Dialog.alert(t("Use a reset credit?"), choice.confirmDescription, [
+      { text: t("Cancel"), style: "cancel" },
+      { text: t("Use credit"), onPress: () => void redeem(choice) },
+    ]);
   };
 
   return (
-    <View className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
-      <Text className="text-xs tabular-nums text-foreground-tertiary">{summary}</Text>
-      {credits.availableCount > 0 ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ disabled: busy || !canManageProviders || offline }}
-          disabled={busy || !canManageProviders || offline}
-          onPress={confirm}
-          className={
-            dense
-              ? "rounded-full bg-subtle-strong px-2.5 py-1 disabled:opacity-[0.45]"
-              : "min-h-[44px] justify-center rounded-full bg-subtle-strong px-3 py-1.5 disabled:opacity-[0.45]"
-          }
-        >
-          <Text
-            className={
-              dense
-                ? "text-xs font-t3-medium text-foreground"
-                : "text-sm font-t3-medium text-foreground"
-            }
-          >
-            {busy ? t("Using…") : t("Use reset")}
-          </Text>
-        </Pressable>
-      ) : null}
+    <View className="gap-1">
+      {resetCreditChoices(credits, input, now).map((choice) => (
+        <View key={choice.key} className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
+          <Text className="text-xs tabular-nums text-foreground-tertiary">{choice.summary}</Text>
+          {choice.availableCount > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: busy || !canManageProviders || offline }}
+              disabled={busy || !canManageProviders || offline}
+              onPress={() => confirm(choice)}
+              className={
+                dense
+                  ? "rounded-full bg-subtle-strong px-2.5 py-1 disabled:opacity-[0.45]"
+                  : "min-h-[44px] justify-center rounded-full bg-subtle-strong px-3 py-1.5 disabled:opacity-[0.45]"
+              }
+            >
+              <Text
+                className={
+                  dense
+                    ? "text-xs font-t3-medium text-foreground"
+                    : "text-sm font-t3-medium text-foreground"
+                }
+              >
+                {busy ? t("Using…") : choice.actionLabel}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ))}
       {!canManageProviders ? (
         <Text className="text-xs text-foreground-tertiary">
           {t("This connection cannot manage provider accounts.")}
@@ -363,18 +345,16 @@ export function useRefreshLimits(
     .filter(([environmentId]) => failedIds.has(environmentId))
     .map(([, presentation]) => presentation.entry.target.label);
 
-  const refresh = (afterPending: boolean) =>
+  const refresh = () =>
     Promise.all(
-      connectedIds.map((environmentId) =>
-        refreshEnvironmentLimits(registry, environmentId, { afterPending }),
-      ),
+      connectedIds.map((environmentId) => refreshEnvironmentLimits(registry, environmentId)),
     );
   // Android RefreshControl needs a true-to-false cycle to stop, even with nothing to probe.
   const refreshManually = async () => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     setRefreshing(true);
-    await refresh(false).finally(() => {
+    await refresh().finally(() => {
       refreshingRef.current = false;
       setRefreshing(false);
     });
@@ -384,6 +364,5 @@ export function useRefreshLimits(
     refreshing,
     failedLabels,
     refresh: refreshManually,
-    refreshAfterEnable: () => refresh(true),
   };
 }

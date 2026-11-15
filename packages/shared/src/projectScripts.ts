@@ -131,6 +131,7 @@ export interface ProjectScriptInput {
   readonly runOnWorktreeCreate: ProjectScript["runOnWorktreeCreate"];
   readonly waitForSetup: boolean;
   readonly runOnSettle: boolean;
+  readonly stopOnSettle?: boolean;
   readonly previewUrl: Exclude<ProjectScript["previewUrl"], undefined> | null;
   readonly autoOpenPreview: boolean;
 }
@@ -154,6 +155,7 @@ export function projectScriptInputFromScript(script: ProjectScript): ProjectScri
     runOnWorktreeCreate: script.runOnWorktreeCreate,
     waitForSetup: script.runOnWorktreeCreate && script.async === false,
     runOnSettle: script.runOnSettle ?? false,
+    stopOnSettle: script.stopOnSettle ?? false,
     previewUrl: script.previewUrl ?? null,
     autoOpenPreview: script.autoOpenPreview ?? false,
   };
@@ -168,6 +170,7 @@ export function buildProjectScript(id: string, input: ProjectScriptInput): Proje
     runOnWorktreeCreate: input.runOnWorktreeCreate,
     ...(input.runOnWorktreeCreate && input.waitForSetup ? { async: false } : {}),
     ...(input.runOnSettle ? { runOnSettle: true } : {}),
+    ...(input.stopOnSettle ? { stopOnSettle: true } : {}),
     ...(input.previewUrl === null
       ? {}
       : {
@@ -200,6 +203,7 @@ export function projectScriptInputFromT3File(fileScript: T3ProjectFileScript): P
     runOnWorktreeCreate: fileScript.runOnWorktreeCreate ?? false,
     waitForSetup: fileScript.runOnWorktreeCreate === true && fileScript.async === false,
     runOnSettle: fileScript.runOnSettle ?? false,
+    stopOnSettle: fileScript.stopOnSettle ?? false,
     previewUrl: fileScript.previewUrl ?? null,
     autoOpenPreview: fileScript.previewUrl ? (fileScript.autoOpenPreview ?? false) : false,
   };

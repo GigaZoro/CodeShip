@@ -127,7 +127,7 @@ it.effect("a server migrating a large database answers its descriptor path with 
     const { startup } = JSON.parse(descriptor.body) as {
       readonly startup: { readonly migration: string; readonly progress: number };
     };
-    assert.strictEqual(startup.migration, "91_CompactOrchestrationIds");
+    assert.strictEqual(startup.migration, "14_CompactOrchestrationIds");
     assert.isTrue(startup.progress > 0 && startup.progress < 1);
     assert.deepStrictEqual(otherRoute, { status: 503, body: "" });
     assert.deepStrictEqual(afterMigration, { status: 503, body: "" });

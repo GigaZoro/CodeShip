@@ -42,7 +42,7 @@ const layerElectronApp = (calls: ElectronAppCalls) =>
     metadata: Effect.die("unexpected metadata read"),
     name: Effect.succeed("T3.CodeShip"),
     systemLocale: Effect.succeed("en-US"),
-    preferredSystemLanguages: Effect.succeed([]),
+    preferredSystemLanguages: Effect.succeed(["en-US"]),
     whenReady: Effect.void,
     requestSingleInstanceLock: Effect.succeed(true),
     quit: Effect.void,

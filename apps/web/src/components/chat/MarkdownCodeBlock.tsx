@@ -1,13 +1,12 @@
 import { t } from "~/i18n";
-import { Check, Copy } from "lucide";
-import { PlayIcon, WrapTextIcon } from "lucide-react";
+import { PlayIcon, WrapTextIcon, CheckIcon, CopyIcon } from "lucide-react";
 import { toHtml } from "hast-util-to-html";
 import React, { use, useEffect, useState, type ReactNode } from "react";
 
 import { runnableShellCommand } from "@t3tools/client-runtime/shell-code-block";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { getClientSettings } from "../../hooks/useSettings";
+import { useClientSettings } from "../../hooks/useSettings";
 import type { DiffThemeName } from "../../lib/diffRendering";
 import {
   createIncrementalHighlightedDocument,
@@ -20,7 +19,6 @@ import {
   hasSpecificPierreIconForFileName,
   syntheticFileNameForLanguageId,
 } from "../../pierre-icons";
-import { MorphIcon } from "../MorphIcon";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -178,7 +176,9 @@ export function MarkdownCodeBlock({
       );
     },
   });
-  const [wrapped, setWrapped] = useState(() => getClientSettings().wordWrap);
+  const defaultWrapped = useClientSettings((settings) => settings.wordWrap);
+  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
+  const wrapped = wrapOverride ?? defaultWrapped;
   const wrapLabel = wrapped ? t("Disable line wrap") : t("Wrap lines");
   const copyLabel = copied ? t("Copied") : t("Copy code");
   // A closed fence's code ends with a newline; an open one may still be growing.
@@ -203,7 +203,7 @@ export function MarkdownCodeBlock({
           />
         }
       >
-        <MorphIcon className="size-3" icon={copied ? Check : Copy} />
+        {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
       </TooltipTrigger>
       <TooltipPopup side="top">{copyLabel}</TooltipPopup>
     </Tooltip>
@@ -243,7 +243,7 @@ export function MarkdownCodeBlock({
                     variant={wrapped ? "secondary" : "ghost-muted"}
                     size="icon-xs"
                     aria-pressed={wrapped}
-                    onClick={() => setWrapped((value) => !value)}
+                    onClick={() => setWrapOverride(!wrapped)}
                     aria-label={wrapLabel}
                   />
                 }
@@ -370,7 +370,7 @@ function UncachedShikiCodeBlock({
       highlightedCodeCache.set(
         cacheKey,
         highlightedHtml,
-        estimateHighlightedSize(highlightedHtml, code),
+        estimateHighlightedSize(highlightedHtml, cacheKey),
       );
     }
     return result;

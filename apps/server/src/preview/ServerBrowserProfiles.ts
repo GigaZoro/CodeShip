@@ -204,21 +204,17 @@ export const make = Effect.fn("ServerBrowserProfiles.make")(function* (stateDir:
       named.length > 1 ? yield* Effect.filter(named, (profile) => hasData(profile.id)) : named;
     if (candidates.length === 1) return candidates[0]!.id;
     if (named.length > 1) {
-      return yield* Effect.fail(
-        new ServerBrowserOperationError(
-          "PreviewAutomationAmbiguousProfileError",
-          `${named.length} browser profiles are named "${requested}": ${describeProfiles(named)}. Pass the id of the one to use.`,
-        ),
-      );
+      return yield* new ServerBrowserOperationError({
+        tag: "PreviewAutomationAmbiguousProfileError",
+        message: `${named.length} browser profiles are named "${requested}": ${describeProfiles(named)}. Pass the id of the one to use.`,
+      });
     }
     // A profile used here before stays usable by id, even when no app has reported it.
     if (isBrowserProfileId(requested) && (yield* hasData(requested))) return requested;
-    return yield* Effect.fail(
-      new ServerBrowserOperationError(
-        "PreviewAutomationUnknownProfileError",
-        `No browser profile is named "${requested}". Use one of: ${describeProfiles(profiles)}.`,
-      ),
-    );
+    return yield* new ServerBrowserOperationError({
+      tag: "PreviewAutomationUnknownProfileError",
+      message: `No browser profile is named "${requested}". Use one of: ${describeProfiles(profiles)}.`,
+    });
   });
 
   return {

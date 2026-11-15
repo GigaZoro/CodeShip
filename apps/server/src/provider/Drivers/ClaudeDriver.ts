@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -16,8 +16,6 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
-import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { ChildProcessSpawner } from "effect/process";
 import * as Option from "effect/Option";
 
@@ -42,7 +40,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
-import { readClaudeAutoUpdatesChannel, setClaudeSkillOverride } from "./ClaudeSkills.ts";
+import { setClaudeSkillOverride } from "./ClaudeSkills.ts";
 import { readClaudeCredentials, readClaudeLoginExpiry } from "../claudeLoginExpiry.ts";
 import { makeClaudeAuthenticationFailure } from "../claudeSignedOut.ts";
 import { saveClaudeOAuthToken } from "../claudeOAuthToken.ts";
@@ -59,6 +57,10 @@ import { makeManagedServerProvider } from "@t3tools/provider-core/server/managed
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import { resolveClaudeModelCatalog } from "../ClaudeModelCatalog.ts";
 import {
+  makeClaudeCodeModelRoutes,
+  resolveClaudeModelSettingsKey,
+} from "../ClaudeCodeModelRoutes.ts";
+import {
   defaultProviderContinuationIdentity,
   type ProviderConfigFolder,
   type ProviderDriver,
@@ -66,13 +68,7 @@ import {
 } from "@t3tools/provider-core/server/driver";
 import { findProviderInstanceEnvironmentVariable } from "@t3tools/provider-core/server/instanceEnvironment";
 import { withInstanceIdentity } from "@t3tools/provider-core/server/instanceIdentity";
-import {
-  enrichProviderSnapshotWithVersionAdvisory,
-  makeCachedProviderMaintenanceResolution,
-  makePackageManagedProviderMaintenanceResolver,
-  normalizeCommandPath,
-  resolveProviderMaintenanceCapabilitiesEffect,
-} from "@t3tools/provider-core/server/maintenanceResolver";
+import { enrichProviderSnapshotWithVersionAdvisory } from "@t3tools/provider-core/server/maintenanceResolver";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
@@ -104,6 +100,7 @@ import {
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { overrideEnvironment } from "@t3tools/shared/shell";
+import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -116,67 +113,12 @@ const withoutUsage = (capabilities: ClaudeCapabilitiesProbe): ClaudeCapabilities
   return result;
 };
 
-function isClaudeNativeCommandPath(commandPath: string): boolean {
-  const normalized = normalizeCommandPath(commandPath);
-  return (
-    normalized.endsWith("/.local/bin/claude") ||
-    normalized.endsWith("/.local/bin/claude.exe") ||
-    normalized.includes("/.local/share/claude/")
-  );
-}
-
-const CLAUDE_RELEASES_URL = "https://downloads.claude.ai/claude-code-releases";
-const CLAUDE_RELEASE_LOOKUP_TIMEOUT = Duration.seconds(4);
-const CLAUDE_CHANNEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const CLAUDE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-
-// `claude update` follows the autoUpdatesChannel in Claude's settings, not npm's latest tag.
-const lookupClaudeChannelVersion = Effect.fn("ClaudeDriver.lookupChannelVersion")(function* (
-  environment: NodeJS.ProcessEnv,
-) {
-  const channel = yield* readClaudeAutoUpdatesChannel(environment);
-  if (Option.isNone(channel) || !CLAUDE_CHANNEL_PATTERN.test(channel.value)) return null;
-  const client = yield* HttpClient.HttpClient;
-  const body = yield* client
-    .execute(HttpClientRequest.get(`${CLAUDE_RELEASES_URL}/${channel.value}`))
-    .pipe(
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.flatMap((response) => response.text),
-      Effect.timeout(CLAUDE_RELEASE_LOOKUP_TIMEOUT),
-      Effect.orElseSucceed(() => ""),
-    );
-  const version = body.trim();
-  return CLAUDE_VERSION_PATTERN.test(version) ? version : null;
-});
-
-const makeUpdateResolver = (services: {
-  readonly httpClient: HttpClient.HttpClient;
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly path: Path.Path;
-  readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
-}) =>
-  makePackageManagedProviderMaintenanceResolver({
-    provider: DRIVER_KIND,
-    npmPackageName: "@anthropic-ai/claude-code",
-    nativeUpdate: {
-      args: ["update"],
-      isCommandPath: isClaudeNativeCommandPath,
-      lookupLatestVersion: (context) =>
-        lookupClaudeChannelVersion(context.env).pipe(
-          Effect.provideService(HttpClient.HttpClient, services.httpClient),
-          Effect.provideService(FileSystem.FileSystem, services.fileSystem),
-          Effect.provideService(Path.Path, services.path),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, services.spawner),
-        ),
-    },
-  });
-
 export type ClaudeDriverEnv =
   | ClaudeAdapterV2DriverEnv
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
   | ResetCreditCoordinator.ResetCreditCoordinator
-  | Crypto.Crypto
+  | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | ProviderLatestVersions.ProviderLatestVersions
@@ -270,18 +212,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: accountHome ?? config.homePath,
     } satisfies ClaudeSettings;
-    const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-      resolveProviderMaintenanceCapabilitiesEffect(
-        makeUpdateResolver({ httpClient, fileSystem, path, spawner }),
-        {
-          binaryPath: effectiveConfig.binaryPath,
-          env: processEnv,
-        },
-      ).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-      ),
+    const resolveMaintenance = yield* makeClaudeMaintenanceResolution({
+      binaryPath: effectiveConfig.binaryPath,
+      env: processEnv,
+    }).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
     );
     // Threads continue across accounts because every account shares the sessions folder.
     const continuationGroupKey = yield* makeClaudeContinuationGroupKey(config, processEnv);
@@ -342,6 +280,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         Effect.catch((error) => Effect.succeed(isClaudeTermsReviewRequiredError(error))),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),
     });
     const plugins = yield* makeClaudePluginManagement({
@@ -438,6 +377,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         Effect.ignoreCause({ log: true }),
       ),
     );
+    // Only a successful probe records routes, so a failed one never sends turns back to slugs
+    // the backend rejects.
+    const modelRoutes = yield* makeClaudeCodeModelRoutes(
+      (cwd) =>
+        resolveClaudeModelSettingsKey(
+          {
+            settings: effectiveConfig,
+            homePath: configDir,
+            environment: processEnv,
+            fileSystem,
+            path,
+          },
+          cwd,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
+      stateDir,
+    );
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -454,6 +409,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         onAuthenticated: authenticationFailure.clear.pipe(
           Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),
         ),
+        modelCatalog,
+        routeModelCatalog: modelRoutes.route,
         prepareHome: copyMcpServers.pipe(Effect.andThen(ensureMcpSignInsFresh)),
       },
     ).pipe(
@@ -471,6 +428,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       effectiveConfig,
       processEnv,
       modelCatalog,
+      modelRoutes.route,
     );
 
     // Per-instance capabilities cache: keyed on binary + resolved HOME so
@@ -489,8 +447,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               })),
             ),
           ),
-          Effect.tap(({ capabilities }) => Ref.set(lastGoodCapabilities, capabilities)),
-          // Pending terms are not a transient miss: every session fails until they are reviewed.
+          Effect.tap(({ capabilities }) =>
+            Ref.set(lastGoodCapabilities, capabilities).pipe(
+              Effect.andThen(modelRoutes.record(capabilities.models ?? [])),
+            ),
+          ),
+          Effect.ensuring(modelRoutes.settle),
           Effect.catchIf(
             (error) => !isClaudeTermsReviewRequiredError(error),
             (error) =>
@@ -563,6 +525,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           Effect.flatMap(authenticationFailure.apply),
         ),
       ),
+      // Disabled, failed version checks and interruption never reach the probe.
+      Effect.ensuring(modelRoutes.settle),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
@@ -623,12 +587,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = Effect.fn(
       "ClaudeDriver.consumeResetCredit",
     )(
-      function* () {
+      function* (creditId) {
         const current = yield* snapshot.getSnapshot;
-        const grantId = current.usageLimits?.resetCredits?.nextCreditId;
-        if (!grantId || !current.version) return "noCredit" as const;
+        const credits = current.usageLimits?.resetCredits;
+        const grantId =
+          creditId === undefined
+            ? credits?.nextCreditId
+            : credits?.options?.some((option) => option.creditId === creditId)
+              ? creditId
+              : undefined;
+        if (!grantId || !current.version) return { outcome: "noCredit" as const };
         const version = current.version;
-        return yield* resetCreditCoordinator.redeem(
+        const outcome = yield* resetCreditCoordinator.redeem(
           configDir,
           (requestId) =>
             ClaudeResetCredits.consumeClaudeResetCredit({
@@ -640,6 +610,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
             }),
           ClaudeResetCredits.isSettledClaudeResetCreditFailure,
         );
+        return yield* ResetCreditCoordinator.confirmRedemption({
+          outcome,
+          getSnapshot: snapshot.getSnapshot,
+          refresh: Cache.invalidateAll(capabilitiesProbeCache).pipe(
+            Effect.andThen(snapshot.refresh),
+          ),
+          providerName: "Claude",
+        });
       },
       Effect.provideService(HttpClient.HttpClient, httpClient),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -655,25 +633,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                 : "Claude could not redeem the reset.",
             cause,
           }),
-      ),
-      // The credit is spent either way, so an unconfirmed reset still succeeds.
-      Effect.flatMap((outcome) =>
-        Effect.gen(function* () {
-          const before = (yield* snapshot.getSnapshot).usageLimits?.checkedAt;
-          yield* Cache.invalidateAll(capabilitiesProbeCache);
-          const refreshed = yield* snapshot.refresh;
-          const after = refreshed.usageLimits?.checkedAt;
-          return outcome === "reset" &&
-            (after === undefined ||
-              after === before ||
-              refreshed.usageLimits?.unavailable?.reason === "probeFailed")
-            ? {
-                outcome,
-                warning:
-                  "The reset was applied, but Claude could not confirm the new limits. Refresh to check.",
-              }
-            : { outcome };
-        }),
       ),
     );
 

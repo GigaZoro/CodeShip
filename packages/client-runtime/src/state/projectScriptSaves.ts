@@ -57,12 +57,12 @@ export interface ProjectScriptList {
 export type ProjectScriptSaveResult = AtomCommandResult<void, unknown>;
 
 /** The action itself was saved, so saving again must edit it rather than add a copy. */
-export class ProjectScriptShortcutError extends Error {
-  readonly scriptId: string;
-
-  constructor(scriptId: string, reason: string) {
-    super(t("The action was saved, but its shortcut was not: {reason}", { reason }));
-    this.scriptId = scriptId;
+export class ProjectScriptShortcutError extends Schema.TaggedError<ProjectScriptShortcutError>()(
+  "ProjectScriptShortcutError",
+  { scriptId: Schema.String, reason: Schema.String },
+) {
+  override get message(): string {
+    return t("The action was saved, but its shortcut was not: {reason}", { reason: this.reason });
   }
 }
 
@@ -73,10 +73,10 @@ function projectScriptShortcutFailure(
   const error = squashAtomCommandFailure(failure);
   return AsyncResult.failure(
     Cause.fail(
-      new ProjectScriptShortcutError(
+      new ProjectScriptShortcutError({
         scriptId,
-        error instanceof Error ? error.message : t("An unexpected error occurred."),
-      ),
+        reason: error instanceof Error ? error.message : t("An unexpected error occurred."),
+      }),
     ),
   );
 }

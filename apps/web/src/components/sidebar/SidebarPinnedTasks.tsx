@@ -94,7 +94,7 @@ import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ScheduledTaskRunsDialog } from "../settings/ScheduledTaskRunsDialog";
-import { scheduleLabel } from "../settings/ScheduledTasksSettings";
+import { scheduleLabel } from "../settings/scheduledTasksSettings.logic";
 import { resolveSidebarRowAccessibility, resolveWorkingStartedAt } from "../Sidebar.logic";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { MachineBadge } from "../MachineBadge";
@@ -414,7 +414,10 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         {display.text}
         {status === "working" && runThread !== null ? (
           <span aria-hidden className="font-normal">
-            <WorkingDuration startedAt={resolveWorkingStartedAt(runThread)} />
+            <WorkingDuration
+              environmentId={runThread.environmentId}
+              startedAt={resolveWorkingStartedAt(runThread)}
+            />
           </span>
         ) : null}
       </span>
@@ -434,8 +437,8 @@ const SidebarPinnedTaskRow = memo(function SidebarPinnedTaskRow(props: {
         <TooltipTrigger
           render={
             <div
-              role="treeitem"
-              tabIndex={-1}
+              role="button"
+              tabIndex={0}
               data-sidebar-row={`task:${environmentId}:${task.id}`}
               data-sidebar-parent="shelf:scheduled"
               aria-label={accessibility.label}
@@ -643,8 +646,6 @@ export const SidebarPinnedTasksBlock = memo(function SidebarPinnedTasksBlock(pro
     <>
       <li className="mx-0.5 h-8 shrink-0 list-none">
         <CollapsibleSectionHeader
-          role="treeitem"
-          tabIndex={-1}
           data-sidebar-row="shelf:scheduled"
           expanded={expanded}
           onClick={() => setExpanded((value) => !value)}

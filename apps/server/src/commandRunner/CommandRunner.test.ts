@@ -26,6 +26,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -46,6 +47,10 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CommandRunner from "./CommandRunner.ts";
+
+class ProcessCleanupError extends Schema.TaggedError<ProcessCleanupError>()("ProcessCleanupError", {
+  cause: Schema.Defect(),
+}) {}
 
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
@@ -216,17 +221,19 @@ const liveChat = (name: string) =>
       `.pipe(
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
-            Effect.try(() =>
-              signalProcessGroup(
-                // A failed test can leave a row without its pid; the wrapper's pid file still names it.
-                row.pid ??
-                  Number.parseInt(
-                    NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
-                    10,
-                  ),
-                "SIGKILL",
-              ),
-            ).pipe(Effect.ignore),
+            Effect.try({
+              try: () =>
+                signalProcessGroup(
+                  // A failed test can leave a row without its pid; the wrapper's pid file still names it.
+                  row.pid ??
+                    Number.parseInt(
+                      NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
+                      10,
+                    ),
+                  "SIGKILL",
+                ),
+              catch: (cause) => new ProcessCleanupError({ cause }),
+            }).pipe(Effect.ignore),
           ),
         ),
         Effect.ignore,
@@ -887,7 +894,10 @@ it.layer(layerTest, { excludeTestServices: true })(
           10,
         );
         yield* Effect.addFinalizer(() =>
-          Effect.try(() => process.kill(childPid)).pipe(Effect.ignore),
+          Effect.try({
+            try: () => process.kill(childPid),
+            catch: (cause) => new ProcessCleanupError({ cause }),
+          }).pipe(Effect.ignore),
         );
         // Only the wrapper, as a stop cut by a restart leaves it.
         NodeChildProcess.execFileSync("taskkill", [

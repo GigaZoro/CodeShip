@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
@@ -6,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { McpServer } from "effect/ai";
 
+import { AssetSigner } from "../assets/AssetSigner.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
 import { AccountRouting } from "../orchestration-v2/AccountRouting.ts";
 import { ServerConfig } from "../config.ts";
@@ -36,6 +38,7 @@ import { ProjectCloneTracker } from "../project/ProjectCloneTracker.ts";
 import { ProjectService } from "../project/ProjectService.ts";
 import { ProjectSetupScriptRunner } from "../project/ProjectSetupScriptRunner.ts";
 import { PullRequestReviewGuideService } from "../pullRequest/PullRequestReviewGuideService.ts";
+import { PullRequestService } from "../pullRequest/PullRequestService.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
 import { SecretRequests } from "../secrets/SecretRequests.ts";
 import { SharedSettings } from "../sharedSettings/SharedSettings.ts";
@@ -49,14 +52,17 @@ import { VisualStudioDebugger } from "../visualStudio/VisualStudioDebugger.ts";
 import { buildCodexAdditionalContext } from "./CodexDeveloperInstructions.ts";
 import { DocumentText } from "./DocumentText.ts";
 import { ProviderMcp } from "./ProviderMcp.ts";
+import { EnvironmentThemeService } from "../environmentTheme.ts";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
   Layer.mock(AccountRouting)({}),
+  Layer.mock(AssetSigner)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
+  Layer.mock(EnvironmentThemeService)({}),
   Layer.mock(GitVcsDriver)({}),
   Layer.mock(GitWorkflowService)({}),
   MemoryAdmission.layerTest(),
@@ -77,6 +83,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProviderMcp)({}),
   Layer.mock(ProviderRegistry)({}),
   Layer.mock(PullRequestReviewGuideService)({}),
+  Layer.mock(PullRequestService)({}),
   Layer.mock(RemoteDelegation)({}),
   Layer.mock(CommandRunner)({}),
   Layer.mock(ScheduledTaskService)({}),
@@ -93,7 +100,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadSearch)({}),
   Layer.mock(VcsStatusBroadcaster)({}),
   Layer.mock(VisualStudioDebugger)({}),
-).pipe(Layer.provideMerge(NodeServices.layer));
+).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
 
@@ -120,6 +127,25 @@ const codexAdditionalContext = () =>
   )
     .map((entry) => entry.value)
     .join("");
+
+const layerAdvertisedTools = McpHttpServer.layerTools.pipe(
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provide(toolHandlerServices),
+);
+
+// Claude Code loads these tools up front instead of behind ToolSearch, outside this budget.
+it.effect("only request_secret and send_to_user ask Claude Code to load them up front", () =>
+  Effect.gen(function* () {
+    const mcp = yield* McpServer.McpServer;
+    const alwaysLoad = mcp.tools
+      .filter(({ tool }) => tool._meta?.["anthropic/alwaysLoad"] !== undefined)
+      .map(({ tool }) => [tool.name, tool._meta]);
+    expect(alwaysLoad).toEqual([
+      ["request_secret", { "anthropic/alwaysLoad": true }],
+      ["send_to_user", { "anthropic/alwaysLoad": true }],
+    ]);
+  }).pipe(Effect.provide(layerAdvertisedTools)),
+);
 
 // CI rejects a PR that raises any value above main's agentContextBudget.json, so growth
 // needs the agent-context-increase label. Lower the values when the text shrinks.
@@ -155,12 +181,5 @@ it.effect("agent context matches the committed budget", () =>
       measured,
       "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
     ).toEqual(budget);
-  }).pipe(
-    Effect.provide(
-      McpHttpServer.layerTools.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
-        Layer.provide(toolHandlerServices),
-      ),
-    ),
-  ),
+  }).pipe(Effect.provide(layerAdvertisedTools)),
 );

@@ -3,7 +3,16 @@ import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import {
+  DATABASE_MIGRATION_PROGRESS_MESSAGE,
+  DATABASE_MIGRATIONS_FINISHED_MESSAGE,
+  DATABASE_MIGRATIONS_STARTED_MESSAGE,
+} from "@t3tools/shared/databaseMigrationLog";
 import { MigrationProgress } from "./MigrationProgress.ts";
+import {
+  reconcileCodeShipMigrationLedger,
+  reconciledCodeShipMigrationHistory,
+} from "./reconcileCodeShipMigrationLedger.ts";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
 import { isResumableMigration, type ResumableMigration } from "./ResumableMigration.ts";
 
@@ -84,21 +93,39 @@ import Migration0074 from "./Migrations/074_ExcludeAttachmentPlaceholdersFromSea
 import Migration0075 from "./Migrations/075_SubagentDeliveryState.ts";
 import Migration0076 from "./Migrations/076_ProjectionProjectsPinArchive.ts";
 import Migration0077 from "./Migrations/077_RepairBooleanSettledOverride.ts";
-import Migration0078 from "./Migrations/078_PeerScheduledTaskSnapshots.ts";
-import Migration0079 from "./Migrations/079_CompletedRunAccountIndex.ts";
-import Migration0080 from "./Migrations/080_UsageLimitHoldEndIndex.ts";
-import Migration0081 from "./Migrations/081_ScheduledTaskRunHistory.ts";
-import Migration0082 from "./Migrations/082_SharedSettingVersions.ts";
-import Migration0083 from "./Migrations/083_ManualStepReviews.ts";
-import Migration0084 from "./Migrations/084_SharedSettingVersionDriver.ts";
-import Migration0085 from "./Migrations/085_UsageLimitHoldLifts.ts";
-import Migration0086 from "./Migrations/086_ScheduledTaskRunConditions.ts";
-import Migration0087 from "./Migrations/087_UsageLimitAnsweredAttempts.ts";
-import Migration0088 from "./Migrations/088_ScheduledTaskLastRunOccurrence.ts";
-import Migration0089 from "./Migrations/089_ScheduledTaskRunFailoverReason.ts";
-import Migration0090 from "./Migrations/090_ThreadToolOutputRetention.ts";
-import Migration0091 from "./Migrations/091_CompactOrchestrationIds.ts";
-import Migration0092 from "./Migrations/092_CommandRuns.ts";
+import Migration0078 from "./Migrations/078_DropOrchestrationEventCorrelationIndex.ts";
+import Migration0079 from "./Migrations/079_DelegatedRecoveryIndexes.ts";
+import Migration0080 from "./Migrations/080_ScheduledTaskThreadMode.ts";
+import Migration0081 from "./Migrations/081_ProjectionMessageSearchText.ts";
+import Migration0082 from "./Migrations/082_TurnItemConversationIndex.ts";
+import Migration0083 from "./Migrations/083_CommandReadIndexes.ts";
+import Migration0084 from "./Migrations/084_LastExecutedRunIndex.ts";
+import Migration0085 from "./Migrations/085_TurnItemCounts.ts";
+import Migration0086 from "./Migrations/086_QueuedTurnInputIndex.ts";
+import Migration0087 from "./Migrations/087_ProjectionProjectsCustomTitle.ts";
+import Migration0088 from "./Migrations/088_TurnItemTypeStatusIndex.ts";
+import Migration0089 from "./Migrations/089_ShellThreadReadIndexes.ts";
+import Migration0090 from "./Migrations/090_AuthConnectDevices.ts";
+import Migration0091 from "./Migrations/091_AuthConnectDeniedRequests.ts";
+import Migration0092 from "./Migrations/092_QueuedTurnInputIndexJsonValid.ts";
+import Migration0093 from "./Migrations/093_ProviderTurnAttemptIndex.ts";
+import Migration0094 from "./Migrations/094_TurnItemMessageOrdinalIndex.ts";
+
+import CodeShipMigration0001 from "./CodeShipMigrations/001_PeerScheduledTaskSnapshots.ts";
+import CodeShipMigration0002 from "./CodeShipMigrations/002_CompletedRunAccountIndex.ts";
+import CodeShipMigration0003 from "./CodeShipMigrations/003_UsageLimitHoldEndIndex.ts";
+import CodeShipMigration0004 from "./CodeShipMigrations/004_ScheduledTaskRunHistory.ts";
+import CodeShipMigration0005 from "./CodeShipMigrations/005_SharedSettingVersions.ts";
+import CodeShipMigration0006 from "./CodeShipMigrations/006_ManualStepReviews.ts";
+import CodeShipMigration0007 from "./CodeShipMigrations/007_SharedSettingVersionDriver.ts";
+import CodeShipMigration0008 from "./CodeShipMigrations/008_UsageLimitHoldLifts.ts";
+import CodeShipMigration0009 from "./CodeShipMigrations/009_ScheduledTaskRunConditions.ts";
+import CodeShipMigration0010 from "./CodeShipMigrations/010_UsageLimitAnsweredAttempts.ts";
+import CodeShipMigration0011 from "./CodeShipMigrations/011_ScheduledTaskLastRunOccurrence.ts";
+import CodeShipMigration0012 from "./CodeShipMigrations/012_ScheduledTaskRunFailoverReason.ts";
+import CodeShipMigration0013 from "./CodeShipMigrations/013_ThreadToolOutputRetention.ts";
+import CodeShipMigration0014 from "./CodeShipMigrations/014_CompactOrchestrationIds.ts";
+import CodeShipMigration0015 from "./CodeShipMigrations/015_CommandRuns.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -179,58 +206,82 @@ const migrationEntries = [
   [75, "SubagentDeliveryState", Migration0075],
   [76, "ProjectionProjectsPinArchive", Migration0076],
   [77, "RepairBooleanSettledOverride", Migration0077],
-  [78, "PeerScheduledTaskSnapshots", Migration0078],
-  [79, "CompletedRunAccountIndex", Migration0079],
-  [80, "UsageLimitHoldEndIndex", Migration0080],
-  [81, "ScheduledTaskRunHistory", Migration0081],
-  [82, "SharedSettingVersions", Migration0082],
-  [83, "ManualStepReviews", Migration0083],
-  [84, "SharedSettingVersionDriver", Migration0084],
-  [85, "UsageLimitHoldLifts", Migration0085],
-  [86, "ScheduledTaskRunConditions", Migration0086],
-  [87, "UsageLimitAnsweredAttempts", Migration0087],
-  [88, "ScheduledTaskLastRunOccurrence", Migration0088],
-  [89, "ScheduledTaskRunFailoverReason", Migration0089],
-  [90, "ThreadToolOutputRetention", Migration0090],
-  [91, "CompactOrchestrationIds", Migration0091],
-  [92, "CommandRuns", Migration0092],
+  [78, "DropOrchestrationEventCorrelationIndex", Migration0078],
+  [79, "DelegatedRecoveryIndexes", Migration0079],
+  [80, "ScheduledTaskThreadMode", Migration0080],
+  [81, "ProjectionMessageSearchText", Migration0081],
+  [82, "TurnItemConversationIndex", Migration0082],
+  [83, "CommandReadIndexes", Migration0083],
+  [84, "LastExecutedRunIndex", Migration0084],
+  [85, "TurnItemCounts", Migration0085],
+  [86, "QueuedTurnInputIndex", Migration0086],
+  [87, "ProjectionProjectsCustomTitle", Migration0087],
+  [88, "TurnItemTypeStatusIndex", Migration0088],
+  [89, "ShellThreadReadIndexes", Migration0089],
+  [90, "AuthConnectDevices", Migration0090],
+  [91, "AuthConnectDeniedRequests", Migration0091],
+  [92, "QueuedTurnInputIndexJsonValid", Migration0092],
+  [93, "ProviderTurnAttemptIndex", Migration0093],
+  [94, "TurnItemMessageOrdinalIndex", Migration0094],
 ] as const;
+
+const codeShipMigrationEntries = [
+  [1, "PeerScheduledTaskSnapshots", CodeShipMigration0001],
+  [2, "CompletedRunAccountIndex", CodeShipMigration0002],
+  [3, "UsageLimitHoldEndIndex", CodeShipMigration0003],
+  [4, "ScheduledTaskRunHistory", CodeShipMigration0004],
+  [5, "SharedSettingVersions", CodeShipMigration0005],
+  [6, "ManualStepReviews", CodeShipMigration0006],
+  [7, "SharedSettingVersionDriver", CodeShipMigration0007],
+  [8, "UsageLimitHoldLifts", CodeShipMigration0008],
+  [9, "ScheduledTaskRunConditions", CodeShipMigration0009],
+  [10, "UsageLimitAnsweredAttempts", CodeShipMigration0010],
+  [11, "ScheduledTaskLastRunOccurrence", CodeShipMigration0011],
+  [12, "ScheduledTaskRunFailoverReason", CodeShipMigration0012],
+  [13, "ThreadToolOutputRetention", CodeShipMigration0013],
+  [14, "CompactOrchestrationIds", CodeShipMigration0014],
+  [15, "CommandRuns", CodeShipMigration0015],
+] as const;
+
+export const codeShipMigrationManifest = codeShipMigrationEntries.map(
+  ([id, name]) => [id, name] as const,
+);
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
-// Resumable migrations commit step by step outside the migrator's single transaction.
-const makeMigrationLoader = (throughId?: number) =>
+type MigrationEntry = (typeof migrationEntries)[number] | (typeof codeShipMigrationEntries)[number];
+const makeMigrationLoader = (entries: ReadonlyArray<MigrationEntry>, throughId: number) =>
   Migrator.fromRecord(
     Object.fromEntries(
-      migrationEntries.flatMap(([id, name, migration]) =>
-        isResumableMigration(migration) || (throughId !== undefined && id > throughId)
+      entries.flatMap(([id, name, migration]) =>
+        isResumableMigration(migration) || id > throughId
           ? []
           : [[`${id}_${name}`, migration] as const],
       ),
     ),
   );
 
-const latestRecordedMigrationId = Effect.gen(function* () {
+const readLedger = Effect.fn("readMigrationLedger")(function* (table: string) {
   const sql = yield* SqlClient.SqlClient;
-  const tables = yield* sql`
-    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  const tables =
+    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ${table}`;
+  if (tables.length === 0) return [];
+  return yield* sql<{ readonly id: number; readonly name: string }>`
+    SELECT migration_id AS id, name FROM ${sql(table)} ORDER BY migration_id
   `;
-  if (tables.length === 0) return 0;
-  const rows = yield* sql<{ readonly latest: number | null }>`
-    SELECT max(migration_id) AS latest FROM effect_sql_migrations
-  `;
-  return rows[0]?.latest ?? 0;
 });
 
 type ReportMigration = (status: EnvironmentStartup | undefined) => Effect.Effect<void>;
 
-// Each step commits with its cursor in `migration_progress`, under the write lock, so a restart
+// Each step commits with its ledger's cursor, under the write lock, so a restart
 // resumes after the last committed step and another process sees the same cursor.
 const runResumableMigration = Effect.fn("runResumableMigration")(function* (
   id: number,
   name: string,
   migration: ResumableMigration,
   report: ReportMigration,
+  table: string,
+  progressTable: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const label = `${id}_${name}`;
@@ -239,30 +290,30 @@ const runResumableMigration = Effect.fn("runResumableMigration")(function* (
     const progress = yield* sql.withTransaction(
       Effect.gen(function* () {
         const recorded = yield* sql`
-          SELECT 1 FROM effect_sql_migrations WHERE migration_id = ${id}
+          SELECT 1 FROM ${sql(table)} WHERE migration_id = ${id}
         `;
         if (recorded.length > 0) return undefined;
         yield* sql`
-          CREATE TABLE IF NOT EXISTS migration_progress (
+          CREATE TABLE IF NOT EXISTS ${sql(progressTable)} (
             migration_id INTEGER PRIMARY KEY NOT NULL,
             cursor_json TEXT NOT NULL
           )
         `;
         const stored = yield* sql<{ readonly cursor_json: string }>`
-          SELECT cursor_json FROM migration_progress WHERE migration_id = ${id}
+          SELECT cursor_json FROM ${sql(progressTable)} WHERE migration_id = ${id}
         `;
         const step = yield* migration.step(stored[0]?.cursor_json);
         if (step.next !== undefined) {
           yield* sql`
-            INSERT INTO migration_progress (migration_id, cursor_json) VALUES (${id}, ${step.next})
+            INSERT INTO ${sql(progressTable)} (migration_id, cursor_json) VALUES (${id}, ${step.next})
             ON CONFLICT (migration_id) DO UPDATE SET cursor_json = excluded.cursor_json
           `;
           return step.progress;
         }
-        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
-        yield* sql`DELETE FROM migration_progress WHERE migration_id = ${id}`;
-        const unfinished = yield* sql`SELECT 1 FROM migration_progress LIMIT 1`;
-        if (unfinished.length === 0) yield* sql`DROP TABLE migration_progress`;
+        yield* sql`INSERT INTO ${sql(table)} (migration_id, name) VALUES (${id}, ${name})`;
+        yield* sql`DELETE FROM ${sql(progressTable)} WHERE migration_id = ${id}`;
+        const unfinished = yield* sql`SELECT 1 FROM ${sql(progressTable)} LIMIT 1`;
+        if (unfinished.length === 0) yield* sql`DROP TABLE ${sql(progressTable)}`;
         return undefined;
       }),
     );
@@ -273,6 +324,24 @@ const runResumableMigration = Effect.fn("runResumableMigration")(function* (
 });
 
 const FIRST_V2_MIGRATION_ID = 55;
+
+export function skippedV2Migrations(
+  recorded: ReadonlyArray<{ readonly id: number; readonly name: string }>,
+  throughId?: number,
+): string[] {
+  const latestRecordedId = Math.max(0, ...recorded.map((row) => row.id));
+  const recordedNames = new Map(recorded.map((row) => [row.id, row.name]));
+  return migrationManifest.flatMap(([id, name]) => {
+    if (
+      id < FIRST_V2_MIGRATION_ID ||
+      id > latestRecordedId ||
+      (throughId !== undefined && id > throughId)
+    )
+      return [];
+    const recordedName = recordedNames.get(id);
+    return recordedName === name ? [] : [`${id}_${name} (recorded: ${recordedName ?? "nothing"})`];
+  });
+}
 
 // Migrators skip ids up to the highest recorded; reject collisions that would skip V2 schema.
 const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function* (
@@ -287,24 +356,28 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
     readonly migration_id: number;
     readonly name: string;
   }>`SELECT migration_id, name FROM effect_sql_migrations`;
+  const skipped = skippedV2Migrations(
+    recorded.map((row) => ({ id: row.migration_id, name: row.name })),
+    throughId,
+  );
   const latestRecordedId = Math.max(0, ...recorded.map((row) => row.migration_id));
-  const recordedNames = new Map(recorded.map((row) => [row.migration_id, row.name]));
-  const skipped = migrationEntries.flatMap(([id, name]) => {
-    if (
-      id < FIRST_V2_MIGRATION_ID ||
-      id > latestRecordedId ||
-      (throughId !== undefined && id > throughId)
-    )
-      return [];
-    const recordedName = recordedNames.get(id);
-    if (recordedName === name) return [];
-    return [`${id}_${name} (recorded: ${recordedName ?? "nothing"})`];
-  });
   if (skipped.length === 0) return;
   return yield* new Migrator.MigrationError({
     kind: "BadState",
     message: `This database's migration history would skip required schema migrations: ${skipped.join(", ")}. The migrator skips every id up to the highest recorded id (${latestRecordedId}), regardless of name. It was probably written by a different build. Start the build that wrote it, or report this migration history so an upgrade path can be added.`,
   });
+});
+
+export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* () {
+  const upstream = yield* readLedger("effect_sql_migrations");
+  const fork = yield* readLedger("codeship_migrations");
+  const reconciled = reconciledCodeShipMigrationHistory(upstream, fork);
+  return (
+    reconciled.moved.length > 0 ||
+    Math.max(0, ...reconciled.upstream.map(({ id }) => id)) < migrationManifest.at(-1)![0] ||
+    Math.max(0, ...reconciled.fork.map(({ id }) => id)) < codeShipMigrationManifest.at(-1)![0] ||
+    upstream.some(({ id, name }) => name === "OrchestrationV2" && (id === 53 || id === 54))
+  );
 });
 
 const run = Migrator.make({});
@@ -316,64 +389,85 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
+  const pendingAtStart = yield* hasPendingMigrations();
+  // The desktop waits past its readiness budget until the finished line follows this one.
+  if (pendingAtStart) yield* Effect.log(DATABASE_MIGRATIONS_STARTED_MESSAGE);
+  const moved = yield* reconcileCodeShipMigrationLedger();
+  if (moved.length > 0)
+    yield* Effect.log("Moved CodeShip migration history to its own ledger").pipe(
+      Effect.annotateLogs({ migrations: moved.map(({ id, name }) => `${id}_${name}`) }),
+    );
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
-  if (includesV2) {
-    yield* assertV2MigrationsCanRun(toMigrationInclusive);
-  }
+  if (includesV2) yield* assertV2MigrationsCanRun(toMigrationInclusive);
   const progress = yield* Effect.serviceOption(MigrationProgress);
   const report: ReportMigration = (status) =>
     Option.match(progress, { onNone: () => Effect.void, onSome: ({ report }) => report(status) });
-  const runThrough = Effect.fn("runMigrationsThrough")(function* (throughId: number | undefined) {
-    const latest = yield* latestRecordedMigrationId;
-    const pending = migrationEntries.find(
-      ([id, , migration]) =>
-        id > latest &&
-        (throughId === undefined || id <= throughId) &&
-        !isResumableMigration(migration),
-    );
-    if (pending !== undefined) yield* report({ migration: `${pending[0]}_${pending[1]}` });
-    return yield* run({ loader: makeMigrationLoader(throughId) });
-  });
-
   const executedMigrations: Array<readonly [id: number, name: string]> = [...previewMigrations];
-  yield* Effect.gen(function* () {
-    for (const [id, name, migration] of migrationEntries) {
-      if (!isResumableMigration(migration)) continue;
-      if (toMigrationInclusive !== undefined && id > toMigrationInclusive) break;
-      executedMigrations.push(...(yield* runThrough(id - 1)));
-      // The migrator skips every id up to the highest recorded one; skip this one the same way.
-      if ((yield* latestRecordedMigrationId) >= id) continue;
-      yield* runResumableMigration(id, name, migration, report);
-      executedMigrations.push([id, name]);
+  const runLedger = Effect.fn("runMigrationLedger")(function* (
+    entries: ReadonlyArray<MigrationEntry>,
+    table: string,
+    progressTable: string,
+    throughId?: number,
+  ) {
+    const recorded = yield* readLedger(table);
+    const latestRecordedId = Math.max(0, ...recorded.map(({ id }) => id));
+    const pending = entries.filter(
+      ([id]) => id > latestRecordedId && (throughId === undefined || id <= throughId),
+    );
+    // Each migration commits separately; resumable migrations also commit their cursor per step.
+    for (const [index, [id, name, migration]] of pending.entries()) {
+      yield* report({ migration: `${id}_${name}` });
+      if (latestRecordedId > 0)
+        yield* Effect.log(DATABASE_MIGRATION_PROGRESS_MESSAGE).pipe(
+          Effect.annotateLogs({
+            migration: `${id}_${name}`,
+            ledger: table,
+            progress: `${index + 1} of ${pending.length}`,
+          }),
+        );
+      if (isResumableMigration(migration)) {
+        yield* runResumableMigration(id, name, migration, report, table, progressTable);
+        executedMigrations.push([id, name]);
+      } else {
+        executedMigrations.push(
+          ...(yield* run({ loader: makeMigrationLoader(entries, id), table })),
+        );
+      }
     }
-    executedMigrations.push(...(yield* runThrough(toMigrationInclusive)));
+    const manifestNames = new Map<number, string>(entries.map(([id, name]) => [id, name]));
+    const divergent = recorded.flatMap(({ id, name }) => {
+      const expected = manifestNames.get(id);
+      return expected === undefined
+        ? [`${id}:${name} (unknown to this build)`]
+        : expected === name
+          ? []
+          : [`${id}:${name} (this build: ${expected})`];
+    });
+    if (divergent.length > 0)
+      yield* Effect.logWarning(
+        "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
+      ).pipe(Effect.annotateLogs({ ledger: table, divergent }));
+  });
+  yield* Effect.gen(function* () {
+    yield* runLedger(
+      migrationEntries,
+      "effect_sql_migrations",
+      "migration_progress",
+      toMigrationInclusive,
+    );
+    if (toMigrationInclusive === undefined) {
+      yield* runLedger(
+        codeShipMigrationEntries,
+        "codeship_migrations",
+        "codeship_migration_progress",
+      );
+    }
   }).pipe(Effect.ensuring(report(undefined)));
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
-  yield* migrations.length === 0
+  yield* migrations.length === 0 && !pendingAtStart
     ? Effect.logDebug("Database schema is current")
-    : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
-
-  const sql = yield* SqlClient.SqlClient;
-  const recorded = yield* sql<{
-    readonly migration_id: number;
-    readonly name: string;
-  }>`SELECT migration_id, name FROM effect_sql_migrations`;
-  const manifestNames = new Map<number, string>(migrationEntries.map(([id, name]) => [id, name]));
-  const divergent = recorded.flatMap((row) => {
-    const expected = manifestNames.get(row.migration_id);
-    if (expected === undefined) {
-      return [`${row.migration_id}:${row.name} (unknown to this build)`];
-    }
-    return expected === row.name
-      ? []
-      : [`${row.migration_id}:${row.name} (this build: ${expected})`];
-  });
-  if (divergent.length > 0) {
-    yield* Effect.logWarning(
-      "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
-    ).pipe(Effect.annotateLogs({ divergent }));
-  }
+    : Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(Effect.annotateLogs({ migrations }));
   return executedMigrations;
 });

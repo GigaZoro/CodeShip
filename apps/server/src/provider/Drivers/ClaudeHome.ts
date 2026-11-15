@@ -85,6 +85,23 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   };
 });
 
+// A Claude Code session that launched T3 exports these. A claude spawned with them acts as part of
+// that session: its session id, messaging socket and token, and effort.
+const CLAUDE_HOST_SESSION_VARIABLES = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_HOST_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_DESKTOP_APP_VERSION",
+  "CLAUDE_EFFORT",
+  "CLAUDE_PID",
+  "CLAUDE_AGENT_SDK_VERSION",
+];
+
 /**
  * Base env for the Claude processes T3.CodeShip runs, before `makeClaudeEnvironment`.
  * Claude Code reads its entrypoint from the process env, not its settings `env`, so T3.CodeShip applies that override itself.
@@ -94,6 +111,14 @@ export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnviro
   instanceEnvironment: ProviderInstanceEnvironment | undefined,
   hostEnvironment: NodeJS.ProcessEnv,
 ) {
+  const baseEnvironment: NodeJS.ProcessEnv = {
+    ...hostEnvironment,
+    CLAUDE_CODE_ENTRYPOINT: "t3-code",
+  };
+  for (const name of CLAUDE_HOST_SESSION_VARIABLES) delete baseEnvironment[name];
+  // The desktop runs the server as Node through Electron. Commands Claude runs inherit its env, so
+  // an Electron app they start (T3.CodeShip itself, VS Code) would run as Node and exit.
+  delete baseEnvironment.ELECTRON_RUN_AS_NODE;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const entrypoint = yield* findProviderInstanceEnvironmentVariable(
@@ -102,7 +127,7 @@ export const mergeClaudeProcessEnvironment = Effect.fn("mergeClaudeProcessEnviro
   );
   const merged = yield* mergeProviderInstanceEnvironment(
     entrypoint === undefined ? undefined : [entrypoint],
-    { ...hostEnvironment, CLAUDE_CODE_ENTRYPOINT: "t3-code" },
+    baseEnvironment,
   );
   // Claude resolves a relative folder against each process's working directory, which differs by
   // project. It names its Keychain item from the exact value, so an absolute one passes unchanged.
@@ -146,6 +171,49 @@ export const hasClaudeManagedMcpConfig = Effect.fn("hasClaudeManagedMcpConfig")(
         ? "C:\\Program Files\\ClaudeCode\\managed-mcp.json"
         : "/etc/claude-code/managed-mcp.json";
   return yield* fileSystem.exists(managedMcpConfigPath).pipe(Effect.orElseSucceed(() => false));
+});
+
+// A worktree's .git file points at <main>/.git/worktrees/<name>, whose commondir leads back to
+// <main>/.git. A bare repository has no main checkout, so its worktree keeps its own file.
+// Untraced because claudeLocalSettingsDirectory already owns the span.
+const mainCheckoutRoot = Effect.fnUntraced(function* (checkout: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* fileSystem.readFileString(path.join(checkout, ".git")).pipe(
+    Effect.flatMap((pointer) => {
+      const gitDir = /^gitdir:\s*(.+)$/m.exec(pointer)?.[1]?.trim();
+      if (gitDir === undefined) return Effect.succeed(checkout);
+      const worktreeGitDir = path.resolve(checkout, gitDir);
+      return fileSystem.readFileString(path.join(worktreeGitDir, "commondir")).pipe(
+        Effect.map((commonDir) => {
+          const common = path.resolve(worktreeGitDir, commonDir.trim());
+          return path.basename(common) === ".git" ? path.dirname(common) : checkout;
+        }),
+      );
+    }),
+    Effect.orElseSucceed(() => checkout),
+  );
+});
+
+// Claude Code keeps .claude/settings.local.json at the repository root, or in cwd outside a
+// repository, on Windows, or when the root is home. Its owner check is skipped, so callers must
+// stay safe when Claude Code ignores the root file.
+export const claudeLocalSettingsDirectory = Effect.fn("claudeLocalSettingsDirectory")(function* (
+  cwd: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  if ((yield* HostProcess.Platform) === "win32") return cwd;
+  for (let directory = cwd; ; directory = path.dirname(directory)) {
+    const isCheckout = yield* fileSystem
+      .exists(path.join(directory, ".git"))
+      .pipe(Effect.orElseSucceed(() => false));
+    if (isCheckout) {
+      const root = yield* mainCheckoutRoot(directory);
+      return root === (yield* HostProcess.HomeDirectory) ? cwd : root;
+    }
+    if (path.dirname(directory) === directory) return cwd;
+  }
 });
 
 export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationGroupKey")(

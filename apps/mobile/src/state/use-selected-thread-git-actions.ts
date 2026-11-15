@@ -27,10 +27,10 @@ import {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
-import { useBranches } from "../state/queries";
-import { useEnvironmentQuery } from "../state/query";
-import { threadEnvironment } from "../state/threads";
-import { vcsActionManager, vcsEnvironment } from "../state/vcs";
+import { useBranches } from "./queries";
+import { useEnvironmentQuery } from "./query";
+import { threadEnvironment } from "./threads";
+import { vcsActionManager, vcsEnvironment } from "./vcs";
 import { uuidv4 } from "../lib/uuid";
 import { appAtomRegistry } from "./atom-registry";
 import { readEnvironmentScope, useEnvironmentScope } from "./session";

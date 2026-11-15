@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 
 import * as Electron from "electron";
 
@@ -16,6 +17,11 @@ import * as DesktopState from "../app/DesktopState.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
+
+class DesktopTrayShowError extends Schema.TaggedError<DesktopTrayShowError>()(
+  "DesktopTrayShowError",
+  { cause: Schema.Defect() },
+) {}
 
 export class DesktopTray extends Context.Service<
   DesktopTray,
@@ -73,20 +79,23 @@ export const make = Effect.gen(function* () {
       return;
     }
     const isNew = tray === null;
-    const shown = yield* Effect.try(() => {
-      if (tray === null) {
-        tray = new Electron.Tray(icon.value);
-        tray.setToolTip(environment.displayName);
-        tray.on("click", open);
-      }
-      // Rebuilt on every call so a language change reaches the menu.
-      tray.setContextMenu(
-        Electron.Menu.buildFromTemplate([
-          { label: t("Open {name}", { name: environment.displayName }), click: open },
-          { type: "separator" },
-          { label: t("Quit {name}", { name: environment.displayName }), click: quit },
-        ]),
-      );
+    const shown = yield* Effect.try({
+      try: () => {
+        if (tray === null) {
+          tray = new Electron.Tray(icon.value);
+          tray.setToolTip(environment.displayName);
+          tray.on("click", open);
+        }
+        // Rebuilt on every call so a language change reaches the menu.
+        tray.setContextMenu(
+          Electron.Menu.buildFromTemplate([
+            { label: t("Open {name}", { name: environment.displayName }), click: open },
+            { type: "separator" },
+            { label: t("Quit {name}", { name: environment.displayName }), click: quit },
+          ]),
+        );
+      },
+      catch: (cause) => new DesktopTrayShowError({ cause }),
     }).pipe(
       Effect.as(true),
       Effect.catch((cause) =>

@@ -199,7 +199,7 @@ export const refusedAtCompileTime = () => {
 
 const probeServer = (threads: Layer.Layer<ThreadManagement.ThreadManagementService>) =>
   McpHttpServer.toolkitRegistration(ProbeToolkit, layerProbeHandlers).pipe(
-    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(threads),
   );
 
@@ -406,7 +406,7 @@ const linkedProbeServer = McpHttpServer.toolkitRegistration(
     writes_environment: McpToolAccess.writesEnvironment(ranHere),
   }),
 ).pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provideMerge(
     Layer.mock(ThreadManagement.ThreadManagementService)({
       getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
@@ -508,7 +508,7 @@ const linkTo = (
 ) => McpInvocationContext.threadLinkFor({ environmentId, client }, threadId);
 const outsideClient: McpInvocationContext.McpInvocationScope = {
   ...supervisedClient,
-  client: { ...supervisedClient.client!, webOrigin: "https://laptop.example" },
+  client: { ...supervisedClient.client!, hostedAppUrl: "https://laptop.example" },
 };
 // Ids are taken as written: escapes and slashes are part of them.
 const writtenThreadId = ThreadId.make("mcp:odd/thread%3A1");
@@ -541,7 +541,7 @@ const threadLinkProbeServer = McpHttpServer.toolkitRegistration(
     ),
   }),
 ).pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provideMerge(
     Layer.mock(ThreadManagement.ThreadManagementService)({
       getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
@@ -741,7 +741,7 @@ const threadToolProbe = (tool: Tool.Any) => {
     ProbeToolkit,
     McpToolAccess.toLayer(ProbeToolkit, { [tool.name]: echo } as never),
   ).pipe(
-    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(
       Layer.mock(PeerForwarding.PeerForwarding)({
         call: (_scope, _tool, environmentId, params) =>

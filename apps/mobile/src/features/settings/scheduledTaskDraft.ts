@@ -1,4 +1,4 @@
-import { isWebhookDedupeTemplate } from "@t3tools/contracts";
+import { isWebhookDedupeTemplate, scheduledTaskThreadMode } from "@t3tools/contracts";
 import type {
   EnvironmentId,
   ModelSelection,
@@ -8,8 +8,10 @@ import type {
   RuntimeMode,
   ScheduledTask,
   ScheduledTaskSharedRunOn,
+  ScheduledTaskThreadMode,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
+  ThreadId,
 } from "@t3tools/contracts";
 
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
@@ -209,6 +211,7 @@ export type ScheduledTaskDraft = PromptFileDraft & {
   /** The label tasks are listed and paused under; empty for none. */
   readonly group: string;
   readonly projectId: ProjectId | null;
+  readonly threadId: ThreadId | null;
   readonly modelSelection: ModelSelection | null;
   readonly modelSelectionIsExplicit: boolean;
   /** Runs the scheduled tasks default model instead of `modelSelection`. */
@@ -223,6 +226,7 @@ export type ScheduledTaskDraft = PromptFileDraft & {
   readonly runCondition: RunConditionDraft;
   readonly delegateProviders: ReadonlyArray<ProviderDriverKind>;
   readonly maxLiveRuns: string;
+  readonly threadMode: ScheduledTaskThreadMode;
   readonly workspace: Workspace;
   readonly baseRef: string;
   readonly checkoutPath: string;
@@ -239,6 +243,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.promptFile.trim(),
     draft.group,
     draft.projectId,
+    draft.threadId,
     draft.modelSelection?.instanceId,
     draft.modelSelection?.model,
     draft.modelSelection?.autoAccount === true,
@@ -263,6 +268,7 @@ function draftSignature(draft: ScheduledTaskDraft): string {
     draft.runCondition.command.trim() === "" ? null : draft.runCondition.timeoutSeconds.trim(),
     draft.delegateProviders,
     draft.maxLiveRuns.trim(),
+    draft.threadMode,
     draft.workspace,
     draft.baseRef,
     draft.checkoutPath,
@@ -291,6 +297,38 @@ export function hasScheduledTaskDraftChanges(
   return draftSignature(initial) !== draftSignature(current);
 }
 
+export function moveDraftToThread(
+  draft: ScheduledTaskDraft,
+  thread: { readonly id: ThreadId; readonly projectId: ProjectId },
+): ScheduledTaskDraft {
+  return {
+    ...draft,
+    threadId: thread.id,
+    projectId: thread.projectId,
+    threadMode: draft.threadMode === "new_thread" ? "continue" : draft.threadMode,
+  };
+}
+
+/** Leaves the thread but keeps the mode. Matches MCP: new threads stay out of the shared checkout. */
+export function unbindDraftFromThread(draft: ScheduledTaskDraft): ScheduledTaskDraft {
+  if (draft.threadId === null) return draft;
+  return {
+    ...draft,
+    threadId: null,
+    ...(draft.workspace === "root"
+      ? { workspace: "worktree" as const, startFromOrigin: true }
+      : {}),
+  };
+}
+
+export function changeDraftProject(
+  draft: ScheduledTaskDraft,
+  projectId: ProjectId,
+): ScheduledTaskDraft {
+  if (projectId === draft.projectId) return draft;
+  return { ...unbindDraftFromThread(draft), projectId };
+}
+
 export function createDraft(
   projectId: ProjectId | null,
   modelSelection: ModelSelection | null,
@@ -302,6 +340,7 @@ export function createDraft(
     ...promptFileDraft(null),
     group: "",
     projectId,
+    threadId: null,
     modelSelection,
     modelSelectionIsExplicit: false,
     followsDefaultModel: true,
@@ -313,6 +352,7 @@ export function createDraft(
     runCondition: runConditionDraft(null),
     delegateProviders: [],
     maxLiveRuns: liveRunLimitDraft(null),
+    threadMode: "new_thread",
     workspace: "worktree",
     baseRef: "main",
     checkoutPath: "",
@@ -324,7 +364,8 @@ export function createDraft(
 
 /** A new task like an existing one. It stores nothing yet, so its webhook filters are all sent. */
 export function duplicateDraft(task: ScheduledTask, title: string): ScheduledTaskDraft {
-  const draft = editDraft(task);
+  // A copy never shares the original's thread; a bound task's copy starts its own.
+  const draft = unbindDraftFromThread(editDraft(task));
   return {
     ...draft,
     task: null,
@@ -343,6 +384,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     ...promptFileDraft(task),
     group: task.group ?? "",
     projectId: task.projectId,
+    threadId: task.threadId,
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
     followsDefaultModel: task.followsDefaultModel === true,
@@ -354,6 +396,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     runCondition: runConditionDraft(task),
     delegateProviders: task.delegateProviders ?? [],
     maxLiveRuns: liveRunLimitDraft(task),
+    threadMode: scheduledTaskThreadMode(task),
     workspace: task.workspaceStrategy.type,
     baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     checkoutPath:

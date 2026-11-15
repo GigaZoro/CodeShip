@@ -24,7 +24,7 @@ import { providerLoginExpiry } from "@t3tools/shared/providerLoginExpiry";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -124,7 +124,7 @@ export class ProviderMcp extends Context.Service<
 
 const make = Effect.gen(function* () {
   const instances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const scope = yield* Effect.scope;
   const signIns = new Map<
     string,
@@ -212,7 +212,7 @@ const make = Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId });
     const mcp = yield* management(input.instanceId, "signIn");
     const signIn = yield* mcp.signIn(input.name);
-    const flowId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const flowId = yield* random.uuidV4();
     yield* Effect.acquireRelease(
       Effect.sync(() => signIns.set(flowId, { instanceId: input.instanceId, signIn })),
       () => Effect.sync(() => signIns.delete(flowId)),

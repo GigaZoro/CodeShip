@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
+import { providerClients } from "@t3tools/client-runtime/provider-clients";
 import {
   normalizeProviderAccentColor,
   resolveProviderInstanceDisplayName,
@@ -44,12 +45,6 @@ import { ResetCredits } from "./UsageLimitsSection";
 import { usageProviderKind, useProviderColors } from "./usageProviders";
 import { t, tn, msg, getFormattingLocale } from "../../lib/i18n";
 
-const DRIVER_LABEL: Partial<Record<string, string>> = {
-  codex: "Codex",
-  claudeAgent: "Claude",
-  grok: "Grok",
-  antigravity: "Antigravity",
-};
 const PACE_LABEL = {
   ahead: msg("Ahead of pace"),
   on: msg("On pace"),
@@ -243,7 +238,7 @@ function segmentAccessibilityLabel(
 
 function accountName(account: LimitAccount) {
   if (account.displayName) return account.displayName;
-  if (!account.email) return DRIVER_LABEL[account.driver] ?? String(account.driver);
+  if (!account.email) return providerClients.get(account.driver)?.label ?? account.driver;
   return emailInitials(account.email) || t("Account");
 }
 
@@ -380,7 +375,7 @@ function PoolWindowCard({
   readonly color: string;
   readonly now: number;
   readonly environmentIds: readonly string[] | null;
-  readonly label?: string;
+  readonly label?: string | null;
   readonly description?: string;
   readonly wide: boolean;
 }) {
@@ -403,7 +398,9 @@ function PoolWindowCard({
     <>
       <View className={wide ? "gap-1" : "flex-row items-start justify-between gap-3"}>
         <View className="gap-1">
-          <Text className="text-sm font-t3-medium text-foreground">{label ?? pool.label}</Text>
+          {label !== null ? (
+            <Text className="text-sm font-t3-medium text-foreground">{label ?? pool.label}</Text>
+          ) : null}
           <View className="flex-row items-baseline gap-1.5">
             <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
               {pool.remainingPercent}%
@@ -612,13 +609,11 @@ export function UsageLimitsSection({
   now,
   failedLabels,
   selectedEnvironmentIds,
-  cursorPrompt,
   wide = false,
 }: {
   readonly now: number;
   readonly failedLabels: readonly string[];
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
-  readonly cursorPrompt?: ReactNode;
   readonly wide?: boolean;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
@@ -643,17 +638,11 @@ export function UsageLimitsSection({
       .filter((driver) => !pools.some((pool) => pool.driver === driver))
       .map((driver) => ({ driver, pool: null })),
   ];
-  const cursorPromptAt =
-    Math.max(
-      sections.findIndex((section) => section.driver === "codex"),
-      sections.findIndex((section) => section.driver === "claudeAgent"),
-    ) + 1;
   return (
     <View className="gap-6">
       {pools.length === 0 &&
       notices.length === 0 &&
       failedLabels.length === 0 &&
-      !cursorPrompt &&
       externalLinks.length === 0 ? (
         <Text className="py-12 text-center text-base text-foreground-muted">
           {selected.size === 0
@@ -661,15 +650,14 @@ export function UsageLimitsSection({
             : t("No provider on the selected environments reports subscription limits.")}
         </Text>
       ) : null}
-      {sections.map(({ driver, pool }, index) => (
+      {sections.map(({ driver, pool }) => (
         <Fragment key={driver}>
-          {index === cursorPromptAt ? cursorPrompt : null}
           <View className="gap-3">
             <View className="gap-1 px-1">
               <View className="flex-row items-start gap-2">
                 <ProviderIcon provider={driver} size={18} />
                 <Text className="min-w-0 flex-1 text-base font-t3-medium text-foreground">
-                  {DRIVER_LABEL[driver] ?? driver}
+                  {providerClients.get(driver)?.label ?? driver}
                 </Text>
                 {pool ? <LimitsFreshness accounts={pool.accounts} now={now} /> : null}
               </View>
@@ -691,7 +679,7 @@ export function UsageLimitsSection({
             {pool
               ? displayLimitWindows(pool).map((window) => {
                   const details =
-                    driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+                    driver === "cursor" ? cursorUsageWindowDetails(window.id, pool) : undefined;
                   return (
                     <PoolWindowCard
                       key={`${window.kind}:${window.id}`}
@@ -721,7 +709,6 @@ export function UsageLimitsSection({
           </View>
         </Fragment>
       ))}
-      {cursorPromptAt === sections.length ? cursorPrompt : null}
       {notices.length > 0 || failedLabels.length > 0 ? (
         <View
           accessible
@@ -798,7 +785,9 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
               <View className="flex-row items-center gap-2">
                 <ProviderIcon provider={account.driver} size={24} />
                 <Text className="flex-1 text-xl font-t3-bold text-foreground">
-                  {account.displayName ?? DRIVER_LABEL[account.driver] ?? account.driver}
+                  {account.displayName ??
+                    providerClients.get(account.driver)?.label ??
+                    account.driver}
                 </Text>
               </View>
               {account.email ? (

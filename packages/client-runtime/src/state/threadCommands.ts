@@ -1,13 +1,15 @@
 import {
+  CommandId,
+  type ModelSelection,
   renameSavedThreadFolder,
   saveThreadFolders,
   type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 import {
   WS_METHODS,
   type EnvironmentId,
@@ -20,12 +22,17 @@ import { createOptimisticThreadLifecycle } from "./threadLifecycle.ts";
 import * as DateTime from "effect/DateTime";
 
 import {
+  type AtomCommand,
   createAtomCommandScheduler,
   createEnvironmentCommand,
   createEnvironmentRpcCommand,
+  environmentConnectionAtom,
+  mapAtomCommandResult,
 } from "./runtime.ts";
+import { waitForTitleRegenerationOutcome } from "./threadTitleRegeneration.ts";
 import {
   type InterruptThreadTurnInput,
+  type UpdateThreadMetadataInput,
   archiveThread,
   closeGuestShare,
   resolveGuestMessage,
@@ -68,6 +75,7 @@ import {
   visitThread,
   watchThreadPullRequest,
 } from "../operations/commands.ts";
+import { connectionProjectionPhase } from "../connection/model.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as ThreadHistoryController from "./threadHistoryController.ts";
@@ -79,7 +87,7 @@ export type LoadEarlierThreadHistoryInput = {
 };
 
 export function createThreadEnvironmentAtoms<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
+  runtime: Atom.AtomRuntime<EnvironmentRegistry | SecureRandom.SecureRandom | R, E>,
   snapshotAtom: (environmentId: EnvironmentId) => Atom.Atom<OrchestrationV2ShellSnapshot | null>,
   settingsAtom: (environmentId: EnvironmentId) => Atom.Atom<ServerSettings | null>,
 ) {
@@ -134,7 +142,42 @@ export function createThreadEnvironmentAtoms<R, E>(
     );
   });
 
-  const commands = {
+  const armTitleRegeneration = Effect.fn("ThreadCommands.armTitleRegeneration")(function* (input: {
+    readonly threadId: ThreadId;
+  }) {
+    const random = yield* SecureRandom.SecureRandom;
+    const requestId = CommandId.make(yield* random.uuidV4());
+    const result = yield* updateThreadMetadata({
+      threadId: input.threadId,
+      regenerateTitle: true,
+      commandId: requestId,
+    });
+    return { requestId, sequence: result.sequence };
+  });
+
+  // Counts the commands that move or remove a thread's row. A list that holds its rows while
+  // environments synchronize (`stepSteadyShells`) shows the user's own change at once.
+  const rowActionsAtom = Atom.family((_environmentId: EnvironmentId) =>
+    Atom.make(0).pipe(Atom.keepAlive),
+  );
+  const rowAction = <W extends { readonly environmentId: EnvironmentId }, A, E>(
+    command: AtomCommand<W, A, E>,
+  ): AtomCommand<W, A, E> => ({
+    label: command.label,
+    run: (registry, target) => {
+      registry.update(rowActionsAtom(target.environmentId), (count) => count + 1);
+      return command.run(registry, target);
+    },
+  });
+
+  const sent = {
+    armTitleRegeneration: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:regenerate-title",
+      execute: armTitleRegeneration,
+      scheduler,
+      concurrency,
+    }),
+
     create: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:create",
       execute: createThread,
@@ -279,6 +322,13 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    setModelSelection: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:set-model-selection",
+      execute: (input: UpdateThreadMetadataInput & { readonly modelSelection: ModelSelection }) =>
+        updateThreadMetadata(input),
+      scheduler,
+      concurrency,
+    }),
     setRuntimeMode: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:set-runtime-mode",
       execute: setThreadRuntimeMode,
@@ -420,8 +470,50 @@ export function createThreadEnvironmentAtoms<R, E>(
       concurrency: foldersConcurrency,
     }),
   };
+  const commands = {
+    ...sent,
+    delete: rowAction(sent.delete),
+    archive: rowAction(sent.archive),
+    unarchive: rowAction(sent.unarchive),
+    settle: rowAction(sent.settle),
+    unsettle: rowAction(sent.unsettle),
+    snooze: rowAction(sent.snooze),
+    unsnooze: rowAction(sent.unsnooze),
+    pin: rowAction(sent.pin),
+    unpin: rowAction(sent.unpin),
+  };
   const optimistic = createOptimisticThreadLifecycle(snapshotAtom);
   const savedFolders = createSavedThreadFolders(settingsAtom);
+  const disconnectedAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => {
+      const connection = AsyncResult.getOrElse(
+        get(environmentConnectionAtom(runtime, environmentId)),
+        () => null,
+      );
+      return connection !== null && connectionProjectionPhase(connection[0]) === "disconnected";
+    }),
+  );
+  const regenerateTitle = {
+    label: commands.armTitleRegeneration.label,
+    run: async (
+      registry: AtomRegistry.AtomRegistry,
+      target: { readonly environmentId: EnvironmentId; readonly input: { threadId: ThreadId } },
+    ) => {
+      const armed = await commands.armTitleRegeneration.run(registry, target);
+      const outcome =
+        armed._tag === "Success"
+          ? await waitForTitleRegenerationOutcome(
+              registry,
+              {
+                snapshot: snapshotAtom(target.environmentId),
+                disconnected: disconnectedAtom(target.environmentId),
+              },
+              { threadId: target.input.threadId, ...armed.value },
+            )
+          : null;
+      return mapAtomCommandResult(armed, () => outcome);
+    },
+  };
   return {
     ...commands,
     setFolder: optimistic.wrap(commands.setFolder, (thread, input) => ({
@@ -436,7 +528,10 @@ export function createThreadEnvironmentAtoms<R, E>(
       saveThreadFolders(folders, input.folders),
     ),
     savedFoldersAtom: savedFolders.foldersAtom,
+    regenerateTitle,
+    rowActionsAtom,
     snapshotAtom: optimistic.snapshotAtom,
+    pendingThreadIdsAtom: optimistic.pendingThreadIdsAtom,
     settle: optimistic.wrap(commands.settle, (thread, _input, now, accepted) =>
       !accepted &&
       (thread.pendingRuntimeRequest !== null ||
@@ -459,17 +554,24 @@ export function createThreadEnvironmentAtoms<R, E>(
       ...thread,
       settledOverride: input.reason === "user" ? "active" : null,
       settledAt: null,
-      unsettledAt: thread.settledOverride === "active" ? (thread.unsettledAt ?? null) : now,
+      unsettledAt:
+        thread.settledOverride === "active"
+          ? (thread.unsettledAt ?? null)
+          : input.restoreUnsettledAt === undefined
+            ? now
+            : input.restoreUnsettledAt === null
+              ? null
+              : DateTime.makeUnsafe(input.restoreUnsettledAt),
     })),
     snooze: optimistic.wrap(commands.snooze, (thread, input, now, accepted) =>
       (!accepted &&
-        (thread.pendingRuntimeRequest !== null ||
+        ((thread.pendingRuntimeRequest !== null &&
+          thread.pendingRuntimeRequest.kind !== "user_input") ||
           ["preparing", "queued", "starting"].includes(thread.status))) ||
       !(Date.parse(input.snoozedUntil) > DateTime.toEpochMillis(now))
         ? thread
         : {
             ...thread,
-            pendingRuntimeRequest: null,
             snoozedUntil: DateTime.makeUnsafe(input.snoozedUntil),
             snoozedAt: now,
           },
@@ -513,6 +615,11 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderActive: optimistic.wrap(commands.reorderActive, (thread, input) => ({
       ...thread,
       activeOrderKey: input.orderKey,
+    })),
+    // Shown at once, so a composer that releases its accepted pick keeps showing it.
+    setModelSelection: optimistic.wrap(commands.setModelSelection, (thread, input) => ({
+      ...thread,
+      modelSelection: input.modelSelection,
     })),
   };
 }

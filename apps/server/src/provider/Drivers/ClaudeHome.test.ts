@@ -101,39 +101,56 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
     );
   });
 
-  it.effect("labels Claude processes t3-code unless instance env or Claude settings set one", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const homePath = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-home-" });
-      const host = { CLAUDE_CODE_ENTRYPOINT: "claude-desktop", KEEP: "1" };
-      const instance = [{ name: "CLAUDE_CODE_ENTRYPOINT", value: "instance", sensitive: false }];
+  it.effect(
+    "drops the launching Claude session and Electron's run-as-Node flag, and labels processes t3-code unless overridden",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const homePath = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-home-" });
+        const host = {
+          CLAUDE_CODE_ENTRYPOINT: "claude-desktop",
+          CLAUDECODE: "1",
+          CLAUDE_CODE_SESSION_ID: "host-session",
+          CLAUDE_CODE_MESSAGING_SOCKET: "/tmp/host-claude.sock",
+          CLAUDE_EFFORT: "high",
+          ELECTRON_RUN_AS_NODE: "1",
+          KEEP: "1",
+        };
+        const instance = [
+          { name: "CLAUDE_CODE_ENTRYPOINT", value: "instance", sensitive: false },
+          { name: "CLAUDE_EFFORT", value: "low", sensitive: false },
+        ];
 
-      expect(yield* mergeClaudeProcessEnvironment({ homePath }, undefined, host)).toMatchObject({
-        CLAUDE_CODE_ENTRYPOINT: "t3-code",
-        KEEP: "1",
-      });
-      expect(
-        (yield* mergeClaudeProcessEnvironment({ homePath }, instance, host)).CLAUDE_CODE_ENTRYPOINT,
-      ).toBe("instance");
-      // Only the entrypoint is applied again: the merged host env already dropped a blank token.
-      const fullInstance = [
-        { name: "claude_code_entrypoint", value: "instance", sensitive: false },
-        { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
-      ];
-      const onWindows = yield* mergeClaudeProcessEnvironment({ homePath }, fullInstance, host).pipe(
-        Effect.provideService(HostProcess.Platform, "win32"),
-      );
-      expect(onWindows.CLAUDE_CODE_ENTRYPOINT).toBe("instance");
-      expect(onWindows).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+        expect(yield* mergeClaudeProcessEnvironment({ homePath }, undefined, host)).toMatchObject({
+          CLAUDE_CODE_ENTRYPOINT: "t3-code",
+          KEEP: "1",
+        });
+        expect(
+          (yield* mergeClaudeProcessEnvironment({ homePath }, instance, host))
+            .CLAUDE_CODE_ENTRYPOINT,
+        ).toBe("instance");
+        // Only the entrypoint is applied again: the merged host env already dropped a blank token.
+        const fullInstance = [
+          { name: "claude_code_entrypoint", value: "instance", sensitive: false },
+          { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "", sensitive: false },
+        ];
+        const onWindows = yield* mergeClaudeProcessEnvironment(
+          { homePath },
+          fullInstance,
+          host,
+        ).pipe(Effect.provideService(HostProcess.Platform, "win32"));
+        expect(onWindows.CLAUDE_CODE_ENTRYPOINT).toBe("instance");
+        expect(onWindows).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
 
-      yield* fileSystem.writeFileString(
-        path.join(homePath, "settings.json"),
-        JSON.stringify({ env: { CLAUDE_CODE_ENTRYPOINT: "custom" } }),
-      );
-      expect(
-        (yield* mergeClaudeProcessEnvironment({ homePath }, instance, host)).CLAUDE_CODE_ENTRYPOINT,
-      ).toBe("custom");
-    }),
+        yield* fileSystem.writeFileString(
+          path.join(homePath, "settings.json"),
+          JSON.stringify({ env: { CLAUDE_CODE_ENTRYPOINT: "custom" } }),
+        );
+        expect(
+          (yield* mergeClaudeProcessEnvironment({ homePath }, instance, host))
+            .CLAUDE_CODE_ENTRYPOINT,
+        ).toBe("custom");
+      }),
   );
 });

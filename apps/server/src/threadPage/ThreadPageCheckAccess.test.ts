@@ -1,4 +1,5 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -100,7 +101,7 @@ const withAccess = <A, E>(
             }),
           ),
         ),
-        Layer.provide(NodeServices.layer),
+        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         Layer.orDie,
       ),
     ),
@@ -457,7 +458,7 @@ describe("ThreadPage check routes", () => {
         }
       }
       assert.lengthOf(calls, 0);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("list a folder's threads and report why ThreadPage did not answer", () =>
@@ -497,7 +498,7 @@ describe("ThreadPage check routes", () => {
       );
       assert.equal(notConnected.status, 503);
       expect(notConnected.body).toEqual({ error: "not_connected", message: "No token." });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("add a note from a valid body only", () =>
@@ -538,7 +539,7 @@ describe("ThreadPage check routes", () => {
       assert.equal(added.status, 201);
       expect(added.body).toEqual({ note_id: "note-1", url: null, operation_id: OPERATION_ID });
       expect(calls).toEqual([{ threadId: "t", markdown: "Healthy", operationId: OPERATION_ID }]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("update a thread from a valid body, and refuse a stale revision", () =>
@@ -609,6 +610,6 @@ describe("ThreadPage check routes", () => {
         status: 403,
         code: "organize_not_allowed",
       });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });

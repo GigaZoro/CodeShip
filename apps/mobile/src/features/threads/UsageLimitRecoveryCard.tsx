@@ -1,20 +1,28 @@
 import { useNavigation } from "@react-navigation/native";
-import { CHATGPT_APP_CAP_CODE } from "@t3tools/shared/usageLimits";
-import { Button } from "../../components/ui/Button";
-import { RetryAccountButton } from "../usage/RetryAccountButton";
-import { openSettings } from "../settings/settings-navigation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { limitRecoveryOwnsSnooze } from "@t3tools/client-runtime/state/thread-execution";
 import type { EnvironmentId } from "@t3tools/contracts";
-import * as DateTime from "effect/DateTime";
+import {
+  CHATGPT_APP_CAP_CODE,
+  CHATGPT_USAGE_LIMIT_CODE,
+  CHATGPT_USAGE_URL,
+  CHATGPT_WORKSPACE_ADMIN_REQUEST,
+  CHATGPT_WORKSPACE_USAGE_LIMIT_CODE,
+} from "@t3tools/shared/usageLimits";
+import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
-import { View } from "react-native";
+import { Linking, Pressable, View } from "react-native";
+import { ProviderIcon } from "../../components/ProviderIcon";
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
 import { useDeadlinePassed } from "../../lib/clock";
+import { getFormattingLocale, t } from "../../lib/i18n";
+import { openSettings } from "../settings/settings-navigation";
+import { RetryAccountButton } from "../usage/RetryAccountButton";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { getFormattingLocale, t } from "../../lib/i18n";
 
 export function UsageLimitRecoveryCard({
   thread,
@@ -24,12 +32,12 @@ export function UsageLimitRecoveryCard({
   environmentId: EnvironmentId;
 }) {
   const navigation = useNavigation();
-  const appCap = thread.runtime?.lastErrorCode === CHATGPT_APP_CAP_CODE;
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resetAt = thread.runtime?.usageLimitResetAt ?? null;
   const canSchedule =
+    thread.settledOverride !== "settled" &&
     resetAt !== null &&
     Date.parse(resetAt) > Date.parse(thread.latestRun?.completedAt ?? thread.updatedAt);
   const resetPassed = useDeadlinePassed(resetAt === null ? null : Date.parse(resetAt));
@@ -37,19 +45,50 @@ export function UsageLimitRecoveryCard({
   const recovery = thread.limitRecovery;
   const scheduled =
     recovery?.runId === runId && recovery?.resetAt === resetAt && recovery?.autoResume;
+  const displayAt =
+    canSchedule &&
+    scheduled &&
+    resetAt &&
+    thread.snoozedUntil &&
+    Date.parse(thread.snoozedUntil) > Date.parse(resetAt)
+      ? thread.snoozedUntil
+      : resetAt;
+  const [copied, setCopied] = useState(false);
+  const [actionPending, setActionPending] = useState(false);
+  const code = thread.runtime?.lastErrorCode;
+  // OpenAI's partner guidelines specify the ChatGPT notice and its action.
+  const workspaceLimit = code === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
+  const chatGptLimit = workspaceLimit || code === CHATGPT_USAGE_LIMIT_CODE;
+  // No ChatGPT setting lifts the app cap, so it gets its own card instead of the usage notice.
+  const appCap = code === CHATGPT_APP_CAP_CODE;
   if (
     thread.runtime?.status !== "failed" ||
-    thread.runtime.lastErrorClass !== "usage_limit" ||
+    // Older servers report ChatGPT sharing limits as provider errors.
+    (thread.runtime.lastErrorClass !== "usage_limit" && !chatGptLimit) ||
     !runId
   )
     return null;
+  const instanceId = thread.runtime.providerInstanceId;
+  const resetDate = displayAt
+    ? new Date(displayAt).toLocaleString(getFormattingLocale(), {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
+  const resetText = resetDate
+    ? canSchedule && scheduled
+      ? t("Resumes {date}.", { date: resetDate })
+      : t("Resets {date}.", { date: resetDate })
+    : null;
   const snoozed =
-    recovery?.snooze === true &&
-    recovery.runId === runId &&
-    recovery.resetAt === resetAt &&
-    resetAt !== null &&
-    thread.snoozedUntil !== null &&
-    Date.parse(thread.snoozedUntil) === Date.parse(resetAt);
+    limitRecoveryOwnsSnooze({
+      runId,
+      resetAt,
+      recovery,
+      snoozedUntil: thread.snoozedUntil,
+    }) && !resetPassed;
   async function toggle(action: "resume" | "snooze") {
     if (!resetAt || !runId || !canSchedule) return;
     if (action === "snooze" && !snoozed && Date.parse(resetAt) <= Date.now()) {
@@ -75,73 +114,163 @@ export function UsageLimitRecoveryCard({
       setError(cause instanceof Error ? cause.message : t("Could not change limit recovery."));
     }
   }
-  const instanceId = thread.runtime.providerInstanceId;
+  const action = workspaceLimit
+    ? {
+        label: t("Copy request for admin"),
+        role: "button" as const,
+        run: () => {
+          setError(null);
+          setCopied(false);
+          setActionPending(true);
+          void Clipboard.setStringAsync(CHATGPT_WORKSPACE_ADMIN_REQUEST)
+            .then(
+              () => setCopied(true),
+              () => setError(t("Could not copy the request. Try again.")),
+            )
+            .finally(() => setActionPending(false));
+        },
+      }
+    : {
+        label: t("Manage usage"),
+        role: "link" as const,
+        run: () => {
+          setError(null);
+          setActionPending(true);
+          void Linking.openURL(CHATGPT_USAGE_URL)
+            .catch(() =>
+              setError(t("Could not open ChatGPT. Go to chatgpt.com → Settings → Usage.")),
+            )
+            .finally(() => setActionPending(false));
+        },
+      };
   return (
-    <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
-      {appCap ? (
-        <>
-          <Text accessibilityRole="header" className="text-sm font-t3-medium text-foreground">
-            {t("ChatGPT's app limit stopped this account")}
-          </Text>
-          <Text className="text-sm text-warning-foreground">
-            {t(
-              "The plan still has room, and no ChatGPT setting lifts this limit. Try again, or sign the account in with Codex's own login. CodeShip tries it again by itself every hour.",
-            )}
-          </Text>
-          {instanceId ? (
-            <View className="flex-row flex-wrap gap-2">
-              <RetryAccountButton
-                environmentId={environmentId}
-                instanceId={instanceId}
-                resumes={Boolean(scheduled) && !snoozed}
-              />
-              <Button
-                label={t("Switch sign-in")}
-                tone="secondary"
-                onPress={() =>
-                  openSettings(navigation, "SettingsProviderAccounts", {
-                    environmentId,
-                    instanceId,
-                  })
-                }
-              />
-            </View>
-          ) : null}
-        </>
-      ) : (
-        <Text className="text-sm text-warning-foreground">
-          {resetAt
-            ? t("Usage limit resets {date}.", {
-                date: DateTime.toDateUtc(DateTime.makeUnsafe(resetAt)).toLocaleString(
-                  getFormattingLocale(),
-                ),
-              })
-            : t(
-                "The provider did not report a reset time. Retry manually when your limit is available.",
-              )}
-        </Text>
-      )}
-      {canSchedule ? (
-        <View className="flex-row flex-wrap gap-2">
-          <Button
-            label={scheduled ? t("Cancel auto-resume") : t("Resume at reset")}
-            tone="secondary"
-            disabled={pending}
-            onPress={() => void toggle("resume")}
-          />
-          <Button
-            label={snoozed ? t("Wake now") : t("Snooze until reset")}
-            tone="secondary"
-            disabled={pending || (!snoozed && resetPassed)}
-            onPress={() => void toggle("snooze")}
-          />
+    <View
+      accessibilityRole={chatGptLimit ? "alert" : undefined}
+      className="mx-3 mb-2 flex-row gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3"
+    >
+      {chatGptLimit ? (
+        <View className="pt-0.5">
+          <ProviderIcon provider="codex" size={16} />
         </View>
       ) : null}
-      {error ? (
-        <Text accessibilityRole="alert" className="text-sm text-destructive">
-          {error}
-        </Text>
-      ) : null}
+      <View className="min-w-0 flex-1 gap-1">
+        {chatGptLimit ? (
+          <Text className="text-sm font-t3-medium text-foreground">
+            {t("ChatGPT usage limit reached")}
+          </Text>
+        ) : null}
+        {appCap ? (
+          <>
+            <Text accessibilityRole="header" className="text-sm font-t3-medium text-foreground">
+              {t("ChatGPT's app limit stopped this account")}
+            </Text>
+            <Text className="text-sm text-warning-foreground">
+              {t(
+                "The plan still has room, and no ChatGPT setting lifts this limit. Try again, or sign the account in with Codex's own login. CodeShip tries it again by itself every hour.",
+              )}
+            </Text>
+            {instanceId ? (
+              <View className="flex-row flex-wrap gap-2">
+                <RetryAccountButton
+                  environmentId={environmentId}
+                  instanceId={instanceId}
+                  resumes={Boolean(scheduled) && !snoozed}
+                />
+                <Button
+                  label={t("Switch sign-in")}
+                  tone="secondary"
+                  onPress={() =>
+                    openSettings(navigation, "SettingsProviderAccounts", {
+                      environmentId,
+                      instanceId,
+                    })
+                  }
+                />
+              </View>
+            ) : null}
+          </>
+        ) : (
+          <Text
+            className={
+              chatGptLimit ? "text-sm text-foreground-muted" : "text-sm text-warning-foreground"
+            }
+          >
+            {workspaceLimit
+              ? copied
+                ? t("Request copied. Send it to your workspace admin.")
+                : t(
+                    "You've reached your workspace's limit for using your ChatGPT plan in other apps. Copy a request to ask your workspace admin for increased usage limits.",
+                  )
+              : chatGptLimit
+                ? (resetText ?? t("Review your usage settings in ChatGPT."))
+                : resetText
+                  ? t("Usage limit reached. {reset}", { reset: resetText })
+                  : t(
+                      "Usage limit reached. The provider did not report a reset time. Retry manually when your limit is available.",
+                    )}
+          </Text>
+        )}
+        {chatGptLimit || canSchedule ? (
+          // The margins cancel the 44pt touch height so the links sit 8pt under the text.
+          <View className="-mb-3 -mt-2 flex-row flex-wrap gap-x-4">
+            {chatGptLimit ? (
+              <RecoveryAction
+                label={action.label}
+                role={action.role}
+                disabled={actionPending}
+                onPress={action.run}
+              />
+            ) : null}
+            {canSchedule ? (
+              <>
+                <RecoveryAction
+                  label={scheduled ? t("Cancel auto-resume") : t("Resume at reset")}
+                  disabled={pending}
+                  onPress={() => void toggle("resume")}
+                />
+                <RecoveryAction
+                  label={snoozed ? t("Wake now") : t("Snooze until reset")}
+                  disabled={pending || (!snoozed && resetPassed)}
+                  onPress={() => void toggle("snooze")}
+                />
+              </>
+            ) : null}
+          </View>
+        ) : null}
+        {error ? (
+          <Text accessibilityRole="alert" className="text-sm text-destructive">
+            {error}
+          </Text>
+        ) : null}
+      </View>
     </View>
+  );
+}
+
+function RecoveryAction(props: {
+  readonly label: string;
+  readonly role?: "button" | "link";
+  readonly disabled: boolean;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole={props.role ?? "button"}
+      accessibilityState={{ disabled: props.disabled }}
+      disabled={props.disabled}
+      hitSlop={{ left: 8, right: 8 }}
+      onPress={props.onPress}
+      className="min-h-11 justify-center active:opacity-70"
+    >
+      <Text
+        className={
+          props.disabled
+            ? "text-sm font-t3-medium text-foreground-muted"
+            : "text-sm font-t3-medium text-primary"
+        }
+      >
+        {props.label}
+      </Text>
+    </Pressable>
   );
 }

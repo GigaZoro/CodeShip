@@ -20,7 +20,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { asciiUpperCase, overrideEnvironment } from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -243,7 +243,7 @@ const make = Effect.gen(function* () {
   const agentScope = yield* AgentScope;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const { logsDir } = yield* ServerConfig.ServerConfig;
   const platform = yield* HostProcess.Platform;
   const windows = platform === "win32";
@@ -417,7 +417,7 @@ const make = Effect.gen(function* () {
    * (a cancel or Stop landed first) or no longer exists keeps nothing waiting, so it is delivered.
    */
   const deliver = Effect.fn("CommandRunner.deliver")(function* (row: CommandRunRow) {
-    const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const attempt = yield* random.uuidV4();
     const parentThreadId = ThreadId.make(row.thread_id);
     const taskId = NodeId.make(row.task_id);
     const delivered = yield* threads
@@ -815,7 +815,7 @@ const make = Effect.gen(function* () {
       );
       const timeoutMinutes =
         input.timeoutMinutes ?? ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES;
-      const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+      const key = input.clientRequestId ?? (yield* random.uuidV4());
       const commandId = CommandId.make(
         `command:mcp:${encodeURIComponent(scope.requestNamespace)}:command-run:${encodeURIComponent(key)}`,
       );

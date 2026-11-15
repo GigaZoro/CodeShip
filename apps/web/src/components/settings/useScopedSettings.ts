@@ -19,23 +19,31 @@ import {
 import { hasSharedSettingsGroup } from "@t3tools/client-runtime/state/shared-settings";
 
 import { persistClientSettingsPatch, useMergedSettings } from "../../hooks/useSettings";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { readEnvironment } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toastManager } from "../ui/toast";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import {
-  persistScopedSettingsPatch,
+  createScopedSettingsWriter,
+  pendingScopedWritesAtom,
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
   scopedSettingsAreMixed,
   scopedSettingsSource,
   sharedSaveSummary,
+  settlePendingScopedWrites,
   type ProjectOverrideEntry,
   type SavedScopedServerWrite,
   type ScopedSettingsPatch,
   type ScopedSettingsPlan,
 } from "./scopedSettings";
+
+const readSettings = (environmentId: EnvironmentId) =>
+  readEnvironment(environmentId)?.serverConfig?.settings ?? null;
+const writeScopedSettings = createScopedSettingsWriter(readSettings);
 
 export function useScopedSettings<T = UnifiedSettings>(
   selector?: (settings: UnifiedSettings) => T,
@@ -81,10 +89,15 @@ function missingSettingsGrant(request: {
       );
 }
 
-export function useRunScopedSettingsPlan() {
+function useRunScopedPlanner() {
   const updateServer = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
   const shareServer = useAtomCommand(serverEnvironment.shareSettings, { reportFailure: false });
-  return (plan: ScopedSettingsPlan, options?: ScopedSettingsWriteOptions) => {
+  return (
+    environments: Parameters<typeof writeScopedSettings>[0],
+    planner: Parameters<typeof writeScopedSettings>[1],
+    options?: ScopedSettingsWriteOptions,
+  ) => {
+    const plan = planner(environments);
     if (plan.unavailableReason) {
       toastManager.add({
         type: "warning",
@@ -94,14 +107,57 @@ export function useRunScopedSettingsPlan() {
       options?.onFailed?.();
       return;
     }
-    void persistScopedSettingsPatch(
-      plan,
+    const save = {};
+    const settledEnvironments = new Set<EnvironmentId>();
+    const settle = (environmentId: EnvironmentId, saved?: ServerSettings) => {
+      settledEnvironments.add(environmentId);
+      appAtomRegistry.update(pendingScopedWritesAtom, (writes) =>
+        settlePendingScopedWrites(
+          writes,
+          { save, environmentId },
+          (id) => readSettings(id) ?? undefined,
+          saved,
+        ),
+      );
+    };
+    appAtomRegistry.update(pendingScopedWritesAtom, (writes) => [
+      ...writes,
+      ...plan.serverWrites.map(({ environmentId, patch }) => ({ save, environmentId, patch })),
+    ]);
+    void writeScopedSettings(
+      environments,
+      planner,
       {
-        update: async (request) => missingSettingsGrant(request) ?? updateServer(request),
-        share: async (request) => missingSettingsGrant(request) ?? shareServer(request),
+        update: async (request) => {
+          const result =
+            missingSettingsGrant(request) ??
+            (await updateServer(request).catch((error: unknown) => {
+              settle(request.environmentId);
+              throw error;
+            }));
+          settle(request.environmentId, result._tag === "Success" ? result.value : undefined);
+          return result;
+        },
+        share: async (request) => {
+          const result =
+            missingSettingsGrant(request) ??
+            (await shareServer(request).catch((error: unknown) => {
+              settle(request.environmentId);
+              throw error;
+            }));
+          settle(
+            request.environmentId,
+            result._tag === "Success" ? result.value.settings : undefined,
+          );
+          return result;
+        },
       },
       persistClientSettingsPatch,
     ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
+      // A follower held back because its authority failed was never sent a request to settle it.
+      for (const { environmentId } of plan.serverWrites) {
+        if (!settledEnvironments.has(environmentId)) settle(environmentId);
+      }
       if (savedEnvironmentCount > 0) options?.onSaved?.(savedEnvironments);
       if (failedEnvironments.length === 0) {
         const shared = plan.share === null ? null : sharedSaveSummary(savedEnvironments, plan);
@@ -148,34 +204,46 @@ export function useRunScopedSettingsPlan() {
   };
 }
 
+/** Runs a plan built elsewhere; it is sent as planned, since only the settings page can replan it. */
+export function useRunScopedSettingsPlan() {
+  const run = useRunScopedPlanner();
+  return (plan: ScopedSettingsPlan, options?: ScopedSettingsWriteOptions) =>
+    run([], () => plan, options);
+}
+
 export function useUpdateScopedSettings() {
-  const { scope, environments, environment } = useSettingsScope();
-  const run = useRunScopedSettingsPlan();
+  const { scope, environments, environment, deviceOnly } = useSettingsScope();
+  const run = useRunScopedPlanner();
   return (patch: ScopedSettingsPatch, options?: ScopedSettingsWriteOptions) =>
     run(
-      planScopedSettingsPatch(scope, environments, patch, environment?.environmentId ?? null),
+      environments,
+      (current) =>
+        planScopedSettingsPatch(scope, current, patch, {
+          origin: environment?.environmentId ?? null,
+          deviceOnly,
+        }),
       options,
     );
 }
 
 export function useClearScopedSettings() {
   const context = useOptionalSettingsScope();
-  const run = useRunScopedSettingsPlan();
+  const run = useRunScopedPlanner();
   return (keys: readonly ProjectScopedServerSettingKey[]) => {
     if (context === null) return;
-    run(planScopedSettingsClear(context.scope, context.environments, keys));
+    run(context.environments, (current) => planScopedSettingsClear(context.scope, current, keys));
   };
 }
 
 export function useClearProjectOverrides() {
   const context = useOptionalSettingsScope();
-  const run = useRunScopedSettingsPlan();
+  const run = useRunScopedPlanner();
   return (
     entries: readonly ProjectOverrideEntry[],
     keys: readonly ProjectScopedServerSettingKey[],
   ) => {
     if (context === null) return;
-    run(planProjectOverridesClear(context.environments, entries, keys));
+    run(context.environments, (current) => planProjectOverridesClear(current, entries, keys));
   };
 }
 

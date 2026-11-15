@@ -53,6 +53,9 @@ location intact. Setting `HOME` instead can put credentials where this provider 
 not find them. Threads on an instance with its own **CLAUDE_CONFIG_DIR path** can
 switch only to instances that use the same directory.
 
+On mobile, tap **Add Claude account** in **Settings > Providers & models** and enter a name and the
+config folder. The login itself still happens on the environment's machine.
+
 A local tool that reads Claude's login, such as a usage meter, can find the folder each enabled
 Claude provider runs in from `providers/claudeAgent/accounts.json` in T3.CodeShip's state folder
 (`~/.t3/userdata` by default), instead of working it out from the settings. Each entry gives the
@@ -64,6 +67,10 @@ can read it; on Windows it has the state folder's permissions.
 
 For presets that differ only in API keys or endpoints, use the instance's
 **Environment variables**. Variable assignments do not belong in **Launch arguments**.
+
+File paths in the `--settings` and `--append-system-prompt-file` launch arguments
+can start with `~` for the home directory of the machine running T3.CodeShip. Any
+other relative path is read from the thread's project folder, or its worktree.
 
 Claude Code's verbose mode can stay enabled when you use Claude for text generation, including
 thread titles, branch names, commit messages, and pull request descriptions. On a remote connection,
@@ -98,16 +105,16 @@ window. Leave it empty for Claude Code's default. An agent with full access can
 set it for you with `t3_environment_preferences_update`; on an added account, the
 value reaches the machines that follow shared settings.
 
-You can also send `/compact` in an existing conversation. Web and desktop offer
-**Compact context** from the context meter. The meter is off by default; see
-[commands and skills](./composer.md#commands-and-skills) to enable it. Claude Code
-compacts automatically whether the meter is on or off.
+You can also send `/compact` in an existing conversation. Claude Code also
+compacts automatically. To see context usage, see
+[commands and skills](./composer.md#commands-and-skills).
 
 When you return to a large thread after Claude's prompt cache expires, a
 **Compact** chip with the thread's token count shows
 next to the send button. While it is on, Enter summarizes the history first, then
 sends your message. Click the chip to switch it to **Keep** and keep the full
-history for that message. The cache lasts about an hour on a Claude
+history for that message. The mobile app shows no chip: an eligible message sent
+from it summarizes first. The cache lasts about an hour on a Claude
 subscription and 5 minutes with an API key, Bedrock, or Vertex. See [commands and skills](./composer.md#commands-and-skills) for using
 composer commands.
 
@@ -143,11 +150,12 @@ Claude skills come from the config directory's `skills` folder, the project's
 the same name, the config-directory copy wins, then the project's. Skills disabled
 in Claude's settings do not appear in the composer.
 
-Use `$` in the composer to select a skill. Enabled installed Claude plugins also
-contribute skills under names such as `plugin:review`. Skills marked `disable-model-invocation`
-can still be started by you. Invoke those one per message: Claude directly runs
-only the last named skill and may try to start earlier ones through its Skill
-tool, which refuses skills reserved for manual invocation.
+Use `$` in the composer to select a skill. Enabled installed Claude plugins,
+and plugins synced from your claude.ai account, also contribute skills under
+names such as `plugin:review`. Skills marked `disable-model-invocation` can
+still be started by you. Invoke those one per message: Claude directly runs only
+the last named skill and may try to start earlier ones through its Skill tool,
+which refuses skills reserved for manual invocation.
 
 ## Task lists
 
@@ -155,6 +163,19 @@ To show Claude task lists in the web and desktop apps, add
 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` under **Variables** in the Claude instance's
 **Environment** section in **Settings > Providers & models**. Each update shows as a Tasks
 row in the thread; open it to see every step.
+
+## Claude in Chrome
+
+Claude threads can use the Claude in Chrome extension, which works in your own
+Chrome with its sign-ins. T3.CodeShip sessions load it only when asked: add `--chrome`
+to **Launch arguments** in the Claude instance's settings in **Settings > Providers**.
+It applies to sessions that start after you save. Set up the extension as you would
+for Claude Code first; see Claude Code's [Chrome guide](https://code.claude.com/docs/en/chrome).
+
+The instance must be signed in with `/login` on a direct Anthropic plan. Instances
+that use an API key or a `claude setup-token` token don't get it, even with
+`--chrome`, and neither do third-party providers such as Amazon Bedrock. Claude Code
+doesn't support it in WSL.
 
 ## OpenRouter
 

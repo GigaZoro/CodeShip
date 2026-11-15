@@ -50,7 +50,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { startScheduledTaskEditor } from "../settings/scheduled-task-editor-state";
 import { editDraft } from "../settings/scheduledTaskDraft";
 import { describeSchedule } from "../settings/scheduledTaskPresentation";
-import { useOpenScheduledTasks } from "../workspace/useOpenScheduledTasks";
+import { useOpenScheduledTasks } from "../layout/workspace/useOpenScheduledTasks";
 import {
   THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
   THREAD_LIST_V2_ROW_DIVIDERS,
@@ -108,7 +108,10 @@ const STATUS_DISPLAY = {
 } satisfies Record<Exclude<PinnedTaskStatus, "idle">, ReturnType<typeof threadStatusLabel>>;
 
 function WorkingDuration(props: { readonly thread: EnvironmentThreadShell }) {
-  return useVisibleWorkingDurationLabel(resolveThreadWorkingStartedAt(props.thread));
+  return useVisibleWorkingDurationLabel(
+    resolveThreadWorkingStartedAt(props.thread),
+    props.thread.environmentId,
+  );
 }
 
 // Ticks once a second while the list is on screen, so only these views re-render.

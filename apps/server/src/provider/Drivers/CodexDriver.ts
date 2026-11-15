@@ -1,16 +1,21 @@
+import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
 import {
   CodexSettings,
-  defaultInstanceIdForDriver,
   ProviderDriverKind,
+  defaultInstanceIdForDriver,
   ProviderSetupError,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import type * as Signature from "effect/crypto/Signature";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import type * as CodexUsageHistory from "../../usage/CodexUsageHistory.ts";
@@ -25,8 +30,8 @@ import {
   type CodexAdapterV2DriverEnv,
 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexConsumeResetCredit } from "../codexResetCredit.ts";
+import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { makeCodexShellEnvironment } from "../codexShellEnvironment.ts";
 import {
   makeCodexSetSkillEnabled,
@@ -56,6 +61,7 @@ import {
   makeCachedProviderMaintenanceResolution,
   makePackageManagedProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
+  type ProviderMaintenanceCapabilities,
 } from "@t3tools/provider-core/server/maintenanceResolver";
 import {
   haveProviderSnapshotSettingsChanged,
@@ -108,6 +114,7 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
   return makePackageManagedProviderMaintenanceResolver({
     provider: DRIVER_KIND,
     npmPackageName: "@openai/codex",
+    mise: { tool: "codex" },
     nativeUpdate: {
       args: ["update"],
       isCommandPath: (commandPath) => codexStandaloneHome(commandPath) !== null,
@@ -122,12 +129,39 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
   });
 }
 
+// `codex update` installs this channel's release, which can lag npm's latest tag.
+const CODEX_NATIVE_CHANNEL = "https://releases.openai.com/codex/channels/latest";
+const CodexNativeRelease = Schema.Struct({ tag_name: Schema.String });
+
+function withCodexNativeLatestVersion(
+  capabilities: ProviderMaintenanceCapabilities,
+  http: HttpClient.HttpClient,
+): ProviderMaintenanceCapabilities {
+  if (capabilities.update?.lockKey !== `${DRIVER_KIND}-native`) return capabilities;
+  return {
+    ...capabilities,
+    latestVersion: null,
+    latestVersionCacheKey: CODEX_NATIVE_CHANNEL,
+    lookupLatestVersion: http.get(CODEX_NATIVE_CHANNEL).pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap((response) => response.json),
+      Effect.flatMap(Schema.decodeUnknownEffect(CodexNativeRelease)),
+      Effect.map((release) => /^rust-v(\d+\.\d+\.\d+)$/.exec(release.tag_name)?.[1] ?? null),
+      Effect.timeoutOption("4 seconds"),
+      Effect.map(Option.getOrNull),
+      Effect.orElseSucceed(() => null),
+    ),
+  };
+}
+
 export type CodexDriverEnv =
   | CodexAdapterV2DriverEnv
   | ProviderHost.ProviderHost
   | ChildProcessSpawner.ChildProcessSpawner
   | ResetCreditCoordinator.ResetCreditCoordinator
-  | Crypto.Crypto
+  | Digest.Digest
+  | SecureRandom.SecureRandom
+  | Signature.Signature
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | ProviderLatestVersions.ProviderLatestVersions
@@ -278,7 +312,7 @@ export const CodexDriver: ProviderDriver<
         makeCodexMaintenanceResolver(homeLayout.sharedHomePath),
         { binaryPath, env: processEnv },
       );
-    const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
+    const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
       resolveBinaryPath.pipe(
         Effect.orElseSucceed(() => DEFAULT_BINARY_PATH),
         Effect.flatMap((binaryPath) =>
@@ -292,6 +326,10 @@ export const CodexDriver: ProviderDriver<
         Effect.provideService(Path.Path, pathService),
       ),
     );
+    const resolveMaintenance: typeof resolveInstallation = (options) =>
+      resolveInstallation(options).pipe(
+        Effect.map((capabilities) => withCodexNativeLatestVersion(capabilities, httpClient)),
+      );
 
     const orchestrationAdapter = yield* createCodexAdapterV2(
       {
@@ -300,13 +338,16 @@ export const CodexDriver: ProviderDriver<
         accentColor,
         environment,
         enabled,
-        config,
+        config: { ...config, homePath: homeLayout.effectiveHomePath ?? "" },
       },
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         // The probe reads a rejected login as signed out, which moves the run to another account.
         onAuthenticationFailed: Effect.suspend(() => snapshot.refresh).pipe(
           Effect.ignoreCause({ log: true }),
+        ),
+        models: Effect.suspend(() => snapshot.getSnapshot).pipe(
+          Effect.map((value) => value.models),
         ),
         compatibility: installation.compatibility,
         resolveBinaryPath: acquireBinaryPath,
@@ -408,7 +449,7 @@ export const CodexDriver: ProviderDriver<
                 }),
               ),
               Effect.scoped,
-              Effect.timeout("20 seconds"),
+              Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv)),
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             ),
           ]).pipe(
@@ -483,15 +524,27 @@ export const CodexDriver: ProviderDriver<
       Effect.forkScoped,
     );
 
+    const accountKey = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
     // Auth overlays use effectiveHomePath; the continuation key would conflate them with shared homes.
     const consumeResetCredit = makeCodexConsumeResetCredit({
       instanceId,
-      accountHome: homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath,
+      accountHome: accountKey,
       coordinator: resetCreditCoordinator,
       openClient: openAppServerClient,
       snapshot,
     });
 
+    // `codex login` and `codex logout` rewrite auth.json outside T3.
+    if (effectiveConfig.enabled) {
+      yield* fileSystem.watch(accountKey).pipe(
+        Stream.filter((event) => pathService.basename(event.path) === "auth.json"),
+        Stream.debounce(Duration.millis(250)),
+        Stream.runForEach(() => snapshot.refresh.pipe(Effect.ignoreCause({ log: true }))),
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
+        Effect.ignoreCause({ log: true }),
+        Effect.forkScoped,
+      );
+    }
     return {
       instanceId,
       driverKind: DRIVER_KIND,

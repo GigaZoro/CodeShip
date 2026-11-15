@@ -21,6 +21,7 @@ export class ResetCreditRedemption extends Context.Service<
      */
     readonly redeem: (
       instanceId: ProviderInstanceId,
+      creditId?: string,
     ) => Effect.Effect<ProviderConsumeResetCreditResult, ProviderSetupError>;
   }
 >()("t3/orchestration-v2/ResetCreditRedemption") {}
@@ -31,7 +32,7 @@ export const layer = Layer.effect(
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     return ResetCreditRedemption.of({
-      redeem: Effect.fn("ResetCreditRedemption.redeem")(function* (instanceId) {
+      redeem: Effect.fn("ResetCreditRedemption.redeem")(function* (instanceId, creditId) {
         const failure = (detail: string, cause?: unknown) =>
           new ProviderSetupError({
             instanceId,
@@ -49,7 +50,7 @@ export const layer = Layer.effect(
           return yield* failure("This provider does not bank reset credits.");
         }
         const result = yield* instance
-          .consumeResetCredit()
+          .consumeResetCredit(creditId)
           .pipe(Effect.mapError((error) => failure(error.detail, error)));
         if (result.outcome === "reset") {
           yield* projections

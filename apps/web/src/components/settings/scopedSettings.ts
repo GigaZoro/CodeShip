@@ -21,8 +21,10 @@ import {
   planSharedSettingsWrites,
   type SharedSettingsGroupMember,
   type SharedSettingsMachine,
+  type SettingsWriteResult,
   type SharedSettingsPersist,
   type SharedSettingsPlan,
+  type SharedSettingsWriteOutcome,
 } from "@t3tools/client-runtime/state/shared-settings";
 import {
   clearProjectSettingsOverrides,
@@ -30,8 +32,10 @@ import {
   resolveWorktreeCleanup,
   type ProjectSettingSource,
 } from "@t3tools/shared/projectSettings";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as Equal from "effect/Equal";
 import * as Cause from "effect/Cause";
+import { Atom } from "effect/reactivity";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
 
@@ -65,6 +69,69 @@ export function isConnectedWithConfig(
   environment: Pick<ScopedSettingsEnvironment, "connection" | "serverConfig">,
 ) {
   return environment.connection.phase === "connected" && environment.serverConfig !== null;
+}
+
+/**
+ * A server save shown before its environment pushes the new settings back. It applies while in
+ * flight, and after success only until that environment's settings change from `settledOver`.
+ */
+export interface PendingScopedWrite {
+  readonly save: object;
+  readonly environmentId: EnvironmentId;
+  readonly patch: ServerSettingsPatch;
+  readonly settledOver?: ServerSettings;
+}
+
+export const pendingScopedWritesAtom = Atom.make<readonly PendingScopedWrite[]>([]).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("web-settings:pending-scoped-writes"),
+);
+
+const pendingWriteApplies = (write: PendingScopedWrite, settings: ServerSettings | undefined) =>
+  settings !== undefined && (write.settledOver === undefined || write.settledOver === settings);
+
+/** Settles one environment's write: a failure or an already-pushed result drops it. */
+export function settlePendingScopedWrites(
+  writes: readonly PendingScopedWrite[],
+  target: Pick<PendingScopedWrite, "save" | "environmentId">,
+  readSettings: (environmentId: EnvironmentId) => ServerSettings | undefined,
+  saved?: ServerSettings,
+): readonly PendingScopedWrite[] {
+  return writes.flatMap((write) => {
+    const current = readSettings(write.environmentId);
+    if (write.save !== target.save || write.environmentId !== target.environmentId) {
+      return pendingWriteApplies(write, current) ? [write] : [];
+    }
+    if (saved === undefined || current === undefined || Equal.equals(current, saved)) return [];
+    return [{ ...write, settledOver: current }];
+  });
+}
+
+export function applyPendingScopedWrites<T extends ScopedSettingsEnvironment>(
+  environments: readonly T[],
+  writes: readonly PendingScopedWrite[],
+): readonly T[] {
+  if (writes.length === 0) return environments;
+  return environments.map((environment) => {
+    const config = environment.serverConfig;
+    if (config === null) return environment;
+    const settings = writes.reduce(
+      (current, write) =>
+        write.environmentId === environment.environmentId &&
+        pendingWriteApplies(write, config.settings)
+          ? applyServerSettingsPatch(current, write.patch)
+          : current,
+      config.settings,
+    );
+    if (settings === config.settings) return environment;
+    // Legacy servers read `compactIdleThreads`, so project the mode back onto it.
+    const { idleCompaction: _mode, ...legacy } = settings;
+    const projected =
+      config.settings.idleCompaction === undefined
+        ? { ...legacy, ...idleCompactionPatch(config.settings, globalIdleCompaction(settings)) }
+        : settings;
+    return { ...environment, serverConfig: { ...config, settings: projected } };
+  });
 }
 
 /** The representative supplies display values, never the set of write targets. */
@@ -310,21 +377,34 @@ export function planScopedSettingsPatch(
   scope: ResolvedSettingsScope,
   environments: readonly ScopedSettingsEnvironment[],
   patch: ScopedSettingsPatch,
-  /** The machine a change for all machines is attributed to. */
-  origin: EnvironmentId | null = null,
+  options?: {
+    /** The machine a change for all machines is attributed to. */
+    readonly origin?: EnvironmentId | null;
+    /** A device-only page stores client settings even inside a project scope. */
+    readonly deviceOnly?: boolean;
+  },
 ): ScopedSettingsPlan {
-  const clientPatch = Object.fromEntries(
-    Object.entries(patch).filter(([key]) => CLIENT_KEYS.has(key) && !SERVER_KEYS.has(key)),
-  ) as ClientSettingsPatch;
+  const origin = options?.origin ?? null;
+  const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
+  const refusesClientKeys = isProjectScope && options?.deviceOnly !== true;
+  const clientKeys = Object.keys(patch).filter(
+    (key) => CLIENT_KEYS.has(key) && !SERVER_KEYS.has(key),
+  );
   const serverPatch = Object.fromEntries(
     Object.entries(patch).filter(([key]) => SERVER_KEYS.has(key)),
   ) as ServerSettingsPatch;
   const serverKeys = Object.keys(serverPatch);
   const { connectedEnvironments } = selectScopedSettingsEnvironments(scope, environments, null);
-  const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
+  // Client settings are stored per device, so a project has nowhere to keep an override.
   const unscopableKeys = isProjectScope
-    ? serverKeys.filter((key) => !isProjectScopedSettingKey(key))
+    ? [
+        ...(refusesClientKeys ? clientKeys : []),
+        ...serverKeys.filter((key) => !isProjectScopedSettingKey(key)),
+      ]
     : [];
+  const clientPatch = Object.fromEntries(
+    refusesClientKeys ? [] : Object.entries(patch).filter(([key]) => clientKeys.includes(key)),
+  ) as ClientSettingsPatch;
   const serverWrites: ScopedServerWrite[] =
     serverKeys.length === 0
       ? []
@@ -688,11 +768,138 @@ export async function persistScopedSettingsPatch(
   persist: SharedSettingsPersist,
   persistClient: (patch: ClientSettingsPatch) => void,
 ) {
-  if (plan.hasClientWrite) persistClient(plan.clientPatch);
-  const outcomes = await persistSharedSettingsWrites(
-    { writes: plan.serverWrites, share: plan.share, sharedGroup: plan.sharedGroup },
-    persist,
+  return persistScopedSettingsPlan(
+    plan,
+    (writes) =>
+      persistSharedSettingsWrites(
+        { writes, share: plan.share, sharedGroup: plan.sharedGroup },
+        persist,
+      ),
+    persistClient,
   );
+}
+
+const OWN_ECHO_LIMIT = 8;
+
+/**
+ * Project overrides are whole entries built from this client's copy of the settings, which hears
+ * of a save only when the server pushes it back. So saves to one environment run one at a time,
+ * each planned from the newest settings held: the previous save's response, unless a newer copy
+ * arrived. A change for all machines carries absolute values, so it goes out as planned.
+ */
+export function createScopedSettingsWriter(
+  readSettings: (environmentId: EnvironmentId) => ServerSettings | null,
+) {
+  const queues = new Map<EnvironmentId, Promise<unknown>>();
+  const responses = new Map<
+    EnvironmentId,
+    {
+      readonly settings: ServerSettings;
+      readonly copy: ServerSettings;
+      readonly saved: readonly ServerSettings[];
+    }
+  >();
+  return (
+    environments: readonly ScopedSettingsEnvironment[],
+    plan: (environments: readonly ScopedSettingsEnvironment[]) => ScopedSettingsPlan,
+    persist: SharedSettingsPersist,
+    persistClient: (patch: ClientSettingsPatch) => void,
+  ) => {
+    const planned = plan(environments);
+    return persistScopedSettingsPlan(
+      planned,
+      (writes) => {
+        if (planned.share !== null) {
+          return persistSharedSettingsWrites(
+            { writes, share: planned.share, sharedGroup: planned.sharedGroup },
+            persist,
+          );
+        }
+        return Promise.all(
+          writes.map((initial) => {
+            const { environmentId } = initial;
+            const save = (queues.get(environmentId) ?? Promise.resolve()).then(
+              async (): Promise<SharedSettingsWriteOutcome<ScopedServerWrite>> => {
+                const copy = readSettings(environmentId);
+                const response = responses.get(environmentId);
+                // A copy equal to one of our earlier responses is a delayed echo, older than the latest.
+                const isOwnEcho = (settings: ServerSettings) =>
+                  response?.saved.some((saved) => Equal.equals(saved, settings)) === true;
+                const continues =
+                  copy !== null &&
+                  response !== undefined &&
+                  (response.copy === copy || isOwnEcho(copy));
+                const settings = continues ? response.settings : copy;
+                const replanned =
+                  settings === null
+                    ? null
+                    : plan(withSettings(environments, environmentId, settings));
+                const write =
+                  replanned?.serverWrites.find((next) => next.environmentId === environmentId) ??
+                  initial;
+                const result = await persist
+                  .update({ environmentId, input: { patch: write.patch } })
+                  .catch((error: unknown): SettingsWriteResult<ServerSettings> => ({
+                    _tag: "Failure",
+                    cause: Cause.die(error),
+                  }));
+                const savedCopy = readSettings(environmentId);
+                if (result._tag === "Success" && savedCopy !== null) {
+                  // A changed copy may be a newer remote push or the delayed echo of our previous save.
+                  if (
+                    savedCopy === copy ||
+                    Equal.equals(savedCopy, settings) ||
+                    Equal.equals(savedCopy, result.value) ||
+                    isOwnEcho(savedCopy)
+                  ) {
+                    responses.set(environmentId, {
+                      settings: result.value,
+                      copy: savedCopy,
+                      saved: [...(continues ? response.saved : []), result.value].slice(
+                        -OWN_ECHO_LIMIT,
+                      ),
+                    });
+                  } else {
+                    responses.delete(environmentId);
+                  }
+                }
+                return { write, sent: write.patch, result };
+              },
+            );
+            queues.set(
+              environmentId,
+              save.catch(() => undefined),
+            );
+            return save;
+          }),
+        );
+      },
+      persistClient,
+    );
+  };
+}
+
+function withSettings(
+  environments: readonly ScopedSettingsEnvironment[],
+  environmentId: EnvironmentId,
+  settings: ServerSettings,
+) {
+  return environments.map((environment) =>
+    environment.environmentId === environmentId && environment.serverConfig
+      ? { ...environment, serverConfig: { ...environment.serverConfig, settings } }
+      : environment,
+  );
+}
+
+async function persistScopedSettingsPlan(
+  plan: ScopedSettingsPlan,
+  persistWrites: (
+    writes: readonly ScopedServerWrite[],
+  ) => Promise<ReadonlyArray<SharedSettingsWriteOutcome<ScopedServerWrite>>>,
+  persistClient: (patch: ClientSettingsPatch) => void,
+) {
+  if (plan.hasClientWrite) persistClient(plan.clientPatch);
+  const outcomes = await persistWrites(plan.serverWrites);
   // Compared with what each machine was asked to hold, so a value it kept instead is reported.
   const savedSettings = ({ write, sent, result }: (typeof outcomes)[number]) =>
     result._tag === "Success" &&

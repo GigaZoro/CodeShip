@@ -45,9 +45,11 @@ describe("createMarkdownRenderer", () => {
         {source}
       </ReactMarkdown>,
     );
-    const { element } = render(source, true);
+    const result = render(source);
+    const { element } = result;
     expect(renderToStaticMarkup(element)).toBe(expected);
-    expect(render(source, true).element).toBe(element);
+    render.remember(source, result);
+    expect(render(source)).toBe(result);
   });
 
   it("renders what react-markdown renders while a reply streams through the incremental parser", () => {
@@ -62,7 +64,7 @@ describe("createMarkdownRenderer", () => {
         rehypePlugins: CHAT_MARKDOWN_REHYPE_PLUGINS,
         components: {},
         urlTransform,
-      })(source, false).element;
+      })(source).element;
       expect(renderToStaticMarkup(streamed)).toBe(
         renderToStaticMarkup(
           <ReactMarkdown
@@ -78,8 +80,10 @@ describe("createMarkdownRenderer", () => {
   });
 
   it("keeps cached messages when one far larger than the cache is rendered", () => {
-    const kept = render("Kept *message*", true);
-    render("x".repeat(600_000), true);
-    expect(render("Kept *message*", true)).toBe(kept);
+    const kept = render("Kept *message*");
+    render.remember("Kept *message*", kept);
+    const large = "x".repeat(600_000);
+    render.remember(large, render(large));
+    expect(render("Kept *message*")).toBe(kept);
   });
 });

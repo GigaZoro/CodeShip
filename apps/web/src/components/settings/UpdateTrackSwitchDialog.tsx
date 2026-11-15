@@ -8,6 +8,7 @@ import { useState } from "react";
 import { AsyncResult } from "effect/reactivity";
 
 import { APP_VERSION } from "~/branding";
+import { isLocalEnvironmentDisabled } from "~/localEnvironment";
 import { useDesktopUpdateState } from "~/state/desktopUpdate";
 import { useEnvironments } from "~/state/environments";
 import { npmReleaseAtom, npmReleaseFailureMessage } from "~/state/npmRelease";
@@ -19,7 +20,11 @@ import {
   type ChannelSwitchRelease,
 } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp, useUpdateEverything } from "../sidebar/useUpdateEverything";
-import { localUpdaterStaysPut, prepareLocalTrackSwitch } from "./updateTrackSwitch.logic";
+import {
+  localUpdaterStaysPut,
+  nothingToMove,
+  prepareLocalTrackSwitch,
+} from "./updateTrackSwitch.logic";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -88,6 +93,15 @@ function SwitchPlan({
   const [checking, setChecking] = useState(false);
   const everything = useUpdateEverything(switchesLocal ? release.version : null, release);
   const label = channelSwitchLabel(release.channel);
+  const idle = nothingToMove({
+    label,
+    channel: release.channel,
+    savedChannel: updateState?.channel ?? null,
+    switchesLocal,
+    crossesLocal,
+    rows: everything.rows,
+    hasTargets: everything.hasUpdates,
+  });
   // This app's reinstall restarts every server it hosts, so each of their databases must allow it.
   const localBlocked = localSwitchBlockReason(
     APP_VERSION,
@@ -97,6 +111,7 @@ function SwitchPlan({
       databaseMigration: environment.serverConfig?.environment.databaseMigration,
     })),
     window.desktopBridge?.getLocalEnvironmentBootstraps().length ?? 0,
+    !isLocalEnvironmentDisabled(),
   );
 
   const run = async () => {
@@ -173,13 +188,7 @@ function SwitchPlan({
       version={release.version}
       rows={everything.rows}
       notes={[
-        ...(everything.rows.length === 0 && !crossesLocal
-          ? [
-              t("Every connected machine is already on {channel}. This only saves the track.", {
-                channel: label,
-              }),
-            ]
-          : []),
+        ...(idle.note === null ? [] : [idle.note]),
         ...(crossesLocal && updatesOff
           ? [t("This app's updates are off here, so reinstall it yourself to switch.")]
           : []),
@@ -191,9 +200,9 @@ function SwitchPlan({
       confirmLabel={checking ? t("Checking…") : t("Switch to {channel}", { channel: label })}
       busy={checking}
       disabledReason={
-        !switchesLocal || localBlocked === null
-          ? null
-          : t("This app cannot switch: {reason}.", { reason: localBlocked })
+        switchesLocal && localBlocked !== null
+          ? t("This app cannot switch: {reason}.", { reason: localBlocked })
+          : idle.disabledReason
       }
       onConfirm={() => void run()}
     />

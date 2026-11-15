@@ -1,0 +1,84 @@
+import { createMemoryHistory } from "@tanstack/react-router";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { ProjectId } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import type * as Context from "effect/Context";
+import { expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+
+import { AppRoot } from "~/AppRoot";
+// The draft route loads ChatView lazily; importing it here keeps its first transform out of the test's timeout.
+import "~/components/ChatView";
+import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import { __setClientSettingsForTests } from "~/hooks/useSettings";
+import { getRouter } from "~/router";
+import {
+  ENVIRONMENT_ID,
+  PROJECT_ID,
+  installFakeEnvironment,
+  type FakeDriver,
+} from "../../../test/fakeEnvironment";
+import { render } from "../../../test/render";
+
+// The socket is the only fake layer; see test/appScenarios.renders.tsx.
+vi.mock(
+  "../../../../../packages/client-runtime/src/connection/driver.ts",
+  async (importOriginal) => {
+    const [actual, { fakeDriver }, Layer] = await Promise.all([
+      importOriginal<{ readonly ConnectionDriver: Context.Key<unknown, FakeDriver> }>(),
+      import("../../../test/fakeEnvironment"),
+      import("effect/Layer"),
+    ]);
+    return { ...actual, layer: Layer.succeed(actual.ConnectionDriver, fakeDriver) };
+  },
+);
+
+vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
+  ...(await original()),
+  trackRpcRequestSent: () => {},
+}));
+
+it("the new-thread project picker keeps the manual sidebar project order, even for the draft's own project", async () => {
+  using _environment = installFakeEnvironment([], {
+    extraProjects: [
+      { id: ProjectId.make("project-alpha"), title: "alpha", orderKey: "a1" },
+      { id: ProjectId.make("project-beta"), title: "beta", orderKey: "a0" },
+    ],
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const draftId = DraftId.make("draft-manual-order");
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId);
+
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  // The shell snapshot has arrived once the sidebar lists the project.
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+  const trigger = document.querySelector<HTMLElement>("[data-draft-project-trigger]");
+  if (!trigger) throw new Error("The draft project picker did not render.");
+  await userEvent.click(page.elementLocator(trigger));
+  await expect.element(page.getByRole("option", { name: "beta" })).toBeVisible();
+
+  // Projects without an order key come after the ordered ones, the draft's own project included.
+  await vi.waitFor(() => {
+    expect(
+      page
+        .getByRole("option")
+        .elements()
+        .map((option) => option.textContent),
+    ).toEqual([
+      expect.stringMatching(/beta$/),
+      expect.stringMatching(/alpha$/),
+      expect.stringMatching(/render$/),
+      "Add project",
+    ]);
+  });
+});

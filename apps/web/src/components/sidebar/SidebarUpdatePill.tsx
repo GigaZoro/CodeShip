@@ -28,6 +28,7 @@ import {
 } from "@t3tools/shared/desktopAutoUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
 import { restartHoldTooltip } from "../restartHold.logic";
+import { useCheckProviderUpdates } from "../ProviderUpdatesAction";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { SidebarMenuItem } from "../ui/sidebar";
@@ -263,6 +264,7 @@ export function SidebarUpdatePill() {
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
   const [isActionPending, setIsActionPending] = useState(false);
+  const [checkingProviders, setCheckingProviders] = useState(false);
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
   const [isConfirmingSafeUpdate, setIsConfirmingSafeUpdate] = useState(false);
   const [isShowingPendingInstall, setIsShowingPendingInstall] = useState(false);
@@ -280,6 +282,7 @@ function SidebarUpdateControl() {
   const localUpdateVersion =
     state && pendingAction !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
   const everything = useUpdateEverything(localUpdateVersion);
+  const checkProviderUpdates = useCheckProviderUpdates();
   const runsEverything = everything.hasUpdates && !isDownloading;
   const run = useUpdateEverythingRun();
   const pendingInstall = usePendingLocalInstall();
@@ -330,6 +333,9 @@ function SidebarUpdateControl() {
 
     if (runsEverything) {
       setIsConfirmingEverything(true);
+      // Machines that still cache an older latest version add their rows while the dialog is open.
+      setCheckingProviders(true);
+      void checkProviderUpdates({ quiet: true }).finally(() => setCheckingProviders(false));
       return;
     }
 
@@ -351,6 +357,7 @@ function SidebarUpdateControl() {
     try {
       confirmed = await ensureLocalApi().dialogs.confirm(
         getDesktopUpdateInstallConfirmationMessage(state),
+        { initialFocus: "confirm" },
       );
     } catch (error) {
       setIsActionPending(false);
@@ -415,6 +422,7 @@ function SidebarUpdateControl() {
         version={everything.version}
         rows={everything.rows}
         restarts={everything.restarts}
+        checking={checkingProviders}
         selectable
         onConfirm={(selection) => void runEverything(selection)}
       />

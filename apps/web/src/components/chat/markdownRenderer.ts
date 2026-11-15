@@ -88,7 +88,7 @@ export function createMarkdownRenderer({
     }
   };
 
-  return (text: string, cache: boolean): MarkdownRender => {
+  const render = (text: string): MarkdownRender => {
     const key = keyPrefix + text;
     const cached = rendered.get(key);
     if (cached !== undefined) {
@@ -109,8 +109,13 @@ export function createMarkdownRenderer({
       passKeys: true,
       passNode: true,
     });
-    const result = { element, data: file.data };
-    if (cache) remember(key, result);
-    return result;
+    return { element, data: file.data };
   };
+
+  return Object.assign(render, {
+    remember(text: string, result: MarkdownRender) {
+      const key = keyPrefix + text;
+      if (!rendered.has(key)) remember(key, result);
+    },
+  });
 }

@@ -1,4 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Layer from "effect/Layer";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -30,7 +32,7 @@ const makeRegistry = (now?: () => number, httpServer = fakeHttpServer) =>
     .pipe(
       Effect.provideService(HttpServer.HttpServer, httpServer),
       Effect.provideService(ServerEnvironment.ServerEnvironment, fakeEnvironment),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
 
 it.effect("stores only a token hash, resolves the bearer token, and revokes by thread", () =>
@@ -138,6 +140,40 @@ it.effect("expires credentials once their session stops showing signs of life", 
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
     timestamp += 101;
     expect(yield* registry.resolve(token)).toBeUndefined();
+    // Once a request found it expired, clocks moving back don't bring it back; a provider turn does.
+    timestamp = 1_000;
+    expect(yield* registry.resolve(token)).toBeUndefined();
+    yield* registry.touch(ThreadId.make("thread-2"));
+    expect((yield* registry.resolve(token))?.thread.threadId).toBe("thread-2");
+  }),
+);
+
+it.effect("a backward wall clock step neither extends nor revives credentials", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(undefined);
+    const issueToken = (threadId: string) =>
+      registry
+        .issue({
+          threadId: ThreadId.make(threadId),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          capabilities: new Set(["preview"]),
+        })
+        .pipe(Effect.map((issued) => issued.config.authorizationHeader.replace(/^Bearer\s+/, "")));
+
+    yield* TestClock.setTime(10_000);
+    const extended = yield* issueToken("thread-extended");
+    // setTime backwards moves wall time only; adjust moves both clocks.
+    yield* TestClock.setTime(1_000);
+    yield* TestClock.adjust(101);
+    expect(yield* registry.resolve(extended)).toBeUndefined();
+
+    const revived = yield* issueToken("thread-revived");
+    yield* TestClock.adjust(101);
+    expect(yield* registry.resolve(revived)).toBeUndefined();
+    const active = yield* issueToken("thread-active");
+    yield* TestClock.setTime(0);
+    expect(yield* registry.resolve(revived)).toBeUndefined();
+    expect((yield* registry.resolve(active))?.thread.threadId).toBe("thread-active");
   }),
 );
 

@@ -9,8 +9,9 @@ import {
 import * as Cause from "effect/Cause";
 import * as Clipboard from "expo-clipboard";
 import { useRef, useState } from "react";
-import { Alert, Linking } from "react-native";
+import { Linking } from "react-native";
 
+import * as Dialog from "../../../components/ui/Dialog";
 import { useEnvironmentQuery } from "../../../state/query";
 import { serverEnvironment } from "../../../state/server";
 import { sourceControlEnvironment } from "../../../state/sourceControl";
@@ -123,7 +124,7 @@ function AppSignInRow(props: {
 
   const showCode = (prompt: SourceControlSignInPrompt) => {
     void Clipboard.setStringAsync(prompt.userCode).catch(() => undefined);
-    Alert.alert(
+    Dialog.alert(
       prompt.userCode,
       t(
         "Enter this code on GitHub, then approve {app}. It is copied. The server finishes signing in even if you leave the app.",
@@ -149,7 +150,7 @@ function AppSignInRow(props: {
     const started = await start({ environmentId, input });
     if (started._tag !== "Success") {
       setPending(null);
-      Alert.alert(t("Could not start the sign-in"), failureMessage(started.cause));
+      Dialog.alert(t("Could not start the sign-in"), failureMessage(started.cause));
       return;
     }
     const prompt = started.value;
@@ -161,7 +162,7 @@ function AppSignInRow(props: {
     attempt.current = null;
     setPending(null);
     if (finished._tag !== "Success") {
-      Alert.alert(t("Sign-in did not finish"), failureMessage(finished.cause));
+      Dialog.alert(t("Sign-in did not finish"), failureMessage(finished.cause));
     }
   };
 
@@ -178,7 +179,7 @@ function AppSignInRow(props: {
 
   const onPress = () => {
     if (signedIn) {
-      Alert.alert(
+      Dialog.alert(
         appSignIn.appName,
         t(
           "Signed in. GitHub requests use the app's higher rate limit, in repositories where the app is installed.",

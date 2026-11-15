@@ -397,10 +397,22 @@ const decodeWindowsLinkRecord = Schema.decodeUnknownEffect(
 );
 const encodeWindowsLinkRecord = Schema.encodeSync(Schema.fromJsonString(WindowsLinkRecord));
 
+const fileSystemFailure = (method: string, pathOrDescriptor: string) => (cause: unknown) =>
+  PlatformError.systemError({
+    _tag: "Unknown",
+    module: "FileSystem",
+    method,
+    pathOrDescriptor,
+    cause,
+  });
+
 const windowsFileVersion = Effect.fn("CodexHomeLayout.windowsFileVersion")(function* (
   filePath: string,
 ) {
-  const info = yield* Effect.tryPromise(() => NodeFSP.lstat(filePath, { bigint: true }));
+  const info = yield* Effect.tryPromise({
+    try: () => NodeFSP.lstat(filePath, { bigint: true }),
+    catch: fileSystemFailure("lstat", filePath),
+  });
   return {
     identity: `${info.dev}:${info.ino}`,
     version: `${info.size}:${info.mtimeNs}`,
@@ -542,22 +554,27 @@ const withSharedFileLock = <A, E, R>(lockPath: string, effect: Effect.Effect<A, 
     Effect.gen(function* () {
       const services = yield* Effect.context<never>();
       yield* Effect.acquireRelease(
-        Effect.tryPromise(() =>
-          lock(lockPath, {
-            lockfilePath: `${lockPath}.lock`,
-            realpath: false,
-            stale: 10_000,
-            retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
-            onCompromised: (error) =>
-              Effect.runSyncWith(services)(
-                Effect.logWarning("A Codex shared-file lock was taken over during setup.", {
-                  path: lockPath,
-                  error,
-                }),
-              ),
-          }),
-        ),
-        (release) => Effect.tryPromise(() => release()).pipe(Effect.ignoreCause({ log: true })),
+        Effect.tryPromise({
+          try: () =>
+            lock(lockPath, {
+              lockfilePath: `${lockPath}.lock`,
+              realpath: false,
+              stale: 10_000,
+              retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
+              onCompromised: (error) =>
+                Effect.runSyncWith(services)(
+                  Effect.logWarning("A Codex shared-file lock was taken over during setup.", {
+                    path: lockPath,
+                    error,
+                  }),
+                ),
+            }),
+          catch: fileSystemFailure("lock", lockPath),
+        }),
+        (release) =>
+          Effect.tryPromise({ try: release, catch: fileSystemFailure("unlock", lockPath) }).pipe(
+            Effect.ignoreCause({ log: true }),
+          ),
       );
       return yield* effect;
     }),
@@ -848,7 +865,12 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
 
   // Junctions link folders on Windows without Developer Mode or elevation.
   const createLink = Effect.gen(function* () {
-    if (windows) return yield* Effect.tryPromise(() => NodeFSP.symlink(target, link, "junction"));
+    if (windows) {
+      return yield* Effect.tryPromise({
+        try: () => NodeFSP.symlink(target, link, "junction"),
+        catch: fileSystemFailure("symlink", link),
+      });
+    }
     return yield* input.fileSystem.symlink(target, link);
   }).pipe(
     Effect.mapError(

@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { ProviderDriverError } from "./Errors.ts";
-import type * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
+import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 
 const DRIVER = ProviderDriverKind.make("codex");
 const isProviderDriverError = Schema.is(ProviderDriverError);
@@ -45,25 +45,12 @@ export function makeCodexConsumeResetCredit<E, C>(input: {
             ? cause
             : failure("Codex could not redeem the reset credit.", cause),
         ),
-        // The windows just changed; re-probe so the snapshot says so. A failed probe republishes
-        // the pre-redemption limits rather than marking them failed, so "confirmed" means
-        // `checkedAt` moved past what was published before the redemption started. The credit is
-        // spent either way, so an unconfirmed reset still succeeds.
         Effect.flatMap((outcome) =>
-          Effect.gen(function* () {
-            const before = (yield* input.snapshot.getSnapshot).usageLimits?.checkedAt;
-            const refreshed = yield* input.snapshot.refresh;
-            const after = refreshed.usageLimits?.checkedAt;
-            return outcome === "reset" &&
-              (after === undefined ||
-                after === before ||
-                refreshed.usageLimits?.unavailable?.reason === "probeFailed")
-              ? {
-                  outcome,
-                  warning:
-                    "The reset was applied, but Codex could not confirm the new limits. Refresh to check.",
-                }
-              : { outcome };
+          ResetCreditCoordinator.confirmRedemption({
+            outcome,
+            getSnapshot: input.snapshot.getSnapshot,
+            refresh: input.snapshot.refresh,
+            providerName: "Codex",
           }),
         ),
       );

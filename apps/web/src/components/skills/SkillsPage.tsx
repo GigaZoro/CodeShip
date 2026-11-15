@@ -18,8 +18,8 @@ import {
   ChevronsUpDownIcon,
   FileCodeIcon,
   ListFilterIcon,
+  ScrollTextIcon,
   SearchIcon,
-  SparklesIcon,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -292,7 +292,8 @@ function SkillRow(props: {
           <code className="flex min-w-0 font-mono text-2xs">
             <MiddleTruncate value={skill.path} />
           </code>
-          <DiffFilePathCopyButton filePath={skill.path} />
+          {/* Skill paths are absolute, so the path itself shows the host's path style. */}
+          <DiffFilePathCopyButton filePath={skill.path} workspaceRoot={undefined} />
         </div>
       ) : null}
     </li>
@@ -713,7 +714,7 @@ export function SkillsPanel(props: { readonly controlsSlot: HTMLElement | null }
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
-              <SparklesIcon />
+              <ScrollTextIcon />
             </EmptyMedia>
             <EmptyTitle>{t("No skills found")}</EmptyTitle>
             <EmptyDescription>

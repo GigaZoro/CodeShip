@@ -32,6 +32,7 @@ import {
 import { setLiveActivityUpdatesEnabled } from "../agent-awareness/liveActivityPreferences";
 import { requestAgentNotificationPermission } from "../agent-awareness/notificationPermissions";
 import {
+  agentAwarenessNotificationsReady,
   endAgentAwarenessLiveActivities,
   getAgentAwarenessRegistrationStatus,
   refreshAgentAwarenessRegistration,
@@ -121,6 +122,14 @@ function useDeviceRegistered(): boolean {
   return status === "registered";
 }
 
+function useNotificationsReady(): boolean {
+  return useSyncExternalStore(
+    subscribeAgentAwarenessRegistrationStatus,
+    agentAwarenessNotificationsReady,
+    () => false,
+  );
+}
+
 export function SettingsNotificationsRouteScreen() {
   if (!hasCloudPublicConfig()) {
     return (
@@ -173,8 +182,9 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     setLiveActivityOverride({ status, basis: liveActivityBasis });
   const liveActivityWriteInFlight = useRef(false);
   const deviceRegistered = useDeviceRegistered();
+  const notificationsReady = useNotificationsReady();
   const deviceNotificationsOn =
-    agentAwarenessPushAvailable && notificationStatus === "enabled" && deviceRegistered;
+    agentAwarenessPushAvailable && notificationStatus === "enabled" && notificationsReady;
   const liveActivitiesPreferenceEnabled = AsyncResult.isSuccess(preferencesResult)
     ? preferencesResult.value.liveActivitiesEnabled !== false
     : true;
@@ -207,12 +217,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     }
     if (result.value.type === "granted") {
       setNotificationStatus("enabled");
-      if (getAgentAwarenessRegistrationStatus() === "registered") {
-        Dialog.alert(
-          t("Notifications enabled"),
-          t("Agent notifications are enabled for this device."),
-        );
-      } else {
+      if (!agentAwarenessNotificationsReady()) {
         Dialog.alert(
           t("Couldn't finish enabling notifications"),
           t(
