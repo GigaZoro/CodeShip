@@ -82,6 +82,7 @@ interface RawManualStepReview {
     readonly command?: string | undefined;
     readonly agentCanDo: boolean;
   }>;
+  readonly translation: { readonly title: string; readonly step: string };
 }
 
 export function normalizeManualStepReview(
@@ -103,14 +104,21 @@ export function normalizeManualStepReview(
       ];
     })
     .slice(0, MANUAL_STEP_SOLUTION_LIMIT);
-  return summary.length === 0 || solutions.length === 0
+  const translation = {
+    title: generated.translation.title.trim(),
+    step: generated.translation.step.replace(/\s+/g, " ").trim(),
+  };
+  return summary.length === 0 ||
+    solutions.length === 0 ||
+    translation.title.length === 0 ||
+    translation.step.length === 0
     ? Effect.fail(
         new TextGenerationError({
           operation: "generateManualStepReview",
-          detail: "The model returned a review without a summary or without solutions.",
+          detail: "The model returned a review without a summary, solutions or translation.",
         }),
       )
-    : Effect.succeed({ summary, needsPerson: generated.needsPerson, solutions });
+    : Effect.succeed({ summary, needsPerson: generated.needsPerson, solutions, translation });
 }
 
 export function fromRunner(name: string, run: Runner): ProviderTextGeneration {

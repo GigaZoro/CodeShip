@@ -25,10 +25,13 @@ const ReviewRow = Schema.Struct({
 export class ManualStepReviewRepository extends Context.Service<
   ManualStepReviewRepository,
   {
+    /** The review of a thread written in `language`. */
     readonly get: (
       threadId: string,
+      language: string,
     ) => Effect.Effect<Option.Option<ManualStepReview>, ManualStepReviewRepositoryError>;
     readonly put: (
+      language: string,
       review: ManualStepReview,
     ) => Effect.Effect<void, ManualStepReviewRepositoryError>;
   }
@@ -38,20 +41,20 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   const findReview = SqlSchema.findOneOption({
-    Request: Schema.String,
+    Request: Schema.Struct({ threadId: Schema.String, language: Schema.String }),
     Result: ReviewRow,
-    execute: (threadId) =>
+    execute: ({ threadId, language }) =>
       sql`
         SELECT review_json AS "review"
         FROM manual_step_reviews
-        WHERE thread_id = ${threadId}
+        WHERE thread_id = ${threadId} AND language = ${language}
       `,
   });
   const encodeReview = Schema.encodeEffect(Schema.fromJsonString(ManualStepReview));
 
   return ManualStepReviewRepository.of({
-    get: Effect.fn("ManualStepReviewRepository.get")(function (threadId) {
-      return findReview(threadId).pipe(
+    get: Effect.fn("ManualStepReviewRepository.get")(function (threadId, language) {
+      return findReview({ threadId, language }).pipe(
         NodeSqliteClient.readOnly,
         Effect.map(Option.map((row) => row.review)),
         Effect.mapError((cause) =>
@@ -61,16 +64,16 @@ const make = Effect.gen(function* () {
         ),
       );
     }),
-    put: Effect.fn("ManualStepReviewRepository.put")(function (review) {
+    put: Effect.fn("ManualStepReviewRepository.put")(function (language, review) {
       return encodeReview(review).pipe(
         Effect.mapError((cause) =>
           PersistenceDecodeError.fromSchemaError("ManualStepReview", cause),
         ),
         Effect.flatMap((reviewJson) =>
           sql`
-            INSERT INTO manual_step_reviews (thread_id, generated_at, review_json)
-            VALUES (${review.threadId}, ${review.generatedAt}, ${reviewJson})
-            ON CONFLICT (thread_id) DO UPDATE SET
+            INSERT INTO manual_step_reviews (thread_id, language, generated_at, review_json)
+            VALUES (${review.threadId}, ${language}, ${review.generatedAt}, ${reviewJson})
+            ON CONFLICT (thread_id, language) DO UPDATE SET
               generated_at = excluded.generated_at,
               review_json = excluded.review_json
           `.pipe(

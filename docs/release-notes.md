@@ -1,3 +1,9 @@
+## 2026-11-15 — Manual steps show in your app's language
+
+- A manual step's AI review is now written in the app's language (**Settings → General → Language**). Before, it followed the language of the step's title, which agents write in English, so the review came in English whatever language you chose.
+- Once its review is ready, a step's text and title show translated into the app's language too, in the thread list, the sidebar and the **Manual steps** page, on web, desktop and mobile. The chat that **Choose** starts still gets the step as it was written.
+- Reviews written before this release are dropped and written again in your language the next time a step is shown. Apps that predate this release keep getting English reviews, and a server that predates it shows steps as written.
+
 ## 2026-11-15 — A restart no longer leaves a chat's next message waiting forever
 
 - When a server restart cut a chat whose agent had already finished its turn, a message queued behind it stayed held for a resume that never came, so the chat never ran again. A message queued behind a run whose turn had finished now starts after the restart. A chat a restart already left in that state starts again on the next start. A chat that is snoozed, settled or archived still stays as it was.

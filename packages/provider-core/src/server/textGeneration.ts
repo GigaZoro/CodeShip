@@ -108,6 +108,8 @@ export interface ManualStepReviewGenerationInput {
     machine: string;
   };
   notes: ReadonlyArray<{ createdAt: string; markdown: string }>;
+  /** The reader's language code, such as `uk`: the review and the translation are in it. */
+  language: string;
   modelSelection: ModelSelection;
 }
 
@@ -115,6 +117,7 @@ export interface ManualStepReviewGenerationResult {
   summary: string;
   needsPerson: boolean;
   solutions: ReadonlyArray<ManualStepSolution>;
+  translation: { title: string; step: string };
 }
 
 export interface ProviderTextGeneration {

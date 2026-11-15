@@ -1,5 +1,6 @@
 import {
   manualStepReviewFailureMessage,
+  manualStepShownText,
   manualStepSolutionDecision,
   manualStepStartChatFailureMessage,
   sameManualStepDecision,
@@ -364,6 +365,8 @@ export function ManualStepCard(props: {
 }) {
   const { step } = props;
   const decision = useStepDecision(step, props.chatHost);
+  const review = useManualStepReview(step, props.reviewEnvironmentId).state;
+  const text = manualStepShownText(step, review);
   const money = step.kind === "needs-you";
   const Icon = money ? CircleDollarSignIcon : HandIcon;
   const headingId = `manual-step-${step.threadId}`;
@@ -389,14 +392,14 @@ export function ManualStepCard(props: {
               )}
             />
             <h3 id={headingId} className="min-w-0 flex-1 text-sm font-medium">
-              {step.step}
+              {text.step}
             </h3>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 ps-6 text-xs text-muted-foreground">
             {money ? (
               <span className="font-medium text-warning-foreground">{t("Money")}</span>
             ) : null}
-            <span className="min-w-0 truncate">{step.title}</span>
+            <span className="min-w-0 truncate">{text.title}</span>
             <span>{step.machine}</span>
             <span className="tabular-nums">
               {t("Waiting")} <WaitingSinceLabel since={Date.parse(step.updatedAt)} />

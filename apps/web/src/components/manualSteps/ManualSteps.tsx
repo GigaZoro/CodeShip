@@ -1,5 +1,6 @@
 import {
   manualStepChatHost,
+  manualStepShownText,
   manualStepsFailureMessage,
   detectedManualStepKey,
   type DetectedManualStepEntry,
@@ -91,6 +92,7 @@ function ManualStepRow(props: {
   const navigate = useNavigate();
   const review = useManualStepReview(step, props.reviewEnvironmentId).state;
   const agentCanDo = review?.status === "ready" && !review.review.needsPerson;
+  const text = manualStepShownText(step, review);
   const openStep = () => void navigate({ to: "/manual-steps", search: { step: step.threadId } });
   const money = step.kind === "needs-you";
   const Icon = money ? CircleDollarSignIcon : HandIcon;
@@ -111,8 +113,8 @@ function ManualStepRow(props: {
         aria-label={[
           money ? t("Money decision") : null,
           agentCanDo ? t("An agent can do this.") : null,
-          step.step,
-          step.title,
+          text.step,
+          text.title,
           machine,
         ]
           .filter(Boolean)
@@ -131,9 +133,9 @@ function ManualStepRow(props: {
           />
           <Tooltip>
             <TooltipTrigger
-              render={<span className="min-w-0 flex-1 truncate text-sm">{step.step}</span>}
+              render={<span className="min-w-0 flex-1 truncate text-sm">{text.step}</span>}
             />
-            <TooltipPopup side="top">{step.step}</TooltipPopup>
+            <TooltipPopup side="top">{text.step}</TooltipPopup>
           </Tooltip>
           {agentCanDo ? <AgentCanDoMarker /> : null}
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
@@ -144,7 +146,7 @@ function ManualStepRow(props: {
           {money ? (
             <span className="shrink-0 font-medium text-warning-foreground">{t("Money")}</span>
           ) : null}
-          <span className="min-w-0 flex-1 truncate">{step.title}</span>
+          <span className="min-w-0 flex-1 truncate">{text.title}</span>
           {step.chat ? (
             <span className="shrink-0" onClick={stopRowActivation}>
               <InlineButton

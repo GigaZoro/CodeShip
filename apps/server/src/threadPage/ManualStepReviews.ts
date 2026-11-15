@@ -2,6 +2,7 @@ import {
   type ManualStepReview,
   ManualStepReviewError,
   type ManualStepReviewFailure,
+  type ManualStepReviewInput,
   type ManualStepsListError,
   type TextGenerationError,
 } from "@t3tools/contracts";
@@ -28,16 +29,17 @@ type ReviewRun = Deferred.Deferred<ManualStepReview, ManualStepReviewError>;
 export class ManualStepReviews extends Context.Service<
   ManualStepReviews,
   {
-    /** The stored review when it read this step version or a newer one, else a new one. */
-    readonly review: (input: {
-      readonly threadId: string;
-      readonly updatedAt: string;
-    }) => Effect.Effect<ManualStepReview, ManualStepReviewError>;
-    /** A new review that replaces the stored one. */
-    readonly reviewAgain: (input: {
-      readonly threadId: string;
-      readonly updatedAt: string;
-    }) => Effect.Effect<ManualStepReview, ManualStepReviewError>;
+    /**
+     * The stored review in the input's language when it read this step version or a newer one,
+     * else a new one.
+     */
+    readonly review: (
+      input: ManualStepReviewInput,
+    ) => Effect.Effect<ManualStepReview, ManualStepReviewError>;
+    /** A new review that replaces the stored one in the input's language. */
+    readonly reviewAgain: (
+      input: ManualStepReviewInput,
+    ) => Effect.Effect<ManualStepReview, ManualStepReviewError>;
   }
 >()("t3/threadPage/ManualStepReviews") {}
 
@@ -80,12 +82,13 @@ const make = Effect.gen(function* () {
   const runs = yield* Ref.make<ReadonlyMap<string, ReviewRun>>(new Map());
 
   // A row that no longer decodes is as good as none: the next generation overwrites it.
-  const readStored = (threadId: string) =>
-    reviews.get(threadId).pipe(
+  const readStored = ({ threadId, language }: ManualStepReviewInput) =>
+    reviews.get(threadId, language).pipe(
       Effect.catchTags({
         PersistenceDecodeError: (error) =>
           Effect.logWarning("Stored manual step review could not be decoded", {
             threadId,
+            language,
             detail: error.message,
           }).pipe(Effect.as(Option.none<ManualStepReview>())),
       }),
@@ -93,13 +96,13 @@ const make = Effect.gen(function* () {
     );
 
   const generate = Effect.fn("ManualStepReviews.generate")(function* (
-    threadId: string,
-    updatedAt: string,
+    request: ManualStepReviewInput,
     force: boolean,
   ) {
+    const { threadId, updatedAt, language } = request;
     if (!force) {
       // A run that finished while this request waited for its turn has already stored the answer.
-      const stored = Option.getOrNull(yield* readStored(threadId));
+      const stored = Option.getOrNull(yield* readStored(request));
       if (stored !== null && stored.updatedAt >= updatedAt) return stored;
     }
     const settings = yield* settingsService.getSettings.pipe(
@@ -129,6 +132,7 @@ const make = Effect.gen(function* () {
             cwd: config.baseDir,
             step: { title: step.title, step: step.step, kind: step.kind, machine: step.machine },
             notes,
+            language,
             modelSelection,
           })
           .pipe(Effect.catch((error) => fromGenerationError(threadId, error)));
@@ -148,32 +152,37 @@ const make = Effect.gen(function* () {
           ? { ...solution, command }
           : solution,
       ),
+      translation: result.translation,
       generatedAt: DateTime.formatIso(yield* DateTime.now),
       modelSelection,
     };
     yield* reviews
-      .put(review)
+      .put(language, review)
       .pipe(Effect.mapError(() => failure("generation-failed", "Could not store the review.")));
     return review;
   });
 
   // The run lives in the service's scope, so it finishes and stores its review even when the
-  // client that asked for it disconnects; every request for the same thread waits on one run.
-  const join = Effect.fn("ManualStepReviews.join")(function* (
-    threadId: string,
-    updatedAt: string,
+  // client that asked for it disconnects; every request for the same thread and language waits
+  // on one run.
+  const awaitRun = Effect.fn("ManualStepReviews.awaitRun")(function* (
+    request: ManualStepReviewInput,
     force: boolean,
   ) {
+    const { threadId, language } = request;
+    // A language code has no colon, so the key names one thread and language.
+    const runKey = `${language}:${threadId}`;
     const run = yield* claims.withPermits(1)(
       Effect.gen(function* () {
-        const existing = (yield* Ref.get(runs)).get(threadId);
+        const existing = (yield* Ref.get(runs)).get(runKey);
         if (existing !== undefined) return existing;
         const created = yield* Deferred.make<ManualStepReview, ManualStepReviewError>();
-        yield* Ref.update(runs, (current) => new Map(current).set(threadId, created));
-        yield* generate(threadId, updatedAt, force).pipe(
+        yield* Ref.update(runs, (current) => new Map(current).set(runKey, created));
+        yield* generate(request, force).pipe(
           Effect.tapError((error) =>
             Effect.logWarning("Manual step review failed", {
               threadId,
+              language,
               reason: error.reason,
               detail: error.detail,
             }),
@@ -184,7 +193,7 @@ const make = Effect.gen(function* () {
               .withPermits(1)(
                 Ref.update(runs, (current) => {
                   const next = new Map(current);
-                  next.delete(threadId);
+                  next.delete(runKey);
                   return next;
                 }),
               )
@@ -198,18 +207,29 @@ const make = Effect.gen(function* () {
     return yield* Deferred.await(run);
   });
 
+  const join = Effect.fn("ManualStepReviews.join")(function* (
+    request: ManualStepReviewInput,
+    force: boolean,
+  ) {
+    let review = yield* awaitRun(request, force);
+    // A run that started for an older step version reviewed that version's text; once it is
+    // done, this request starts or joins one that covers its own.
+    while (review.updatedAt < request.updatedAt) review = yield* awaitRun(request, force);
+    return review;
+  });
+
   const review: ManualStepReviews["Service"]["review"] = Effect.fn("ManualStepReviews.review")(
     function* (input) {
-      const stored = Option.getOrNull(yield* readStored(input.threadId));
+      const stored = Option.getOrNull(yield* readStored(input));
       if (stored !== null && stored.updatedAt >= input.updatedAt) return stored;
-      return yield* join(input.threadId, input.updatedAt, false);
+      return yield* join(input, false);
     },
   );
 
   const reviewAgain: ManualStepReviews["Service"]["reviewAgain"] = Effect.fn(
     "ManualStepReviews.reviewAgain",
   )(function* (input) {
-    return yield* join(input.threadId, input.updatedAt, true);
+    return yield* join(input, true);
   });
 
   return ManualStepReviews.of({ review, reviewAgain });
