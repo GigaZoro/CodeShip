@@ -12859,7 +12859,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
-  /** Splits queued runs into automatic ones (notifications, delegated results) and messages someone sent. */
+  /**
+   * Splits queued runs into automatic ones (from agents, scheduled tasks, notifications and
+   * delegated results) and messages a person sent.
+   */
   const partitionQueuedRuns = Effect.fn("orchestrationV2.partitionQueuedRuns")(function* (
     command: OrchestrationV2Command,
     runs: ReadonlyArray<OrchestrationV2Run>,
@@ -12875,7 +12878,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       messages
         .filter(
           (message) =>
-            message.notification !== undefined || message.delegatedCompletion !== undefined,
+            message.role === "user" &&
+            (message.createdBy !== "user" ||
+              message.scheduledTaskId !== undefined ||
+              message.notification !== undefined ||
+              message.delegatedCompletion !== undefined),
         )
         .map((message) => message.id),
     );
