@@ -33,6 +33,17 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
+const messagesById =
+  (projection: OrchestrationV2ThreadProjection) =>
+  (_threadId: ThreadId, messageIds: ReadonlyArray<MessageId>) =>
+    Effect.succeed(
+      new Map(
+        projection.messages
+          .filter((message) => messageIds.includes(message.id))
+          .map((message) => [message.id, message]),
+      ),
+    );
+
 it.effect("expires orphaned runtime requests before command readiness", () => {
   const threadId = ThreadId.make("thread_recovery_requests");
   let committedInput: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | null =
@@ -472,11 +483,14 @@ it.effect("tells the thread a running run stopped when the server went down", ()
         pendingBackgroundTasks: [{ taskId: "task-cut", description: "Watch CI" }],
       },
     ],
-    providerTurns: [],
+    providerTurns: [
+      { runAttemptId: RunAttemptId.make("attempt_restart_notice"), status: "running" },
+    ],
     runs: [
       {
         id: runId,
         status: "running",
+        activeAttemptId: RunAttemptId.make("attempt_restart_notice"),
         providerInstanceId: ProviderInstanceId.make("codex"),
         providerThreadId: ProviderThreadId.make("provider_thread_restart_notice"),
       },
@@ -838,6 +852,7 @@ it.effect.each([
           getThreadRecords: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          lastCommittedAt: Effect.succeed(null),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -886,8 +901,8 @@ it.effect.each([
     );
     if (terminalized) {
       assert.equal(
-        runEvent?.type === "run.updated" ? runEvent.payload.status : null,
-        status === "preparing" ? "cancelled" : "queued",
+        attemptEvent?.type === "run-attempt.updated" ? attemptEvent.payload.status : null,
+        "cancelled",
       );
       assert.equal(
         nodeEvent?.type === "node.updated" ? nodeEvent.payload.status : null,
@@ -1144,6 +1159,7 @@ it.effect.each([
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+            getMessagesById: messagesById(projection),
             getThreadRecords: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
@@ -2598,6 +2614,7 @@ it.effect.each([
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+            getMessagesById: messagesById(projection),
             getThreadRecords: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({

@@ -800,13 +800,13 @@ type ClaimFilter = Omit<Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]
 
 export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: Effect.Effect<void>;
-  readonly runOnce: (input?: {
-    readonly maxRunningSlowEffects?: number;
-  }) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runOnce: (
+    input?: EffectOutbox.SlowEffectClaimLimit,
+  ) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly runRecoveryOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
-  readonly nextClaimableAt: (input?: {
-    readonly maxRunningSlowEffects?: number;
-  }) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
+  readonly nextClaimableAt: (
+    input?: EffectOutbox.SlowEffectClaimLimit,
+  ) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
   readonly drain: (maxEffects?: number) => Effect.Effect<number, OrchestrationEffectWorkerError>;
 }
 
@@ -1095,8 +1095,12 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       const livenessPollIntervalMs = Number.isFinite(requestedLivenessPollIntervalMs)
         ? Math.max(1, Math.floor(requestedLivenessPollIntervalMs))
         : DEFAULT_EFFECT_WORKER_LIVENESS_POLL_INTERVAL_MS;
-      // Title generations and provider starts can run for minutes; each leaves a worker free.
-      const claimLimits = concurrency > 1 ? { maxRunningSlowEffects: concurrency - 1 } : {};
+      // Title generations and provider starts can run for minutes; each leaves a worker free
+      // until the slot wait lets its worker go.
+      const claimLimits =
+        concurrency > 1
+          ? { maxRunningSlowEffects: concurrency - 1, workerSlotWait: EFFECT_WORKER_SLOT_WAIT }
+          : {};
       // Notifications wake promptly; availableAt persists retry timing, and liveness polling recovers missed wakeups.
       const runWorker = Effect.gen(function* () {
         while (true) {

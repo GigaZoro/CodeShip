@@ -218,6 +218,7 @@ it.effect("recovers an admitted continuation after another crash before provider
             getThreadRecords: () => Effect.succeed(running),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) =>
               Effect.sync(() => {
                 commits.push(input);
@@ -769,7 +770,8 @@ it.effect.each([
     ProjectId.make("restart-project"),
     backgroundSubagent,
     true,
-    ", past a later prompt the provider never accepted",
+    // The prompt it sends again tells the agent about the work.
+    ", but first sends again a later prompt the provider never accepted",
   ],
 ] as const)(
   "cleans up background work of a $0 run in project $1 and wakes it only for awaited work$4",
@@ -853,7 +855,7 @@ it.effect.each([
             ? [
                 {
                   type: "provider-runtime.continue",
-                  sourceRunId: runId,
+                  sourceRunId: followUp === "" ? runId : unacceptedFollowUp.id,
                   processLossCount: trigger === "shutdown" ? 0 : 1,
                 },
               ]
@@ -867,7 +869,7 @@ it.effect.each([
           ),
         );
         const note = events.find((event) => event.type === "run.background-work-cancelled");
-        assert.equal(note?.runId, runId);
+        assert.equal(note?.runId, followUp === "" ? runId : unacceptedFollowUp.id);
         assert.deepEqual(note?.payload.restartCancelledBackgroundWork, [background.work]);
         if (status === "completed")
           assert.isFalse(
@@ -1093,6 +1095,7 @@ it.effect.each([
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
             commitCommand: (input) => {
               commits.push(input);
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1699,6 +1702,13 @@ it.each(["preparing", "starting", "running"] as const)(
       { ...cut, thread: { ...cut.thread, snoozedUntil: DateTime.add(now, { days: 1 }) } },
       // A restart continuation keeps its own path.
       { ...cut, runs: [{ ...cut.runs[0]!, restartContinuationOfRunId: RunId.make("run:older") }] },
+      // The usage-limit worker sends a cut resume again itself.
+      {
+        ...cut,
+        runs: [{ ...cut.runs[0]!, usageLimitContinuationOfRunId: RunId.make("run:limited") }],
+      },
+      // Recovery rewinds unaccepted runs, so a start left on one means a provider took a prompt.
+      { ...cut, runs: [{ ...cut.runs[0]!, startedAt: now }] },
     ])
       assert.isUndefined(
         restartRetryRun(blocked as unknown as OrchestrationV2ThreadProjection, now),

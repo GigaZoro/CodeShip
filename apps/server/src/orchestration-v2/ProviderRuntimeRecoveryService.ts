@@ -33,6 +33,7 @@ import {
   answerableAfterRestart,
   continuesAfterRestart,
   RestartResumeRequest,
+  restartRerunRun,
   restartResumeRun,
   restartContinuationBlocked,
   restartStopRequested,
@@ -523,14 +524,28 @@ export const make = Effect.gen(function* () {
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
-      const projection = yield* rewindUnacceptedRuns(stored);
+      const rewound = yield* rewindUnacceptedRuns(stored);
+      // The restart starts this run again with its own message, or a later send revives it, so it
+      // is cancelled as stored: a run cut while running may already have reached its provider.
+      const rerunRun = restartRerunRun(rewound);
+      const projection =
+        rerunRun === undefined
+          ? rewound
+          : {
+              ...rewound,
+              runs: rewound.runs.map((run) =>
+                run.id === rerunRun.id
+                  ? (stored.runs.find((candidate) => candidate.id === run.id) ?? run)
+                  : run,
+              ),
+            };
       // Cut work stopped with the server, not when this pass noticed; scheduled recovery reads it.
       const stoppedAt = lastCommittedAt === null ? now : DateTime.min(lastCommittedAt, now);
       let runs = yield* cutRuns(projection);
       const continuationRun =
         continueAfterRestart && trigger === "startup"
           ? restartResumeRun(
-              { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
+              { ...rewound, providerSessions: sessionsLiveAtStart(rewound, stoppedThisPass) },
               now,
             )
           : undefined;
@@ -573,6 +588,7 @@ export const make = Effect.gen(function* () {
         ) + 1;
       const unstartedRuns = runs.filter(
         (run) =>
+          run.id !== rerunRun?.id &&
           run.status === "starting" &&
           neverStarted(run) &&
           !projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId) &&
@@ -762,33 +778,39 @@ export const make = Effect.gen(function* () {
         ...retryableRuns,
         ...queuedRunsInDeliveryOrder({ runs: queuedRuns, messages: queuedMessages }),
       ];
+      // A message put back at the front of the queue waits for the person to send it again, and
+      // everything queued behind it waits with it as their own hold.
+      const requeued = retryableRuns.length > 0;
       for (const [index, run] of heldRuns.entries()) {
         if (bufferedMessageIds.has(run.userMessageId)) {
           runs.push(run);
           continue;
         }
-        // A hold from before the restart (a Stop, a failure) stays the person's to release.
-        if (run.queueHeld === true) continue;
-        // A person reviews what they queued, but nobody reviews a message an agent, the server or a
-        // scheduled task queued, and no continuation is scheduled to lift its hold: it just starts.
-        // So does a message queued behind a run whose turn had already finished: the restart cut no
-        // work, and no continuation will ever lift a hold on it.
-        if (
-          trigger === "startup" &&
-          continueAfterRestart &&
-          continuationRun === undefined &&
-          (queuedMessages.some(
-            (message) =>
-              message.id === run.userMessageId &&
-              (message.createdBy !== "user" || message.scheduledTaskId !== undefined),
-          ) ||
-            (!restartLeavesThreadAsIs(projection.thread, now) &&
-              cutAfterTurnFinished(
-                runs.filter((cut) => cut.status !== "queued"),
-                projection.providerTurns,
-              )))
-        )
-          continue;
+        if (!requeued) {
+          // A hold from before the restart (a Stop, a failure) stays the person's to release.
+          if (run.queueHeld === true) continue;
+          // A person reviews what they queued, but nobody reviews a message an agent, the server or
+          // a scheduled task queued, and no continuation is scheduled to lift its hold: it just
+          // starts. So does a message queued behind a run whose turn had already finished: the
+          // restart cut no work, and no continuation will ever lift a hold on it.
+          if (
+            trigger === "startup" &&
+            continueAfterRestart &&
+            continuationRun === undefined &&
+            (queuedMessages.some(
+              (message) =>
+                message.id === run.userMessageId &&
+                (message.createdBy !== "user" || message.scheduledTaskId !== undefined),
+            ) ||
+              (!restartLeavesThreadAsIs(projection.thread, now) &&
+                cutAfterTurnFinished(
+                  runs.filter((cut) => cut.status !== "queued"),
+                  projection.providerTurns,
+                )))
+          )
+            continue;
+        }
+        const { queueHeldByRestart: _byRestart, ...unmarked } = run;
         events.push({
           id: yield* allocateEventId(),
           type: "run.updated",
@@ -796,13 +818,15 @@ export const make = Effect.gen(function* () {
           runId: run.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: {
-            ...run,
-            status: "queued",
-            queueHeld: true,
-            ...(continueAfterRestart ? { queueHeldByRestart: true } : {}),
-            ...(retryableRuns.length === 0 ? {} : { queuePosition: index + 1 }),
-          },
+          // Held so nothing starts ahead of the continuation; with continuation on, the queue follows it.
+          payload: requeued
+            ? { ...unmarked, status: "queued", queueHeld: true, queuePosition: index + 1 }
+            : {
+                ...run,
+                status: "queued",
+                queueHeld: true,
+                ...(continueAfterRestart ? { queueHeldByRestart: true } : {}),
+              },
         });
       }
       const unsentResumeRunIds = runs.flatMap((run) =>

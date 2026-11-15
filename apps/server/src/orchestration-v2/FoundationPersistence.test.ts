@@ -3451,7 +3451,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
   );
 
   it.effect(
-    "starts another thread's turn while every worker holds a start that never returns",
+    "starts another thread's turn while starts that never return fill every worker a start may take",
     () =>
       Effect.gen(function* () {
         const outbox = yield* EffectOutbox.EffectOutboxV2;
@@ -3500,9 +3500,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         );
 
         yield* Effect.gen(function* () {
-          yield* EffectWorker.runDaemonWithOptions({ concurrency: wedgedThreadIds.length }).pipe(
-            Effect.forkScoped,
-          );
+          // Provider starts leave one worker free.
+          yield* EffectWorker.runDaemonWithOptions({
+            concurrency: wedgedThreadIds.length + 1,
+          }).pipe(Effect.forkScoped);
           yield* Deferred.await(wedgedStarted);
           yield* outbox.enqueue([
             {
