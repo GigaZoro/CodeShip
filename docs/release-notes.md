@@ -1,3 +1,7 @@
+## 2026-11-15 — The Windows test lane runs on a runner this repository has
+
+- The on-demand Windows tests waited forever for a runner that only upstream's account provides. They now run on GitHub's own Windows runner, so a Windows test run starts and finishes.
+
 ## 2026-11-15 — Agent commands on Windows no longer open a terminal window
 
 - On Windows, every command an agent ran with `t3_command_run` (tests, builds, installs) opened a console window titled `C:\WINDOWS\system32\cmd.exe`, which Windows 11 shows in Windows Terminal, and it stayed open until the command ended. These commands now run in a hidden window. Their output still goes to the chat as before.
