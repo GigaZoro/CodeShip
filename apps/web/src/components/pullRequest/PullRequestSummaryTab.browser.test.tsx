@@ -1,3 +1,5 @@
+import { loadMessageCatalog } from "@t3tools/client-runtime/i18n/catalogs";
+import { activateLanguage } from "@t3tools/shared/i18n";
 import {
   DEFAULT_CLIENT_SETTINGS,
   SourceControlProviderKind,
@@ -110,8 +112,12 @@ const detail: PullRequestDetailView = {
 
 // The comment filter persists to localStorage, so tests that touch it start and end empty.
 
-const tab = (value = detail) => (
+const tab = (
+  value = detail,
+  reveal: { revealUrl?: string; onRevealSettled?: (revealUrl: string) => void } = {},
+) => (
   <PullRequestSummaryTab
+    {...reveal}
     scrollerRef={() => {}}
     environmentId={EnvironmentId.make("environment")}
     threadRef={null}
@@ -269,4 +275,21 @@ it("shows a comment's exact time in the chosen 24-hour clock", async () => {
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toBe(expected),
   );
+});
+
+it("reveals the checks a checks link opens in a translated interface", async () => {
+  setup();
+  activateLanguage({
+    language: "uk",
+    catalog: await loadMessageCatalog("uk"),
+    formattingLocale: "uk",
+  });
+  try {
+    const revealUrl = `${detail.url}/checks`;
+    const onRevealSettled = vi.fn();
+    await using _screen = await renderUi(tab(detail, { revealUrl, onRevealSettled }));
+    await vi.waitFor(() => expect(onRevealSettled).toHaveBeenCalledWith(revealUrl));
+  } finally {
+    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
+  }
 });

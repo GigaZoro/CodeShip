@@ -367,6 +367,7 @@ function MetaRow({
 }
 
 function Section({
+  name,
   title,
   defaultOpen = true,
   keepMounted = false,
@@ -374,6 +375,8 @@ function Section({
   actions,
   children,
 }: {
+  /** Names the section for links, since its title is translated. */
+  name: "description" | "checks" | "comments";
   title: string;
   defaultOpen?: boolean;
   keepMounted?: boolean;
@@ -415,7 +418,7 @@ function Section({
       open={open !== false}
       onOpenChange={setOpenWithScrollAnchor}
       render={<section aria-label={title} />}
-      data-pull-request-summary-section
+      data-pull-request-summary-section={name}
     >
       <div
         ref={headingRef}
@@ -617,9 +620,7 @@ export function PullRequestSummaryTab({
     if (revealUrl === undefined || !root) return;
     let target: HTMLElement | null | undefined;
     if (location?.kind === "checks") {
-      target = root.querySelector<HTMLElement>(
-        '[data-pull-request-summary-section][aria-label="Checks"]',
-      );
+      target = root.querySelector<HTMLElement>('[data-pull-request-summary-section="checks"]');
     } else if (location?.kind === "summary") {
       if (location.anchor === "top") {
         stopHolding.current?.();
@@ -952,6 +953,7 @@ export function PullRequestSummaryTab({
 
       <Section
         key={`description:${detail.url}`}
+        name="description"
         title={t("Description")}
         keepMounted
         revealCount={descriptionReveals}
@@ -994,6 +996,7 @@ export function PullRequestSummaryTab({
 
       <Section
         key={`checks:${detail.url}`}
+        name="checks"
         title={t("Checks")}
         defaultOpen={false}
         revealCount={checksReveals}
@@ -1057,6 +1060,7 @@ export function PullRequestSummaryTab({
       </Section>
 
       <Section
+        name="comments"
         title={t("Comments ({count})", { count: detail.commentCount })}
         actions={
           <div className="flex shrink-0 items-center gap-1">
