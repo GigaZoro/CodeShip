@@ -1,3 +1,7 @@
+## 2026-11-16 — A finished run no longer goes back to waiting and blocks its queue
+
+- When a delegated task or command finished just after its parent's run completed, the parent could go back to waiting and lose its checkpoint, and the next queued message did not start until CodeShip restarted. A task result now changes only the parent's task bookkeeping, and the server refuses any write that would put a finished run back to an earlier state or drop its checkpoint.
+
 ## 2026-11-16 — The manual Windows server test run fits its time limit
 
 - Maintainers: the Windows Tests workflow now splits a full `apps/server` run into eight shards, balanced by recorded duration, instead of one job that hit the 45-minute limit. Runs of other packages or of chosen files are unchanged.

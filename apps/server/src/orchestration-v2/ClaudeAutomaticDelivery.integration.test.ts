@@ -45,6 +45,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 
 const sessionId = "automatic-delivery-session";
@@ -240,21 +241,17 @@ it.effect.each(deliveries)(
             const sink = yield* EventSink.EventSinkV2;
             yield* sink.write({
               events: [
-                {
-                  id: EventId.make("cohort"),
-                  type: "run.updated",
+                delegatedCompletionUpdated({
+                  id: "cohort",
                   threadId,
                   runId: parent.id,
                   occurredAt: now,
-                  payload: {
-                    ...parent,
-                    delegatedCompletion: {
-                      disposition: "open",
-                      nextGeneration: 2,
-                      delivery: { generation: 1, messageId, taskIds: [taskId] },
-                    },
+                  delegatedCompletion: {
+                    disposition: "open",
+                    nextGeneration: 2,
+                    delivery: { generation: 1, messageId, taskIds: [taskId] },
                   },
-                },
+                }),
                 {
                   id: EventId.make("child"),
                   type: "subagent.updated",

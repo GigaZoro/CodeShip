@@ -1,17 +1,23 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointId,
   CommandId,
   EnvironmentId,
+  EventId,
+  MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import { vi } from "vite-plus/test";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -355,6 +361,118 @@ it.layer(layerTest)("a command task", (it) => {
       const offered = yield* Ref.get(offers);
       assert.equal(offered.length, 1);
       assert.equal(offered[0]?.threadId, parent.threadId);
+    }),
+  );
+
+  it.effect("keeps its parent completed when checkpoint capture lands before its result", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const parent = yield* seedLiveParent("command-capture-race");
+      yield* orchestrator.dispatch({
+        type: "delegated_task.command.request",
+        commandId: CommandId.make("command:command-run:capture-race"),
+        parentThreadId: parent.threadId,
+        parentRunId: parent.runId,
+        parentNodeId: parent.rootNodeId,
+        title: "Checks",
+        driver: ProviderDriverKind.make("command"),
+        providerInstanceId: instanceId,
+        command,
+      });
+      const recorded = yield* orchestrator.getThreadProjection(parent.threadId);
+      const task = recorded.subagents[0]!;
+      const running = recorded.runs.find((run) => run.id === parent.runId)!;
+      const waiting = { ...running, status: "waiting" as const };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("event:capture-race:waiting"),
+            type: "run.updated",
+            threadId: parent.threadId,
+            runId: parent.runId,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: waiting,
+          },
+        ],
+      });
+      const queuedMessageId = MessageId.make("message:capture-race:queued");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("command:capture-race:queued"),
+        threadId: parent.threadId,
+        messageId: queuedMessageId,
+        text: "Next",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const queuedRun = (yield* orchestrator.getThreadProjection(parent.threadId)).runs.find(
+        (run) => run.userMessageId === queuedMessageId,
+      );
+      assert.equal(queuedRun?.status, "queued");
+
+      const checkpointId = CheckpointId.make("checkpoint:capture-race");
+      const commit = sink.commitCommand;
+      let captured = false;
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() =>
+          vi.spyOn(sink, "commitCommand").mockImplementation((input) =>
+            Effect.gen(function* () {
+              if (!captured && input.commandType === "delegated_task.command.complete") {
+                captured = true;
+                // Capture commits after the completion planned from the waiting run.
+                yield* commit({
+                  commandId: CommandId.make(`command:effect:checkpoint.capture:${parent.runId}`),
+                  threadId: parent.threadId,
+                  commandType: "checkpoint.capture",
+                  acceptedAt: now,
+                  effects: [],
+                  events: [
+                    {
+                      id: EventId.make("event:capture-race:completed"),
+                      type: "run.updated",
+                      threadId: parent.threadId,
+                      runId: parent.runId,
+                      providerInstanceId: instanceId,
+                      occurredAt: now,
+                      payload: { ...waiting, status: "completed", completedAt: now, checkpointId },
+                    },
+                  ],
+                });
+              }
+              return yield* commit(input);
+            }),
+          ),
+        ),
+        () =>
+          orchestrator.dispatch({
+            type: "delegated_task.command.complete",
+            commandId: CommandId.make("command:command-complete:capture-race"),
+            parentThreadId: parent.threadId,
+            taskId: task.id,
+            status: "completed",
+            result: "Exited with code 0 after 2s.",
+          }),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      yield* orchestrator.dispatch({
+        type: "queue.resume",
+        commandId: CommandId.make("command:capture-race:resume"),
+        threadId: parent.threadId,
+      });
+
+      assert.isTrue(captured);
+      const projection = yield* orchestrator.getThreadProjection(parent.threadId);
+      const parentRun = projection.runs.find((run) => run.id === parent.runId);
+      assert.equal(parentRun?.status, "completed");
+      assert.equal(parentRun?.checkpointId, checkpointId);
+      assert.deepEqual(parentRun?.delegatedCompletion?.delivery?.taskIds, [task.id]);
+      const next = projection.runs.find((run) => run.userMessageId === queuedMessageId);
+      assert.notEqual(next?.status, "queued");
     }),
   );
 });

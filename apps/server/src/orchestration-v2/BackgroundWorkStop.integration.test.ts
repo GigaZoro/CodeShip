@@ -289,6 +289,7 @@ const stopEarlierBackgroundWork = ({
                   type: "run.updated",
                   threadId,
                   occurredAt: now,
+                  reopensTerminalRun: true,
                   payload: run,
                 },
                 {
@@ -878,6 +879,7 @@ const stopEarlierBackgroundWork = ({
                 threadId,
                 runId: owner.id,
                 occurredAt: now,
+                reopensTerminalRun: true,
                 payload: { ...owner, status: "waiting", completedAt: null },
               },
             ],
@@ -929,6 +931,7 @@ const stopEarlierBackgroundWork = ({
                 threadId,
                 runId: older.id,
                 occurredAt: now,
+                reopensTerminalRun: true,
                 payload: { ...older, status: "starting", startedAt: null, completedAt: null },
               },
             ],

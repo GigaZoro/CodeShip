@@ -14,6 +14,7 @@ import {
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
+  type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   ProjectId,
@@ -1712,6 +1713,235 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
+  it.effect.each([
+    "write",
+    "writeWithEffects",
+    "writeIfRunCurrent",
+    "writeIfProviderThreadOwner",
+    "writeIfProviderThreadUnchanged",
+    "commitCommand",
+  ] as const)("refuses a %s that puts a finished run back to an earlier read", (writer) =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const name = `foundation-run-regression-${writer}`;
+      const threadId = ThreadId.make(`thread:${name}`);
+      const runId = RunId.make(`run:${name}`);
+      const attemptId = RunAttemptId.make(`attempt:${name}`);
+      const providerThreadId = ProviderThreadId.make(`provider-thread:${name}`);
+      const checkpointId = CheckpointId.make(`checkpoint:${name}`);
+      const commandId = CommandId.make(`command:${name}`);
+      const waiting: OrchestrationV2Run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId,
+        userMessageId: MessageId.make(`message:${name}`),
+        rootNodeId: null,
+        activeAttemptId: attemptId,
+        status: "waiting",
+        queuePosition: null,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: providerThreadId,
+        driver: providerDriver,
+        providerInstanceId,
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        pendingBackgroundTasks: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      const runEvent = (
+        id: string,
+        payload: OrchestrationV2Run,
+        type: "run.created" | "run.updated" = "run.updated",
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(`event:${name}:${id}`),
+        type,
+        threadId,
+        runId,
+        providerInstanceId,
+        occurredAt: now,
+        payload,
+      });
+      yield* eventSink.write({
+        events: [
+          threadCreatedEvent({
+            id: `event:${name}:thread`,
+            thread: makeThread(threadId, now),
+            now,
+          }),
+          runEvent("created", waiting, "run.created"),
+          {
+            id: EventId.make(`event:${name}:provider-thread`),
+            type: "provider-thread.updated",
+            threadId,
+            driver: providerDriver,
+            providerInstanceId,
+            occurredAt: now,
+            payload: providerThread,
+          },
+          // Checkpoint capture commits after the stale writer below read the waiting run.
+          runEvent("captured", { ...waiting, status: "completed", completedAt: now, checkpointId }),
+        ],
+      });
+
+      const events = [runEvent("stale", waiting)];
+      const write: Effect.Effect<unknown, EventSink.EventSinkV2Error> =
+        writer === "write"
+          ? eventSink.write({ commandId, events })
+          : writer === "writeWithEffects"
+            ? eventSink.writeWithEffects({ commandId, events, effects: [] })
+            : writer === "writeIfRunCurrent"
+              ? eventSink.writeIfRunCurrent({
+                  commandId,
+                  threadId,
+                  runId,
+                  activeAttemptId: attemptId,
+                  expectedStatus: "completed",
+                  events,
+                })
+              : writer === "writeIfProviderThreadOwner"
+                ? eventSink.writeIfProviderThreadOwner({
+                    commandId,
+                    providerThreadId,
+                    runId,
+                    activeAttemptId: attemptId,
+                    expectedLastRunOrdinal: 1,
+                    events,
+                  })
+                : writer === "writeIfProviderThreadUnchanged"
+                  ? projectionStore.getThreadRecords(threadId, ["providerThreads"]).pipe(
+                      Effect.orDie,
+                      Effect.flatMap(({ providerThreads }) =>
+                        eventSink.writeIfProviderThreadUnchanged({
+                          expected: providerThreads[0]!,
+                          events,
+                        }),
+                      ),
+                    )
+                  : eventSink.commitCommand({
+                      commandId,
+                      threadId,
+                      commandType: "delegated_task.command.complete",
+                      acceptedAt: now,
+                      events,
+                      effects: [],
+                    });
+      const error = yield* Effect.flip(Effect.asVoid(write));
+
+      assert.instanceOf(error.cause, EventSink.EventSinkRunRegressionError);
+      assert.equal(
+        error.cause.commandId,
+        writer === "writeIfProviderThreadUnchanged" ? undefined : commandId,
+      );
+      const run = (yield* projectionStore.getThreadRecords(threadId, ["runs"])).runs[0];
+      assert.equal(run?.status, "completed");
+      assert.equal(run?.checkpointId, checkpointId);
+    }),
+  );
+
+  it.effect("lets a marked retry reopen a finished run but never drops its checkpoint", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-run-reopen");
+      const runId = RunId.make("run:foundation-run-reopen");
+      const checkpointId = CheckpointId.make("checkpoint:foundation-run-reopen");
+      const failed: OrchestrationV2Run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("message:foundation-run-reopen"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "failed",
+        queuePosition: null,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      let sequence = 0;
+      const runEvent = (
+        payload: OrchestrationV2Run,
+        options: { readonly type?: "run.created"; readonly reopensTerminalRun?: true } = {},
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(`event:foundation-run-reopen:${++sequence}`),
+        type: options.type ?? "run.updated",
+        threadId,
+        runId,
+        providerInstanceId,
+        occurredAt: now,
+        payload,
+        ...(options.reopensTerminalRun === undefined ? {} : { reopensTerminalRun: true }),
+      });
+      yield* eventSink.write({
+        events: [
+          threadCreatedEvent({
+            id: "event:foundation-run-reopen:thread",
+            thread: makeThread(threadId, now),
+            now,
+          }),
+          runEvent(failed, { type: "run.created" }),
+        ],
+      });
+
+      yield* eventSink.write({
+        events: [
+          runEvent(
+            { ...failed, status: "preparing", completedAt: null },
+            { reopensTerminalRun: true },
+          ),
+        ],
+      });
+      yield* eventSink.write({
+        events: [runEvent({ ...failed, status: "completed", checkpointId })],
+      });
+      // A rewind moves a completed run to another terminal status and keeps its checkpoint.
+      yield* eventSink.write({
+        events: [runEvent({ ...failed, status: "rolled_back", checkpointId })],
+      });
+      const dropped = yield* Effect.flip(
+        eventSink.write({
+          events: [
+            runEvent(
+              { ...failed, status: "preparing", completedAt: null },
+              { reopensTerminalRun: true },
+            ),
+          ],
+        }),
+      );
+
+      assert.instanceOf(dropped.cause, EventSink.EventSinkRunRegressionError);
+      const run = (yield* projectionStore.getThreadRecords(threadId, ["runs"])).runs[0];
+      assert.equal(run?.status, "rolled_back");
+      assert.equal(run?.checkpointId, checkpointId);
+    }),
+  );
+
   it.effect("guards post-terminal provider-thread writes by attempt and run ordinal", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
@@ -1831,6 +2061,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             nodeId: rootNodeId,
             providerInstanceId,
             occurredAt: afterReplacement,
+            reopensTerminalRun: true,
             payload: {
               ...run,
               activeAttemptId: replacementAttemptId,

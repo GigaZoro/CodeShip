@@ -41,8 +41,6 @@ const projectId = ProjectId.make("project:checkpoint-capture-delegated");
 const runId = RunId.make("run:checkpoint-capture-delegated");
 const scopeId = CheckpointScopeId.make("scope:checkpoint-capture-delegated");
 const rootNodeId = NodeId.make("node:checkpoint-capture-delegated-root");
-const taskId = NodeId.make("node:checkpoint-capture-task");
-const deliveryMessageId = MessageId.make("message:checkpoint-capture-delivery");
 const providerThreadId = ProviderThreadId.make("provider-thread:checkpoint-capture-delegated");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
@@ -53,27 +51,12 @@ const modelSelection = {
 
 it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
   it.effect.each([false, true])(
-    "captures without decoding history or losing newer delegated completion, ref lookup fails=%s",
+    "captures without decoding history, ref lookup fails=%s",
     (refLookupFails) =>
       Effect.gen(function* () {
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const now = yield* DateTime.now;
-        const later = DateTime.add(now, { seconds: 1 });
 
-        const staleDelegatedCompletion = {
-          disposition: "open" as const,
-          nextGeneration: 1,
-          delivery: null,
-        };
-        const newerCohort = {
-          disposition: "open" as const,
-          nextGeneration: 2,
-          delivery: {
-            generation: 1,
-            messageId: deliveryMessageId,
-            taskIds: [taskId],
-          },
-        };
         const staleRun: OrchestrationV2Run = {
           id: runId,
           threadId,
@@ -90,7 +73,6 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           completedAt: null,
           checkpointId: null,
           contextHandoffId: null,
-          delegatedCompletion: staleDelegatedCompletion,
         };
         const rootNode = {
           id: rootNodeId,
@@ -344,37 +326,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             assert.equal(capturedEvent.payload.status, "ready");
             assert.deepEqual(capturedEvent.payload.files, []);
           }
-          assert.isUndefined(
-            runUpdated.payload.delegatedCompletion,
-            "checkpoint capture must omit delegatedCompletion so ProjectionStore can keep a newer cohort",
-          );
-
-          yield* projectionStore.apply({
-            id: EventId.make("event:checkpoint-capture:newer-cohort"),
-            type: "run.updated",
-            threadId,
-            runId,
-            nodeId: rootNodeId,
-            providerInstanceId,
-            occurredAt: later,
-            payload: {
-              ...staleRun,
-              delegatedCompletion: newerCohort,
-            },
-          });
-
           yield* projectionStore.apply(runUpdated);
-
-          const projectedRun = (yield* projectionStore.getCheckpointCaptureContext(threadId, {
-            runId,
-            scopeId,
-          })).run;
-          assert.isDefined(projectedRun);
-          assert.equal(projectedRun?.status, "completed");
-          assert.equal(projectedRun?.checkpointId, runUpdated.payload.checkpointId);
-          assert.deepEqual(projectedRun?.delegatedCompletion, newerCohort);
-          assert.equal(projectedRun?.delegatedCompletion?.delivery?.messageId, deliveryMessageId);
-          assert.deepEqual(projectedRun?.delegatedCompletion?.delivery?.taskIds, [taskId]);
           yield* Ref.set(committed, []);
           yield* service.execute({ threadId, runId, scopeId, willRetry: true });
           assert.deepEqual(yield* Ref.get(committed), []);

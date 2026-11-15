@@ -75,6 +75,7 @@ import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
+import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistrySync from "../provider/ProviderInstanceRegistrySync.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -6389,21 +6390,17 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         const now = yield* DateTime.now;
         yield* eventSink.write({
           events: [
-            {
-              id: EventId.make(`${threadId}:cohort`),
-              type: "run.updated",
+            delegatedCompletionUpdated({
+              id: `${threadId}:cohort`,
               threadId,
               runId: active.id,
               occurredAt: now,
-              payload: {
-                ...active,
-                delegatedCompletion: {
-                  disposition: "open",
-                  nextGeneration: 2,
-                  delivery: { messageId: completionMessageId, generation: 1, taskIds: [taskId] },
-                },
+              delegatedCompletion: {
+                disposition: "open",
+                nextGeneration: 2,
+                delivery: { messageId: completionMessageId, generation: 1, taskIds: [taskId] },
               },
-            },
+            }),
           ],
         });
         yield* orchestrator.dispatch({
@@ -8654,25 +8651,21 @@ it.layer(layerTest)("snooze queued runs", (it) => {
         if (kind === "delegated-completion") {
           yield* eventSink.write({
             events: [
-              {
-                id: EventId.make(`completion:${threadId}`),
-                type: "run.updated",
+              delegatedCompletionUpdated({
+                id: `completion:${threadId}`,
                 threadId,
                 runId: activeRun.id,
                 occurredAt: now,
-                payload: {
-                  ...activeRun,
-                  delegatedCompletion: {
-                    disposition: "open",
-                    nextGeneration: 2,
-                    delivery: {
-                      messageId: MessageId.make(`queued:${threadId}`),
-                      generation: 1,
-                      taskIds: [NodeId.make("snooze-queued-task")],
-                    },
+                delegatedCompletion: {
+                  disposition: "open",
+                  nextGeneration: 2,
+                  delivery: {
+                    messageId: MessageId.make(`queued:${threadId}`),
+                    generation: 1,
+                    taskIds: [NodeId.make("snooze-queued-task")],
                   },
                 },
-              },
+              }),
             ],
           });
         }

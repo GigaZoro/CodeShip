@@ -27,6 +27,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -201,26 +202,20 @@ it.effect.each(
         const taskId = NodeId.make("task:mailbox");
         if (mailbox) {
           const sink = yield* EventSink.EventSinkV2;
-          const current = yield* orchestrator.getThreadProjection(threadId);
-          const parentRun = current.runs.find((run) => run.id === first.runId)!;
           const now = yield* DateTime.now;
           yield* sink.write({
             events: [
-              {
-                id: EventId.make("mailbox:cohort"),
-                type: "run.updated",
+              delegatedCompletionUpdated({
+                id: "mailbox:cohort",
                 threadId,
                 runId: first.runId,
                 occurredAt: now,
-                payload: {
-                  ...parentRun,
-                  delegatedCompletion: {
-                    disposition: "open",
-                    nextGeneration: 2,
-                    delivery: { generation: 1, messageId, taskIds: [taskId] },
-                  },
+                delegatedCompletion: {
+                  disposition: "open",
+                  nextGeneration: 2,
+                  delivery: { generation: 1, messageId, taskIds: [taskId] },
                 },
-              },
+              }),
               {
                 id: EventId.make("mailbox:task"),
                 type: "subagent.updated",
