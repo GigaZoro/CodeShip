@@ -14,20 +14,26 @@ const ON_TIME_MS = 5;
 // waits out the process start in progress, which took up to 6 s on a loaded Windows machine.
 const MAX_SETTLE_WINDOWS = 20;
 
-// Runs inside the ProcessDeadline.expire span.
+// Untraced: a timing step of the deadline below.
 const elapsedMs = Effect.fnUntraced(function* (self: Effect.Effect<unknown>) {
   const startedAt = yield* Clock.monotonicTimeNanos;
   yield* self;
   return Number((yield* Clock.monotonicTimeNanos) - startedAt) / 1_000_000;
 });
 
-const expire = Effect.fn("ProcessDeadline.expire")(function* (ms: number) {
-  const lateMs = (yield* elapsedMs(Effect.sleep(ms))) - ms;
+const confirmExpired = Effect.fn("ProcessDeadline.expire")(function* (lateMs: number) {
   const settleMs = yield* elapsedMs(WorkerProcessSpawner.settle);
   if (lateMs <= 0 && settleMs <= ON_TIME_MS) return;
   for (let window = 0; window < MAX_SETTLE_WINDOWS; window++) {
     if ((yield* elapsedMs(Effect.sleep(SETTLE_WINDOW_MS))) - SETTLE_WINDOW_MS <= ON_TIME_MS) return;
   }
+});
+
+// Untraced until the deadline passes: the race interrupts the deadline of every process that
+// exits first, and a span for it would record each such command as a failure.
+const expire = Effect.fnUntraced(function* (ms: number) {
+  const lateMs = (yield* elapsedMs(Effect.sleep(ms))) - ms;
+  yield* confirmExpired(lateMs);
 });
 
 /**
