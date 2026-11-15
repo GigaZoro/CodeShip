@@ -1,3 +1,7 @@
+## 2026-11-15 — Agent commands on Windows no longer open a terminal window
+
+- On Windows, every command an agent ran with `t3_command_run` (tests, builds, installs) opened a console window titled `C:\WINDOWS\system32\cmd.exe`, which Windows 11 shows in Windows Terminal, and it stayed open until the command ended. These commands now run in a hidden window. Their output still goes to the chat as before.
+
 ## 2026-11-15 — A failed usage check no longer counts as a full one
 
 - An account whose usage check failed, and whose meters then came back during a turn, no longer looks as if its usage was fully read at the failed check. Only a successful check can free an account waiting out a limit.

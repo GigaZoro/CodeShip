@@ -426,7 +426,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   );
 
   it.effect(
-    "gives a Windows command the host environment under its agent's in Unicode, each name once, its ERRORLEVEL past cmd, writing no value and reading none to start",
+    "starts a Windows command in a hidden window with the host environment under its agent's in Unicode, each name once, its ERRORLEVEL past cmd, writing no value and reading none to start",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-windows-environment");
@@ -493,6 +493,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         );
         const launcherScript = launch.args.join(" ");
         assert.include(launcherScript, "CreateFlags = [uint32]1024");
+        // SW_HIDE: otherwise every command opens a console window on the user's desktop.
+        assert.include(launcherScript, "ShowWindow = [uint16]0");
         assert.include(
           launcherScript,
           "HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)",
