@@ -1733,7 +1733,7 @@ const make = Effect.gen(function* () {
         threadManagement,
         scope,
         threadId,
-        `Thread ${threadId} is no longer available.`,
+        `Thread ${threadId} was not found.`,
       );
     }
     const input = { projectId: shell.projectId, threadId };
