@@ -29,6 +29,12 @@
 
 - Moving a checkout while a turn names a worktree folder that has since been deleted failed with a git error. A folder that is gone now counts as no repository, so the move proceeds.
 
+## 2026-11-18 — Windows test runs check command environments and every platform's agent tools
+
+- Maintainers: the four tests of what a `t3_command_run` command gets from its agent's shell and the host environment, PATH included, run on Windows again, in PowerShell, instead of skipping there. The ACP terminal test runs its pipe in the host's shell too, cmd.exe on Windows.
+- The agent context budget test measures the tools an agent is offered on Linux, macOS and Windows on every host, so it passes on Windows and catches growth in Windows' own tools. `agentContextBudget.json` has a separate value for Windows, which adds the Visual Studio tools.
+- The i18n, Claude attachment and Antigravity attachment tests no longer depend on the machine's number format or its path separators.
+
 ## 2026-11-18 — Node rows in the state database no longer repeat their columns
 
 - About 800 of a node's 1.3 KB stored payload repeated ids and status that its row's columns already hold. New nodes store only the rest, reads put the values back, and a startup migration converts existing rows in steps while the server answers requests.

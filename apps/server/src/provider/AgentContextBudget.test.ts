@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { McpServer } from "effect/ai";
@@ -131,30 +132,22 @@ const PEER_LINK_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "t3_link_back",
 ]);
 
-it.effect("agent context matches the committed budget", () =>
+// The tools an agent is offered depend on the server's platform, not on the host running this test.
+const mcpToolListJsonBytes = (platform: NodeJS.Platform) =>
   Effect.gen(function* () {
     const mcp = yield* McpServer.McpServer;
-    const measured = {
-      claudeSystemAppendBytes: utf8Bytes(claudeSystemAppend()),
-      codexAdditionalContextBytes: utf8Bytes(codexAdditionalContext()),
-      // The model sees these fields. outputSchema and annotations are protocol metadata.
-      mcpToolListJsonBytes: utf8Bytes(
-        JSON.stringify(
-          mcp.tools
-            .filter(({ tool }) => !PEER_LINK_ONLY_TOOLS.has(tool.name))
-            .map(({ tool }) => ({
-              name: tool.name,
-              description: tool.description,
-              inputSchema: tool.inputSchema,
-            })),
-        ),
+    // The model sees these fields. outputSchema and annotations are protocol metadata.
+    return utf8Bytes(
+      JSON.stringify(
+        mcp.tools
+          .filter(({ tool }) => !PEER_LINK_ONLY_TOOLS.has(tool.name))
+          .map(({ tool }) => ({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          })),
       ),
-    };
-
-    expect(
-      measured,
-      "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
-    ).toEqual(budget);
+    );
   }).pipe(
     Effect.provide(
       McpHttpServer.layerTools.pipe(
@@ -162,5 +155,27 @@ it.effect("agent context matches the committed budget", () =>
         Layer.provide(toolHandlerServices),
       ),
     ),
-  ),
+    Effect.provideService(HostProcess.Platform, platform),
+  );
+
+it.effect("agent context on every platform matches the committed budget", () =>
+  Effect.gen(function* () {
+    const linux = yield* mcpToolListJsonBytes("linux");
+    expect(
+      yield* mcpToolListJsonBytes("darwin"),
+      "macOS registers Linux's tools; give it its own budget value if that changes.",
+    ).toBe(linux);
+    const measured = {
+      claudeSystemAppendBytes: utf8Bytes(claudeSystemAppend()),
+      codexAdditionalContextBytes: utf8Bytes(codexAdditionalContext()),
+      mcpToolListJsonBytes: linux,
+      // Windows adds the Visual Studio tools.
+      windowsMcpToolListJsonBytes: yield* mcpToolListJsonBytes("win32"),
+    };
+
+    expect(
+      measured,
+      "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
+    ).toEqual(budget);
+  }),
 );
