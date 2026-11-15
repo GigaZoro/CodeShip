@@ -31,6 +31,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as ProviderInstanceRegistrySync from "../provider/ProviderInstanceRegistrySync.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SharedSettings from "./SharedSettings.ts";
@@ -71,6 +72,11 @@ const version = (
 
 type SettingsService = Settings.ServerSettingsService["Service"];
 
+/** A registry that never catches up, as one waiting for a vault to unlock. */
+const layerRegistryStuck = Layer.mock(ProviderInstanceRegistrySync.ProviderInstanceRegistrySync)({
+  catchUp: Effect.never,
+});
+
 /**
  * Settings whose reads outside the write lock still say the machine follows shared settings, as
  * they did a moment before following was turned off.
@@ -105,6 +111,7 @@ const machine = (
   seen: ((real: SettingsService) => SettingsService) | undefined,
   managedPolicy: ManagedPolicySummary | undefined,
   environmentId: EnvironmentId,
+  registrySync: Layer.Layer<ProviderInstanceRegistrySync.ProviderInstanceRegistrySync> = ProviderInstanceRegistrySync.layerTest,
 ) => {
   const settings = Settings.layerTest({ followSharedSettings: true, ...overrides }, managedPolicy);
   const settingsSeen =
@@ -126,6 +133,7 @@ const machine = (
         ),
       }),
     ),
+    Layer.provideMerge(registrySync),
     Layer.provideMerge(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(environmentId),
@@ -187,6 +195,20 @@ it.effect("a write saved for all machines becomes the shared version of the keys
       );
     }),
   ),
+);
+
+it.effect("a write that leaves the provider instances alone does not wait for the registry", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(NOW));
+    const instances = yield* Ref.make<ReadonlyArray<string>>([]);
+    yield* Effect.gen(function* () {
+      const shared = yield* SharedSettings.SharedSettings;
+      const settings = yield* Settings.ServerSettingsService;
+      yield* shared.update({ defaultRuntimeMode: "full-access" }, undefined);
+      yield* shared.updateForAllMachines({ finalReviewByDefault: true });
+      expect(yield* finalReview(settings)).toBe(true);
+    }).pipe(Effect.provide(machine({}, instances, undefined, undefined, HERE, layerRegistryStuck)));
+  }),
 );
 
 it.effect("a write for one machine shares nothing", () =>
@@ -1176,6 +1198,35 @@ it.effect("a built-in provider shares only its name and whether it is on", () =>
   }),
 );
 
+it.effect("an account change that is already saved still waits for the registry", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(NOW));
+    const instances = yield* Ref.make<ReadonlyArray<string>>([]);
+    const catchUps = yield* Ref.make(0);
+    const local = workAccount("a");
+    const saved = { ...local, config: { ...local.config, autoCompactWindow: "400000" } };
+    yield* Effect.gen(function* () {
+      const shared = yield* SharedSettings.SharedSettings;
+      // Another write of the same value can still be on its way to the registry.
+      yield* shared.updateAccountConfigs({ [WORK]: { autoCompactWindow: "400000" } });
+      expect(yield* Ref.get(catchUps)).toBe(1);
+    }).pipe(
+      Effect.provide(
+        machine(
+          { providerInstances: { [WORK]: saved } },
+          instances,
+          undefined,
+          undefined,
+          HERE,
+          Layer.succeed(ProviderInstanceRegistrySync.ProviderInstanceRegistrySync, {
+            catchUp: Ref.update(catchUps, (count) => count + 1),
+          }),
+        ),
+      ),
+    );
+  }),
+);
+
 const CLAUDE_BUILT_IN = ProviderInstanceId.make("claudeAgent");
 
 it.effect(
@@ -1694,6 +1745,7 @@ const machineWithSecretStore = (environmentId: EnvironmentId, policy?: ManagedPo
     Layer.provideMerge(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
     ),
+    Layer.provideMerge(ProviderInstanceRegistrySync.layerTest),
     Layer.provideMerge(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(environmentId),

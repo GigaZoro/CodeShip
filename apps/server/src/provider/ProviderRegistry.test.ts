@@ -72,6 +72,7 @@ import * as PortScanner from "../preview/PortScanner.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import {
   readProviderStatusCache,
   resolveProviderStatusCachePath,
@@ -431,6 +432,48 @@ const buildRegistryOverSnapshot = Effect.fn("buildRegistryOverSnapshot")(functio
     ),
   ).pipe(Scope.provide(scope));
 });
+
+/**
+ * The provider registry over real provider instances and the given settings. It still needs the
+ * platform services, so a test can change one of them before providing them.
+ */
+const layerHydratedProviderRegistry = (
+  serverSettings: ServerSettingsModule.ServerSettingsService["Service"],
+) =>
+  ProviderRegistry.layer.pipe(
+    Layer.provideMerge(
+      ProviderInstanceRegistryHydration.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            PortScanner.layerTest,
+            ProviderInstallationGate.layer,
+            SqlitePersistence.layerMemory,
+          ),
+        ),
+      ),
+    ),
+    Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
+    Layer.provideMerge(Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings)),
+    Layer.provideMerge(ServerSecretStore.layer),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), {
+        prefix: "t3-provider-registry-",
+      }),
+    ),
+    Layer.provideMerge(layerTestHttpClient),
+    Layer.provideMerge(
+      Layer.succeed(
+        ProviderEventLoggers.ProviderEventLoggers,
+        ProviderEventLoggers.NoOpProviderEventLoggers,
+      ),
+    ),
+    Layer.provideMerge(ProviderLatestVersions.layer),
+    Layer.provideMerge(McpProviderSessions.layer),
+    Layer.provideMerge(ModelManifest.layerTest),
+    Layer.provideMerge(ResetCreditCoordinator.layerTest),
+    Layer.provideMerge(OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest))),
+    Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
+  );
 
 const layerTestNodeServices = Layer.mergeAll(
   ProviderLatestVersions.layer,
@@ -3657,42 +3700,7 @@ it.layer(
         } satisfies ServerSettingsModule.ServerSettingsService["Service"];
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-        const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(
-            ProviderInstanceRegistryHydration.layer.pipe(
-              Layer.provide(
-                Layer.mergeAll(
-                  PortScanner.layerTest,
-                  ProviderInstallationGate.layer,
-                  SqlitePersistence.layerMemory,
-                ),
-              ),
-            ),
-          ),
-          Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
-          Layer.provideMerge(
-            Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
-          ),
-          Layer.provideMerge(ServerSecretStore.layer),
-          Layer.provideMerge(
-            ServerConfig.layerTest(process.cwd(), {
-              prefix: "t3-provider-registry-",
-            }),
-          ),
-          Layer.provideMerge(layerTestHttpClient),
-          Layer.provideMerge(
-            Layer.succeed(
-              ProviderEventLoggers.ProviderEventLoggers,
-              ProviderEventLoggers.NoOpProviderEventLoggers,
-            ),
-          ),
-          Layer.provideMerge(ProviderLatestVersions.layer),
-          Layer.provideMerge(McpProviderSessions.layer),
-          Layer.provideMerge(ModelManifest.layerTest),
-          Layer.provideMerge(ResetCreditCoordinator.layerTest),
-          Layer.provideMerge(
-            OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
-          ),
+        const layerProviderRegistry = layerHydratedProviderRegistry(serverSettings).pipe(
           Layer.updateService(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
             ChildProcessSpawner.make((command) => {
               if (command._tag !== "StandardCommand") return spawner.spawn(command);
@@ -3707,7 +3715,6 @@ it.layer(
             }),
           ),
           Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-          Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
         );
         const runtimeServices = yield* Layer.build(layerProviderRegistry).pipe(
           Scope.provide(scope),
@@ -3783,44 +3790,8 @@ it.layer(
         );
         const scope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-        const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(
-            ProviderInstanceRegistryHydration.layer.pipe(
-              Layer.provide(
-                Layer.mergeAll(
-                  PortScanner.layerTest,
-                  ProviderInstallationGate.layer,
-                  SqlitePersistence.layerMemory,
-                ),
-              ),
-            ),
-          ),
-          Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
-          Layer.provideMerge(
-            Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
-          ),
-          Layer.provideMerge(ServerSecretStore.layer),
-          Layer.provideMerge(
-            ServerConfig.layerTest(process.cwd(), {
-              prefix: "t3-provider-registry-",
-            }),
-          ),
-          Layer.provideMerge(layerTestHttpClient),
-          Layer.provideMerge(
-            Layer.succeed(
-              ProviderEventLoggers.ProviderEventLoggers,
-              ProviderEventLoggers.NoOpProviderEventLoggers,
-            ),
-          ),
-          Layer.provideMerge(ProviderLatestVersions.layer),
-          Layer.provideMerge(McpProviderSessions.layer),
-          Layer.provideMerge(ModelManifest.layerTest),
-          Layer.provideMerge(ResetCreditCoordinator.layerTest),
-          Layer.provideMerge(
-            OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
-          ),
+        const layerProviderRegistry = layerHydratedProviderRegistry(serverSettings).pipe(
           Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-          Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
         );
         const runtimeServices = yield* Layer.build(layerProviderRegistry).pipe(
           Scope.provide(scope),
@@ -3837,6 +3808,54 @@ it.layer(
           assert.strictEqual(Object.hasOwn(ghost ?? {}, "setup"), false);
           assert.match(ghost?.unavailableReason ?? "", /ghostDriver/);
         }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
+    it.effect("runs a provider instance as soon as the settings write that adds it returns", () =>
+      Effect.gen(function* () {
+        const mutableServerSettings = yield* makeMutableServerSettingsService({
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: disabledDefaultSlots(
+            "codex",
+            "claudeAgent",
+            "cursor",
+            "grok",
+            "opencode",
+          ),
+        });
+        // The registry hears of saves in the background. This one hears of none, as when the
+        // client acts on a save before the background reconcile reaches it.
+        const serverSettings = {
+          ...mutableServerSettings,
+          subscribeChanges: Effect.succeed(Stream.never),
+        } satisfies ServerSettingsModule.ServerSettingsService["Service"];
+        const layerSharedSettings = SharedSettings.layer.pipe(
+          Layer.provideMerge(layerHydratedProviderRegistry(serverSettings)),
+          Layer.provideMerge(
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-here")),
+            }),
+          ),
+          Layer.provideMerge(SqlitePersistence.layerMemory),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        );
+
+        yield* Effect.gen(function* () {
+          const shared = yield* SharedSettings.SharedSettings;
+          const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+          const instanceId = ProviderInstanceId.make("codex_added");
+          yield* shared.updateProviderInstance(
+            {
+              operation: "create",
+              instanceId,
+              instance: { driver: ProviderDriverKind.make("codex"), enabled: false },
+            },
+            {},
+            undefined,
+          );
+
+          assert.notStrictEqual(yield* registry.getInstance(instanceId), undefined);
+        }).pipe(Effect.provide(layerSharedSettings));
       }),
     );
 

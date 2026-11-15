@@ -19,6 +19,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 import type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
 
 export type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
@@ -73,7 +74,28 @@ export const makeProviderAuthService = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const registrySync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
   const credentialChanges = yield* Semaphore.make(1);
+
+  // A sign-in or sign-out can save the account's credentials, which the registry runs in the
+  // background. Its caller hears of it once the registry runs them, so a turn it starts at once
+  // does not use the account's old instance.
+  const credentialsRunning = (instanceId: ProviderInstanceId) =>
+    registrySync.catchUp.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderSetupError({
+            instanceId,
+            operation: "reload",
+            detail: "The server could not reload this account after its sign-in changed.",
+            cause,
+          }),
+      ),
+    );
+  const afterCredentialsSaved = (state: ProviderAuthState) =>
+    Effect.as(credentialsRunning(state.instanceId), state);
+  const whenSignedIn = (state: ProviderAuthState) =>
+    state.phase === "succeeded" ? afterCredentialsSaved(state) : Effect.succeed(state);
 
   const getController = Effect.fn("ProviderAuthService.getController")(function* (
     instanceId: ProviderInstanceId,
@@ -238,7 +260,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
           );
         }),
       );
-    }),
+    }, Effect.flatMap(whenSignedIn)),
     start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId) {
       return yield* credentialChanges.withPermit(
         Effect.gen(function* () {
@@ -266,11 +288,11 @@ export const makeProviderAuthService = Effect.gen(function* () {
         });
       }
       return yield* auth.respond(ownerSessionId, input);
-    }),
+    }, Effect.flatMap(whenSignedIn)),
     complete: Effect.fn("ProviderAuthService.complete")(function* (input, ownerSessionId) {
       const auth = yield* getController(input.instanceId, "complete", input.purpose);
       return yield* auth.complete(ownerSessionId, input);
-    }),
+    }, Effect.flatMap(whenSignedIn)),
     cancel: Effect.fn("ProviderAuthService.cancel")(function* (input, ownerSessionId) {
       const auth = yield* getController(input.instanceId, "cancel", input.purpose);
       return yield* auth.cancel(ownerSessionId, input.flowId);
@@ -299,7 +321,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
           return yield* auth.logout(stopSessions(input.instanceId, auth.credentialBinding));
         }),
       );
-    }),
+    }, Effect.flatMap(afterCredentialsSaved)),
     subscribe: Function.flow(
       Effect.fn("ProviderAuthService.subscribe")(function* (input, ownerSessionId) {
         const changes = yield* registry.subscribeChanges;
@@ -312,6 +334,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
         ).pipe(
           Stream.changesWith((previous, next) => previous === next),
           Stream.switchMap((auth) => auth.subscribe(ownerSessionId)),
+          Stream.mapEffect(whenSignedIn),
         );
       }),
       Stream.unwrap,
@@ -332,6 +355,10 @@ export const makeProviderAuthService = Effect.gen(function* () {
           }),
         );
       },
+      (effect, input) =>
+        Effect.flatMap(effect, (loggedOut) =>
+          loggedOut ? Effect.as(credentialsRunning(input.instanceId), true) : Effect.succeed(false),
+        ),
     ),
   });
 });

@@ -1130,17 +1130,26 @@ describe("ProviderInstanceRegistry secret environment", () => {
     const invalidated: Array<ReadonlyArray<string>> = [];
     const created: Array<ResolvedProviderInstanceEnvironment> = [];
     const configs: Array<unknown> = [];
+    // A test can hold a build open, as a slow provider start does.
+    let createHold: Effect.Effect<void> = Effect.void;
     const driver: AnyProviderDriver = {
       driverKind,
       metadata: { displayName: "Fake" },
       configSchema,
       defaultConfig: () => ({}),
       create: (input) =>
-        Effect.sync(() => {
-          created.push(input.environment);
-          configs.push(input.config);
-          return { instanceId: input.instanceId, enabled: input.enabled } as ProviderInstance;
-        }),
+        Effect.suspend(() => createHold).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              created.push(input.environment);
+              configs.push(input.config);
+              return { instanceId: input.instanceId, enabled: input.enabled } as ProviderInstance;
+            }),
+          ),
+        ),
+    };
+    const holdCreates = (hold: Effect.Effect<void>) => {
+      createHold = hold;
     };
     const gate = Deferred.makeUnsafe<void>();
     const resolver = Layer.succeed(SecretResolver.SecretResolver, {
@@ -1180,7 +1189,18 @@ describe("ProviderInstanceRegistry secret environment", () => {
       yield* PubSub.take(changes);
       return built;
     });
-    return { vault, reads, invalidated, created, configs, configMap, make, makeGated, gate };
+    return {
+      vault,
+      reads,
+      invalidated,
+      created,
+      configs,
+      configMap,
+      make,
+      makeGated,
+      gate,
+      holdCreates,
+    };
   }
 
   it.effect("starts an instance with the secret its environment points at", () => {
@@ -1313,6 +1333,52 @@ describe("ProviderInstanceRegistry secret environment", () => {
       expect(yield* registry.listUnavailable).toEqual([]);
       expect(fixture.created).toHaveLength(1);
     });
+  });
+
+  it.effect("rebuilds the instance a secret reload retired when its caller goes away", () => {
+    const fixture = setup({ [secret.reference]: "sk-live" });
+    return Effect.gen(function* () {
+      const { registry, mutator } = yield* fixture.make;
+      const buildStarted = yield* Deferred.make<void>();
+      const releaseBuild = yield* Deferred.make<void>();
+      fixture.holdCreates(
+        Deferred.succeed(buildStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseBuild)),
+        ),
+      );
+
+      fixture.vault.set(secret.reference, "sk-rotated");
+      const reload = yield* Effect.forkChild(mutator.reloadSecrets(instanceId));
+      yield* Deferred.await(buildStarted);
+      expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+      yield* Fiber.interrupt(reload);
+      yield* Deferred.succeed(releaseBuild, undefined);
+      // Another change waits for the registry's lock and rebuilds nothing itself.
+      yield* mutator.reloadSecrets(ProviderInstanceId.make("fake_other"));
+
+      expect(yield* registry.getInstance(instanceId)).toBeDefined();
+      expect(fixture.created.map((environment) => environment[0]?.value)).toEqual([
+        "sk-live",
+        "sk-rotated",
+      ]);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("a reconcile of unchanged settings waits for the startup secret read", () => {
+    const fixture = setup({ [secret.reference]: "sk-live" });
+    return Effect.gen(function* () {
+      const { registry, mutator } = yield* fixture.makeGated;
+      const reconcile = yield* Effect.forkChild(mutator.reconcile({ ...fixture.configMap }), {
+        startImmediately: true,
+      });
+      expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+
+      yield* Deferred.succeed(fixture.gate, undefined);
+      yield* Fiber.join(reconcile);
+
+      expect(yield* registry.getInstance(instanceId)).toBeDefined();
+      expect(fixture.created).toHaveLength(1);
+    }).pipe(Effect.scoped);
   });
 
   it.effect("starts without waiting for secrets to be read", () => {

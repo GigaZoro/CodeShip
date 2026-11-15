@@ -16,6 +16,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -594,12 +595,18 @@ export const makeProviderInstanceRegistry = Effect.fn(
   });
   const configMapRef = yield* Ref.make(input.configMap);
   const semaphore = yield* Semaphore.make(1);
+  // A reconcile retires instances before it builds their replacements, so a caller that goes away
+  // must not cut it, such as a secret reload whose request closed.
+  const inRegistryScope = <A, E>(effect: Effect.Effect<A, E>) =>
+    effect.pipe(Effect.forkIn(parentScope), Effect.flatMap(Fiber.join));
   const reconcile: ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutatorShape["reconcile"] =
     (configMap) =>
-      semaphore.withPermits(1)(
-        Ref.set(configMapRef, configMap).pipe(
-          Effect.andThen(reconcileWithR(configMap)),
-          Effect.provideContext(driverContext),
+      inRegistryScope(
+        semaphore.withPermits(1)(
+          Ref.set(configMapRef, configMap).pipe(
+            Effect.andThen(reconcileWithR(configMap)),
+            Effect.provideContext(driverContext),
+          ),
         ),
       );
 
@@ -669,6 +676,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
     },
     (effect) => semaphore.withPermits(1)(effect),
     Effect.provideContext(driverContext),
+    inRegistryScope,
   );
   const reloadSecrets: ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutatorShape["reloadSecrets"] =
     (instanceId) =>

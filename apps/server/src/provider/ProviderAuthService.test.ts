@@ -5,6 +5,7 @@ import {
   ProviderSessionId,
   ProviderSetupError,
   ProviderThreadId,
+  ServerSettingsError,
   ThreadId,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ThreadShell,
@@ -26,6 +27,7 @@ import { AcpProviderCapabilitiesV2 } from "@t3tools/provider-acp/server/adapter"
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderAuthService from "./ProviderAuthService.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 
 const instanceId = ProviderInstanceId.make("antigravity-personal");
 const otherInstanceId = ProviderInstanceId.make("antigravity-work");
@@ -138,6 +140,8 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
     beforeListSessions?: Effect.Effect<void>;
     onLookup?: Effect.Effect<void>;
     onListThreads?: (instances: ProviderInstance[]) => void;
+    /** Runs when the service waits for the registry to run saved credentials. */
+    catchUp?: Effect.Effect<void, ServerSettingsError>;
   } = {},
 ) {
   const actions: string[] = [];
@@ -271,6 +275,9 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
           listInstances: Effect.succeed(instances),
           subscribeChanges: PubSub.subscribe(registryChanges),
         }),
+        Layer.mock(ProviderInstanceRegistrySync.ProviderInstanceRegistrySync)({
+          catchUp: input.catchUp ?? Effect.void,
+        }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getRecoveryThreadIds: () =>
             Effect.gen(function* () {
@@ -367,7 +374,11 @@ const makeStreamingController = Effect.fn("ProviderAuthService.test.makeStreamin
 );
 
 const makeSubscriptionHarness = Effect.fn("ProviderAuthService.test.makeSubscriptionHarness")(
-  function* (initial: ProviderInstance, replaceDuringFirstLookup?: ProviderInstance) {
+  function* (
+    initial: ProviderInstance,
+    replaceDuringFirstLookup?: ProviderInstance,
+    catchUp: Effect.Effect<void, ServerSettingsError> = Effect.void,
+  ) {
     const changes = yield* PubSub.unbounded<void>();
     let current: ProviderInstance | undefined = initial;
     let pendingReplacement = replaceDuringFirstLookup;
@@ -393,6 +404,7 @@ const makeSubscriptionHarness = Effect.fn("ProviderAuthService.test.makeSubscrip
                 return instance;
               }),
           }),
+          Layer.mock(ProviderInstanceRegistrySync.ProviderInstanceRegistrySync)({ catchUp }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
         ),
@@ -509,6 +521,65 @@ describe("ProviderAuthService", () => {
       const complete = yield* service.complete({ instanceId, flowId, callbackUrl }, owner);
       assert.strictEqual(complete.phase, "succeeded");
       assert.strictEqual(complete.authorizationUrl, null);
+    }),
+  );
+
+  it.effect("answers a finished sign-in or sign-out once the registry runs what it saved", () =>
+    Effect.gen(function* () {
+      const { service, actions } = yield* makeHarness({
+        catchUp: Effect.sync(() => {
+          actions.push("registry-caught-up");
+        }),
+      });
+      yield* service.start({ instanceId }, owner);
+      assert.notInclude(actions, "registry-caught-up");
+
+      yield* service.complete({ instanceId, flowId, callbackUrl }, owner);
+      assert.strictEqual(actions.at(-1), "registry-caught-up");
+
+      yield* service.logout({ instanceId });
+      assert.deepStrictEqual(actions.slice(-2), ["native-logout", "registry-caught-up"]);
+    }),
+  );
+
+  it.effect("reports a finished sign-in the registry could not run as a setup error", () =>
+    Effect.gen(function* () {
+      const { service } = yield* makeHarness({
+        catchUp: Effect.fail(
+          new ServerSettingsError({ settingsPath: "test settings", operation: "read-file" }),
+        ),
+      });
+      yield* service.start({ instanceId }, owner);
+
+      const error = yield* Effect.flip(
+        service.complete({ instanceId, flowId, callbackUrl }, owner),
+      );
+      assert.instanceOf(error, ProviderSetupError);
+      assert.strictEqual(error.instanceId, instanceId);
+      assert.strictEqual(error.operation, "reload");
+    }),
+  );
+
+  it.effect("passes on a finished sign-in once the registry runs what it saved", () =>
+    Effect.gen(function* () {
+      const controller = yield* makeStreamingController(owner);
+      const catchUps = yield* Queue.unbounded<void>();
+      const caughtUp = yield* Deferred.make<void>();
+      const { service } = yield* makeSubscriptionHarness(
+        makeInstance({ instanceId, enabled: true, auth: controller.auth }),
+        undefined,
+        Queue.offer(catchUps, undefined).pipe(Effect.andThen(Deferred.await(caughtUp))),
+      );
+      const { states } = yield* observeAuth(service.subscribe({ instanceId }, owner));
+      assert.deepStrictEqual(yield* Queue.take(states), idleAuthState);
+
+      const succeeded: ProviderAuthState = { ...idleAuthState, phase: "succeeded" };
+      yield* SubscriptionRef.set(controller.state, succeeded);
+      yield* Queue.take(catchUps);
+      assert.strictEqual(yield* Queue.size(states), 0);
+
+      yield* Deferred.succeed(caughtUp, undefined);
+      assert.deepStrictEqual(yield* Queue.take(states), succeeded);
     }),
   );
 

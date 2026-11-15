@@ -3,13 +3,17 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderInstanceConfigMap,
   SecretProviderId,
   SecretProviderKind,
   type ServerSettings,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -20,10 +24,12 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import {
   DEV_REPLAY_INSTANCE_ID,
   deriveProviderInstanceConfigMap,
-  layerSettingsWatcher,
+  layerSettingsSync,
+  patchChangesProviderInstances,
   seedDevReplayInstance,
 } from "./ProviderInstanceRegistryHydration.ts";
-import { ProviderInstanceRegistryMutator } from "./ProviderInstanceRegistryMutator.ts";
+import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
+import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 
 const projectId = ProjectId.make("project-a");
 const instanceId = ProviderInstanceId.make("codex_work");
@@ -148,7 +154,30 @@ describe("seedDevReplayInstance", () => {
   );
 });
 
-describe("layerSettingsWatcher", () => {
+describe("patchChangesProviderInstances", () => {
+  it("is true only for the settings provider instances come from", () => {
+    expect(patchChangesProviderInstances({ providerInstances: {} })).toBe(true);
+    expect(patchChangesProviderInstances({ projectSettingsOverrides: {} })).toBe(true);
+    expect(patchChangesProviderInstances({ defaultRuntimeMode: "full-access" })).toBe(false);
+  });
+});
+
+const codexDriver = ProviderDriverKind.make("codex");
+const initialConfigMap = deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS);
+
+/** The sync over test settings, a registry `reconcile` and a watcher fed by `changes`. */
+const layerSync = (
+  changes: Queue.Queue<ServerSettings>,
+  reconcile: (configMap: ProviderInstanceConfigMap) => Effect.Effect<void>,
+) =>
+  layerSettingsSync(Stream.fromQueue(changes), DEFAULT_SERVER_SETTINGS).pipe(
+    Layer.provideMerge(
+      Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({ reconcile }),
+    ),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+  );
+
+describe("layerSettingsSync", () => {
   const provider = (label: string) => ({
     [SecretProviderId.make("personal")]: {
       kind: SecretProviderKind.make("one_password"),
@@ -162,13 +191,16 @@ describe("layerSettingsWatcher", () => {
       const changes = yield* Queue.unbounded<ServerSettings>();
       const reconciled = yield* Queue.unbounded<void>();
       let reloads = 0;
-      const mutator = Layer.succeed(ProviderInstanceRegistryMutator, {
-        reconcile: () => Queue.offer(reconciled, undefined),
-        reloadSecrets: () => Effect.sync(() => void reloads++),
-        applySecret: () => Effect.succeed([]),
-      });
+      const mutator = Layer.succeed(
+        ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+        {
+          reconcile: () => Queue.offer(reconciled, undefined),
+          reloadSecrets: () => Effect.sync(() => void reloads++),
+          applySecret: () => Effect.succeed([]),
+        },
+      );
       yield* Layer.build(
-        layerSettingsWatcher(Stream.fromQueue(changes), initial).pipe(Layer.provide(mutator)),
+        layerSettingsSync(Stream.fromQueue(changes), initial).pipe(Layer.provide(mutator)),
       );
       return {
         reloads: () => reloads,
@@ -210,5 +242,152 @@ describe("layerSettingsWatcher", () => {
 
         expect(reloads()).toBe(1);
       }).pipe(Effect.scoped, Effect.provide(ServerSettingsService.layerTest())),
+  );
+
+  // The registry can lack an instance its settings name, after a rebuild that failed or while its
+  // startup secret read waits on a vault, so unchanged settings are no proof that it runs them.
+  effectIt.effect("a catch-up reconciles settings that have not changed", () =>
+    Effect.gen(function* () {
+      const reconciled: Array<ProviderInstanceConfigMap> = [];
+      const reconcile = (configMap: ProviderInstanceConfigMap) =>
+        Effect.sync(() => {
+          reconciled.push(configMap);
+        });
+
+      yield* Effect.gen(function* () {
+        const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+        yield* sync.catchUp;
+
+        expect(reconciled).toEqual([initialConfigMap]);
+      }).pipe(Effect.provide(layerSync(yield* Queue.unbounded<ServerSettings>(), reconcile)));
+    }),
+  );
+
+  effectIt.effect("a catch-up fails when the reconcile it runs fails", () =>
+    Effect.gen(function* () {
+      const reconcile = () => Effect.die("provider start failed");
+
+      yield* Effect.gen(function* () {
+        const settings = yield* ServerSettingsService;
+        const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+        yield* settings.updateProviderInstance({
+          operation: "create",
+          instanceId,
+          instance: { driver: codexDriver },
+        });
+
+        expect(Exit.isFailure(yield* Effect.exit(sync.catchUp))).toBe(true);
+      }).pipe(Effect.provide(layerSync(yield* Queue.unbounded<ServerSettings>(), reconcile)));
+    }),
+  );
+
+  effectIt.effect(
+    "a catch-up waits for a reconcile building other instances, then applies its own",
+    () =>
+      Effect.gen(function* () {
+        const changes = yield* Queue.unbounded<ServerSettings>();
+        const reconcileStarted = yield* Deferred.make<void>();
+        const releaseReconcile = yield* Deferred.make<void>();
+        const reconciled: Array<ProviderInstanceConfigMap> = [];
+        let building = false;
+        const reconcile = (configMap: ProviderInstanceConfigMap) =>
+          Effect.gen(function* () {
+            reconciled.push(configMap);
+            if (reconciled.length > 1) return;
+            building = true;
+            yield* Deferred.succeed(reconcileStarted, undefined);
+            yield* Deferred.await(releaseReconcile);
+            building = false;
+          });
+
+        yield* Effect.gen(function* () {
+          const settings = yield* ServerSettingsService;
+          const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+          yield* settings.updateProviderInstance({
+            operation: "create",
+            instanceId,
+            instance: { driver: codexDriver },
+          });
+          yield* Queue.offer(changes, yield* settings.getSettings);
+          yield* Deferred.await(reconcileStarted);
+          // Removed before that build ends: the saved instances are the ones applied before it.
+          yield* settings.updateProviderInstance({ operation: "remove", instanceId });
+          const writer = yield* Effect.forkChild(
+            sync.catchUp.pipe(Effect.andThen(Effect.sync(() => building))),
+            { startImmediately: true },
+          );
+          yield* Deferred.succeed(releaseReconcile, undefined);
+
+          expect(yield* Fiber.join(writer)).toBe(false);
+          expect(reconciled.at(-1)).toEqual(initialConfigMap);
+        }).pipe(Effect.provide(layerSync(changes, reconcile)));
+      }),
+  );
+
+  effectIt.effect("a catch-up after a failed reconcile rebuilds the saved instances", () =>
+    Effect.gen(function* () {
+      const changes = yield* Queue.unbounded<ServerSettings>();
+      const reconcileEnded = yield* Deferred.make<void>();
+      const reconciled: Array<ProviderInstanceConfigMap> = [];
+      // The first reconcile stops after retiring instances, so the registry matches no map.
+      const reconcile = (configMap: ProviderInstanceConfigMap) =>
+        Effect.suspend(() => {
+          reconciled.push(configMap);
+          return reconciled.length === 1
+            ? Effect.die("provider start failed").pipe(
+                Effect.ensuring(Deferred.succeed(reconcileEnded, undefined)),
+              )
+            : Effect.void;
+        });
+
+      yield* Effect.gen(function* () {
+        const settings = yield* ServerSettingsService;
+        const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+        yield* settings.updateProviderInstance({
+          operation: "create",
+          instanceId,
+          instance: { driver: codexDriver },
+        });
+        yield* Queue.offer(changes, yield* settings.getSettings);
+        yield* Deferred.await(reconcileEnded);
+        yield* settings.updateProviderInstance({ operation: "remove", instanceId });
+        yield* sync.catchUp;
+
+        expect(reconciled).toHaveLength(2);
+        expect(reconciled.at(-1)).toEqual(initialConfigMap);
+      }).pipe(Effect.provide(layerSync(changes, reconcile)));
+    }),
+  );
+
+  effectIt.effect("finishes a catch-up reconcile when the writer waiting on it goes away", () =>
+    Effect.gen(function* () {
+      const reconcileStarted = yield* Deferred.make<void>();
+      const releaseReconcile = yield* Deferred.make<void>();
+      const reconcileOutcome = yield* Deferred.make<"finished" | "interrupted">();
+      // A reconcile cut between creating an instance and recording it would leave that instance
+      // running outside the registry.
+      const reconcile = () =>
+        Deferred.succeed(reconcileStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseReconcile)),
+          Effect.andThen(Deferred.succeed(reconcileOutcome, "finished")),
+          Effect.onInterrupt(() => Deferred.succeed(reconcileOutcome, "interrupted")),
+        );
+
+      yield* Effect.gen(function* () {
+        const settings = yield* ServerSettingsService;
+        const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+        yield* settings.updateProviderInstance({
+          operation: "create",
+          instanceId,
+          instance: { driver: codexDriver },
+        });
+        const writer = yield* Effect.forkChild(sync.catchUp);
+        yield* Deferred.await(reconcileStarted);
+        yield* Fiber.interrupt(writer);
+        yield* Deferred.succeed(releaseReconcile, undefined);
+
+        expect(yield* Deferred.await(reconcileOutcome)).toBe("finished");
+      }).pipe(Effect.provide(layerSync(yield* Queue.unbounded<ServerSettings>(), reconcile)));
+    }),
   );
 });

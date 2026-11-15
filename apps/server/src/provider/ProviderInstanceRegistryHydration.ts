@@ -7,16 +7,19 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   ServerSettings,
+  type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import * as NodeUtil from "node:util";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import type * as SqlClient from "effect/sql/SqlClient";
 import * as Path from "effect/Path";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as ManagedProviders from "../policy/managedProviders.ts";
@@ -25,6 +28,7 @@ import * as SecretResolver from "../secrets/SecretResolver.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "./builtInDrivers.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
+import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "./ProviderOrchestrationAdapterInfrastructure.ts";
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as ProviderHostLive from "./ProviderHostLive.ts";
@@ -52,8 +56,11 @@ type ProviderInstanceRegistryHydrationEnv =
   // Adapter ids read which subagent threads predate short ids.
   | SqlClient.SqlClient;
 
+/** The settings the registry's provider instances come from, and the only ones it reads. */
+const PROVIDER_INSTANCE_SETTING_KEYS = ["providerInstances", "projectSettingsOverrides"] as const;
+
 export const deriveProviderInstanceConfigMap = (
-  settings: ServerSettings,
+  settings: Pick<ServerSettings, (typeof PROVIDER_INSTANCE_SETTING_KEYS)[number]>,
 ): ProviderInstanceConfigMap => {
   const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
 
@@ -85,6 +92,10 @@ export const deriveProviderInstanceConfigMap = (
 
   return merged as ProviderInstanceConfigMap;
 };
+
+/** Whether a write of `patch` can add, change or remove a provider instance. */
+export const patchChangesProviderInstances = (patch: ServerSettingsPatch): boolean =>
+  PROVIDER_INSTANCE_SETTING_KEYS.some((key) => patch[key] !== undefined);
 
 export const DEV_REPLAY_INSTANCE_ID = ProviderInstanceId.make("devReplay");
 
@@ -131,33 +142,43 @@ export const seedDevReplayInstance = Effect.fn(
 const vaultConfigs = (settings: ServerSettings) =>
   Object.entries(settings.secretProviders).map(([id, { kind, config }]) => [id, kind, config]);
 
-export const layerSettingsWatcher = (
+/**
+ * Reconciles the registry with the current settings on every saved change and on a writer's
+ * `catchUp`, under one lock, so an older map never replaces a newer one. Unchanged settings still
+ * reconcile: that rebuilds what a failed rebuild left out and waits for secrets still being read.
+ */
+export const layerSettingsSync = (
   settingsChanges: Stream.Stream<ServerSettings>,
   // The settings the registry was built from: a change queued during startup differs from these.
   initialSettings: ServerSettings | undefined,
 ) =>
-  Layer.effectDiscard(
+  Layer.effect(
+    ProviderInstanceRegistrySync.ProviderInstanceRegistrySync,
     Effect.gen(function* () {
       const mutator = yield* ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator;
       const serverSettings = yield* Settings.ServerSettingsService;
+      const layerScope = yield* Effect.scope;
+      const lock = yield* Semaphore.make(1);
       let secretProviders = initialSettings && vaultConfigs(initialSettings);
+      // A failed current read must leave the registry intact.
+      const reconcileCurrent = lock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* serverSettings.getSettings;
+          yield* mutator.reconcile(deriveProviderInstanceConfigMap(current));
+          // Reconcile leaves instances parked on an unreadable secret alone,
+          // and a corrected secret provider is what can make them readable.
+          const next = vaultConfigs(current);
+          if (!NodeUtil.isDeepStrictEqual(secretProviders, next)) {
+            secretProviders = next;
+            yield* mutator.reloadSecrets();
+          }
+        }),
+      );
+
+      // The subscription predates the seed read, so a queued change can be older than the seed.
       yield* settingsChanges.pipe(
         Stream.runForEach(() =>
-          // The subscription predates the seed read, so a queued change can be
-          // older than the seed. A failed current read must leave the registry intact.
-          serverSettings.getSettings.pipe(
-            Effect.flatMap((current) =>
-              Effect.gen(function* () {
-                yield* mutator.reconcile(deriveProviderInstanceConfigMap(current));
-                // Reconcile leaves instances parked on an unreadable secret alone,
-                // and a corrected secret provider is what can make them readable.
-                const next = vaultConfigs(current);
-                if (!NodeUtil.isDeepStrictEqual(secretProviders, next)) {
-                  secretProviders = next;
-                  yield* mutator.reloadSecrets();
-                }
-              }),
-            ),
+          reconcileCurrent.pipe(
             Effect.catchCause((cause) =>
               Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
             ),
@@ -165,12 +186,19 @@ export const layerSettingsWatcher = (
         ),
         Effect.forkScoped,
       );
+
+      return ProviderInstanceRegistrySync.ProviderInstanceRegistrySync.of({
+        // Runs in this layer's scope, so a writer that goes away stops waiting while the lock stays
+        // held until its reconcile ends: reconciles reach the registry in the order they read.
+        catchUp: reconcileCurrent.pipe(Effect.forkIn(layerScope), Effect.flatMap(Fiber.join)),
+      });
     }),
   );
 
 export const layer: Layer.Layer<
   | ProviderInstanceRegistry.ProviderInstanceRegistry
-  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator
+  | ProviderInstanceRegistrySync.ProviderInstanceRegistrySync,
   never,
   ProviderInstanceRegistryHydrationEnv
 > = Layer.unwrap(
@@ -209,13 +237,14 @@ export const layer: Layer.Layer<
       Layer.provide(SecretResolver.layer),
     );
 
-    return layerSettingsWatcher(settingsChanges, initialSettings).pipe(
+    return layerSettingsSync(settingsChanges, initialSettings).pipe(
       Layer.provideMerge(layerMutable),
     );
   }),
 ) as Layer.Layer<
   | ProviderInstanceRegistry.ProviderInstanceRegistry
-  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator,
+  | ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator
+  | ProviderInstanceRegistrySync.ProviderInstanceRegistrySync,
   never,
   ProviderInstanceRegistryHydrationEnv
 >;

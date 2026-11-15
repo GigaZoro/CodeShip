@@ -42,6 +42,7 @@ import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.t
 import * as ProjectService from "../project/ProjectService.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistrySync from "../provider/ProviderInstanceRegistrySync.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -119,7 +120,7 @@ const layerTestProviderInstanceRegistry = Layer.succeed(
     streamChanges: Stream.empty,
     subscribeChanges: Effect.never,
   },
-);
+).pipe(Layer.merge(ProviderInstanceRegistrySync.layerTest));
 
 const layerTest = Layer.mergeAll(
   RuntimeLayer.layer,

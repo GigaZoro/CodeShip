@@ -40,6 +40,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { BUILT_IN_DRIVERS } from "../provider/builtInDrivers.ts";
+import { patchChangesProviderInstances } from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ProviderInstanceRegistrySync from "../provider/ProviderInstanceRegistrySync.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import {
@@ -362,7 +364,8 @@ interface ShareSink {
 /**
  * The versions of the settings this machine shares with the user's other machines, and the rules
  * for taking a newer one. Every check and change to a version happens under the settings write lock,
- * so a version never disagrees with the value a write left in settings.json.
+ * so a version never disagrees with the value a write left in settings.json. A write that changes
+ * a provider instance returns once the registry runs it; other writes do not wait for it.
  */
 export class SharedSettings extends Context.Service<
   SharedSettings,
@@ -433,6 +436,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const settings = yield* Settings.ServerSettingsService;
   const providers = yield* ProviderRegistry.ProviderRegistry;
+  const registrySync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const sharing = yield* accountSharingDrivers(BUILT_IN_DRIVERS);
 
@@ -1337,19 +1341,23 @@ const make = Effect.gen(function* () {
     servedVersions,
     update: Effect.fn("SharedSettings.update")(function* (patch, share) {
       const taken = yield* delivered(patch, share);
-      return yield* settings.updateSettings(
+      const saved = yield* settings.updateSettings(
         patch,
         yield* writeHooks(patch, taken.share, false, undefined, taken.allowedAheadMs),
       );
+      if (patchChangesProviderInstances(patch)) yield* registrySync.catchUp;
+      return saved;
     }),
     updateProviderInstance: Effect.fn("SharedSettings.updateProviderInstance")(
       function* (mutation, patch, share) {
         const taken = yield* delivered(patch, share);
-        return yield* settings.updateProviderInstance(
+        const saved = yield* settings.updateProviderInstance(
           mutation,
           patch,
           yield* writeHooks(patch, taken.share, true, undefined, taken.allowedAheadMs),
         );
+        yield* registrySync.catchUp;
+        return saved;
       },
     ),
     updateForAllMachines: Effect.fn("SharedSettings.updateForAllMachines")(
@@ -1366,13 +1374,19 @@ const make = Effect.gen(function* () {
         );
         // `prepare` stamps the change under the lock; it refuses the write when it cannot.
         if (sink.stamp === undefined) return yield* refuse("take-shared-setting-unfollowed");
+        if (patchChangesProviderInstances(patch)) yield* registrySync.catchUp;
         return { settings: stored, share: { stamp: sink.stamp, values: sink.values } };
       },
     ),
     accountConfigs: Effect.fn("SharedSettings.accountConfigs")((current) =>
       Effect.succeed(accountSharedConfigs(sharing, current)),
     ),
-    updateAccountConfigs: updateAccountConfigsWith(sharing, settings, accountWriteHooks),
+    updateAccountConfigs: updateAccountConfigsWith(
+      sharing,
+      settings,
+      accountWriteHooks,
+      registrySync.catchUp,
+    ),
     applyPulled,
     retryWaiting,
   });
@@ -1380,7 +1394,8 @@ const make = Effect.gen(function* () {
 
 /**
  * `updateAccountConfigs` on a machine whose account writes take the hooks `hooksFor` gives for
- * their patch and the accounts a change for all machines names, or none.
+ * their patch and the accounts a change for all machines names, or none, and run `catchUp` before
+ * they return.
  */
 const updateAccountConfigsWith = (
   sharing: AccountSharingDrivers,
@@ -1389,6 +1404,7 @@ const updateAccountConfigsWith = (
     patch: ServerSettingsPatch,
     forAllMachines: ReadonlyArray<ProviderInstanceId> | undefined,
   ) => Effect.Effect<Settings.SettingsWriteHooks, ServerSettingsError>,
+  catchUp: Effect.Effect<void, ServerSettingsError>,
 ): SharedSettings["Service"]["updateAccountConfigs"] =>
   Effect.fn("SharedSettings.updateAccountConfigs")(function* (changes, options) {
     const forAllMachines = options?.forAllMachines === true;
@@ -1406,9 +1422,11 @@ const updateAccountConfigsWith = (
     const mutationsOf = (latest: ServerSettings) =>
       accountConfigMutations(latest.providerInstances, planned);
     if (!forAllMachines && Object.keys(patch).length === 0 && mutationsOf(current)?.length === 0) {
+      // Another write of these values can still be on its way to the registry.
+      yield* catchUp;
       return current;
     }
-    return yield* settings.updateProviderInstance(
+    const saved = yield* settings.updateProviderInstance(
       mutationsOf,
       patch,
       yield* hooksFor(
@@ -1416,6 +1434,8 @@ const updateAccountConfigsWith = (
         forAllMachines ? planned.map((change) => change.instanceId) : undefined,
       ),
     );
+    yield* catchUp;
+    return saved;
   });
 
 export const layer = Layer.effect(SharedSettings, make);
@@ -1431,7 +1451,12 @@ export const layerTest = Layer.effect(
       accountConfigs: Effect.fn("SharedSettings.test.accountConfigs")((current) =>
         Effect.succeed(accountSharedConfigs(sharing, current)),
       ),
-      updateAccountConfigs: updateAccountConfigsWith(sharing, settings, () => Effect.succeed({})),
+      updateAccountConfigs: updateAccountConfigsWith(
+        sharing,
+        settings,
+        () => Effect.succeed({}),
+        Effect.void,
+      ),
       update: Effect.fn("SharedSettings.test.update")((patch) => settings.updateSettings(patch)),
       updateProviderInstance: Effect.fn("SharedSettings.test.updateProviderInstance")(
         (mutation, patch) => settings.updateProviderInstance(mutation, patch),
