@@ -993,7 +993,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const backOffAfterDefect = Effect.suspend(() => {
     const retryDelay = subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, defectRetries);
     defectRetries += 1;
-    return setStreamError("Could not synchronize the thread.").pipe(
+    return setStreamError(t("Could not synchronize the thread.")).pipe(
       Effect.andThen(Effect.sleep(retryDelay)),
     );
   });

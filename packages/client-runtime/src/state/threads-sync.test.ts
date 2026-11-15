@@ -30,6 +30,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import { activateLanguage } from "@t3tools/shared/i18n";
 import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
@@ -40,6 +41,7 @@ import {
   type SupervisorConnectionState,
 } from "../connection/model.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
+import uk from "../i18n/locales/uk.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import {
@@ -2456,6 +2458,15 @@ describe("EnvironmentThreads", () => {
     "resubscribes after a snapshot decode defect ends the thread subscription (#23041)",
     () =>
       Effect.gen(function* () {
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            activateLanguage({ language: "uk", catalog: uk, formattingLocale: "uk" }),
+          ),
+          () =>
+            Effect.sync(() =>
+              activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined }),
+            ),
+        );
         const harness = yield* makeHarness({ httpSnapshot: { _tag: "unavailable" } });
         yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
           Stream.filter((count) => count >= 1),
@@ -2466,7 +2477,7 @@ describe("EnvironmentThreads", () => {
           Option.isSome(value.error),
         );
         expect(failed.status).toBe("empty");
-        expect(Option.getOrThrow(failed.error)).toBe("Could not synchronize the thread.");
+        expect(Option.getOrThrow(failed.error)).toBe("Не вдалося синхронізувати чат.");
 
         yield* TestClock.adjust("60 seconds");
         expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
