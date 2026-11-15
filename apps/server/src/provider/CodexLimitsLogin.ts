@@ -102,14 +102,7 @@ export const makeCodexLimitsLogin = Effect.fn("makeCodexLimitsLogin")(function* 
         const email = yield* chatGptEmail(client);
         if (!sameCodexAccountEmail(email, yield* options.accountEmail)) return undefined;
         return yield* client.request("account/rateLimits/read", null).pipe(
-          Effect.map((response) =>
-            codexRateLimitsToLimits({
-              snapshot: response.rateLimits,
-              rateLimitsByLimitId: response.rateLimitsByLimitId,
-              resetCredits: response.rateLimitResetCredits,
-              checkedAt,
-            }),
-          ),
+          Effect.map((response) => codexRateLimitsToLimits({ read: response, checkedAt })),
           Effect.catch((error) =>
             Effect.succeed(probeFailed(codexRateLimitsFailureMessage(error))),
           ),

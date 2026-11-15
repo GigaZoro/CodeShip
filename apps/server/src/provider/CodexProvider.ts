@@ -60,25 +60,14 @@ import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageL
 import {
   codexRateLimitsFailureMessage,
   codexRateLimitsToLimits,
-  type CodexRateLimitSnapshot,
-  type CodexResetCreditsSummary,
+  type CodexRateLimitsRead,
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import packageJson from "../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
 
-type CodexRateLimitsProbe =
-  | {
-      readonly snapshot: CodexRateLimitSnapshot;
-      readonly rateLimitsByLimitId?:
-        | Readonly<Record<string, CodexRateLimitSnapshot>>
-        | null
-        | undefined;
-      readonly resetCredits: CodexResetCreditsSummary | null | undefined;
-      readonly accountId?: string | null | undefined;
-    }
-  | { readonly failure: string };
+type CodexRateLimitsProbe = CodexRateLimitsRead | { readonly failure: string };
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 const CODEX_CATALOG_REFRESH_TIMEOUT_MS = 3_000;
@@ -668,15 +657,9 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         deadlineMs,
         RATE_LIMITS_PROBE_TIMEOUT_MS,
       ).pipe(
-        Effect.map((response): CodexRateLimitsProbe =>
-          response
-            ? {
-                snapshot: response.rateLimits,
-                rateLimitsByLimitId: response.rateLimitsByLimitId,
-                resetCredits: response.rateLimitResetCredits,
-                accountId: response.accountId,
-              }
-            : { failure: "Codex did not answer the usage request." },
+        Effect.map(
+          (response): CodexRateLimitsProbe =>
+            response ?? { failure: "Codex did not answer the usage request." },
         ),
         Effect.catch((error) =>
           Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
@@ -836,10 +819,10 @@ function accountProbeStatus({ account, rateLimits, storedLogin }: CodexAppServer
 } {
   const authLabel = codexAccountAuthLabel(
     account.account,
-    rateLimits && "snapshot" in rateLimits ? rateLimits.snapshot.planType : undefined,
+    rateLimits && "rateLimits" in rateLimits ? rateLimits.rateLimits.planType : undefined,
   );
   const workspaceId =
-    rateLimits && "accountId" in rateLimits ? rateLimits.accountId?.trim() : undefined;
+    rateLimits && "rateLimits" in rateLimits ? rateLimits.accountId?.trim() : undefined;
   // Limits merge hosts by email, so a proxied login without one shows once per host.
   const authEmail =
     codexAccountEmail(account.account) ??
@@ -997,12 +980,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
             ...(accountStatus.message ? { message: accountStatus.message } : {}),
             ...(snapshot.rateLimits ? { message: snapshot.rateLimits.failure } : {}),
           })
-        : codexRateLimitsToLimits({
-            snapshot: snapshot.rateLimits.snapshot,
-            rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
-            resetCredits: snapshot.rateLimits.resetCredits,
-            checkedAt,
-          });
+        : codexRateLimitsToLimits({ read: snapshot.rateLimits, checkedAt });
   // A ChatGPT sharing token cannot read Codex limits; the home's own Codex login can. Its limits
   // are this account's only when the backend confirms that login is this account. A failed read
   // attributes nothing, so the saved login's identity hint is enough to report why it failed.

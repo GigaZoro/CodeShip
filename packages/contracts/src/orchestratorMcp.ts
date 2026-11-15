@@ -40,6 +40,7 @@ import {
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
+import { ServerProviderResetKind } from "./providerUsageLimits.ts";
 import { PullRequestState } from "./pullRequest.ts";
 import {
   ThreadLinkedPullRequest,
@@ -643,8 +644,72 @@ export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
       description: "Match model ids and labels. Replaces the short list.",
     }),
   ),
+  usage: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Add each Claude and Codex account's usage: meters, credits, banked resets. Reads one older than 10 minutes again.",
+    }),
+  ),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
+
+export const OrchestratorMcpUsageMeter = Schema.Struct({
+  /** `session`, `weekly_all`, `weekly_scoped:<model>`, or the provider's own id for another meter. */
+  id: Schema.String,
+  /** The one model a scoped meter limits; null when it limits the account. */
+  model: Schema.NullOr(Schema.String),
+  usedPercent: Schema.Number,
+  windowMinutes: Schema.NullOr(Schema.Number),
+  resetsAt: Schema.NullOr(Schema.String),
+});
+export type OrchestratorMcpUsageMeter = typeof OrchestratorMcpUsageMeter.Type;
+
+export const OrchestratorMcpBankedReset = Schema.Struct({
+  status: Schema.NullOr(Schema.String),
+  grantedAt: Schema.NullOr(Schema.String),
+  expiresAt: Schema.NullOr(Schema.String),
+  program: Schema.String,
+  kind: ServerProviderResetKind,
+  resetsLeft: Schema.optional(Schema.Number),
+  usableNow: Schema.optional(Schema.Boolean),
+  requiresLimit: Schema.optional(Schema.Boolean),
+  paused: Schema.optional(Schema.Boolean),
+});
+export type OrchestratorMcpBankedReset = typeof OrchestratorMcpBankedReset.Type;
+
+/** Why an account's usage, or its banked resets, could not be read. */
+export const OrchestratorMcpUsageError = Schema.Literals([
+  "signed_out",
+  "unsupported",
+  "not_read",
+  "read_failed",
+]);
+export type OrchestratorMcpUsageError = typeof OrchestratorMcpUsageError.Type;
+
+export const OrchestratorMcpProviderUsage = Schema.Struct({
+  /** The same on every machine for one provider account; never the account id itself. */
+  accountKey: Schema.NullOr(Schema.String),
+  plan: Schema.NullOr(Schema.String),
+  measuredAt: Schema.String,
+  meters: Schema.Array(OrchestratorMcpUsageMeter),
+  credits: Schema.NullOr(
+    Schema.Struct({
+      balance: Schema.NullOr(Schema.String),
+      unlimited: Schema.Boolean,
+      currency: Schema.optional(Schema.String),
+    }),
+  ),
+  bankedResets: Schema.NullOr(
+    Schema.Struct({
+      available: Schema.Number,
+      resets: Schema.Array(OrchestratorMcpBankedReset),
+    }),
+  ),
+  bankedResetsError: Schema.optional(OrchestratorMcpUsageError),
+  /** False while the account is usageLimited or its provider says it may not run (Codex). */
+  usageAllowed: Schema.Boolean,
+});
+export type OrchestratorMcpProviderUsage = typeof OrchestratorMcpProviderUsage.Type;
 
 export const OrchestratorMcpModelOption = Schema.Struct({
   id: Schema.String,
@@ -688,6 +753,9 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
       description: "Usage-limited until limitedUntil (provider reset or T3 hold).",
     }),
   ),
+  /** With `usage`, for an enabled Claude or Codex account; null when `usageError` says why. */
+  usage: Schema.optional(Schema.NullOr(OrchestratorMcpProviderUsage)),
+  usageError: Schema.optional(OrchestratorMcpUsageError),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 

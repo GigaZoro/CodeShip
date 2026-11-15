@@ -26,6 +26,7 @@ import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as AccountRouting from "./AccountRouting.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ResetCreditRedemption from "./ResetCreditRedemption.ts";
@@ -567,6 +568,7 @@ describe("limitRecoveryTarget", () => {
             ]),
             streamChanges: Stream.never,
           }),
+          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
           Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({
             redeem: (instanceId) =>
               (input.redeemed === undefined
@@ -692,6 +694,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
             getProviders: Effect.succeed([]),
             streamChanges: Stream.fromQueue(providerChanges),
           }),
+          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
           Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
         ),
       ),
@@ -859,6 +862,7 @@ it.effect.each([
             ]),
             streamChanges: Stream.never,
           }),
+          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
           Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
         ),
       ),
@@ -1110,6 +1114,7 @@ describe("reset credits", () => {
             streamChanges: Stream.never,
           }),
           Layer.mock(ProviderMcp.ProviderMcp)({ listLoaded: () => Effect.succeedNone }),
+          Layer.mock(AccountRouting.AccountRouting)({ releaseAllowedHolds: Effect.succeed(false) }),
           Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({
             redeem: (instanceId) =>
               Effect.sync(() => {

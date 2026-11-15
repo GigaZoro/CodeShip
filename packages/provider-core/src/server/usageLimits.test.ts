@@ -62,8 +62,17 @@ describe("applyUsageLimitsUpdate", () => {
     expect(next).not.toBe(published);
     expect(next).toEqual({
       checkedAt: "2026-09-03T12:00:05.000Z",
+      accountReadAt: checkedAt,
       windows: [{ ...session, usedPercent: 55 }, weekly],
     });
+    // A later update still names the full read the account fields came from.
+    expect(
+      applyUsageLimitsUpdate({
+        previous: next,
+        checkedAt: "2026-09-03T12:00:09.000Z",
+        update: { windows: [{ ...session, usedPercent: 60 }] },
+      })?.accountReadAt,
+    ).toBe(checkedAt);
   });
 
   it("leaves an unsupported account and an empty update alone", () => {
@@ -138,9 +147,55 @@ describe("applyUsageLimitsUpdate", () => {
 
     expect(next).toEqual({
       checkedAt: "2026-09-03T12:00:05.000Z",
+      accountReadAt: checkedAt,
       windows: [{ ...session, usedPercent: 55 }, weekly],
       resetCredits,
     });
+  });
+
+  it("drops the credits when an update says the account has none", () => {
+    const credits = { balance: "4.00", unlimited: false };
+    const next = applyUsageLimitsUpdate({
+      previous: { ...published, credits },
+      checkedAt: "2026-09-03T12:00:05.000Z",
+      update: { windows: [], credits: null },
+    });
+    expect(next?.credits).toBeUndefined();
+    expect(
+      applyUsageLimitsUpdate({
+        previous: published,
+        checkedAt,
+        update: { windows: [], credits: null },
+      }),
+    ).toBe(published);
+  });
+
+  it("keeps the provider's yes through a window its read saw at 100%, not through one an update uses up", () => {
+    const allowed = {
+      checkedAt,
+      windows: [{ ...session, usedPercent: 100 }, weekly],
+      usageAllowed: true,
+    };
+    const later = "2026-09-03T12:00:05.000Z";
+    expect(
+      applyUsageLimitsUpdate({
+        previous: allowed,
+        checkedAt: later,
+        update: {
+          windows: [
+            { ...session, usedPercent: 100 },
+            { ...weekly, usedPercent: 30 },
+          ],
+        },
+      })?.usageAllowed,
+    ).toBe(true);
+    expect(
+      applyUsageLimitsUpdate({
+        previous: allowed,
+        checkedAt: later,
+        update: { windows: [{ ...weekly, usedPercent: 100 }] },
+      })?.usageAllowed,
+    ).toBe(false);
   });
 });
 
@@ -165,6 +220,7 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published: live, probed })).toEqual({
       ...probed,
       checkedAt: live.checkedAt,
+      accountReadAt: probed.checkedAt,
       windows: live.windows,
     });
 

@@ -1,6 +1,8 @@
 import type {
   ProviderUsageLimitsUpdate,
+  ServerProviderResetCredit,
   ServerProviderResetCredits,
+  ServerProviderUsageCredits,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -8,12 +10,22 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import type * as CodexErrors from "effect-codex-app-server/errors";
 
-import { clampPercent, makeUsageLimits } from "@t3tools/provider-core/server/usageLimits";
+import {
+  clampPercent,
+  makeUsageLimits,
+  usageAccountKey,
+} from "@t3tools/provider-core/server/usageLimits";
 
 interface CodexRateLimitWindow {
   readonly usedPercent: number;
   readonly resetsAt?: number | null;
   readonly windowDurationMins?: number | null;
+}
+
+interface CodexCreditsSnapshot {
+  readonly balance?: string | null;
+  readonly hasCredits?: boolean;
+  readonly unlimited: boolean;
 }
 
 export interface CodexRateLimitSnapshot {
@@ -26,14 +38,26 @@ export interface CodexRateLimitSnapshot {
     readonly remainingPercent: number;
     readonly resetsAt: number;
   } | null;
+  readonly credits?: CodexCreditsSnapshot | null;
 }
 
 export interface CodexResetCreditsSummary {
   readonly availableCount: number;
   readonly credits?: ReadonlyArray<{
     readonly status: string;
+    readonly resetType?: string;
+    readonly grantedAt?: number;
     readonly expiresAt?: number | null;
   }> | null;
+}
+
+/** The answer to app-server's `account/rateLimits/read`. */
+export interface CodexRateLimitsRead {
+  readonly rateLimits: CodexRateLimitSnapshot;
+  readonly rateLimitsByLimitId?: Readonly<Record<string, CodexRateLimitSnapshot>> | null;
+  readonly rateLimitResetCredits?: CodexResetCreditsSummary | null;
+  readonly accountId?: string | null;
+  readonly ordinaryUsageAllowed?: boolean | null;
 }
 
 const SESSION_MINS = 5 * 60;
@@ -107,28 +131,63 @@ function codexResetCreditsToContract(
     .filter((value): value is number => typeof value === "number");
   const nextExpiresAt =
     expiries.length > 0 ? isoFromEpochSeconds(Math.min(...expiries)) : undefined;
+  const credits = (summary.credits ?? []).map((credit): ServerProviderResetCredit => {
+    const grantedAt = isoFromEpochSeconds(credit.grantedAt);
+    const expiresAt = isoFromEpochSeconds(credit.expiresAt);
+    return {
+      program: credit.resetType?.trim() || "codexRateLimits",
+      // A Codex reset clears every Codex limit of the account.
+      kind: "full",
+      status: credit.status,
+      ...(grantedAt ? { grantedAt } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    };
+  });
   return {
     availableCount: Math.max(0, summary.availableCount),
     ...(nextExpiresAt ? { nextExpiresAt } : {}),
+    ...(summary.credits ? { credits } : {}),
   };
 }
 
+/** Undefined when the snapshot says nothing of credits; null when the account has none. */
+function codexCreditsToContract(
+  credits: CodexCreditsSnapshot | null | undefined,
+): ServerProviderUsageCredits | null | undefined {
+  if (!credits) return undefined;
+  if (credits.hasCredits === false && !credits.unlimited) return null;
+  const balance = credits.balance?.trim();
+  return { unlimited: credits.unlimited, ...(balance ? { balance } : {}) };
+}
+
+function sameCodexCredits(
+  a: ServerProviderUsageCredits | null | undefined,
+  b: ServerProviderUsageCredits | null | undefined,
+): boolean {
+  return a == null || b == null ? a === b : a.balance === b.balance && a.unlimited === b.unlimited;
+}
+
 export function codexRateLimitsToLimits(input: {
-  readonly snapshot: CodexRateLimitSnapshot;
-  readonly rateLimitsByLimitId?:
-    | Readonly<Record<string, CodexRateLimitSnapshot>>
-    | null
-    | undefined;
-  readonly resetCredits?: CodexResetCreditsSummary | null | undefined;
+  readonly read: CodexRateLimitsRead;
   readonly checkedAt: string;
 }): ServerProviderUsageLimits {
-  const resetCredits = codexResetCreditsToContract(input.resetCredits);
-  const windows = codexRateLimitsToWindows(input.rateLimitsByLimitId?.codex ?? input.snapshot);
+  const { read } = input;
+  const snapshot = read.rateLimitsByLimitId?.codex ?? read.rateLimits;
+  const resetCredits = codexResetCreditsToContract(read.rateLimitResetCredits);
+  const accountKey = usageAccountKey(read.accountId);
+  const plan = snapshot.planType?.trim() || read.rateLimits.planType?.trim();
+  const credits = codexCreditsToContract(snapshot.credits ?? read.rateLimits.credits);
   return {
     ...makeUsageLimits({
       checkedAt: input.checkedAt,
-      windows,
+      windows: codexRateLimitsToWindows(snapshot),
     }),
+    ...(accountKey ? { accountKey } : {}),
+    ...(plan ? { plan } : {}),
+    ...(credits ? { credits } : {}),
+    ...(typeof read.ordinaryUsageAllowed === "boolean"
+      ? { usageAllowed: read.ordinaryUsageAllowed }
+      : {}),
     ...(resetCredits ? { resetCredits } : {}),
   };
 }
@@ -137,6 +196,7 @@ export function codexRateLimitsToUpdate(
   snapshot: CodexRateLimitSnapshot,
   previous?: CodexRateLimitSnapshot,
 ): ProviderUsageLimitsUpdate | undefined {
+  if (snapshot.limitId && snapshot.limitId !== "codex") return undefined;
   const previousWindows = previous ? codexRateLimitsToWindows(previous) : [];
   // Token ticks repeat session-cached limits that may predate an account probe or reset.
   const windows = codexRateLimitsToWindows(snapshot).filter((window) => {
@@ -149,7 +209,12 @@ export function codexRateLimitsToUpdate(
       existing.windowDurationMins !== window.windowDurationMins
     );
   });
-  return windows.length > 0 ? { windows } : undefined;
+  const credits = codexCreditsToContract(snapshot.credits);
+  const creditsChanged =
+    credits !== undefined && !sameCodexCredits(credits, codexCreditsToContract(previous?.credits));
+  return windows.length > 0 || creditsChanged
+    ? { windows, ...(creditsChanged ? { credits } : {}) }
+    : undefined;
 }
 
 export function codexRateLimitsFailureMessage(error: CodexErrors.CodexAppServerError): string {
@@ -186,6 +251,7 @@ export function mergeCodexRateLimits(
     ...(update.primary !== undefined ? { primary: update.primary } : {}),
     ...(update.secondary !== undefined ? { secondary: update.secondary } : {}),
     ...(update.individualLimit !== undefined ? { individualLimit: update.individualLimit } : {}),
+    ...(update.credits !== undefined ? { credits: update.credits } : {}),
   };
 }
 

@@ -232,6 +232,20 @@ describe("new thread model fallback", () => {
       }).selection?.options,
     ).toEqual(expected);
   });
+  it("believes the provider's yes over a window it still shows at 100%", () => {
+    expect(
+      exhaustedUsageWindow(
+        provider({
+          usageLimits: {
+            checkedAt: limited.checkedAt,
+            windows: [{ ...window, usedPercent: 100 }],
+            usageAllowed: true,
+          },
+        }),
+        now,
+      ),
+    ).toBeUndefined();
+  });
   it.each([undefined, "invalid"])("treats an unknown reset as exhausted: %s", (resetsAt) => {
     expect(
       exhaustedUsageWindow(
@@ -321,6 +335,8 @@ describe("new thread model fallback", () => {
     ["claudeAgent", ["seven_day_fable"], "claude-opus-5-5", false],
     ["claudeAgent", ["seven_day_fable"], "claude-fable-5-1", true],
     ["claudeAgent", ["seven_day"], "claude-opus-5-5", true],
+    // Fable's weekly meter is a share of the weekly allowance, so a spent week holds Fable too.
+    ["claudeAgent", ["seven_day"], "claude-fable-5-2", true],
   ] as const)("matches %s pools %s to %s", (driver, ids, model, usesFallback) => {
     const defaultSelection = { ...selection, model };
     expect(

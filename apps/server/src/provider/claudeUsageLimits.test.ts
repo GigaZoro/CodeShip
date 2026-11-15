@@ -59,6 +59,7 @@ describe("claudeUsageResponseToLimits", () => {
             label: "Weekly · Fable",
             usedPercent: 73,
             windowDurationMins: 10080,
+            model: "Fable",
             resetsAt: "2026-07-24T08:59:00.000Z",
           },
         ],
@@ -141,6 +142,7 @@ describe("claudeUsageResponseToLimits", () => {
       {
         checkedAt,
         windows: [monthlyWindow],
+        credits: { balance: "453.69", currency: "USD", unlimited: false },
       },
     );
     const response = {
@@ -198,6 +200,30 @@ describe("claudeUsageResponseToLimits", () => {
     expect(
       claudeUsageResponseToLimits({ checkedAt, response: utilizationOnly }).limits.windows,
     ).toEqual([monthlyWindow]);
+    expect(claudeUsageResponseToLimits({ checkedAt, response }).limits.credits).toEqual({
+      balance: "453.69",
+      currency: "USD",
+      unlimited: false,
+    });
+  });
+
+  it("publishes extra usage without a monthly limit as unlimited, and none while it is off", () => {
+    const rateLimits = enterpriseResponse.rate_limits;
+    const withExtra = (extra_usage: object) => ({
+      ...enterpriseResponse,
+      rate_limits: { ...rateLimits, spend: { ...rateLimits.spend, enabled: false }, extra_usage },
+    });
+    const credits = (extra_usage: object) =>
+      claudeUsageResponseToLimits({ checkedAt, response: withExtra(extra_usage) as never }).limits
+        .credits;
+    expect(credits({ ...rateLimits.extra_usage, monthly_limit: null })).toEqual({
+      currency: "USD",
+      unlimited: true,
+    });
+    expect(credits({ ...rateLimits.extra_usage, is_enabled: false })).toBeUndefined();
+    expect(
+      credits({ ...rateLimits.extra_usage, currency: "jpy", decimal_places: undefined }),
+    ).toEqual({ balance: "45369", currency: "JPY", unlimited: false });
   });
 
   it("omits disabled budgets and refuses invalid money without an enabled fallback", () => {
@@ -379,6 +405,7 @@ describe("claudeRateLimitEventToUpdate", () => {
           label: "Weekly · Fable",
           usedPercent: 40,
           windowDurationMins: 10080,
+          model: "Fable",
         },
       ],
     });

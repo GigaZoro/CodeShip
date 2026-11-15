@@ -299,6 +299,8 @@ function nonEmptyProbeString(value: string): string | undefined {
 export type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
   readonly workspaceId?: string | undefined;
+  /** `usageAccountKey` of the signed-in account, from `.claude.json`. */
+  readonly accountKey?: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
   readonly apiKeySource: string | undefined;
@@ -790,7 +792,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     capabilities.apiKeySource === "none" &&
     (capabilities.tokenSource === "oauth" ||
       capabilities.tokenSource === "CLAUDE_CODE_OAUTH_TOKEN");
-  const usageLimits = !capabilities.usage
+  const usageReading = !capabilities.usage
     ? makeUnavailableUsageLimits({
         checkedAt,
         reason: "probeFailed",
@@ -812,6 +814,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           checkedAt: usageCheckedAt,
           allowStreamedLimits,
         }).limits;
+  const usageLimits = {
+    ...usageReading,
+    ...(capabilities.accountKey ? { accountKey: capabilities.accountKey } : {}),
+    ...(capabilities.subscriptionType ? { plan: capabilities.subscriptionType } : {}),
+  };
   const loginProfileId = customApiEndpoint
     ? undefined
     : yield* claudeLoginProfileId(claudeSettings, capabilities, resolvedEnvironment);

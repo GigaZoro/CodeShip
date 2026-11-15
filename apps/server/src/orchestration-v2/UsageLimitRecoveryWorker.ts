@@ -24,6 +24,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
+  AccountRouting,
   type AccountRoutingContext,
   accountsWithRoom,
   type McpSignIns,
@@ -437,6 +438,7 @@ const makeSweep = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const mcp = yield* ProviderMcp.ProviderMcp;
   const resetCredits = yield* ResetCreditRedemption.ResetCreditRedemption;
+  const accountRouting = yield* AccountRouting;
   const due = DueHint.make();
   // When each account last had a reset credit redeemed for it, so retries wait RESET_CREDIT_RETRY_MS.
   const redemptionTries = new Map<ProviderInstanceId, number>();
@@ -464,6 +466,8 @@ const makeSweep = Effect.gen(function* () {
   return Effect.fn("UsageLimitRecoveryWorker.sweep")(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
+    // A lift records no event, so the threads that wait on it are read again here.
+    if (yield* accountRouting.releaseAllowedHolds) yield* due.invalidate;
     if (yield* due.isIdle(nowMs)) return;
     const readVersion = yield* due.version;
     const preferences = yield* settings.getSettings;

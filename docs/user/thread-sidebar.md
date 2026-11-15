@@ -523,7 +523,9 @@ until it resets. When the provider gives no reset, CodeShip holds the account fo
 hours from the refusal, or for its shortest reported usage window when that is shorter.
 Five hours is the session window for Claude and ChatGPT subscriptions. A newer usage
 check showing room does not shorten this hold; a run on that account that started
-after the refusal and got an answer does, even while it is still working. When Claude
+after the refusal and got an answer does, even while it is still working. A held Codex account
+is freed early, from a hold with a reset time too, as soon as Codex itself says it may be used
+again, such as after a banked reset was used; CodeShip asks Codex at most every 10 minutes. When Claude
 attributes the limit to one model family's weekly window, such as Opus, only that family
 is held. A run of a model in that family that got an answer lifts it early; a run of
 another model, or a newer usage check, does not. Agent launches (`t3_thread_launch`,
@@ -571,7 +573,9 @@ too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`
 starts it there. A new thread starts on the primary provider's first account in its
 account order. With account switching enabled in **Settings → Threads**, it starts on the first
 signed-in one that has usage left, or, when none has, on the signed-in one whose limit ends
-first, and switches accounts at usage limits. A thread whose account signed out moves the
+first, and switches accounts at usage limits. A scheduled task on Auto starts its new thread on
+the account with usage left whose weekly limit resets soonest, so usage that would reset unused
+is spent first. A thread whose account signed out moves the
 same way on its next message. The turn a
 finished background command starts stays on the account that ran the command,
 because only that session has its result; if that account is out of usage, the

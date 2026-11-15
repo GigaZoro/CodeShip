@@ -1,6 +1,7 @@
 import type { SDKControlGetUsageResponse, SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ProviderUsageLimitsUpdate,
+  ServerProviderUsageCredits,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -71,7 +72,68 @@ function scopedWindow(
     label: `Weekly · ${displayName}`,
     windowDurationMins: WEEK_MINS,
     usedPercent: clampPercent(usedPercent),
+    model: displayName,
     ...(resetsAt ? { resetsAt } : {}),
+  };
+}
+
+/** A non-negative amount in minor units, written in major units with `exponent` decimals. */
+function formatMinorUnits(amountMinor: number, exponent: number): string {
+  return (Math.max(0, amountMinor) / 10 ** exponent).toFixed(exponent);
+}
+
+const ISO_CURRENCY = /^[A-Z]{3}$/;
+
+/** Intl accepts any well-formed ISO 4217 code and gives an unknown one two decimals. */
+function currencyExponent(currency: string): number {
+  return (
+    new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions()
+      .maximumFractionDigits ?? 2
+  );
+}
+
+/** What extra usage has left this billing period: the spend budget, else the extra-usage limit. */
+function readClaudeCredits(
+  rateLimits: NonNullable<SDKControlGetUsageResponse["rate_limits"]>,
+): ServerProviderUsageCredits | undefined {
+  const spend = Option.getOrUndefined(
+    decodeSpendBudget((rateLimits as { readonly spend?: unknown }).spend),
+  );
+  const spendCurrency = spend?.limit.currency.trim();
+  if (
+    spend?.enabled &&
+    spendCurrency &&
+    spendCurrency === spend.used.currency.trim() &&
+    spend.used.exponent === spend.limit.exponent
+  ) {
+    return {
+      balance: formatMinorUnits(
+        spend.limit.amount_minor - spend.used.amount_minor,
+        spend.limit.exponent,
+      ),
+      currency: spendCurrency,
+      unlimited: false,
+    };
+  }
+  const extra = rateLimits.extra_usage;
+  if (extra?.is_enabled !== true) return undefined;
+  // Extra-usage amounts are minor units of `currency`, which the CLI takes as USD when absent.
+  const currency = extra.currency?.trim().toUpperCase() || "USD";
+  if (!ISO_CURRENCY.test(currency)) return { unlimited: extra.monthly_limit === null };
+  if (extra.monthly_limit === null) return { currency, unlimited: true };
+  if (typeof extra.used_credits !== "number" || !Number.isFinite(extra.monthly_limit)) {
+    return { currency, unlimited: false };
+  }
+  // The endpoint states the scale as `decimal_places`, which the pinned SDK does not type yet.
+  const decimalPlaces = (extra as { readonly decimal_places?: unknown }).decimal_places;
+  const exponent =
+    typeof decimalPlaces === "number" && Number.isInteger(decimalPlaces) && decimalPlaces >= 0
+      ? Math.min(decimalPlaces, 6)
+      : currencyExponent(currency);
+  return {
+    balance: formatMinorUnits(extra.monthly_limit - extra.used_credits, exponent),
+    currency,
+    unlimited: false,
   };
 }
 
@@ -251,8 +313,9 @@ export function claudeUsageResponseToLimits(input: {
       usedPercent: spendPercent,
     });
   }
+  const credits = readClaudeCredits(response.rate_limits);
   return {
-    limits: makeUsageLimits({ checkedAt, windows }),
+    limits: { ...makeUsageLimits({ checkedAt, windows }), ...(credits ? { credits } : {}) },
     names: { overageIncluded },
   };
 }

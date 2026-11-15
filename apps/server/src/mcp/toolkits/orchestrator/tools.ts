@@ -88,7 +88,7 @@ const threadMetadataDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List providers, models, options, runtime modes, and usage-limited accounts for `delegate_task`. Short list. `search` finds others. Any catalog model works.",
+    "List providers, models, options, runtime modes, and usage-limited accounts for `delegate_task`. Short list. `search` finds others. Any catalog model works. `usage` adds each Claude and Codex account's usage meters, resets and banked resets.",
   parameters: OrchestratorMcpCapabilitiesInput,
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,

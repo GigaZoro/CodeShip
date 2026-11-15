@@ -151,6 +151,7 @@ import {
   taskPrompt,
 } from "./delegatedTaskModes.ts";
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
+import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
@@ -3180,7 +3181,21 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope);
-      const providers = yield* loadProvidersRechecked();
+      const checkedProviders = yield* loadProvidersRechecked();
+      const nowMs = yield* Clock.currentTimeMillis;
+      const staleUsage =
+        input.usage === true
+          ? checkedProviders.filter(
+              (provider) => publishesUsage(provider) && usageReadingStale(provider, nowMs),
+            )
+          : [];
+      const providers =
+        staleUsage.length === 0
+          ? checkedProviders
+          : yield* recheckInstances(
+              staleUsage.map((provider) => provider.instanceId),
+              checkedProviders,
+            );
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
       const availability = Option.isNone(accountRouting)
@@ -3267,6 +3282,9 @@ const make = Effect.gen(function* () {
             ...(limitedUntil == null ? {} : { limitedUntil }),
             ...(limitedUntil != null && availability.estimated.has(provider.instanceId)
               ? { limitedUntilEstimated: true as const }
+              : {}),
+            ...(input.usage === true && publishesUsage(provider)
+              ? providerUsageFields(provider, limitedUntil !== undefined)
               : {}),
           };
         }),

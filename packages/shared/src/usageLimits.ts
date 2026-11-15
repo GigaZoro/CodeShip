@@ -100,10 +100,33 @@ function windowLimitsModel(
   }
 }
 
+/**
+ * When the first weekly window that limits `model` on this account resets, after `now`; null
+ * when no reading gives one. What is left of an allowance that resets sooner is lost sooner.
+ */
+export function nextWeeklyResetMs(
+  provider: ServerProvider,
+  now: number,
+  model: string,
+): number | null {
+  const resets = (provider.usageLimits?.windows ?? []).flatMap((window) => {
+    const reset = resetMillis(window);
+    return window.kind === "weekly" &&
+      reset !== null &&
+      reset > now &&
+      windowLimitsModel(provider.driver, window.id, model)
+      ? [reset]
+      : [];
+  });
+  return resets.length === 0 ? null : Math.min(...resets);
+}
+
 function usedUpWindows(provider: ServerProvider | undefined, now: number) {
   const limits = provider?.usageLimits;
   if (limits === undefined) return null;
   const end = (window: ServerProviderUsageWindow) => usageWindowLimitEnd(limits, window);
+  // The provider's own yes outranks its percentages, which can stay at 100% after a banked reset.
+  if (limits.usageAllowed === true) return { end, windows: [] };
   return {
     end,
     windows: limits.windows.filter((window) => window.usedPercent >= 100 && end(window) > now),

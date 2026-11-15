@@ -2,6 +2,7 @@ import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetCredits,
 } from "@t3tools/contracts";
+import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -22,7 +23,10 @@ const Credentials = Schema.Struct({
 });
 const Config = Schema.Struct({
   oauthAccount: Schema.optional(
-    Schema.Struct({ organizationUuid: Schema.optional(Schema.String) }),
+    Schema.Struct({
+      organizationUuid: Schema.optional(Schema.String),
+      accountUuid: Schema.optional(Schema.String),
+    }),
   ),
 });
 const Grant = Schema.Struct({
@@ -172,10 +176,24 @@ export const readClaudeResetCredits = Effect.fn("readClaudeResetCredits")(
   Effect.orElseSucceed(() => undefined),
 );
 
-export const readClaudeOrganizationId = (accountConfigPath: string) =>
+export interface ClaudeAccountIdentity {
+  readonly workspaceId?: string;
+  /** `usageAccountKey` of the account id; the id itself never leaves this read. */
+  readonly accountKey?: string;
+}
+
+/** The signed-in account `.claude.json` names; empty when it names none or cannot be read. */
+export const readClaudeAccountIdentity = (accountConfigPath: string) =>
   readJson(Config, accountConfigPath).pipe(
-    Effect.map((config) => config.oauthAccount?.organizationUuid?.trim() || undefined),
-    Effect.orElseSucceed(() => undefined),
+    Effect.map((config): ClaudeAccountIdentity => {
+      const workspaceId = config.oauthAccount?.organizationUuid?.trim();
+      const accountKey = usageAccountKey(config.oauthAccount?.accountUuid);
+      return {
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(accountKey ? { accountKey } : {}),
+      };
+    }),
+    Effect.orElseSucceed((): ClaudeAccountIdentity => ({})),
   );
 
 export const claudeAccountConfigPath = Effect.fn("claudeAccountConfigPath")(function* (

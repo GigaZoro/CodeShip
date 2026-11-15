@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { assert, describe, it } from "@effect/vitest";
@@ -304,6 +305,36 @@ describe("routeAutoAccount", () => {
     assert.equal(exhausted("2026-11-03T11:00:00.000Z"), primary);
     // Opus still has room when only the Fable weekly window is full.
     assert.equal(exhausted("2026-11-03T13:00:00.000Z", "seven_day_fable"), primary);
+  });
+
+  it.each([
+    ["a scheduled run takes the account whose weekly usage resets first", true, third],
+    ["any other run follows the saved order", false, primary],
+  ] as const)("%s", (_, scheduled, expected) => {
+    const weekly = (resetsAt: string, id = "seven_day") => ({
+      usageLimits: {
+        checkedAt: "2026-11-03T11:59:00.000Z",
+        windows: [{ id, kind: "weekly" as const, label: id, usedPercent: 50, resetsAt }],
+      },
+    });
+    const routed = routeAutoAccount({
+      selection: auto,
+      projectId,
+      currentInstanceId: null,
+      providers: [
+        provider(primary, weekly("2026-11-08T00:00:00.000Z")),
+        // Fable's own weekly meter does not hold Opus, so it does not move this account up.
+        provider(second, weekly("2026-11-04T00:00:00.000Z", "seven_day_fable")),
+        provider(third, weekly("2026-11-05T00:00:00.000Z")),
+      ],
+      settings: settings([primary, second, third]),
+      mcpSignInsNeeded: signIns(),
+      recordedLimits: new Map(),
+      nowMs,
+      started: false,
+      scheduled,
+    });
+    assert.equal(routed.instanceId, expected);
   });
 
   describe("Auto models", () => {
@@ -1260,6 +1291,114 @@ it.effect("reads a held account's usage at most hourly, and frees it once the us
       assert.equal(yield* Ref.get(reads), 2);
     }).pipe(Effect.provide(layer));
   }),
+);
+
+it.effect.each([
+  {
+    name: "frees it on the first read whose app-server says usage is allowed",
+    answers: [false, true],
+    usedPercent: 20,
+    freed: true,
+  },
+  {
+    name: "leaves it to the hourly path while the app-server gives no answer",
+    answers: [null, undefined],
+    usedPercent: 20,
+    freed: false,
+  },
+  {
+    name: "believes the app-server's yes over a window it still shows at 100%",
+    answers: [false, true],
+    usedPercent: 100,
+    freed: true,
+  },
+] as const)(
+  "reads a held Codex account every ten minutes: $name",
+  ({ answers, usedPercent, freed }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-03T12:00:00.000Z"));
+      const codexAccount = ProviderInstanceId.make("codex_main");
+      const codexDriver = ProviderDriverKind.make("codex");
+      const lifted = yield* Ref.make(false);
+      const reads = yield* Ref.make(0);
+      // What the app-server answers to account/rateLimits/read on each read.
+      const appServerRead = (allowed: boolean | null | undefined) => ({
+        rateLimits: { primary: { usedPercent, windowDurationMins: 300 } },
+        ...(allowed === undefined ? {} : { ordinaryUsageAllowed: allowed }),
+      });
+      const codexProvider = (usageLimits?: ServerProvider["usageLimits"]) =>
+        provider(codexAccount, { driver: codexDriver, ...(usageLimits ? { usageLimits } : {}) });
+      const latest = yield* Ref.make(codexProvider());
+      const layer = AccountRouting.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(ProviderMcp.ProviderMcp)({}),
+            ServerSettings.layerTest({
+              providerInstances: { [codexAccount]: { driver: codexDriver } },
+            }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getUsageLimitedProviderInstances: () =>
+                Ref.get(lifted).pipe(
+                  Effect.map(
+                    (done) =>
+                      new Map(
+                        done
+                          ? []
+                          : [
+                              [
+                                codexAccount,
+                                [
+                                  {
+                                    refusedAt: "2026-11-03T11:55:00.000Z",
+                                    resetAt: "2026-11-03T20:00:00.000Z",
+                                  },
+                                ],
+                              ],
+                            ],
+                      ),
+                  ),
+                ),
+              liftUsageLimitHolds: () => Ref.set(lifted, true),
+            }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Ref.get(latest).pipe(Effect.map((entry) => [entry])),
+              refreshInstance: () =>
+                Effect.gen(function* () {
+                  const count = yield* Ref.updateAndGet(reads, (value) => value + 1);
+                  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+                  const read = appServerRead(answers[count - 1]);
+                  const next = codexProvider(codexRateLimitsToLimits({ read, checkedAt }));
+                  yield* Ref.set(latest, next);
+                  return [next];
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const routing = yield* AccountRouting.AccountRouting;
+        // Ten minutes after the refusal is the first read.
+        yield* TestClock.adjust("4 minutes");
+        assert.isFalse(yield* routing.releaseAllowedHolds);
+        assert.equal(yield* Ref.get(reads), 0);
+
+        yield* TestClock.adjust("1 minute");
+        assert.isFalse(yield* routing.releaseAllowedHolds);
+        assert.equal(yield* Ref.get(reads), 1);
+        assert.isFalse(yield* Ref.get(lifted));
+
+        yield* TestClock.adjust("9 minutes");
+        assert.isFalse(yield* routing.releaseAllowedHolds);
+        assert.equal(yield* Ref.get(reads), 1);
+
+        yield* TestClock.adjust("1 minute");
+        assert.equal(yield* routing.releaseAllowedHolds, freed);
+        assert.equal(yield* Ref.get(reads), 2);
+        assert.equal(yield* Ref.get(lifted), freed);
+        // A freed account is one routing may send work to again.
+        assert.equal((yield* routing.limits).accounts.has(codexAccount), !freed);
+      }).pipe(Effect.provide(layer));
+    }),
 );
 
 describe("accountsWithRoom", () => {

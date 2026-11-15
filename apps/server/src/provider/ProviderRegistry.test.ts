@@ -512,7 +512,7 @@ it.layer(
           checkCodexProviderStatus(defaultCodexSettings, () =>
             Effect.succeed(
               makeCodexProbeSnapshot({
-                rateLimits: { snapshot: { planType }, resetCredits: null },
+                rateLimits: { rateLimits: { planType } },
               }),
             ),
           );
@@ -535,8 +535,7 @@ it.layer(
           email: string,
           rateLimits: CodexAppServerProviderSnapshot["rateLimits"] = {
             accountId: "workspace-1",
-            snapshot: { primary: { usedPercent: 78, windowDurationMins: 10080 } },
-            resetCredits: null,
+            rateLimits: { primary: { usedPercent: 78, windowDurationMins: 10080 } },
           },
         ) =>
           checkCodexProviderStatus(
@@ -562,8 +561,7 @@ it.layer(
         assert.strictEqual((yield* statusFor("other@example.com")).usageLimits, undefined);
         const unconfirmed = yield* statusFor("test@example.com", {
           accountId: "workspace-2",
-          snapshot: { primary: { usedPercent: 10 } },
-          resetCredits: null,
+          rateLimits: { primary: { usedPercent: 10 } },
         });
         assert.strictEqual(unconfirmed.usageLimits, undefined);
         const signedOut = yield* statusFor("test@example.com", { failure: "Signed out." });

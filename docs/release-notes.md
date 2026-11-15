@@ -1,3 +1,9 @@
+## 2026-11-15 — Agents can read each account's usage
+
+- Agents asking `orchestrator_capabilities` with `usage: true` now get each Claude and Codex account's usage: the plan, the 5-hour, weekly and model weekly meters (such as Fable's) with their resets, paid credits or extra usage, Codex's banked resets, and whether the account may be used now (never while it waits out a limit). With `environmentId` they read a linked machine's accounts. A reading older than 10 minutes is read again, at most once every 10 minutes. Paid credits Codex reports spent are dropped. An account whose usage cannot be read shows a reason code instead. Each account has a key that is the same on every machine and contains no account id or e-mail. Claude's banked resets are not read yet.
+- A scheduled task that picks its account automatically now takes, among the accounts with room, the one whose weekly limit resets first, so usage that would reset unused goes first. A task chat whose account still has room stays on it.
+- A Codex account waiting out a usage limit is used again as soon as Codex says it may be, for example after a banked reset was used, instead of at the limit's reset time, even while its meter still shows 100%. CodeShip checks a waiting account at most every 10 minutes; one Codex gives no answer for is checked hourly as before.
+
 ## 2026-11-15 — `t3_command_run` reports the shell it used
 
 - The result of `t3_command_run` now names the shell that ran the command (`powershell`, `bash`, `zsh` or `sh`), so an agent that wrote bash syntax for a Windows PowerShell command sees why it failed. A test keeps the tool's description and the shell the runner picks in step.

@@ -21,6 +21,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -172,6 +173,9 @@ it.effect.each([
               }),
               ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
               ServerSettings.layerTest({ autoResumeLimitedThreads: true }),
+              Layer.mock(AccountRouting.AccountRouting)({
+                releaseAllowedHolds: Effect.succeed(false),
+              }),
               Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({}),
             ),
           ),

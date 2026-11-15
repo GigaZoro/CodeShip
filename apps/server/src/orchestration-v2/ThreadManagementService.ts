@@ -841,6 +841,7 @@ const make = Effect.gen(function* () {
       readonly selection: ModelSelection | undefined;
       /** A delegated task's thread does not exist yet, so it starts like a new thread. */
       readonly newThread: boolean;
+      readonly scheduled: boolean;
     }) {
       if (input.selection !== undefined && input.selection.autoAccount !== true) return command;
       // A retried command keeps the account its first attempt chose.
@@ -861,6 +862,7 @@ const make = Effect.gen(function* () {
             ? null
             : thread.providerInstanceId,
         started: !input.newThread && thread.latestRunId !== null,
+        scheduled: input.scheduled,
       });
       return routed === selection ? command : { ...command, modelSelection: routed };
     });
@@ -875,12 +877,14 @@ const make = Effect.gen(function* () {
           threadId: command.threadId,
           selection: command.modelSelection,
           newThread: false,
+          scheduled: command.scheduledTaskId !== undefined,
         });
       case "delegated_task.request":
         return route({
           threadId: command.parentThreadId,
           selection: command.modelSelection,
           newThread: true,
+          scheduled: false,
         });
       default:
         return Effect.succeed(command);

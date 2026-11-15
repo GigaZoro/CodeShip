@@ -19,14 +19,45 @@ export const ServerProviderUsageWindow = Schema.Struct({
   windowDurationMins: Schema.optional(NonNegativeInt),
   /** When the window was first seen at 100%; absent below 100% and from older servers. */
   exhaustedSince: Schema.optional(IsoDateTime),
+  /** The model a scoped window limits, by the provider's name for it (Claude's `Fable`). */
+  model: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
+
+/** What a banked reset clears: Codex resets are `full`; Claude grants say which limit they reset. */
+export const ServerProviderResetKind = Schema.Literals(["full", "weekly", "five_hour", "fable"]);
+export type ServerProviderResetKind = typeof ServerProviderResetKind.Type;
+
+/** One banked reset or grant, without the provider's id for it. */
+export const ServerProviderResetCredit = Schema.Struct({
+  program: TrimmedNonEmptyString,
+  kind: ServerProviderResetKind,
+  status: Schema.optional(TrimmedNonEmptyString),
+  grantedAt: Schema.optional(IsoDateTime),
+  expiresAt: Schema.optional(IsoDateTime),
+  resetsLeft: Schema.optional(NonNegativeInt),
+  usableNow: Schema.optional(Schema.Boolean),
+  requiresLimit: Schema.optional(Schema.Boolean),
+  paused: Schema.optional(Schema.Boolean),
+});
+export type ServerProviderResetCredit = typeof ServerProviderResetCredit.Type;
+
+/** Paid usage beyond the plan: Codex credits, or Claude's extra usage. */
+export const ServerProviderUsageCredits = Schema.Struct({
+  /** What is left, in `currency` when it is money; absent when the provider gives no balance. */
+  balance: Schema.optional(TrimmedNonEmptyString),
+  currency: Schema.optional(TrimmedNonEmptyString),
+  unlimited: Schema.Boolean,
+});
+export type ServerProviderUsageCredits = typeof ServerProviderUsageCredits.Type;
 
 export const ServerProviderResetCredits = Schema.Struct({
   availableCount: NonNegativeInt,
   nextExpiresAt: Schema.optional(IsoDateTime),
   /** Pins hub redemption to the displayed credit, including retries from another client. */
   nextCreditId: Schema.optional(TrimmedNonEmptyString),
+  /** Each banked reset, when the provider lists them; it may list fewer than `availableCount`. */
+  credits: Schema.optional(ForwardCompatibleArray(ServerProviderResetCredit)),
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
@@ -35,6 +66,21 @@ export const ServerProviderUsageLimits = Schema.Struct({
   checkedAt: IsoDateTime,
   windows: ForwardCompatibleArray(ServerProviderUsageWindow),
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
+  /** The provider account's `usageAccountKey`: equal on every machine, never the id itself. */
+  accountKey: Schema.optional(TrimmedNonEmptyString),
+  plan: Schema.optional(TrimmedNonEmptyString),
+  credits: Schema.optional(ServerProviderUsageCredits),
+  /**
+   * The provider's own answer, at its last usage read, whether the plan's ordinary usage may run;
+   * absent when it gives none. Codex says recovery must not be inferred from percentages or resets,
+   * so `true` outranks a window still shown at 100%.
+   */
+  usageAllowed: Schema.optional(Schema.Boolean),
+  /**
+   * When the last full read gave `accountKey`, `plan`, `usageAllowed` and `resetCredits`, if a
+   * streamed update has moved `checkedAt` past it.
+   */
+  accountReadAt: Schema.optional(IsoDateTime),
   resetCredits: Schema.optional(ServerProviderResetCredits),
   externalUsage: Schema.optional(
     Schema.Struct({
@@ -56,6 +102,8 @@ export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
 /** Partial updates merge windows by id; omitted windows remain unchanged. */
 export const ProviderUsageLimitsUpdate = Schema.Struct({
   windows: Schema.Array(ServerProviderUsageWindow),
+  /** Null when the account has no credits any more; absent when the update says nothing of them. */
+  credits: Schema.optional(Schema.NullOr(ServerProviderUsageCredits)),
   /** The event contains usable limits independently of a successful background probe. */
   available: Schema.optional(Schema.Literal(true)),
 });

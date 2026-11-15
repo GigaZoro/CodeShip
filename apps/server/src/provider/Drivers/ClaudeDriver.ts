@@ -481,11 +481,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       () =>
         probeClaudeCapabilities(effectiveConfig, processEnv, stateDir).pipe(
           Effect.flatMap((capabilities) =>
-            ClaudeResetCredits.readClaudeOrganizationId(accountConfigPath).pipe(
-              Effect.map((workspaceId) => ({
+            ClaudeResetCredits.readClaudeAccountIdentity(accountConfigPath).pipe(
+              Effect.map((identity) => ({
                 _tag: "fresh" as const,
-                capabilities:
-                  workspaceId === undefined ? capabilities : { ...capabilities, workspaceId },
+                capabilities: { ...capabilities, ...identity },
               })),
             ),
           ),
@@ -498,9 +497,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                 Effect.flatMap((capabilities) =>
                   capabilities === undefined
                     ? Effect.fail(error)
-                    : ClaudeResetCredits.readClaudeOrganizationId(accountConfigPath).pipe(
-                        Effect.flatMap((workspaceId) =>
-                          workspaceId === capabilities.workspaceId
+                    : ClaudeResetCredits.readClaudeAccountIdentity(accountConfigPath).pipe(
+                        Effect.flatMap((identity) =>
+                          identity.workspaceId === capabilities.workspaceId &&
+                          identity.accountKey === capabilities.accountKey
                             ? Effect.succeed({
                                 _tag: "fallback" as const,
                                 capabilities: withoutUsage(capabilities),

@@ -1,5 +1,9 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Pure synchronous hashing derives the account key inside pure usage mappers.
+import * as NodeCrypto from "node:crypto";
+
 import type {
   ProviderUsageLimitsUpdate,
+  ServerProviderUsageCredits,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -10,6 +14,15 @@ const WINDOW_KIND_ORDER: Record<ServerProviderUsageWindow["kind"], number> = {
   monthly: 2,
   other: 3,
 };
+
+/**
+ * Names a provider account the same way on every machine without revealing it: the first 16 hex
+ * digits of the SHA-256 of the provider's account id. Usage reports compare accounts by it.
+ */
+export function usageAccountKey(accountId: string | null | undefined): string | undefined {
+  const id = accountId?.trim();
+  return id ? NodeCrypto.createHash("sha256").update(id).digest("hex").slice(0, 16) : undefined;
+}
 
 export function clampPercent(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
@@ -73,13 +86,19 @@ export function applyUsageLimitsUpdate(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits | undefined {
   const { previous, update } = input;
-  if (update.windows.length === 0 || previous?.unavailable?.reason === "unsupported") {
+  if (
+    (update.windows.length === 0 && update.credits === undefined) ||
+    previous?.unavailable?.reason === "unsupported"
+  ) {
     return previous;
   }
   const merged = new Map(previous?.windows.map((window) => [window.id, window] as const));
   const previousCheckedAt = previous?.checkedAt ?? input.checkedAt;
   // Codex repeats unchanged limits on token ticks; avoid allocating snapshots for no-ops.
-  let changed = update.available === true && previous?.unavailable !== undefined;
+  let changed =
+    (update.available === true && previous?.unavailable !== undefined) ||
+    (update.credits !== undefined && !usageCreditsEqual(previous?.credits, update.credits));
+  let newlyUsedUp = false;
   for (const window of update.windows) {
     const existing = merged.get(window.id);
     const next = trackExhaustion(
@@ -99,6 +118,7 @@ export function applyUsageLimitsUpdate(input: {
     if (existing === undefined || !usageWindowEquals(existing, next)) {
       merged.set(window.id, next);
       changed = true;
+      newlyUsedUp ||= next.usedPercent >= 100 && (existing?.usedPercent ?? 0) < 100;
     }
   }
   if (!changed && previous !== undefined) {
@@ -113,11 +133,30 @@ export function applyUsageLimitsUpdate(input: {
   const windows = [...merged.values()].map((window) =>
     trackExhaustion(window, { window, checkedAt: previousCheckedAt }, input.checkedAt),
   );
+  const credits = update.credits === null ? undefined : (update.credits ?? previous?.credits);
+  // An update cannot grant usage the last read refused, but a window it newly used up withdraws
+  // it; one the read already saw at 100% was weighed by that read.
+  const usageAllowed =
+    previous?.usageAllowed === true && newlyUsedUp ? false : previous?.usageAllowed;
+  const accountReadAt = previous && (previous.accountReadAt ?? previous.checkedAt);
   return {
     ...makeUsageLimits({ checkedAt: input.checkedAt, windows }),
+    ...(accountReadAt !== undefined && accountReadAt !== input.checkedAt ? { accountReadAt } : {}),
+    ...(previous?.accountKey !== undefined ? { accountKey: previous.accountKey } : {}),
+    ...(previous?.plan !== undefined ? { plan: previous.plan } : {}),
+    ...(credits !== undefined ? { credits } : {}),
+    ...(usageAllowed !== undefined ? { usageAllowed } : {}),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
     ...(unavailable !== undefined ? { unavailable } : {}),
   };
+}
+
+function usageCreditsEqual(
+  a: ServerProviderUsageCredits | undefined,
+  b: ServerProviderUsageCredits | null,
+): boolean {
+  if (a === undefined || b === null) return a === undefined && b === null;
+  return a.balance === b.balance && a.currency === b.currency && a.unlimited === b.unlimited;
 }
 
 function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageWindow): boolean {
@@ -128,7 +167,8 @@ function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageW
     a.usedPercent === b.usedPercent &&
     a.resetsAt === b.resetsAt &&
     a.windowDurationMins === b.windowDurationMins &&
-    a.exhaustedSince === b.exhaustedSince
+    a.exhaustedSince === b.exhaustedSince &&
+    a.model === b.model
   );
 }
 
@@ -167,7 +207,12 @@ export function resolveUsageLimitsAfterProbe(input: {
     !probed.unavailable &&
     Date.parse(published.checkedAt) > Date.parse(probed.checkedAt)
   ) {
-    return { ...probed, checkedAt: published.checkedAt, windows: published.windows };
+    return {
+      ...probed,
+      checkedAt: published.checkedAt,
+      accountReadAt: probed.checkedAt,
+      windows: published.windows,
+    };
   }
   return probed && carryExhaustion(published, probed);
 }
