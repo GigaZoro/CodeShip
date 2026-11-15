@@ -666,22 +666,35 @@ const threadTools = MCP_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> =>
   Object.values(toolkit.tools),
 ).filter((tool) => McpToolAccess.threadParameters(tool).length > 0);
 
-type ThreadParameterNames<P> = {
-  [Key in keyof P]-?: NonNullable<P[Key]> extends ThreadId ? Key : never;
-}[keyof P];
-type MisnamedThreadParameters<Tools> = {
-  [Name in keyof Tools]: Exclude<
-    ThreadParameterNames<Tool.Parameters<Tools[Name]>>,
-    "threadId" | `${string}ThreadId`
-  >;
-}[keyof Tools];
+// A tool without parameters takes Record<string, never>, whose `never` would match ThreadId.
+type ThreadParameterKinds<P> = {
+  [Key in keyof P as string extends Key ? never : Key]-?: NonNullable<P[Key]> extends ThreadId
+    ? Key
+    : never;
+};
+type ThreadParameterNames<P> = ThreadParameterKinds<P>[keyof ThreadParameterKinds<P>];
+// Per toolkit: a union of their tool maps shares no key, so it would name nothing.
+type MisnamedThreadParameters<Tools> = Tools extends unknown
+  ? {
+      [Name in keyof Tools]: Exclude<
+        ThreadParameterNames<Tool.Parameters<Tools[Name]>>,
+        "threadId" | `${string}ThreadId`
+      >;
+    }[keyof Tools]
+  : never;
+type NamesEveryThreadParameter<Tools> = [MisnamedThreadParameters<Tools>] extends [never]
+  ? true
+  : never;
+const misnamedThreadTool = Tool.make("misnamed", { parameters: Schema.Struct({ chat: ThreadId }) });
 
 it("finds every thread parameter of every tool by its name", () => {
   // A thread parameter named otherwise would take links unresolved; this fails the build.
-  const named: [MisnamedThreadParameters<(typeof MCP_TOOLKITS)[number]["tools"]>] extends [never]
-    ? true
-    : never = true;
-  expect(named).toBe(true);
+  const named: NamesEveryThreadParameter<(typeof MCP_TOOLKITS)[number]["tools"]> = true;
+  // @ts-expect-error a ThreadId parameter outside the naming rule
+  const misnamed: NamesEveryThreadParameter<
+    (typeof ThreadLinkProbeToolkit)["tools"] | { misnamed: typeof misnamedThreadTool }
+  > = true;
+  expect([named, misnamed]).toEqual([true, true]);
   expect(threadTools.map((tool) => tool.name)).toEqual(
     expect.arrayContaining([
       "t3_thread_read",

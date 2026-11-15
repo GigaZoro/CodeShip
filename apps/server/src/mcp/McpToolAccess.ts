@@ -424,45 +424,43 @@ const linkRefused = (message: string) =>
  * parameter takes either. The link's environment routes the call as `environmentId` would; a
  * tool that never leaves this environment refuses a link to another one by the id to pass.
  */
-const resolvingThreadLinks =
-  <E>(
-    name: string,
-    keys: ReadonlyArray<string>,
-    routes: boolean,
-    handle: (params: Record<string, unknown>) => Effect.Effect<unknown, E>,
-  ) =>
-  (params: Record<string, unknown>) =>
-    Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
-      const resolved = { ...params };
-      for (const key of keys) {
-        const value = params[key];
-        if (typeof value !== "string") continue;
-        const link = McpInvocationContext.threadOfLink(scope, value);
-        if (link === undefined) continue;
-        if (link === null) {
-          return yield* linkRefused(
-            `${key} is a thread link that names no thread. Pass the thread id instead.`,
-          );
-        }
-        resolved[key] = link.threadId;
-        const linked = link.environmentId;
-        const named = resolved.environmentId as EnvironmentId | undefined;
-        if (linked === null || linked === (routes ? named : scope.environmentId)) continue;
-        if (!routes) {
-          return yield* linkRefused(
-            `${key} links thread ${link.threadId} on environment ${linked}, but ${name} works only on this environment's threads.`,
-          );
-        }
-        if (named !== undefined) {
-          return yield* linkRefused(
-            `${key} links thread ${link.threadId} on environment ${linked}, but this call names environment ${named}. Pass the thread id with the environmentId it is on.`,
-          );
-        }
-        resolved.environmentId = linked;
+const resolvingThreadLinks = <E>(
+  name: string,
+  keys: ReadonlyArray<string>,
+  routes: boolean,
+  handle: (params: Record<string, unknown>) => Effect.Effect<unknown, E>,
+) =>
+  Effect.fn("McpToolAccess.resolvingThreadLinks")(function* (params: Record<string, unknown>) {
+    const scope = yield* McpInvocationContext.McpInvocationContext;
+    const resolved = { ...params };
+    for (const key of keys) {
+      const value = params[key];
+      if (typeof value !== "string") continue;
+      const link = McpInvocationContext.threadOfLink(scope, value);
+      if (link === undefined) continue;
+      if (link === null) {
+        return yield* linkRefused(
+          `${key} is a thread link that names no thread. Pass the thread id instead.`,
+        );
       }
-      return yield* handle(resolved);
-    });
+      resolved[key] = link.threadId;
+      const linked = link.environmentId;
+      const named = resolved.environmentId as EnvironmentId | undefined;
+      if (linked === null || linked === (routes ? named : scope.environmentId)) continue;
+      if (!routes) {
+        return yield* linkRefused(
+          `${key} links thread ${link.threadId} on environment ${linked}, but ${name} works only on this environment's threads.`,
+        );
+      }
+      if (named !== undefined) {
+        return yield* linkRefused(
+          `${key} links thread ${link.threadId} on environment ${linked}, but this call names environment ${named}. Pass the thread id with the environmentId it is on.`,
+        );
+      }
+      resolved.environmentId = linked;
+    }
+    return yield* handle(resolved);
+  });
 
 /**
  * Every tool that takes a linked environment runs there the same way: its
