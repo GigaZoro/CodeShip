@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -56,6 +57,14 @@ export function selectEvalProvider(input: {
   );
 }
 
+class CodexLoginError extends Schema.TaggedError<CodexLoginError>()("CodexLoginError", {
+  cause: Schema.Defect(),
+}) {
+  override get message(): string {
+    return "Could not read the Codex login's account.";
+  }
+}
+
 const decodeClaims = Schema.decodeUnknownSync(
   Schema.Struct({
     "https://api.openai.com/auth": Schema.Struct({ chatgpt_account_id: Schema.String }),
@@ -93,7 +102,11 @@ export const readCodexConnection = Effect.fn("evals.readCodexConnection")(
   function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
-      ChildProcess.make(process.env.CODEX_BIN ?? "codex", ["app-server"], { shell: false }),
+      ChildProcess.make(
+        yield* Config.String("CODEX_BIN").pipe(Config.withDefault("codex")),
+        ["app-server"],
+        { shell: false },
+      ),
     );
     return yield* Effect.gen(function* () {
       const client = yield* CodexClient.CodexAppServerClient;
@@ -106,9 +119,13 @@ export const readCodexConnection = Effect.fn("evals.readCodexConnection")(
         includeToken: true,
         refreshToken: true,
       });
-      const connection = yield* Effect.try(() => openAiConnection(auth));
+      const connection = yield* Effect.try({
+        try: () => openAiConnection(auth),
+        catch: (cause) => new CodexLoginError({ cause }),
+      });
       if (!connection) return undefined;
-      const login = process.env.CODEX_HOME?.trim() || "~/.codex";
+      const login =
+        (yield* Config.String("CODEX_HOME").pipe(Config.withDefault(""))).trim() || "~/.codex";
       // An exhausted plan login fails every sample after minutes of 429 retries; stop before the first.
       const blocked = connection.publicApi
         ? undefined
@@ -135,40 +152,6 @@ export const readCodexConnection = Effect.fn("evals.readCodexConnection")(
   // Sign-in's 15 seconds plus the usage read's own 5, so a slow read cannot cost the sign-in.
   Effect.timeout("20 seconds"),
 );
-
-export function openAiShellRequest(request: {
-  model: string;
-  system: string;
-  messages: ReadonlyArray<{
-    role: string;
-    content: ReadonlyArray<{ type: string; readonly [key: string]: unknown }>;
-  }>;
-  output_config: { format: { schema: unknown } };
-}) {
-  return {
-    model: request.model,
-    instructions: request.system,
-    input: request.messages.map(({ role, content }) => ({
-      type: "message",
-      role,
-      content: content.map(({ text }) => ({
-        type: "input_text",
-        text: typeof text === "string" ? text : "",
-      })),
-    })),
-    text: {
-      format: {
-        type: "json_schema",
-        name: "shell_reply",
-        strict: true,
-        schema: request.output_config.format.schema,
-      },
-    },
-    reasoning: { effort: "low" },
-    stream: true,
-    store: false,
-  };
-}
 
 type Block = { readonly type: string; readonly [key: string]: unknown };
 export function publicResponsesRequest<T extends { input: ReadonlyArray<Block> }>(request: T) {

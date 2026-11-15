@@ -907,6 +907,9 @@ it("sends a GPT shell model the same simulator request, with a strict JSON reply
   assert.equal(request.model, "gpt-6-luna");
   assert.equal(request.instructions, body.system);
   assert.isTrue(request.text.format.strict);
+  assert.equal(request.input[0]?.type, "message");
+  assert.notProperty(request, "max_tokens");
+  assert.notProperty(request, "output_config");
   assert.deepEqual(
     request.input[0]?.content.map((part) => part.text),
     body.messages[0]?.content.map((block) => block.text),
@@ -980,7 +983,7 @@ it.effect("saves a new secret file for each request and tells the shell simulato
         type: "tool_use",
         id,
         name: "mcp__t3-code__request_secret",
-        input: { label: "Token", delivery },
+        input: { label: "Token", reason: "Signs the deploy webhook.", delivery },
       }).pipe(Effect.map((result) => JSON.parse(String(result.content))));
     const first = yield* request("a", "file");
     const second = yield* request("b", "file");
@@ -1009,7 +1012,7 @@ it.effect("saves a new secret file for each request and tells the shell simulato
       type: "tool_use",
       id: "d",
       name: "mcp__t3-code__request_secret",
-      input: { delivery: "file" },
+      input: { label: "Token", reason: "Signs the deploy webhook.", delivery: "file" },
     });
     assert.deepEqual(declined.secretFiles, []);
   }).pipe(Effect.provide(FetchHttpClient.layer)),
@@ -1038,7 +1041,7 @@ it.effect("saves a pasted value with no card where request_secret takes one", ()
       type: "tool_use",
       id: "a",
       name: "mcp__t3-code__request_secret",
-      input: { label: "Pixel PIN", value: "482916" },
+      input: { label: "Pixel PIN", reason: "Unlocks the test phone.", value: "482916" },
     }).pipe(Effect.map((block) => JSON.parse(String(block.content))));
     if (!savesPastedSecrets) {
       // On refs without `value`, T3 ignores it and the card runs.
@@ -1227,7 +1230,11 @@ it.effect("builds device cases from product-backed worlds and synthetic prior tu
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-// Models recover from either result, so this keeps the guard case failing on the old success.
+const secretCases = () =>
+  NodeFS.readFileSync(new URL("./cases/secrets.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line));
 
 it.effect("builds the secrets cases, each citing a finding and grading secret handling", () =>
   Effect.gen(function* () {

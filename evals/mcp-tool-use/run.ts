@@ -1669,7 +1669,9 @@ export const shellResponsesRequest = (body: ReturnType<typeof shellRequest>) => 
   text: {
     format: { type: "json_schema", name: "shell_reply", schema: SHELL_REPLY_SCHEMA, strict: true },
   },
+  // Typed items, so publicResponsesRequest can tell them from captured tool lists.
   input: body.messages.map((message) => ({
+    type: "message",
     role: message.role,
     content: message.content.map((block) => ({ type: "input_text", text: block.text })),
   })),
@@ -1978,7 +1980,8 @@ export const gradeSample = (
         (!succeeded || call.failed === false) &&
         matches(args, call.input),
     );
-  const label = ({ tool, args }: McpToolUseCall) => (args ? `${tool} ${valueText(args)}` : tool);
+  const label = ({ tool, args, succeeded }: McpToolUseCall) =>
+    [tool, ...(args ? [valueText(args)] : []), ...(succeeded ? ["succeeded"] : [])].join(" ");
   for (const call of expect.calls ?? []) add(`calls ${label(call)}`, found(call));
   if (expect.callsAnyOf !== undefined)
     add(
@@ -2637,14 +2640,16 @@ const main = Effect.gen(function* () {
         ? "openai"
         : undefined);
   const decodeProvider = Schema.decodeUnknownEffect(Schema.Literals(["openai", "anthropic"]));
-  const preferred = process.env.CODESHIP_EVAL_PROVIDER?.trim();
+  const preferred = (yield* Config.String("CODESHIP_EVAL_PROVIDER").pipe(
+    Config.withDefault(""),
+  )).trim();
   const requested =
     requestedProvider === undefined ? undefined : yield* decodeProvider(requestedProvider);
   const preference = preferred ? yield* decodeProvider(preferred) : undefined;
   if (values.proxy && (requested ?? preference) === "anthropic")
     return yield* Effect.die(new Error("--proxy requires the OpenAI provider."));
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim() ?? "";
-  const openAiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = (yield* Config.String("ANTHROPIC_API_KEY").pipe(Config.withDefault(""))).trim();
+  const openAiKey = (yield* Config.String("OPENAI_API_KEY").pipe(Config.withDefault(""))).trim();
   const connection =
     offline || (requested ?? preference) === "anthropic"
       ? undefined

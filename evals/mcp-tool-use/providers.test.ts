@@ -3,7 +3,6 @@ import {
   codexUsageBlock,
   selectEvalProvider,
   openAiConnection,
-  openAiShellRequest,
   publicResponsesRequest,
 } from "./providers.ts";
 
@@ -32,23 +31,6 @@ it("uses the sole available provider and requires a choice when both are availab
     () => selectEvalProvider({ available: ["openai"], requested: "anthropic" }),
     /not available/,
   );
-});
-
-it("uses an OpenAI response schema for shell simulation without Anthropic options", () => {
-  const request = openAiShellRequest({
-    model: "gpt-6-luna",
-    system: "Simulate only",
-    messages: [{ role: "user", content: [{ type: "text", text: "fake command" }] }],
-    output_config: { format: { schema: { type: "object" } } },
-  });
-  assert.equal(request.model, "gpt-6-luna");
-  assert.equal(request.instructions, "Simulate only");
-  assert.deepEqual(request.input, [
-    { type: "message", role: "user", content: [{ type: "input_text", text: "fake command" }] },
-  ]);
-  assert.equal(request.text.format.type, "json_schema");
-  assert.notProperty(request, "max_tokens");
-  assert.notProperty(request, "output_config");
 });
 
 it("moves captured tools to the public Responses schema and keeps the mocked transcript", () => {
