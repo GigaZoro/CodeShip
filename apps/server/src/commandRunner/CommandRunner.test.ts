@@ -1147,8 +1147,8 @@ describe.runIf(isWindowsHost)("Windows only", () => {
   });
 
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
-    // Send returns once the command's own handler has the event. It takes it, so the command goes on,
-    // and C# 5, which Windows PowerShell compiles, has no newer syntax.
+    // Send returns once the command's own handler has the event, and takes it so the command goes on.
+    // Windows PowerShell compiles this as C# 5.
     const consoleApi = [
       "Add-Type -Namespace T3Test -Name Console -MemberDefinition '",
       '[DllImport("kernel32.dll")] private static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint group);',
