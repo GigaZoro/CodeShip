@@ -964,6 +964,24 @@ function assertUniqueEntries(entries: ReadonlyArray<ThirdPartyLicenseEntry>): vo
   }
 }
 
+/** The inputs of each build's notices under the repository `root`, so checks read what builds do. */
+export function shippedThirdPartyLicenses(root: URL) {
+  const configFile = new URL("third-party-licenses.config.json", root);
+  const app = (name: string) => ({
+    bundle: name,
+    path: new URL(`apps/${name}/package.json`, root),
+  });
+  return {
+    // The web bundle's notices also cover the server and desktop app shipped with it.
+    web: {
+      bundleName: "web",
+      configFile,
+      packageManifests: [app("web"), app("server"), app("desktop")],
+    },
+    mobile: { configFile, packageManifests: [app("mobile")] },
+  };
+}
+
 export async function generateThirdPartyLicenseManifest(input: {
   readonly configFile?: string | URL;
   readonly packageManifests: ReadonlyArray<ThirdPartyLicensePackageManifest>;

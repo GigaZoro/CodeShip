@@ -217,7 +217,7 @@ for the security model.
 ## Checks
 
 `vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
-changed files, `knip:check` when code or a manifest changes, the generated GraphQL checks, typecheck
+changed files, `knip:check` when code or a manifest changes, the third-party license notices, the generated GraphQL checks, typecheck
 of the affected packages and their dependents, the test files beside the changed files, and the
 test files that import a changed file directly or through test-support code (a `*.testkit.ts`, a
 `testkit/`, `testing/`, `test/` or `fixtures/` folder), and the test files beside each production

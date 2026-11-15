@@ -1,3 +1,7 @@
+## 2026-11-15 — `check:changed` catches a dependency without a license notice
+
+- Maintainers: `vp run check:changed` now checks the third-party license notices the web and mobile builds generate, so a new dependency without a license file fails there instead of in the release build. `vp run licenses:check` runs the same check on its own.
+
 ## 2026-11-15 — A cancelled terminal open no longer leaves its shell running
 
 - When opening a terminal was cancelled just as its shell started, for example because the app disconnected, the shell could keep running with no terminal to reach it. It now always belongs to its terminal, which shows its output and can stop it.

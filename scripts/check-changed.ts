@@ -750,6 +750,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const steps: Array<Step<never>> = [
     command("release notes", ["exec", "node", ".github/scripts/release-notes.cjs", "check", base]),
     ...(runPatchCheck ? [{ name: "unused patches", run: () => checkPatches }] : []),
+    // The web and mobile builds stop on a shipped package without a license notice. Notices come
+    // from installed packages and files the license config names anywhere, so this always runs.
+    command("third-party licenses", ["run", "licenses:check"]),
     ...(present.length > 0
       ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]
       : []),

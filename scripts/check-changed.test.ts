@@ -510,6 +510,7 @@ it("checks changed source paths through the Windows launcher", () => {
   });
   expect(calls.some(({ args }) => args[0] === "fmt" && args.includes(project.source))).toBe(true);
   expect(calls.some(({ args }) => args[0] === "run" && args.includes("typecheck"))).toBe(true);
+  expect(calls.some(({ args }) => args.join(" ") === "run licenses:check")).toBe(true);
   expect(calls.filter(({ args }) => args[0] === "install")).toEqual([
     { args: ["install", "--frozen-lockfile", "--prefer-offline"], cwd: project.root },
   ]);
@@ -578,7 +579,8 @@ it("installs Chromium before web browser tests and runs none without it", () => 
 });
 
 it.each([
-  ["install", "install --lockfile-only"],
+  ["unused patches", "install --lockfile-only"],
+  ["third-party licenses", "run licenses:check"],
   ["lint", "lint"],
 ])("reports a failing %s step with its output", (step, failing) => {
   using project = launcherFixture();
@@ -596,10 +598,14 @@ it.each([
     "--ignore-scripts",
   ]);
   expect(install?.cwd).not.toBe(project.root);
-  expect(result.stdout + result.stderr).toContain(`fixture stdout: ${step}`);
-  expect(result.stdout + result.stderr).toContain(`fixture stderr: ${step}`);
-  expect(result.stdout).toContain(step === "install" ? "FAIL  unused patches" : "FAIL  lint");
-  if (step === "lint") expect(result.stdout).toContain("pass  unused patches");
+  const command = failing.split(" ")[0];
+  expect(result.stdout + result.stderr).toContain(`fixture stdout: ${command}`);
+  expect(result.stdout + result.stderr).toContain(`fixture stderr: ${command}`);
+  expect(result.stdout).toContain(`FAIL  ${step}`);
+  if (step === "lint") {
+    expect(result.stdout).toContain("pass  unused patches");
+    expect(result.stdout).toContain("pass  third-party licenses");
+  }
   expect(
     NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
   ).toBe(false);

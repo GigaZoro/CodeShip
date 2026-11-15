@@ -29,6 +29,8 @@ license or notice text. Generated notices use license templates from the pinned 
 committed under `third-party-licenses/spdx/`. Builds never fetch them, so a network blip cannot
 fail a build. A build fails when a configured template is missing; run `vp run licenses:sync` to
 download it, then commit the new file.
+`vp run licenses:check` collects both manifests from the same inputs without building, and
+`check:changed` always runs it.
 
 ## Custom notices and package overrides
 

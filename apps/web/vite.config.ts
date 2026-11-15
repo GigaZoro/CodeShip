@@ -19,7 +19,10 @@ import {
 } from "@t3tools/shared/devProxy";
 
 import { loadRepoEnv } from "../../scripts/lib/public-config";
-import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses";
+import {
+  shippedThirdPartyLicenses,
+  thirdPartyLicensesPlugin,
+} from "../../scripts/lib/third-party-licenses";
 import { tailwindPlugins } from "./vite/tailwind";
 import { warmBundledDevPlugin } from "./vite/warmBundledDev";
 
@@ -270,15 +273,9 @@ export default defineConfig(() => {
       chunkCycleGuardPlugin(),
       builtDev
         ? undefined
-        : thirdPartyLicensesPlugin({
-            bundleName: "web",
-            configFile: new URL("../../third-party-licenses.config.json", import.meta.url),
-            packageManifests: [
-              { bundle: "web", path: new URL("./package.json", import.meta.url) },
-              { bundle: "server", path: new URL("../server/package.json", import.meta.url) },
-              { bundle: "desktop", path: new URL("../desktop/package.json", import.meta.url) },
-            ],
-          }),
+        : thirdPartyLicensesPlugin(
+            shippedThirdPartyLicenses(new URL("../../", import.meta.url)).web,
+          ),
       tanstackRouter({ autoCodeSplitting: true }),
       react({ compiler: true }),
       tailwindPlugins(bundledDev),
