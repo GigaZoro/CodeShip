@@ -91,6 +91,8 @@ export interface ReviewGuideGenerationInput {
   settledReview: string;
   instructions?: string | undefined;
   stack?: ReadonlyArray<ReviewGuideStackLayer> | undefined;
+  /** The reader's language code, such as `uk`: the guide's prose is in it. */
+  language: string;
   modelSelection: ModelSelection;
 }
 

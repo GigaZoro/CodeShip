@@ -18,7 +18,11 @@ import {
   useGuideRunStore,
   type GuideProgress,
 } from "./guideRunStore";
-import { stepTourPosition, stopFilePaths } from "@t3tools/client-runtime/review-guide-tour";
+import {
+  stepTourPosition,
+  stopFilePaths,
+  stopTitle,
+} from "@t3tools/client-runtime/review-guide-tour";
 import { useGuideDiffFiles } from "./useGuideDiffFiles";
 import { t } from "~/i18n";
 
@@ -52,6 +56,7 @@ export function GuideTour({
   const stopCount = guide.stops.length;
   const position = Math.max(Math.min(tour.position, stopCount - 1), 0);
   const stop = guide.stops[position] ?? null;
+  const nextStop = guide.stops[position + 1];
 
   const wantedPaths = stop === null ? [] : stopFilePaths(stop);
   const diff = useGuideDiffFiles({
@@ -130,7 +135,7 @@ export function GuideTour({
                   onSelect={goTo}
                 />
               }
-              nextTitle={guide.stops[position + 1]?.title ?? null}
+              nextTitle={nextStop === undefined ? null : stopTitle(nextStop)}
               files={diff.files}
               loadDiffFiles={loadDiffFiles}
               diffLoading={diff.loading}

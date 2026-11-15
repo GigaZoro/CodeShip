@@ -2971,6 +2971,8 @@ const catalog: MessageCatalog = {
   },
   "Changed {name}": "Змінено {name}",
   "Changed files": "Змінені файли",
+  "Changed files the tour does not otherwise cover.":
+    "Змінені файли, яких тур не охоплює в інших місцях.",
   Changes: "Зміни",
   "Changes apply to {destination}": "Зміни застосовуються до: {destination}",
   "Changes can be cleanly merged.": "Зміни можна злити без конфліктів.",
@@ -8469,6 +8471,7 @@ const catalog: MessageCatalog = {
   "Other Bluetooth": "Інші Bluetooth",
   "Other entries in this grouped project are unaffected.":
     "Інші записи в цьому згрупованому проєкті не зачіпаються.",
+  "Other files": "Інші файли",
   "Other folders": "Інші папки",
   "Other Models": "Інші моделі",
   "Other paired clients will need a new pairing link before reconnecting.":

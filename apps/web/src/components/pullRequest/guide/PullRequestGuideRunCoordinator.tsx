@@ -1,5 +1,6 @@
 import type { AnyRouter } from "@tanstack/react-router";
 import type { PullRequestReviewGuideResult } from "@t3tools/contracts";
+import { pullRequestReviewGuideInput } from "@t3tools/client-runtime/state/pull-requests";
 import { CircleAlertIcon, CircleCheckIcon } from "lucide-react";
 import { AsyncResult, type AtomRegistry } from "effect/reactivity";
 
@@ -63,7 +64,7 @@ function watchGuideRun(
 ): () => void {
   const atom = pullRequestEnvironment.reviewGuide({
     environmentId: watch.environmentId,
-    input: watch.reference,
+    input: pullRequestReviewGuideInput(watch.reference),
   });
   let sawRunning = watch.answeredRunning === true;
   let subscribing = true;

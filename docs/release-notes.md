@@ -1,3 +1,9 @@
+## 2026-11-15 — Pull request guides are written in your app's language
+
+- A pull request's review guide is now written in the app's language (**Settings → General → Language**) on web, desktop and mobile. Its closing "Other files" stop is labelled in that language too. Before, it came in English whatever language you chose.
+- Each language keeps its own guide. Guides written before this release stay as the English ones; in another language, choose **Write guide** to have one written in it.
+- Agents writing guides with `write_pull_request_guides` and reading them with `read_pull_request_guide` can pass `language`, such as `uk`; without it they write and read the English guide. Apps that predate this release keep getting English guides.
+
 ## 2026-11-15 — Manual steps show in your app's language
 
 - A manual step's AI review is now written in the app's language (**Settings → General → Language**). Before, it followed the language of the step's title, which agents write in English, so the review came in English whatever language you chose.

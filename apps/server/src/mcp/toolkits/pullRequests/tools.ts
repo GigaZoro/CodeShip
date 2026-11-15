@@ -6,6 +6,7 @@ import {
   PullRequestReviewGuide,
   PullRequestReviewGuideRun,
   PullRequestState,
+  ReaderLanguage,
   ThreadPullRequestLinkSource,
   TrimmedNonEmptyString,
   ThreadId,
@@ -448,6 +449,12 @@ const WritePullRequestGuidesTool = Tool.make("write_pull_request_guides", {
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     pullRequests: Schema.Array(GuideTarget).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+    language: Schema.optional(
+      ReaderLanguage.annotate({
+        description:
+          "Code of the reader's language, such as uk. The PR Guide tab shows the guide in the app's language. Default: en.",
+      }),
+    ),
   }),
   success: WritePullRequestGuidesResult,
   failure: PullRequestToolError,
@@ -465,6 +472,11 @@ const ReadPullRequestGuideTool = Tool.make("read_pull_request_guide", {
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     ...GuideTarget.fields,
+    language: Schema.optional(
+      ReaderLanguage.annotate({
+        description: "Code of the guide's language; each has its own. Default: en.",
+      }),
+    ),
   }),
   success: ReadPullRequestGuideResult,
   failure: PullRequestToolError,

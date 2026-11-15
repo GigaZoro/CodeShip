@@ -1,4 +1,3 @@
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
@@ -6,6 +5,7 @@ import {
   CommandId,
   ForwardCompatibleArray,
   IsoDateTime,
+  ReaderLanguageField,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -124,12 +124,6 @@ export const ManualStepSolution = Schema.Struct({
 });
 export type ManualStepSolution = typeof ManualStepSolution.Type;
 
-/**
- * The language code a review is written in: the reader's interface language. Any code, so a
- * server writes reviews for languages added after it shipped.
- */
-export const ManualStepReviewLanguage = Schema.String.check(Schema.isPattern(/^[a-z]{2,3}$/));
-
 /** An AI review of one manual step, in the reader's language: does it need a person, and how. */
 export const ManualStepReview = Schema.Struct({
   threadId: Schema.String,
@@ -156,7 +150,7 @@ export const ManualStepReviewInput = Schema.Struct({
    */
   updatedAt: Schema.String,
   /** Clients that predate it read reviews in English. */
-  language: ManualStepReviewLanguage.pipe(Schema.withDecodingDefaultKey(Effect.succeed("en"))),
+  language: ReaderLanguageField,
 });
 export type ManualStepReviewInput = typeof ManualStepReviewInput.Type;
 

@@ -1,7 +1,21 @@
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  PositiveInt,
+  ReaderLanguageField,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { PullRequestRef } from "./pullRequest.ts";
+
+/** A guide is written, stored and read per language: a reader sees only one in their own. */
+export const PullRequestReviewGuideInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  /** Clients that predate it read guides in English. */
+  language: ReaderLanguageField,
+});
+export type PullRequestReviewGuideInput = typeof PullRequestReviewGuideInput.Type;
 
 export const PullRequestReviewGuideAttention = Schema.Struct({
   kind: Schema.Literals(["tradeoff", "contract", "product", "risk", "accessibility"]),
@@ -39,6 +53,8 @@ export const PullRequestReviewGuideStop = Schema.Struct({
   ),
   notes: Schema.Array(PullRequestReviewGuideNote),
   questions: Schema.Array(TrimmedNonEmptyString),
+  /** The server adds this stop for files the tour left out; clients label it in their language. */
+  otherFiles: Schema.optionalKey(Schema.Literal(true)),
 });
 export type PullRequestReviewGuideStop = typeof PullRequestReviewGuideStop.Type;
 

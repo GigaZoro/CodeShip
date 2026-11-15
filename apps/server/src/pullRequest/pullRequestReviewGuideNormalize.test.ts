@@ -237,6 +237,7 @@ describe("normalizeReviewGuide", () => {
     expect(result.stops.at(-1)).toMatchObject({
       title: "Other files",
       files: [{ path: "src/gone.ts" }, { path: "docs/readme.md" }],
+      otherFiles: true,
     });
   });
 

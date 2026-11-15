@@ -1,7 +1,7 @@
 import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildManualStepReviewPrompt } from "./textGenerationPrompts.ts";
+import { buildManualStepReviewPrompt, buildReviewGuidePrompt } from "./textGenerationPrompts.ts";
 import { normalizeManualStepReview } from "./textGenerationOperations.ts";
 import { normalizeCliError } from "./textGenerationUtils.ts";
 import * as Effect from "effect/Effect";
@@ -47,6 +47,25 @@ describe("buildManualStepReviewPrompt", () => {
       "solutions",
       "translation",
     ]);
+  });
+});
+
+describe("buildReviewGuidePrompt", () => {
+  it("writes the tour in the reader's language, after any preferences", () => {
+    const { prompt } = buildReviewGuidePrompt({
+      number: 7,
+      title: "Add the feature",
+      description: "Adds the feature.",
+      baseBranch: "main",
+      baseCommit: "abc123",
+      settledReview: "",
+      instructions: "Write in English.",
+      language: "uk",
+    });
+
+    const rule = prompt.indexOf("in Ukrainian, whatever language the change request");
+    expect(rule).toBeGreaterThan(prompt.indexOf("Write in English."));
+    expect(prompt).toContain("Keep commands, code, paths, URLs");
   });
 });
 

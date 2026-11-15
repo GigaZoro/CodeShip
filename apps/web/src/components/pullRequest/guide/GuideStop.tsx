@@ -28,7 +28,7 @@ import { GuideExcerpt, type ExcerptCommenting } from "./GuideExcerpt";
 import { GuideFileDiff } from "./GuideFileDiff";
 import { GuideNotes } from "./GuideNotes";
 import { GuideProse } from "./GuideProse";
-import { letterStopNotes } from "@t3tools/client-runtime/review-guide-tour";
+import { letterStopNotes, stopSummary, stopTitle } from "@t3tools/client-runtime/review-guide-tour";
 import { msg, t } from "~/i18n";
 
 const ATTENTION_LABELS = {
@@ -73,6 +73,7 @@ export function GuideStop({
   onOpenFile: (path: string) => void;
 }) {
   const { lettered, byExcerpt } = letterStopNotes(stop);
+  const summary = stopSummary(stop);
   const excerptPaths = new Set(stop.excerpts.map((excerpt) => excerpt.path));
   const otherFiles = stop.files.filter((file) => !excerptPaths.has(file.path));
 
@@ -132,10 +133,10 @@ export function GuideStop({
         </Collapsible>
 
         <div className="flex max-w-[60rem] flex-col gap-2">
-          <h2 className="text-lg font-semibold text-foreground">{stop.title}</h2>
-          {stop.summary.trim() !== "" ? (
+          <h2 className="text-lg font-semibold text-foreground">{stopTitle(stop)}</h2>
+          {summary.trim() !== "" ? (
             <div className="text-sm text-muted-foreground">
-              <GuideProse text={stop.summary} />
+              <GuideProse text={summary} />
             </div>
           ) : null}
         </div>

@@ -4,7 +4,7 @@ import { Chip } from "../../components/ui/Chip";
 import { pullRequestTabOffset } from "./pullRequestTabScroll";
 import { guideFocusedRows, type GuideDiffFocus } from "./guide/guideDiffFocus";
 import { PullRequestGuideContent } from "./guide/PullRequestGuideScreen";
-import { useReviewGuidesEnabled } from "./guide/useReviewGuide";
+import { reviewGuideTarget, useReviewGuidesEnabled } from "./guide/useReviewGuide";
 import {
   filterPullRequestActivity,
   DEFAULT_ACTIVITY_FILTER,
@@ -441,7 +441,7 @@ export function PullRequestRouteScreen({ route }: StaticScreenProps<PullRequestP
     );
   const stack = usePullRequestStack(params, pr);
   const refreshActivity = useAtomRefresh(composerPullRequests.activity(requestTarget(params)));
-  const refreshGuide = useAtomRefresh(composerPullRequests.reviewGuide(requestTarget(params)));
+  const refreshGuide = useAtomRefresh(composerPullRequests.reviewGuide(reviewGuideTarget(params)));
   const registry = use(RegistryContext);
   const refresh = () =>
     pullRefresh.onRefresh(async (signal) => {

@@ -21,6 +21,16 @@ export function stopSubline(stop: PullRequestReviewGuideStop): string {
   return tn(count, "{count} file", "{count} files");
 }
 
+export function stopTitle(stop: PullRequestReviewGuideStop): string {
+  return stop.otherFiles === true ? t("Other files") : stop.title;
+}
+
+export function stopSummary(stop: PullRequestReviewGuideStop): string {
+  return stop.otherFiles === true
+    ? t("Changed files the tour does not otherwise cover.")
+    : stop.summary;
+}
+
 function noteMarker(index: number): string {
   return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
 }
