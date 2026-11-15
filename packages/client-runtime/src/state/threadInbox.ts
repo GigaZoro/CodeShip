@@ -87,15 +87,17 @@ function failureWaitsOnUser(thread: Pick<NeedsYouInput, "createdBy" | "settledOv
 }
 
 /**
- * Requests always need the user, settled or not. A failure in a thread the user started does
- * until they settle, snooze, or retry it, or a usage-limited run is set to resume by itself.
+ * Requests always need the user, settled or not, except a question while it is snoozed. A failure
+ * in a thread the user started does until they settle, snooze, or retry it, or a usage-limited run
+ * is set to resume by itself.
  */
 export function threadNeedsYouReason(
   thread: NeedsYouInput,
   options: { readonly now: string },
 ): NeedsYouReason | null {
   const status = resolveThreadStatus(thread);
-  if (status === "approval" || status === "input" || status === "request") return status;
+  if (status === "approval" || status === "request") return status;
+  if (status === "input") return effectiveSnoozed(thread, options) ? null : status;
   const failure = failureFromStatus(status, thread);
   if (failure === null || !failureWaitsOnUser(thread)) return null;
   if (effectiveSnoozed(thread, options)) return null;
@@ -130,7 +132,7 @@ export interface NeedsYouThreads<T> {
   readonly later: readonly T[];
   /** When the thread started waiting on the user, in epoch milliseconds. */
   readonly sinceOf: (thread: T) => number;
-  /** When a failed thread's snooze ends and it rejoins, so a caller can recompute then. */
+  /** When a snoozed failure or question rejoins, so a caller can recompute then. */
   readonly nextChangeAt: number | null;
 }
 
@@ -147,8 +149,8 @@ export function collectNeedsYouThreads<
     }
     if (
       thread.snoozedUntil != null &&
-      failureWaitsOnUser(thread) &&
-      threadFailureStatus(thread) !== null
+      (resolveThreadStatus(thread) === "input" ||
+        (failureWaitsOnUser(thread) && threadFailureStatus(thread) !== null))
     ) {
       const wakeAt = Date.parse(thread.snoozedUntil);
       if (wakeAt > Date.parse(options.now) && (nextChangeAt === null || wakeAt < nextChangeAt)) {

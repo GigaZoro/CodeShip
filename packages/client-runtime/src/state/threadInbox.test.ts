@@ -379,7 +379,7 @@ describe("Needs you", () => {
     expect(threadNeedsYouReason(asking, { now })).toBe("input");
   });
 
-  it("orders the longest wait first and wakes when a failed thread's snooze ends", () => {
+  it("orders the longest wait first and wakes when a snoozed failure or question rejoins", () => {
     const recent = failed("recent", "2026-06-01T11:00:00.000Z");
     const oldest = failed("oldest", "2026-06-01T08:00:00.000Z");
     const snoozed = failed("snoozed", "2026-06-01T09:00:00.000Z", {
@@ -389,6 +389,18 @@ describe("Needs you", () => {
     const result = collectNeedsYouThreads([recent, snoozed, oldest], { now });
     expect(result.threads.map((entry) => entry.id)).toEqual(["oldest", "recent"]);
     expect(result.nextChangeAt).toBe(Date.parse("2026-06-01T12:30:00.000Z"));
+
+    const question = {
+      ...thread("question", false),
+      hasPendingUserInput: true,
+      pendingUserInputAt: "2026-06-01T11:00:00.000Z",
+      snoozedAt: "2026-06-01T11:30:00.000Z",
+      snoozedUntil: "2026-06-01T12:15:00.000Z",
+    };
+    const withQuestion = collectNeedsYouThreads([recent, snoozed, question], { now });
+    expect(withQuestion.threads.map((entry) => entry.id)).toEqual(["recent"]);
+    expect(withQuestion.nextChangeAt).toBe(Date.parse("2026-06-01T12:15:00.000Z"));
+    expect(threadNeedsYouReason(question, { now: "2026-06-01T12:20:00.000Z" })).toBe("input");
   });
   it("keeps a thread put off for later only until it starts a new wait", () => {
     const putOff = {
