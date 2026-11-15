@@ -1,3 +1,7 @@
+## 2026-11-15 — Tests check that `t3 doctor` removes old tool output before it compacts
+
+- Maintenance only, with no change in behavior. A test now runs `t3 doctor`'s compaction on a database file and checks that it removes tool output older than the **Remove old tool output** setting allows, keeps newer output, and returns the removed space to disk.
+
 ## 2026-11-15 — Service updates no longer pile up launchers
 
 - When T3.CodeShip runs as a service, each update handed the service to the new release's launcher but kept the previous launcher running, so every update left about 300 MB behind until the service restarted. A launcher that took over the service now hands it back to the one the service manager started, which starts the newest launcher, so a service runs at most two launchers. A service installed with an earlier release runs at most three until `t3 update` or `t3 service install` on that machine reinstalls it, and launchers that piled up before this release stay until the service restarts.
