@@ -1,5 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not.
+// @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not, and one test watches the main thread's child_process.spawn.
+import type * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -34,6 +36,7 @@ import {
 } from "@t3tools/contracts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as ServerConfig from "../config.ts";
+import * as WorkerProcessSpawner from "../process/WorkerProcessSpawner.ts";
 import {
   GIT_REMOTE_TIMED_OUT_DETAIL,
   makeGitVcsDriverCore,
@@ -1505,7 +1508,7 @@ describe("rejected git refs", () => {
 
   const failWith = (stderr: string) => {
     const spawner = ChildProcessSpawner.make(() => Effect.succeed(makeFailedHandle(stderr)));
-    const layer = GitVcsDriver.layer.pipe(
+    const layer = Layer.effect(GitVcsDriver.GitVcsDriver, GitVcsDriver.make).pipe(
       Layer.provide(layerServerConfig),
       Layer.provideMerge(
         Layer.merge(
@@ -1593,6 +1596,46 @@ it.live("returns the result of a command that exited while the event loop was bl
     });
     assert.equal(result.exitCode, 0);
   }).pipe(Effect.provide(layerTest)),
+);
+
+// Process creation blocks its calling thread for as long as it takes, so none may run on this one.
+const countMainThreadSpawns = Effect.acquireRelease(
+  Effect.sync(() => {
+    const childProcess = NodeModule.createRequire(import.meta.url)(
+      "node:child_process",
+    ) as typeof NodeChildProcess;
+    const original = childProcess.spawn;
+    const counter = { calls: 0 };
+    childProcess.spawn = function (this: unknown, ...args: ReadonlyArray<unknown>) {
+      counter.calls++;
+      return Reflect.apply(original, this, args);
+    } as typeof original;
+    NodeModule.syncBuiltinESMExports();
+    return { counter, restore: () => (childProcess.spawn = original) };
+  }),
+  ({ restore }) =>
+    Effect.sync(() => {
+      restore();
+      NodeModule.syncBuiltinESMExports();
+    }),
+).pipe(Effect.map(({ counter }) => counter));
+
+it.live("starts a command off the event loop while process creation is slow", () =>
+  Effect.gen(function* () {
+    const cwd = yield* makeTmpDir();
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const mainThreadSpawns = yield* countMainThreadSpawns;
+    yield* WorkerProcessSpawner.__testing.slowStarts(1_000);
+
+    const result = yield* driver.execute({
+      operation: "GitVcsDriver.test.slowProcessCreation",
+      cwd,
+      args: ["--version"],
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(mainThreadSpawns.calls, 0);
+  }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
 
 it.layer(layerTest)("GitVcsDriver core integration", (it) => {

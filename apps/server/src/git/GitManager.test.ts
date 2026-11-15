@@ -48,6 +48,7 @@ import {
   fromRunner,
   decodeJsonReply,
 } from "@t3tools/provider-core/server/textGenerationOperations";
+import * as WorkerProcessSpawner from "../process/WorkerProcessSpawner.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -661,12 +662,12 @@ function makeManager(input?: {
               );
           });
         }),
-      ).pipe(Layer.provide(NodeServices.layer))
-    : Layer.empty;
-  const gitVcsDriver = input?.gitConfigReads
-    ? Layer.effect(
-        GitVcsDriver.GitVcsDriver,
-        GitVcsDriver.make.pipe(
+      ).pipe(Layer.provide(WorkerProcessSpawner.layer))
+    : WorkerProcessSpawner.layer;
+  const gitVcsDriver = Layer.effect(
+    GitVcsDriver.GitVcsDriver,
+    input?.gitConfigReads
+      ? GitVcsDriver.make.pipe(
           Effect.map((service) =>
             GitVcsDriver.GitVcsDriver.of({
               ...service,
@@ -676,9 +677,9 @@ function makeManager(input?: {
                 ),
             }),
           ),
-        ),
-      )
-    : GitVcsDriver.layer;
+        )
+      : GitVcsDriver.make,
+  );
   const layerVcsDriver = (watchesGitSpawns ? Layer.fresh(gitVcsDriver) : gitVcsDriver).pipe(
     Layer.provide(layerGitDriverSpawner),
     Layer.provideMerge(VcsProcess.layer),

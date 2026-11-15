@@ -58,7 +58,7 @@ const fakePowerShell = (reply: (call: Call) => Reply) => {
     }),
   );
   const layer = VisualStudioDebugger.layer.pipe(
-    Layer.provide(ProcessRunner.layer),
+    Layer.provide(Layer.effect(ProcessRunner.ProcessRunner, ProcessRunner.make())),
     Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-visual-studio-" })),
     Layer.provide(NodeServices.layer),

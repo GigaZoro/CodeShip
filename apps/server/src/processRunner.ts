@@ -11,6 +11,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { timeoutProcessOption } from "./process/processDeadline.ts";
+import * as WorkerProcessSpawner from "./process/WorkerProcessSpawner.ts";
 import {
   collectUint8StreamText,
   decodeUtf8,
@@ -394,4 +395,6 @@ export const make = Effect.fn("ProcessRunner.make")(function* () {
   });
 });
 
-export const layer = Layer.effect(ProcessRunner, make());
+export const layer = Layer.effect(ProcessRunner, make()).pipe(
+  Layer.provide(WorkerProcessSpawner.layer),
+);

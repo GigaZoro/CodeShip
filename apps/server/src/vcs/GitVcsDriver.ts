@@ -42,6 +42,7 @@ import {
   PATCH_RENDER_PREFIX_ARGS,
   splitNullSeparatedGitStdoutPaths,
 } from "./GitVcsDriverCore.ts";
+import * as WorkerProcessSpawner from "../process/WorkerProcessSpawner.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 
@@ -1525,5 +1526,9 @@ export const make = Effect.gen(function* () {
   return GitVcsDriver.of(git);
 });
 
-export const layerVcs = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver);
-export const layer = Layer.effect(GitVcsDriver, make);
+export const layerVcs = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver).pipe(
+  Layer.provide(WorkerProcessSpawner.layer),
+);
+export const layer = Layer.effect(GitVcsDriver, make).pipe(
+  Layer.provide(WorkerProcessSpawner.layer),
+);

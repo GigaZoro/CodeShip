@@ -71,7 +71,7 @@ const runWith =
         }),
       ),
       Effect.provide(
-        ProcessRunner.layer.pipe(
+        Layer.effect(ProcessRunner.ProcessRunner, ProcessRunner.make()).pipe(
           Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
         ),
       ),
