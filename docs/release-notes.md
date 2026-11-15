@@ -1,3 +1,7 @@
+## 2026-11-15 — The weekly upstream sync ends within three hours
+
+- The scheduled "weekly sync from T3 Code" task no longer chases a busy main for hours. It merges upstream into the main it started from and, when main moves before it lands, merges main in at most twice more. When main conflicts with the sync, or the run passes 3 merges or 3 hours, it stops, pushes its branch, and names the conflicting files in its report and follow-up. `node scripts/upstream-sync.ts` keeps those bounds.
+
 ## 2026-11-15 — A one-machine task no longer runs twice when its machines run different versions
 
 - A task shared with **One machine** could run on two machines in the same occurrence when one of them ran an older T3.CodeShip, because the two followed different rules for deciding who runs it. Machines now tell each other which rules they follow. When a machine that would run the task is on other rules, this one leaves the occurrence to it and records a skip that names that machine; the task row and **Run history** say to update T3.CodeShip on both machines.
