@@ -31,6 +31,7 @@
 // to main without one.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
@@ -436,6 +437,167 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 });
 
 const CODE = /\.[cm]?[jt]sx?$/;
+
+// Nothing of the kind read is at the path: it was removed since Git listed it, a path it runs
+// through is a file, it is a folder where a file was read, or it is a link that leads back to
+// itself, which Git cannot read either.
+const ABSENT = new Set(["ENOENT", "ENOTDIR", "EISDIR", "ELOOP"]);
+const unlessAbsent = <A>(read: Promise<A>) =>
+  read.catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== undefined && ABSENT.has(error.code)) return undefined;
+    throw error;
+  });
+
+// HEAD, commondir and a .git file each hold one line, which this much of the file covers.
+const GIT_FILE_BYTES = 64 * 1024;
+// Windows defines no O_NONBLOCK, and its folders hold no FIFO.
+const OPEN_WITHOUT_WAITING = NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NONBLOCK ?? 0);
+
+// The start of the regular file at `path`, or undefined when there is none. A FIFO or a device
+// there would hold a read until something writes to it, which may be never, so the open does not
+// wait and only a regular file is read.
+const readGitFile = async (path: string) => {
+  const file = await unlessAbsent(NodeFSP.open(path, OPEN_WITHOUT_WAITING));
+  if (file === undefined) return undefined;
+  try {
+    if (!(await file.stat()).isFile()) return undefined;
+    const { buffer, bytesRead } = await file.read({
+      buffer: Buffer.alloc(GIT_FILE_BYTES),
+      position: 0,
+    });
+    return buffer.toString("utf8", 0, bytesRead);
+  } finally {
+    await file.close();
+  }
+};
+
+// The HEAD of a git directory: a ref, or the commit a detached HEAD holds.
+const GIT_HEAD = /^(?:ref:\s*refs\/|[0-9a-fA-F]{40})/;
+
+// Git takes a HEAD that links to a path under refs/ without following it, as an older Git wrote
+// one, so it holds even for a branch with no commit yet; it takes a link anywhere else for no HEAD.
+const isGitHead = async (path: string) => {
+  const info = await unlessAbsent(NodeFSP.lstat(path));
+  if (info?.isSymbolicLink()) {
+    return (await unlessAbsent(NodeFSP.readlink(path)))?.startsWith("refs/") === true;
+  }
+  const head = await readGitFile(path);
+  return head !== undefined && GIT_HEAD.test(head);
+};
+
+// What Git reads as a git directory: a HEAD it can read, and objects and refs folders in the
+// directory or, for a linked worktree's, in the one its commondir file names.
+const isGitDirectory = async (directory: string) => {
+  if (!(await isGitHead(NodePath.join(directory, "HEAD")))) return false;
+  const common = await readGitFile(NodePath.join(directory, "commondir"));
+  const shared =
+    common === undefined ? directory : NodePath.resolve(directory, common.replace(/[\r\n]+$/, ""));
+  const folders = await Promise.all(
+    ["objects", "refs"].map((name) => unlessAbsent(NodeFSP.stat(NodePath.join(shared, name)))),
+  );
+  return folders.every((info) => info?.isDirectory() === true);
+};
+
+// Git stops at a nested repository and lists its folder: one whose .git is a git directory, or a
+// file `gitdir: <path>` naming one, as a submodule's or a linked worktree's is. Any other .git, such
+// as a marker file a tool leaves, is no repository, and Git lists what is beside it.
+const isNestedRepository = async (folder: string) => {
+  const dotGit = NodePath.join(folder, ".git");
+  const info = await unlessAbsent(NodeFSP.stat(dotGit));
+  if (info?.isDirectory()) return isGitDirectory(dotGit);
+  if (!info?.isFile()) return false;
+  const text = await readGitFile(dotGit);
+  if (!text?.startsWith("gitdir: ")) return false;
+  return isGitDirectory(
+    NodePath.resolve(folder, text.slice("gitdir: ".length).replace(/[\r\n]+$/, "")),
+  );
+};
+
+const GENERATED_INPUT = /(?:^|\/)\.generated\//;
+const ENV_INPUT = /(?:^|\/)\.env[^/]*$/;
+// Of the ignored inputs, tests read env files and the generated sources that are not declarations.
+export const isTestInput = (file: string) =>
+  !file.endsWith(".d.ts") && (GENERATED_INPUT.test(file) || ENV_INPUT.test(file));
+
+// The ignored files checks read: generated sources, Astro's generated types, declarations and env
+// files.
+export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (root: string) {
+  // Pathspec exclusions filter output, but do not prune Git for Windows' junction traversal.
+  const output = yield* git(root, [
+    "ls-files",
+    "--others",
+    "--ignored",
+    "--exclude-standard",
+    "--directory",
+    "-z",
+  ]);
+  // With core.ignorecase set, Git passes over .git in any case. Whether a folder holds a nested
+  // repository is the file system's answer for .git, which one that folds case gives for .GIT as
+  // well, so a name in any case is checked. Exit 1: the setting is not set.
+  const ignoreCase = yield* gitAllowing(
+    root,
+    ["config", "--type=bool", "--get", "core.ignorecase"],
+    [0, 1],
+  ).pipe(Effect.map(({ stdout }) => stdout.toString().trim() === "true"));
+  const isDotGit = (name: string) => (ignoreCase ? name.toLowerCase() : name) === ".git";
+  // Node looks for dependencies in the folder lowercase node_modules opens, through a link too: on a
+  // file system that folds case one named in any case, on one that keeps it any folder such a link
+  // leads to, whatever core.ignorecase says. The walk enters folders only, never a link.
+  const isNodeModules = async (parent: string, name: string) => {
+    if (name === "node_modules") return true;
+    if (name.toLowerCase() !== "node_modules") return false;
+    const [named, lowercase] = await Promise.all([
+      unlessAbsent(NodeFSP.lstat(NodePath.join(root, parent, name), { bigint: true })),
+      unlessAbsent(NodeFSP.stat(NodePath.join(root, parent, "node_modules"), { bigint: true })),
+    ]);
+    return named !== undefined && named.ino === lowercase?.ino && named.dev === lowercase.dev;
+  };
+  const inNodeModules = async (file: string) => {
+    const parts = file.split("/");
+    for (const [index, part] of parts.entries()) {
+      if (await isNodeModules(parts.slice(0, index).join("/"), part)) return true;
+    }
+    return false;
+  };
+  return yield* Effect.tryPromise(async () => {
+    const files = new Set<string>();
+    const matches = (file: string) =>
+      GENERATED_INPUT.test(file) ||
+      ENV_INPUT.test(file) ||
+      /(?:^|\/)\.astro\//.test(file) ||
+      file.endsWith(".d.ts");
+    // Git can list a folder together with folders inside it; each is read once. A path removed since
+    // Git listed it is no input, as for `add` in checkChanged.
+    const seen = new Set<string>();
+    const walk = async (file: string): Promise<void> => {
+      if (seen.has(file) || (await inNodeModules(file))) return;
+      seen.add(file);
+      const absolute = NodePath.join(root, file);
+      const info = await unlessAbsent(NodeFSP.lstat(absolute));
+      if (info === undefined) return;
+      if (info.isDirectory() && !info.isSymbolicLink()) {
+        const entries =
+          (await unlessAbsent(NodeFSP.readdir(absolute, { withFileTypes: true }))) ?? [];
+        const hasDotGit = entries.some((entry) => entry.name.toLowerCase() === ".git");
+        if (hasDotGit && (await isNestedRepository(absolute))) {
+          if (matches(`${file}/`)) files.add(`${file}/`);
+          return;
+        }
+        for (const entry of entries) {
+          // Git never lists a .git entry, whatever it holds.
+          if (isDotGit(entry.name)) continue;
+          const child = `${file}/${entry.name}`;
+          if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(child);
+          else if (matches(child)) files.add(child);
+        }
+      } else if (matches(file)) files.add(file);
+    };
+    for (const entry of output.toString().split("\0").filter(Boolean)) {
+      await walk(entry.replace(/\/$/, ""));
+    }
+    return [...files].sort();
+  });
+});
 // Directories `scripts/i18n-catalog.ts` reads messages from.
 const TRANSLATED_SOURCE = /^(apps\/(web|mobile|desktop)|packages\/(client-runtime|shared))\/src\//;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
@@ -1242,47 +1404,26 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     const bytes = yield* addFiles(hash, yield* changedIn(current, against));
     return { hash, tree: current, bytes };
   });
-  const ignoredInputs = (...patterns: Array<string>) =>
-    paths(
-      "ls-files",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "--",
-      ...patterns,
-      ":(exclude,glob)**/node_modules/**",
-    );
   const installed = () => Effect.try({ try: () => installFingerprint(root), catch: String });
   const testFingerprint = Effect.fn("checkChanged.testFingerprint")(function* (
     head: string,
     install: string,
   ) {
     const { hash } = yield* sourceFingerprint(head);
-    yield* addFiles(
-      hash,
-      yield* ignoredInputs(
-        ":(glob)**/.env*",
-        ":(glob)**/.generated/**",
-        ":(exclude,glob)**/*.d.ts",
-      ),
-    );
+    yield* addFiles(hash, (yield* ignoredInputs(root)).filter(isTestInput));
     return hash.update(install).digest("hex");
   });
   const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
     const { hash, tree: checked, bytes } = yield* sourceFingerprint(against);
     const source = hash.copy().digest("hex");
-    yield* addFiles(
-      hash,
-      yield* ignoredInputs(
-        ":(glob)**/.generated/**",
-        ":(glob)**/.astro/**",
-        ":(glob)**/*.d.ts",
-        ":(glob)**/.env*",
-      ),
-    );
+    yield* addFiles(hash, yield* ignoredInputs(root));
     return { source, tree: checked, bytes, inputs: hash.update(yield* installed()).digest("hex") };
   });
+  const fingerprintStarted = yield* Clock.currentTimeMillis;
   const before = yield* fingerprints(base);
+  yield* Console.log(
+    `check:changed: fingerprinted inputs in ${(((yield* Clock.currentTimeMillis) - fingerprintStarted) / 1000).toFixed(1)}s`,
+  );
   const key = before.inputs;
   const cachePath = inRoot("node_modules/.cache/check-changed.json");
   // A missing or unreadable cache is a miss, never a failure.

@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
@@ -8,6 +9,7 @@ import { expect, onTestFinished, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
 import { assert, describe, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -32,6 +34,8 @@ import {
   dependencyChangeFiles,
   docReaderTests,
   gitLines,
+  ignoredInputs,
+  isTestInput,
   keepModuleCache,
   runSteps,
   runTestGroups,
@@ -46,6 +50,8 @@ import { cachedTestTasks } from "./lib/cached-tests.ts";
 import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { workingTree } from "../.github/scripts/check-changed-receipt.cjs";
+
+vi.mock("node:fs/promises", { spy: true });
 
 const GiB = 1024 ** 3;
 
@@ -928,17 +934,19 @@ const env: Record<string, string> = {
   ),
 };
 
+const writeUnder = (root: string, file: string, content = "input") => {
+  const path = NodePath.join(root, file);
+  NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+  NodeFS.writeFileSync(path, content);
+};
+
 // History A -> B -> C, with HEAD at C. Each remote's main points at A or B.
 function fixture(remotes: Record<string, "A" | "B">) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-changed-")),
   );
   const commits: Record<string, string> = {};
-  const write = (file: string, content: string) => {
-    const path = NodePath.join(root, file);
-    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-    NodeFS.writeFileSync(path, content);
-  };
+  const write = (file: string, content: string) => writeUnder(root, file, content);
   const git = (...args: Array<string>) =>
     NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", env }).trim();
   try {
@@ -979,6 +987,290 @@ const compare = (root: string, ref: Option.Option<string>) =>
     );
   }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
 
+it("fingerprints ignored inputs without entering dependency trees or directory links", async () => {
+  using project = fixture({});
+  const write = (file: string, content?: string) => writeUnder(project.root, file, content);
+  write(".gitignore", "ignored/\n.generated/\n.astro/\n*.d.ts\n.env*\nnode_modules/\n");
+  const expected = [
+    ".env",
+    ".env.local",
+    "root.d.ts",
+    "target/leaked.d.ts",
+    ".generated/code.ts",
+    ".astro/types.ts",
+    "ignored/deep/.generated/code.js",
+    "ignored/deep/.astro/data.json",
+    "ignored/deep/types.d.ts",
+    "ignored/deep/.env.test",
+    "ignored/space & дослід.d.ts",
+    // Nested repositories, with a .git folder and with a .git file, are listed by their folder.
+    ".generated/nested/",
+    "ignored/deep/.generated/linked-repo/",
+  ].sort();
+  const gitInit = (...args: Array<string>) =>
+    NodeChildProcess.execFileSync("git", ["init", "-q", "-b", "main", ...args], {
+      cwd: project.root,
+      env,
+    });
+  gitInit(".generated/nested");
+  // Git does not create the parent of a separate Git directory.
+  const modules = NodePath.join(project.root, ".git", "modules");
+  NodeFS.mkdirSync(modules);
+  gitInit(
+    `--separate-git-dir=${NodePath.join(modules, "linked-repo")}`,
+    "ignored/deep/.generated/linked-repo",
+  );
+  for (const file of [
+    ...expected.filter((file) => !file.endsWith("/")),
+    ".generated/nested/code.ts",
+    "ignored/deep/.generated/linked-repo/code.ts",
+    "ignored/plain.ts",
+    "unignored.ts",
+    "node_modules/pkg/index.d.ts",
+    "ignored/node_modules/pkg/.env",
+    "target/leaked.d.ts",
+    ".generated/node_modules/pkg/data.ts",
+  ])
+    write(file);
+  NodeFS.symlinkSync(
+    NodePath.join(project.root, "target"),
+    NodePath.join(project.root, "ignored", "linked"),
+    "junction",
+  );
+  NodeFS.symlinkSync(
+    NodePath.join(project.root, "target"),
+    NodePath.join(project.root, "node_modules", "linked"),
+    "junction",
+  );
+  const actual = await Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return yield* ignoredInputs(project.root).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          assert.isTrue(ChildProcess.isStandardCommand(command));
+          if (ChildProcess.isStandardCommand(command) && command.args.includes("ls-files")) {
+            assert.include(command.args, "--directory");
+            assert.notInclude(command.args, "--");
+          }
+          return spawner.spawn(ChildProcess.setEnv(command, env));
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
+  assert.deepStrictEqual(actual, expected);
+});
+
+// The inputs `ignoredInputs` finds in `root` when Git's listing is `entries`. Git answers its other
+// calls.
+const ignoredInputsListed = (root: string, entries: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return yield* ignoredInputs(root).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) =>
+          spawner.spawn(
+            ChildProcess.isStandardCommand(command) && command.args.includes("ls-files")
+              ? ChildProcess.make(process.execPath, [
+                  "-e",
+                  `process.stdout.write(${JSON.stringify(entries.map((entry) => `${entry}\0`).join(""))})`,
+                ])
+              : ChildProcess.setEnv(command, env),
+          ),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
+
+it("keys the test cache on ignored env files and generated sources, never a declaration", () => {
+  const listed = [
+    "apps/docs/.astro/content.json",
+    "apps/web/.env.local",
+    "packages/client/.generated/routes.d.ts",
+    "packages/client/.generated/routes.ts",
+    "packages/client/types.d.ts",
+  ];
+  assert.deepStrictEqual(listed.filter(isTestInput), [
+    "apps/web/.env.local",
+    "packages/client/.generated/routes.ts",
+  ]);
+});
+
+it("leaves out an ignored input removed after Git listed it", async () => {
+  using project = fixture({});
+  // Git's listing names a folder that is gone by the time it is read.
+  assert.deepStrictEqual(
+    await ignoredInputsListed(project.root, ["removed/.generated/", "removed.d.ts"]),
+    [],
+  );
+});
+
+it("reads each ignored folder once when Git lists it beside folders inside it", async () => {
+  using project = fixture({});
+  const inputs = ["outer/a.d.ts", "outer/inner/b.d.ts", "outer/inner/deeper/c.d.ts"];
+  for (const file of inputs) writeUnder(project.root, file);
+  const reads = vi.mocked(NodeFSP.readdir);
+  reads.mockClear();
+  const actual = await ignoredInputsListed(project.root, [
+    "outer/",
+    "outer/inner/",
+    "outer/inner/deeper/",
+    ...inputs,
+  ]);
+  assert.deepStrictEqual(actual, inputs);
+  assert.deepStrictEqual(
+    reads.mock.calls.map(([folder]) =>
+      NodePath.relative(project.root, String(folder)).replaceAll("\\", "/"),
+    ),
+    ["outer", "outer/inner", "outer/inner/deeper"],
+  );
+});
+
+// Git takes a folder for a nested repository only when its .git is a git directory or a file naming
+// one, a linked worktree's with the commondir that holds its objects and refs. A .git that is
+// neither, such as a tool's marker file, leaves what is beside it listed; a .git entry never is.
+it("walks past a .git that is no repository and stops at one that is", async () => {
+  using project = fixture({});
+  const write = (file: string, content?: string) => writeUnder(project.root, file, content);
+  const store = NodePath.join(project.root, "store");
+  write("store/HEAD", "ref: refs/heads/main\n");
+  NodeFS.mkdirSync(NodePath.join(store, "objects"));
+  NodeFS.mkdirSync(NodePath.join(store, "refs"));
+  write("store/worktrees/wt/HEAD", `${"1".repeat(40)}\n`);
+  write("store/worktrees/wt/commondir", "../..\n");
+  write("ignored/marked/.git", "not a repository\n");
+  write("ignored/dangling/.git", "gitdir: ../nowhere\n");
+  write("ignored/hollow/.git/inside.d.ts");
+  write("ignored/.generated/linked/.git", "gitdir: ../../../store\r\n");
+  write("ignored/.generated/worktree/.git", `gitdir: ${NodePath.join(store, "worktrees", "wt")}\n`);
+  for (const file of [
+    "ignored/marked/legit.d.ts",
+    "ignored/dangling/a.d.ts",
+    "ignored/hollow/b.d.ts",
+    "ignored/.generated/linked/code.ts",
+    "ignored/.generated/worktree/code.ts",
+  ])
+    write(file);
+  assert.deepStrictEqual(await ignoredInputsListed(project.root, ["ignored/"]), [
+    "ignored/.generated/linked/",
+    "ignored/.generated/worktree/",
+    "ignored/dangling/a.d.ts",
+    "ignored/hollow/b.d.ts",
+    "ignored/marked/legit.d.ts",
+  ]);
+});
+
+// Git passes over an entry named .git in another case when core.ignorecase is set, and takes a .GIT
+// for a nested repository's .git where the file system folds case. Node resolves node_modules there
+// in any case, whatever the setting says, so a NODE_MODULES folder holds dependencies.
+it.each([true, false])(
+  "matches .git and node_modules in any case with core.ignorecase %s",
+  async (fold) => {
+    using project = fixture({});
+    NodeChildProcess.execFileSync("git", ["config", "core.ignorecase", String(fold)], {
+      cwd: project.root,
+      env,
+    });
+    const write = (file: string, content?: string) => writeUnder(project.root, file, content);
+    write("ignored/.generated/upper/.GIT/HEAD", "ref: refs/heads/main\n");
+    NodeFS.mkdirSync(NodePath.join(project.root, "ignored/.generated/upper/.GIT/objects"));
+    NodeFS.mkdirSync(NodePath.join(project.root, "ignored/.generated/upper/.GIT/refs"));
+    for (const file of [
+      "ignored/.generated/upper/code.ts",
+      "ignored/NODE_MODULES/pkg/x.d.ts",
+      "ignored/other/.GIT/inside.d.ts",
+      "ignored/other/b.d.ts",
+    ])
+      write(file);
+    const foldsCase = NodeFS.existsSync(
+      NodePath.join(project.root, "ignored/.generated/upper/.git"),
+    );
+    const unlessFolding = (file: string) => (fold ? [] : [file]);
+    assert.deepStrictEqual(await ignoredInputsListed(project.root, ["ignored/"]), [
+      ...(foldsCase
+        ? ["ignored/.generated/upper/"]
+        : [
+            ...unlessFolding("ignored/.generated/upper/.GIT/HEAD"),
+            "ignored/.generated/upper/code.ts",
+          ]),
+      ...(foldsCase ? [] : ["ignored/NODE_MODULES/pkg/x.d.ts"]),
+      ...unlessFolding("ignored/other/.GIT/inside.d.ts"),
+      "ignored/other/b.d.ts",
+    ]);
+  },
+);
+
+// Node reads dependencies from the folder a lowercase node_modules link leads to, so where the file
+// system keeps case a NODE_MODULES folder that link reaches holds them too. Where it folds case, the
+// two names are one folder, which holds them as well.
+it("passes over the folder a node_modules link leads to, whatever its case", async () => {
+  using project = fixture({});
+  writeUnder(project.root, "ignored/NODE_MODULES/pkg/x.d.ts");
+  const link = NodePath.join(project.root, "ignored/node_modules");
+  const target = NodePath.join(project.root, "ignored/NODE_MODULES");
+  if (!NodeFS.existsSync(link)) NodeFS.symlinkSync(target, link, "junction");
+  assert.deepStrictEqual(await ignoredInputsListed(project.root, ["ignored/"]), []);
+});
+
+// A HEAD that is a FIFO would hold a read until something writes to it. Git lists the ignored folder
+// that holds it without looking inside, so check:changed must not wait on it either.
+it.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "walks past a .git whose HEAD is a FIFO",
+  async () => {
+    using project = fixture({});
+    const dotGit = NodePath.join(project.root, "ignored/.generated/piped/.git");
+    for (const folder of ["objects", "refs"])
+      NodeFS.mkdirSync(NodePath.join(dotGit, folder), { recursive: true });
+    NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dotGit, "HEAD")]);
+    writeUnder(project.root, "ignored/.generated/piped/code.ts");
+    assert.deepStrictEqual(await ignoredInputsListed(project.root, ["ignored/"]), [
+      "ignored/.generated/piped/code.ts",
+    ]);
+  },
+);
+
+// A .git link that leads back to itself is no repository Git can read, so Git lists what is beside it.
+// Windows skips it: making a link there needs a privilege.
+it.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "walks past a .git that is a link to itself",
+  async () => {
+    using project = fixture({});
+    const looped = NodePath.join(project.root, "ignored/.generated/looped");
+    NodeFS.mkdirSync(looped, { recursive: true });
+    NodeFS.symlinkSync(".git", NodePath.join(looped, ".git"));
+    writeUnder(project.root, "ignored/.generated/looped/code.ts");
+    assert.deepStrictEqual(await ignoredInputsListed(project.root, ["ignored/"]), [
+      "ignored/.generated/looped/code.ts",
+    ]);
+  },
+);
+
+// Git takes a HEAD that links under refs/ without following it, so a repository whose branch has no
+// commit yet is one, and takes a HEAD that links anywhere else for none, whatever the link reaches.
+// Windows skips it: making a link there needs a privilege.
+it.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "reads a HEAD that is a link as Git does",
+  async () => {
+    using project = fixture({});
+    writeUnder(project.root, "ignored/head.txt", "ref: refs/heads/main\n");
+    for (const [name, target] of [
+      ["unborn", "refs/heads/main"],
+      ["elsewhere", "../../../head.txt"],
+    ] as const) {
+      const dotGit = NodePath.join(project.root, "ignored/.generated", name, ".git");
+      for (const folder of ["objects", "refs"])
+        NodeFS.mkdirSync(NodePath.join(dotGit, folder), { recursive: true });
+      NodeFS.symlinkSync(target, NodePath.join(dotGit, "HEAD"));
+      writeUnder(project.root, `ignored/.generated/${name}/code.ts`);
+    }
+    assert.deepStrictEqual(await ignoredInputsListed(project.root, ["ignored/"]), [
+      "ignored/.generated/elsewhere/code.ts",
+      "ignored/.generated/unborn/",
+    ]);
+  },
+);
+
 it.each(["upstream", "team/upstream"])(
   "compares against %s/main when the fork's origin/main lags it",
   async (remote) => {
@@ -1005,11 +1297,7 @@ function launcherFixture() {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
   );
-  const write = (file: string, content: string) => {
-    const path = NodePath.join(root, file);
-    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-    NodeFS.writeFileSync(path, content);
-  };
+  const write = (file: string, content: string) => writeUnder(root, file, content);
   for (const file of [
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
