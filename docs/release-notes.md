@@ -1,3 +1,7 @@
+## 2026-11-15 — The fork's translation and upstream sync tasks are shared
+
+- The fork's daily translation check and weekly sync from T3 Code read their instructions from `automations/` in this repository and run as shared one-machine scheduled tasks: Zoro-VPS first, the MacBook when the server is down. `machine-config.json` declares both tasks, so `machine-config.mjs check` on either machine reports a copy whose prompt, schedule, model or machines differ.
+
 ## 2026-11-15 — Claude Full access follows the settings Claude Code keeps
 
 - Whether a Claude chat may use Full access now follows only the settings Claude Code itself keeps for the chat. Before, T3.CodeShip read your organization's cached settings, the `--settings` launch argument and, for a provider account with its own config folder, that folder's `settings.json` by itself, so a setting Claude Code ignores could still turn Full access off: one in a file with an invalid field, comments or trailing commas, a bypass switch value Claude Code does not accept, or an account `settings.json` Claude Code cannot read.

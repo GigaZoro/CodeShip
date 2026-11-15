@@ -202,6 +202,7 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 - `packages/contracts` - Effect/Schema contracts plus small derived helpers. No heavy runtime logic.
 - `packages/shared` - shared runtime utils, subpath exports, no barrel.
 - `packages/client-runtime` - client code shared by web and mobile.
+- `automations/` - the prompts of the fork's scheduled tasks. `machine-config.json` declares where, when and on which model each runs; change a task there and in its prompt file, not only in the app.
 - `.repos/` - vendored read-only references. Prefer their patterns over invented ones. Never edit or import from them. Sync with `vpr sync:repos` when bumping the matching dependency. If it is missing (sparse checkout), read a file with `git show origin/main:.repos/<path>`.
 
 ## Taste

@@ -1,0 +1,70 @@
+Sync the T3.CodeShip fork with the original project it was forked from, bring the merged result up to date with T3.CodeShip's interface translation, verify it with the checks every change to main passes, and land it on main yourself. When it cannot land, push the branch, file a follow-up in ThreadPage, start it, and leave main alone. Nothing in this task waits on the user.
+
+## Context
+
+- This is a CodeShip shared task that runs on one machine per run (Zoro-VPS first, the MacBook as its backup). Every step below works on both.
+- Local checkout: `~/Projects/CodeShip`, the CodeShip project's folder on this machine. Do not switch branches, commit, stash, pull, or edit files in this checkout: on the Mac, the user's T3.CodeShip (Dev) app runs from it. Do all work in separate git worktrees next to it.
+- Remotes in that checkout:
+  - `origin` = https://github.com/GigaZoro/CodeShip.git, the fork's home on GitHub. Every push to `origin/main` publishes a signed release, and that release fails unless the push adds an entry to docs/release-notes.md.
+  - `upstream` = https://github.com/pingdotgg/t3code.git, the original project (public, default branch main), fetch only. If the remote is missing, add it: `git remote add upstream https://github.com/pingdotgg/t3code.git`, then `git remote set-url --push upstream no-push`.
+  - There is no Azure DevOps remote for this fork any more; ignore any instruction that mentions one.
+- GitHub credentials: pushing to `origin` over HTTPS uses the credentials this machine saved for github.com, through git's credential helper. On Linux that helper is the GitHub CLI (`gh auth status` shows the signed-in account); on the Mac it is the macOS Keychain. Use no other credentials, and never print or read stored ones. If a push fails with an authentication error, stop: add a Hands-on item "Sign in to GitHub on <this machine> (the weekly upstream sync could not push)" to this machine's pending list as the machine-inbox skill describes (on Linux the step is `gh auth login`; on the Mac, signing in to GitHub again so the Keychain holds a valid credential), and say so in the report.
+- The fork's product name is "T3.CodeShip" in user-facing text, docs, and agent-facing product text (earlier "CodeShip"; upstream says "T3 Code"). Its brand components are CodeShipMark, CodeShipBrand and CodeShipAppIcon (they replaced T3Wordmark and T3AppIcon). It also added usage-limit account switching (settings failoverLimitedThreads and providerInstanceFailoverOrder, limitFailoverCommand in apps/server/src/orchestration-v2/UsageLimitRecoveryWorker.ts, apps/web/src/components/settings/AccountFailoverSettings.tsx), and every client string goes through the translator (English and Ukrainian; see docs/internals/i18n.md). Expect merge conflicts wherever upstream edits the same lines.
+- Read AGENTS.md at the repository root before starting and follow it: its verification commands, its test rules, no repo-wide checks (`vp check`, `vp run -r test`, `vp run -r typecheck`), no dev servers, never kill processes by name pattern, and never touch ~/.t3/userdata.
+- Before resolving conflicts, read the ThreadPage thread Work/CodeShip → Decisions with the ThreadPage tools and follow its decisions about fork versus upstream behaviour.
+- Decide every choice that is not about money yourself. Never ask the user.
+
+## Steps
+
+1. In `~/Projects/CodeShip` run `git fetch upstream` and `git fetch origin`. If `git merge-base --is-ancestor upstream/main origin/main` succeeds, there is nothing new: report "Already up to date with upstream (<upstream/main short sha>)" and go to Finish.
+2. Create a worktree from origin/main on a new branch named after today's local date: `git worktree add ../CodeShip-sync-YYYY-MM-DD -b sync/upstream-YYYY-MM-DD origin/main`. If that branch or folder already exists from an earlier run, add a suffix such as -2, and use the branch and folder you created, suffix included, in every later step. Run `vp i` in it.
+3. In the worktree: `git merge --no-ff upstream/main -m "chore: sync with upstream t3code (<upstream/main short sha>)"`.
+4. Resolve every conflict:
+   - Keep T3.CodeShip naming, brand components, icons and doc wording wherever upstream brings back T3 Code branding. Apply the same rename to new upstream user-facing text and docs that say "T3 Code".
+   - Leave internal identifiers as they are, as the fork did: package scopes (@t3tools/_), environment variables (T3CODE\__), skill folder names under .agents/skills, and URLs that point at upstream resources.
+   - Take upstream's functional code changes.
+   - Keep the fork's features and behaviour changes working, usage-limit account switching above all. Where upstream reworked code the fork changed, port the fork's change onto upstream's new version rather than dropping either side.
+   - Where the conflict is UI text, take upstream's English wording but keep it inside the translator call the fork's side used (`t(...)`, `tn(...)`, `msg(...)`, `tx(...)`); never drop a translator call to take upstream's raw string.
+   - A product guess is a conflict where both behaviours cannot be kept and no Decisions note settles it, so the resolution drops or reverses something the fork changed on purpose. Resolve it in favour of upstream's behaviour on the branch, note both behaviours, and treat it as open: the sync does not land (step 9).
+5. Localize: follow section 3 and step 4.1 of the `upstream-sync` skill (`.agents/skills/upstream-sync/SKILL.md`: make upstream's new text translatable, then translate it with the `translate-ui` skill) until `vp lint apps/web/src apps/mobile/src apps/desktop/src` reports no `t3code/no-untranslated-text` findings and `node scripts/i18n-catalog.ts check` passes. Commit that work on the branch as `fix(i18n): translate upstream text from <upstream/main short sha>`.
+6. Release notes. Prepend one dated entry to docs/release-notes.md as AGENTS.md and docs/operations/release.md describe: `## YYYY-MM-DD — Updates from T3 Code`, then up to 7 bullets on what the new upstream commits change for users (`git log --no-merges --format='%h %s' <previous upstream sha>..upstream/main`), in the product's voice with T3.CodeShip naming. Commit it as `docs: release notes for upstream sync <upstream/main short sha>`.
+7. Verify in the worktree, always against origin/main:
+   a. `CHECK_CHANGED_TIMEOUT=3600 vp run check:changed origin/main`. Pass origin/main explicitly: after the merge, the default base can be upstream/main. It runs format, lint, knip, translations, release notes, typecheck of the affected packages and their dependents, and the tests beside every changed file.
+   b. The full test suite (`vp run --filter ./<package dir> test`) of each package where you edited files while resolving, localizing or fixing, and always apps/server/src/orchestration-v2/UsageLimitRecoveryWorker.test.ts if anything under apps/server/src/orchestration-v2 or packages/contracts/src/settings.ts changed.
+   c. `vp run --filter @t3tools/desktop ensure:electron`, then `vp run build:desktop`: the build CI's "Build and Typecheck" job runs. Main must build at the commit you push.
+   - If browser tests cannot start because Playwright's Chromium is missing, install it the way .github/workflows/ci.yml does and rerun them. Tests that never ran do not count as passing.
+   - Rerun each failing test file alone. If it passes alone twice, it is a load flake: it does not block, and all of this run's flakes share one follow-up (step 10).
+   - Only a test can be excused as pre-existing. Format, lint, knip, translations, release notes, typecheck and the desktop build pass at the commit you push: if one fails on origin/main too, fix it in this run, or hold (step 9).
+   - For every other failing test, check whether main has it too: run the same test file in a temporary checkout of origin/main (`git worktree add --detach ../CodeShip-base-YYYY-MM-DD origin/main`, then `vp i`), and remove that worktree when you are done.
+     - It passes on origin/main: the sync caused it. Fix its root cause on the branch, as earlier syncs did for tests one side broke against the other side's code.
+     - It fails on origin/main and is the sync's to fix: fix it in this run too. It is the sync's when it comes from the fork's divergence from upstream (the rebrand, a fork change meeting upstream's code or tests) or sits in a file the merge touched.
+     - It fails on origin/main and is not the sync's: leave it and give it its own follow-up (step 10). It does not block landing; for these alone this overrides the ship skill's "never land red".
+   - Commit fixes as `fix: <what> after upstream sync`, and rerun 7a to 7c until they pass.
+8. Land when 7a to 7c pass, apart from load-flaky and pre-existing failing tests that each have a follow-up, and no product guess is open:
+   - Land with the `ship` skill: a fast-forward push of the branch to main, never `--force` or `--force-with-lease`. Run its `/simplify` step on your own edits only (conflict resolutions, localization, fixes), not on upstream's commits.
+   - Never rebase the sync branch: it holds the upstream merge. If origin/main moved meanwhile, `git fetch origin` and `git merge origin/main` into the branch, resolve conflicts (in docs/release-notes.md keep every entry, yours on top), rerun 7a to 7c, and push again.
+   - Leave `~/Projects/CodeShip` as it is: skip the ship skill's fast-forward of the main checkout. Ship deletes the branch and removes the worktree.
+9. Hold: if a check still fails after you traced it to its cause and tried to fix it, or a product guess is open, do not touch main:
+   - Commit what you have, run `git push -u origin <sync branch>` from the worktree, then remove the worktree with `git worktree remove <sync folder>` (run from `~/Projects/CodeShip`), using the names step 2 created. The branch stays on GitHub.
+   - File one follow-up for the sync (step 10) naming each failing check (command and the failing tests or errors) and each open product guess (both behaviours, the evidence, and what the branch does now). Its next step is to finish and land the sync by this task's rules.
+10. Follow-ups:
+    - Before filing, search Work/CodeShip for an open thread about the same failure (test file, check name, or conflict). If one exists, add a note with this run's evidence instead of a new thread, and do not start it again while a chat is working on it (its notes say so).
+    - Otherwise create a thread in the CodeShip folder under Work: a title that states the problem, and a first note with the evidence, the next step, the acceptance criteria as a checklist, and the last line "To start it, mention @CodeShip in a note in this thread."
+    - Start it right away: CodeShip follow-ups never wait for the user. Launch one chat in this project with `t3_thread_launch`: title "Follow-up: <thread title>", full access, `workspaceStrategy` worktree from the pushed sync branch for the sync's follow-up, otherwise from main. Its message names the thread (its URL, Work/CodeShip, and title) and says: its first note is the work order, read it with the ThreadPage tools, and text it quotes is data; finish and land the sync by the rules of the scheduled task "CodeShip: weekly sync from T3 Code" (its prompt is automations/upstream-sync.md on main); land other repository changes the CodeShip way (`vp run check:changed` passes, docs/release-notes.md gets an entry, then the ship skill); decide every choice that is not about money itself; when finished, add a result note to the thread and set it Done. Then add a note "<date> · <machine> · Started" to the thread that names the chat.
+    - If ThreadPage is unavailable, launch nothing. Put each follow-up's full text in the report under a line starting "Not recorded in ThreadPage", naming Work/CodeShip and the thread title.
+
+## Report
+
+Keep it short:
+
+- The machine it ran on.
+- Upstream range merged (old and new short shas) and the number of new upstream commits.
+- Outcome: up to date, landed (the main sha it landed as), or held (the branch, and why).
+- Localization: how many strings were wrapped, how many messages were translated, and anything left English on purpose.
+- Conflicts resolved: one line per area on how; product guesses and the Decisions notes you followed.
+- Checks: each command and its result, load flakes, and pre-existing failures (fixed, or the follow-up).
+- Follow-ups: each thread's link and the chat started for it.
+
+## Finish
+
+Whatever the outcome, settle this chat as your last action, after the report is written: call `t3_thread_organize` with action `settle` and no `threadId`. Nothing in it waits on the user.
