@@ -260,9 +260,13 @@ const make = Effect.gen(function* () {
       ) ??
       candidates[0];
     if (chosen === undefined) {
+      const available = providers
+        .filter((provider) => provider.canRunChildTask)
+        .map((provider) => `${provider.providerInstanceId} (${provider.driverKind})`)
+        .join(", ");
       return yield* new OrchestratorMcpFailure({
         code: "provider_unavailable",
-        message: `No instance of driver ${requested.driverKind} there can run a child task. orchestrator_capabilities with this environmentId lists its providers.`,
+        message: `No instance of driver ${requested.driverKind} there can run a child task. Its instances that can: ${available || "none"}. Pass target.providerInstanceId; orchestrator_capabilities with this environmentId lists their models.`,
       });
     }
     return chosen.providerInstanceId;
