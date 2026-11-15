@@ -1037,6 +1037,10 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       '[DllImport("kernel32.dll")] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint group);',
       '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();',
       '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);',
+      "public delegate bool Handler(uint ctrlEvent);",
+      "private static readonly Handler ignoreBreak = ctrlEvent => ctrlEvent == 1;",
+      '[DllImport("kernel32.dll")] private static extern bool SetConsoleCtrlHandler(Handler handler, bool add);',
+      "public static void IgnoreBreak() { SetConsoleCtrlHandler(ignoreBreak, true); }",
       "'",
     ].join("\n");
     it.effect.each([
@@ -1044,11 +1048,13 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       [
         "Ctrl+Break",
         "command-win-ctrl-break",
-        "[void][T3Test.Console]::GenerateConsoleCtrlEvent(1, 0)",
+        // Windows PowerShell breaks into its debugger on Ctrl+Break and waits there for input, so the
+        // command ignores it; every other process in its console still gets it.
+        "[T3Test.Console]::IgnoreBreak(); [void][T3Test.Console]::GenerateConsoleCtrlEvent(1, 0)",
       ],
       [
-        // As taskkill without /F does to a console program.
-        "its window closing",
+        // As taskkill without /F does to a console program whose console has a window.
+        "a close message for its window, if it has one",
         "command-win-close",
         "$window = [T3Test.Console]::GetConsoleWindow(); if ($window -ne [IntPtr]::Zero) { [void][T3Test.Console]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }",
       ],

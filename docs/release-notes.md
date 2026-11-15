@@ -3,7 +3,7 @@
 - When CodeShip's check of a running command's process fails for a reason other than "no such process", it checks again on its next pass instead of reporting the command lost and stopping what the command started.
 - A command reported lost (`t3_command_run`'s "Ended without an exit status") now keeps on its record why: its process ended without one, the machine restarted, or its process id now names a later process. The record also keeps when the command was last seen running, what the failed check reported, and its last output. When more than half the running commands are lost within a minute, CodeShip logs one warning and writes the lost commands to `logs/command-losses.ndjson` in its data folder.
 - On Windows, stopping a command no longer stops a process that an earlier holder of one of the command's process ids started.
-- On Windows, a command whose console gets Ctrl+C or Ctrl+Break, or is closed (as `taskkill` without `/F` does), now ends with its exit status instead of being reported lost: the process that records the status no longer shares the command's console.
+- On Windows, a Ctrl+C, Ctrl+Break or close event in a command's console no longer ends the process that records its exit status, so the command is no longer reported lost: that process now has a console of its own, and the command's console has no window to close.
 
 ## 2026-11-16 — The server stays responsive while it looks up pull requests on Windows
 
