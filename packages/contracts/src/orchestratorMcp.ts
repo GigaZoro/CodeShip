@@ -292,8 +292,13 @@ export const OrchestratorMcpRunCommandInput = Schema.Struct({
 });
 export type OrchestratorMcpRunCommandInput = typeof OrchestratorMcpRunCommandInput.Type;
 
+export const ORCHESTRATOR_MCP_COMMAND_SHELLS = ["powershell", "bash", "zsh", "sh"] as const;
+
 export const OrchestratorMcpRunCommandResult = Schema.Struct({
   taskId: NodeId,
+  shell: Schema.Literals(ORCHESTRATOR_MCP_COMMAND_SHELLS).annotate({
+    description: "The shell that runs the command.",
+  }),
   logPath: Schema.String,
   timeoutMinutes: PositiveInt,
   next: OrchestratorMcpRunningTaskNext,

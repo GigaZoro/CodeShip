@@ -415,6 +415,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           "utf8",
         ).split("\n");
         // Read for the chat's folder, as the agent's own settings were, though it ran below it.
+        assert.equal(started.shell, (yield* runsOnWindows) ? "powershell" : "sh");
         assert.equal(seen, `set for ${chat.workspace} ${chat.threadId} kept removed`);
         assert.equal(commandPath, PATH);
         assert.match(shellOptions ?? "", /errexit/);
@@ -877,6 +878,19 @@ const stillRunning = (pid: number) =>
     ],
     { encoding: "utf8" },
   ).trim() === "alive";
+
+describe("the shell a command runs in", () => {
+  it.each([
+    ["win32", { SHELL: "/bin/zsh" }, "powershell"],
+    ["darwin", { SHELL: "/bin/zsh" }, "zsh"],
+    ["linux", { SHELL: "/usr/bin/bash" }, "bash"],
+    ["linux", { SHELL: "/usr/bin/fish" }, "sh"],
+    ["linux", { SHELL: "/tmp/a=b/bash" }, "sh"],
+    ["linux", {}, "sh"],
+  ] as const)("on %s with %j is %s", (platform, env, name) => {
+    assert.equal(CommandRunner.resolveCommandShell(platform, env).name, name);
+  });
+});
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {

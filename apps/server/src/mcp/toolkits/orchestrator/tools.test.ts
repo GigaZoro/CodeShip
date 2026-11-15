@@ -3,6 +3,9 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
+import { ORCHESTRATOR_MCP_COMMAND_SHELLS } from "@t3tools/contracts";
+
+import { COMMAND_SHELL_LABELS } from "../../../commandRunner/CommandRunner.ts";
 import { OrchestratorToolkit } from "./tools.ts";
 
 // Oversized page sizes clamp on decode, so the schema has no `maximum`; Codex also drops
@@ -26,6 +29,14 @@ it("names the shell t3_command_run uses on each platform and how to chain on Win
   expect(description).toContain("$LASTEXITCODE");
   expect(description).toContain("WSL's bash");
   expect(description).toContain("Git\\bin\\bash.exe");
+});
+
+// The runner reports one of these in every result; the description has to name each.
+it("names every shell t3_command_run can report in its description", () => {
+  const description = OrchestratorToolkit.tools.t3_command_run.description ?? "";
+  for (const shell of ORCHESTRATOR_MCP_COMMAND_SHELLS) {
+    expect(description, shell).toContain(COMMAND_SHELL_LABELS[shell]);
+  }
 });
 
 it("refuses a t3_thread_update whose fields do not fit its action", () => {

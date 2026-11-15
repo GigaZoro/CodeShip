@@ -144,13 +144,29 @@ class CommandLaunchError extends Schema.TaggedError<CommandLaunchError>()("Comma
 const failure = (code: OrchestratorMcpFailure["code"], message: string) =>
   new OrchestratorMcpFailure({ code, message });
 
+type CommandShellName = OrchestratorMcpRunCommandResult["shell"];
+
+/** What the tool description (`tools.ts`) says of each shell; the test keeps the two in step. */
+export const COMMAND_SHELL_LABELS: Readonly<Record<CommandShellName, string>> = {
+  powershell: "Windows PowerShell 5.1",
+  bash: "bash",
+  zsh: "zsh",
+  sh: "/bin/sh",
+};
+
 /**
- * bash or zsh as the user's own commands expect; anything else (fish, nu) gets /bin/sh. A path
- * with `=` would read as an assignment to `env`.
+ * Windows runs PowerShell. Elsewhere bash or zsh as the user's own commands expect; anything else
+ * (fish, nu) gets /bin/sh. A path with `=` would read as an assignment to `env`.
  */
-const posixShell = (env: NodeJS.ProcessEnv) => {
-  const shell = env.SHELL;
-  return shell !== undefined && /^\/(?:[^=]*\/)?(?:ba|z)sh$/.test(shell) ? shell : "/bin/sh";
+export const resolveCommandShell = (
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): { readonly name: CommandShellName; readonly path: string } => {
+  if (platform === "win32") return { name: "powershell", path: "powershell.exe" };
+  const path = env.SHELL;
+  const match = path === undefined ? null : /^\/(?:[^=]*\/)?(ba|z)sh$/.exec(path);
+  if (path === undefined || match === null) return { name: "sh", path: "/bin/sh" };
+  return { name: match[1] === "ba" ? "bash" : "zsh", path };
 };
 
 /** The options and functions bash, /bin/sh on macOS and many Linux systems, reads from its environment. */
@@ -646,7 +662,7 @@ const make = Effect.gen(function* () {
           statusPath,
           path.join(directory, PID_FILE),
           ...prefix,
-          posixShell(env),
+          resolveCommandShell(platform, env).path,
           "-c",
           command,
         ],
@@ -827,6 +843,10 @@ const make = Effect.gen(function* () {
       const logPath = path.join(directory, LOG_FILE);
       const result = (taskId: NodeId): OrchestratorMcpRunCommandResult => ({
         taskId,
+        shell: resolveCommandShell(
+          platform,
+          windows ? {} : posixLaunchEnvironment(hostCommandEnv, commandEnv).env,
+        ).name,
         logPath,
         timeoutMinutes,
         next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,

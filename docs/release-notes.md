@@ -1,3 +1,7 @@
+## 2026-11-15 — `t3_command_run` reports the shell it used
+
+- The result of `t3_command_run` now names the shell that ran the command (`powershell`, `bash`, `zsh` or `sh`), so an agent that wrote bash syntax for a Windows PowerShell command sees why it failed. A test keeps the tool's description and the shell the runner picks in step.
+
 ## 2026-11-15 — Signing in to an account you just added no longer fails with "no longer available"
 
 - Adding a provider account (**Settings → Providers → Add**) could stop at the sign-in step with "This provider instance is no longer available.", most often for a Claude account. The account had been saved, but the save answered before the server had loaded it, and the sign-in step asked for it in between. A save that adds, changes or removes an account now answers once the server has loaded it, so the sign-in step opens straight away. A finished sign-in likewise reports success once the server runs the account with its new sign-in, so a chat started right away uses it. An account added before this release can be signed in from its row in **Settings → Providers**.
