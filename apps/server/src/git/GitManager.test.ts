@@ -1879,12 +1879,13 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         gitCommands,
         providerScenario: { prListSequence: [[merged], [merged]] },
       });
+      // Background sweeps skip the settled-PR confirmation, as they confirm before acting.
       const gitCommandsDuring = (options?: { readonly freshGitState: true }) =>
         Effect.gen(function* () {
           const before = gitCommands.length;
           const pullRequest = yield* manager.branchPullRequest(
             { cwd: repoDir, branch: "feature/merged-lookup" },
-            options,
+            { confirmTerminal: false, ...options },
           );
           expect(pullRequest?.state).toBe("merged");
           return gitCommands.length - before;
