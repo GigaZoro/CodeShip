@@ -1,3 +1,13 @@
+## 2026-11-15 — Updates from T3 Code
+
+- A first run now opens one Welcome page instead of a three-step wizard.
+- Kiro joins the providers, and Claude Fable 5.2 is in the model picker. The picker checks for new models when it opens, and you can @-mention a model in the composer to name it for the agent.
+- A stopped chat resumes its provider session where it left off, `/clear` starts a fresh session in the same chat, and a scheduled task can run in one chat with a fresh session each run.
+- Agents can restyle T3.CodeShip with theme colors and CSS, and other apps can use T3.CodeShip through MCP: run **Use T3.CodeShip in another app (MCP)** from the command palette.
+- The computer stays awake while agents work (**Keep awake while agents work**, on by default), and you can send a message while its attachments still upload.
+- T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
+- Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
+
 ## 2026-11-15 — Service updates no longer pile up launchers
 
 - When T3.CodeShip runs as a service, each update handed the service to the new release's launcher but kept the previous launcher running, so every update left about 300 MB behind until the service restarted. A launcher that took over the service now hands it back to the one the service manager started, which starts the newest launcher, so a service runs at most two launchers. A service installed with an earlier release runs at most three until `t3 update` or `t3 service install` on that machine reinstalls it, and launchers that piled up before this release stay until the service restarts.
