@@ -710,6 +710,8 @@ export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
   id: Schema.optional(TrimmedNonEmptyString),
   /** Native id of the turn item that started this work, when it is not `id`. */
   nativeItemId: Schema.optional(TrimmedNonEmptyString),
+  /** The provider wakes the agent when it ends, so a restart note wakes it even for a shell. */
+  awaited: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationV2RestartCancelledBackgroundWork =
   typeof OrchestrationV2RestartCancelledBackgroundWork.Type;
