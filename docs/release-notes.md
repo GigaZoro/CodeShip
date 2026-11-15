@@ -1,3 +1,7 @@
+## 2026-11-15 — A long database update no longer floods the server's trace files
+
+- While a large database was updated at startup, the server wrote a trace entry for every stored row it rewrote, about 10 MB every 10 seconds, so the trace files lost everything from before the update within minutes. The update now writes one entry per step instead.
+
 ## 2026-11-15 — Tests check that `t3 doctor` removes old tool output before it compacts
 
 - Maintenance only, with no change in behavior. A test now runs `t3 doctor`'s compaction on a database file and checks that it removes tool output older than the **Remove old tool output** setting allows, keeps newer output, and returns the removed space to disk.

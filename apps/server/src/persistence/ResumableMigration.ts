@@ -52,7 +52,8 @@ export const make = <Cursor>(options: {
         cursorJson === undefined
           ? options.start
           : yield* decode(cursorJson).pipe(Effect.mapError(unreadable));
-      const { next, progress } = yield* options.step(cursor);
+      // A step can issue a query per stored row; this span stands for all of them in the traces.
+      const { next, progress } = yield* options.step(cursor).pipe(Effect.withTracerEnabled(false));
       return {
         next:
           next === undefined ? undefined : yield* encode(next).pipe(Effect.mapError(unreadable)),

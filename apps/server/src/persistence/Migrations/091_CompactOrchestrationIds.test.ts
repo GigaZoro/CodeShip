@@ -4,6 +4,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Tracer from "effect/Tracer";
 
 import { MigrationProgress } from "../MigrationProgress.ts";
 import { runMigrations } from "../Migrations.ts";
@@ -120,46 +121,67 @@ it.effect("a restart resumes 091 after its last committed step instead of starti
   }).pipe(Effect.provide(freshDatabase)),
 );
 
-it.effect("091 splits a large table into bounded steps and reports growing progress", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 90 });
-    // Small rows span more than one query; each pair of large rows fills a step's text budget.
-    for (let index = 1; index <= 160; index++) {
-      const filler = "x".repeat(index <= 150 ? 1_000 : 600_000);
-      yield* insertEvent(`event:${index}`, index, { id: LEGACY_ROOT, filler });
-    }
-    const reports: Array<{ readonly progress: number; readonly cursor: unknown }> = [];
-    const recording = MigrationProgress.of({
-      current: () => undefined,
-      report: (status: EnvironmentStartup | undefined) =>
-        Effect.gen(function* () {
-          if (status?.progress === undefined) return;
-          reports.push({ progress: status.progress, cursor: yield* storedCursor });
-        }).pipe(Effect.orDie, Effect.provideService(SqlClient.SqlClient, sql)),
-    });
+it.effect(
+  "091 splits a large table into bounded steps, traces each step once and reports growing progress",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 90 });
+      // Small rows span more than one query; each pair of large rows fills a step's text budget.
+      for (let index = 1; index <= 160; index++) {
+        const filler = "x".repeat(index <= 150 ? 1_000 : 600_000);
+        yield* insertEvent(`event:${index}`, index, { id: LEGACY_ROOT, filler });
+      }
+      const reports: Array<{ readonly progress: number; readonly cursor: unknown }> = [];
+      const recording = MigrationProgress.of({
+        current: () => undefined,
+        report: (status: EnvironmentStartup | undefined) =>
+          Effect.gen(function* () {
+            if (status?.progress === undefined) return;
+            reports.push({ progress: status.progress, cursor: yield* storedCursor });
+          }).pipe(Effect.orDie, Effect.provideService(SqlClient.SqlClient, sql)),
+      });
 
-    yield* runMigrations({ toMigrationInclusive: 91 }).pipe(
-      Effect.provideService(MigrationProgress, recording),
-    );
+      const spans: Array<Tracer.NativeSpan> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
 
-    const eventCursors = reports.flatMap(({ cursor }) =>
-      cursor !== undefined && (cursor as { table: string }).table === "orchestration_events"
-        ? [cursor]
-        : [],
-    );
-    assert.deepStrictEqual(
-      eventCursors,
-      [0, 152, 154, 156, 158, 160].map((rowid) => ({ table: "orchestration_events", rowid })),
-    );
-    const progress = reports.map((report) => report.progress);
-    assert.deepStrictEqual(
-      progress,
-      progress.toSorted((left, right) => left - right),
-    );
-    assert.isTrue(progress.every((value) => value >= 0 && value <= 1));
-    assert.isTrue(Object.values(yield* eventPayloadIds).every((id) => id === ROOT));
-  }).pipe(Effect.provide(freshDatabase)),
+      yield* runMigrations({ toMigrationInclusive: 91 }).pipe(
+        Effect.provideService(MigrationProgress, recording),
+        Effect.withTracer(tracer),
+      );
+
+      // One span per row filled the trace files while a large database migrated.
+      const rowSpans = spans.filter((span) =>
+        String(span.attributes.get("db.query.text") ?? "").startsWith(
+          'UPDATE "orchestration_events"',
+        ),
+      );
+      assert.strictEqual(rowSpans.length, 0);
+      assert.isAbove(spans.filter((span) => span.name === "ResumableMigration.step").length, 5);
+
+      const eventCursors = reports.flatMap(({ cursor }) =>
+        cursor !== undefined && (cursor as { table: string }).table === "orchestration_events"
+          ? [cursor]
+          : [],
+      );
+      assert.deepStrictEqual(
+        eventCursors,
+        [0, 152, 154, 156, 158, 160].map((rowid) => ({ table: "orchestration_events", rowid })),
+      );
+      const progress = reports.map((report) => report.progress);
+      assert.deepStrictEqual(
+        progress,
+        progress.toSorted((left, right) => left - right),
+      );
+      assert.isTrue(progress.every((value) => value >= 0 && value <= 1));
+      assert.isTrue(Object.values(yield* eventPayloadIds).every((id) => id === ROOT));
+    }).pipe(Effect.provide(freshDatabase)),
 );
 
 layer("091_CompactOrchestrationIds", (it) => {
