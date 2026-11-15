@@ -1,10 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off - hashes inputs with node:crypto, sizes the budget with node:os, holds its slots with node:sqlite, and resolves test imports with node:path.
 // Runs CI's fast checks for this branch's changes: format and lint of the
 // changed files, knip, generated GraphQL operations, typecheck of the affected
-// packages and their dependents, the test files beside the changed files and
-// those that import them directly or through test-support code, and the
-// cross-file checks those miss (agent context budget, React Compiler coverage
-// of the changed client files).
+// packages and their dependents, the test files beside the changed files,
+// those that import them directly or through test-support code and those
+// beside the production files that import them, and the cross-file checks
+// those miss (agent context budget, React Compiler coverage of the changed
+// client files).
 // A dependency change also gets the unused-patch install check below. CI still
 // runs the full test suites and the jobs listed in the summary; the fork's CI
 // does not, so these tests are the last ones a change meets before main.
@@ -303,8 +304,6 @@ const isTestSupport = (file: string) => {
       parts.slice(0, -1).some((part) => SUPPORT_DIR.test(part)))
   );
 };
-const isTestCode = (file: string) =>
-  !file.startsWith(".repos/") && (TEST.test(file) || isTestSupport(file));
 // Relative paths in any string count, so `new URL("./x.ndjson", import.meta.url)` reaches data files.
 const RELATIVE_REFERENCE = /["'`](\.\.?\/[^"'`\s$]+)["'`]/g;
 const PACKAGE_IMPORT = /\b(?:from|import|import\s*\(|vi\.mock\()\s*["']([^"'./][^"']*)["']/g;
@@ -330,10 +329,10 @@ const exportTarget = (exports: unknown, subpath: string) => {
 };
 
 /**
- * Tests that import a changed file directly or through test-support code. A
- * production importer ends the walk: Vitest's full import graph pulled 252 of
- * 406 server test files in for one leaf file. A barrel that only re-exports
- * selects nothing; typecheck covers it.
+ * Tests that import a changed file directly or through test-support code, and
+ * those beside a production file that imports it. The walk stops there: the full
+ * import graph pulled 252 of 406 server tests in for one leaf file. A barrel
+ * that only re-exports selects nothing; typecheck covers it.
  */
 export const testsReaching = (input: {
   readonly changed: ReadonlyArray<string>;
@@ -365,8 +364,15 @@ export const testsReaching = (input: {
   };
 
   const importers = new Map<string, Array<string>>();
+  const testsByDir = new Map<string, Array<string>>();
   for (const file of input.files) {
-    if (!isTestCode(file)) continue;
+    if (!CODE.test(file) || file.startsWith(".repos/")) continue;
+    if (TEST.test(file)) {
+      const dir = NodePath.posix.dirname(file);
+      const known = testsByDir.get(dir);
+      if (known === undefined) testsByDir.set(dir, [file]);
+      else known.push(file);
+    }
     const text = input.read(file);
     const targets = new Set([
       ...[...text.matchAll(RELATIVE_REFERENCE)].map(([, specifier]) =>
@@ -393,7 +399,13 @@ export const testsReaching = (input: {
       if (seen.has(importer)) continue;
       seen.add(importer);
       if (TEST.test(importer)) tests.add(importer);
-      else queue.push(importer);
+      else if (isTestSupport(importer)) queue.push(importer);
+      else {
+        const prefix = `${NodePath.posix.basename(importer).replace(CODE, "")}.`;
+        for (const test of testsByDir.get(NodePath.posix.dirname(importer)) ?? []) {
+          if (NodePath.posix.basename(test).startsWith(prefix)) tests.add(test);
+        }
+      }
     }
   }
   return [...tests].sort();
@@ -569,7 +581,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // Changed test files, the test files beside a changed source file
   // (foo.ts -> foo.test.ts, foo.browser.test.tsx), and the tests that reach a
   // changed file through test code, such as a provider's replay fixtures
-  // through its adapter's testkit.
+  // through its adapter's testkit, or through one production importer.
   const tests = new Set(code.filter((file) => TEST.test(file)));
   for (const file of code) {
     const dir = path.dirname(file);
@@ -581,7 +593,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const workspaceFiles = new Set([...(yield* lines("ls-files")), ...(yield* untrackedFiles)]);
   const contents = new Map<string, string>();
   yield* Effect.forEach(
-    [...workspaceFiles].filter((file) => isTestCode(file) || code.includes(file)),
+    [...workspaceFiles].filter((file) => CODE.test(file) && !file.startsWith(".repos/")),
     (file) =>
       Effect.gen(function* () {
         // A tracked file deleted in the working tree references nothing.

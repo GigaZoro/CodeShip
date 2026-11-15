@@ -246,7 +246,8 @@ describe("check:changed", () => {
   });
 
   // A provider's replay suite reaches its adapter through the adapter's testkit
-  // and the fixture index, which is how 40b1b72673 broke one unseen.
+  // and the fixture index, which is how 40b1b72673 broke one unseen. A service's
+  // own tests reach it through the service.
   const reachSources: Record<string, string> = {
     "server/Adapter.ts": "export const run = 1;\n",
     "server/Adapter.testkit.ts": 'import { run } from "./Adapter.ts";\n',
@@ -266,14 +267,14 @@ describe("check:changed", () => {
     "server/Barrel.test.ts": 'import { code } from "@t3/core";\n',
   };
   it.each([
-    ["server/Adapter.ts", ["server/testkit/Replay.integration.test.ts"]],
+    ["server/Adapter.ts", ["server/Service.test.ts", "server/testkit/Replay.integration.test.ts"]],
     [
       "server/testkit/fixtures/case/transcript.ndjson",
       ["server/testkit/Replay.integration.test.ts"],
     ],
     ["core/src/failure.ts", ["server/Failure.test.ts"]],
     ["core/src/index.ts", []],
-  ])("selects the tests that reach %s through test code", (changed, expected) => {
+  ])("selects the tests that reach %s", (changed, expected) => {
     assert.deepStrictEqual(
       testsReaching({
         changed: [changed],

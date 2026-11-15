@@ -146,7 +146,10 @@ export function applyUsageLimitsUpdate(input: {
   // it; one the read already saw at 100% was weighed by that read.
   const usageAllowed =
     previous?.usageAllowed === true && newlyUsedUp ? false : previous?.usageAllowed;
-  const accountReadAt = previous && (previous.accountReadAt ?? previous.checkedAt);
+  // A failed read gave none of the account fields, so it is no read of the account.
+  const accountReadAt =
+    previous?.accountReadAt ??
+    (previous?.unavailable === undefined ? previous?.checkedAt : undefined);
   return {
     ...makeUsageLimits({ checkedAt: input.checkedAt, windows }),
     ...(accountReadAt !== undefined && accountReadAt !== input.checkedAt ? { accountReadAt } : {}),

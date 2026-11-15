@@ -1,3 +1,8 @@
+## 2026-11-15 — A failed usage check no longer counts as a full one
+
+- An account whose usage check failed, and whose meters then came back during a turn, no longer looks as if its usage was fully read at the failed check. Only a successful check can free an account waiting out a limit.
+- Maintainers: `vp run check:changed` also runs the test files beside each production file that imports a changed file, so a change to a shared helper runs the tests of the services built on it.
+
 ## 2026-11-15 — Webhook tasks can check Standard Webhooks signatures, such as ThreadPage's
 
 - A webhook task's **Require signature** now offers a **Standard Webhooks** scheme next to the HMAC-SHA256 one. Enter the sender's `whsec_` secret; requests with a missing or forged `webhook-signature`, or a `webhook-timestamp` more than 5 minutes from when they arrived, are rejected, and a repeated `webhook-id` runs only once. Agents can choose it with `schedule_task` as `signature: { scheme: "standard-webhooks" }`.
