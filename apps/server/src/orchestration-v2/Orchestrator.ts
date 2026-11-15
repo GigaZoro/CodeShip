@@ -126,6 +126,7 @@ import {
   visibleConversationItems,
   visibleDeltaRunOrdinals,
 } from "./ContextHandoffService.ts";
+import { continuesAfterRestart } from "./RestartContinuation.ts";
 import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
 import {
   backgroundWorkStoppedNoticeId,
@@ -2715,8 +2716,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .map((message) => message.id),
     );
     const now = yield* DateTime.now;
+    // With continuation off a restart's hold is left for the person on purpose.
+    const continues = continuesAfterRestart(
+      false,
+      yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null)),
+      projection.thread.projectId,
+    );
+    const cutCandidates = continues
+      ? projection.runs.filter((run) => run.status === "cancelled")
+      : [];
+    const { turnItems: cutNotices } =
+      cutCandidates.length === 0
+        ? { turnItems: [] }
+        : yield* projectionStore.getThreadRecords(threadId, ["turnItems"], {
+            turnItemTypes: ["system_notice"],
+            turnItemRunIds: cutCandidates.map((run) => run.id),
+          });
+    const cutRuns = cutCandidates.filter((run) => cutByRestart(run, cutNotices));
     const released = held.filter(
-      (run) => run.queueHeldByRestart === true || unattended.has(run.userMessageId),
+      (run) =>
+        run.queueHeldByRestart === true ||
+        unattended.has(run.userMessageId) ||
+        queuedDuringRestartCut(run, cutRuns),
     );
     if (released.length === 0) return;
     yield* writeSystemEvents(
@@ -2730,6 +2751,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       })),
     );
   });
+
+  // Holds a restart placed before queueHeldByRestart existed carry no flag. A queued message that
+  // arrived while a run executed and that run was then cut by a restart was held by that restart.
+  const queuedDuringRestartCut = (
+    run: OrchestrationV2Run,
+    cutRuns: ReadonlyArray<OrchestrationV2Run>,
+  ) =>
+    cutRuns.some(
+      (cut) =>
+        cut.completedAt !== null &&
+        DateTime.isLessThanOrEqualTo(cut.startedAt ?? cut.requestedAt, run.requestedAt) &&
+        DateTime.isGreaterThanOrEqualTo(cut.completedAt, run.requestedAt),
+    );
 
   const resumeQueuedRuns = Effect.gen(function* () {
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");

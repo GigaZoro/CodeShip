@@ -1,3 +1,7 @@
+## 2026-11-15 — A chat no longer keeps a queued message held after an old restart bug
+
+- A message queued behind a run that a restart cut could stay held for days, with the chat showing as finished. With "continue threads after an update" on, the next server start now starts it, and a chat with a held queue is marked `queueHeld` in the thread list and the thread summary.
+
 ## 2026-11-15 — Agents on Windows are told that `bash` there is WSL
 
 - `t3_command_run`'s description now says that on Windows `bash` reaches WSL's bash (no node, its own home folder) and gives the Git Bash path, so an agent no longer lands in the wrong environment.

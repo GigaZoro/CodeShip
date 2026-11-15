@@ -423,6 +423,8 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionMode),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
+  /** Queued messages are held: nothing starts them until `t3_queue` `resume`. */
+  queueHeld: Schema.optional(Schema.Boolean),
   settled: Schema.optional(Schema.Boolean),
   settledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozed: Schema.optional(Schema.Boolean),
