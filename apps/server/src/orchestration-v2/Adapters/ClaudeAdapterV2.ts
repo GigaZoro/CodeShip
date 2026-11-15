@@ -4935,15 +4935,20 @@ function providerFailureFromApiRetry(
 
 const UNATTRIBUTED_RATE_LIMIT_TYPE = "unknown";
 
-/** When every window blocking the turn reopens, or null while one has no reported reset. */
+/**
+ * When every window blocking the turn reopens, or null while one has no reported reset. A gateway
+ * cooldown read from the result text counts as one more window.
+ */
 function blockedUsageLimitResetAt(
   context: Pick<ActiveClaudeTurnContext, "rateLimitResetTimes" | "latestAssistantRateLimit">,
+  resultResetAt?: string | null,
 ): string | null {
   const resetTimes = Array.from(context.rateLimitResetTimes.values());
   const assistantLimit = context.latestAssistantRateLimit;
   if (assistantLimit?.type != null && !context.rateLimitResetTimes.has(assistantLimit.type)) {
     resetTimes.push(assistantLimit.resetAt);
   }
+  if (resultResetAt != null) resetTimes.push(resultResetAt);
   return resetTimes.length > 0 && resetTimes.every((time) => time !== null)
     ? resetTimes.reduce((latest, time) => (time! > latest ? time! : latest), "")
     : null;
@@ -12074,7 +12079,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               usageLimited && message.subtype === "success" && message.local_command === "compact"
                 ? context.compactionFailure
                 : null;
-            const resetAt = blockedUsageLimitResetAt(context);
             const modelScope = blockedUsageLimitModelScope(
               context,
               adapterOptions.scopedLimitNames
@@ -12100,7 +12104,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               resultFailure?.class === "usage_limit"
                 ? {
                     ...resultFailure,
-                    resetAt: resetAt ?? resultFailure.resetAt ?? null,
+                    resetAt: blockedUsageLimitResetAt(context, resultFailure.resetAt),
                     ...(modelScope === undefined ? {} : { modelScope }),
                   }
                 : resultFailure;
