@@ -1,9 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { expect } from "vite-plus/test";
+import { expect, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
 import { assert, describe, it } from "@effect/vitest";
@@ -22,6 +23,7 @@ import {
   defaultConcurrency,
   docReaderTests,
   gitLines,
+  ignoredInputs,
   runSteps,
   splitTests,
   suiteSteps,
@@ -30,6 +32,8 @@ import {
   testsReaching,
 } from "./check-changed.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+
+vi.mock("node:fs/promises", { spy: true });
 
 const GiB = 1024 ** 3;
 
@@ -381,14 +385,16 @@ describe("check:changed", () => {
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config or the default
 // ~/.config/git/ignore can ignore or sign fixture files.
+// Git for Windows rejects the device namespace prefix in Node's null path.
+const gitDevNull = NodeOS.devNull.replace("\\\\.\\", "");
 const fixtureConfig = {
-  "core.excludesFile": NodeOS.devNull,
+  "core.excludesFile": gitDevNull,
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
 const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
-  GIT_CONFIG_GLOBAL: NodeOS.devNull,
+  GIT_CONFIG_GLOBAL: gitDevNull,
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_COUNT: String(Object.keys(fixtureConfig).length),
   ...Object.fromEntries(
@@ -399,6 +405,12 @@ const env = {
   ),
 };
 
+const writeUnder = (root: string, file: string, content = "input") => {
+  const path = NodePath.join(root, file);
+  NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+  NodeFS.writeFileSync(path, content);
+};
+
 // History A -> B -> C, with HEAD at C. Each remote's main points at A or B.
 function fixture(remotes: Record<string, "A" | "B">) {
   const root = NodeFS.realpathSync(
@@ -406,11 +418,7 @@ function fixture(remotes: Record<string, "A" | "B">) {
   );
   const commits: Record<string, string> = {};
   try {
-    const write = (file: string, content: string) => {
-      const path = NodePath.join(root, file);
-      NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-      NodeFS.writeFileSync(path, content);
-    };
+    const write = (file: string, content: string) => writeUnder(root, file, content);
     const git = (...args: Array<string>) =>
       NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", env }).trim();
     git("init");
@@ -448,6 +456,129 @@ const compare = (root: string, ref: Option.Option<string>) =>
     );
   }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
 
+it("fingerprints ignored inputs without entering dependency trees or directory links", async () => {
+  using project = fixture({});
+  const write = (file: string, content?: string) => writeUnder(project.root, file, content);
+  write(".gitignore", "ignored/\n.generated/\n.astro/\n*.d.ts\n.env*\nnode_modules/\n");
+  const expected = [
+    ".env",
+    ".env.local",
+    "root.d.ts",
+    "target/leaked.d.ts",
+    ".generated/code.ts",
+    ".astro/types.ts",
+    "ignored/deep/.generated/code.js",
+    "ignored/deep/.astro/data.json",
+    "ignored/deep/types.d.ts",
+    "ignored/deep/.env.test",
+    "ignored/space & дослід.d.ts",
+    // Nested repositories, with a .git folder and with a .git file, are listed by their folder.
+    ".generated/nested/",
+    "ignored/deep/.generated/linked-repo/",
+  ].sort();
+  const gitInit = (...args: Array<string>) =>
+    NodeChildProcess.execFileSync("git", ["init", "-q", "-b", "main", ...args], {
+      cwd: project.root,
+      env,
+    });
+  gitInit(".generated/nested");
+  // Git does not create the parent of a separate Git directory.
+  const modules = NodePath.join(project.root, ".git", "modules");
+  NodeFS.mkdirSync(modules);
+  gitInit(
+    `--separate-git-dir=${NodePath.join(modules, "linked-repo")}`,
+    "ignored/deep/.generated/linked-repo",
+  );
+  for (const file of [
+    ...expected.filter((file) => !file.endsWith("/")),
+    ".generated/nested/code.ts",
+    "ignored/deep/.generated/linked-repo/code.ts",
+    "ignored/plain.ts",
+    "unignored.ts",
+    "node_modules/pkg/index.d.ts",
+    "ignored/node_modules/pkg/.env",
+    "target/leaked.d.ts",
+    ".generated/node_modules/pkg/data.ts",
+  ])
+    write(file);
+  NodeFS.symlinkSync(
+    NodePath.join(project.root, "target"),
+    NodePath.join(project.root, "ignored", "linked"),
+    "junction",
+  );
+  NodeFS.symlinkSync(
+    NodePath.join(project.root, "target"),
+    NodePath.join(project.root, "node_modules", "linked"),
+    "junction",
+  );
+  const actual = await Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return yield* ignoredInputs(project.root).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          assert.isTrue(ChildProcess.isStandardCommand(command));
+          if (ChildProcess.isStandardCommand(command)) {
+            assert.include(command.args, "--directory");
+            assert.notInclude(command.args, "--");
+          }
+          return spawner.spawn(ChildProcess.setEnv(command, env));
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
+  assert.deepStrictEqual(actual, expected);
+});
+
+// The inputs `ignoredInputs` finds in `root` when Git's listing is `entries`.
+const ignoredInputsListed = (root: string, entries: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return yield* ignoredInputs(root).pipe(
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          spawner.spawn(
+            ChildProcess.make(process.execPath, [
+              "-e",
+              `process.stdout.write(${JSON.stringify(entries.map((entry) => `${entry}\0`).join(""))})`,
+            ]),
+          ),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.runPromise);
+
+it("leaves out an ignored input removed after Git listed it", async () => {
+  using project = fixture({});
+  // Git's listing names a folder that is gone by the time it is read.
+  assert.deepStrictEqual(
+    await ignoredInputsListed(project.root, ["removed/.generated/", "removed.d.ts"]),
+    [],
+  );
+});
+
+it("reads each ignored folder once when Git lists it beside folders inside it", async () => {
+  using project = fixture({});
+  const inputs = ["outer/a.d.ts", "outer/inner/b.d.ts", "outer/inner/deeper/c.d.ts"];
+  for (const file of inputs) writeUnder(project.root, file);
+  const reads = vi.mocked(NodeFSP.readdir);
+  reads.mockClear();
+  const actual = await ignoredInputsListed(project.root, [
+    "outer/",
+    "outer/inner/",
+    "outer/inner/deeper/",
+    ...inputs,
+  ]);
+  assert.deepStrictEqual(actual, inputs);
+  assert.deepStrictEqual(
+    reads.mock.calls.map(([folder]) =>
+      NodePath.relative(project.root, String(folder)).replaceAll("\\", "/"),
+    ),
+    ["outer", "outer/inner", "outer/inner/deeper"],
+  );
+});
+
 it.each(["upstream", "team/upstream"])(
   "compares against %s/main when the fork's origin/main lags it",
   async (remote) => {
@@ -469,11 +600,7 @@ function launcherFixture() {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
   );
-  const write = (file: string, content: string) => {
-    const path = NodePath.join(root, file);
-    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-    NodeFS.writeFileSync(path, content);
-  };
+  const write = (file: string, content: string) => writeUnder(root, file, content);
   for (const file of [
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
