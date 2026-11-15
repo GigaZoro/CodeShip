@@ -160,11 +160,14 @@ function resolveDeliveryIntent(
 
   const activeRun = projection.runs.findLast(isActiveRun);
   if (activeRun === undefined) return { type: "start_immediately" };
+  if (deliveryIntent === "steer") {
+    return { type: "steer_active", targetRunId: activeRun.id };
+  }
   if (deliveryIntent === "restart") {
     return { type: "restart_active", targetRunId: activeRun.id };
   }
   // A run can be active before its provider turn starts or after it finishes.
-  // Queue input in those gaps so steering cannot reject the message.
+  // Queue automatic input in those gaps so steering cannot reject the message.
   if (
     activeRun.status === "preparing" ||
     activeRun.status === "starting" ||
@@ -173,9 +176,6 @@ function resolveDeliveryIntent(
     )
   ) {
     return { type: "queue_after_active" };
-  }
-  if (deliveryIntent === "steer") {
-    return { type: "steer_active", targetRunId: activeRun.id };
   }
 
   const capabilities = providerTurnCapabilities(projection, activeRun);
