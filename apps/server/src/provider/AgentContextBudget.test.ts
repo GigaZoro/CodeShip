@@ -158,12 +158,17 @@ const mcpToolListJsonBytes = (platform: NodeJS.Platform) =>
     ),
   );
 
-it.effect("agent context matches the committed budget", () =>
+it.effect("agent context on every platform matches the committed budget", () =>
   Effect.gen(function* () {
+    const linux = yield* mcpToolListJsonBytes("linux");
+    expect(
+      yield* mcpToolListJsonBytes("darwin"),
+      "macOS registers Linux's tools; give it its own budget value if that changes.",
+    ).toBe(linux);
     const measured = {
       claudeSystemAppendBytes: utf8Bytes(claudeSystemAppend()),
       codexAdditionalContextBytes: utf8Bytes(codexAdditionalContext()),
-      mcpToolListJsonBytes: yield* mcpToolListJsonBytes("linux"),
+      mcpToolListJsonBytes: linux,
       windowsMcpToolListJsonBytes: yield* mcpToolListJsonBytes("win32"),
     };
 

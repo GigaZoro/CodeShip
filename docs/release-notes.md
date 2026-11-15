@@ -1,3 +1,8 @@
+## 2026-11-21 — Windows test runs check command environments in PowerShell
+
+- Maintainers: the four tests of what a `t3_command_run` command gets from its agent's shell and the host environment, PATH included, run on Windows again, in PowerShell, instead of skipping there. The ACP terminal test runs its pipe in the host's shell too, cmd.exe on Windows.
+- The agent context budget test also checks that macOS offers an agent the same tools as Linux, since the budget keeps no separate value for macOS. The Antigravity attachment test no longer depends on the machine's path separators.
+
 ## 2026-11-21 — Every checkout runs the tracked push gate again
 
 - The machine configuration listed its Git settings twice, so only the second list applied and the machine check stopped pointing `core.hooksPath` at the tracked hooks in `.vite-hooks`. One list now holds both settings, so the check sets the hooks path and the one-day prune window on every machine.
