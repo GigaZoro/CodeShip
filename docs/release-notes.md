@@ -1,3 +1,8 @@
+## 2026-11-15 — Agents can name a chat by the link T3.CodeShip gave them
+
+- Every agent tool that takes a chat's thread id now also takes the chat's `link`, the `<t3-thread://v2/…>` form T3.CodeShip's tools return, with or without its angle brackets, as a Markdown link, or as the web address an outside client gets. A link to a chat on a linked machine goes to that machine, as `environmentId` would. Before, `t3_thread_read` answered such a link with "Thread … is no longer available" even for a running chat, so a machine inbox run could take the chat for stopped, clear its claim and start a second chat on the same work.
+- A link the tool cannot follow now says so: one that names no chat, one for another machine passed to a tool that works only here, or one whose machine differs from the `environmentId` passed beside it. A link to a machine that is not linked names that machine. A chat that really cannot be found is reported as not found, without saying it was ever there.
+
 ## 2026-11-15 — The server stops rereading idle chats while it checks for an update
 
 - With many Codex chats, the server reread every chat that had ever used Codex's shared session each time any chat's work changed, once for every open window and linked computer, to tell whether an update would stop anything. That kept the server and the disk busy and filled its trace log in seconds. It now reads only the chats with work a restart would stop, once for everyone who watches.

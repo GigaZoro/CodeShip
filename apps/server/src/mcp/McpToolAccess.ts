@@ -405,6 +405,65 @@ const linksUnavailable = new OrchestratorMcpFailure({
   message: "This environment cannot reach linked environments.",
 });
 
+/** The parameters that name a thread: `threadId` and every `<role>ThreadId`. */
+export const threadParameters = (tool: Tool.Any): ReadonlyArray<string> => {
+  const parameters: unknown = tool.parametersSchema;
+  if (!Predicate.hasProperty(parameters, "fields") || !Predicate.isObject(parameters.fields)) {
+    return [];
+  }
+  return Object.keys(parameters.fields).filter(
+    (key) => key === "threadId" || key.endsWith("ThreadId"),
+  );
+};
+
+const linkRefused = (message: string) =>
+  new OrchestratorMcpFailure({ code: "invalid_request", message });
+
+/**
+ * Agents pass back the `link` a tool returned for a thread as readily as its id, so a thread
+ * parameter takes either. The link's environment routes the call as `environmentId` would; a
+ * tool that never leaves this environment refuses a link to another one by the id to pass.
+ */
+const resolvingThreadLinks =
+  <E>(
+    name: string,
+    keys: ReadonlyArray<string>,
+    routes: boolean,
+    handle: (params: Record<string, unknown>) => Effect.Effect<unknown, E>,
+  ) =>
+  (params: Record<string, unknown>) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const resolved = { ...params };
+      for (const key of keys) {
+        const value = params[key];
+        if (typeof value !== "string") continue;
+        const link = McpInvocationContext.threadOfLink(scope, value);
+        if (link === undefined) continue;
+        if (link === null) {
+          return yield* linkRefused(
+            `${key} is a thread link that names no thread. Pass the thread id instead.`,
+          );
+        }
+        resolved[key] = link.threadId;
+        const linked = link.environmentId;
+        const named = resolved.environmentId as EnvironmentId | undefined;
+        if (linked === null || linked === (routes ? named : scope.environmentId)) continue;
+        if (!routes) {
+          return yield* linkRefused(
+            `${key} links thread ${link.threadId} on environment ${linked}, but ${name} works only on this environment's threads.`,
+          );
+        }
+        if (named !== undefined) {
+          return yield* linkRefused(
+            `${key} links thread ${link.threadId} on environment ${linked}, but this call names environment ${named}. Pass the thread id with the environmentId it is on.`,
+          );
+        }
+        resolved.environmentId = linked;
+      }
+      return yield* handle(resolved);
+    });
+
 /**
  * Every tool that takes a linked environment runs there the same way: its
  * declaration checks the caller here, and the same call goes to the other
@@ -442,6 +501,18 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         const { delegatedFrom: _claimed, ...forwarded } = params as { delegatedFrom?: unknown };
         return yield* forwarding.value.call(scope, tool, target, { ...forwarded, environmentId });
       });
+  }
+  for (const [name, tool] of Object.entries<Tool.Any>(toolkit.tools)) {
+    const keys = threadParameters(tool);
+    if (keys.length === 0) continue;
+    handlers[name] = resolvingThreadLinks(
+      name,
+      keys,
+      takesLinkedEnvironment(tool),
+      handlers[name] as (
+        params: Record<string, unknown>,
+      ) => Effect.Effect<unknown, Tool.Failure<Tools[keyof Tools]>>,
+    );
   }
   return handlers as Toolkit.HandlersFrom<Tools>;
 });

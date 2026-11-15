@@ -1,18 +1,25 @@
 import {
   type AuthMcpClientAccess,
-  type EnvironmentId,
+  EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
   PreviewAutomationUnavailableError,
   type ProviderInstanceId,
   type ProviderInteractionMode,
   type RuntimeMode,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import { formatThreadLink } from "@t3tools/shared/threadLinks";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import {
+  formatThreadLink,
+  parseThreadLinkHref,
+  THREAD_LINK_PROTOCOL,
+  type ThreadLink,
+} from "@t3tools/shared/threadLinks";
 
 const ALL_MCP_CAPABILITIES = [
   "preview",
@@ -150,6 +157,43 @@ export const threadLinkFor = (
   return origin === undefined
     ? formatThreadLink({ environmentId: scope.environmentId, threadId })
     : `${origin}/${encodeURIComponent(scope.environmentId)}/${encodeURIComponent(threadId)}`;
+};
+
+const LABELED_LINK = /^\[[^\]\n]*\]\((.*)\)$/;
+const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
+const decodeThreadId = Schema.decodeUnknownOption(ThreadId);
+
+const decodedWebLink = (path: string): ThreadLink | null => {
+  const [environment, thread, ...rest] = path.split("/");
+  if (environment === undefined || thread === undefined || rest.length > 0) return null;
+  try {
+    const environmentId = Option.getOrNull(decodeEnvironmentId(decodeURIComponent(environment)));
+    const threadId = Option.getOrNull(decodeThreadId(decodeURIComponent(thread)));
+    return environmentId === null || threadId === null ? null : { environmentId, threadId };
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The thread a `threadLinkFor` link names, also as a bare or labeled `t3-thread://` link:
+ * `undefined` for a value that is no link, `null` for a link that names no thread.
+ */
+export const threadOfLink = (
+  scope: Pick<McpInvocationScope, "client">,
+  value: string,
+): ThreadLink | null | undefined => {
+  const written = value.trim();
+  const href =
+    written.startsWith("<") && written.endsWith(">")
+      ? written.slice(1, -1)
+      : (LABELED_LINK.exec(written)?.[1] ?? written);
+  if (href.startsWith(`${THREAD_LINK_PROTOCOL}://`)) return parseThreadLinkHref(href);
+  if (written.includes(`${THREAD_LINK_PROTOCOL}://`)) return null;
+  const origin = scope.client?.webOrigin;
+  return origin === undefined || !href.startsWith(`${origin}/`)
+    ? undefined
+    : decodedWebLink(href.slice(origin.length + 1));
 };
 
 export class McpInvocationContext extends Context.Service<

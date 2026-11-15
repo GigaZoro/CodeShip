@@ -9,20 +9,7 @@ import {
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
-import { AttachmentToolkit } from "./toolkits/attachment/tools.ts";
-import { DeviceToolkit } from "./toolkits/device/tools.ts";
-import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
-import { HtmlToolkit } from "./toolkits/html/tools.ts";
-import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
-import { PreviewToolkit } from "./toolkits/preview/tools.ts";
-import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
-import { ProjectToolkit } from "./toolkits/project/tools.ts";
-import { ProviderMcpToolkit } from "./toolkits/providerMcp/tools.ts";
-import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
-import { TerminalToolkit } from "./toolkits/terminal/tools.ts";
-import { ThreadToolkit } from "./toolkits/thread/tools.ts";
-import { VisualStudioToolkit } from "./toolkits/visualStudio/tools.ts";
-import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
+import { MCP_TOOLKITS } from "./toolkits.testkit.ts";
 
 interface JsonSchemaNode {
   readonly description?: string;
@@ -51,31 +38,16 @@ function schemaText(schema: unknown) {
 type SchemaText = ReturnType<typeof schemaText>;
 
 const tools = new Map(
-  [
-    AttachmentToolkit,
-    DeviceToolkit,
-    EnvironmentToolkit,
-    HtmlToolkit,
-    OrchestratorToolkit,
-    PreviewToolkit,
-    PreviewControlsToolkit,
-    ProjectToolkit,
-    ProviderMcpToolkit,
-    PullRequestsToolkit,
-    TerminalToolkit,
-    ThreadToolkit,
-    VisualStudioToolkit,
-    WorktreeToolkit,
-  ]
-    .flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools))
-    .map((tool) => [
+  MCP_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools)).map(
+    (tool) => [
       tool.name,
       {
         description: Tool.getDescription(tool) ?? "",
         parameters: schemaText(advertisedJsonSchema(tool)),
         result: schemaText(Tool.getJsonSchemaFromSchema(tool.successSchema)),
       },
-    ]),
+    ],
+  ),
 );
 
 // "`tool` with …" or "`tool` takes …" up to the end of its clause; code spans may hold "." or ";".

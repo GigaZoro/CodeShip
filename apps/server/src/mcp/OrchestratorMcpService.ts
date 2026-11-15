@@ -1543,11 +1543,7 @@ const make = Effect.gen(function* () {
       .getThreadShell(threadId)
       .pipe(Effect.mapError(threadManagementFailure));
     if (shell === null || shell.deletedAt !== null) {
-      return yield* threadNotFound(
-        threadManagement,
-        threadId,
-        `Thread ${threadId} is no longer available.`,
-      );
+      return yield* threadNotFound(threadManagement, threadId, `Thread ${threadId} was not found.`);
     }
     const input = { projectId: shell.projectId, threadId };
     // Transfers are needed only to acknowledge a caller's child-task result.

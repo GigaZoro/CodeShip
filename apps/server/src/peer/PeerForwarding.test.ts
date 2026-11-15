@@ -455,6 +455,48 @@ it.effect("an agent here works on a linked environment's threads within its own 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("an agent here reaches a thread by the link a tool returned, here or linked", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const linkSession = yield* Ref.make("");
+      const b = yield* serveBox(seen, linkSession);
+      const a = yield* makeLaptop;
+      yield* linkTo(a.links, b, "auto");
+      yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+
+      const listed = yield* a.call("thread:laptop-full", "t3_thread_list", {
+        environmentId: box.environmentId,
+        projectId: boxProject,
+      });
+      const link = (listed.structuredContent as { threads: ReadonlyArray<{ link: string }> })
+        .threads[0]!.link;
+      expect(link).toBe(`<t3-thread://v2/${box.environmentId}/${boxThread}>`);
+
+      const waited = yield* a.call("thread:laptop-full", "t3_thread_wait", { threadId: link });
+      expect(waited.structuredContent).toMatchObject({ threadId: boxThread, status: "completed" });
+
+      const sent = yield* a.call("thread:laptop-full", "t3_thread_send", {
+        threadId: link.slice(1, -1),
+        message: "Carry on there.",
+      });
+      expect(sent.structuredContent).toMatchObject({ threadId: boxThread, delivery: "started" });
+      expect((yield* Ref.get(seen)).sends).toMatchObject([{ threadId: boxThread }]);
+
+      const conflicting = yield* a.call("thread:laptop-full", "t3_thread_read", {
+        environmentId: laptop.environmentId,
+        threadId: link,
+      });
+      expect(failureOf(conflicting)).toMatchObject({ code: "invalid_request" });
+
+      const unknown = yield* a.call("thread:laptop-full", "t3_thread_read", {
+        threadId: "<t3-thread://v2/environment-elsewhere/thread:x>",
+      });
+      expect(failureOf(unknown)?.message).toContain("environment-elsewhere");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("keeps a forwarded wait short and its retries scoped to the caller", () =>
   Effect.scoped(
     Effect.gen(function* () {

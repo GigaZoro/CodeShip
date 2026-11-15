@@ -5700,7 +5700,7 @@ describe("OrchestratorMcpService thread lookup", () => {
     Effect.gen(function* () {
       const { read, send, wait } = yield* failuresFor([]);
       assert.equal(read.code, "thread_not_found");
-      assert.equal(read.message, `Thread ${bareId} is no longer available.`);
+      assert.equal(read.message, `Thread ${bareId} was not found.`);
       assert.equal(send.code, "thread_not_found");
       assert.equal(send.message, `Thread ${bareId} was not found.`);
       assert.equal(wait.code, "thread_not_found");
@@ -5711,7 +5711,7 @@ describe("OrchestratorMcpService thread lookup", () => {
   it.effect("does not name an mcp: thread that was deleted", () =>
     Effect.gen(function* () {
       const { read, send, wait } = yield* failuresFor([deletedLaunched]);
-      assert.equal(read.message, `Thread ${bareId} is no longer available.`);
+      assert.equal(read.message, `Thread ${bareId} was not found.`);
       assert.equal(send.message, `Thread ${bareId} was not found.`);
       assert.equal(wait.message, send.message);
     }),

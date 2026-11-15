@@ -480,6 +480,14 @@ one that is not a linked environment, cannot render `t3-thread://` links, so it
 gets a web URL on the origin it reached, `<origin>/<environmentId>/<threadId>`,
 for threads in this environment.
 
+Agents pass those links back as readily as ids, so every `threadId` and
+`<role>ThreadId` parameter takes either. `McpToolAccess.toLayer` swaps a link
+for its thread id before the handler runs, and the link's environment routes the
+call as `environmentId` would. A tool that never leaves this environment, or a
+call whose `environmentId` names another environment, refuses the link with the
+id to pass. Name a new thread parameter by that rule; the contract test in
+`McpToolAccess.test.ts` holds every tool to it.
+
 List and read results report `snoozed` and `snoozedUntil`, and
 `t3_thread_list` filters on `snoozed`. The server's `isSnoozed` follows the
 client's `effectiveSnoozed`, so agents and the sidebar agree: a snoozed thread

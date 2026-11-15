@@ -23,6 +23,7 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
 import { assertFullAccess } from "./threadAccess.ts";
+import { MCP_TOOLKITS } from "./toolkits.testkit.ts";
 
 const supervisedThreadId = ThreadId.make("thread:supervised");
 const planThreadId = ThreadId.make("thread:plan");
@@ -497,4 +498,264 @@ it.effect("refuses a linked environment to a tool that acts as its calling threa
     ).pipe(Effect.scoped, Effect.exit);
     expect(Exit.isFailure(built) && Cause.hasDies(built.cause)).toBe(true);
   }),
+);
+
+/** The link a tool returns for a thread, to a T3.CodeShip caller or to `client`. */
+const linkTo = (
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  client?: McpInvocationContext.McpClientCaller,
+) => McpInvocationContext.threadLinkFor({ environmentId, client }, threadId);
+const outsideClient: McpInvocationContext.McpInvocationScope = {
+  ...supervisedClient,
+  client: { ...supervisedClient.client!, webOrigin: "https://laptop.example" },
+};
+// Ids are taken as written: escapes and slashes are part of them.
+const writtenThreadId = ThreadId.make("mcp:odd/thread%3A1");
+
+const threadsNamed = (params: object) =>
+  ["threadId", "targetThreadId"]
+    .flatMap((key) => (key in params ? [String(params[key as keyof typeof params])] : []))
+    .join(" ");
+const threadLinkProbe = {
+  ...probe,
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    threadId: Schema.optional(ThreadId),
+    targetThreadId: Schema.optional(ThreadId),
+  }),
+};
+const ThreadLinkProbeToolkit = Toolkit.make(
+  Tool.make("routed", threadLinkProbe),
+  Tool.make("here_only", { ...probe, parameters: Schema.Struct({ threadId: ThreadId }) }),
+);
+const threadLinkProbeServer = McpHttpServer.toolkitRegistration(
+  ThreadLinkProbeToolkit,
+  McpToolAccess.toLayer(ThreadLinkProbeToolkit, {
+    routed: McpToolAccess.reads((params) =>
+      Effect.succeed({ ran: `here: ${threadsNamed(params)}` }),
+    ),
+    here_only: McpToolAccess.writesThreads(
+      (input) => [input.threadId],
+      (params) => Effect.succeed({ ran: `here: ${threadsNamed(params)}` }),
+    ),
+  }),
+).pipe(
+  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provideMerge(
+    Layer.mock(ThreadManagement.ThreadManagementService)({
+      getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+    }),
+  ),
+  Layer.provide(
+    Layer.mock(PeerForwarding.PeerForwarding)({
+      call: (_scope, _tool, environmentId, params) =>
+        Effect.succeed({
+          ran: `${environmentId}: ${threadsNamed(params as Record<string, unknown>)}`,
+        } as never),
+    }),
+  ),
+);
+
+it.effect.each([
+  ["routed", supervised, { threadId: linkTo(here, planThreadId) }, "here: thread:plan"],
+  [
+    "routed",
+    supervised,
+    { threadId: linkTo(here, planThreadId).slice(1, -1) },
+    "here: thread:plan",
+  ],
+  [
+    "routed",
+    supervised,
+    { threadId: `[Plan](${linkTo(here, planThreadId).slice(1, -1)})` },
+    "here: thread:plan",
+  ],
+  ["routed", supervised, { threadId: "t3-thread://v1/thread:plan" }, "here: thread:plan"],
+  ["routed", supervised, { threadId: planThreadId }, "here: thread:plan"],
+  ["routed", supervised, { threadId: linkTo(box, writtenThreadId) }, `${box}: ${writtenThreadId}`],
+  [
+    "routed",
+    supervised,
+    { environmentId: box, threadId: linkTo(box, planThreadId) },
+    `${box}: thread:plan`,
+  ],
+  [
+    "routed",
+    supervised,
+    { threadId: linkTo(box, planThreadId), targetThreadId: endedThreadId },
+    `${box}: thread:plan thread:ended`,
+  ],
+  [
+    "routed",
+    supervised,
+    { environmentId: here, threadId: linkTo(box, planThreadId) },
+    "invalid_request",
+  ],
+  [
+    "routed",
+    supervised,
+    { threadId: linkTo(here, planThreadId), targetThreadId: linkTo(box, endedThreadId) },
+    "invalid_request",
+  ],
+  ["routed", supervised, { threadId: "t3-thread://v2/environment" }, "invalid_request"],
+  [
+    "routed",
+    supervised,
+    { threadId: "<t3-thread://v3/environment/thread:plan>" },
+    "invalid_request",
+  ],
+  // An outside client gets a web link to the thread, and passes that back.
+  [
+    "routed",
+    outsideClient,
+    { threadId: linkTo(here, planThreadId, outsideClient.client) },
+    "here: thread:plan",
+  ],
+  [
+    "routed",
+    outsideClient,
+    { threadId: linkTo(box, writtenThreadId, outsideClient.client) },
+    `${box}: ${writtenThreadId}`,
+  ],
+  ["here_only", supervised, { threadId: linkTo(here, planThreadId) }, "here: thread:plan"],
+  // The thread the link names is the one the access checks hold to the caller's modes.
+  [
+    "here_only",
+    supervised,
+    { threadId: linkTo(here, fullAccessThreadId) },
+    "runtime_mode_escalation_denied",
+  ],
+  ["here_only", supervised, { threadId: linkTo(box, planThreadId) }, "invalid_request"],
+] as const)("a thread link to %s from %o with %o: %s", ([tool, scope, args, expected]) =>
+  call(tool, scope, args).pipe(
+    Effect.map((outcome) => expect(outcome).toBe(expected)),
+    Effect.provide(threadLinkProbeServer),
+  ),
+);
+
+const failureMessage = (tool: string, args: Record<string, unknown>) =>
+  McpServer.McpServer.pipe(
+    Effect.flatMap((server) => server.callTool({ name: tool, arguments: args })),
+    Effect.map(({ content }) => (content[0]?.type === "text" ? JSON.parse(content[0].text) : {})),
+    Effect.provideService(McpInvocationContext.McpInvocationContext, supervised),
+    Effect.provideService(McpSchema.McpServerClient, mcpClient),
+    Effect.provide(threadLinkProbeServer),
+  );
+
+it.effect(
+  "a thread link it cannot follow says which id to pass, never that the thread is gone",
+  () =>
+    Effect.gen(function* () {
+      expect(
+        yield* failureMessage("here_only", { threadId: linkTo(box, planThreadId) }),
+      ).toMatchObject({
+        code: "invalid_request",
+        message: `threadId links thread thread:plan on environment ${box}, but here_only works only on this environment's threads.`,
+      });
+      expect(
+        yield* failureMessage("routed", { threadId: "t3-thread://v2/environment" }),
+      ).toMatchObject({
+        code: "invalid_request",
+        message: "threadId is a thread link that names no thread. Pass the thread id instead.",
+      });
+    }),
+);
+
+const threadTools = MCP_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> =>
+  Object.values(toolkit.tools),
+).filter((tool) => McpToolAccess.threadParameters(tool).length > 0);
+
+type ThreadParameterNames<P> = {
+  [Key in keyof P]-?: NonNullable<P[Key]> extends ThreadId ? Key : never;
+}[keyof P];
+type MisnamedThreadParameters<Tools> = {
+  [Name in keyof Tools]: Exclude<
+    ThreadParameterNames<Tool.Parameters<Tools[Name]>>,
+    "threadId" | `${string}ThreadId`
+  >;
+}[keyof Tools];
+
+it("finds every thread parameter of every tool by its name", () => {
+  // A thread parameter named otherwise would take links unresolved; this fails the build.
+  const named: [MisnamedThreadParameters<(typeof MCP_TOOLKITS)[number]["tools"]>] extends [never]
+    ? true
+    : never = true;
+  expect(named).toBe(true);
+  expect(threadTools.map((tool) => tool.name)).toEqual(
+    expect.arrayContaining([
+      "t3_thread_read",
+      "t3_thread_send",
+      "t3_thread_wait",
+      "t3_thread_interrupt",
+      "t3_thread_send_attachments",
+      "t3_thread_transfer",
+      "terminal_read",
+      "link_pull_request",
+      "t3_worktree_list",
+    ]),
+  );
+});
+
+/**
+ * Each real thread tool's own thread parameters, routing and failure schema, behind a handler
+ * that answers with the ids it was given: every handler layer comes from `McpToolAccess.toLayer`.
+ */
+const threadToolProbe = (tool: Tool.Any) => {
+  const fields = (
+    tool.parametersSchema as unknown as Schema.Struct<Record<string, Schema.Codec<unknown>>>
+  ).fields;
+  const keys = McpToolAccess.threadParameters(tool);
+  const routes = fields.environmentId === OrchestratorMcpEnvironmentTarget;
+  const picked = Object.fromEntries(
+    Object.entries(fields).filter(
+      ([key]) => keys.includes(key) || (routes && key === "environmentId"),
+    ),
+  );
+  const ProbeToolkit = Toolkit.make(
+    Tool.make(tool.name, {
+      parameters: Schema.Struct(picked),
+      success: Schema.Struct({ ran: Schema.String }),
+      failure: tool.failureSchema as Schema.Codec<unknown>,
+      failureMode: "return",
+      dependencies: [McpInvocationContext.McpInvocationContext],
+    }),
+  );
+  const echo = McpToolAccess.reads((params: Record<string, unknown>) =>
+    Effect.succeed({ ran: `here: ${keys.map((key) => params[key]).join(" ")}` }),
+  );
+  const server = McpHttpServer.toolkitRegistration(
+    ProbeToolkit,
+    McpToolAccess.toLayer(ProbeToolkit, { [tool.name]: echo } as never),
+  ).pipe(
+    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provide(
+      Layer.mock(PeerForwarding.PeerForwarding)({
+        call: (_scope, _tool, environmentId, params) =>
+          Effect.succeed({
+            ran: `${environmentId}: ${keys.map((key) => (params as Record<string, unknown>)[key]).join(" ")}`,
+          } as never),
+      }),
+    ),
+  );
+  const every = (value: string) => Object.fromEntries(keys.map((key) => [key, value]));
+  const named = (environmentId: EnvironmentId) =>
+    `${environmentId === here ? "here" : environmentId}: ${keys.map(() => planThreadId).join(" ")}`;
+  return { server, routes, every, named };
+};
+
+it.effect.each(threadTools.map((tool) => [tool.name, tool] as const))(
+  "%s takes the link a tool returned for each thread it names",
+  ([name, tool]) => {
+    const { server, routes, every, named } = threadToolProbe(tool);
+    const outcome = (args: Record<string, unknown>) => call(name, supervised, args);
+    return Effect.gen(function* () {
+      expect(yield* outcome(every(linkTo(here, planThreadId)))).toBe(named(here));
+      expect(yield* outcome(every(linkTo(here, planThreadId).slice(1, -1)))).toBe(named(here));
+      expect(yield* outcome(every(linkTo(box, planThreadId)))).toBe(
+        routes ? named(box) : "invalid_request",
+      );
+      expect(yield* outcome(every("t3-thread://v2/environment"))).toBe("invalid_request");
+    }).pipe(Effect.provide(server));
+  },
 );
