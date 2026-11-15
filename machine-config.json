@@ -4,7 +4,7 @@
   "project": "CodeShip",
   "repository": "https://github.com/GigaZoro/CodeShip.git",
   "branch": "main",
-  "$automation_order": "\"one\" runs each occurrence on the first machine that is up, in this order. Zoro-PC and the job machine are excluded in each task's settings.",
+  "$automation_order": "\"one\" runs each occurrence on the first machine that is up, in this order. Each task's settings exclude Zoro-PC. The job machine gets no copy: it is not linked to these machines, and CodeShip accepts no exclusion for a machine no copy reaches.",
   "automation_order": ["Zoro-VPS", "MacBook-Pro-Andrii"],
   "automations": {
     "CodeShip: keep translations up to date": "one",

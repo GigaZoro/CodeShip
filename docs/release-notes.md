@@ -1,3 +1,7 @@
+## 2026-11-15 — The fork's shared tasks say which machines get no copy
+
+- `machine-config.json` now says that the translation and upstream sync tasks exclude Zoro-PC in their settings and that the job machine gets no copy, because it is not linked to the machines that run them. Before, it said both were excluded in the task settings, which CodeShip refuses for a machine no copy can reach.
+
 ## 2026-11-15 — The fork's translation and upstream sync tasks are shared
 
 - The fork's daily translation check and weekly sync from T3 Code read their instructions from `automations/` in this repository and run as shared one-machine scheduled tasks: Zoro-VPS first, the MacBook when the server is down. `machine-config.json` declares both tasks, so `machine-config.mjs check` on either machine reports a copy whose prompt, schedule, model or machines differ.
