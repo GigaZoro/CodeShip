@@ -1,3 +1,9 @@
+## 2026-11-15 — Service updates no longer pile up launchers
+
+- When T3.CodeShip runs as a service, each update handed the service to the new release's launcher but kept the previous launcher running, so every update left about 300 MB behind until the service restarted. A launcher that took over the service now hands it back to the one the service manager started, which starts the newest launcher, so a service runs at most two launchers. A service installed with an earlier release runs at most three until `t3 update` or `t3 service install` on that machine reinstalls it, and launchers that piled up before this release stay until the service restarts.
+- If a new launcher fails after it took over, the service now restarts, so nothing that launcher started keeps running beside the next server. A service installed with this release or later then keeps its old launcher until the next release. Before, the old launcher took the service back on its own, could start the release it had handed over instead of the one the service had moved to, and could do so while the failed launcher's server was still running.
+- Stopping the service while an update hands it to a new launcher now stops it at once, instead of starting the new launcher and waiting until the service manager forced the service down.
+
 ## 2026-11-15 — Skills page works for Codex accounts connected with ChatGPT
 
 - On the Skills page you can now copy a skill to a Codex account connected with ChatGPT and turn its skills on or off, as you already could for a Codex account that uses an existing login.

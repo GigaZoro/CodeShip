@@ -13,6 +13,19 @@ immutable runtime. Preflight checks the launcher protocol because a target that
 needs new rollback guarantees cannot safely run under an older launcher. Upgrading
 that launcher requires a local service update.
 
+Within one protocol, launcher fixes arrive with updates: at start and after a
+commit, the launcher the service manager started hands the service to the active
+release's launcher. That delegate hands the service back for the next hand-off
+instead of starting a launcher of its own, so a service runs at most two. The
+service manager keeps starting the launcher it was installed with, and one from
+before hand-back nests a launcher at every update, so its service runs a third
+until a local service update reinstalls it. A delegate that fails can leave its
+server running, even mid-migration, and only the service manager stops every
+process of the service. The launcher above it therefore exits 0, which every
+launcher since the hand-off takes as done, so the exit reaches the service
+manager and the service restarts. A launcher that reads the failure marker then
+skips that release's launcher; an installed one from before hand-back does not.
+
 ## Commit boundary
 
 The launcher durably records the pending update before acknowledging it, then

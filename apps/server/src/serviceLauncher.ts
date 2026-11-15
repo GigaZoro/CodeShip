@@ -46,8 +46,17 @@ const HANDOFF_PROBE_TIMEOUT_MS = 30_000;
 /** A launcher started with this set only proves it can load the service state, then exits. */
 const LAUNCHER_PROBE_ENV = "T3_SERVICE_LAUNCHER_PROBE";
 const LAUNCHER_PROBE_OK = "service-launcher-probe-ok";
+/**
+ * Set on a launcher's delegate. To move the service to a newer launcher, the delegate exits with
+ * HAND_BACK_EXIT_CODE and its parent starts that launcher, so a delegate never starts a launcher.
+ */
+const LAUNCHER_DELEGATE_ENV = "T3_SERVICE_LAUNCHER_DELEGATE";
+const HAND_BACK_EXIT_CODE = 75;
+/** Names a release whose launcher failed after taking over, for launchers to skip. */
+const FAILED_LAUNCHER_FILE = ".failed-launcher";
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
+type LauncherOutcome = "stopped" | "handed-back";
 type ChildRole = "active" | "trial";
 
 interface ManagedChild {
@@ -127,6 +136,7 @@ const MANAGED_SERVICE_ENV_NAMES = new Set([
   "T3CODE_HOME",
   "T3_BOOT_SERVICE_UNIT",
   SERVICE_LAUNCHER_CONTEXT_ENV,
+  LAUNCHER_DELEGATE_ENV,
 ]);
 
 export async function readServiceEnvironment(
@@ -659,6 +669,13 @@ const stopMarkerPath = (baseDir: string) =>
   NodePath.join(baseDir, "runtime", SERVICE_STOP_MARKER_FILE);
 const restartPendingPath = (baseDir: string) =>
   NodePath.join(baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
+const failedLauncherPath = (baseDir: string) =>
+  NodePath.join(baseDir, "runtime", FAILED_LAUNCHER_FILE);
+const readFailedLauncher = (baseDir: string) =>
+  NodeFSP.readFile(failedLauncherPath(baseDir), "utf8").then(
+    (version) => version.trim(),
+    () => undefined,
+  );
 
 export class Launcher {
   readonly #baseDir: string;
@@ -673,9 +690,10 @@ export class Launcher {
   #done = false;
   #delegate: NodeChildProcess.ChildProcess | null = null;
   readonly #launcherVersion: string | undefined;
-  readonly #completion = Promise.withResolvers<void>();
+  readonly #completion = Promise.withResolvers<LauncherOutcome>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
+  readonly #handsBack: boolean;
 
   constructor(
     baseDir: string,
@@ -692,12 +710,15 @@ export class Launcher {
         : runningLauncherVersion(baseDir, process.execPath);
     this.#baseDir = baseDir;
     this.#backupSpaceProbe = options.backupSpaceProbe;
-    this.#environment = { ...(options.environment ?? process.env) };
+    const { [LAUNCHER_DELEGATE_ENV]: delegateMarker, ...environment } =
+      options.environment ?? process.env;
+    this.#handsBack = delegateMarker === "1";
+    this.#environment = environment;
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
   }
 
-  async run(): Promise<void> {
+  async run(): Promise<LauncherOutcome> {
     const onSigterm = () => void this.stop("SIGTERM");
     const onSigint = () => void this.stop("SIGINT");
     process.once("SIGTERM", onSigterm);
@@ -711,7 +732,7 @@ export class Launcher {
         await boundServiceLog(this.#baseDir);
         await this.#recover();
       });
-      await this.#completion.promise;
+      return await this.#completion.promise;
     } finally {
       clearInterval(this.#logTimer);
       process.off("SIGTERM", onSigterm);
@@ -763,7 +784,7 @@ export class Launcher {
       this.#child = null;
       if (child !== undefined) await terminateChild(child, signal);
       this.#done = true;
-      this.#completion.resolve();
+      this.#completion.resolve("stopped");
     });
     await this.#completion.promise.catch(() => undefined);
   }
@@ -781,8 +802,13 @@ export class Launcher {
     if (awaitedVersion?.trim() === this.#state.activeVersion) {
       await NodeFSP.rm(restartPending, { force: true }).catch(() => undefined);
     }
+    if (await this.#handOff()) return;
+    await this.#resume();
+  }
+
+  /** Runs the service from the recorded state, whose update may still be pending after a restart. */
+  async #resume(): Promise<void> {
     const update = this.#state.update;
-    if (update?.status !== "pending" && (await this.#handOff())) return;
     if (update?.status !== "pending") {
       if (update !== undefined) {
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
@@ -998,60 +1024,96 @@ export class Launcher {
     await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     await sendMessage(child.process, { type: "committed", updateId: committed.id });
     if (await this.#handOff(child)) return;
-    if (this.#child === null && !this.#stopping) {
-      await this.#startChild(next.activeVersion, "active", committed);
-    }
+    if (this.#child === null && !this.#stopping) await this.#resume();
+  }
+
+  /** A stop queued behind the current transition settles the launcher once that transition ends. */
+  get #ending(): boolean {
+    return this.#stopping || this.#stopRequested;
   }
 
   /**
    * Updates replace the server child but not this launcher, so a launcher fix reaches a machine
-   * only through this hand-off. Any failure leaves this launcher running the service.
-   * @returns true when the delegate ran to completion and this launcher is done.
+   * only through this hand-off. A launcher that fails its probe, or failed before, leaves this one serving.
+   * @returns true when this launcher is done: its delegate ended, it handed back, or a stop is ending it.
    */
   async #handOff(active?: ManagedChild): Promise<boolean> {
-    const target = this.#state.activeVersion;
-    const own = this.#launcherVersion;
-    if (
-      own === undefined ||
-      this.#stopping ||
-      this.#stopRequested ||
-      this.#state.update?.status === "pending" ||
-      compareExactServiceVersions(target, own) <= 0 ||
-      !(await runtimeExists(this.#baseDir, target))
-    ) {
-      return false;
+    for (;;) {
+      if (this.#ending) return true;
+      const target = this.#state.activeVersion;
+      const own = this.#launcherVersion;
+      if (
+        own === undefined ||
+        this.#state.update?.status === "pending" ||
+        compareExactServiceVersions(target, own) <= 0 ||
+        !(await runtimeExists(this.#baseDir, target))
+      ) {
+        return false;
+      }
+      if ((await readFailedLauncher(this.#baseDir)) === target) {
+        process.stderr.write(
+          `[service-launcher] t3@${target} launcher failed before; t3@${own} keeps the service.\n`,
+        );
+        return false;
+      }
+      const entryPath = runtimePaths(this.#baseDir, target).entryPath;
+      if (!(await probeLauncher(entryPath, this.#environment))) {
+        process.stderr.write(
+          `[service-launcher] t3@${target} launcher failed its probe; t3@${own} keeps the service.\n`,
+        );
+        return false;
+      }
+      if (this.#ending) return true;
+      if (active !== undefined && this.#child === active) {
+        this.#child = null;
+        await terminateChild(active.process);
+      }
+      if (this.#ending) return true;
+      if (this.#handsBack) {
+        this.#clearTimer();
+        this.#done = true;
+        this.#completion.resolve("handed-back");
+        return true;
+      }
+      const outcome = await this.#runDelegate(entryPath);
+      if (!this.#stopRequested && outcome !== 0 && outcome !== HAND_BACK_EXIT_CODE) {
+        // Its server can outlive it, and only the service manager stops every process of the service.
+        // Exiting 0 ends every launcher above this one too, since released launchers take a delegate's
+        // exit 0 as done, and both service managers restart the service on any exit.
+        process.stderr.write(
+          `[service-launcher] t3@${target} launcher exited (${String(outcome)}); the service restarts.\n`,
+        );
+        await NodeFSP.writeFile(failedLauncherPath(this.#baseDir), target, { mode: 0o600 }).catch(
+          (cause: unknown) =>
+            process.stderr.write(
+              `[service-launcher] could not record the failed t3@${target} launcher: ${String(cause)}\n`,
+            ),
+        );
+      }
+      if (this.#stopRequested || outcome !== HAND_BACK_EXIT_CODE) {
+        this.#done = true;
+        this.#completion.resolve("stopped");
+        return true;
+      }
+      // The delegate ran the service, so the state on disk is newer than this launcher's copy.
+      this.#state = await readServiceState(this.#statePath);
     }
-    const entryPath = runtimePaths(this.#baseDir, target).entryPath;
-    if (!(await probeLauncher(entryPath, this.#environment))) {
-      process.stderr.write(
-        `[service-launcher] t3@${target} launcher failed its probe; t3@${own} keeps the service.\n`,
-      );
-      return false;
-    }
-    if (this.#stopping || this.#stopRequested) return false;
-    if (active !== undefined && this.#child === active) {
-      this.#child = null;
-      await terminateChild(active.process);
-    }
+  }
+
+  async #runDelegate(entryPath: string): Promise<number | null> {
     const delegate = NodeChildProcess.spawn(entryPath, ["__service-launcher"], {
-      env: { ...this.#environment },
+      env: { ...this.#environment, [LAUNCHER_DELEGATE_ENV]: "1" },
       stdio: "inherit",
     });
     this.#delegate = delegate;
-    const outcome = await new Promise<number | null>((resolve) => {
-      delegate.once("error", () => resolve(null));
-      delegate.once("exit", (code) => resolve(code));
-    });
-    this.#delegate = null;
-    if (this.#stopRequested || outcome === 0) {
-      this.#done = true;
-      this.#completion.resolve();
-      return true;
+    try {
+      return await new Promise<number | null>((resolve) => {
+        delegate.once("error", () => resolve(null));
+        delegate.once("exit", (code) => resolve(code));
+      });
+    } finally {
+      this.#delegate = null;
     }
-    process.stderr.write(
-      `[service-launcher] t3@${target} launcher exited (${String(outcome)}); t3@${own} resumes the service.\n`,
-    );
-    return false;
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -1154,5 +1216,6 @@ export async function main(): Promise<void> {
     process.stdout.write(`${LAUNCHER_PROBE_OK}\n`);
     return;
   }
-  await new Launcher(baseDir, state, { environment }).run();
+  const outcome = await new Launcher(baseDir, state, { environment }).run();
+  if (outcome === "handed-back") process.exitCode = HAND_BACK_EXIT_CODE;
 }
