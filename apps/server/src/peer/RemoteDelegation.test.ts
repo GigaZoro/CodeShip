@@ -1901,12 +1901,13 @@ it.effect.each(["tail-error", "middle-error", "reply-fallback", "cancel-refill"]
               result,
             });
           }
-          const pages = reads.filter((read) => read.itemId === undefined);
+          // Scan pages name their view; the status read delegate_task makes does not.
+          const pages = reads.filter((read) => read.view !== undefined);
           expect(pages.map((read) => read.afterPosition)).toEqual([undefined, 99, 199, 299]);
-          expect(pages.map((read) => read.maxCharsPerItem)).toEqual([undefined, 1, 1, undefined]);
+          expect(pages.map((read) => read.maxCharsPerItem)).toEqual([20_000, 1, 1, 20_000]);
           const refills = reads.filter((read) => read.itemId !== undefined);
           expect(refills[0]).toMatchObject({ itemId: "selected", textOffset: middle ? 1 : 20_000 });
-          if (scenario !== "cancel-refill") expect(refills).toHaveLength(middle ? 2 : 1);
+          if (scenario !== "cancel-refill") expect(refills).toHaveLength(middle ? 3 : 2);
         }),
       ).pipe(
         Effect.provide(NodeHttpServer.layerTest),
@@ -2022,7 +2023,8 @@ it.effect.each([
             result,
           });
         }
-        const pages = reads.filter((read) => read.itemId === undefined);
+        // Scan pages name their view; the status read delegate_task makes does not.
+        const pages = reads.filter((read) => read.view !== undefined);
         const positions =
           scenario === "cancelled" || scenario === "interrupted"
             ? [undefined, 99, 199, 299]
@@ -2037,13 +2039,13 @@ it.effect.each([
         expect(
           pages.every(
             (read) =>
-              read.view === "messages" && read.limit === 100 && read.maxCharsPerItem === undefined,
+              read.view === "messages" && read.limit === 100 && read.maxCharsPerItem === 20_000,
           ),
         ).toBe(true);
         const refills = reads.filter((read) => read.itemId !== undefined);
-        expect(refills).toHaveLength(scenario === "long" ? 2 : 0);
-        if (scenario === "long")
-          expect(refills.map((read) => read.textOffset)).toEqual([20_000, 70_000]);
+        expect(refills.map((read) => read.textOffset)).toEqual(
+          scenario === "long" ? [20_000, 40_000, 60_000, 80_000] : [],
+        );
       }),
     ).pipe(
       Effect.provide(NodeHttpServer.layerTest),
