@@ -163,6 +163,7 @@ export function cancelledRosterTaskWork(task: OrchestrationV2PendingBackgroundTa
         description === undefined ? task.taskId : `${description} (id ${task.taskId})`,
       ) ?? "background task",
     id: task.taskId,
+    ...(task.awaited === true ? { awaited: true as const } : {}),
     ...(task.nativeItemId === undefined ? {} : { nativeItemId: task.nativeItemId }),
   };
 }

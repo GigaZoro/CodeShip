@@ -1588,7 +1588,7 @@ it.effect("leaves a finished delegated child's background roster to the child", 
     assert.deepEqual(effects, [{ effect_id: `effect:restart-continuation:${childRun}` }]);
     const projection = yield* projections.getThreadProjection(child);
     assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
-      { kind: "shell", label: "sleep 600 (id wait)", id: "wait" },
+      { kind: "shell", label: "sleep 600 (id wait)", id: "wait", awaited: true },
     ]);
   }).pipe(Effect.provide(layerRecoveryTest)),
 );
