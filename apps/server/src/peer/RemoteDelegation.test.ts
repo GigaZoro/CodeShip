@@ -222,8 +222,21 @@ const makeBoxThread = Effect.gen(function* () {
   } satisfies BoxThread;
 });
 
-/** The box's projects: more than a page, with this repository's last. */
+const boxScratchProject = ProjectId.make("project:box-scratch");
+
+/** The box's projects: its No project, more than a page of others, and this repository's last. */
 const boxProjects: ReadonlyArray<Project> = [
+  {
+    id: boxScratchProject,
+    title: "No project",
+    workspaceRoot: "/srv/scratch",
+    repositoryIdentity: null,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    deletedAt: null,
+  },
   ...Array.from({ length: 120 }, (_, index) => ({
     id: ProjectId.make(`project:box-other-${index}`),
     title: `other ${index}`,
@@ -254,8 +267,6 @@ const boxProjects: ReadonlyArray<Project> = [
     deletedAt: null,
   },
 ];
-
-const boxScratchProject = ProjectId.make("project:box-scratch");
 
 /** The box's own accounts: its codex instance is not named like the laptop's. */
 const boxCodex = ProviderInstanceId.make("codex_box");
