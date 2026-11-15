@@ -133,7 +133,10 @@ export class GitManager extends Context.Service<
       input: VcsStatusInput,
       options?: GitRemoteStatusOptions,
     ) => Effect.Effect<VcsStatusRemoteResult | null, GitManagerServiceError>;
-    /** refresh queries the host; freshGitState rereads only git state and is required before persisting. */
+    /**
+     * Git state may be up to five minutes old. refresh also queries the host; freshGitState rereads
+     * only git state. Pass one before settling, removing a worktree or persisting on the answer.
+     */
     readonly branchPullRequest: (
       input: { readonly cwd: string; readonly branch: string },
       options?: { readonly refresh?: boolean; readonly freshGitState?: boolean },
@@ -2410,7 +2413,8 @@ export const make = Effect.gen(function* () {
     });
     return mergeGitStatusParts(local, remote);
   });
-  // Closed PR results can settle threads or remove worktrees; confirm fresh git state before persisting.
+  // Background lookups read each worktree's git state at most once per TTL; callers about to act
+  // on an answer (settle a thread, remove a worktree, persist a link) ask for fresh state.
   const prLookupGitStateByKey = new Map<
     string,
     { readonly readAtMs: number; readonly value: string | null }
@@ -2673,15 +2677,9 @@ export const make = Effect.gen(function* () {
   )(function* ({ cwd, branch }, options) {
     const cacheCwd = yield* normalizeStatusCacheKey(cwd);
     const refresh = options?.refresh === true;
-    const freshGitState = refresh || options?.freshGitState === true;
-    const pullRequest = yield* lookupBranchPullRequest(cacheCwd, branch, {
-      refresh,
-      freshGitState,
-    });
-    if (pullRequest === null || pullRequest.state === "open" || freshGitState) return pullRequest;
     return yield* lookupBranchPullRequest(cacheCwd, branch, {
-      refresh: false,
-      freshGitState: true,
+      refresh,
+      freshGitState: refresh || options?.freshGitState === true,
     });
   });
   const invalidateLocalStatus: GitManager["Service"]["invalidateLocalStatus"] = Effect.fn(

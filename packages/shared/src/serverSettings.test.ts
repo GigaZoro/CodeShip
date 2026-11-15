@@ -792,7 +792,7 @@ describe("serverSettings helpers", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,
       backgroundActivityProfile: "performance" as const,
-      automaticGitFetchInterval: Duration.seconds(7),
+      automaticGitFetchInterval: Duration.seconds(20),
       providerHealthRefreshInterval: Duration.minutes(4),
     };
 
@@ -808,12 +808,12 @@ describe("serverSettings helpers", () => {
       profile: "custom",
       baseProfile: "performance",
       overrides: {
-        automaticGitFetchInterval: Duration.seconds(7),
+        automaticGitFetchInterval: Duration.seconds(20),
         providerHealthRefreshInterval: Duration.minutes(4),
       },
     });
     expect(next.backgroundActivityProfile).toBe("performance");
-    expect(Duration.toMillis(next.automaticGitFetchInterval)).toBe(7_000);
+    expect(Duration.toMillis(next.automaticGitFetchInterval)).toBe(20_000);
     expect(Duration.toMillis(next.providerHealthRefreshInterval)).toBe(240_000);
   });
 
@@ -896,7 +896,7 @@ describe("serverSettings helpers", () => {
     const next = applyServerSettingsPatch(current, {
       backgroundActivity: {
         overrides: {
-          automaticGitFetchInterval: Duration.seconds(10),
+          automaticGitFetchInterval: Duration.seconds(20),
         },
       },
     });
@@ -906,7 +906,7 @@ describe("serverSettings helpers", () => {
       profile: "custom",
       baseProfile: "balanced",
       overrides: {
-        automaticGitFetchInterval: Duration.seconds(10),
+        automaticGitFetchInterval: Duration.seconds(20),
       },
     });
   });
@@ -927,6 +927,29 @@ describe("serverSettings helpers", () => {
         providerHealthRefreshInterval: Duration.minutes(4),
       },
     });
+  });
+
+  it("raises a git fetch interval below the per-repository fetch floor", () => {
+    const stored = {
+      ...DEFAULT_SERVER_SETTINGS,
+      backgroundActivity: {
+        schemaVersion: 1 as const,
+        profile: "custom" as const,
+        baseProfile: "balanced" as const,
+        overrides: { automaticGitFetchInterval: Duration.seconds(1) },
+      },
+    };
+    const patched = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      automaticGitFetchInterval: Duration.seconds(5),
+    });
+
+    expect(
+      Duration.toMillis(resolveServerBackgroundActivitySettings(stored).automaticGitFetchInterval),
+    ).toBe(15_000);
+    expect(patched.backgroundActivity.overrides).toEqual({
+      automaticGitFetchInterval: Duration.seconds(15),
+    });
+    expect(Duration.toMillis(patched.automaticGitFetchInterval)).toBe(15_000);
   });
 });
 

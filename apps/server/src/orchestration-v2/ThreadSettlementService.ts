@@ -326,111 +326,113 @@ export const make = Effect.gen(function* () {
   const projectScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   // Repeated thread.settled retains settledAt; run the action only once per settlement.
   const settleActionRunAt = new Map<ThreadId, number>();
-  const unmergedWorkHeldUntilMs = new Map<ThreadId, number>();
-  const worktreesOpeningPullRequests = new Set<string>();
+  // Keyed by worktree path: the unmerged work belongs to the worktree, whichever thread found it.
+  const unmergedWorkHeldUntilMs = new Map<string, number>();
+  // A worktree another thread or sweep is checking counts as held until that check sets its hold.
+  const worktreesBeingChecked = new Set<string>();
+  const holdsUnmergedWork = (cwd: string, nowMs: number) =>
+    (unmergedWorkHeldUntilMs.get(cwd) ?? 0) > nowMs || worktreesBeingChecked.has(cwd);
+
+  const checkUnmergedWork = Effect.fnUntraced(function* (
+    thread: ProjectionStore.ProjectionSettlementCandidate,
+    cwd: string,
+    opensPullRequests: boolean,
+    nowMs: number,
+  ) {
+    const hold = (durationMs: number) => {
+      unmergedWorkHeldUntilMs.set(cwd, nowMs + durationMs);
+      return false;
+    };
+    const work = yield* gitWorkflow.unmergedWork({ cwd });
+    if (work.changedFileCount === 0 && work.unmergedCommitCount === 0) {
+      unmergedWorkHeldUntilMs.delete(cwd);
+      return true;
+    }
+    const pullRequest =
+      work.refName === null
+        ? null
+        : yield* git.branchPullRequest({ cwd, branch: work.refName }, { freshGitState: true });
+    // A closed pull request set the work aside on purpose; an open one already holds the commits.
+    if (
+      pullRequest?.state === "closed" ||
+      (pullRequest?.state === "open" && work.changedFileCount === 0)
+    ) {
+      unmergedWorkHeldUntilMs.delete(cwd);
+      return true;
+    }
+    if (
+      !opensPullRequests ||
+      work.refName === null ||
+      !(yield* gitWorkflow.localStatus({ cwd })).hasPrimaryRemote
+    ) {
+      return hold(UNMERGED_WORK_RECHECK_MS);
+    }
+    const uuid = yield* crypto.randomUUIDv4();
+    const opened = yield* gitWorkflow
+      .runStackedAction({
+        actionId: `auto-settle:${thread.id}:${uuid}`,
+        cwd,
+        action: "commit_push_pr",
+        threadId: thread.id,
+        projectId: thread.projectId,
+      })
+      .pipe(
+        Effect.tap((result) =>
+          linkCreatedPullRequest({
+            threadId: thread.id,
+            result,
+            commandId: Effect.succeed(CommandId.make(`server:auto-settle-pr:${thread.id}:${uuid}`)),
+          }),
+        ),
+        Effect.as(true),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("opening a pull request before automatic settlement failed", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+        ),
+        Effect.provideService(Orchestrator.OrchestratorV2, orchestrator),
+        Effect.provideService(ProjectService.ProjectService, projectService),
+      );
+    if (!opened) return hold(UNMERGED_WORK_RETRY_AFTER_FAILURE_MS);
+    unmergedWorkHeldUntilMs.delete(cwd);
+    return false;
+  });
 
   /**
    * False keeps the thread active so its worktree's unmerged work stays in view. That work gets a
    * pull request first when the setting allows; the link it adds sweeps the thread again.
    */
-  const releasesUnmergedWork = Effect.fnUntraced(
-    function* (
-      thread: ProjectionStore.ProjectionSettlementCandidate,
-      opensPullRequests: boolean,
-      nowMs: number,
-    ) {
-      const cwd = thread.worktreePath;
-      if (cwd === null || !(yield* fileSystem.exists(cwd))) return true;
-      if (
-        (unmergedWorkHeldUntilMs.get(thread.id) ?? 0) > nowMs ||
-        worktreesOpeningPullRequests.has(cwd)
-      ) {
-        return false;
-      }
-      const hold = (durationMs: number) => {
-        unmergedWorkHeldUntilMs.set(thread.id, nowMs + durationMs);
-        return false;
-      };
-      const work = yield* gitWorkflow.unmergedWork({ cwd });
-      if (work.changedFileCount === 0 && work.unmergedCommitCount === 0) {
-        unmergedWorkHeldUntilMs.delete(thread.id);
-        return true;
-      }
-      const pullRequest =
-        work.refName === null ? null : yield* git.branchPullRequest({ cwd, branch: work.refName });
-      // A closed pull request set the work aside on purpose; an open one already holds the commits.
-      if (
-        pullRequest?.state === "closed" ||
-        (pullRequest?.state === "open" && work.changedFileCount === 0)
-      ) {
-        unmergedWorkHeldUntilMs.delete(thread.id);
-        return true;
-      }
-      if (
-        !opensPullRequests ||
-        work.refName === null ||
-        !(yield* gitWorkflow.localStatus({ cwd })).hasPrimaryRemote
-      ) {
-        return hold(UNMERGED_WORK_RECHECK_MS);
-      }
-      // Recheck after the reads above: a concurrent sweep may have started on this worktree.
-      if (worktreesOpeningPullRequests.has(cwd)) return false;
-      worktreesOpeningPullRequests.add(cwd);
-      const uuid = yield* crypto.randomUUIDv4();
-      const opened = yield* gitWorkflow
-        .runStackedAction({
-          actionId: `auto-settle:${thread.id}:${uuid}`,
-          cwd,
-          action: "commit_push_pr",
-          threadId: thread.id,
-          projectId: thread.projectId,
-        })
-        .pipe(
-          Effect.tap((result) =>
-            linkCreatedPullRequest({
-              threadId: thread.id,
-              result,
-              commandId: Effect.succeed(
-                CommandId.make(`server:auto-settle-pr:${thread.id}:${uuid}`),
-              ),
-            }),
-          ),
-          Effect.as(true),
-          Effect.catchCauseIf(
-            (cause) => !Cause.hasInterruptsOnly(cause),
-            (cause) =>
-              Effect.logWarning("opening a pull request before automatic settlement failed", {
-                threadId: thread.id,
-                cause: Cause.pretty(cause),
-              }).pipe(Effect.as(false)),
-          ),
-          Effect.ensuring(Effect.sync(() => worktreesOpeningPullRequests.delete(cwd))),
-          Effect.provideService(Orchestrator.OrchestratorV2, orchestrator),
-          Effect.provideService(ProjectService.ProjectService, projectService),
-        );
-      if (!opened) return hold(UNMERGED_WORK_RETRY_AFTER_FAILURE_MS);
-      unmergedWorkHeldUntilMs.delete(thread.id);
-      return false;
-    },
-    (effect, thread, _opensPullRequests, nowMs) =>
-      effect.pipe(
-        Effect.catchCauseIf(
-          (cause) => !Cause.hasInterruptsOnly(cause),
-          (cause) =>
-            Effect.logWarning("checking unmerged work before automatic settlement failed", {
-              threadId: thread.id,
-              cause: Cause.pretty(cause),
-            }).pipe(
-              Effect.andThen(
-                Effect.sync(() => {
-                  unmergedWorkHeldUntilMs.set(thread.id, nowMs + UNMERGED_WORK_RECHECK_MS);
-                  return false;
-                }),
-              ),
+  const releasesUnmergedWork = Effect.fnUntraced(function* (
+    thread: ProjectionStore.ProjectionSettlementCandidate,
+    opensPullRequests: boolean,
+    nowMs: number,
+  ) {
+    const cwd = thread.worktreePath;
+    if (cwd === null || !(yield* fileSystem.exists(cwd))) return true;
+    if (holdsUnmergedWork(cwd, nowMs)) return false;
+    worktreesBeingChecked.add(cwd);
+    return yield* checkUnmergedWork(thread, cwd, opensPullRequests, nowMs).pipe(
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) =>
+          Effect.logWarning("checking unmerged work before automatic settlement failed", {
+            threadId: thread.id,
+            cause: Cause.pretty(cause),
+          }).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                unmergedWorkHeldUntilMs.set(cwd, nowMs + UNMERGED_WORK_RECHECK_MS);
+                return false;
+              }),
             ),
-        ),
+          ),
       ),
-  );
+      Effect.ensuring(Effect.sync(() => worktreesBeingChecked.delete(cwd))),
+    );
+  });
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
     mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,
@@ -572,7 +574,14 @@ export const make = Effect.gen(function* () {
         cwd === undefined ? ["missing-project", thread.id] : ["branch", cwd, thread.branch],
       );
     };
-    const groups = Map.groupBy(lookupCandidates, lookupKey);
+    // A held worktree cannot settle before its hold ends; looking up its branch would only start git.
+    const unheldCandidates = lookupCandidates.filter(
+      (thread) =>
+        thread.worktreePath === null ||
+        lookupCwdByThreadId.get(thread.id) !== thread.worktreePath ||
+        !holdsUnmergedWork(thread.worktreePath, nowMs),
+    );
+    const groups = Map.groupBy(unheldCandidates, lookupKey);
 
     // wouldSettle and pullRequestFor run per lookup group; the git and pull request reads they make carry the spans.
     const wouldSettle = Effect.fnUntraced(function* (
@@ -654,7 +663,10 @@ export const make = Effect.gen(function* () {
         return yield* Effect.die(new Error("thread project not found"));
       }
       const refresh = group.filter((member) => shellClosedThreads.delete(member.id)).length > 0;
-      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { refresh });
+      const cached = yield* git.branchPullRequest({ cwd, branch: thread.branch }, { refresh });
+      if (refresh || cached === null || cached.state === "open") return cached;
+      if (!(yield* wouldSettle(group, cached))) return cached;
+      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { freshGitState: true });
     });
 
     yield* Effect.forEach(

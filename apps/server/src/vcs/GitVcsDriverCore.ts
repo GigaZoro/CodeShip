@@ -24,6 +24,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
   GitCommandError,
+  MIN_AUTOMATIC_GIT_FETCH_INTERVAL,
   type GitCommandFailureReason,
   T3_PROJECT_FILE_NAME,
   type ReviewBranchCommitsInput,
@@ -91,7 +92,6 @@ const REVIEW_DIFF_ARGS = [
   "--no-textconv",
   ...PATCH_RENDER_PREFIX_ARGS,
 ];
-const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
 const STATUS_UPSTREAM_FETCH_TIMEOUT = Duration.minutes(5);
 
@@ -1821,7 +1821,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     // Cache/back off failed fetches while status uses old refs; repeated mounts must not cause subprocess storms.
     timeToLive: (exit, cacheKey) =>
       Exit.isSuccess(exit)
-        ? STATUS_UPSTREAM_REFRESH_INTERVAL
+        ? MIN_AUTOMATIC_GIT_FETCH_INTERVAL
         : statusUpstreamRefreshFailureCooldown(
             statusRemoteRefreshFailures.get(statusRemoteRefreshFailureKey(cacheKey))?.count ?? 1,
           ),

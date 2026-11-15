@@ -1376,6 +1376,97 @@ describe("ThreadSettlementServiceV2 worker", () => {
     ),
   );
 
+  it.effect("looks up a merged branch held for unmerged work only once per hold", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const thread = makeThread("held-work", {
+          branch: "feature",
+          worktreePath: "/worktrees/feature",
+          latestUserMessageAt: DateTime.makeUnsafe("2026-08-27T00:00:00.000Z"),
+        });
+        const lookups: Array<Parameters<GitManager.GitManager["Service"]["branchPullRequest"]>[1]> =
+          [];
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([thread]),
+          settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleOpensPullRequests: false },
+          existingWorktreePaths: ["/worktrees/feature"],
+          unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
+          branchPullRequest: (_input, lookupOptions) =>
+            Effect.sync(() => lookups.push(lookupOptions)).pipe(
+              Effect.as(makeBranchPullRequest("merged")),
+            ),
+        });
+        const sweepThread = (index: number) =>
+          Effect.gen(function* () {
+            const reactor = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* fixture.publishEvent({
+              type: "run.background-work-cancelled",
+              id: EventId.make(`event:held-work:${index}`),
+              threadId: thread.id,
+              occurredAt: DateTime.makeUnsafe(NOW),
+              payload: { runId: RunId.make("run:held-work"), restartCancelledBackgroundWork: [] },
+            });
+            yield* Queue.take(fixture.snapshotReads);
+            yield* reactor.drain;
+          });
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
+          // The settling lookup and the unmerged-work check read fresh git state before acting.
+          expect(lookups).toEqual([
+            { refresh: false },
+            { freshGitState: true },
+            { freshGitState: true },
+          ]);
+          yield* sweepThread(1);
+          expect(lookups).toHaveLength(3);
+          yield* TestClock.adjust("1 hour");
+          yield* sweepThread(2);
+          expect(lookups.length).toBeGreaterThan(3);
+          assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("checks a worktree shared by two threads for unmerged work only once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const threads = ["shared-a", "shared-b"].map((id) =>
+          makeThread(id, { branch: "feature", worktreePath: "/worktrees/feature" }),
+        );
+        const lookups: Array<Parameters<GitManager.GitManager["Service"]["branchPullRequest"]>[1]> =
+          [];
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot(threads),
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            sidebarAutoSettleAfterDays: 3,
+            sidebarAutoSettleOpensPullRequests: false,
+          },
+          existingWorktreePaths: ["/worktrees/feature"],
+          unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
+          // The yield stands in for git's I/O, which lets the other thread's check run meanwhile.
+          branchPullRequest: (_input, lookupOptions) =>
+            Effect.sync(() => lookups.push(lookupOptions)).pipe(
+              Effect.andThen(Effect.yieldNow),
+              Effect.as(null),
+            ),
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          expect(lookups).toEqual([{ freshGitState: true }]);
+          assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
   it.effect(
     "settles branch threads on a pull request merge without waiting for the next sweep",
     () =>

@@ -1,9 +1,12 @@
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
 import { cn } from "../../lib/utils";
-import { msg, t, type Message } from "~/i18n";
+import { msg, t, tn, type Message } from "~/i18n";
 import { SettingsIcon } from "lucide-react";
 import { useState } from "react";
-import { type BackgroundActivityProfile } from "@t3tools/contracts";
+import {
+  type BackgroundActivityProfile,
+  MIN_AUTOMATIC_GIT_FETCH_INTERVAL,
+} from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import * as Duration from "effect/Duration";
@@ -39,6 +42,8 @@ import { CommittedNumberField, IntervalSecondsField } from "./IntervalSecondsFie
 import { ScopedSwitch } from "./ScopedSwitch";
 import { PolicyTooltip, SettingResetButton, SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+
+const MIN_GIT_FETCH_INTERVAL_SECONDS = durationToSeconds(MIN_AUTOMATIC_GIT_FETCH_INTERVAL);
 
 const BACKGROUND_ACTIVITY_PROFILE_LABELS: Record<BackgroundActivityProfile, Message> = {
   balanced: msg("Balanced"),
@@ -179,7 +184,11 @@ function BackgroundActivityAdvancedDialog({
                   {searchableSetting("git-fetch-interval").title}
                 </div>
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  {t("Refresh remote branch status in the background.")}
+                  {tn(
+                    MIN_GIT_FETCH_INTERVAL_SECONDS,
+                    "Refresh remote branch status in the background. The shortest interval is {count} second, and 0 turns it off.",
+                    "Refresh remote branch status in the background. The shortest interval is {count} seconds, and 0 turns it off.",
+                  )}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -515,8 +524,10 @@ export function GitFetchIntervalRow() {
       serverScoped
       settingKeys={["backgroundActivity"]}
       {...searchableSetting("git-fetch-interval")}
-      description={t(
-        "Refresh remote branch status in the background. Set to 0 to turn it off. The Background activity policy decides when fetches may run.",
+      description={tn(
+        MIN_GIT_FETCH_INTERVAL_SECONDS,
+        "Refresh remote branch status in the background. The shortest interval is {count} second, and 0 turns it off. The Background activity policy decides when fetches may run.",
+        "Refresh remote branch status in the background. The shortest interval is {count} seconds, and 0 turns it off. The Background activity policy decides when fetches may run.",
       )}
       resetAction={
         isBackgroundIntervalOverridden(settings, "automaticGitFetchInterval") &&

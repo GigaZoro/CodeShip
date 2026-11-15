@@ -464,7 +464,7 @@ export const make = Effect.gen(function* () {
       // Squash and rebase merges leave the branch's own commits outside the default branch.
       // A lookup that fails keeps the commits counted, so the warning errs toward showing.
       const pullRequest = yield* gitManager
-        .branchPullRequest({ cwd: input.cwd, branch: work.refName })
+        .branchPullRequest({ cwd: input.cwd, branch: work.refName }, { freshGitState: true })
         .pipe(Effect.orElseSucceed(() => null));
       if (pullRequest?.state === "merged") {
         const head = pullRequest.headSha

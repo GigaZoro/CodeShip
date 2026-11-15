@@ -1107,6 +1107,8 @@ export interface BranchNamingOptions {
 }
 
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
+// Each repository fetches at most this often, so a shorter poll would only rerun git status.
+export const MIN_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(15);
 export const DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL = Duration.minutes(5);
 
 export const BackgroundActivityProfile = Schema.Literals([

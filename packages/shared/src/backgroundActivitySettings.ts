@@ -4,6 +4,7 @@ import {
   DEFAULT_BACKGROUND_ACTIVITY_PROFILE,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
+  MIN_AUTOMATIC_GIT_FETCH_INTERVAL,
   type ServerSettings,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
@@ -79,8 +80,9 @@ export function resolveBackgroundActivitySettings(
   const overrides = backgroundActivity.profile === "custom" ? backgroundActivity.overrides : {};
   return {
     profile: baseProfile,
-    automaticGitFetchInterval:
+    automaticGitFetchInterval: withFetchIntervalFloor(
       overrides.automaticGitFetchInterval ?? preset.automaticGitFetchInterval,
+    ),
     providerHealthRefreshInterval:
       overrides.providerHealthRefreshInterval ?? preset.providerHealthRefreshInterval,
     hostPowerMonitorActiveInterval:
@@ -92,6 +94,13 @@ export function resolveBackgroundActivitySettings(
     pauseWhenClientLowPower: overrides.pauseWhenClientLowPower ?? preset.pauseWhenClientLowPower,
     pauseWhenOnBattery: overrides.pauseWhenOnBattery ?? preset.pauseWhenOnBattery,
   };
+}
+
+// Zero turns automatic fetches off.
+function withFetchIntervalFloor(interval: Duration.Duration): Duration.Duration {
+  return Duration.isZero(interval)
+    ? interval
+    : Duration.max(interval, MIN_AUTOMATIC_GIT_FETCH_INTERVAL);
 }
 
 function durationsEqual(a: Duration.Duration, b: Duration.Duration): boolean {

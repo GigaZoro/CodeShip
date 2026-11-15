@@ -19,6 +19,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
 import type {
@@ -1637,60 +1638,104 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect("branch PR lookup does not reuse a cached PR after the remote is repointed", () =>
+  it.effect(
+    "a fresh branch PR lookup does not reuse a cached PR after the remote is repointed",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        const originalRemoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", originalRemoteDir]);
+        yield* runGit(repoDir, ["checkout", "-b", "feature/repointed-lookup"]);
+        yield* runGit(repoDir, ["push", "-u", "origin", "feature/repointed-lookup"]);
+        yield* configureVisibleRemoteUrlWithLocalRewrite(
+          repoDir,
+          "origin",
+          "git@github.com:old-owner/old-repository.git",
+          originalRemoteDir,
+        );
+        const { manager, providerCalls } = yield* makeManager({
+          providerScenario: {
+            prListSequence: [
+              [
+                {
+                  number: 219,
+                  title: "Old repository PR",
+                  url: "https://github.com/old-owner/old-repository/pull/219",
+                  baseRefName: "main",
+                  headRefName: "feature/repointed-lookup",
+                  state: "merged",
+                  updatedAt: "2026-04-06T15:00:00Z",
+                },
+              ],
+              [],
+            ],
+          },
+        });
+
+        const first = yield* manager.branchPullRequest({
+          cwd: repoDir,
+          branch: "feature/repointed-lookup",
+        });
+        expect(first?.state).toBe("merged");
+
+        const replacementRemoteDir = yield* createBareRemote();
+        yield* configureVisibleRemoteUrlWithLocalRewrite(
+          repoDir,
+          "origin",
+          "git@github.com:new-owner/new-repository.git",
+          replacementRemoteDir,
+        );
+
+        const second = yield* manager.branchPullRequest(
+          { cwd: repoDir, branch: "feature/repointed-lookup" },
+          { freshGitState: true },
+        );
+
+        expect(second).toBeNull();
+        expect(listed(providerCalls)).toHaveLength(2);
+      }),
+  );
+
+  it.effect("a merged branch's PR lookup rereads git only on request or after its TTL", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
-      const originalRemoteDir = yield* createBareRemote();
-      yield* runGit(repoDir, ["remote", "add", "origin", originalRemoteDir]);
-      yield* runGit(repoDir, ["checkout", "-b", "feature/repointed-lookup"]);
-      yield* runGit(repoDir, ["push", "-u", "origin", "feature/repointed-lookup"]);
-      yield* configureVisibleRemoteUrlWithLocalRewrite(
-        repoDir,
-        "origin",
-        "git@github.com:old-owner/old-repository.git",
-        originalRemoteDir,
-      );
-      const { manager, providerCalls } = yield* makeManager({
-        providerScenario: {
-          prListSequence: [
-            [
-              {
-                number: 219,
-                title: "Old repository PR",
-                url: "https://github.com/old-owner/old-repository/pull/219",
-                baseRefName: "main",
-                headRefName: "feature/repointed-lookup",
-                state: "merged",
-                updatedAt: "2026-04-06T15:00:00Z",
-              },
-            ],
-            [],
-          ],
-        },
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/merged-lookup"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/merged-lookup"]);
+      const merged: FakeChangeRequest = {
+        number: 222,
+        title: "Merged PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/222",
+        baseRefName: "main",
+        headRefName: "feature/merged-lookup",
+        state: "merged",
+        updatedAt: "2026-04-08T15:00:00Z",
+      };
+      const gitCommands: string[] = [];
+      const { manager } = yield* makeManager({
+        gitCommands,
+        providerScenario: { prListSequence: [[merged], [merged]] },
       });
+      const gitCommandsDuring = (options?: { readonly freshGitState: true }) =>
+        Effect.gen(function* () {
+          const before = gitCommands.length;
+          const pullRequest = yield* manager.branchPullRequest(
+            { cwd: repoDir, branch: "feature/merged-lookup" },
+            options,
+          );
+          expect(pullRequest?.state).toBe("merged");
+          return gitCommands.length - before;
+        });
 
-      const first = yield* manager.branchPullRequest({
-        cwd: repoDir,
-        branch: "feature/repointed-lookup",
-      });
-      expect(first?.state).toBe("merged");
-
-      const replacementRemoteDir = yield* createBareRemote();
-      yield* configureVisibleRemoteUrlWithLocalRewrite(
-        repoDir,
-        "origin",
-        "git@github.com:new-owner/new-repository.git",
-        replacementRemoteDir,
-      );
-
-      const second = yield* manager.branchPullRequest({
-        cwd: repoDir,
-        branch: "feature/repointed-lookup",
-      });
-
-      expect(second).toBeNull();
-      expect(listed(providerCalls)).toHaveLength(2);
+      yield* gitCommandsDuring();
+      expect(yield* gitCommandsDuring()).toBe(0);
+      expect(yield* gitCommandsDuring({ freshGitState: true })).toBeGreaterThan(0);
+      expect(yield* gitCommandsDuring()).toBe(0);
+      yield* TestClock.adjust("5 minutes");
+      expect(yield* gitCommandsDuring()).toBeGreaterThan(0);
     }),
   );
 

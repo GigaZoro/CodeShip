@@ -1,3 +1,10 @@
+## 2026-11-15 — Git commands that finished are no longer reported as timed out, and idle chats stop starting git
+
+- When the server stalled, for example while agents loaded the computer, a git command or other command that had already finished could be reported as timed out, and the action that ran it failed. A command that finished before its time limit now counts as finished, and starting it no longer eats into its limit.
+- Starting git no longer freezes the server. On a loaded Windows computer, starting each git process took seconds, and the server answered nothing meanwhile. Git and the server's other commands now start on a separate thread. A command cancelled while it waits to start stops at once, and if that thread fails, the commands it started end with the processes they left running.
+- Idle chats no longer start git every minute. Branch and pull request checks reuse each worktree's git state for up to five minutes and read it again before acting on the answer, and a worktree whose unmerged work keeps its chat open is checked once per hold instead of every minute, even when several chats share it.
+- **Settings → Source control → Git fetch interval** has a minimum of 15 seconds, the shortest time between fetches of a repository. A shorter value is raised to 15 seconds, and 0 still turns it off.
+
 ## 2026-11-15 — Agents can name a chat by the link T3.CodeShip gave them
 
 - Every agent tool that takes a chat's thread id now also takes the chat's `link`, the `<t3-thread://v2/…>` form T3.CodeShip's tools return, with or without its angle brackets, as a Markdown link, or as the web address an outside client gets. A link to a chat on a linked machine goes to that machine, as `environmentId` would. Before, `t3_thread_read` answered such a link with "Thread … is no longer available" even for a running chat, so a machine inbox run could take the chat for stopped, clear its claim and start a second chat on the same work.
