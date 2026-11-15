@@ -23,17 +23,26 @@ function NativeSource(props: NativeReviewDiffViewProps) {
   return <div data-native-source data-rows={props.rowsJson} data-tokens={props.tokensJson} />;
 }
 
-vi.mock("expo", async () => {
+vi.mock("react-native-nitro-modules", async () => {
   const { createWasmHighlightsModule } = await import("../../lib/highlights.testing");
   mocks.wasmTokenize = createWasmHighlightsModule().tokenize;
-  return { requireOptionalNativeModule: () => ({ tokenize: mocks.tokenize }) };
+  return {
+    NitroModules: {
+      hasHybridObject: () => true,
+      createHybridObject: () => ({ tokenize: mocks.tokenize }),
+    },
+  };
 });
 vi.mock("react-native", () => ({
   View: Host,
   ScrollView: Host,
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
   RefreshControl: () => null,
-  FlatList: ({
+  Platform: { OS: "ios", select: (options: { ios: string }) => options.ios },
+  useWindowDimensions: () => ({ width: 400, height: 800 }),
+}));
+vi.mock("@legendapp/list/react-native", () => ({
+  LegendList: ({
     data,
     renderItem,
     keyExtractor,
@@ -48,9 +57,9 @@ vi.mock("react-native", () => ({
       ))}
     </div>
   ),
-  Platform: { OS: "ios", select: (options: { ios: string }) => options.ios },
-  useWindowDimensions: () => ({ width: 400, height: 800 }),
 }));
+vi.mock("../../native/NativeScrollViewMarker", () => ({ NativeScrollView: Host }));
+vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("@t3tools/mobile-source-text", () => ({
   SourceText: ({
     children,
