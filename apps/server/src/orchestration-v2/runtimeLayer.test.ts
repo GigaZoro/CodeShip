@@ -7271,9 +7271,14 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.isTrue((yield* heldRun()).queueHeldByRestart);
       // The resume ran and declined, as when the cut run's turn had already finished.
       const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const claimed = Option.getOrThrow(yield* outbox.claimNext({ workerId: "test" }));
-      assert.equal(claimed.id, EffectOutbox.restartContinuationEffectId(active!.id));
-      assert.isTrue(yield* outbox.succeed({ effectId: claimed.id, workerId: "test" }));
+      assert.deepEqual(
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["provider-runtime.continue"],
+          reason: "declined",
+        }),
+        [EffectOutbox.restartContinuationEffectId(active!.id)],
+      );
       yield* orchestrator.resumeQueuedRuns;
       assert.isUndefined((yield* heldRun()).queueHeldByRestart);
       assert.isNotTrue((yield* heldRun()).queueHeld);
