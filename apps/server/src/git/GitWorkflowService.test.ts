@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { ProjectId, ThreadId, VcsCheckoutBusyError } from "@t3tools/contracts";
+import {
+  GitCommandError,
+  ProjectId,
+  ThreadId,
+  VcsCheckoutBusyError,
+  VcsProcessTimeoutError,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -68,6 +74,45 @@ it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
           Layer.provideMerge(VcsProcess.layer),
           Layer.provideMerge(
             ServerConfig.layerTest(process.cwd(), { prefix: "t3-ref-named-" }).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps why the VCS driver could not be resolved in the Git command error", () =>
+    Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const error = yield* Effect.flip(workflow.hasRefNamed({ cwd: "/repo", refName: "main" }));
+      assert.instanceOf(error, GitCommandError);
+      assert.include(error.detail, "Failed to resolve the VCS driver for this Git command.");
+      assert.include(error.message, "timed out");
+      assert.include(error.message, "5000ms");
+    }).pipe(
+      Effect.provide(
+        GitWorkflowService.layer.pipe(
+          Layer.provide(
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+              resolve: () =>
+                Effect.fail(
+                  new VcsProcessTimeoutError({
+                    operation: "GitVcsDriver.detectRepository",
+                    command: "git",
+                    cwd: "/repo",
+                    timeoutMs: 5000,
+                  }),
+                ),
+            }),
+          ),
+          Layer.provide(Layer.mock(GitManager.GitManager)({})),
+          Layer.provide(layerActiveTurns()),
+          Layer.provideMerge(GitVcsDriver.layer),
+          Layer.provideMerge(VcsProcess.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-resolve-failure-" }).pipe(
               Layer.provide(NodeServices.layer),
             ),
           ),

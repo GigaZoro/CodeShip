@@ -1,3 +1,7 @@
+## 2026-11-15 — Workspace preparation errors say why Git detection failed
+
+- When a workspace could not be prepared because CodeShip could not tell whether a folder is a Git repository, the error only said "Failed to resolve the VCS driver". It now adds the cause: a timeout (and how long), or Git's exit code and its last error lines, such as a broken `.git/config`. A folder that is simply not a repository is still treated as one.
+
 ## 2026-11-15 — Pull request lookups start far fewer git commands
 
 - A pull request lookup used to start about ten `git` commands, each re-reading the repository's remotes and configuration. On a machine short of memory with many open chats this added up to hundreds of commands and slowed the server. A lookup now reads the remotes and each configuration value once and shares them for the whole lookup.

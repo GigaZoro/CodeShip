@@ -187,6 +187,10 @@ function nonRepositoryListRefs(): VcsListRefsResult {
 const UNMERGED_WORK_FETCH_TIMEOUT = Duration.seconds(10);
 
 /** @public */
+// Detection fails for a timeout, a Git exit or a missing repository; the person reading the chat needs which.
+export const resolveFailureDetail = (base: string, cause: { readonly message: string }) =>
+  `${base} ${cause.message}`;
+
 export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
@@ -278,7 +282,10 @@ export const make = Effect.gen(function* () {
           new GitManagerError({
             operation,
             cwd,
-            detail: "Failed to resolve the VCS driver for this Git workflow.",
+            detail: resolveFailureDetail(
+              "Failed to resolve the VCS driver for this Git workflow.",
+              cause,
+            ),
             cause,
           }),
       ),
@@ -297,7 +304,10 @@ export const make = Effect.gen(function* () {
             operation,
             command: "vcs-route",
             cwd,
-            detail: "Failed to resolve the VCS driver for this Git command.",
+            detail: resolveFailureDetail(
+              "Failed to resolve the VCS driver for this Git command.",
+              cause,
+            ),
             cause,
           }),
       ),

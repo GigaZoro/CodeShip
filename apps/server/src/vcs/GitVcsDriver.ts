@@ -38,6 +38,8 @@ import {
 import { isMissingExecutable } from "@t3tools/source-control-core/server/discovery";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
+  gitErrorLines,
+  isNonRepositoryGitStderr,
   makeGitVcsDriverCore,
   PATCH_RENDER_PREFIX_ARGS,
   splitNullSeparatedGitStdoutPaths,
@@ -635,7 +637,21 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         maxOutputBytes: 16_384,
       },
     ).pipe(Effect.catchIf(isMissingExecutable, () => Effect.succeed(null)));
-    if (result === null || result.exitCode !== 0) return null;
+    if (result === null) return null;
+    if (result.exitCode !== 0) {
+      // Only "not a git repository" means there is nothing to detect; any other exit is a broken repository.
+      if (isNonRepositoryGitStderr(result.stderr)) return null;
+      const diagnostics = gitErrorLines(result.stderr);
+      return yield* new VcsProcessExitError({
+        operation: "GitVcsDriver.detectRepository",
+        command: "git",
+        cwd,
+        argumentCount: 5,
+        exitCode: result.exitCode,
+        stderrLength: result.stderr.length,
+        detail: `Git could not detect the repository${diagnostics ? `: ${diagnostics}` : "."}`,
+      });
+    }
     const lines = result.stdout.replace(/\r?\n$/u, "").split(/\r?\n/u);
     if (lines[0]?.trim() !== "true") return null;
     // A newline inside a path breaks the line framing; ask for each path on its own.

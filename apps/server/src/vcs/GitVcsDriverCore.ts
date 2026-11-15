@@ -560,7 +560,7 @@ function isMissingGitCwdError(error: GitCommandError): boolean {
   );
 }
 
-function isNonRepositoryGitStderr(stderr: string): boolean {
+export function isNonRepositoryGitStderr(stderr: string): boolean {
   return stderr.toLowerCase().includes("not a git repository");
 }
 function isUnbornHeadStderr(stderr: string): boolean {
@@ -610,6 +610,16 @@ const MAX_FETCH_DIAGNOSTIC_LINE_LENGTH = 300;
 // Git strips passwords from the URLs it prints, but not tokens in user names or query strings.
 function withoutUrlCredentials(line: string): string {
   return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@'"]*@)?([^\s?#'"]*)[^\s'"]*/gi, "$1$2");
+}
+
+/** The last lines Git itself printed, with URL credentials stripped, for a failure message. */
+export function gitErrorLines(stderr: string): string {
+  return stderr
+    .split(/\r?\n/)
+    .filter((line) => GIT_OWN_DIAGNOSTIC_LINE.test(line))
+    .slice(-MAX_FETCH_DIAGNOSTIC_LINES)
+    .map((line) => withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH))
+    .join(" | ");
 }
 
 const formatSeconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;

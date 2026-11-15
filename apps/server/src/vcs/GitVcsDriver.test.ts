@@ -1162,6 +1162,42 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+const vcsProcessAnswering = (stderr: string) =>
+  Layer.succeed(
+    VcsProcess.VcsProcess,
+    VcsProcess.VcsProcess.of({
+      run: () =>
+        Effect.succeed({
+          exitCode: ChildProcessSpawner.ExitCode(128),
+          stdout: "",
+          stderr,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        }),
+    }),
+  );
+
+it.effect("GitVcsDriver keeps Git's exit code and error lines when detection fails", () =>
+  Effect.gen(function* () {
+    const broken = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+      Effect.provide(
+        vcsProcessAnswering("hint: x\nfatal: bad config line 3 in file /r/.git/config\n"),
+      ),
+    );
+    const error = yield* broken.detectRepository("/r").pipe(Effect.flip);
+    assert.strictEqual(error._tag, "VcsProcessExitError");
+    assert.strictEqual(error._tag === "VcsProcessExitError" && error.exitCode, 128);
+    assert.include(error.message, "fatal: bad config line 3");
+
+    const plain = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+      Effect.provide(
+        vcsProcessAnswering("fatal: not a git repository (or any of the parent directories): .git"),
+      ),
+    );
+    assert.strictEqual(yield* plain.detectRepository("/r"), null);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 const gitCommandCount = (operation: string, outcome: string) =>
   Metric.value(
     Metric.withAttributes(gitCommandsTotal, [
