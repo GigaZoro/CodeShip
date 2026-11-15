@@ -150,6 +150,13 @@ function LocalSettingsRouteScreen() {
   return <SettingsList connections={[environmentsRow(Object.keys(savedConnectionsById).length)]} />;
 }
 
+const MACHINES_ROW: SettingsListRow = {
+  id: "SettingsMachines",
+  icon: "server.rack",
+  label: msg("Machines"),
+  target: "SettingsMachines",
+};
+
 function environmentsRow(count: number): SettingsListRow {
   return {
     id: "SettingsEnvironments",
@@ -175,7 +182,7 @@ function SettingsList(props: { readonly connections: readonly SettingsListRow[] 
   const indexSections = useSettingsIndexSections();
   const sections = filterSettingsSections(
     [
-      { rows: overflowRows },
+      { rows: [...overflowRows, MACHINES_ROW] },
       { title: msg("Connections"), rows: props.connections },
       ...indexSections,
     ],

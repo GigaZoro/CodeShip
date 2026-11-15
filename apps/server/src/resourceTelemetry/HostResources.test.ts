@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import type * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -10,6 +11,7 @@ import { ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
+import * as ServerConfig from "../config.ts";
 import * as HostResources from "./HostResources.ts";
 
 // An 8-CPU host; every cpus() call advances each CPU by 100 ms at `host.busy` utilization.
@@ -75,6 +77,10 @@ const linuxHost = (files: Record<string, ReadonlyArray<string>>) => {
           },
         }),
         Layer.succeed(HostProcess.Platform, "linux"),
+        // The disk probe reads the real drive holding this temporary T3 home.
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-host-resources-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
         Layer.succeed(
           ChildProcessSpawner.ChildProcessSpawner,
           ChildProcessSpawner.make(() => Effect.die("HostResources spawned on linux")),
@@ -223,5 +229,77 @@ describe("HostResources.layer", () => {
         }),
       ),
     ),
+  );
+});
+
+describe("parseDarwinSwapUsage", () => {
+  it("reads total and free in the units sysctl prints", () => {
+    assert.deepStrictEqual(
+      HostResources.parseDarwinSwapUsage(
+        "total = 2048.00M  used = 1081.25M  free = 966.75M  (encrypted)\n",
+      ),
+      { totalBytes: 2048 * MiB, availableBytes: Math.round(966.75 * MiB) },
+    );
+    assert.deepStrictEqual(
+      HostResources.parseDarwinSwapUsage("total = 3.00G  used = 2.50G  free = 0.50G  (encrypted)"),
+      { totalBytes: 3 * GiB, availableBytes: 0.5 * GiB },
+    );
+  });
+
+  it("reports a Mac that has not swapped yet as empty swap", () => {
+    assert.deepStrictEqual(
+      HostResources.parseDarwinSwapUsage("total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"),
+      { totalBytes: 0, availableBytes: 0 },
+    );
+  });
+
+  it("returns null when the output is missing or unrecognized", () => {
+    assert.strictEqual(HostResources.parseDarwinSwapUsage(""), null);
+    assert.strictEqual(HostResources.parseDarwinSwapUsage("total = 2048.00X  free = 1.00X"), null);
+  });
+});
+
+describe("parseLinuxMeminfo", () => {
+  it("reads available memory and swap", () => {
+    const meminfo = [
+      "MemTotal:       16314328 kB",
+      "MemFree:         1032004 kB",
+      "MemAvailable:    9876543 kB",
+      "SwapCached:        12345 kB",
+      "SwapTotal:       2097148 kB",
+      "SwapFree:        2000000 kB",
+    ].join("\n");
+    assert.deepStrictEqual(HostResources.parseLinuxMeminfo(meminfo), {
+      availableMemoryBytes: 9876543 * 1024,
+      swap: { totalBytes: 2097148 * 1024, availableBytes: 2000000 * 1024 },
+    });
+  });
+
+  it("leaves out what the kernel does not report", () => {
+    assert.deepStrictEqual(HostResources.parseLinuxMeminfo("MemTotal:       16314328 kB"), {
+      availableMemoryBytes: null,
+      swap: null,
+    });
+  });
+});
+
+describe("makeDiskSpaceReader", () => {
+  it.effect("gives up on a stalled drive and reuses the stuck probe", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const readDisk = HostResources.makeDiskSpaceReader(() => {
+        calls += 1;
+        return new Promise(() => {});
+      }, "/t3");
+
+      const first = yield* readDisk.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(yield* Fiber.join(first), null);
+
+      const second = yield* readDisk.pipe(Effect.forkChild({ startImmediately: true }));
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(yield* Fiber.join(second), null);
+      assert.strictEqual(calls, 1);
+    }),
   );
 });

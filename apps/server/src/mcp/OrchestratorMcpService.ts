@@ -1206,6 +1206,7 @@ function listItemFromShell(
     updatedAt: DateTime.formatIso(shell.updatedAt),
     parentThreadId: shell.lineage.parentThreadId,
     ...(shell.folder ? { folder: shell.folder } : {}),
+    ...(shell.queueHeld === true ? { queueHeld: true } : {}),
     ...(shape.full || shape.withProject ? { projectId: shell.projectId } : {}),
   } satisfies OrchestratorMcpThreadListItem;
   if (!shape.full) return compact;

@@ -325,6 +325,12 @@ const catalog: MessageCatalog = {
     many: "{count} cookie",
     other: "{count} cookie",
   },
+  "{count} cores": {
+    one: "{count} ядро",
+    few: "{count} ядра",
+    many: "{count} ядер",
+    other: "{count} ядра",
+  },
   "{count} days": {
     one: "{count} день",
     few: "{count} дні",
@@ -1270,6 +1276,7 @@ const catalog: MessageCatalog = {
   "{files} · {size}": "{files} · {size}",
   "{filtered} of {total}": "{filtered} з {total}",
   "{first} and {second}": "{first} і {second}",
+  "{free} free of {total}": "Вільно {free} з {total}",
   "{from} to {to}": "{from} – {to}",
   "{from}–{to} of {total}": "{from}–{to} з {total}",
   "{guides}, {failed} failed": "{guides}, невдало: {failed}",
@@ -1822,6 +1829,7 @@ const catalog: MessageCatalog = {
     other: "{used} з {count} тунеля використовується",
   },
   "{used} of {max} tokens": "{used} із {max} токенів",
+  "{used} of {total}": "{used} з {total}",
   "{used} uncached tokens": "{used} некешованих токенів",
   "{used}% used": "Використано {used}%",
   "{value} ms": "{value} мс",
@@ -2068,6 +2076,8 @@ const catalog: MessageCatalog = {
     "Додайте вкладку «Посібник» до пул-реквестів. Агент пояснює зміни та вказує на рішення, що потребують рев’ю.",
   "Add a letter, number, or function key to your shortcut.":
     "Додайте до скорочення літеру, цифру або функціональну клавішу.",
+  "Add a machine in Settings → Machines & access to see its resources.":
+    "Додайте комп’ютер у «Налаштування → Комп’ютери й доступ», щоб бачити його ресурси.",
   "Add a message": "Додайте повідомлення",
   "Add a model API to write thread titles, commit messages, and other short text without starting a coding agent.":
     "Додайте API моделі, щоб писати назви чатів, повідомлення комітів та інший короткий текст без запуску агента для кодування.",
@@ -3920,6 +3930,8 @@ const catalog: MessageCatalog = {
   confused: "збентеження",
   connect: "підключити",
   Connect: "Підключити",
+  "Connect to {machine} to decide here. The step stays on its pending list.":
+    "Підключіться до {machine}, щоб вирішити тут. Крок залишається в його списку очікування.",
   "Connect {apps} before using it.": "Підключіть {apps} перед використанням.",
   "Connect {clientName}": "Підключити {clientName}",
   "Connect {environment} and try again.": "Підключіть {environment} і спробуйте ще раз.",
@@ -3953,6 +3965,7 @@ const catalog: MessageCatalog = {
     "Підключіть середовище, щоб зберегти цей параметр.",
   "Connect an environment to see diagnostics.": "Підключіть середовище, щоб побачити діагностику.",
   "Connect an environment to see limits.": "Підключіть середовище, щоб побачити ліміти.",
+  "Connect an environment to see machines.": "Підключіть середовище, щоб бачити комп’ютери.",
   "Connect an environment to see usage.": "Підключіть середовище, щоб побачити використання.",
   "Connect an environment to set Auto mode, delegated tasks, and final review models.":
     "Підключіть середовище, щоб налаштувати режим Auto, делеговані завдання та моделі фінального рев’ю.",
@@ -4854,6 +4867,7 @@ const catalog: MessageCatalog = {
   "Couldn't read an included Niri config. Check its location in Advanced.":
     "Не вдалося прочитати підключену конфігурацію Niri. Перевірте її розташування в розділі «Додатково».",
   "Couldn't read this file": "Не вдалося прочитати цей файл",
+  "Couldn't read this machine's resources.": "Не вдалося прочитати ресурси цього комп’ютера.",
   "Couldn't read your settings file. Choose a different file in Advanced.":
     "Не вдалося прочитати файл налаштувань. Виберіть інший файл у розділі «Додатково».",
   "Couldn't refresh limits on {environments}. Showing the last values read.":
@@ -4888,6 +4902,7 @@ const catalog: MessageCatalog = {
   "Counted as {model}": "Враховується як {model}",
   "Counted once across environments sharing a transcript directory: {sources}":
     "Враховано один раз для середовищ зі спільним каталогом транскриптів: {sources}",
+  cpu: "цп",
   CPU: "ЦП",
   "CPU average": "Середнє навантаження CPU",
   "CPU avg {value}%": "CPU сер. {value}%",
@@ -5346,6 +5361,8 @@ const catalog: MessageCatalog = {
   "Discovering sign-in methods…": "Пошук способів входу…",
   Discussion: "Обговорення",
   "Discussion reply": "Відповідь в обговоренні",
+  disk: "диск",
+  Disk: "Диск",
   Dismiss: "Закрити",
   "Dismiss ({shortcut})": "Закрити ({shortcut})",
   "Dismiss {provider} provider {status}": "Закрити сповіщення провайдера {provider}: {status}",
@@ -7324,6 +7341,8 @@ const catalog: MessageCatalog = {
   "Live transcription": "Транскрипція наживо",
   "Live Update Settings": "Налаштування живих оновлень",
   "Ln {line}, Col {column}": "Рядок {line}, стовпець {column}",
+  load: "навантаження",
+  "Load {load}": "Навантаження {load}",
   "Load balancing": "Балансування навантаження",
   "Load diff": "Завантажити зміни",
   "Load earlier activity": "Завантажити попередню активність",
@@ -7501,6 +7520,7 @@ const catalog: MessageCatalog = {
   "Machine, {label}": "Комп’ютер, {label}",
   Machines: "Комп’ютери",
   "Machines & access": "Комп’ютери й доступ",
+  "Machines breadcrumb": "Навігація комп’ютерів",
   "Machines you trust here can read PR data through each other's source control access. Enable both machines. Read and act may use broader permissions than the machine that owns them. This applies only to this device.":
     "Комп’ютери, яким ви тут довіряєте, можуть читати дані PR через доступ одне одного до системи керування версіями. Увімкніть обидва комп’ютери. «Читати й діяти» може використовувати ширші дозволи, ніж комп’ютер, якому вони належать. Діє лише на цьому пристрої.",
   "Machines: {states}": "Комп’ютери: {states}",
@@ -7626,6 +7646,7 @@ const catalog: MessageCatalog = {
   "Media actions": "Дії з медіа",
   "Media library": "Медіатека",
   "Media unavailable": "Медіа недоступне",
+  memory: "пам’ять",
   Memory: "Пам’ять",
   "memory limits": "ліміти пам’яті",
   "Memory limits for automated starts": "Ліміти пам’яті для автоматичних запусків",
@@ -8187,6 +8208,7 @@ const catalog: MessageCatalog = {
   "No machine can switch to {channel} now.":
     "Жоден комп’ютер зараз не може перейти на канал {channel}.",
   "No machine is available.": "Немає доступного комп’ютера.",
+  "No machines connected": "Немає підключених комп’ютерів",
   "No matches found.": "Збігів не знайдено.",
   "No matches.": "Збігів немає.",
   "No matching actions.": "Немає відповідних дій.",
@@ -8374,6 +8396,7 @@ const catalog: MessageCatalog = {
   none: "немає",
   None: "Жодного",
   "None assigned": "Не призначено",
+  "None in use": "Не використовується",
   "None of your machines can start a thread without a project right now.":
     "Зараз жоден із ваших комп’ютерів не може запустити чат без проєкту.",
   Normal: "Звичайний",
@@ -8748,6 +8771,7 @@ const catalog: MessageCatalog = {
     "Спершу відкривати пов’язані пул-реквести. Інакше відкривати «Зміни», якщо відредаговано щонайменше 3 файли або 50 рядків.",
   "Open links in": "Відкривати посилання в",
   "Open logs folder": "Відкрити папку журналів",
+  "Open machines": "Відкрити комп’ютери",
   "Open Machines & access": "Відкрити «Комп’ютери та доступ»",
   "Open MCP servers": "Відкрити сервери MCP",
   "Open microphone settings": "Відкрити налаштування мікрофона",
@@ -9625,6 +9649,7 @@ const catalog: MessageCatalog = {
   Quote: "Цитата",
   "Quote is too long": "Цитата надто довга",
   "Raised surface": "Піднесена поверхня",
+  ram: "оперативна пам’ять",
   Ran: "Запущено",
   "Ran {count} commands": {
     one: "Виконано {count} команду",
@@ -10327,6 +10352,7 @@ const catalog: MessageCatalog = {
   "Resource history period": "Період історії ресурсів",
   "Resource monitor": "Монітор ресурсів",
   "Resource timeline": "Часова шкала ресурсів",
+  resources: "ресурси",
   "response streaming": "потокове виведення відповіді",
   "Response streaming": "Потокове виведення відповіді",
   Responsive: "Адаптивний",
@@ -12013,6 +12039,7 @@ const catalog: MessageCatalog = {
   "Stopping workflow {label}": "Зупинка робочого процесу {label}",
   "Stopping...": "Зупинка...",
   "Stopping…": "Зупинка…",
+  storage: "сховище",
   "Storage & cleanup": "Сховище та очищення",
   "Storage bytes": "Байти сховища",
   "Storage unavailable": "Сховище недоступне",
@@ -12070,6 +12097,8 @@ const catalog: MessageCatalog = {
     "Підтримувані провайдери схвалюють рутинні дії; інші все одно питають.",
   Surface: "Поверхня",
   Suspended: "Призупинено",
+  swap: "підкачка",
+  Swap: "Підкачка",
   "Switch branch": "Перейти на гілку",
   "Switch branch, create branch, or move to a worktree":
     "Перемкніть гілку, створіть гілку або перейдіть до worktree",
@@ -14276,6 +14305,7 @@ const catalog: MessageCatalog = {
   "Untitled commit": "Коміт без назви",
   "Untitled project": "Проєкт без назви",
   "Untitled thread": "Чат без назви",
+  "Up {duration}": "Працює {duration}",
   "Up to {count} options": "До {count} варіантів",
   "Up to {devices} at once, each released after {minutes} min":
     "До {devices} одночасно, кожен звільняється через {minutes} хв",
@@ -14511,6 +14541,7 @@ const catalog: MessageCatalog = {
   "Uploading {name}, {percent}%": "Завантаження {name}, {percent}%",
   "Upside down": "Догори дриґом",
   upstream: "віддаленої гілки",
+  uptime: "час роботи",
   URL: "URL",
   "URL copied": "URL скопійовано",
   "Usable once {environment} reconnects":

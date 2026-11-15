@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -47,39 +47,40 @@ const makeReady = (
 const udid = "SIM-1";
 
 describe("runDeviceAction", () => {
-  it.live.each([
-    "https://example.com/callback?code=1&state=2",
-    "https://example.com/it's?a=1&b=2",
-    "https://example.com/a b?key=value",
-    "https://example.com/plain",
-  ])("opens the complete Android URL %s", (url) =>
-    Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) === "win32") return;
-      const { ready, calls } = makeReady();
-      yield* runDeviceAction(ready, "android", {
-        type: "openUrl",
-        deviceId: "emulator-5554",
-        url,
-      });
-      const args = calls[0]!.args;
-      expect(args.slice(0, 3)).toEqual(["-s", "emulator-5554", "shell"]);
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      // adb joins arguments verbatim before the Android shell parses them.
-      const stdout = yield* spawner.string(
-        ChildProcess.make("/bin/sh", [
-          "-c",
-          `am() { printf '%s\\0' "$@"; }\n${args.slice(3).join(" ")}`,
-        ]),
-      );
-      expect(stdout.split("\0").slice(0, -1)).toEqual([
-        "start",
-        "-a",
-        "android.intent.action.VIEW",
-        "-d",
-        url,
-      ]);
-    }).pipe(Effect.provide(NodeServices.layer)),
-  );
+  describe.skipIf(isWindowsHost)("with a POSIX shell", () => {
+    it.live.each([
+      "https://example.com/callback?code=1&state=2",
+      "https://example.com/it's?a=1&b=2",
+      "https://example.com/a b?key=value",
+      "https://example.com/plain",
+    ])("opens the complete Android URL %s", (url) =>
+      Effect.gen(function* () {
+        const { ready, calls } = makeReady();
+        yield* runDeviceAction(ready, "android", {
+          type: "openUrl",
+          deviceId: "emulator-5554",
+          url,
+        });
+        const args = calls[0]!.args;
+        expect(args.slice(0, 3)).toEqual(["-s", "emulator-5554", "shell"]);
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        // adb joins arguments verbatim before the Android shell parses them.
+        const stdout = yield* spawner.string(
+          ChildProcess.make("/bin/sh", [
+            "-c",
+            `am() { printf '%s\\0' "$@"; }\n${args.slice(3).join(" ")}`,
+          ]),
+        );
+        expect(stdout.split("\0").slice(0, -1)).toEqual([
+          "start",
+          "-a",
+          "android.intent.action.VIEW",
+          "-d",
+          url,
+        ]);
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  });
 
   it.effect.each([
     ["emulator-5554", "Physical size: 2560x1600", "portrait", "-9.81:0:0"],

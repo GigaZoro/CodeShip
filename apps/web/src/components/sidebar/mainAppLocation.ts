@@ -20,6 +20,7 @@ export function isSidebarSectionPage(pathname: string) {
     pathname === "/thread-page" ||
     pathname === "/manual-steps" ||
     pathname === "/usage" ||
+    pathname === "/machines" ||
     isSettingsPage(pathname)
   );
 }

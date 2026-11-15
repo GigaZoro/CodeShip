@@ -41,6 +41,7 @@ import { isMissingExecutable } from "@t3tools/source-control-core/server/discove
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { quoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import {
+  gitErrorLines,
   makeGitVcsDriverCore,
   PATCH_RENDER_PREFIX_ARGS,
   splitNullSeparatedGitStdoutPaths,
@@ -671,7 +672,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       command: "git rev-parse",
       cwd,
       exitCode: result.exitCode,
-      detail: result.stderr.trim() || "git rev-parse failed",
+      detail: gitErrorLines(result.stderr) || "git rev-parse failed",
     });
   });
 

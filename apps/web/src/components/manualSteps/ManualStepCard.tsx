@@ -413,7 +413,13 @@ export function ManualStepCard(props: {
             decision={decision}
           />
         )}
-        {decision === null || props.chatHost === null ? null : (
+        {decision === null || props.chatHost === null ? (
+          <p className="text-xs text-muted-foreground">
+            {t("Connect to {machine} to decide here. The step stays on its pending list.", {
+              machine: step.machine,
+            })}
+          </p>
+        ) : (
           <DecisionFooter decision={decision} machine={props.chatHost.machine} />
         )}
         <CardFooter step={step} reviewEnvironmentId={props.reviewEnvironmentId} />

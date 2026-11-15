@@ -13,6 +13,7 @@ import {
   BotIcon,
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
+  GaugeIcon,
   GitBranchIcon,
   GlobeIcon,
   MessageSquareTextIcon,
@@ -114,11 +115,13 @@ function SettingsSearchResultIcon({ item }: { item: SettingsSearchItem }) {
       ? CalendarClockIcon
       : item.to === "/usage"
         ? ChartNoAxesColumnIcon
-        : item.extensionsTab === "skills"
-          ? ScrollTextIcon
-          : item.extensionsTab === "mcp"
-            ? ServerIcon
-            : BlocksIcon;
+        : item.to === "/machines"
+          ? GaugeIcon
+          : item.extensionsTab === "skills"
+            ? ScrollTextIcon
+            : item.extensionsTab === "mcp"
+              ? ServerIcon
+              : BlocksIcon;
   return <Icon className="size-4 shrink-0 text-(--sidebar-icon-color)" />;
 }
 

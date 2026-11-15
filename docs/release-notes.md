@@ -8,6 +8,45 @@
 - T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
 
+## 2026-11-15 — A chat no longer keeps a queued message held after an old restart bug
+
+- A message queued behind a run that a restart cut could stay held for days, with the chat showing as finished. With "continue threads after an update" on, the next server start now starts it, and a chat with a held queue is marked `queueHeld` in the thread list and the thread summary.
+
+## 2026-11-15 — Agents on Windows are told that `bash` there is WSL
+
+- `t3_command_run`'s description now says that on Windows `bash` reaches WSL's bash (no node, its own home folder) and gives the Git Bash path, so an agent no longer lands in the wrong environment.
+
+## 2026-11-15 — A manual step is decided only on the machine whose list holds it
+
+- Choosing a solution for a manual step starts its chat only on that step's own machine. When the app is not connected to it, the card says so and offers no choice, and the step stays on the machine's pending list instead of running on another machine.
+
+## 2026-11-15 — Windows and POSIX-only tests now report a skip, not a pass
+
+- 19 tests that returned early on the wrong platform reported a pass without running. They now skip, so a test run shows what ran on each platform, and a lint rule refuses new early returns on the host platform.
+
+## 2026-11-15 — See every machine's CPU, memory and disk on the new Machines page
+
+- New **Machines** page, at the bottom of the sidebar rail and in the command palette, and on mobile at the top of **Settings**. It shows each connected machine's CPU use, core count and load averages, memory, swap, free disk space and uptime, refreshing every 5 seconds while it is open. Values turn amber at 80% and red at 90%, and an offline machine offers to reconnect.
+- Hover **Machines** in the rail for CPU, memory and disk on every machine at once.
+- A machine on an older version shows only CPU and memory until it is updated.
+
+## 2026-11-15 — Windows test runs no longer fail on POSIX-only command tests
+
+- On Windows, 16 tests of commands run apart from their agent used `sh`, `kill` and process groups and failed or timed out there. They now skip on Windows, where their own tests cover the same stop and lost paths, so a real Windows failure is no longer hidden among them.
+
+## 2026-11-15 — Agents are told which shell their commands run in
+
+- The tool agents use to run a long command apart from the chat now names its shell: bash or zsh on macOS and Linux, Windows PowerShell 5.1 on Windows. It also says PowerShell 5.1 has no `&&` or `||` and how to chain steps there, so a Windows command no longer fails with "not a valid statement separator".
+
+## 2026-11-15 — A scheduled run a restart cut before its prompt no longer leaves an empty chat
+
+- When a restart cut a scheduled run after its chat was made but before the task's prompt reached it, the run was shown as failed but its empty chat stayed in the sidebar. The next startup now deletes that chat and shows the run as interrupted in its history; a recurring task runs again at its next time, as after any missed run. A chat you wrote in or moved to another folder is kept.
+- A restart-cut run whose chat had only your own message in it was counted as succeeded. Startup now checks for the task's own prompt, so such a run is shown as interrupted.
+
+## 2026-11-15 — Workspace preparation errors say why Git detection failed
+
+- When a workspace could not be prepared because CodeShip could not tell whether a folder is a Git repository, the error only said "Failed to resolve the VCS driver". It now adds the cause: a timeout (and how long), or Git's exit code and its last error lines, such as a broken `.git/config`. A folder that is simply not a repository is still treated as one.
+
 ## 2026-11-15 — Pull request lookups start far fewer git commands
 
 - A pull request lookup used to start about ten `git` commands, each re-reading the repository's remotes and configuration. On a machine short of memory with many open chats this added up to hundreds of commands and slowed the server. A lookup now reads the remotes and each configuration value once and shares them for the whole lookup.

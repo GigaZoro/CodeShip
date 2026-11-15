@@ -2053,6 +2053,29 @@ it.effect("GitVcsDriver reads an absent checkpoint ref as absent despite a Git w
   }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );
 
+it.effect("GitVcsDriver keeps Git's exit code and error lines when detection fails", () =>
+  Effect.gen(function* () {
+    const cwd = globalThis.process.cwd();
+    const broken = yield* makeStubbedDriver({
+      code: 128,
+      stdout: "",
+      stderr: "hint: x\nfatal: bad config line 3 in file /r/.git/config\n",
+    });
+    const error = yield* broken.detectRepository(cwd).pipe(Effect.flip);
+    assert.strictEqual(error._tag, "VcsProcessExitError");
+    assert.strictEqual(error._tag === "VcsProcessExitError" && error.exitCode, 128);
+    assert.include(error.message, "fatal: bad config line 3");
+    assert.notInclude(error.message, "hint: x");
+
+    const plain = yield* makeStubbedDriver({
+      code: 128,
+      stdout: "",
+      stderr: "fatal: not a git repository (or any of the parent directories): .git",
+    });
+    assert.strictEqual(yield* plain.detectRepository(cwd), null);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
 const gitCommandCount = (operation: string, outcome: string) =>
   Metric.value(
     Metric.withAttributes(gitCommandsTotal, [

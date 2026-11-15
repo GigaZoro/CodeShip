@@ -3444,6 +3444,63 @@ const writeHtmlRenderRun = Effect.fn("test.writeHtmlRenderRun")(function* (input
   });
   return { runId, pagePath };
 });
+const restartHeldQueue = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: CommandId.make(`${threadId}:create`),
+      threadId,
+      projectId: ProjectId.make(`${threadId}:project`),
+      title: "Held with no resume",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: process.cwd(),
+    });
+    for (const [index, text] of ["Active", "Queued"].entries()) {
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}:message:${index}`),
+        threadId,
+        messageId: MessageId.make(`${threadId}:message:${index}`),
+        text,
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
+      });
+    }
+    const eventSink = yield* EventSink.EventSinkV2;
+    const [active] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+    const startedAt = yield* DateTime.now;
+    yield* eventSink.write({
+      commandId: CommandId.make(`${threadId}:running`),
+      events: [
+        {
+          id: EventId.make(`${threadId}:running-event`),
+          type: "run.updated",
+          threadId,
+          runId: active!.id,
+          occurredAt: startedAt,
+          payload: { ...active!, status: "running", startedAt },
+        },
+      ],
+    });
+    yield* recovery.reconcile("startup");
+    const queuedId = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!.id;
+    const heldRun = () =>
+      orchestrator
+        .getThreadProjection(threadId)
+        .pipe(Effect.map(({ runs }) => runs.find((run) => run.id === queuedId)!));
+    assert.isTrue((yield* heldRun()).queueHeldByRestart);
+    return { orchestrator, active: active!, queuedId, heldRun };
+  });
 
 it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
   it.effect("applies lifecycle commands idempotently and emits archive/removal shell deltas", () =>
@@ -10846,60 +10903,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
 
   it.effect("starts a restart's held message when no resume of the cut run is pending", () =>
     Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
       const threadId = ThreadId.make("restart-hold-without-resume");
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        createdBy: "user",
-        creationSource: "web",
-        commandId: CommandId.make(`${threadId}:create`),
-        threadId,
-        projectId: ProjectId.make(`${threadId}:project`),
-        title: "Held with no resume",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: process.cwd(),
-      });
-      for (const [index, text] of ["Active", "Queued"].entries()) {
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          createdBy: "user",
-          creationSource: "web",
-          commandId: CommandId.make(`${threadId}:message:${index}`),
-          threadId,
-          messageId: MessageId.make(`${threadId}:message:${index}`),
-          text,
-          attachments: [],
-          modelSelection,
-          dispatchMode: { type: index === 0 ? "start_immediately" : "queue_after_active" },
-        });
-      }
-      const eventSink = yield* EventSink.EventSinkV2;
-      const [active] = (yield* orchestrator.getThreadProjection(threadId)).runs;
-      const startedAt = yield* DateTime.now;
-      yield* eventSink.write({
-        commandId: CommandId.make(`${threadId}:running`),
-        events: [
-          {
-            id: EventId.make(`${threadId}:running-event`),
-            type: "run.updated",
-            threadId,
-            runId: active!.id,
-            occurredAt: startedAt,
-            payload: { ...active!, status: "running", startedAt },
-          },
-        ],
-      });
-      yield* recovery.reconcile("startup");
-      const queuedId = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!.id;
-      const heldRun = () =>
-        orchestrator
-          .getThreadProjection(threadId)
-          .pipe(Effect.map(({ runs }) => runs.find((run) => run.id === queuedId)!));
-      assert.isTrue((yield* heldRun()).queueHeldByRestart);
+      const { orchestrator, active, heldRun } = yield* restartHeldQueue(threadId);
       // The resume ran and declined, as when the cut run's turn had already finished.
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       assert.deepEqual(
@@ -10908,11 +10913,51 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           effectTypes: ["provider-runtime.continue"],
           reason: "declined",
         }),
-        [EffectOutbox.restartContinuationEffectId(active!.id)],
+        [EffectOutbox.restartContinuationEffectId(active.id)],
       );
       yield* orchestrator.resumeQueuedRuns;
       assert.isUndefined((yield* heldRun()).queueHeldByRestart);
       assert.isNotTrue((yield* heldRun()).queueHeld);
+    }),
+  );
+
+  it.effect("releases a hold a restart left before holds carried the restart flag", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("restart-hold-without-flag");
+      const { orchestrator, queuedId, heldRun } = yield* restartHeldQueue(threadId);
+      const eventSink = yield* EventSink.EventSinkV2;
+      const { queueHeldByRestart: _flag, ...unflagged } = yield* heldRun();
+      yield* eventSink.write({
+        commandId: CommandId.make(`${threadId}:strip-flag`),
+        events: [
+          {
+            id: EventId.make(`${threadId}:strip-flag-event`),
+            type: "run.updated",
+            threadId,
+            runId: queuedId,
+            occurredAt: yield* DateTime.now,
+            payload: unflagged,
+          },
+        ],
+      });
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      yield* outbox.cancelUnsettled({
+        threadId,
+        effectTypes: ["provider-runtime.continue"],
+        reason: "declined",
+      });
+      const shellHeld = () =>
+        orchestrator
+          .getShellSnapshot()
+          .pipe(
+            Effect.map((snapshot) => snapshot.threads.find((thread) => thread.id === threadId)),
+          );
+      assert.isTrue((yield* heldRun()).queueHeld);
+      assert.isTrue((yield* shellHeld())?.queueHeld);
+      yield* orchestrator.resumeQueuedRuns;
+      assert.isNotTrue((yield* heldRun()).queueHeld);
+      assert.isNotTrue((yield* shellHeld())?.queueHeld);
+      assert.notEqual((yield* heldRun()).status, "queued");
     }),
   );
 

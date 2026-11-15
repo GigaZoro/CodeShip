@@ -130,6 +130,7 @@ import { SettingsProjectOverviewRouteScreen } from "./features/settings/Settings
 import { SettingsProjectActionRouteScreen } from "./features/settings/SettingsProjectActionRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
+import { MachinesRouteScreen } from "./features/machines/MachinesRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
 import { SettingsEnvironmentFilterProvider } from "./features/settings/settings-environment-filter";
@@ -345,6 +346,14 @@ const SETTINGS_SCREENS = {
     screen: UsageRouteScreen,
     linking: "settings/usage",
     options: () => settingsPage(t("Usage")),
+  }),
+  SettingsMachines: createNativeStackScreen({
+    screen: MachinesRouteScreen,
+    linking: "settings/machines",
+    options: () => ({
+      ...SETTINGS_PAGE_OPTIONS,
+      title: t("Machines"),
+    }),
   }),
   SettingsAuth: createNativeStackScreen({
     screen: SettingsAuthRouteScreen,

@@ -688,6 +688,16 @@ function withoutUrlCredentials(line: string): string {
   return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@'"]*@)?([^\s?#'"]*)[^\s'"]*/gi, "$1$2");
 }
 
+/** The last lines Git itself printed, with URL credentials stripped, for a failure message. */
+export function gitErrorLines(stderr: string): string {
+  return stderr
+    .split(/\r?\n/)
+    .filter((line) => GIT_OWN_DIAGNOSTIC_LINE.test(line))
+    .slice(-MAX_FETCH_DIAGNOSTIC_LINES)
+    .map((line) => withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH))
+    .join(" | ");
+}
+
 const formatSeconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
 
 /** Where a remote command spent its time and what Git said, for its failure message. */

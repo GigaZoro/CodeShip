@@ -1869,6 +1869,15 @@ export function createServerEnvironmentAtoms<R, E>(
       execute: (input: EnvironmentRpcInput<typeof WS_METHODS.serverGetHostResources>) =>
         request(WS_METHODS.serverGetHostResources, input).pipe(Effect.timeout("5 seconds")),
     }),
+    // The Machines screens poll while they are open; draft routing above reads on demand.
+    liveHostResources: createEnvironmentQueryAtomFamily(runtime, {
+      label: "environment-data:server:live-host-resources",
+      idleTtlMs: 0,
+      staleTimeMs: 5_000,
+      refreshIntervalMs: 5_000,
+      execute: (input: EnvironmentRpcInput<typeof WS_METHODS.serverGetHostResources>) =>
+        request(WS_METHODS.serverGetHostResources, input).pipe(Effect.timeout("5 seconds")),
+    }),
     processResourceHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:process-resource-history",
       tag: WS_METHODS.serverGetProcessResourceHistory,

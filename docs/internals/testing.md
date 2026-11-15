@@ -22,7 +22,7 @@ Rules for writing tests, and for asking for them in review. AGENTS.md carries th
   - Browser tests assert through `expect.element` or `vi.waitFor`, never `requestAnimationFrame` or `transitionend`.
   - `vi.mock` factories must not spread a real module that pulls in Shiki or the diff workers.
   - `it.skip` and friends need a tracking issue on the line above: `// quarantine: #1234 <why>`.
-  - Lint enforces this: `t3code/no-test-timeout-or-unreasoned-skip`, `t3code/no-frame-waits-in-browser-tests`, `t3code/no-wall-clock-in-tests`, `t3code/no-real-time-wait-in-tests`, `t3code/no-polling-loop-in-tests`.
+  - Lint enforces this: `t3code/no-test-timeout-or-unreasoned-skip`, `t3code/no-frame-waits-in-browser-tests`, `t3code/no-wall-clock-in-tests`, `t3code/no-real-time-wait-in-tests`, `t3code/no-polling-loop-in-tests`, `t3code/no-platform-early-return-in-tests`.
 
 ## Web browser tests
 

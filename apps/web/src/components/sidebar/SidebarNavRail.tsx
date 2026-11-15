@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
+  GaugeIcon,
   HandIcon,
   LayoutGridIcon,
   PuzzleIcon,
@@ -16,6 +17,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../../env";
 import { shortcutLabelForCommand } from "../../keybindings";
+import { MachinesGlance } from "../machines/MachineResources";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { usePullRequestsSupported } from "../../state/environments";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
@@ -34,6 +36,7 @@ import {
 import { isSettingsPage, isSidebarSectionPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarUpdatePill } from "./SidebarUpdatePill";
 import { useScheduledTasksRailBadge } from "./useScheduledTasksRailBadge";
+import { useSidebarMachines } from "./useSidebarMachines";
 import {
   useExtensionsRailBadge,
   useManualStepsRailBadge,
@@ -52,6 +55,7 @@ type SidebarNavDestination =
   | "scheduled-tasks"
   | "thread-page"
   | "manual-steps"
+  | "machines"
   | "usage"
   | "settings";
 
@@ -61,6 +65,7 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination | nul
   if (pathname === "/artifacts") return "artifacts";
   if (pathname === "/extensions") return "extensions";
   if (pathname === "/usage") return "usage";
+  if (pathname === "/machines") return "machines";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
   if (pathname === "/thread-page") return "thread-page";
   if (pathname === "/manual-steps") return "manual-steps";
@@ -159,6 +164,26 @@ function SidebarNavRailUsageItem({
   );
 }
 
+/** Hover reads each machine's CPU, memory and disk; click opens Machines. */
+function SidebarNavRailMachinesItem({
+  isActive,
+  onClick,
+}: {
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  const machines = useSidebarMachines();
+  return (
+    <SidebarNavRailItem
+      icon={<GaugeIcon />}
+      label={t("Machines")}
+      tooltip={machines.length === 0 ? t("Machines") : <MachinesGlance machines={machines} />}
+      isActive={isActive}
+      onClick={onClick}
+    />
+  );
+}
+
 /** The app's top-level places, beside the thread list. */
 export const SidebarNavRail = memo(function SidebarNavRail() {
   const navigate = useNavigate();
@@ -247,6 +272,10 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
       </SidebarMenu>
       <SidebarMenu className="items-center">
         <SidebarUpdatePill />
+        <SidebarNavRailMachinesItem
+          isActive={active === "machines"}
+          onClick={go(() => navigate({ to: "/machines" }))}
+        />
         <SidebarNavRailUsageItem
           isActive={active === "usage"}
           onClick={go(() => navigate({ to: "/usage" }))}

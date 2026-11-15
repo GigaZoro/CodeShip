@@ -43,6 +43,7 @@ import {
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
@@ -761,81 +762,84 @@ it.layer(
       }),
     );
 
-    it.effect("reads the version of a Codex CLI too old to run app-server (#20351)", () =>
-      Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) === "win32") return;
-        const codexHome = yield* FileSystem.FileSystem.pipe(
-          Effect.flatMap((fs) => fs.makeTempDirectoryScoped({ prefix: "t3-codex-home-" })),
-        );
-        const { binaryPath } = yield* writeFakeCodexCli(
-          [
-            `if [ "$1" = "--version" ]; then`,
-            // The fallback runs with the provider's environment and CODEX_HOME.
-            `  [ "$CODEX_HOME" = "${codexHome}" ] && [ "$FAKE_CODEX_ENV" = "kept" ] || exit 2`,
-            `  echo 0.1.4161006; exit 0`,
-            `fi`,
-            OBSOLETE_CODEX_APP_SERVER,
-          ].join("\n"),
-        );
-        const settings = decodeCodexSettings({ binaryPath, homePath: codexHome });
+    it.effect.skipIf(isWindowsHost)(
+      "reads the version of a Codex CLI too old to run app-server (#20351)",
+      () =>
+        Effect.gen(function* () {
+          const codexHome = yield* FileSystem.FileSystem.pipe(
+            Effect.flatMap((fs) => fs.makeTempDirectoryScoped({ prefix: "t3-codex-home-" })),
+          );
+          const { binaryPath } = yield* writeFakeCodexCli(
+            [
+              `if [ "$1" = "--version" ]; then`,
+              // The fallback runs with the provider's environment and CODEX_HOME.
+              `  [ "$CODEX_HOME" = "${codexHome}" ] && [ "$FAKE_CODEX_ENV" = "kept" ] || exit 2`,
+              `  echo 0.1.4161006; exit 0`,
+              `fi`,
+              OBSOLETE_CODEX_APP_SERVER,
+            ].join("\n"),
+          );
+          const settings = decodeCodexSettings({ binaryPath, homePath: codexHome });
 
-        const status = yield* checkCodexProviderStatus(settings, undefined, {
-          ...process.env,
-          FAKE_CODEX_ENV: "kept",
-        });
+          const status = yield* checkCodexProviderStatus(settings, undefined, {
+            ...process.env,
+            FAKE_CODEX_ENV: "kept",
+          });
 
-        assert.strictEqual(status.status, "error");
-        assert.strictEqual(status.installed, true);
-        assert.strictEqual(status.version, "0.1.4161006");
-        assert.match(status.message ?? "", /^Codex app-server provider probe failed: /);
-        const classified = withBundledCompatibility({
-          ...status,
-          instanceId: ProviderInstanceId.make("codex"),
-          driver: ProviderDriverKind.make("codex"),
-        });
-        assert.strictEqual(classified.compatibilityAdvisory?.status, "broken");
-      }),
+          assert.strictEqual(status.status, "error");
+          assert.strictEqual(status.installed, true);
+          assert.strictEqual(status.version, "0.1.4161006");
+          assert.match(status.message ?? "", /^Codex app-server provider probe failed: /);
+          const classified = withBundledCompatibility({
+            ...status,
+            instanceId: ProviderInstanceId.make("codex"),
+            driver: ProviderDriverKind.make("codex"),
+          });
+          assert.strictEqual(classified.compatibilityAdvisory?.status, "broken");
+        }),
     );
 
-    it.effect("keeps a prerelease --version unclassified instead of reading it as stable", () =>
-      Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) === "win32") return;
-        const { binaryPath } = yield* writeFakeCodexCli(
-          [
-            `[ "$1" = "--version" ] && { echo "codex-cli 0.159.0-alpha.1"; exit 0; }`,
-            OBSOLETE_CODEX_APP_SERVER,
-          ].join("\n"),
-        );
+    it.effect.skipIf(isWindowsHost)(
+      "keeps a prerelease --version unclassified instead of reading it as stable",
+      () =>
+        Effect.gen(function* () {
+          const { binaryPath } = yield* writeFakeCodexCli(
+            [
+              `[ "$1" = "--version" ] && { echo "codex-cli 0.159.0-alpha.1"; exit 0; }`,
+              OBSOLETE_CODEX_APP_SERVER,
+            ].join("\n"),
+          );
 
-        const status = yield* checkCodexProviderStatus(decodeCodexSettings({ binaryPath }));
+          const status = yield* checkCodexProviderStatus(decodeCodexSettings({ binaryPath }));
 
-        assert.strictEqual(status.version, "0.159.0-alpha.1");
-        const classified = withBundledCompatibility({
-          ...status,
-          instanceId: ProviderInstanceId.make("codex"),
-          driver: ProviderDriverKind.make("codex"),
-        });
-        assert.strictEqual(classified.compatibilityAdvisory?.status, "unknown");
-      }),
+          assert.strictEqual(status.version, "0.159.0-alpha.1");
+          const classified = withBundledCompatibility({
+            ...status,
+            instanceId: ProviderInstanceId.make("codex"),
+            driver: ProviderDriverKind.make("codex"),
+          });
+          assert.strictEqual(classified.compatibilityAdvisory?.status, "unknown");
+        }),
     );
 
-    it.effect("keeps the probe failure without a version when --version also fails", () =>
-      Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) === "win32") return;
-        const { binaryPath } = yield* writeFakeCodexCli(
-          [
-            `[ "$1" = "--version" ] && { echo "codex 0.1.0" >&2; exit 3; }`,
-            OBSOLETE_CODEX_APP_SERVER,
-          ].join("\n"),
-        );
+    it.effect.skipIf(isWindowsHost)(
+      "keeps the probe failure without a version when --version also fails",
+      () =>
+        Effect.gen(function* () {
+          const { binaryPath } = yield* writeFakeCodexCli(
+            [
+              `[ "$1" = "--version" ] && { echo "codex 0.1.0" >&2; exit 3; }`,
+              OBSOLETE_CODEX_APP_SERVER,
+            ].join("\n"),
+          );
 
-        const status = yield* checkCodexProviderStatus(decodeCodexSettings({ binaryPath }));
+          const status = yield* checkCodexProviderStatus(decodeCodexSettings({ binaryPath }));
 
-        assert.strictEqual(status.status, "error");
-        assert.strictEqual(status.installed, true);
-        assert.strictEqual(status.version, null);
-        assert.match(status.message ?? "", /^Codex app-server provider probe failed: /);
-      }),
+          assert.strictEqual(status.status, "error");
+          assert.strictEqual(status.installed, true);
+          assert.strictEqual(status.version, null);
+          assert.match(status.message ?? "", /^Codex app-server provider probe failed: /);
+        }),
     );
 
     it.effect("bounds a hanging Codex --version fallback and releases its process scope", () =>
@@ -956,28 +960,29 @@ it.layer(
       }),
     );
 
-    it.effect("does not run --version when the Codex executable cannot start", () =>
-      Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) === "win32") return;
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const { directory, binaryPath } = yield* writeFakeCodexCli(
-          `touch "$(dirname "$0")/ran"; echo 0.1.4161006`,
-        );
+    it.effect.skipIf(isWindowsHost)(
+      "does not run --version when the Codex executable cannot start",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const { directory, binaryPath } = yield* writeFakeCodexCli(
+            `touch "$(dirname "$0")/ran"; echo 0.1.4161006`,
+          );
 
-        const status = yield* checkCodexProviderStatus(decodeCodexSettings({ binaryPath }), () =>
-          Effect.fail(
-            new CodexErrors.CodexAppServerSpawnError({
-              command: `${binaryPath} app-server`,
-              cause: new Error("spawn ENOENT"),
-            }),
-          ),
-        );
+          const status = yield* checkCodexProviderStatus(decodeCodexSettings({ binaryPath }), () =>
+            Effect.fail(
+              new CodexErrors.CodexAppServerSpawnError({
+                command: `${binaryPath} app-server`,
+                cause: new Error("spawn ENOENT"),
+              }),
+            ),
+          );
 
-        assert.strictEqual(status.installed, false);
-        assert.strictEqual(status.version, null);
-        assert.isFalse(yield* fs.exists(path.join(directory, "ran")));
-      }),
+          assert.strictEqual(status.installed, false);
+          assert.strictEqual(status.version, null);
+          assert.isFalse(yield* fs.exists(path.join(directory, "ran")));
+        }),
     );
   });
 
@@ -4150,47 +4155,48 @@ it.layer(
       ),
     );
 
-    it.effect("does not let a lazy mise shim install Claude during a status check (#33415)", () =>
-      Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) === "win32") return;
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fake-mise-claude-" });
-        const installMarker = path.join(directory, "installed");
-        const binaryPath = path.join(directory, "claude");
-        // A `lazy = true` mise shim downloads and installs the tool unless MISE_OFFLINE is set.
-        yield* fs.writeFileString(
-          binaryPath,
-          [
-            `#!/bin/sh`,
-            `case "$MISE_OFFLINE" in`,
-            `  1|true) cat >&2 <<'EOF'`,
-            `mise WARN  Failed to resolve tool version list for claude: [/home/u/.config/mise/config.toml] claude@latest: no versions found for claude`,
-            `mise ERROR Failed to install aqua:anthropics/claude-code@latest: no versions found for claude`,
-            `mise ERROR Version: 2026.11.5 linux-x64 (2026-11-09)`,
-            `mise ERROR Run with --verbose or MISE_VERBOSE=1 for more information`,
-            `EOF`,
-            `  exit 1 ;;`,
-            `esac`,
-            `touch "${installMarker}"`,
-            `echo "2.1.0 (Claude Code)"`,
-          ].join("\n"),
-        );
-        yield* fs.chmod(binaryPath, 0o755);
-        const { MISE_OFFLINE: _, ...environment } = process.env;
+    it.effect.skipIf(isWindowsHost)(
+      "does not let a lazy mise shim install Claude during a status check (#33415)",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fake-mise-claude-" });
+          const installMarker = path.join(directory, "installed");
+          const binaryPath = path.join(directory, "claude");
+          // A `lazy = true` mise shim downloads and installs the tool unless MISE_OFFLINE is set.
+          yield* fs.writeFileString(
+            binaryPath,
+            [
+              `#!/bin/sh`,
+              `case "$MISE_OFFLINE" in`,
+              `  1|true) cat >&2 <<'EOF'`,
+              `mise WARN  Failed to resolve tool version list for claude: [/home/u/.config/mise/config.toml] claude@latest: no versions found for claude`,
+              `mise ERROR Failed to install aqua:anthropics/claude-code@latest: no versions found for claude`,
+              `mise ERROR Version: 2026.11.5 linux-x64 (2026-11-09)`,
+              `mise ERROR Run with --verbose or MISE_VERBOSE=1 for more information`,
+              `EOF`,
+              `  exit 1 ;;`,
+              `esac`,
+              `touch "${installMarker}"`,
+              `echo "2.1.0 (Claude Code)"`,
+            ].join("\n"),
+          );
+          yield* fs.chmod(binaryPath, 0o755);
+          const { MISE_OFFLINE: _, ...environment } = process.env;
 
-        const status = yield* checkClaudeProviderStatus(
-          { ...defaultClaudeSettings, binaryPath },
-          claudeCapabilities(),
-          environment,
-        );
+          const status = yield* checkClaudeProviderStatus(
+            { ...defaultClaudeSettings, binaryPath },
+            claudeCapabilities(),
+            environment,
+          );
 
-        assert.isFalse(
-          yield* fs.exists(installMarker),
-          "the Claude --version status probe let mise install Claude",
-        );
-        assert.isNull(status.version, "mise's own version is not Claude's");
-      }),
+          assert.isFalse(
+            yield* fs.exists(installMarker),
+            "the Claude --version status probe let mise install Claude",
+          );
+          assert.isNull(status.version, "mise's own version is not Claude's");
+        }),
     );
 
     it.effect("reports a logged-out CLI as unauthenticated", () =>

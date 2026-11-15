@@ -20,6 +20,7 @@
 - [Devices](./user/devices.md)
 - [Visual Studio debugging](./user/visual-studio.md)
 - [Usage and limits](./user/usage.md)
+- [Machine resources](./user/machines.md)
 - [ThreadPage notes](./user/threadpage.md)
 - [Plugins](./user/plugins.md)
 - [MCP servers](./user/mcp.md)

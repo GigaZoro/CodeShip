@@ -6,12 +6,28 @@ import { DesktopUpdateChannelSchema, DesktopUpdateStateSchema } from "./ipc.ts";
 
 export const RESOURCE_MONITOR_PROTOCOL_VERSION = 3 as const;
 
+export const HostSpaceUsage = Schema.Struct({
+  totalBytes: NonNegativeInt,
+  availableBytes: NonNegativeInt,
+});
+export type HostSpaceUsage = typeof HostSpaceUsage.Type;
+
+// Fields after totalMemoryBytes are optional because older servers do not send them.
 export const HostResourcesSnapshot = Schema.Struct({
   sampledAt: NonNegativeInt,
   cpuUtilization: Schema.NullOr(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
   cpuCount: NonNegativeInt,
   availableMemoryBytes: NonNegativeInt,
   totalMemoryBytes: NonNegativeInt,
+  /** 1, 5 and 15 minute load averages; null on Windows, which has none. */
+  loadAverage: Schema.optionalKey(
+    Schema.NullOr(Schema.Tuple([Schema.Number, Schema.Number, Schema.Number])),
+  ),
+  /** Null where the platform does not report it (Windows) or the read failed. */
+  swap: Schema.optionalKey(Schema.NullOr(HostSpaceUsage)),
+  /** The volume holding the server's data directory, where its worktrees live. */
+  disk: Schema.optionalKey(Schema.NullOr(HostSpaceUsage)),
+  uptimeSeconds: Schema.optionalKey(NonNegativeInt),
 });
 export type HostResourcesSnapshot = typeof HostResourcesSnapshot.Type;
 

@@ -554,8 +554,10 @@ it.effect(
         DateTime.formatIso(DateTime.toUtc(at(day, hour)));
       yield* TestClock.setTime(DateTime.toEpochMillis(at(10, 12)));
       const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+      const prompts = yield* Ref.make<ReadonlyArray<string | null | undefined>>([]);
       const layer = runHistoryLayer((input) =>
         Ref.update(launched, (titles) => [...titles, input.title]).pipe(
+          Effect.andThen(Ref.update(prompts, (ids) => [...ids, input.initialMessage?.messageId])),
           Effect.as({ threadId: ThreadId.make("thread-caught-up"), resumed: false } as never),
         ),
       );
@@ -610,6 +612,10 @@ it.effect(
           threadId: "thread-caught-up",
           failover: null,
         });
+        // It launches under its scheduled fire's key, where startup recovery looks for its prompt.
+        expect(yield* Ref.get(prompts)).toEqual([
+          `scheduled-task-message:${caughtUp?.id.replace(/:catch_up$/, ":scheduled")}`,
+        ]);
         expect((yield* service.listRuns({ id: off.id })).runs).toMatchObject([
           { outcome: "skipped", skipReason: "missed", scheduledFor: isoAt(13, 7) },
         ]);

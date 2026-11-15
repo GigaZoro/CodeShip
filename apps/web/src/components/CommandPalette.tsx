@@ -79,6 +79,7 @@ import {
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  GaugeIcon,
   LayoutGridIcon,
   MessageSquareDashedIcon,
   LinkIcon,
@@ -2094,6 +2095,17 @@ function OpenCommandPaletteDialog(props: {
     shortcutCommand: "usage.open",
     run: async () => {
       await navigate({ to: "/usage" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:machines",
+    searchTerms: ["machines", "resources", "cpu", "ram", "memory", "disk", "swap", "load"],
+    title: t("Open machines"),
+    icon: <GaugeIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/machines" });
     },
   });
 

@@ -17,6 +17,17 @@ it("states t3_thread_read page size limits in the parameter descriptions", () =>
   }
 });
 
+// Agents on Windows write POSIX syntax because their Bash tool is Git Bash; `&&` then fails in PowerShell 5.1.
+it("names the shell t3_command_run uses on each platform and how to chain on Windows", () => {
+  const description = OrchestratorToolkit.tools.t3_command_run.description ?? "";
+  expect(description).toContain("bash or zsh on macOS and Linux");
+  expect(description).toContain("Windows PowerShell 5.1");
+  expect(description).toContain("no `&&` or `||`");
+  expect(description).toContain("$LASTEXITCODE");
+  expect(description).toContain("WSL's bash");
+  expect(description).toContain("Git\\bin\\bash.exe");
+});
+
 it("refuses a t3_thread_update whose fields do not fit its action", () => {
   const decode = Schema.decodeUnknownExit(
     OrchestratorToolkit.tools.t3_thread_update.parametersSchema,

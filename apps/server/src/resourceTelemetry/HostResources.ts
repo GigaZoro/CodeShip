@@ -1,5 +1,7 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Effect's FileSystem has no statfs for free disk space.
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
-import type { HostResourcesSnapshot } from "@t3tools/contracts";
+import type { HostResourcesSnapshot, HostSpaceUsage } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
@@ -9,6 +11,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+
+import * as ServerConfig from "../config.ts";
 
 export class HostResources extends Context.Service<
   HostResources,
@@ -97,10 +101,83 @@ function cgroupNumber(text: string, pattern: RegExp): number | null {
   return value === undefined ? null : Number(value);
 }
 
+function loadAverage(): readonly [number, number, number] {
+  const [one = 0, five = 0, fifteen = 0] = NodeOS.loadavg();
+  return [one, five, fifteen];
+}
+
+function spaceUsage(totalBytes: number, availableBytes: number): HostSpaceUsage | null {
+  if (!Number.isSafeInteger(totalBytes) || !Number.isSafeInteger(availableBytes)) return null;
+  if (totalBytes < 0) return null;
+  return { totalBytes, availableBytes: Math.min(totalBytes, Math.max(0, availableBytes)) };
+}
+
+export function parseLinuxMeminfo(output: string) {
+  const bytes = (label: string) => {
+    const kilobytes = new RegExp(`^${label}:\\s+(\\d+)\\s+kB$`, "m").exec(output)?.[1];
+    return kilobytes === undefined ? null : Number(kilobytes) * 1024;
+  };
+  const swapTotal = bytes("SwapTotal");
+  const swapFree = bytes("SwapFree");
+  return {
+    availableMemoryBytes: bytes("MemAvailable"),
+    swap: swapTotal === null || swapFree === null ? null : spaceUsage(swapTotal, swapFree),
+  };
+}
+
+const SWAP_UNIT_BYTES: Readonly<Record<string, number>> = {
+  K: 1024,
+  M: 1024 ** 2,
+  G: 1024 ** 3,
+  T: 1024 ** 4,
+};
+
+/** Parses `sysctl -n vm.swapusage`: `total = 2048.00M  used = 1081.25M  free = 966.75M`. */
+export function parseDarwinSwapUsage(output: string): HostSpaceUsage | null {
+  const bytes = (label: string) => {
+    const match = new RegExp(`\\b${label} = (\\d+(?:\\.\\d+)?)([KMGT])\\b`).exec(output);
+    const unit = match ? SWAP_UNIT_BYTES[match[2]!] : undefined;
+    return match && unit !== undefined ? Math.round(Number(match[1]) * unit) : null;
+  };
+  const total = bytes("total");
+  const free = bytes("free");
+  return total === null || free === null ? null : spaceUsage(total, free);
+}
+
+type StatFs = (
+  path: string,
+) => Promise<{ readonly blocks: number; readonly bsize: number; readonly bavail: number }>;
+
+/** Free space on `path`'s drive, or null when it cannot be read within a second. */
+export function makeDiskSpaceReader(statfs: StatFs, path: string) {
+  // A hung network mount parks a libuv thread per call; reuse the stuck probe instead of stacking more.
+  let inFlight: ReturnType<StatFs> | null = null;
+  const probe = () =>
+    (inFlight ??= statfs(path).finally(() => {
+      inFlight = null;
+    }));
+  return Effect.tryPromise(probe).pipe(
+    Effect.timeout("1 second"),
+    Effect.map((stats) => spaceUsage(stats.blocks * stats.bsize, stats.bavail * stats.bsize)),
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not read disk space", { cause }).pipe(Effect.as(null)),
+    ),
+  );
+}
+
 const make = Effect.fn("makeHostResources")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const platform = yield* HostProcess.Platform;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+
+  const readCommand = (command: string, args: ReadonlyArray<string>) =>
+    spawner.string(ChildProcess.make(command, args, { stdin: "ignore", stderr: "ignore" })).pipe(
+      Effect.timeout("1 second"),
+      Effect.orElseSucceed(() => ""),
+    );
+
+  const readDisk = makeDiskSpaceReader(NodeFSP.statfs, baseDir);
 
   const readFile = (path: string) => fs.readFileString(path).pipe(Effect.orElseSucceed(() => ""));
 
@@ -168,18 +245,21 @@ const make = Effect.fn("makeHostResources")(function* () {
     let totalMemoryBytes = NodeOS.totalmem();
     // On Windows libuv returns GlobalMemoryStatusEx.ullAvailPhys, including standby memory.
     let availableMemoryBytes = NodeOS.freemem();
+    let swap: HostSpaceUsage | null = null;
     if (platform === "linux") {
-      const meminfo = yield* readFile("/proc/meminfo");
-      const available = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(meminfo)?.[1];
-      if (available) availableMemoryBytes = Number(available) * 1024;
+      const meminfo = parseLinuxMeminfo(yield* readFile("/proc/meminfo"));
+      availableMemoryBytes = meminfo.availableMemoryBytes ?? availableMemoryBytes;
+      swap = meminfo.swap;
     } else if (platform === "darwin") {
-      const output = yield* spawner
-        .string(ChildProcess.make("/usr/bin/vm_stat", [], { stdin: "ignore", stderr: "ignore" }))
-        .pipe(
-          Effect.timeout("1 second"),
-          Effect.orElseSucceed(() => ""),
-        );
-      availableMemoryBytes = darwinAvailableMemory(output) ?? availableMemoryBytes;
+      const [vmStat, swapUsage] = yield* Effect.all(
+        [
+          readCommand("/usr/bin/vm_stat", []),
+          readCommand("/usr/sbin/sysctl", ["-n", "vm.swapusage"]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      availableMemoryBytes = darwinAvailableMemory(vmStat) ?? availableMemoryBytes;
+      swap = parseDarwinSwapUsage(swapUsage);
     }
     const memoryMax = cgroup
       ? cgroupNumber(yield* readFile(`${cgroup}/memory.max`), /^(\d+)$/m)
@@ -205,6 +285,10 @@ const make = Effect.fn("makeHostResources")(function* () {
       cpuCount,
       availableMemoryBytes: Math.min(totalMemoryBytes, Math.max(0, availableMemoryBytes)),
       totalMemoryBytes,
+      loadAverage: platform === "win32" ? null : loadAverage(),
+      swap,
+      disk: yield* readDisk,
+      uptimeSeconds: Math.floor(NodeOS.uptime()),
     };
   });
 

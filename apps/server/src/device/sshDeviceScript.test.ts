@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalFetchInEffect:off - verifies generated remote scripts using real shell and Node processes.
 import * as Effect from "effect/Effect";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { expect, it } from "@effect/vitest";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
@@ -60,9 +60,8 @@ const probeAndroid = (setup: (home: string) => Promise<Record<string, string>>, 
     }
   });
 
-it.effect("does not offer Android when the SDK adb cannot run", () =>
+it.effect.skipIf(isWindowsHost)("does not offer Android when the SDK adb cannot run", () =>
   Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
     const { android } = yield* probeAndroid(async (home) => {
       const sdk = NodePath.join(home, "sdk");
       await completeSdk(sdk, "exit 1");
@@ -72,9 +71,8 @@ it.effect("does not offer Android when the SDK adb cannot run", () =>
   }),
 );
 
-it.effect("does not offer Android when SDK tools are directories", () =>
+it.effect.skipIf(isWindowsHost)("does not offer Android when SDK tools are directories", () =>
   Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
     const { android } = yield* probeAndroid(async (home) => {
       const sdk = NodePath.join(home, "sdk");
       await executable(NodePath.join(sdk, "platform-tools/adb"), "echo Android Debug Bridge");
@@ -92,9 +90,8 @@ it.effect("does not offer Android when SDK tools are directories", () =>
   }),
 );
 
-it.effect("uses the SDK the probe accepted for later SSH commands", () =>
+it.effect.skipIf(isWindowsHost)("uses the SDK the probe accepted for later SSH commands", () =>
   Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
     let sdk = "";
     const result = yield* probeAndroid(async (home) => {
       // Incomplete default locations must not shadow the configured SDK.
@@ -109,34 +106,29 @@ it.effect("uses the SDK the probe accepted for later SSH commands", () =>
   }),
 );
 
-it.effect("finds Android Studio Java for a non-interactive SSH session", () =>
-  Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
-    yield* Effect.promise(async () => {
-      const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-ssh-java-"));
-      try {
-        const javaHome = NodePath.join(home, ".local/opt/android-studio/jbr");
-        await NodeFSP.mkdir(NodePath.join(javaHome, "bin"), { recursive: true });
-        await NodeFSP.writeFile(
-          NodePath.join(javaHome, "bin/java"),
-          "#!/bin/sh\necho test-java\n",
-          { mode: 0o755 },
-        );
-        const result = await exec("/bin/sh", ["-c", `${remoteDeviceEnvironment}\njava`], {
-          env: { HOME: home, PATH: "/nonexistent", JAVA_HOME: "" },
-        });
-        expect(result.stdout.trim()).toBe("test-java");
-      } finally {
-        await NodeFSP.rm(home, { recursive: true, force: true });
-      }
-    });
+it.effect.skipIf(isWindowsHost)("finds Android Studio Java for a non-interactive SSH session", () =>
+  Effect.promise(async () => {
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-ssh-java-"));
+    try {
+      const javaHome = NodePath.join(home, ".local/opt/android-studio/jbr");
+      await NodeFSP.mkdir(NodePath.join(javaHome, "bin"), { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(javaHome, "bin/java"), "#!/bin/sh\necho test-java\n", {
+        mode: 0o755,
+      });
+      const result = await exec("/bin/sh", ["-c", `${remoteDeviceEnvironment}\njava`], {
+        env: { HOME: home, PATH: "/nonexistent", JAVA_HOME: "" },
+      });
+      expect(result.stdout.trim()).toBe("test-java");
+    } finally {
+      await NodeFSP.rm(home, { recursive: true, force: true });
+    }
   }),
 );
 
-it.effect("restarts the hub when the Android SDK appears after it started", () =>
-  Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
-    yield* Effect.promise(async () => {
+it.effect.skipIf(isWindowsHost)(
+  "restarts the hub when the SSH host's Android SDK changes after it started",
+  () =>
+    Effect.promise(async () => {
       const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-ssh-hub-"));
       const state = NodePath.join(home, ".t3/device/hosts/owner");
       const readHub = async () =>
@@ -144,15 +136,12 @@ it.effect("restarts the hub when the Android SDK appears after it started", () =
           pid: number;
         };
       const tool = NodePath.join(home, `.t3/device/tools/expo-device-hub@${DEVICE_HUB_VERSION}`);
-      const executable = async (file: string) => {
-        await NodeFSP.mkdir(NodePath.dirname(file), { recursive: true });
-        await NodeFSP.writeFile(file, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-      };
-      const start = () => {
+      const start = (env: Record<string, string> = {}) => {
         const started = exec("/bin/sh", ["-c", `${remoteDeviceEnvironment}exec node`], {
           env: {
             HOME: home,
             PATH: `${home}/bin:${NodePath.dirname(process.execPath)}:/usr/bin:/bin`,
+            ...env,
           },
         });
         started.child.stdin?.end(remoteDeviceScript("owner", "start"));
@@ -167,10 +156,12 @@ it.effect("restarts the hub when the Android SDK appears after it started", () =
           fakeHub,
         );
         await NodeFSP.writeFile(NodePath.join(tool, ".install-complete"), DEVICE_HUB_VERSION);
-        await executable(NodePath.join(home, "bin/adb"));
-        await start();
+        // A hub only starts with a complete SDK, so the first one ran on another SDK.
+        const firstSdk = NodePath.join(home, "first-sdk");
+        await completeSdk(firstSdk);
+        await start({ ANDROID_HOME: firstSdk });
         const before = await readHub();
-        await executable(NodePath.join(home, "Android/Sdk/platform-tools/adb"));
+        await completeSdk(NodePath.join(home, "Android/Sdk"));
         await start();
         const after = await readHub();
         expect(after.pid).not.toBe(before.pid);
@@ -183,40 +174,39 @@ it.effect("restarts the hub when the Android SDK appears after it started", () =
           .catch(() => {});
         await NodeFSP.rm(home, { recursive: true, force: true });
       }
-    });
-  }),
+    }),
 );
 
-it.effect("preserves shell metacharacters and newlines in remote arguments", () =>
-  Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
-    yield* Effect.promise(async () => {
+it.effect.skipIf(isWindowsHost)(
+  "preserves shell metacharacters and newlines in remote arguments",
+  () =>
+    Effect.promise(async () => {
       const value = "quotes ' \" ; $(echo expanded) $HOME\nnext line";
       const result = await exec("sh", ["-c", `printf %s ${quoteRemoteArg(value)}`]);
       expect(result.stdout).toBe(value);
-    });
-  }),
+    }),
 );
 
-it.effect("rejects a Node release below the pinned agent-device engine floor", () =>
-  Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
-    const probe = NodeChildProcess.spawnSync(process.execPath, [], {
-      input:
-        `Object.defineProperty(process.versions, "node", { value: "22.11.0" });\n` +
-        remoteDeviceScript("owner", "probe"),
-      env: { HOME: NodeOS.tmpdir(), PATH: NodePath.dirname(process.execPath) },
-      encoding: "utf8",
-    });
-    expect(probe.status).not.toBe(0);
-    expect(probe.stderr).toContain("Node 22.12 or newer");
-  }),
+it.effect.skipIf(isWindowsHost)(
+  "rejects a Node release below the pinned agent-device engine floor",
+  () =>
+    Effect.sync(() => {
+      const probe = NodeChildProcess.spawnSync(process.execPath, [], {
+        input:
+          `Object.defineProperty(process.versions, "node", { value: "22.11.0" });\n` +
+          remoteDeviceScript("owner", "probe"),
+        env: { HOME: NodeOS.tmpdir(), PATH: NodePath.dirname(process.execPath) },
+        encoding: "utf8",
+      });
+      expect(probe.status).not.toBe(0);
+      expect(probe.stderr).toContain("Node 22.12 or newer");
+    }),
 );
 
-it.effect("stops a daemon left for its owner when starting without agent tools", () =>
-  Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
-    yield* Effect.promise(async () => {
+it.effect.skipIf(isWindowsHost)(
+  "stops a daemon left for its owner when starting without agent tools",
+  () =>
+    Effect.promise(async () => {
       const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-ssh-start-"));
       try {
         const state = NodePath.join(home, ".t3/device/hosts/owner");
@@ -256,46 +246,37 @@ if (fs.existsSync(${JSON.stringify(failMarker)})) process.exitCode = 1;`,
       } finally {
         await NodeFSP.rm(home, { recursive: true, force: true });
       }
-    });
-  }),
+    }),
 );
 
-it.effect("keeps a daemon record its missing agent CLI cannot stop", () =>
-  Effect.gen(function* () {
-    if ((yield* HostProcess.Platform) === "win32") return;
-    yield* Effect.promise(async () => {
-      const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-ssh-start-"));
-      try {
-        const state = NodePath.join(home, ".t3/device/hosts/owner");
-        const daemonFile = NodePath.join(state, "daemon.json");
-        await NodeFSP.mkdir(NodePath.join(home, "bin"));
-        await NodeFSP.mkdir(state, { recursive: true });
-        await NodeFSP.writeFile(
-          NodePath.join(state, "agent.json"),
-          JSON.stringify({ entryPath: NodePath.join(home, "missing/agent-device.mjs") }),
-        );
-        const start = async (pid: number) => {
-          await NodeFSP.writeFile(
-            daemonFile,
-            JSON.stringify({ pid, httpPort: 1, token: "claims" }),
-          );
-          return NodeChildProcess.spawnSync(process.execPath, [], {
-            input: remoteDeviceScript("owner", "start"),
-            env: { HOME: home, PATH: NodePath.join(home, "bin") },
-            encoding: "utf8",
-          });
-        };
-        // This test process stands in for a daemon that is still running.
-        expect((await start(process.pid)).stderr).toContain(
-          "Could not stop the agent-device daemon",
-        );
-        expect(await NodeFSP.readFile(daemonFile, "utf8")).toContain("claims");
-        const exited = NodeChildProcess.spawnSync(process.execPath, ["-e", ""]).pid;
-        expect((await start(exited)).stderr).toContain("Android SDK was not found");
-        await expect(NodeFSP.access(daemonFile)).rejects.toThrow();
-      } finally {
-        await NodeFSP.rm(home, { recursive: true, force: true });
-      }
-    });
+it.effect.skipIf(isWindowsHost)("keeps a daemon record its missing agent CLI cannot stop", () =>
+  Effect.promise(async () => {
+    const home = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-ssh-start-"));
+    try {
+      const state = NodePath.join(home, ".t3/device/hosts/owner");
+      const daemonFile = NodePath.join(state, "daemon.json");
+      await NodeFSP.mkdir(NodePath.join(home, "bin"));
+      await NodeFSP.mkdir(state, { recursive: true });
+      await NodeFSP.writeFile(
+        NodePath.join(state, "agent.json"),
+        JSON.stringify({ entryPath: NodePath.join(home, "missing/agent-device.mjs") }),
+      );
+      const start = async (pid: number) => {
+        await NodeFSP.writeFile(daemonFile, JSON.stringify({ pid, httpPort: 1, token: "claims" }));
+        return NodeChildProcess.spawnSync(process.execPath, [], {
+          input: remoteDeviceScript("owner", "start"),
+          env: { HOME: home, PATH: NodePath.join(home, "bin") },
+          encoding: "utf8",
+        });
+      };
+      // This test process stands in for a daemon that is still running.
+      expect((await start(process.pid)).stderr).toContain("Could not stop the agent-device daemon");
+      expect(await NodeFSP.readFile(daemonFile, "utf8")).toContain("claims");
+      const exited = NodeChildProcess.spawnSync(process.execPath, ["-e", ""]).pid;
+      expect((await start(exited)).stderr).toContain("Android SDK was not found");
+      await expect(NodeFSP.access(daemonFile)).rejects.toThrow();
+    } finally {
+      await NodeFSP.rm(home, { recursive: true, force: true });
+    }
   }),
 );

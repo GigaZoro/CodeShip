@@ -355,6 +355,13 @@ export function CommandPalette(props: {
         run: () => openSettings(navigation, "SettingsUsage"),
       },
       {
+        key: "machines",
+        kind: "action",
+        title: t("Machines"),
+        searchTerms: ["resources", "cpu", "memory", "disk", "swap", "uptime"],
+        run: () => openSettings(navigation, "SettingsMachines"),
+      },
+      {
         key: "archive",
         kind: "action",
         title: t("Archived threads"),

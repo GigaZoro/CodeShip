@@ -310,7 +310,13 @@ function StepContent(props: {
         </Text>
       </View>
       <ReviewBody step={step} reviewEnvironmentId={props.reviewEnvironmentId} decision={decision} />
-      {decision === null || chatHost === null ? null : (
+      {decision === null || chatHost === null ? (
+        <Text className="text-xs text-foreground-muted">
+          {t("Connect to {machine} to decide here. The step stays on its pending list.", {
+            machine: step.machine,
+          })}
+        </Text>
+      ) : (
         <DecisionFooter decision={decision} machine={chatHost.machine} />
       )}
       <View className="flex-row flex-wrap gap-3">
