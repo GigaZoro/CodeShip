@@ -9,6 +9,7 @@ import {
   type OrchestratorMcpThreadRun,
   type OrchestratorMcpThreadSendInput,
   type OrchestratorMcpThreadSendResult,
+  type OrchestratorMcpThreadReadResult,
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
@@ -629,17 +630,23 @@ const make = Effect.gen(function* () {
     let error: OrchestratorMcpThreadTimelineItem | undefined;
     let afterPosition: number | undefined;
     let remainingItems = 0;
+    let wholePageItems = 0;
     let tailProbed = false;
     let run: OrchestratorMcpThreadRun | undefined;
     while (true) {
+      // Keep the first and expected final activity pages whole; a result on a middle page then
+      // needs an extra text read. A whole page ends at the result budget, so the last one read
+      // whole is the measure of whether the rest fits in one.
+      const truncated = failed && remainingItems > wholePageItems;
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
         view: failed ? "activity" : "messages",
         limit: 100,
         runLimit: 50,
-        maxCharsPerItem: failed && remainingItems > 100 ? 1 : 20_000,
+        maxCharsPerItem: truncated ? 1 : 20_000,
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
+      if (!truncated) wholePageItems = read.items.length;
       run ??= read.recentRuns?.find((candidate) => candidate.runId === runId);
       reply =
         read.items.findLast(
@@ -654,18 +661,30 @@ const make = Effect.gen(function* () {
       if (!read.hasMore || read.nextPosition === null) break;
       if (!failed && probeSuccess && !tailProbed) {
         tailProbed = true;
-        const tailPosition = Math.floor((read.thread.itemCount - 1) / 100) * 100 - 1;
+        let tailPosition: number | null = Math.floor((read.thread.itemCount - 1) / 100) * 100 - 1;
         if (tailPosition > read.nextPosition) {
-          const tail = yield* forwarding.readThread(scope, remote.environmentId, {
-            threadId: remote.threadId,
-            view: "messages",
-            limit: 100,
-            afterPosition: tailPosition,
-          });
-          const tailReply = tail.items.findLast(
-            (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
-          );
-          if (!tail.hasMore && tailReply !== undefined) {
+          // Read on to the end: the result budget can end a tail read early.
+          let tailReply: OrchestratorMcpThreadTimelineItem | undefined;
+          while (tailPosition !== null) {
+            const tail: OrchestratorMcpThreadReadResult = yield* forwarding.readThread(
+              scope,
+              remote.environmentId,
+              {
+                threadId: remote.threadId,
+                view: "messages",
+                limit: 100,
+                maxCharsPerItem: 20_000,
+                afterPosition: tailPosition,
+              },
+            );
+            tailReply =
+              tail.items.findLast(
+                (item) =>
+                  item.type === "assistant_message" && (runId === null || item.runId === runId),
+              ) ?? tailReply;
+            tailPosition = tail.hasMore ? tail.nextPosition : null;
+          }
+          if (tailReply !== undefined) {
             reply = tailReply;
             break;
           }

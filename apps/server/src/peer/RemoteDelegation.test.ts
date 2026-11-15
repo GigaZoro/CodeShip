@@ -1903,8 +1903,19 @@ it.effect.each(["tail-error", "middle-error", "reply-fallback", "cancel-refill"]
           }
           // Scan pages name their view; the status read delegate_task makes does not.
           const pages = reads.filter((read) => read.view !== undefined);
-          expect(pages.map((read) => read.afterPosition)).toEqual([undefined, 99, 199, 299]);
-          expect(pages.map((read) => read.maxCharsPerItem)).toEqual([20_000, 1, 1, 20_000]);
+          // The result budget ends a whole page at 11 history items and a truncated one near 72,
+          // so the last 3 items after the truncated pages fit one whole page and the last 55 do not.
+          expect(pages.map((read) => read.afterPosition)).toEqual(
+            middle ? [undefined, 10, 82, 154, 225, 296] : [undefined, 10, 82, 154, 226, 298],
+          );
+          expect(pages.map((read) => read.maxCharsPerItem)).toEqual([
+            20_000,
+            1,
+            1,
+            1,
+            1,
+            middle ? 1 : 20_000,
+          ]);
           const refills = reads.filter((read) => read.itemId !== undefined);
           expect(refills[0]).toMatchObject({ itemId: "selected", textOffset: middle ? 1 : 20_000 });
           if (scenario !== "cancel-refill") expect(refills).toHaveLength(middle ? 3 : 2);
@@ -2025,15 +2036,17 @@ it.effect.each([
         }
         // Scan pages name their view; the status read delegate_task makes does not.
         const pages = reads.filter((read) => read.view !== undefined);
+        // The result budget ends a page of history at about 70 items, and the tail read in
+        // "growing" after 69 of the 102 items past position 299.
         const positions =
           scenario === "cancelled" || scenario === "interrupted"
-            ? [undefined, 99, 199, 299]
+            ? [undefined, 69, 139, 209, 279]
             : scenario === "later-run"
-              ? [undefined, 299, 99, 199, 299]
+              ? [undefined, 299, 69, 139, 209, 279, 348]
               : scenario === "shrinking"
-                ? [undefined, 299, 99]
+                ? [undefined, 299, 69, 139]
                 : scenario === "growing"
-                  ? [undefined, 299, 99, 199, 299, 399]
+                  ? [undefined, 299, 368]
                   : [undefined, 299];
         expect(pages.map((read) => read.afterPosition)).toEqual(positions);
         expect(
