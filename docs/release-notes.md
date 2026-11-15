@@ -1,3 +1,7 @@
+## 2026-11-15 — A restart no longer leaves a chat's next message waiting forever
+
+- When a server restart cut a chat whose agent had already finished its turn, a message queued behind it stayed held for a resume that never came, so the chat never ran again. A message queued behind a run whose turn had finished now starts after the restart. A chat that is snoozed, settled or archived still stays as it was.
+
 ## 2026-11-15 — A long database update no longer floods the server's trace files
 
 - While a large database was updated at startup, the server wrote a trace entry for every stored row it rewrote, about 10 MB every 10 seconds, so the trace files lost everything from before the update within minutes. The update now writes one entry per step instead.

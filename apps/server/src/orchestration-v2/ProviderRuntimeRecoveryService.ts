@@ -31,6 +31,7 @@ import {
   answerableAfterRestart,
   continuesAfterRestart,
   RestartResumeRequest,
+  restartLeavesThreadAsIs,
   restartResumeRun,
 } from "./RestartContinuation.ts";
 import { isBufferedProviderNotification } from "./NotificationMailbox.ts";
@@ -44,6 +45,7 @@ import {
   backgroundWorkStoppedNotice,
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
+  cutAfterTurnFinished,
   isAwaitedWork,
   latestStartedRun,
   mergeRestartCancelledBackgroundWork,
@@ -528,15 +530,22 @@ export const make = Effect.gen(function* () {
         if (run.queueHeld === true) continue;
         // A person reviews what they queued, but nobody reviews a message an agent, the server or a
         // scheduled task queued, and no continuation is scheduled to lift its hold: it just starts.
+        // So does a message queued behind a run whose turn had already finished: the restart cut no
+        // work, and no continuation will ever lift a hold on it.
         if (
           trigger === "startup" &&
           continueAfterRestart &&
           continuationRun === undefined &&
-          queuedMessages.some(
+          (queuedMessages.some(
             (message) =>
               message.id === run.userMessageId &&
               (message.createdBy !== "user" || message.scheduledTaskId !== undefined),
-          )
+          ) ||
+            (!restartLeavesThreadAsIs(projection.thread, now) &&
+              cutAfterTurnFinished(
+                runs.filter((cut) => cut.status !== "queued"),
+                projection.providerTurns,
+              )))
         )
           continue;
         events.push({

@@ -517,6 +517,24 @@ export function promptNeverDelivered(
   return !providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId);
 }
 
+/**
+ * Every run a restart cut had already finished its provider turn, so the restart lost no work for
+ * a person to review or a continuation to redo.
+ */
+export function cutAfterTurnFinished(
+  cutRuns: ReadonlyArray<Pick<OrchestrationV2Run, "activeAttemptId">>,
+  providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>,
+): boolean {
+  return (
+    cutRuns.length > 0 &&
+    cutRuns.every((run) =>
+      providerTurns.some(
+        (turn) => turn.runAttemptId === run.activeAttemptId && turn.status === "completed",
+      ),
+    )
+  );
+}
+
 /** The run whose message started the work `run` continues, through any server continuations. */
 export function continuationSource(
   run: OrchestrationV2Run,
