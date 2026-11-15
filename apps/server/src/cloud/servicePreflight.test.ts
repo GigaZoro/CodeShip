@@ -11,6 +11,7 @@ import {
   databaseMigrationHead,
 } from "../persistence/databaseMigrationHead.ts";
 import { codeShipMigrationManifest, migrationManifest } from "../persistence/Migrations.ts";
+import { legacyCodeShipMigrationNames } from "../persistence/reconcileCodeShipMigrationLedger.ts";
 
 import { decodeServicePreflightResult, runServicePreflight } from "./servicePreflight.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
@@ -127,7 +128,9 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       db.exec(
         "DELETE FROM effect_sql_migrations WHERE migration_id >= 78; DELETE FROM codeship_migrations",
       );
-      for (const [id, name] of codeShipMigrationManifest) insert.run(id + 77, name);
+      for (const [index, name] of legacyCodeShipMigrationNames.entries()) {
+        insert.run(index + 78, name);
+      }
       expect(preflight()).toMatchObject({ status: "ready", migratesDatabase: true });
       expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
       expect(db.prepare("SELECT COUNT(*) AS count FROM codeship_migrations").get()?.count).toBe(0);

@@ -2,7 +2,8 @@ import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 
-const legacyNames = [
+/** Fork migrations that released builds recorded in the upstream ledger, at ids 78 and up. */
+export const legacyCodeShipMigrationNames = [
   "PeerScheduledTaskSnapshots",
   "CompletedRunAccountIndex",
   "UsageLimitHoldEndIndex",
@@ -29,7 +30,7 @@ export function reconciledCodeShipMigrationHistory<Row extends MigrationRow>(
   upstream: ReadonlyArray<Row>,
   fork: ReadonlyArray<Row>,
 ) {
-  const moved = upstream.filter(({ id, name }) => legacyNames[id - 78] === name);
+  const moved = upstream.filter(({ id, name }) => legacyCodeShipMigrationNames[id - 78] === name);
   const movedIds = new Set(moved.map(({ id }) => id));
   const byId = new Map(fork.map((row) => [row.id, row]));
   const conflicts: string[] = [];

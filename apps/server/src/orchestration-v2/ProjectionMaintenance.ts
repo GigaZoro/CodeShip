@@ -387,7 +387,9 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           AND NOT EXISTS (
             SELECT 1
             FROM orchestration_v2_projection_threads AS member
-            WHERE json_extract(member.payload_json, '$.lineage.rootThreadId') = ${rootThreadId}
+            -- Migration 89's root_thread_idx key: the same expression, or SQLite scans every chat.
+            WHERE CASE WHEN json_valid(member.payload_json)
+              THEN json_extract(member.payload_json, '$.lineage.rootThreadId') END = ${rootThreadId}
               AND (
                 member.updated_at >= ${idleBefore}
                 OR json_extract(member.payload_json, '$.pinnedAt') IS NOT NULL
@@ -616,7 +618,8 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
             SELECT
               page.thread_id,
               page.updated_at,
-              json_extract(page.payload_json, '$.lineage.rootThreadId') AS root_thread_id,
+              CASE WHEN json_valid(page.payload_json)
+                THEN json_extract(page.payload_json, '$.lineage.rootThreadId') END AS root_thread_id,
               (
                 page.updated_at < ${idleBefore}
                 AND (

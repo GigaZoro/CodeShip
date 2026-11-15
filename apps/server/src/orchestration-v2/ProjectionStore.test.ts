@@ -10243,6 +10243,16 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           assert.include(errorLookup, "turn_items_failed_error_idx");
           assert.include(errorLookup, "(thread_id=? AND run_id=? AND node_id=?)");
         }
+        // The recovery sweep lists usage-limit threads from the hold-end index alone.
+        assert.deepEqual(
+          plan.filter((detail) => /^(?:SCAN|SEARCH) failure\b/.test(detail)),
+          marker.includes("blocking")
+            ? []
+            : [
+                "SCAN failure USING INDEX orchestration_v2_projection_turn_items_usage_limit_hold_end_idx",
+              ],
+          marker,
+        );
       }
     }),
   );

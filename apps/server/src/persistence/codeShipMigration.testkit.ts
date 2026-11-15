@@ -1,7 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
-import { runMigrations, codeShipMigrationManifest } from "./Migrations.ts";
+import { runMigrations } from "./Migrations.ts";
+import { legacyCodeShipMigrationNames } from "./reconcileCodeShipMigrationLedger.ts";
 import { isResumableMigration } from "./ResumableMigration.ts";
 import Migration001 from "./CodeShipMigrations/001_PeerScheduledTaskSnapshots.ts";
 import Migration002 from "./CodeShipMigrations/002_CompletedRunAccountIndex.ts";
@@ -47,10 +48,10 @@ export const seedLegacyCodeShipDatabase = Effect.fn("seedLegacyCodeShipDatabase"
 ) {
   yield* runMigrations({ toMigrationInclusive: 77 });
   const sql = yield* SqlClient.SqlClient;
-  for (const [forkId, name] of codeShipMigrationManifest) {
-    const id = forkId + 77;
+  for (const [index, name] of legacyCodeShipMigrationNames.entries()) {
+    const id = index + 78;
     if (id > throughId) break;
-    const migration = bodies[forkId - 1]!;
+    const migration = bodies[index]!;
     if (isResumableMigration(migration)) {
       let cursor: string | undefined;
       do {

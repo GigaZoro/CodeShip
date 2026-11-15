@@ -18,6 +18,7 @@ import * as Stream from "effect/Stream";
 
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EventSink from "./EventSink.ts";
@@ -370,6 +371,7 @@ it.effect("keeps old tool output while any chat sharing the root is open, pinned
     const activeSource = retentionThread("active-fork-source", longAgo, settled);
     const settledSource = retentionThread("settled-fork-source", longAgo, settled);
     const archivedParent = retentionThread("side-chat-parent", longAgo, { archivedAt: longAgo });
+    const malformed = retentionThread("malformed", longAgo, settled);
     const families = [
       { pruned: false, members: [openSource, forkOf(openSource, "open-fork", longAgo)] },
       {
@@ -408,18 +410,52 @@ it.effect("keeps old tool output while any chat sharing the root is open, pinned
           }),
         ],
       },
+      // A chat whose payload is not JSON has no family to judge, so it keeps its output.
+      { pruned: false, members: [malformed] },
     ];
     const members = families.flatMap((family) => family.members);
     for (const member of members) yield* writeRetentionItems(member, member.updatedAt);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      UPDATE orchestration_v2_projection_threads SET payload_json = '{broken'
+      WHERE thread_id = ${malformed.id}
+    `;
     const before = new Map<ThreadId, ReadonlyArray<OrchestrationV2TurnItem | null>>();
     for (const member of members) before.set(member.id, yield* storedRetentionItems(member.id));
 
-    assert.deepEqual(yield* maintenance.pruneColdThreadToolOutput({ idleBefore }), {
-      threadCount: 4,
-      itemCount: 8,
-      eventCount: 12,
-      unreadableItemCount: 0,
+    const spans: Array<Tracer.NativeSpan> = [];
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
     });
+    assert.deepEqual(
+      yield* maintenance.pruneColdThreadToolOutput({ idleBefore }).pipe(Effect.withTracer(tracer)),
+      { threadCount: 4, itemCount: 8, eventCount: 12, unreadableItemCount: 0 },
+    );
+    // Each family is read by root from its index, not from a walk over every chat.
+    const familyReads = new Set(
+      spans.flatMap((span) => {
+        const query = span.attributes.get("db.query.text");
+        return typeof query === "string" &&
+          query.includes("orchestration_v2_projection_threads AS member")
+          ? [query]
+          : [];
+      }),
+    );
+    assert.strictEqual(familyReads.size, 1);
+    for (const statement of familyReads) {
+      const lookups = (yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${statement}`,
+      ))
+        .map((row) => row.detail)
+        .filter((detail) => /^(?:SCAN|SEARCH) member\b/.test(detail));
+      assert.deepEqual(lookups, [
+        "SEARCH member USING INDEX orchestration_v2_projection_threads_root_thread_idx (<expr>=?)",
+      ]);
+    }
     for (const family of families) {
       for (const member of family.members) {
         const items = before.get(member.id)!;

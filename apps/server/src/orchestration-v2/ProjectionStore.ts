@@ -4909,10 +4909,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           WHERE t.deleted_at IS NULL
             -- The sweep runs every scheduler tick. Without this list the latest-run
             -- lookup above sorts every run of every thread, tens of milliseconds
-            -- for one long thread; only threads with a usage-limit failure qualify.
+            -- for one long thread; only threads with a usage-limit failure qualify. These are
+            -- the hold-end index's filters, so the list reads only that small index.
             AND t.thread_id IN (
               SELECT failure.thread_id FROM orchestration_v2_projection_turn_items failure
               WHERE failure.type = 'error' AND failure.status = 'failed'
+                AND json_valid(failure.payload_json)
                 AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
             )
             AND json_extract(t.payload_json, '$.archivedAt') IS NULL
@@ -5192,12 +5194,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ON answered_run.run_id = answered_attempt.run_id
             WHERE answered_attempt.provider_instance_id = ${instanceId}
               AND answered_attempt.status <> 'superseded'
-              AND json_extract(answered_attempt.payload_json, '$.startedAt') > ${since}
+              AND CASE WHEN json_valid(answered_attempt.payload_json)
+                THEN json_extract(answered_attempt.payload_json, '$.startedAt') END > ${since}
               AND julianday(json_extract(answered_attempt.payload_json, '$.startedAt'))
                 > julianday(${since})
               AND EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_provider_turns answered
                 WHERE answered.run_attempt_id = answered_attempt.attempt_id
+                  AND json_valid(answered.payload_json)
                   AND json_extract(answered.payload_json, '$.tokenUsage') IS NOT NULL
               )
           )
@@ -5254,9 +5258,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             SELECT failure.thread_id, failure.run_id, failure.node_id, failure.payload_json
             FROM orchestration_v2_projection_turn_items failure
             WHERE failure.type = 'error' AND failure.status = 'failed'
+              AND json_valid(failure.payload_json)
               AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
               -- The latest a refusal can hold: its reset, else usageHoldMs (at most five hours).
-              -- This exact expression is the key of the hold-end index (migration 080).
+              -- These filters and this exact expression are the hold-end index's (CodeShip
+              -- migration 18); any difference drops the index.
               AND COALESCE(
                 julianday(json_extract(failure.payload_json, '$.failure.resetAt')),
                 julianday(failure.updated_at, '+5 hours')
@@ -5312,12 +5318,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ) AND NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_run_attempts answered_attempt
                 WHERE answered_attempt.provider_instance_id = limited.provider_instance_id
-                  AND json_extract(answered_attempt.payload_json, '$.startedAt') > limited.refused_at
+                  AND CASE WHEN json_valid(answered_attempt.payload_json)
+                    THEN json_extract(answered_attempt.payload_json, '$.startedAt') END
+                    > limited.refused_at
                   AND julianday(json_extract(answered_attempt.payload_json, '$.startedAt'))
                     > julianday(limited.refused_at)
                   AND EXISTS (
                     SELECT 1 FROM orchestration_v2_projection_provider_turns answered
                     WHERE answered.run_attempt_id = answered_attempt.attempt_id
+                      AND json_valid(answered.payload_json)
                       AND json_extract(answered.payload_json, '$.tokenUsage') IS NOT NULL
                   )
               )))
