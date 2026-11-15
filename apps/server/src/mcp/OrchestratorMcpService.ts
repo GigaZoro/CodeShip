@@ -3016,10 +3016,10 @@ const make = Effect.gen(function* () {
     listScheduledTasks: Effect.fn("OrchestratorMcpService.listScheduledTasks")(
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
+        // A named task is found outside the caller's own project unless a project is asked for.
         const projectId =
-          input.scheduledTaskId === undefined
-            ? (input.projectId ?? parent?.thread.projectId)
-            : undefined;
+          input.projectId ??
+          (input.scheduledTaskId === undefined ? parent?.thread.projectId : undefined);
         const includePrompt = input.includePrompt === true || input.scheduledTaskId !== undefined;
         const { tasks, projectMachineOrders } = yield* scheduledTasks
           .list()
