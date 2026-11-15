@@ -2205,7 +2205,10 @@ it.effect("keeps ingesting while the last stored root snapshot reports pending w
       ).pipe(Effect.asSome),
       Deferred.await(consumed).pipe(Effect.as(Option.none())),
     );
-    assert.deepEqual(result, Option.some(["root-finalized", "turn_item:completed"]));
+    assert.deepEqual(
+      result,
+      Option.some(["roster:0", "root-finalized", "turn_item:completed", "roster:0"]),
+    );
   }),
 );
 
