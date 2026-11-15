@@ -1,6 +1,6 @@
 ## 2026-11-15 — A restart no longer leaves a chat's next message waiting forever
 
-- When a server restart cut a chat whose agent had already finished its turn, a message queued behind it stayed held for a resume that never came, so the chat never ran again. A message queued behind a run whose turn had finished now starts after the restart. A chat that is snoozed, settled or archived still stays as it was.
+- When a server restart cut a chat whose agent had already finished its turn, a message queued behind it stayed held for a resume that never came, so the chat never ran again. A message queued behind a run whose turn had finished now starts after the restart. A chat a restart already left in that state starts again on the next start. A chat that is snoozed, settled or archived still stays as it was.
 
 ## 2026-11-15 — A long database update no longer floods the server's trace files
 

@@ -31,7 +31,6 @@ import {
   answerableAfterRestart,
   continuesAfterRestart,
   RestartResumeRequest,
-  restartLeavesThreadAsIs,
   restartResumeRun,
 } from "./RestartContinuation.ts";
 import { isBufferedProviderNotification } from "./NotificationMailbox.ts";
@@ -49,6 +48,7 @@ import {
   isAwaitedWork,
   latestStartedRun,
   mergeRestartCancelledBackgroundWork,
+  restartLeavesThreadAsIs,
   turnCallWork,
 } from "./RestartBackgroundNote.ts";
 

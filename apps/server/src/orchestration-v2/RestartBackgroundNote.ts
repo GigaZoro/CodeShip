@@ -586,6 +586,22 @@ export function restartHeldBySnooze(
   return thread.snoozedUntil != null && DateTime.isGreaterThan(thread.snoozedUntil, now);
 }
 
+/** A restart wakes nothing in a chat that is archived, deleted, settled or snoozed. */
+export function restartLeavesThreadAsIs(
+  thread: Pick<
+    OrchestrationV2AppThread,
+    "archivedAt" | "deletedAt" | "settledOverride" | "snoozedUntil"
+  >,
+  now: DateTime.Utc,
+): boolean {
+  return (
+    thread.archivedAt !== null ||
+    thread.deletedAt !== null ||
+    thread.settledOverride === "settled" ||
+    restartHeldBySnooze(thread, now)
+  );
+}
+
 /** The provider never accepted this continuation's prompt, so starting it again repeats nothing. */
 export function continuationFailedBeforePrompt(
   run: Pick<OrchestrationV2Run, "status" | "activeAttemptId" | "restartContinuationOfRunId">,
