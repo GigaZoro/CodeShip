@@ -13,6 +13,7 @@ import * as Layer from "effect/Layer";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../config.ts";
+import { DiskSpaceCheckError } from "../persistence/DatabaseMaintenance.ts";
 
 export class HostResources extends Context.Service<
   HostResources,
@@ -156,7 +157,10 @@ export function makeDiskSpaceReader(statfs: StatFs, path: string) {
     (inFlight ??= statfs(path).finally(() => {
       inFlight = null;
     }));
-  return Effect.tryPromise(probe).pipe(
+  return Effect.tryPromise({
+    try: probe,
+    catch: (cause) => new DiskSpaceCheckError({ path, cause }),
+  }).pipe(
     Effect.timeout("1 second"),
     Effect.map((stats) => spaceUsage(stats.blocks * stats.bsize, stats.bavail * stats.bsize)),
     Effect.catch((cause) =>
