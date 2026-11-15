@@ -3237,7 +3237,11 @@ it.layer(
           { ...firstParty, email: "ada@example.com" },
           { CLAUDE_CONFIG_DIR: "/home/ada/.claude-work" },
         );
-        assert.strictEqual(saved.auth.profileId, "claude.ai:/home/ada/.claude-work");
+        // The profile id carries the resolved path, which gains a drive letter on Windows.
+        assert.strictEqual(
+          saved.auth.profileId,
+          `claude.ai:${(yield* Path.Path).resolve("/home/ada/.claude-work")}`,
+        );
 
         const tokenA = yield* statusFor(token, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-ada" });
         const tokenB = yield* statusFor(token, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-bob" });

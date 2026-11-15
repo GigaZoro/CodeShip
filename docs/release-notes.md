@@ -1,3 +1,7 @@
+## 2026-11-15 — Windows test runs no longer fail on POSIX-only command tests or drive-letter paths
+
+- Five server tests still failed on Windows: four ran `printf` in a shell that has none, and one expected a Unix path where Windows adds a drive letter. The POSIX ones now skip and the path test follows the host. The remaining command-runner tests that returned early on Windows also skip, so a run reports them as skipped.
+
 ## 2026-11-15 — `check:changed` catches a dependency without a license notice
 
 - Maintainers: `vp run check:changed` now checks the third-party license notices the web and mobile builds generate, so a new dependency without a license file fails there instead of in the release build. `vp run licenses:check` runs the same check on its own.
