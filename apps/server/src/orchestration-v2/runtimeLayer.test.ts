@@ -586,7 +586,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
               prompt: "Check orchestration progress",
               enabled: !webhook,
               schedule: webhook ? { type: "webhook" } : { type: "interval", everyMs: 60_000 },
-              projectId,
+              projectId: target === otherThreadId ? otherProjectId : projectId,
               threadId: target,
               workspaceStrategy: { type: "root" },
               modelSelection,
