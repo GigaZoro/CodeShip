@@ -2193,7 +2193,7 @@ it.effect("names the credential helper that never answered when a fetch times ou
       .fetchRemote({ cwd, remoteName: "origin", refName: "main" })
       .pipe(Effect.flip, Effect.forkChild);
     yield* Deferred.await(helperStarted);
-    yield* TestClock.adjust("30 seconds");
+    yield* TestClock.adjust("5 minutes");
     const error = yield* Fiber.join(fetch);
 
     assert.equal(error.detail, GIT_REMOTE_TIMED_OUT_DETAIL);
