@@ -532,7 +532,8 @@ another model, or a newer usage check, does not. Agent launches (`t3_thread_laun
 `delegate_task`, `create_threads`), Auto and named, respect the hold; a thread you create
 in the app is not refused. Used-up usage windows still block until the last of them
 resets. A used-up window that reports no reset blocks for at most the same hold, counted
-from when CodeShip first saw it used up. If none is free, the thread waits as above, and moves to the first
+from when CodeShip first saw it used up. A Codex account that Codex says may not be used now
+is skipped, even while its meters show room, until its fullest usage window resets. If none is free, the thread waits as above, and moves to the first
 account that gets usage back unless you stop it, snooze it or cancel its auto-resume; a thread
 hidden by **Hide limited threads until the limit resets** moves too, with or without
 **Resume when the limit resets**, and shows again. It moves when that account's last

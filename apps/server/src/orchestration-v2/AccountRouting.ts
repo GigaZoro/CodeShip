@@ -922,9 +922,10 @@ export const layer = Layer.effect(
       return { block, providers, recordedLimits };
     });
     const probedAt = yield* Ref.make(new Map<ProviderInstanceId, number>());
-    // Only a reading taken after the last refusal can say it no longer holds, as when the
-    // provider reset the account early. A wrong lift costs one refused turn an hour. A provider
-    // that says whether the account may be used is believed over its percentages.
+    // Only a full read after the last refusal can say it no longer holds; a streamed update moves
+    // `checkedAt` without reading the permission. A wrong lift costs one refused turn an hour. The
+    // provider's own answer outranks its percentages, and the lift ends at the read, so a refusal
+    // recorded after it still holds.
     const probeAccount = Effect.fn("AccountRouting.probeAccount")(
       function* (instanceId: ProviderInstanceId, lastRefusedAtMs: number, frees: ReadingFrees) {
         const providers = yield* providerRegistry
@@ -932,17 +933,17 @@ export const layer = Layer.effect(
           .pipe(Effect.timeout(USAGE_PROBE_TIMEOUT));
         const provider = providers.find((entry) => entry.instanceId === instanceId);
         const usage = provider?.usageLimits;
-        const now = yield* DateTime.now;
+        const readAtMs = Date.parse(usage?.accountReadAt ?? usage?.checkedAt ?? "");
         if (
           provider === undefined ||
           usage === undefined ||
           usage.unavailable !== undefined ||
-          Date.parse(usage.checkedAt) <= lastRefusedAtMs ||
-          !frees(provider, DateTime.toEpochMillis(now))
+          !(readAtMs > lastRefusedAtMs) ||
+          !frees(provider, DateTime.toEpochMillis(yield* DateTime.now))
         ) {
           return false;
         }
-        yield* projections.liftUsageLimitHolds(instanceId, now);
+        yield* projections.liftUsageLimitHolds(instanceId, DateTime.makeUnsafe(readAtMs));
         yield* Effect.logInfo("orchestration-v2.account-routing.probe-found-room", { instanceId });
         return true;
       },

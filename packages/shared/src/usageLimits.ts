@@ -123,14 +123,19 @@ export function nextWeeklyResetMs(
 
 function usedUpWindows(provider: ServerProvider | undefined, now: number) {
   const limits = provider?.usageLimits;
-  if (limits === undefined) return null;
+  if (provider === undefined || limits === undefined) return null;
   const end = (window: ServerProviderUsageWindow) => usageWindowLimitEnd(limits, window);
   // The provider's own yes outranks its percentages, which can stay at 100% after a banked reset.
   if (limits.usageAllowed === true) return { end, windows: [] };
-  return {
-    end,
-    windows: limits.windows.filter((window) => window.usedPercent >= 100 && end(window) > now),
-  };
+  const live = limits.windows.filter((window) => end(window) > now);
+  const usedUp = live.filter((window) => window.usedPercent >= 100);
+  const accountWide = (window: ServerProviderUsageWindow) =>
+    windowLimitsModel(provider.driver, window.id, null);
+  if (limits.usageAllowed !== false || usedUp.some(accountWide)) return { end, windows: usedUp };
+  // Its no outranks them too: the fullest account-wide windows hold the account until they reset.
+  const held = live.filter(accountWide);
+  const fullest = Math.max(...held.map((window) => window.usedPercent));
+  return { end, windows: [...usedUp, ...held.filter((window) => window.usedPercent === fullest)] };
 }
 
 function latestEnding(

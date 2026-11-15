@@ -60,6 +60,14 @@ export function makeUnavailableUsageLimits(input: {
   };
 }
 
+/** Whether `window` is used up where the reading before it, `before`, still had room. */
+function usesUp(
+  window: ServerProviderUsageWindow,
+  before: ServerProviderUsageWindow | undefined,
+): boolean {
+  return window.usedPercent >= 100 && (before?.usedPercent ?? 0) < 100;
+}
+
 /**
  * Stamps a window read at `checkedAt` with when it was first seen at 100%, carried from its
  * `previous` reading while it stays there, so a later update cannot move a no-reset window's hold.
@@ -118,7 +126,7 @@ export function applyUsageLimitsUpdate(input: {
     if (existing === undefined || !usageWindowEquals(existing, next)) {
       merged.set(window.id, next);
       changed = true;
-      newlyUsedUp ||= next.usedPercent >= 100 && (existing?.usedPercent ?? 0) < 100;
+      newlyUsedUp ||= usesUp(next, existing);
     }
   }
   if (!changed && previous !== undefined) {
@@ -207,11 +215,22 @@ export function resolveUsageLimitsAfterProbe(input: {
     !probed.unavailable &&
     Date.parse(published.checkedAt) > Date.parse(probed.checkedAt)
   ) {
+    // A newer streamed update keeps what streams carry, and a window it used up withdraws the
+    // read's yes, as `applyUsageLimitsUpdate` would have had it arrived after the read.
+    const { credits: _readCredits, usageAllowed: readAllowed, ...read } = probed;
+    const before = new Map(probed.windows.map((window) => [window.id, window] as const));
+    const usageAllowed =
+      readAllowed === true &&
+      published.windows.some((window) => usesUp(window, before.get(window.id)))
+        ? false
+        : readAllowed;
     return {
-      ...probed,
+      ...read,
       checkedAt: published.checkedAt,
       accountReadAt: probed.checkedAt,
       windows: published.windows,
+      ...(published.credits !== undefined ? { credits: published.credits } : {}),
+      ...(usageAllowed !== undefined ? { usageAllowed } : {}),
     };
   }
   return probed && carryExhaustion(published, probed);

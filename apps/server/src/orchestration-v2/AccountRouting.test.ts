@@ -1312,14 +1312,22 @@ it.effect.each([
     usedPercent: 100,
     freed: true,
   },
+  {
+    // A failed read keeps the last one, whose yes predates the refusal.
+    name: "does not believe a yes read before the refusal that a streamed update carried past it",
+    answers: [false, true],
+    usedPercent: 20,
+    freed: false,
+    readBeforeRefusal: true,
+  },
 ] as const)(
   "reads a held Codex account every ten minutes: $name",
-  ({ answers, usedPercent, freed }) =>
+  ({ answers, usedPercent, freed, ...row }) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse("2026-11-03T12:00:00.000Z"));
       const codexAccount = ProviderInstanceId.make("codex_main");
       const codexDriver = ProviderDriverKind.make("codex");
-      const lifted = yield* Ref.make(false);
+      const lifted = yield* Ref.make<string | null>(null);
       const reads = yield* Ref.make(0);
       // What the app-server answers to account/rateLimits/read on each read.
       const appServerRead = (allowed: boolean | null | undefined) => ({
@@ -1342,7 +1350,7 @@ it.effect.each([
                   Effect.map(
                     (done) =>
                       new Map(
-                        done
+                        done !== null
                           ? []
                           : [
                               [
@@ -1358,16 +1366,27 @@ it.effect.each([
                       ),
                   ),
                 ),
-              liftUsageLimitHolds: () => Ref.set(lifted, true),
+              liftUsageLimitHolds: (_, at) => Ref.set(lifted, DateTime.formatIso(at)),
             }),
             Layer.mock(ProviderRegistry.ProviderRegistry)({
               getProviders: Ref.get(latest).pipe(Effect.map((entry) => [entry])),
               refreshInstance: () =>
                 Effect.gen(function* () {
                   const count = yield* Ref.updateAndGet(reads, (value) => value + 1);
-                  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+                  // A reading taken a minute ago, as a cached one is.
+                  const readAt = DateTime.formatIso(
+                    DateTime.subtract(yield* DateTime.now, { minutes: 1 }),
+                  );
                   const read = appServerRead(answers[count - 1]);
-                  const next = codexProvider(codexRateLimitsToLimits({ read, checkedAt }));
+                  const limits = codexRateLimitsToLimits({
+                    read,
+                    checkedAt: "readBeforeRefusal" in row ? "2026-11-03T11:50:00.000Z" : readAt,
+                  });
+                  const next = codexProvider(
+                    "readBeforeRefusal" in row
+                      ? { ...limits, checkedAt: readAt, accountReadAt: limits.checkedAt }
+                      : limits,
+                  );
                   yield* Ref.set(latest, next);
                   return [next];
                 }),
@@ -1385,7 +1404,7 @@ it.effect.each([
         yield* TestClock.adjust("1 minute");
         assert.isFalse(yield* routing.releaseAllowedHolds);
         assert.equal(yield* Ref.get(reads), 1);
-        assert.isFalse(yield* Ref.get(lifted));
+        assert.isNull(yield* Ref.get(lifted));
 
         yield* TestClock.adjust("9 minutes");
         assert.isFalse(yield* routing.releaseAllowedHolds);
@@ -1394,7 +1413,8 @@ it.effect.each([
         yield* TestClock.adjust("1 minute");
         assert.equal(yield* routing.releaseAllowedHolds, freed);
         assert.equal(yield* Ref.get(reads), 2);
-        assert.equal(yield* Ref.get(lifted), freed);
+        // The lift ends at the reading, so a refusal after it still holds.
+        assert.equal(yield* Ref.get(lifted), freed ? "2026-11-03T12:14:00.000Z" : null);
         // A freed account is one routing may send work to again.
         assert.equal((yield* routing.limits).accounts.has(codexAccount), !freed);
       }).pipe(Effect.provide(layer));

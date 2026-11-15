@@ -230,6 +230,31 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published: live, probed: newer })).toEqual(newer);
   });
 
+  it("keeps a newer streamed update's credits, and a window it used up withdraws the read's yes", () => {
+    const probed = {
+      ...published,
+      credits: { balance: "4.00", unlimited: false },
+      usageAllowed: true,
+    };
+    const streamed = {
+      checkedAt: "2026-09-03T12:00:05.000Z",
+      windows: [{ ...session, usedPercent: 100 }, weekly],
+      credits: { balance: "1.00", unlimited: false },
+    };
+    expect(resolveUsageLimitsAfterProbe({ published: streamed, probed })).toEqual({
+      checkedAt: streamed.checkedAt,
+      accountReadAt: probed.checkedAt,
+      windows: streamed.windows,
+      credits: streamed.credits,
+      usageAllowed: false,
+    });
+    // The read's yes already weighed a window it saw at 100%.
+    const usedUp = { ...probed, windows: [{ ...session, usedPercent: 100 }, weekly] };
+    expect(
+      resolveUsageLimitsAfterProbe({ published: streamed, probed: usedUp })?.usageAllowed,
+    ).toBe(true);
+  });
+
   it.each([
     [
       "keeps when the replaced reading first saw it",

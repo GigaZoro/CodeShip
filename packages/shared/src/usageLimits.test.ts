@@ -232,19 +232,28 @@ describe("new thread model fallback", () => {
       }).selection?.options,
     ).toEqual(expected);
   });
-  it("believes the provider's yes over a window it still shows at 100%", () => {
+  const weekly = {
+    ...window,
+    id: "seven_day",
+    kind: "weekly",
+    label: "Weekly",
+    usedPercent: 70,
+    windowDurationMins: 10_080,
+    resetsAt: "2026-09-08T12:00:00.000Z",
+  } as const;
+  it.each([
+    { answer: true, windows: [{ ...window, usedPercent: 100 }], held: undefined },
+    // A no with room left holds the account until its fullest window resets.
+    { answer: false, windows: [window, weekly], held: weekly },
+  ])("believes the provider's answer $answer over its percentages", ({ answer, windows, held }) => {
     expect(
       exhaustedUsageWindow(
         provider({
-          usageLimits: {
-            checkedAt: limited.checkedAt,
-            windows: [{ ...window, usedPercent: 100 }],
-            usageAllowed: true,
-          },
+          usageLimits: { checkedAt: limited.checkedAt, windows, usageAllowed: answer },
         }),
         now,
       ),
-    ).toBeUndefined();
+    ).toEqual(held);
   });
   it.each([undefined, "invalid"])("treats an unknown reset as exhausted: %s", (resetsAt) => {
     expect(
