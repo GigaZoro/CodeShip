@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 import {
+  AUTOMATIC_UPDATE_INTERVAL_HOURS,
+  AutomaticUpdateIntervalHours,
   ProviderUpdatesChoice,
   UsageLimitRecoveryChoice,
   providerUpdatesChoice,
@@ -20,6 +22,7 @@ import { msg, t } from "~/i18n";
 
 const isUsageLimitRecoveryChoice = Schema.is(UsageLimitRecoveryChoice);
 const isProviderUpdatesChoice = Schema.is(ProviderUpdatesChoice);
+const isAutomaticUpdateIntervalHours = Schema.is(AutomaticUpdateIntervalHours);
 
 const recoveryLabels = {
   off: msg("Do nothing"),
@@ -153,6 +156,49 @@ export function InstallUpdatesAutomaticallySetting() {
           onCheckedChange={(checked) => update({ installUpdatesAutomatically: Boolean(checked) })}
           aria-label={t("Install updates automatically when idle")}
         />
+      }
+    />
+  );
+}
+
+const automaticUpdateIntervalLabel = (hours: number) =>
+  hours === 0 ? t("No wait") : t("{hours} h", { hours });
+
+export function AutomaticUpdateIntervalSetting() {
+  const settings = useScopedSettings();
+  const update = useUpdateScopedSettings();
+  const hours = settings.minHoursBetweenAutomaticUpdates;
+  return (
+    <SettingsRow
+      {...searchableSetting("min-hours-between-automatic-updates")}
+      serverScoped
+      settingKeys={["minHoursBetweenAutomaticUpdates"]}
+      description={t(
+        "After a restart, automatic updates wait this long before installing the next release, so a busy machine restarts less often.",
+      )}
+      control={
+        <div className="w-full sm:w-40">
+          <Select
+            value={String(hours)}
+            onValueChange={(value) => {
+              const next = Number(value);
+              if (isAutomaticUpdateIntervalHours(next)) {
+                update({ minHoursBetweenAutomaticUpdates: next });
+              }
+            }}
+          >
+            <SelectTrigger size="sm" aria-label={t("Time between automatic updates")}>
+              <SelectValue>{automaticUpdateIntervalLabel(hours)}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {AUTOMATIC_UPDATE_INTERVAL_HOURS.map((value) => (
+                <SelectItem key={value} value={String(value)}>
+                  {automaticUpdateIntervalLabel(value)}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
       }
     />
   );

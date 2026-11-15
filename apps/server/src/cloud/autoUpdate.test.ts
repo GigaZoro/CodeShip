@@ -4,6 +4,7 @@ import {
   ServerSelfUpdateError,
   ThreadId,
   type OrchestrationV2RestartHold,
+  type ServerSettings,
   type ServerSelfUpdateOutcome,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -21,6 +22,7 @@ import { ProviderRuntimeRecoveryService } from "../orchestration-v2/ProviderRunt
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Settings from "../serverSettings.ts";
 import * as AutoUpdate from "./autoUpdate.ts";
+import { isDraining } from "./updateDrain.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 
@@ -41,6 +43,7 @@ interface HarnessOptions {
   readonly enabled?: boolean;
   readonly hold?: OrchestrationV2RestartHold["work"];
   readonly settledOutcome?: ServerSelfUpdateOutcome;
+  readonly minHoursBetweenAutomaticUpdates?: ServerSettings["minHoursBetweenAutomaticUpdates"];
 }
 
 const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
@@ -53,6 +56,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   const settings = yield* SubscriptionRef.make({
     ...DEFAULT_SERVER_SETTINGS,
     installUpdatesAutomatically: options.enabled ?? true,
+    minHoursBetweenAutomaticUpdates: options.minHoursBetweenAutomaticUpdates ?? 0,
   });
   const hold = yield* SubscriptionRef.make<OrchestrationV2RestartHold>({
     work: options.hold ?? [],
@@ -202,7 +206,31 @@ describe("automatic server update", () => {
     }),
   );
 
-  it.effect("installs a busy machine after the patience, once no background work is listed", () =>
+  it.effect(
+    "drains a busy machine after the patience: holds scheduled starts, installs when turns end",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
+        const check = yield* Effect.forkChild(harness.auto.check());
+        yield* Deferred.await(harness.holdSeen);
+        expect(yield* isDraining()).toBe(false);
+
+        yield* TestClock.adjust(
+          Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
+        );
+        expect(yield* isDraining()).toBe(true);
+        expect(harness.events).toEqual([]);
+
+        yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: [] });
+        yield* Fiber.join(check);
+
+        expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
+        expect(yield* isDraining()).toBe(false);
+      }),
+  );
+
+  it.effect("cuts only turns still running at the drain limit", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
@@ -212,8 +240,24 @@ describe("automatic server update", () => {
       yield* TestClock.adjust(
         Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
       );
+      yield* TestClock.adjust(
+        Duration.sum(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT, Duration.minutes(1)),
+      );
       yield* Fiber.join(check);
 
+      expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
+      expect(yield* isDraining()).toBe(false);
+    }),
+  );
+
+  it.effect("waits the minimum time since boot before installing", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ minHoursBetweenAutomaticUpdates: 4 });
+      yield* harness.auto.check();
+      expect(harness.events).toEqual([]);
+
+      yield* TestClock.adjust(Duration.hours(4));
+      yield* harness.auto.check();
       expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
     }),
   );
@@ -226,6 +270,9 @@ describe("automatic server update", () => {
 
       yield* TestClock.adjust(
         Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
+      );
+      yield* TestClock.adjust(
+        Duration.sum(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT, Duration.minutes(1)),
       );
       expect(harness.events).toEqual([]);
 

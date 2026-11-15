@@ -1271,6 +1271,7 @@ const catalog: MessageCatalog = {
   "{hostLabel} froze for {seconds}s": "{hostLabel} завис на {seconds} с",
   "{hour} today": "{hour} сьогодні",
   "{hour} yesterday": "{hour} учора",
+  "{hours} h": "{hours} год",
   "{hours}h": "{hours} год",
   "{hours}h {minutes}m": "{hours} год {minutes} хв",
   "{hours}h ago": "{hours} год тому",
@@ -2125,6 +2126,8 @@ const catalog: MessageCatalog = {
   "Advanced (one environment)": "Додатково (одне середовище)",
   "After a request changes files, each reviewer checks the changes and the agent fixes what they confirm, using turns on the reviewers' accounts.":
     "Після запиту, що змінює файли, кожен рев’юер перевіряє зміни, а агент виправляє підтверджене, витрачаючи ходи на акаунтах рев’юерів.",
+  "After a restart, automatic updates wait this long before installing the next release, so a busy machine restarts less often.":
+    "Після перезапуску автоматичні оновлення чекають стільки часу, перш ніж встановити наступний випуск, тож завантажена машина перезапускається рідше.",
   "After the turn": "Після ходу",
   Agent: "Агент",
   "Agent access": "Доступ агентів",
@@ -7882,6 +7885,7 @@ const catalog: MessageCatalog = {
   "No transcript yet.": "Запису ще немає.",
   "No video received from the device. Reconnect to try again.":
     "Від пристрою не надійшло відео. Перепідключіться й спробуйте ще раз.",
+  "No wait": "Без очікування",
   "No warnings or errors found.": "Попереджень чи помилок не знайдено.",
   "No window was selected.": "Вікно не вибрано.",
   "Nobody else has access to this repository.": "Більше ніхто не має доступу до цього репозиторію.",
@@ -12998,6 +13002,7 @@ const catalog: MessageCatalog = {
   "thumbs up": "палець угору",
   Thursday: "Четвер",
   Time: "Час",
+  "Time between automatic updates": "Час між автоматичними оновленнями",
   "time format": "формат часу",
   "Time format": "Формат часу",
   "Time limit": "Ліміт часу",

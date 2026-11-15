@@ -108,6 +108,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
 import * as DueHint from "../scheduling/DueHint.ts";
+import { isDraining as isUpdateDraining } from "../cloud/updateDrain.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
@@ -3733,6 +3734,8 @@ export const layer = Layer.effect(
     });
 
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
+      // An automatic update is draining the running turns; due starts follow the install.
+      if (yield* isUpdateDraining()) return;
       const now = yield* localNow;
       const nowMs = DateTime.toEpochMillis(now);
       if (yield* dueTasks.isIdle(nowMs)) return;

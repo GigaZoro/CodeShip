@@ -1,3 +1,8 @@
+## 2026-11-15 — Automatic updates no longer cut running scheduled runs
+
+- A machine that always has a chat answering used to install an update after a fixed 2-hour wait, which cut every running turn and its delegated chats. Now, after the wait, the update holds new scheduled starts so the running turns can finish, installs when they end, and starts the held runs right after. A turn still running after a further 3 hours is cut and resumes as before, and the log names each chat it cut.
+- New setting **Time between automatic updates** (**Settings → Maintenance**, default 4 hours): after a restart, automatic updates wait this long before installing the next release, so a machine that receives many releases a day restarts a few times instead of at every release. The setting is shared like the other update settings; agents do not set it yet.
+
 ## 2026-11-15 — `check:changed` installs the browser its web browser tests run in
 
 - For contributors: on a machine without Playwright's Chromium for the current Playwright version, `vp run check:changed` failed every web browser test with "Executable doesn't exist". When a run includes web browser tests, it now first installs the Chromium build CI installs. Already installed, this takes about two seconds.

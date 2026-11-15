@@ -1,6 +1,7 @@
 import { ThreadPageTokenSettings } from "./ThreadPageTokenSettings";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  AutomaticUpdateIntervalSetting,
   InstallUpdatesAutomaticallySetting,
   ProviderUpdatesSettings,
   UsageLimitRecoverySettings,
@@ -2100,6 +2101,7 @@ export function MaintenanceSettingsPanel() {
           <SettingsSection id="updates" title={t("Updates")}>
             <ProviderUpdatesSettings />
             <InstallUpdatesAutomaticallySetting />
+            <AutomaticUpdateIntervalSetting />
           </SettingsSection>
 
           <SettingsSection id="background" title={t("Background activity")}>

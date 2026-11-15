@@ -110,9 +110,16 @@ anything, so it waits until a restart hold lists no work and no running turn
 (`untilRestartHoldIsEmpty`, shared with the desktop app). A running turn would resume after the
 restart, so a manual update ignores `runningTurns` and waits only for its tool calls (below), but
 an automatic one must not cut a chat mid answer. A machine that always has a turn running (scheduled
-runs, autopilot) would then never install, so after `AUTO_UPDATE_IDLE_PATIENCE` (2 hours) the wait
-becomes the user's rule: background work and tool calls only, and the last check before the handoff
-no longer holds off on chats. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
+runs, autopilot) would then never idle, so after `AUTO_UPDATE_IDLE_PATIENCE` (2 hours) the update
+drains: `UpdateDrain` holds new scheduled starts ([`updateDrain.ts`](../../apps/server/src/cloud/updateDrain.ts)),
+so the running turns can end and the install follows them. Only turns still running after
+`AUTO_UPDATE_DRAIN_LIMIT` (3 hours) are cut: the wait then becomes the user's rule, background
+work and tool calls only, the last check before the handoff no longer holds off on chats, and the
+log line names the cut threads (`cutThreadIds`); those turns resume after the restart. Scheduled
+starts that came due while draining start right after the install. Since each install restarts the
+server, `minHoursBetweenAutomaticUpdates` (default 4) keeps the next one from installing until the
+server has run that long, so a machine that gets many releases a day drains a few times, not at
+every release. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
 the hold once more right before the launcher takes over
 ([`autoUpdate.ts`](../../apps/server/src/cloud/autoUpdate.ts)). A busy hold there puts the update
 off to the next check without counting as a failed attempt. A user's update keeps

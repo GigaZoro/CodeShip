@@ -64,6 +64,9 @@ import { PullRequestMergeMethod } from "./pullRequest.ts";
 import { ScheduledTaskPlacement } from "./scheduledTask.ts";
 import { StoredSavedThreadFolders } from "./threadFolders.ts";
 
+export const AUTOMATIC_UPDATE_INTERVAL_HOURS = [0, 2, 4, 8, 12, 24] as const;
+export const AutomaticUpdateIntervalHours = Schema.Literals(AUTOMATIC_UPDATE_INTERVAL_HOURS);
+
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
 const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
@@ -1397,6 +1400,10 @@ export const ServerSettings = Schema.Struct({
   installUpdatesAutomatically: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  /** Fork-only. Hours after a boot before an automatic update installs the next release. */
+  minHoursBetweenAutomaticUpdates: AutomaticUpdateIntervalHours.pipe(
+    Schema.withDecodingDefault(Effect.succeed(4 as const)),
+  ),
   continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
@@ -1903,6 +1910,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   autoUpdateProviders: Schema.optionalKey(Schema.Boolean),
   installUpdatesAutomatically: Schema.optionalKey(Schema.Boolean),
+  minHoursBetweenAutomaticUpdates: Schema.optionalKey(AutomaticUpdateIntervalHours),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   importAgentConversations: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
