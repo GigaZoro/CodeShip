@@ -1,3 +1,7 @@
+## 2026-11-15 — Windows test runs no longer fail on POSIX-only command tests
+
+- On Windows, 16 tests of commands run apart from their agent used `sh`, `kill` and process groups and failed or timed out there. They now skip on Windows, where their own tests cover the same stop and lost paths, so a real Windows failure is no longer hidden among them.
+
 ## 2026-11-15 — Agents are told which shell their commands run in
 
 - The tool agents use to run a long command apart from the chat now names its shell: bash or zsh on macOS and Linux, Windows PowerShell 5.1 on Windows. It also says PowerShell 5.1 has no `&&` or `||` and how to chain steps there, so a Windows command no longer fails with "not a valid statement separator".

@@ -261,10 +261,15 @@ const STOP_NOTING_CHILD = `sh -c 'trap "echo > stopped; exit 0" TERM; echo > rea
 /** Once `go` exists it kills its wrapper, leaving no exit status, then writes `orphaned`. */
 const ORPHANING_COMMAND = `${STOP_NOTING_CHILD} until [ -e go ]; do sleep 0.05; done; kill -9 $PPID; echo > orphaned; wait`;
 
+// Tests that call this return early on Windows: they use sh, kill and process groups, which it lacks. Its wrapper's
+// stop and lost paths are tested in "a Windows command whose wrapper ended".
+const runsOnWindows = Effect.map(HostProcess.Platform, (platform) => platform === "win32");
+
 // Real processes and the real clock: the runner watches commands on a wall-clock interval.
 it.layer(layerTest, { excludeTestServices: true })("a command run apart from its agent", (it) => {
   it.effect("keeps running through a restart and wakes its chat once with its end", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-survives");
       const started = yield* withServer((runner) =>
         runner.run(callerOf(chat.threadId), {
@@ -299,6 +304,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   it.effect("delivers an end that came while no server was running, once one starts", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-ends-while-down");
       const started = yield* withServer((runner) =>
         runner.run(callerOf(chat.threadId), {
@@ -321,6 +327,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   it.effect("adopts a command whose server stopped before it recorded the pid", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-pid-unrecorded");
       const started = yield* withServer((runner) =>
         runner.run(callerOf(chat.threadId), {
@@ -343,6 +350,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   it.effect("keeps the end of a log that grew too large, after a note that it was cut", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-log-trimmed");
       const started = yield* withServer((runner) =>
         runner
@@ -561,6 +569,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     "reports a command whose wrapper was killed %s as lost, and stops what it started",
     ([, name, watching, pidUnrecorded]) =>
       Effect.gen(function* () {
+        if (yield* runsOnWindows) return;
         const chat = yield* liveChat(name);
         // As a reboot would; what it started lives on.
         const request = { command: ORPHANING_COMMAND };
@@ -594,6 +603,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   it.effect("watches a command whose request was cancelled while it started", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-request-cancelled");
       const agentScope = yield* AgentScope;
       const launching = yield* Deferred.make<void>();
@@ -682,6 +692,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   it.effect("stops a command whose chat was deleted while it started", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-chat-deleted-late");
       const agentScope = yield* AgentScope;
       const processRunner = yield* ProcessRunner.ProcessRunner;
@@ -729,6 +740,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   it.effect("never starts a command for a retry of a request that could not start it", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-unstarted");
       const request = { command: "echo started", clientRequestId: "command-unstarted" };
       const unstartable = yield* AgentScope;
@@ -759,6 +771,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 
   it.effect("stops everything the command started when its task is cancelled", () =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat("command-cancelled");
       yield* withServer((runner) =>
         Effect.gen(function* () {
@@ -788,6 +801,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     ],
   ] as const)("stops a command when %s, once a server starts", ([, name, cutStop, wrapperGone]) =>
     Effect.gen(function* () {
+      if (yield* runsOnWindows) return;
       const chat = yield* liveChat(name);
       const started = yield* withServer((runner) =>
         runner.run(callerOf(chat.threadId), {
@@ -825,6 +839,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     "reports a command from before a reboot as lost and leaves alone %s",
     ([, name, wrapperGone]) =>
       Effect.gen(function* () {
+        if (yield* runsOnWindows) return;
         const chat = yield* liveChat(name);
         const started = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), {
