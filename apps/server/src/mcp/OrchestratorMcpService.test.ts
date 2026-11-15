@@ -991,6 +991,7 @@ describe("OrchestratorMcpService", () => {
         messages: [],
         subagents: [],
         providerThreads: [],
+        providerTurns: [],
         runtimeRequests: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
@@ -999,6 +1000,11 @@ describe("OrchestratorMcpService", () => {
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+          listAppOwnedChildThreadIds: () => Effect.succeed([]),
+          cancelDelegatedTask: ({ command, stopDescendants }) =>
+            stopDescendants(() => Effect.die("No remote descendants in this test")).pipe(
+              Effect.andThen(Ref.update(dispatched, (commands) => [...commands, command])),
+            ),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
               Effect.as({} as never),
