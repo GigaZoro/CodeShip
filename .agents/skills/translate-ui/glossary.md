@@ -31,6 +31,7 @@ message passes only when every word in it is listed here.
 | project                                   | проєкт                                        |
 | environment                               | середовище                                    |
 | machine (a computer running T3.CodeShip)  | комп’ютер; "this machine" = цей комп’ютер     |
+| CPU / swap / load (machine resources)     | ЦП / підкачка / навантаження                  |
 | provider                                  | провайдер                                     |
 | agent / subagent                          | агент / субагент                              |
 | model                                     | модель                                        |

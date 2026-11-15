@@ -53,6 +53,18 @@ const SETTINGS_SEARCH_TERMS = {
     msg("recurring"),
     msg("webhook"),
   ],
+  SettingsMachines: [
+    msg("resources"),
+    msg("cpu"),
+    msg("memory"),
+    msg("ram"),
+    msg("swap"),
+    msg("disk"),
+    msg("storage"),
+    msg("load"),
+    msg("uptime"),
+    msg("servers"),
+  ],
   SettingsProjectOverview: [
     msg("project"),
     msg("overview"),

@@ -1,3 +1,9 @@
+## 2026-11-15 — See every machine's CPU, memory and disk on the new Machines page
+
+- New **Machines** page, at the bottom of the sidebar rail and in the command palette, and on mobile at the top of **Settings**. It shows each connected machine's CPU use, core count and load averages, memory, swap, free disk space and uptime, refreshing every 5 seconds while it is open. Values turn amber at 80% and red at 90%, and an offline machine offers to reconnect.
+- Hover **Machines** in the rail for CPU, memory and disk on every machine at once.
+- A machine on an older version shows only CPU and memory until it is updated.
+
 ## 2026-11-15 — Windows test runs no longer fail on POSIX-only command tests
 
 - On Windows, 16 tests of commands run apart from their agent used `sh`, `kill` and process groups and failed or timed out there. They now skip on Windows, where their own tests cover the same stop and lost paths, so a real Windows failure is no longer hidden among them.

@@ -28,6 +28,7 @@ import { Route as ChatPluginsRouteImport } from './routes/_chat.plugins'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
 import { Route as ChatModelContextServersRouteImport } from './routes/_chat.model-context-servers'
 import { Route as ChatManualStepsRouteImport } from './routes/_chat.manual-steps'
+import { Route as ChatMachinesRouteImport } from './routes/_chat.machines'
 import { Route as ChatExtensionsRouteImport } from './routes/_chat.extensions'
 import { Route as ChatArtifactsRouteImport } from './routes/_chat.artifacts'
 import { Route as ChatArchivedRouteImport } from './routes/_chat.archived'
@@ -152,6 +153,11 @@ const ChatModelContextServersRoute = ChatModelContextServersRouteImport.update({
 const ChatManualStepsRoute = ChatManualStepsRouteImport.update({
   id: '/manual-steps',
   path: '/manual-steps',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatMachinesRoute = ChatMachinesRouteImport.update({
+  id: '/machines',
+  path: '/machines',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatExtensionsRoute = ChatExtensionsRouteImport.update({
@@ -325,6 +331,7 @@ export interface FileRoutesByFullPath {
   '/archived': typeof ChatArchivedRoute
   '/artifacts': typeof ChatArtifactsRoute
   '/extensions': typeof ChatExtensionsRoute
+  '/machines': typeof ChatMachinesRoute
   '/manual-steps': typeof ChatManualStepsRoute
   '/model-context-servers': typeof ChatModelContextServersRoute
   '/new': typeof ChatNewRoute
@@ -375,6 +382,7 @@ export interface FileRoutesByTo {
   '/archived': typeof ChatArchivedRoute
   '/artifacts': typeof ChatArtifactsRoute
   '/extensions': typeof ChatExtensionsRoute
+  '/machines': typeof ChatMachinesRoute
   '/manual-steps': typeof ChatManualStepsRoute
   '/model-context-servers': typeof ChatModelContextServersRoute
   '/new': typeof ChatNewRoute
@@ -428,6 +436,7 @@ export interface FileRoutesById {
   '/_chat/archived': typeof ChatArchivedRoute
   '/_chat/artifacts': typeof ChatArtifactsRoute
   '/_chat/extensions': typeof ChatExtensionsRoute
+  '/_chat/machines': typeof ChatMachinesRoute
   '/_chat/manual-steps': typeof ChatManualStepsRoute
   '/_chat/model-context-servers': typeof ChatModelContextServersRoute
   '/_chat/new': typeof ChatNewRoute
@@ -482,6 +491,7 @@ export interface FileRouteTypes {
     | '/archived'
     | '/artifacts'
     | '/extensions'
+    | '/machines'
     | '/manual-steps'
     | '/model-context-servers'
     | '/new'
@@ -532,6 +542,7 @@ export interface FileRouteTypes {
     | '/archived'
     | '/artifacts'
     | '/extensions'
+    | '/machines'
     | '/manual-steps'
     | '/model-context-servers'
     | '/new'
@@ -584,6 +595,7 @@ export interface FileRouteTypes {
     | '/_chat/archived'
     | '/_chat/artifacts'
     | '/_chat/extensions'
+    | '/_chat/machines'
     | '/_chat/manual-steps'
     | '/_chat/model-context-servers'
     | '/_chat/new'
@@ -770,6 +782,13 @@ declare module '@tanstack/react-router' {
       path: '/manual-steps'
       fullPath: '/manual-steps'
       preLoaderRoute: typeof ChatManualStepsRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/machines': {
+      id: '/_chat/machines'
+      path: '/machines'
+      fullPath: '/machines'
+      preLoaderRoute: typeof ChatMachinesRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/extensions': {
@@ -1058,6 +1077,7 @@ interface ChatRouteChildren {
   ChatArchivedRoute: typeof ChatArchivedRoute
   ChatArtifactsRoute: typeof ChatArtifactsRoute
   ChatExtensionsRoute: typeof ChatExtensionsRoute
+  ChatMachinesRoute: typeof ChatMachinesRoute
   ChatManualStepsRoute: typeof ChatManualStepsRoute
   ChatModelContextServersRoute: typeof ChatModelContextServersRoute
   ChatNewRoute: typeof ChatNewRoute
@@ -1078,6 +1098,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatArchivedRoute: ChatArchivedRoute,
   ChatArtifactsRoute: ChatArtifactsRoute,
   ChatExtensionsRoute: ChatExtensionsRoute,
+  ChatMachinesRoute: ChatMachinesRoute,
   ChatManualStepsRoute: ChatManualStepsRoute,
   ChatModelContextServersRoute: ChatModelContextServersRoute,
   ChatNewRoute: ChatNewRoute,

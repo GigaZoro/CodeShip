@@ -27,7 +27,7 @@ const LIMIT_TONE_CLASS_NAME = {
   error: "text-destructive-foreground",
 } as const;
 
-function machineStateLabel(machine: SidebarMachine): string {
+export function machineStateLabel(machine: SidebarMachine): string {
   return machine.enabled ? machineAvailabilityLabel(machine.availability) : t("Switched off");
 }
 
