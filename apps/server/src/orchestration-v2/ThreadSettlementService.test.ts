@@ -1940,7 +1940,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
           // The settling lookup and the unmerged-work check read fresh git state before acting.
           expect(lookups).toEqual([
-            { refresh: false },
+            { refresh: false, confirmTerminal: false },
             { freshGitState: true },
             { freshGitState: true },
           ]);
