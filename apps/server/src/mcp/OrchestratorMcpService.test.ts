@@ -4295,7 +4295,10 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mergeAll(
             NodeServices.layer,
             NodeCrypto.layer,
-            Layer.mock(ThreadManagementService.ThreadManagementService)(threads),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({
+              getThreadShell: () => Effect.succeed(null),
+              ...threads,
+            }),
             ServerSettings.layerTest(),
             MemoryAdmission.layerTest(),
             Layer.mock(ProviderRegistry.ProviderRegistry)({
