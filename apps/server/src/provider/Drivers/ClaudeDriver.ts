@@ -639,10 +639,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = Effect.fn(
       "ClaudeDriver.consumeResetCredit",
     )(
-      function* () {
-        const shown = (yield* snapshot.getSnapshot).usageLimits?.accountKey;
+      function* (request) {
+        const forAccount =
+          request?.accountKey ?? (yield* snapshot.getSnapshot).usageLimits?.accountKey;
         return yield* ResetCreditCoordinator.redeemThenReadUsage({
-          redeem: limitResets.claim(shown),
+          redeem: limitResets.claim(forAccount, request?.kind),
           readUsage: snapshot.refreshAfterRedemption,
           usedNothing: (error) =>
             error._tag === "ClaudeLimitResetError" &&

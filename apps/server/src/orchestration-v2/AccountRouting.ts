@@ -268,7 +268,7 @@ function runnableModel(
 }
 
 /** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
-export function usableModel(
+function usableModel(
   provider: ServerProvider,
   input: Pick<AccountRoutingContext, "settings"> & {
     readonly projectId: ProjectId;

@@ -102,6 +102,12 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;
 
+export const MAX_PLAN_RESET_WAIT_HOURS = 168;
+const DEFAULT_MAX_PLAN_RESET_WAIT_HOURS = 48;
+export const MaxPlanResetWaitHours = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: MAX_PLAN_RESET_WAIT_HOURS }),
+);
+
 export const MAX_SNOOZE_PRESET_MINUTES = 30 * 24 * 60;
 export const MAX_SNOOZE_PRESETS = 8;
 export const SnoozePresetDay = Schema.Literals([
@@ -1482,12 +1488,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   /**
-   * Accounts that redeem a banked reset credit when a thread stops on their usage limit and no
-   * other account takes it, then continue the thread. Kept outside the account's own config, whose
-   * every change rebuilds the provider and stops its running chats.
+   * Fork-only. Claims a banked Claude or Codex usage reset for an account whose limit is out, when
+   * its plan reset is further away than `maxPlanResetWaitHours` or the reset would otherwise expire
+   * unused. Off by default: a claim spends a reset that cannot be returned.
    */
-  autoUseResetCredits: Schema.Array(ProviderInstanceId).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
+  redeemUsageResets: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Fork-only. A plan reset at most this many hours away is waited for instead of spending a reset. */
+  maxPlanResetWaitHours: MaxPlanResetWaitHours.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MAX_PLAN_RESET_WAIT_HOURS)),
   ),
   /**
    * Auto mode's provider: an Auto pick (`ModelSelection.autoAccount`) starts there; null turns
@@ -1966,7 +1974,8 @@ export const ServerSettingsPatch = Schema.Struct({
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   failoverLimitedThreads: Schema.optionalKey(Schema.Boolean),
   providerInstanceFailoverOrder: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
-  autoUseResetCredits: Schema.optionalKey(Schema.Array(ProviderInstanceId)),
+  redeemUsageResets: Schema.optionalKey(Schema.Boolean),
+  maxPlanResetWaitHours: Schema.optionalKey(MaxPlanResetWaitHours),
   autoModeProvider: Schema.optionalKey(Schema.NullOr(ProviderDriverKind)),
   /** Per provider; null clears it back to the provider's default model. */
   autoModeModels: Schema.optionalKey(

@@ -22,6 +22,7 @@ import {
   OrchestratorMcpFailure,
   type OrchestratorMcpCapabilitiesInput,
   type OrchestratorMcpCapabilitiesResult,
+  type OrchestratorMcpLastRedemption,
   type OrchestratorMcpModelOption,
   type OrchestratorMcpCreateThreadsInput,
   type OrchestratorMcpCreateThreadsResult,
@@ -114,6 +115,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
@@ -1297,6 +1299,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   // Optional so test runtimes without provider state refuse no launch on a usage limit.
   const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+  const usageResetRedeemer = yield* Effect.serviceOption(UsageResetRedeemer.UsageResetRedeemer);
   const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
@@ -3207,6 +3210,10 @@ const make = Effect.gen(function* () {
             models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
           }
         : yield* accountRouting.value.limits;
+      const redemptions =
+        input.usage === true && Option.isSome(usageResetRedeemer)
+          ? yield* usageResetRedeemer.value.lastRedemptions
+          : new Map<string, OrchestratorMcpLastRedemption>();
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
@@ -3286,10 +3293,16 @@ const make = Effect.gen(function* () {
               ? { limitedUntilEstimated: true as const }
               : {}),
             ...(input.usage === true && publishesUsage(provider)
-              ? providerUsageFields(provider, limitedUntil !== undefined)
+              ? providerUsageFields(provider, limitedUntil !== undefined, redemptions)
               : {}),
           };
         }),
+        ...(input.usage === true
+          ? {
+              maxWaitHours: settings.maxPlanResetWaitHours,
+              redeemUsageResets: settings.redeemUsageResets,
+            }
+          : {}),
         features: {
           appOwnedSubagents: true,
           asyncPolling: true,

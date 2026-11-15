@@ -249,7 +249,7 @@ export const make = Effect.gen(function* () {
       environmentThemes: true,
       usageLimitSources: true,
       usageLimitAccountFailover: true,
-      usageLimitAutoResetCredits: true,
+      usageResetRedeemer: true,
       autoMode: true,
       lastPickedModel: true,
       providerSkillCopy: true,

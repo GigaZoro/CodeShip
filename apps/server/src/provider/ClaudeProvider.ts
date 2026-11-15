@@ -473,13 +473,9 @@ const probeClaudeCapabilities = (
         if (!abort.signal.aborted) abort.abort();
       }),
     ),
+    // Claude's stderr can name the account, so it goes only to the provider status, never the log.
     Effect.tapError((error) =>
-      Effect.logWarning("Claude capability probe failed.", {
-        errorTag: error._tag,
-        ...(error._tag === "ClaudeCapabilitiesProbeFailedError" && error.detail !== undefined
-          ? { reason: error.detail }
-          : {}),
-      }),
+      Effect.logWarning("Claude capability probe failed.", { errorTag: error._tag }),
     ),
   );
 };

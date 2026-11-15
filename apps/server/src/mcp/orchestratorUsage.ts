@@ -1,4 +1,5 @@
 import type {
+  OrchestratorMcpLastRedemption,
   OrchestratorMcpProviderUsage,
   OrchestratorMcpUsageError,
   OrchestratorMcpUsageMeter,
@@ -94,6 +95,8 @@ function usageError(provider: ServerProvider): OrchestratorMcpUsageError | undef
 export function providerUsageFields(
   provider: ServerProvider,
   limited: boolean,
+  /** The redeemer's last claims by account key; only the account held now is published. */
+  redemptions: ReadonlyMap<string, OrchestratorMcpLastRedemption> = new Map(),
 ): {
   readonly usage: OrchestratorMcpProviderUsage | null;
   readonly usageError?: OrchestratorMcpUsageError;
@@ -130,6 +133,8 @@ export function providerUsageFields(
             },
           }),
       usageAllowed: !limited && limits.usageAllowed !== false,
+      lastRedemption:
+        (limits.accountKey === undefined ? undefined : redemptions.get(limits.accountKey)) ?? null,
     },
   };
 }

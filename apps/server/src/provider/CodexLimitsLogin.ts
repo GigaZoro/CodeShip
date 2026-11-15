@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
+import { errorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -110,10 +111,10 @@ export const makeCodexLimitsLogin = Effect.fn("makeCodexLimitsLogin")(function* 
       }),
     ).pipe(
       Effect.timeout(READ_TIMEOUT),
-      Effect.catch((cause) =>
-        Effect.logWarning("Codex could not read limits through its own login.", { cause }).pipe(
-          Effect.as(probeFailed("Codex could not be started to read usage.")),
-        ),
+      Effect.catch((error) =>
+        Effect.logWarning("Codex could not read limits through its own login.", {
+          errorTag: errorTag(error),
+        }).pipe(Effect.as(probeFailed("Codex could not be started to read usage."))),
       ),
     );
   });

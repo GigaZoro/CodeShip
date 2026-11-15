@@ -12,7 +12,6 @@ import {
 } from "@t3tools/contracts";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
-import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -34,20 +33,13 @@ import {
   nextAccountRoomAt,
   recoveryRoomAt,
   routeAutoAccount,
-  usableModel,
 } from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
-import * as ResetCreditRedemption from "./ResetCreditRedemption.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 // A cooldown this short is cheaper to wait out than to move the thread to another account for good.
 const MIN_FAILOVER_WAIT_MS = 5 * 60_000;
-// A reset this close is cheaper to wait out than to spend a banked reset credit on.
-const MIN_RESET_CREDIT_WAIT_MS = 30 * 60_000;
-// After a redemption, whatever its outcome, the account is left alone this long, so a refused
-// claim is not repeated every tick and a limit a reset does not lift cannot spend credit after credit.
-const RESET_CREDIT_RETRY_MS = 15 * 60_000;
 
 const MAX_OVERDUE_ARM_MS = 24 * 60 * 60 * 1000;
 
@@ -145,7 +137,7 @@ export function limitRecoveryCommand(
 
 type FailoverInput = AccountRoutingContext &
   McpSignIns & {
-    readonly settings: Pick<ServerSettingsValue, "autoUseResetCredits">;
+    readonly settings: Pick<ServerSettingsValue, "redeemUsageResets">;
     readonly thread: ProjectionStore.ProjectionLimitRecoveryCandidate;
   };
 
@@ -306,11 +298,10 @@ export function limitFailoverCommand(input: FailoverInput): DispatchCommand | nu
     : continueLimitedRun("limit-failover", input.thread, search.runId, target);
 }
 
-/** The waiting thread's own account and run, when that account uses banked reset credits automatically. */
+/** The waiting thread's own account and run, when this machine redeems banked usage resets. */
 function resetCreditAccount({ thread, ...input }: FailoverInput) {
   const runId = waitingRunId(thread, input.nowMs);
-  if (runId === null || !input.settings.autoUseResetCredits.includes(thread.providerInstanceId))
-    return null;
+  if (runId === null || !input.settings.redeemUsageResets) return null;
   const provider = input.providers.find(
     (candidate) => candidate.instanceId === thread.providerInstanceId,
   );
@@ -319,7 +310,7 @@ function resetCreditAccount({ thread, ...input }: FailoverInput) {
 
 /**
  * Continues a limited thread on its own account once that account has room again before the
- * reset, as after a redeemed reset credit, when the account uses reset credits automatically.
+ * reset, as after a redeemed banked reset, when this machine redeems them.
  */
 export function resetCreditResumeCommand(input: FailoverInput): DispatchCommand | null {
   const { thread } = input;
@@ -334,31 +325,6 @@ export function resetCreditResumeCommand(input: FailoverInput): DispatchCommand 
   )
     return null;
   return continueLimitedRun("limit-reset-resume", thread, account.runId);
-}
-
-/**
- * The account to redeem a banked reset credit on so a limited thread can continue there, or null
- * when the thread waits. Only while the account's own limits read used up for the model its next
- * turn runs: that is what a reset clears, unlike a refusal such as ChatGPT's app cap.
- */
-export function resetCreditRedemptionAccount(input: FailoverInput): ProviderInstanceId | null {
-  const { thread } = input;
-  const account = resetCreditAccount(input);
-  if (account === null) return null;
-  const { provider } = account;
-  // Only usage may keep the thread off the account; a credit cannot help one it cannot run on.
-  const model = usableModel(provider, {
-    ...input,
-    projectId: thread.projectId,
-    model: nextTurnModel(input, thread.modelSelection),
-  });
-  const resetMs = Date.parse(thread.usageLimitResetAt ?? "");
-  return model !== null &&
-    (provider.usageLimits?.resetCredits?.availableCount ?? 0) > 0 &&
-    resetMs > input.nowMs + MIN_RESET_CREDIT_WAIT_MS &&
-    exhaustedUsageWindow(provider, input.nowMs, model) !== undefined
-    ? provider.instanceId
-    : null;
 }
 
 // A stop older than this is left to the person, as a lost connection's is.
@@ -437,26 +403,23 @@ const makeSweep = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const mcp = yield* ProviderMcp.ProviderMcp;
-  const resetCredits = yield* ResetCreditRedemption.ResetCreditRedemption;
   const accountRouting = yield* AccountRouting;
   const due = DueHint.make();
-  // When each account last had a reset credit redeemed for it, so retries wait RESET_CREDIT_RETRY_MS.
-  const redemptionTries = new Map<ProviderInstanceId, number>();
   yield* forkParked(
     Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
       affectsLimitRecovery(event) ? due.invalidate : Effect.void,
     ),
   );
   yield* forkParked(Stream.runForEach(settings.streamChanges, () => due.invalidate));
-  // An account signing in, regaining room, being enabled or banking a reset credit can take a
-  // waiting thread.
+  // An account signing in, regaining room, being enabled or having a banked reset redeemed can
+  // take a waiting thread.
   yield* forkParked(
     Stream.runForEach(providerRegistry.streamChanges, () =>
       settings.getSettings.pipe(
         Effect.flatMap((current) =>
           current.failoverLimitedThreads ||
           current.autoResumeLimitedThreads ||
-          current.autoUseResetCredits.length > 0
+          current.redeemUsageResets
             ? due.invalidate
             : Effect.void,
         ),
@@ -472,7 +435,7 @@ const makeSweep = Effect.gen(function* () {
     const readVersion = yield* due.version;
     const preferences = yield* settings.getSettings;
     const switching = preferences.failoverLimitedThreads;
-    const resetting = preferences.autoUseResetCredits.length > 0;
+    const resetting = preferences.redeemUsageResets;
     const candidates = yield* projections
       .getLimitRecoveryCandidates({
         now,
@@ -533,10 +496,6 @@ const makeSweep = Effect.gen(function* () {
       );
       if (outcome !== "refused") acted = true;
     }
-    // One credit per sweep: it can give room that other threads move to, so the next sweep reads
-    // the accounts again before spending another.
-    let redeemOn: ProviderInstanceId | null = null;
-    let retryRedemptionAt = Infinity;
     for (const thread of candidates) {
       // Another account with room comes first: it costs no banked credit.
       const continuation =
@@ -562,21 +521,6 @@ const makeSweep = Effect.gen(function* () {
           room,
         );
       const command = recover(target);
-      // A resume that has room now, on another model or account, costs no banked credit either.
-      const redemption =
-        routing === null || command?.type === "message.dispatch"
-          ? null
-          : resetCreditRedemptionAccount({ ...routing, thread });
-      if (redemption !== null) {
-        const triedAt = redemptionTries.get(redemption);
-        if (triedAt === undefined || nowMs >= triedAt + RESET_CREDIT_RETRY_MS) {
-          // Arming now could hide the thread until the reset or record it as not resuming, which
-          // would keep the reset from continuing it. A redemption that does not reset arms it next tick.
-          redeemOn ??= redemption;
-          continue;
-        }
-        retryRedemptionAt = Math.min(retryRedemptionAt, triedAt + RESET_CREDIT_RETRY_MS);
-      }
       if (command === null) {
         // A resume that waits only for room on its target checks again when that room comes.
         if (
@@ -604,45 +548,6 @@ const makeSweep = Effect.gen(function* () {
         ),
       );
     }
-    // The person may stop or snooze a thread, or turn off its auto-resume or the account's setting,
-    // while this sweep dispatched. A credit is spent only for a thread that still waits for one right
-    // before it is redeemed; such a change also invalidates the due hint, so the next tick re-reads.
-    const stillWanted = Effect.fn("UsageLimitRecoveryWorker.stillWanted")(function* (
-      instanceId: ProviderInstanceId,
-    ) {
-      if (routing === null) return false;
-      const current = yield* settings.getSettings;
-      const waiting = yield* projections
-        .getLimitRecoveryCandidates({
-          now,
-          autoResume: current.autoResumeLimitedThreads,
-          snooze: current.snoozeLimitedThreads,
-          waiting: true,
-        })
-        .pipe(NodeSqliteClient.inBackground);
-      return waiting.some(
-        (thread) =>
-          resetCreditRedemptionAccount({ ...routing, settings: current, thread }) === instanceId,
-      );
-    });
-    if (redeemOn !== null && (yield* stillWanted(redeemOn))) {
-      const instanceId = redeemOn;
-      redemptionTries.set(instanceId, nowMs);
-      // A reset lifts the account's holds, so the next tick continues its threads there.
-      acted = true;
-      yield* resetCredits.redeem(instanceId).pipe(
-        Effect.tap(({ outcome, warning }) =>
-          Effect.logInfo("orchestration-v2.reset-credit.outcome", {
-            instanceId,
-            outcome,
-            warning,
-          }),
-        ),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("orchestration-v2.reset-credit.redeem-failed", { instanceId, cause }),
-        ),
-      );
-    }
     // A sweep that acted, or failed to, re-checks on the next tick.
     if (acted) return;
     const wakeAt = yield* projections
@@ -663,7 +568,7 @@ const makeSweep = Effect.gen(function* () {
           );
     yield* due.record(
       readVersion,
-      Math.min(wakeAt ?? Infinity, accountRoomAt, targetRoomAt, retryRedemptionAt),
+      Math.min(wakeAt ?? Infinity, accountRoomAt, targetRoomAt),
       nowMs,
     );
   });

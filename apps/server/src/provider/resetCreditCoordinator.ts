@@ -20,11 +20,15 @@ interface AccountRedemptionState {
 export class ResetCreditCoordinator extends Context.Service<
   ResetCreditCoordinator,
   {
-    /** Reuse the idempotency key until an outcome or settled failure; timeouts keep it for retry. */
+    /**
+     * Reuse the idempotency key until an outcome or settled failure; timeouts keep it for retry.
+     * A `fixedKey` names one run-out for every redeemer of the account, so it replaces that key.
+     */
     readonly redeem: <E, R>(
       accountKey: string,
       consume: (idempotencyKey: string) => Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>,
       isSettled?: (error: E) => boolean,
+      fixedKey?: string,
     ) => Effect.Effect<ProviderConsumeResetCreditOutcome, E | PlatformError.PlatformError, R>;
     /** Runs `effect` under the same lock, after any redemption or other run holding it. */
     readonly runLocked: <A, E, R>(
@@ -61,10 +65,11 @@ export const make = Effect.gen(function* () {
 
   const redeem: ResetCreditCoordinator["Service"]["redeem"] = Effect.fn(
     "resetCreditCoordinator.redeem",
-  )(function* (accountKey, consume, isSettled) {
+  )(function* (accountKey, consume, isSettled, fixedKey) {
     const state = yield* stateFor(accountKey);
     return yield* state.lock.withPermits(1)(
       Effect.gen(function* () {
+        if (fixedKey !== undefined) return yield* consume(fixedKey);
         const existing = yield* Ref.get(state.pendingKey);
         const idempotencyKey = existing ?? (yield* crypto.randomUUIDv4());
         yield* Ref.set(state.pendingKey, idempotencyKey);

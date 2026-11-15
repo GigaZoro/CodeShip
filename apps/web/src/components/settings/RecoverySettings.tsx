@@ -1,17 +1,21 @@
+import { useState } from "react";
 import * as Schema from "effect/Schema";
 import {
   AUTOMATIC_UPDATE_INTERVAL_HOURS,
   AutomaticUpdateIntervalHours,
   ProviderUpdatesChoice,
+  MAX_PLAN_RESET_WAIT_HOURS,
   UsageLimitRecoveryChoice,
   providerUpdatesChoice,
   providerUpdatesPatch,
   usageLimitRecoveryChoice,
   usageLimitRecoveryPatch,
 } from "@t3tools/contracts/settings";
+import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SettingsRow } from "./settingsLayout";
 import { ScopedSwitch } from "./ScopedSwitch";
+import { useSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
 import {
   useScopedSettings,
@@ -201,5 +205,89 @@ export function AutomaticUpdateIntervalSetting() {
         </div>
       }
     />
+  );
+}
+
+function WaitHoursInput({ value, onCommit }: { value: number; onCommit: (hours: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  const [draftSource, setDraftSource] = useState(value);
+  if (draftSource !== value) {
+    setDraftSource(value);
+    setDraft(String(value));
+  }
+  return (
+    <Input
+      size="sm"
+      type="number"
+      min={0}
+      max={MAX_PLAN_RESET_WAIT_HOURS}
+      className="w-full sm:w-24"
+      value={draft}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        const parsed = Number(event.target.value);
+        if (
+          event.target.value.trim() !== "" &&
+          Number.isInteger(parsed) &&
+          parsed >= 0 &&
+          parsed <= MAX_PLAN_RESET_WAIT_HOURS
+        ) {
+          onCommit(parsed);
+        }
+      }}
+      onBlur={() => setDraft(String(value))}
+      aria-label={t("Hours to wait for a plan reset")}
+    />
+  );
+}
+
+export function UsageResetRedeemerSettings() {
+  const settings = useScopedSettings();
+  const update = useUpdateScopedSettings();
+  const { connectedEnvironments } = useSettingsScope();
+  // Servers without the redeemer would drop these settings.
+  const supported =
+    connectedEnvironments.length > 0 &&
+    connectedEnvironments.every(
+      (target) => target.serverConfig?.environment.capabilities.usageResetRedeemer === true,
+    );
+  if (!supported) return null;
+  return (
+    <>
+      <SettingsRow
+        {...searchableSetting("redeem-usage-resets")}
+        serverScoped
+        settingKeys={["redeemUsageResets"]}
+        description={t(
+          "When a Claude or Codex account's limit is out, claim one of its banked resets, but only if the plan reset is further away than the wait below or the reset would otherwise expire unused.",
+        )}
+        control={
+          <ScopedSwitch
+            settingKeys={["redeemUsageResets"]}
+            checked={settings.redeemUsageResets}
+            onCheckedChange={(checked) => update({ redeemUsageResets: checked })}
+            aria-label={t("Redeem usage resets automatically")}
+          />
+        }
+      />
+      {settings.redeemUsageResets ? (
+        <SettingsRow
+          title={t("Wait at most {hours} hours for a plan reset", {
+            hours: settings.maxPlanResetWaitHours,
+          })}
+          serverScoped
+          settingKeys={["maxPlanResetWaitHours"]}
+          description={t(
+            "A limit whose plan reset is this close is waited out and keeps its banked reset.",
+          )}
+          control={
+            <WaitHoursInput
+              value={settings.maxPlanResetWaitHours}
+              onCommit={(hours) => update({ maxPlanResetWaitHours: hours })}
+            />
+          }
+        />
+      ) : null}
+    </>
   );
 }

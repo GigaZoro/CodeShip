@@ -19,6 +19,7 @@ import type {
   ProviderMcpServerConfig,
   ProviderSkillError,
   ServerProvider,
+  ServerProviderResetKind,
   ServerProviderWorkspaceSnapshot,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
@@ -54,6 +55,13 @@ export type ProviderConfigFolder =
   | { readonly kind: "path"; readonly path: string }
   | { readonly kind: "secret" };
 
+export interface ProviderConsumeResetCreditRequest {
+  readonly kind?: ServerProviderResetKind;
+  readonly attemptKey?: string;
+  /** The account the claim was decided for; nothing is used once the login holds another. */
+  readonly accountKey?: string;
+}
+
 export interface ProviderInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
@@ -69,11 +77,14 @@ export interface ProviderInstance {
   ) => Effect.Effect<ProviderWorkspaceSnapshot, ProviderDriverError>;
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
   readonly invalidateCaches?: Effect.Effect<void>;
-  /** A redeemed reset whose new limits could not be read back succeeds with a `warning`. */
-  readonly consumeResetCredit?: () => Effect.Effect<
-    ProviderConsumeResetCreditResult,
-    ProviderDriverError
-  >;
+  /**
+   * A redeemed reset whose new limits could not be read back succeeds with a `warning`. With no
+   * request the provider picks the reset itself; a request names the kind to claim (Claude) and the
+   * idempotency key one run-out is redeemed under (Codex).
+   */
+  readonly consumeResetCredit?: (
+    request?: ProviderConsumeResetCreditRequest,
+  ) => Effect.Effect<ProviderConsumeResetCreditResult, ProviderDriverError>;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
   readonly auth?: ProviderAuthController;

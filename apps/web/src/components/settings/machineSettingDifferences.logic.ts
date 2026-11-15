@@ -129,7 +129,26 @@ const SHARED_SETTING_PRESENTATION: Record<
   continueThreadsAfterServerUpdate: { id: "continue-threads-after-server-update" },
   backgroundActivity: { id: "background-activity" },
   providerInstanceFailoverOrder: "accounts",
-  autoUseResetCredits: "accounts",
+  redeemUsageResets: {
+    id: "redeem-usage-resets",
+    resolve: (settings) =>
+      settings.redeemUsageResets === undefined || settings.maxPlanResetWaitHours === undefined
+        ? undefined
+        : {
+            redeemUsageResets: settings.redeemUsageResets,
+            maxPlanResetWaitHours: settings.maxPlanResetWaitHours,
+          },
+    format: (value) => {
+      const settings = value as Pick<ServerSettings, "redeemUsageResets" | "maxPlanResetWaitHours">;
+      return settings.redeemUsageResets
+        ? t("On, waiting up to {hours} h for a plan reset.", {
+            hours: settings.maxPlanResetWaitHours,
+          })
+        : t("Off");
+    },
+    patch: (value) => value as ServerSettingsPatch,
+  },
+  maxPlanResetWaitHours: "grouped",
   deviceSettingsProfile: "devices",
 };
 

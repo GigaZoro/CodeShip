@@ -403,7 +403,8 @@ export const makeClaudeLimitResets = Effect.fn("makeClaudeLimitResets")(function
       yield* ensureCwd;
       return yield* claimClaudeGrantedReset(claimOptions, enabled.granted, chosen);
     }
-    if (enabled.weeklySession !== undefined && (kind === undefined || kind === "five_hour")) {
+    // A named kind is a granted reset, so the redeemer's 5-hour claim never spends the weekly one.
+    if (enabled.weeklySession !== undefined && kind === undefined) {
       yield* ensureCwd;
       return yield* claimClaudeWeeklySessionReset(claimOptions, enabled.weeklySession);
     }
@@ -412,8 +413,8 @@ export const makeClaudeLimitResets = Effect.fn("makeClaudeLimitResets")(function
 
   /**
    * Uses one reset of `forAccount`, the account key of the usage it was chosen from, and none once
-   * the login holds another account: of `kind`, or the usable grant that expires first, or the
-   * weekly 5-hour one. Fails with why when Claude gave no outcome; every claim, however it ends,
+   * the login holds another account: a granted one of `kind`, or unasked the usable grant that
+   * expires first, or else the weekly 5-hour one. Fails with why when Claude gave no outcome; every claim, however it ends,
    * counts as a redemption, so the grants are read again before they are shown or chosen from.
    */
   const claim = Effect.fn("ClaudeLimitResets.claim")(function* (

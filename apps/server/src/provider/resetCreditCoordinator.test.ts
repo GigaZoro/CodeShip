@@ -57,6 +57,26 @@ describe("ResetCreditCoordinator", () => {
     }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
   );
 
+  it.effect("sends a fixed key as given and leaves the pending key alone", () =>
+    Effect.gen(function* () {
+      const { redeem } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+      const keys = yield* Ref.make<ReadonlyArray<string>>([]);
+      const consume = (key: string) =>
+        Ref.update(keys, (seen) => [...seen, key]).pipe(Effect.as("reset" as const));
+
+      yield* redeem("acct", consume, undefined, "banked-reset:a:codex:1");
+      yield* redeem("acct", consume, undefined, "banked-reset:a:codex:1");
+      yield* redeem("acct", consume);
+
+      const seen = yield* Ref.get(keys);
+      assert.deepStrictEqual(seen.slice(0, 2), [
+        "banked-reset:a:codex:1",
+        "banked-reset:a:codex:1",
+      ]);
+      assert.notStrictEqual(seen[2], "banked-reset:a:codex:1");
+    }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
+  );
+
   it.effect("serialises concurrent redemptions on the same account, not per caller", () =>
     Effect.gen(function* () {
       const { redeem } = yield* ResetCreditCoordinator.ResetCreditCoordinator;

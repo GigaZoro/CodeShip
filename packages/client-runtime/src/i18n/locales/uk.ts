@@ -1852,6 +1852,8 @@ const catalog: MessageCatalog = {
     "Оренда закінчується після вказаної кількості хвилин, навіть якщо пристрій використовується.",
   "A lease ends after the lease minutes even while in use. Saving restarts this host, which releases its devices.":
     "Оренда закінчується після вказаної кількості хвилин, навіть якщо пристрій використовується. Збереження перезапускає цей хост, що звільняє його пристрої.",
+  "A limit whose plan reset is this close is waited out and keeps its banked reset.":
+    "Ліміт, скидання тарифу якого так близько, перечікується, а накопичене скидання зберігається.",
   "A limited thread continues on the highest account in this list that still has usage left.":
     "Чат, що досяг ліміту, продовжується на найвищому обліковому записі цього списку, у якого ще є ліміт.",
   "a linked environment": "пов’язане середовище",
@@ -6222,6 +6224,7 @@ const catalog: MessageCatalog = {
     other: "години",
   },
   Hours: "Години",
+  "Hours to wait for a plan reset": "Годин очікування скидання тарифу",
   "How new worktrees in this project populate git submodules.":
     "Як нові worktree в цьому проєкті заповнюють git-підмодулі.",
   "How new worktrees populate git submodules. Projects and their t3.json can override it.":
@@ -8090,6 +8093,8 @@ const catalog: MessageCatalog = {
   "On the computer with your code, start T3.CodeShip or run {command}, then run:":
     "На комп’ютері з вашим кодом запустіть T3.CodeShip або виконайте {command}, а потім виконайте:",
   "On webhook": "За вебгуком",
+  "On, waiting up to {hours} h for a plan reset.":
+    "Увімкнено, очікування скидання тарифу до {hours} год.",
   Once: "Один раз",
   "Once is not available here": "Одноразовий запуск тут недоступний",
   "Once, {date} at {time}": "Один раз, {date} о {time}",
@@ -9325,6 +9330,7 @@ const catalog: MessageCatalog = {
   "Red / green (protanopia)": "Червоний / зелений (протанопія)",
   "Red & green": "Червоний і зелений",
   "Red & green (default)": "Червоний і зелений (за замовчуванням)",
+  "Redeem usage resets automatically": "Автоматично використовувати скидання лімітів",
   "Redirect address": "Адреса переспрямування",
   "Redirecting to authorize T3 Connect for your CLI…":
     "Перенаправлення для авторизації T3 Connect для вашого CLI…",
@@ -13743,7 +13749,6 @@ const catalog: MessageCatalog = {
   "Use regular sign-in instead": "Натомість використовувати звичайний вхід",
   "Use remote version of {ref}": "Використати віддалену версію {ref}",
   "Use reset": "Скинути",
-  "Use reset credits automatically": "Використовувати кредити скидання автоматично",
   "Use skills available to the selected provider.":
     "Використовувати навички, доступні вибраному провайдеру.",
   "Use skills from all enabled providers on the same environment.":
@@ -13961,6 +13966,7 @@ const catalog: MessageCatalog = {
     "Зачекайте кілька хвилин. T3.CodeShip повторить спробу сам.",
   "Wait a minute. T3.CodeShip retries on its own.":
     "Зачекайте хвилину. T3.CodeShip повторить спробу сам.",
+  "Wait at most {hours} hours for a plan reset": "Чекати скидання тарифу щонайбільше {hours} год",
   "Wait for attachments to finish preparing before rewinding.":
     "Дочекайтеся завершення підготовки вкладень перед поверненням.",
   "Wait for file uploads before stashing this prompt":
@@ -14100,9 +14106,9 @@ const catalog: MessageCatalog = {
   "What went wrong?": "Що пішло не так?",
   "What's changed": "Що змінилося",
   When: "Коли",
+  "When a Claude or Codex account's limit is out, claim one of its banked resets, but only if the plan reset is further away than the wait below or the reset would otherwise expire unused.":
+    "Коли ліміт облікового запису Claude або Codex вичерпано, використовуйте один із його накопичених скидань, але лише якщо скидання тарифу далі, ніж вказане нижче очікування, або скидання інакше згорить невикористаним.",
   "When a thread hits a usage limit": "Коли чат досягає ліміту використання",
-  "When a thread stops on this account's usage limit and no other account continues it, redeem a banked reset credit and continue the thread. A limit that resets within 30 minutes is waited out.":
-    "Коли чат зупиняється на ліміті використання цього облікового запису і жоден інший обліковий запис його не продовжує, використати накопичений кредит скидання та продовжити чат. Якщо ліміт скинеться менш ніж за 30 хвилин, чат дочекається скидання.",
   "When an agent hands work to a child task without naming a model, the task runs on the model set for its role. Unset roles use the thread's own model.":
     "Коли агент передає роботу дочірньому завданню без указання моделі, завдання виконується на моделі, заданій для його ролі. Для незаданих ролей використовується модель самого чату.",
   "When expression": "Вираз умови",

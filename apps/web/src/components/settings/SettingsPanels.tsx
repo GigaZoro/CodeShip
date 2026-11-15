@@ -5,6 +5,7 @@ import {
   InstallUpdatesAutomaticallySetting,
   ProviderUpdatesSettings,
   UsageLimitRecoverySettings,
+  UsageResetRedeemerSettings,
 } from "./RecoverySettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
@@ -1730,6 +1731,7 @@ export function ThreadsSettingsPanel() {
 
       <SettingsSection id="recovery" title={t("Recovery")}>
         <UsageLimitRecoverySettings />
+        <UsageResetRedeemerSettings />
         <SettingsRow
           {...searchableSetting("retry-threads-after-network-errors")}
           serverScoped

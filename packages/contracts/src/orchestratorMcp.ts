@@ -689,6 +689,25 @@ export const OrchestratorMcpUsageError = Schema.Literals([
 ]);
 export type OrchestratorMcpUsageError = typeof OrchestratorMcpUsageError.Type;
 
+/** What a claim of a banked reset came to; `failed` is tried again after 15 minutes. */
+export const OrchestratorMcpRedemptionOutcome = Schema.Literals([
+  "reset",
+  "already_used",
+  "not_limited",
+  "no_reset",
+  "failed",
+]);
+export type OrchestratorMcpRedemptionOutcome = typeof OrchestratorMcpRedemptionOutcome.Type;
+
+export const OrchestratorMcpLastRedemption = Schema.Struct({
+  at: Schema.String,
+  outcome: OrchestratorMcpRedemptionOutcome,
+  kind: ServerProviderResetKind,
+  /** `reset-too-far`: the plan reset was past the wait. `reset-expiring`: the reset would lapse unused. */
+  reason: Schema.Literals(["reset-too-far", "reset-expiring"]),
+});
+export type OrchestratorMcpLastRedemption = typeof OrchestratorMcpLastRedemption.Type;
+
 export const OrchestratorMcpProviderUsage = Schema.Struct({
   /** The same on every machine for one provider account; never the account id itself. */
   accountKey: Schema.NullOr(Schema.String),
@@ -719,6 +738,8 @@ export const OrchestratorMcpProviderUsage = Schema.Struct({
   ),
   /** False while the account is usageLimited or its provider says it may not run (Codex). */
   usageAllowed: Schema.Boolean,
+  /** The last banked reset this server claimed for the account; null when it has claimed none. */
+  lastRedemption: Schema.NullOr(OrchestratorMcpLastRedemption),
 });
 export type OrchestratorMcpProviderUsage = typeof OrchestratorMcpProviderUsage.Type;
 
@@ -803,6 +824,10 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  /** With `usage`: the hours this server waits for a plan reset before it claims a banked one. */
+  maxWaitHours: Schema.optional(Schema.Number),
+  /** With `usage`: whether this server claims banked resets by itself. */
+  redeemUsageResets: Schema.optional(Schema.Boolean),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,

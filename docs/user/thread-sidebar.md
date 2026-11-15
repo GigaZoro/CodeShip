@@ -543,9 +543,9 @@ sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit
 its limit starts its new thread on the first other account with usage left, and
 its **Run history** says which account it used and why. **Usage → Limits** shows which
-account a limited thread continues on right now. When no other account has room, an
-account set to **Use reset credits automatically** redeems a banked reset and continues the
-thread; see [Track subscription limits](usage.md#track-subscription-limits). When an
+account a limited thread continues on right now. When no other account has room, a
+thread waiting on an account whose banked reset was just redeemed continues there; see
+[Track subscription limits](usage.md#track-subscription-limits). When an
 account's login is rejected before the agent does any work, the thread sends its message
 again on the first other signed-in account with usage left, right away or as soon as one
 gets usage back within a day.

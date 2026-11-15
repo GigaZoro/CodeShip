@@ -4,6 +4,7 @@ import {
   ServerSettingsError,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -257,9 +258,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const refreshAfterRedemption = input.getSettings.pipe(
     Effect.flatMap((settings) => refreshSemaphore.withPermits(1)(readAfterRedemption(settings))),
     Effect.catchCause((cause) =>
-      Effect.logWarning("Usage could not be read after a reset was used.", { cause }).pipe(
-        Effect.as(false),
-      ),
+      Effect.logWarning("Usage could not be read after a reset was used.", {
+        errorTag: causeErrorTag(cause),
+      }).pipe(Effect.as(false)),
     ),
     Effect.forkIn(scope),
   );

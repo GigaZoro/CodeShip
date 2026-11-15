@@ -100,8 +100,27 @@ describe("providerUsageFields", () => {
         bankedResets: null,
         bankedResetsError: "not_read",
         usageAllowed: true,
+        lastRedemption: null,
       },
     });
+  });
+
+  it("publishes the last redemption only for the account the instance holds now", () => {
+    const record = {
+      at: "2026-09-03T11:00:00.000Z",
+      outcome: "reset",
+      kind: "full",
+      reason: "reset-too-far",
+    } as const;
+    const redemptions = new Map([["07e998012c1137de", record]]);
+    const held = (accountKey: string) =>
+      providerUsageFields(
+        provider("claudeAgent", { usageLimits: { ...claudeLimits, accountKey } }),
+        false,
+        redemptions,
+      ).usage?.lastRedemption;
+    expect(held("07e998012c1137de")).toEqual(record);
+    expect(held("5d41402abc4b2a76")).toBeNull();
   });
 
   it("takes Codex's own usage answer and lists each banked reset without its id", () => {

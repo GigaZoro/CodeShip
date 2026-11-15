@@ -373,30 +373,33 @@ it.layer(Layer.mergeAll(NodeServices.layer, ResetCreditCoordinator.layerTest))(
         }),
     );
 
-    it.effect("uses the weekly 5-hour reset and publishes when it is available again", () =>
-      Effect.gen(function* () {
-        const { resets, fake } = yield* makeResets(WEEKLY_SESSION_ON, {
-          reactions: {
-            hi: { answer: "You've hit your 5-hour limit · resets 5pm" },
-            "/limit-reset": {
-              answer:
-                "5-hour limit reset · next reset available Nov 22 · your weekly limit still applies",
-              uses: true,
+    it.effect(
+      "uses the weekly 5-hour reset only unasked, and publishes when it is available again",
+      () =>
+        Effect.gen(function* () {
+          const { resets, fake } = yield* makeResets(WEEKLY_SESSION_ON, {
+            reactions: {
+              hi: { answer: "You've hit your 5-hour limit · resets 5pm" },
+              "/limit-reset": {
+                answer:
+                  "5-hour limit reset · next reset available Nov 22 · your weekly limit still applies",
+                uses: true,
+              },
             },
-          },
-        });
-        expect(yield* resets.claim(undefined, "weekly")).toBe("noCredit");
-        expect(fake.spawns).toEqual([]);
-        expect(yield* resets.claim(undefined)).toBe("reset");
-        expect(yield* resets.current(usage(0))).toEqual({
-          resetPrograms: {
-            granted: false,
-            weeklySession: true,
-            weeklySessionAvailableAt: "2026-11-22T00:00:00.000Z",
-          },
-        });
-        expect(fake.used).toEqual(["/limit-reset"]);
-      }),
+          });
+          expect(yield* resets.claim(undefined, "weekly")).toBe("noCredit");
+          expect(yield* resets.claim(undefined, "five_hour")).toBe("noCredit");
+          expect(fake.spawns).toEqual([]);
+          expect(yield* resets.claim(undefined)).toBe("reset");
+          expect(yield* resets.current(usage(0))).toEqual({
+            resetPrograms: {
+              granted: false,
+              weeklySession: true,
+              weeklySessionAvailableAt: "2026-11-22T00:00:00.000Z",
+            },
+          });
+          expect(fake.used).toEqual(["/limit-reset"]);
+        }),
     );
 
     it.effect("fails a claim Claude gave no outcome for, and reads the grants again after it", () =>

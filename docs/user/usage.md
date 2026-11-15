@@ -143,19 +143,19 @@ with banked reset credits get a row under the window cards with the count, when 
 expires, and **Use reset**; the account details offer it too. A reset applies to the whole account
 at once: new threads and account switching can use it right away. When the provider takes the
 credit but its new limits cannot be read back yet, **Use reset** says so; refresh to see them.
+When the machine's login has switched to another account, it uses nothing and says so.
 
-To redeem resets without asking, turn on **Use reset credits automatically** for the account in
-**Settings → Providers & models**; the switch appears for accounts that bank reset credits. When a
-thread stops on that account's limit, or Claude holds its turn until the reset, and no other
-account continues it, one credit is redeemed and the thread continues on the same account. Threads
-waiting on that account at the time all continue on the one credit. A limit that resets within 30
-minutes is waited out, and no credit is spent while the account's own limits still show room,
-such as when ChatGPT's app limit stopped it, or while the account is turned off for the thread's
-project. A thread you stopped or snoozed, or one whose auto-resume you cancelled, is left alone;
-one hidden by **Hide limited threads until the limit resets** continues and shows again, even when
-limited threads do not resume at the reset. After a redemption,
-that machine leaves the account alone for 15 minutes, and a thread still waiting then follows your
-usage-limit recovery choice.
+To redeem resets without asking, turn on **Redeem usage resets automatically** in **Settings →
+Recovery**. It is off by default and applies to every Claude and Codex account on that machine.
+When an account's limit is out, CodeShip waits if the limit's plan reset is at most **Wait at most
+N hours for a plan reset** away (48 by default), and otherwise redeems a banked reset that clears
+that limit. It takes the one that expires first, never a paused one, and redeems one that would
+expire unused when a limit it clears runs out for the last time before it expires, whatever the wait.
+Nothing is redeemed while the account can still be used, such as when ChatGPT's app limit
+stopped it, and Claude's weekly 5-hour reset is left for **Use reset**. After a redemption the account's usage is read again and threads waiting on it
+continue; a redemption that used nothing is tried again after 15 minutes. Agents see the last one in `usage`.
+Codex redeems a limit once even when the account is on several machines. Claude cannot tell two
+machines apart, so turn it on on one machine per Claude account.
 Claude accounts list the resets Claude's own `/limit-reset` shows. CodeShip asks it in a hidden
 terminal at most every six hours and again when the account reaches a limit, and asking never uses
 a reset. On narrow screens, numbered rows below
