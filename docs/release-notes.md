@@ -1,3 +1,6 @@
+## 2026-11-16 — The manual Windows server test run fits its time limit
+
+- Maintainers: the Windows Tests workflow now splits a full `apps/server` run into eight shards, balanced by recorded duration, instead of one job that hit the 45-minute limit. Runs of other packages or of chosen files are unchanged.
 ## 2026-11-16 — Test lint catches early returns hidden behind a platform helper
 
 - **Maintenance:** the `no-platform-early-return-in-tests` lint rule now also flags `if (yield* runsOnWindows) return;` when the helper wraps a host-platform check, and four tests that returned early on Linux now skip instead of reporting a pass.
