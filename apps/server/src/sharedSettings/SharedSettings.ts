@@ -40,6 +40,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { BUILT_IN_DRIVERS } from "../provider/builtInDrivers.ts";
+import { patchChangesProviderInstances } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ProviderInstanceRegistrySync from "../provider/ProviderInstanceRegistrySync.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
@@ -363,8 +364,8 @@ interface ShareSink {
 /**
  * The versions of the settings this machine shares with the user's other machines, and the rules
  * for taking a newer one. Every check and change to a version happens under the settings write lock,
- * so a version never disagrees with the value a write left in settings.json. A write returns once
- * the provider instances it saved are running, so its caller can sign one in at once.
+ * so a version never disagrees with the value a write left in settings.json. A write that changes
+ * a provider instance returns once the registry runs it; other writes do not wait for it.
  */
 export class SharedSettings extends Context.Service<
   SharedSettings,
@@ -1344,7 +1345,7 @@ const make = Effect.gen(function* () {
         patch,
         yield* writeHooks(patch, taken.share, false, undefined, taken.allowedAheadMs),
       );
-      yield* registrySync.catchUp;
+      if (patchChangesProviderInstances(patch)) yield* registrySync.catchUp;
       return saved;
     }),
     updateProviderInstance: Effect.fn("SharedSettings.updateProviderInstance")(
@@ -1373,7 +1374,7 @@ const make = Effect.gen(function* () {
         );
         // `prepare` stamps the change under the lock; it refuses the write when it cannot.
         if (sink.stamp === undefined) return yield* refuse("take-shared-setting-unfollowed");
-        yield* registrySync.catchUp;
+        if (patchChangesProviderInstances(patch)) yield* registrySync.catchUp;
         return { settings: stored, share: { stamp: sink.stamp, values: sink.values } };
       },
     ),

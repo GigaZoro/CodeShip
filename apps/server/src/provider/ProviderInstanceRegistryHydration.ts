@@ -7,6 +7,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   ServerSettings,
+  type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type * as Crypto from "effect/Crypto";
@@ -52,8 +53,11 @@ type ProviderInstanceRegistryHydrationEnv =
   // The Claude runner counts its CLIs as running agents for port discovery.
   | PortScanner.PortDiscovery;
 
+/** The settings the registry's provider instances come from, and the only ones it reads. */
+const PROVIDER_INSTANCE_SETTING_KEYS = ["providerInstances", "projectSettingsOverrides"] as const;
+
 export const deriveProviderInstanceConfigMap = (
-  settings: ServerSettings,
+  settings: Pick<ServerSettings, (typeof PROVIDER_INSTANCE_SETTING_KEYS)[number]>,
 ): ProviderInstanceConfigMap => {
   const merged: Record<string, ProviderInstanceConfig> = { ...settings.providerInstances };
 
@@ -85,6 +89,10 @@ export const deriveProviderInstanceConfigMap = (
 
   return merged as ProviderInstanceConfigMap;
 };
+
+/** Whether a write of `patch` can add, change or remove a provider instance. */
+export const patchChangesProviderInstances = (patch: ServerSettingsPatch): boolean =>
+  PROVIDER_INSTANCE_SETTING_KEYS.some((key) => patch[key] !== undefined);
 
 export const DEV_REPLAY_INSTANCE_ID = ProviderInstanceId.make("devReplay");
 
@@ -129,8 +137,9 @@ export const seedDevReplayInstance = Effect.fn(
 
 /**
  * Reconciles the registry with the current settings on every saved change, and on a writer's
- * `catchUp`. Both read the settings under one lock, so the last to run applies the newest
- * instances and an older map never replaces a newer one.
+ * `catchUp`. Both read the settings and check what is applied under one lock, so the last to run
+ * applies the newest instances, an older map never replaces a newer one, and a catch-up never
+ * returns while a reconcile is still building instances.
  */
 export const layerSettingsSync = (
   settingsChanges: Stream.Stream<ServerSettings>,
@@ -143,12 +152,11 @@ export const layerSettingsSync = (
       const serverSettings = yield* Settings.ServerSettingsService;
       const layerScope = yield* Effect.scope;
       const lock = yield* Semaphore.make(1);
-      const applied = yield* Ref.make(initialConfigMap);
+      // Unset while a reconcile runs and after one fails: the registry then matches no map.
+      const applied = yield* Ref.make<ProviderInstanceConfigMap | undefined>(initialConfigMap);
       const currentConfigMap = serverSettings.getSettings.pipe(
         Effect.map(deriveProviderInstanceConfigMap),
       );
-      const isApplied = (configMap: ProviderInstanceConfigMap) =>
-        Ref.get(applied).pipe(Effect.map((last) => Equal.equals(configMap, last)));
       const logFailure = Effect.catchCause((cause) =>
         Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
       );
@@ -158,7 +166,9 @@ export const layerSettingsSync = (
           .withPermits(1)(
             Effect.gen(function* () {
               const configMap = yield* currentConfigMap;
-              if (skipWhenApplied && (yield* isApplied(configMap))) return;
+              const last = yield* Ref.get(applied);
+              if (skipWhenApplied && last !== undefined && Equal.equals(configMap, last)) return;
+              yield* Ref.set(applied, undefined);
               yield* mutator.reconcile(configMap);
               yield* Ref.set(applied, configMap);
             }),
@@ -173,19 +183,9 @@ export const layerSettingsSync = (
       );
 
       return ProviderInstanceRegistrySync.ProviderInstanceRegistrySync.of({
-        // A write that leaves the instances as applied returns without the lock, so it does not
-        // wait behind a reconcile that waits for a vault to unlock. The reconcile runs in this
-        // layer's scope, as the watcher's do: a writer that goes away stops waiting, but cannot
-        // cut a build between creating an instance and recording it.
-        catchUp: currentConfigMap.pipe(
-          Effect.flatMap(isApplied),
-          Effect.flatMap((upToDate) =>
-            upToDate
-              ? Effect.void
-              : reconcileCurrent(true).pipe(Effect.forkIn(layerScope), Effect.flatMap(Fiber.join)),
-          ),
-          logFailure,
-        ),
+        // Runs in this layer's scope, as the watcher's reconciles do: a writer that goes away stops
+        // waiting, but cannot cut a build between creating an instance and recording it.
+        catchUp: reconcileCurrent(true).pipe(Effect.forkIn(layerScope), Effect.flatMap(Fiber.join)),
       });
     }),
   );

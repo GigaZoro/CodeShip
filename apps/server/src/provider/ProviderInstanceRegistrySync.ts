@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 export interface ProviderInstanceRegistrySyncShape {
   /**
@@ -13,3 +14,6 @@ export class ProviderInstanceRegistrySync extends Context.Service<
   ProviderInstanceRegistrySync,
   ProviderInstanceRegistrySyncShape
 >()("t3/provider/ProviderInstanceRegistrySync") {}
+
+/** For tests whose registry is a fixed set of instances, which always matches the settings. */
+export const layerTest = Layer.succeed(ProviderInstanceRegistrySync, { catchUp: Effect.void });
