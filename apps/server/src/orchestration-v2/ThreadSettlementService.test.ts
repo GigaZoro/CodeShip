@@ -1480,7 +1480,10 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* markDelivery("child-delivered");
           yield* service.drain;
 
-          expect(yield* Ref.get(fixture.candidateReads)).toEqual([undefined, undefined, undefined]);
+          // Three full sweeps, each on the background readers.
+          expect(yield* Ref.get(fixture.candidateReads)).toEqual(
+            Array.from({ length: 3 }, () => ({ threadId: undefined, background: true })),
+          );
           expect((yield* Ref.get(fixture.commands)).map((command) => command.threadId)).toEqual([
             child.id,
           ]);
