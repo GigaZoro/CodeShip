@@ -85,6 +85,7 @@ import {
   isProviderAvailable,
   resolveProjectProviderInstanceEnabled,
   scheduledTaskSharedProjectKey,
+  isOrchestrationV2TerminalRunStatus,
 } from "@t3tools/contracts";
 import {
   getProviderOptionCurrentValue,
@@ -751,7 +752,7 @@ function hasPendingChildRuns(
 ): boolean {
   return childProjection.runs.some(
     (run) =>
-      !ThreadManagementService.isTerminalRunStatus(run.status) &&
+      !isOrchestrationV2TerminalRunStatus(run.status) &&
       !(run.status === "queued" && run.queueHeld === true) &&
       (delegatedRun === undefined || run.ordinal > delegatedRun.ordinal),
   );
@@ -787,7 +788,7 @@ function pendingTaskApproval(
     child.runs
       .filter(
         (run) =>
-          !ThreadManagementService.isTerminalRunStatus(run.status) &&
+          !isOrchestrationV2TerminalRunStatus(run.status) &&
           (run.delegatedTaskId === taskId ||
             // Legacy tasks own only their original run, not later turns in the child thread.
             (run.delegatedTaskId === undefined && run.id === originalRun?.id)),
@@ -935,7 +936,7 @@ function latestTerminalResultRun(
   return projection.runs
     .filter(
       (run) =>
-        ThreadManagementService.isTerminalRunStatus(run.status) &&
+        isOrchestrationV2TerminalRunStatus(run.status) &&
         !monitorRunIds.has(run.id) &&
         run.status !== "rolled_back" &&
         (run.id === delegatedRun?.id || run.startedAt !== null),
@@ -3090,10 +3091,7 @@ const make = Effect.gen(function* () {
             return item.secretStatus;
           }
           const current = projection.runs.find((candidate) => candidate.id === runId);
-          if (
-            current === undefined ||
-            ThreadManagementService.isTerminalRunStatus(current.status)
-          ) {
+          if (current === undefined || isOrchestrationV2TerminalRunStatus(current.status)) {
             yield* record("cancelled");
             return "cancelled" as const;
           }

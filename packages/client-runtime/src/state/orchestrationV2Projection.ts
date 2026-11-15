@@ -303,9 +303,25 @@ export function applyOrchestrationV2ProjectionEvent(
       return { ...projection, thread: event.payload };
     case "run.created":
     case "run.updated": {
-      const next = { ...base, runs: upsertEntity(base.runs, event.payload) };
+      const current = base.runs.find((run) => run.id === event.payload.id);
+      // Only run.delegated-completion-updated changes a cohort; run.updated no longer carries one.
+      const run =
+        event.payload.delegatedCompletion === undefined &&
+        current?.delegatedCompletion !== undefined
+          ? { ...event.payload, delegatedCompletion: current.delegatedCompletion }
+          : event.payload;
+      const next = { ...base, runs: upsertEntity(base.runs, run) };
       return { ...next, visibleTurnItems: activeVisibleTurnItems(next) };
     }
+    case "run.delegated-completion-updated":
+      return {
+        ...base,
+        runs: base.runs.map((run) =>
+          run.id === event.payload.runId
+            ? { ...run, delegatedCompletion: event.payload.delegatedCompletion }
+            : run,
+        ),
+      };
     case "run.background-work-cancelled":
       return {
         ...base,

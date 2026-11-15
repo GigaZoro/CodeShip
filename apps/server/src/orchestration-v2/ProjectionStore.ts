@@ -1036,6 +1036,15 @@ export function applyToProjection(
             : run,
         ),
       };
+    case "run.delegated-completion-updated":
+      return {
+        ...base,
+        runs: base.runs.map((run) =>
+          run.id === event.payload.runId
+            ? { ...run, delegatedCompletion: event.payload.delegatedCompletion }
+            : run,
+        ),
+      };
     case "run-attempt.created":
     case "run-attempt.updated":
       return withLocalVisibleTurnItems({
@@ -1228,6 +1237,9 @@ const encodeThreadUpdatedAt = Schema.encodeEffect(
 const encodeRunPayload = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2RunJsonSchema));
 const encodeRestartCancelledBackgroundWork = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema.fields.restartCancelledBackgroundWork),
+);
+const encodeDelegatedCompletion = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2RunJsonSchema.fields.delegatedCompletion),
 );
 const encodeRunAttemptPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2RunAttemptJsonSchema),
@@ -2261,6 +2273,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 '$.restartCancelledBackgroundWork',
                 json(${workJson})
               )
+              WHERE run_id = ${event.payload.runId} AND thread_id = ${event.threadId}
+            `;
+              break;
+            }
+            case "run.delegated-completion-updated": {
+              const cohortJson = yield* encodeDelegatedCompletion(
+                event.payload.delegatedCompletion,
+              );
+              yield* sql`
+              UPDATE orchestration_v2_projection_runs
+              SET payload_json = json_set(payload_json, '$.delegatedCompletion', json(${cohortJson}))
               WHERE run_id = ${event.payload.runId} AND thread_id = ${event.threadId}
             `;
               break;

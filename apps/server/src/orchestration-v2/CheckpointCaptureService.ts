@@ -130,8 +130,6 @@ export const layer: Layer.Layer<
         capturedAt,
         forceMissing: sideChat,
       });
-      // Omit delegatedCompletion to preserve cohort writes made after capture loaded the run.
-      const { delegatedCompletion: _delegatedCompletion, ...runWithoutDelegatedCompletion } = run;
       const commandId = CommandId.make(`command:effect:checkpoint.capture:${run.id}`);
       yield* eventSink.commitCommand({
         commandId,
@@ -206,9 +204,9 @@ export const layer: Layer.Layer<
             providerInstanceId: run.providerInstanceId,
             occurredAt: capturedAt,
             payload: stopped
-              ? { ...runWithoutDelegatedCompletion, checkpointId: checkpoint.id }
+              ? { ...run, checkpointId: checkpoint.id }
               : {
-                  ...runWithoutDelegatedCompletion,
+                  ...run,
                   status: "completed",
                   completedAt: capturedAt,
                   checkpointId: checkpoint.id,
@@ -251,7 +249,6 @@ export const layer: Layer.Layer<
       );
       if (run?.status !== "waiting") return;
       const completedAt = yield* DateTime.now;
-      const { delegatedCompletion: _delegatedCompletion, ...runWithoutDelegatedCompletion } = run;
       const commandId = CommandId.make(`command:effect:checkpoint.capture:${run.id}:uncaptured`);
       yield* eventSink.commitCommand({
         commandId,
@@ -268,7 +265,7 @@ export const layer: Layer.Layer<
             ...(rootNode === undefined ? {} : { nodeId: rootNode.id }),
             providerInstanceId: run.providerInstanceId,
             occurredAt: completedAt,
-            payload: { ...runWithoutDelegatedCompletion, status: "completed", completedAt },
+            payload: { ...run, status: "completed", completedAt },
           },
           ...(rootNode === undefined
             ? []

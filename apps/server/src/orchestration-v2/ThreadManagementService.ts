@@ -41,6 +41,8 @@ import {
   type ScheduledTaskId,
   ThreadId,
   type TurnItemId,
+  isOrchestrationV2TerminalRunStatus,
+  type OrchestrationV2TerminalRunStatus,
 } from "@t3tools/contracts";
 import {
   delegatedTaskProgress,
@@ -138,11 +140,6 @@ function existingThreadIdsForCommand(
   }
 }
 
-export type ThreadManagementTerminalRunStatus = Extract<
-  OrchestrationV2Run["status"],
-  "completed" | "failed" | "cancelled" | "interrupted" | "rolled_back"
->;
-
 export interface ThreadManagementSendInput {
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
@@ -218,7 +215,7 @@ export type ThreadManagementInterruptResult =
   | { readonly type: "no_active_run" }
   | {
       readonly type: "already_terminal";
-      readonly run: OrchestrationV2Run & { readonly status: ThreadManagementTerminalRunStatus };
+      readonly run: OrchestrationV2Run & { readonly status: OrchestrationV2TerminalRunStatus };
     };
 
 export class ThreadManagementThreadNotFoundError extends Schema.TaggedError<ThreadManagementThreadNotFoundError>()(
@@ -502,18 +499,6 @@ export function isActiveRun(run: OrchestrationV2Run): boolean {
   );
 }
 
-export function isTerminalRunStatus(
-  status: OrchestrationV2Run["status"],
-): status is ThreadManagementTerminalRunStatus {
-  return (
-    status === "completed" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "interrupted" ||
-    status === "rolled_back"
-  );
-}
-
 export function latestRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | undefined {
@@ -530,7 +515,10 @@ export function threadStillWorking(
   records: Pick<OrchestrationV2ThreadProjection, "runs" | "subagents" | "providerThreads">,
 ): Effect.Effect<boolean> {
   const { runs } = records;
-  if (runs.some((run) => !isTerminalRunStatus(run.status)) || delegatedWorkPending(records)) {
+  if (
+    runs.some((run) => !isOrchestrationV2TerminalRunStatus(run.status)) ||
+    delegatedWorkPending(records)
+  ) {
     return Effect.succeed(true);
   }
   const continued = new Set(runs.flatMap((run) => run.restartContinuationOfRunId ?? []));
@@ -1084,8 +1072,9 @@ const make = Effect.gen(function* () {
       }
       const run = latestRestartContinuation(runs, current);
       const pending =
-        isTerminalRunStatus(run.status) && (yield* orchestrator.restartContinuationPending(run));
-      return { run, pending, settled: isTerminalRunStatus(run.status) && !pending };
+        isOrchestrationV2TerminalRunStatus(run.status) &&
+        (yield* orchestrator.restartContinuationPending(run));
+      return { run, pending, settled: isOrchestrationV2TerminalRunStatus(run.status) && !pending };
     });
     const untilDelegatedWorkSettled = input.untilDelegatedWorkSettled === true;
     const delegatedWorkResult = Effect.gen(function* () {
@@ -1098,7 +1087,7 @@ const make = Effect.gen(function* () {
       // A thread rolled back past all its work, with nothing left running, has no answer to wait for.
       if (
         progress.resultRun === undefined &&
-        records.runs.every((run) => isTerminalRunStatus(run.status))
+        records.runs.every((run) => isOrchestrationV2TerminalRunStatus(run.status))
       ) {
         return latestRun(records);
       }
@@ -1279,11 +1268,11 @@ const make = Effect.gen(function* () {
         runId: input.runId,
       });
     }
-    if (explicitRun !== undefined && isTerminalRunStatus(explicitRun.status)) {
+    if (explicitRun !== undefined && isOrchestrationV2TerminalRunStatus(explicitRun.status)) {
       return {
         type: "already_terminal",
         run: explicitRun as OrchestrationV2Run & {
-          readonly status: ThreadManagementTerminalRunStatus;
+          readonly status: OrchestrationV2TerminalRunStatus;
         },
       } as const;
     }

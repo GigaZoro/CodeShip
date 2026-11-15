@@ -721,11 +721,8 @@ export const layer: Layer.Layer<
             : [];
         const persistedStatus =
           input.terminal.status === "completed" ? "waiting" : input.terminal.status;
-        // Omit delegatedCompletion; the startup snapshot must not overwrite newer acknowledgements, successors, or Stop barriers.
-        const { delegatedCompletion: _delegatedCompletion, ...runWithoutDelegatedCompletion } =
-          input.run;
         const finalizedRun: OrchestrationV2Run = {
-          ...runWithoutDelegatedCompletion,
+          ...input.run,
           status: persistedStatus,
           completedAt: input.terminal.status === "completed" ? null : completedAt,
         };

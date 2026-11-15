@@ -131,7 +131,6 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
       .map((task) => task.runId!),
   ]);
   for (const parentRunId of cohortRunIds) {
-    // Use the projected cancellation so disposing a cohort cannot revive its run.
     const parentRun = current.runs.find((run) => run.id === parentRunId);
     if (parentRun === undefined) continue;
     const cohort = parentRun.delegatedCompletion;
@@ -139,14 +138,14 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
       (task) => task.origin === "app_owned" && task.runId === parentRunId,
     );
     yield* emitEvent({
-      type: "run.updated",
+      type: "run.delegated-completion-updated",
       threadId: parentRun.threadId,
       runId: parentRun.id,
       ...(parentRun.rootNodeId === null ? {} : { nodeId: parentRun.rootNodeId }),
       providerInstanceId: parentRun.providerInstanceId,
       occurredAt: now,
       payload: {
-        ...parentRun,
+        runId: parentRun.id,
         delegatedCompletion: {
           disposition: "disposed",
           nextGeneration: cohort?.nextGeneration ?? 1,
