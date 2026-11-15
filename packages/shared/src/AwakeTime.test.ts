@@ -70,9 +70,22 @@ describe("AwakeTime", () => {
           orElse: (wait) => Effect.map(Clock.currentTimeMillis, (at) => ({ at, ...wait })),
         }),
       );
-      // 15 awake seconds before the pause; the tick it interrupted does not count.
-      expect(fired).toEqual({ at: wake + 75_000, ...wait });
+      // 16 awake seconds before the pause; the second it interrupted does not count.
+      expect(fired).toEqual({ at: wake + 74_000, ...wait });
     }).pipe(onPausingMac(sleepAt, sleepMs, pause)),
+  );
+
+  it.effect("an awake deadline charges a short stall only the part of a second before it", () =>
+    Effect.gen(function* () {
+      const fired = yield* Effect.never.pipe(
+        timeoutAwakeOrElse({
+          duration: "90 seconds",
+          orElse: (wait) => Effect.map(Clock.currentTimeMillis, (at) => ({ at, ...wait })),
+        }),
+      );
+      // The stall began half a second into a tick; only that half second counts.
+      expect(fired).toEqual({ at: 92_500, slept: false, stalled: false });
+    }).pipe(onPausingMac(1_500, 3_000, "stall")),
   );
 
   it.effect("an awake wait without a sleep says so", () =>

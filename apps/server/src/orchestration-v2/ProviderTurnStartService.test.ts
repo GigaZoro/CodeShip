@@ -2140,9 +2140,9 @@ effectIt.effect.each([
     yield* TestClock.adjust("1 minute");
     mac[row.pause]("8 hours");
     yield* TestClock.adjust("4 minutes");
-    // The 5 seconds the pause interrupted do not count.
+    // The second the pause interrupted does not count.
     expect(harness.projection().runs.at(-1)?.status).toBe("starting");
-    yield* TestClock.adjust("5 seconds");
+    yield* TestClock.adjust("1 second");
     yield* Fiber.join(startup);
 
     expect(harness.projection().runs.at(-1)?.status).toBe("failed");

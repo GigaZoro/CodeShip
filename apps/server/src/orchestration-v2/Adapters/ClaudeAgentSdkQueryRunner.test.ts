@@ -17,6 +17,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
@@ -115,13 +116,38 @@ it.effect("forks a session stored under the instance's own CLAUDE_CONFIG_DIR", (
     }).pipe(Effect.provide(forkRunnerLayer)),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
-const realQueryRunner = layerQueryRunner.pipe(
+const queryRunnerNeedingPlatform = layerQueryRunner.pipe(
   Layer.provide(PortScanner.layerTest),
   Layer.provide(
     Layer.succeed(ProviderEventLoggers, {
       native: undefined,
       canonical: undefined,
     }),
+  ),
+);
+const realQueryRunner = queryRunnerNeedingPlatform.pipe(Layer.provide(NodeServices.layer));
+const unreadableForkTranscriptQueryRunner = queryRunnerNeedingPlatform.pipe(
+  Layer.provide(
+    Layer.effect(
+      FileSystem.FileSystem,
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        return {
+          ...fileSystem,
+          exists: (path) =>
+            path.endsWith(`${FORK_SESSION_ID}.jsonl`)
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "exists",
+                    pathOrDescriptor: path,
+                  }),
+                )
+              : fileSystem.exists(path),
+        } satisfies FileSystem.FileSystem;
+      }),
+    ),
   ),
   Layer.provide(NodeServices.layer),
 );
@@ -389,39 +415,73 @@ it.effect("cancels a stalled registration without retrying or retaining its prom
   ),
 );
 
-it.effect("does not reuse a fresh session ID after MCP registration times out", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const registrationStarted = Promise.withResolvers<void>();
-      const disposed = vi.fn(async () => {});
-      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
-        () =>
-          ({
+it.effect.each([
+  { transcript: "absent", reopens: true },
+  { transcript: "present", reopens: false },
+  { transcript: "unreadable", reopens: false },
+] as const)(
+  "reopens a fresh session ID after MCP registration times out only without a transcript: $transcript",
+  ({ transcript, reopens }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-fresh-reopen-",
+        });
+        const projectDir = path.join(configDir, "projects", "-repo");
+        yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+        if (transcript === "present") {
+          yield* fileSystem.writeFileString(
+            path.join(projectDir, `${FORK_SESSION_ID}.jsonl`),
+            `${JSON.stringify({ type: "last-prompt", sessionId: FORK_SESSION_ID })}\n`,
+          );
+        }
+        const firstRegistration = Promise.withResolvers<void>();
+        const disposed = vi.fn(async () => {});
+        const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(() => {
+          const first = querySpy.mock.calls.length === 1;
+          return {
             setMcpServers: () => {
-              registrationStarted.resolve();
+              if (!first) return Promise.resolve({ added: ["t3-code"], removed: [], errors: {} });
+              firstRegistration.resolve();
               return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
             },
+            close: vi.fn(),
             [Symbol.asyncDispose]: disposed,
-          }) as unknown as ClaudeSdk.Query,
-      );
-      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
-      const runner = yield* ClaudeAgentSdkQueryRunner;
-      const { resume, ...options } = resumedMcpQueryInput.options;
-      const opening = yield* runner
-        .open({
-          ...resumedMcpQueryInput,
-          options: { ...options, sessionId: resume },
-        })
-        .pipe(Effect.result, Effect.forkChild);
-      yield* Effect.promise(() => registrationStarted.promise);
-      yield* TestClock.adjust("90 seconds");
-      const result = yield* Fiber.join(opening);
+          } as unknown as ClaudeSdk.Query;
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+        const runner = yield* ClaudeAgentSdkQueryRunner;
+        const { resume, ...options } = resumedMcpQueryInput.options;
+        const opening = yield* runner
+          .open({
+            ...resumedMcpQueryInput,
+            options: {
+              ...options,
+              sessionId: resume,
+              cwd: "/repo",
+              env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+            },
+          })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => firstRegistration.promise);
+        yield* TestClock.adjust("90 seconds");
+        const result = yield* Fiber.join(opening);
+        if (Exit.isSuccess(result)) yield* result.value.close;
 
-      assert.equal(result._tag, "Failure");
-      assert.equal(querySpy.mock.calls.length, 1);
-      assert.equal(disposed.mock.calls.length, 1);
-    }).pipe(Effect.provide(realQueryRunner)),
-  ),
+        assert.equal(Exit.isSuccess(result), reopens);
+        assert.deepEqual(
+          querySpy.mock.calls.map(([call]) => call.options?.sessionId),
+          reopens ? [FORK_SESSION_ID, FORK_SESSION_ID] : [FORK_SESSION_ID],
+        );
+        assert.equal(disposed.mock.calls.length, 1);
+      }).pipe(
+        Effect.provide(
+          transcript === "unreadable" ? unreadableForkTranscriptQueryRunner : realQueryRunner,
+        ),
+      ),
+    ).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect.each([
@@ -438,31 +498,33 @@ it.effect.each([
 ] as const)("does not count a $pause against MCP registration, and names it", (row) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const registrationStarted = Promise.withResolvers<void>();
-      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
-        () =>
-          ({
-            setMcpServers: () => {
-              registrationStarted.resolve();
-              return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
-            },
-            [Symbol.asyncDispose]: async () => {},
-          }) as unknown as ClaudeSdk.Query,
-      );
+      const registrations = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(() => {
+        const started = registrations[querySpy.mock.calls.length - 1]!;
+        return {
+          setMcpServers: () => {
+            started.resolve();
+            return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
+          },
+          [Symbol.asyncDispose]: async () => {},
+        } as unknown as ClaudeSdk.Query;
+      });
       yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
       const mac = yield* sleepingTestClock;
       const runner = yield* ClaudeAgentSdkQueryRunner;
-      const { resume, ...options } = resumedMcpQueryInput.options;
       const opening = yield* runner
-        .open({ ...resumedMcpQueryInput, options: { ...options, sessionId: resume } })
+        .open(resumedMcpQueryInput)
         .pipe(Effect.result, mac.provide, Effect.forkChild);
-      yield* Effect.promise(() => registrationStarted.promise);
+      yield* Effect.promise(() => registrations[0]!.promise);
+      yield* TestClock.adjust("90 seconds");
+      // The retry is the last attempt, so its pause is the one the error names.
+      yield* Effect.promise(() => registrations[1]!.promise);
       yield* TestClock.adjust("10 seconds");
       mac[row.pause]("15 minutes");
       yield* TestClock.adjust("80 seconds");
-      // 85 awake seconds: the 5 seconds the pause interrupted do not count.
+      // 89 awake seconds: the second the pause interrupted does not count.
       assert.isUndefined(opening.pollUnsafe());
-      yield* TestClock.adjust("5 seconds");
+      yield* TestClock.adjust("1 second");
       const result = yield* Fiber.join(opening);
 
       assert.equal(result._tag, "Failure");

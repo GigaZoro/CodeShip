@@ -7,10 +7,13 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
 // libuv timers keep running while macOS or Windows sleeps and all fire on wake, so a plain
-// deadline can expire while the machine sleeps. Awake time is counted in ticks instead.
-const AWAKE_TICK_MS = 5_000;
+// deadline can expire while the machine sleeps. Awake time is counted in ticks instead. A stall
+// that ends before a tick is due goes unseen, so it costs a deadline at most one tick.
+const AWAKE_TICK_MS = 1_000;
 // A tick that ends this much later than it should did not run awake.
 const LATE_TICK_MS = 5_000;
+// A watch only reports a sleep or a stall, so it can look less often.
+const WATCH_TICK_MS = 5_000;
 
 /** How long the event loop has run, rather than waited in its poll, in ms. */
 export const EventLoopActiveMs = Context.Reference<Effect.Effect<number>>(
@@ -95,15 +98,15 @@ export const watchWait: Effect.Effect<Effect.Effect<AwakeWait>, never, Scope.Sco
     yield* Effect.forkScoped(
       Effect.gen(function* () {
         while (!wait.slept || !wait.stalled) {
-          yield* Effect.sleep(AWAKE_TICK_MS);
-          const late = yield* lateTick(tick, AWAKE_TICK_MS);
+          yield* Effect.sleep(WATCH_TICK_MS);
+          const late = yield* lateTick(tick, WATCH_TICK_MS);
           if (late !== undefined) wait[late] = true;
           tick = yield* startTick;
         }
       }),
     );
     return Effect.map(
-      Effect.suspend(() => lateTick(tick, AWAKE_TICK_MS)),
+      Effect.suspend(() => lateTick(tick, WATCH_TICK_MS)),
       (late) => ({
         slept: wait.slept || late === "slept",
         stalled: wait.stalled || late === "stalled",

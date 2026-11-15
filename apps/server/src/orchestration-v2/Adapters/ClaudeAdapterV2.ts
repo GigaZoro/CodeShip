@@ -944,6 +944,7 @@ export const layerQueryRunner: Layer.Layer<
   never,
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
+  | FileSystem.FileSystem
   | Path.Path
   | PortScanner.PortDiscovery
   | ProviderEventLoggers.ProviderEventLoggers
@@ -952,6 +953,7 @@ export const layerQueryRunner: Layer.Layer<
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
@@ -959,6 +961,24 @@ export const layerQueryRunner: Layer.Layer<
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
+    // A failed open leaves no transcript until a prompt was sent, but the CLI refuses a fresh ID
+    // that names one, even one without messages.
+    const canReopen = (options: ClaudeAgentSdkQueryOpenInput["options"]) =>
+      options.resume !== undefined || options.sessionId === undefined
+        ? Effect.succeed(true)
+        : findClaudeTranscripts(fileSystem, path, {
+            configDir: (options.env ?? hostEnvironment).CLAUDE_CONFIG_DIR,
+            cwd: options.cwd ?? ".",
+            sessionId: options.sessionId,
+          }).pipe(
+            Effect.map((transcripts) => transcripts.length === 0),
+            Effect.catch((cause) =>
+              Effect.logWarning("orchestration-v2.claude-mcp-registration-retry-lookup-failed", {
+                sessionId: options.sessionId,
+                cause,
+              }).pipe(Effect.as(false)),
+            ),
+          );
 
     return ClaudeAgentSdkQueryRunner.of({
       allocateSessionId: crypto
@@ -1312,14 +1332,12 @@ export const layerQueryRunner: Layer.Layer<
             ),
           } satisfies ClaudeAgentSdkQuerySession;
         },
-        // Fresh IDs may already have a metadata-only transcript; only resumed opens can reuse their ID.
         (effect, input) =>
           effect.pipe(
             Effect.retry({
               times: 1,
               while: (error) =>
-                input.options.resume !== undefined &&
-                isClaudeMcpRegistrationTimeoutError(error.cause),
+                isClaudeMcpRegistrationTimeoutError(error.cause) ? canReopen(input.options) : false,
             }),
           ),
       ),
@@ -1924,6 +1942,38 @@ const isClaudeConversationLine = (line: string): boolean =>
     onNone: () => false,
     onSome: (entry) => entry.type === "user" || entry.type === "assistant",
   });
+
+/** The files under `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/*` that hold a session's transcript. */
+const findClaudeTranscripts = Effect.fn("ClaudeAdapterV2.findClaudeTranscripts")(function* (
+  fileSystem: FileSystem.FileSystem,
+  path: Path.Path,
+  input: {
+    readonly configDir: string | undefined;
+    readonly cwd: string;
+    readonly sessionId: string;
+  },
+) {
+  const configuredDir = input.configDir?.trim() ?? "";
+  const projectsDir = path.join(
+    configuredDir.length > 0
+      ? path.resolve(input.cwd, configuredDir)
+      : path.join(yield* HostProcess.HomeDirectory, ".claude"),
+    "projects",
+  );
+  if (!(yield* fileSystem.exists(projectsDir))) return [];
+  const transcripts: string[] = [];
+  for (const project of yield* fileSystem.readDirectory(projectsDir)) {
+    const transcriptPath = path.join(projectsDir, project, `${input.sessionId}.jsonl`);
+    // Stray files beside the project dirs fail with ENOTDIR; other failures leave it unknown.
+    const exists = yield* fileSystem
+      .exists(transcriptPath)
+      .pipe(Effect.catchReason("PlatformError", "BadResource", () => Effect.succeed(false)));
+    if (exists) {
+      transcripts.push(transcriptPath);
+    }
+  }
+  return transcripts;
+});
 
 const getNativeThreadId = Effect.fnUntraced(function* (
   providerThread: OrchestrationV2ProviderThread,
@@ -11600,23 +11650,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Metadata-only transcripts cannot be resumed or recreated; fail resumeThread to trigger a fresh session and handoff.
         const hasEmptyClaudeTranscript = Effect.fn("ClaudeAdapterV2.hasEmptyClaudeTranscript")(
           function* (nativeThreadId: string) {
-            const configuredDir = adapterOptions.environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
-            const projectsDir = path.join(
-              configuredDir.length > 0
-                ? path.resolve(session.cwd, configuredDir)
-                : path.join(yield* HostProcess.HomeDirectory, ".claude"),
-              "projects",
-            );
+            const transcripts = yield* findClaudeTranscripts(fileSystem, path, {
+              configDir: adapterOptions.environment.CLAUDE_CONFIG_DIR,
+              cwd: session.cwd,
+              sessionId: nativeThreadId,
+            });
             // Any message in any transcript copy means Claude may still resume it.
-            let found = false;
-            for (const project of yield* fileSystem.readDirectory(projectsDir)) {
-              const transcriptPath = path.join(projectsDir, project, `${nativeThreadId}.jsonl`);
-              // Stray files beside the project dirs fail with ENOTDIR.
-              if (
-                !(yield* fileSystem.exists(transcriptPath).pipe(Effect.orElseSucceed(() => false)))
-              ) {
-                continue;
-              }
+            for (const transcriptPath of transcripts) {
               const conversationLine = yield* fileSystem
                 .stream(transcriptPath)
                 .pipe(
@@ -11628,9 +11668,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               if (Option.isSome(conversationLine)) {
                 return false;
               }
-              found = true;
             }
-            return found;
+            return transcripts.length > 0;
           },
         );
 

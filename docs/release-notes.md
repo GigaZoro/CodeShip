@@ -1,3 +1,8 @@
+## 2026-11-15 — Claude chats try registering their MCP tools again
+
+- When a Claude chat's MCP tools took longer than 90 seconds to register, its turn failed with "Claude timed out while registering its MCP tools". Registration is now tried once more before the turn fails, also in a new chat such as a scheduled task's, as long as Claude saved no conversation file on the first try.
+- A stall of the server counts against that limit, and the other limits that already skip time the computer slept, for at most a second: a stall shorter than five seconds used to cost up to five.
+
 ## 2026-11-15 — The server keeps up while agents load the computer
 
 - Agents, and the commands they run with `t3_command_run` or in a terminal, now run at a lower CPU priority than T3.CodeShip's server on Windows, macOS and Linux, so builds and tests that use every core no longer leave the server too slow to answer its chats or register a Claude chat's MCP tools.
