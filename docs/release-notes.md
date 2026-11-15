@@ -276,6 +276,11 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — Windows test runs check command environments in PowerShell
+
+- Maintainers: the four tests of what a `t3_command_run` command gets from its agent's shell and the host environment, PATH included, run on Windows again, in PowerShell, instead of skipping there. The ACP terminal test runs its pipe in the host's shell too, cmd.exe on Windows.
+- The agent context budget test also checks that macOS offers an agent the same tools as Linux, since the budget keeps no separate value for macOS. The Antigravity attachment test no longer depends on the machine's path separators.
+
 ## 2026-11-21 — Monitoring stays visible while it updates
 
 - Monitoring keeps the last overview and chat rows visible while a connection recovers or a period or filter loads, and labels results that are out of date. Refresh spins only when you request it, and a slow environment times out.

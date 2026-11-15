@@ -786,63 +786,70 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         }),
     );
-
-    it.effect.each([
-      ["/t3-agent-tools", true, "command-agent-shell"],
-      ["", true, "command-agent-shell-empty-path"],
-      ["/t3-agent-tools", false, "command-agent-shell-no-host-path"],
-      ["", false, "command-agent-shell-empty-path-no-host-path"],
-    ] as const)(
-      "gives a command what its agent's own shell commands get, shell options only to the command, PATH %j, host PATH %s",
-      ([PATH, hostHasPath, name]) =>
-        Effect.gen(function* () {
-          const { PATH: _hostPath, ...hostWithoutPath } = process.env;
-          const chat = yield* liveChat(name);
-          NodeFS.mkdirSync(NodePath.join(chat.workspace, "sub"));
-          const started = yield* withServer((runner) =>
-            runner
-              .run(callerOf(chat.threadId), {
-                command:
-                  'printf "%s %s %s %s\\n%s\\n%s\\n" "$AGENT_SETTING" "$T3CODE_THREAD_ID" "$HOST_KEPT" "${HOST_REMOVED-removed}" "$PATH" "$SHELLOPTS"; exit 7',
-                cwd: "sub",
-              })
-              .pipe(Effect.tap(() => nextWake(chat.threadId))),
-          ).pipe(
-            Effect.provide(
-              providerShell((cwd, { HOST_REMOVED: _removed, ...inherited }) =>
-                // A PATH without the wrapper's own tools, which it still needs to record the end.
-                // sh reads no startup files that could add to it.
-                Effect.succeed({
-                  ...inherited,
-                  AGENT_SETTING: `set for ${cwd}`,
-                  PATH,
-                  SHELL: "/bin/sh",
-                  // bash as /bin/sh takes this as its own option; dash ignores it.
-                  SHELLOPTS: "errexit",
-                }),
-              ),
-            ),
-            Effect.provideService(HostProcess.Environment, {
-              ...(hostHasPath ? process.env : hostWithoutPath),
-              HOST_KEPT: "kept",
-              HOST_REMOVED: "host",
-            }),
-          );
-          const [seen, commandPath, shellOptions] = NodeFS.readFileSync(
-            started.logPath,
-            "utf8",
-          ).split("\n");
-          // Read for the chat's folder, as the agent's own settings were, though it ran below it.
-          assert.equal(started.shell, "sh");
-          assert.equal(seen, `set for ${chat.workspace} ${chat.threadId} kept removed`);
-          assert.equal(commandPath, PATH);
-          assert.match(shellOptions ?? "", /errexit/);
-          const task = yield* taskOf(chat.threadId, started.taskId);
-          assert.equal(task?.status, "failed");
-          assert.match(task?.result ?? "", /^Exited with code 7 after /);
-        }),
-    );
   });
+
+  it.effect.each([
+    ["/t3-agent-tools", true, "command-agent-shell"],
+    ["", true, "command-agent-shell-empty-path"],
+    ["/t3-agent-tools", false, "command-agent-shell-no-host-path"],
+    ["", false, "command-agent-shell-empty-path-no-host-path"],
+  ] as const)(
+    "gives a command what its agent's own shell commands get, shell options only to the command, PATH %j, host PATH %s",
+    ([PATH, hostHasPath, name]) =>
+      Effect.gen(function* () {
+        // Windows names ignore case, so its host PATH may be spelled Path.
+        const hostWithoutPath = Object.fromEntries(
+          Object.entries(process.env).filter(([key]) =>
+            isWindowsHost ? key.toLowerCase() !== "path" : key !== "PATH",
+          ),
+        );
+        const chat = yield* liveChat(name);
+        NodeFS.mkdirSync(NodePath.join(chat.workspace, "sub"));
+        const started = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), {
+              // The command runs in the host's shell: PowerShell on Windows, sh elsewhere.
+              command: isWindowsHost
+                ? '$removed = if (Test-Path Env:HOST_REMOVED) { $env:HOST_REMOVED } else { "removed" }; [Console]::WriteLine(($env:AGENT_SETTING, $env:T3CODE_THREAD_ID, $env:HOST_KEPT, $removed -join " ")); [Console]::WriteLine($env:PATH); [Console]::WriteLine($env:SHELLOPTS); exit 7'
+                : 'printf "%s %s %s %s\\n%s\\n%s\\n" "$AGENT_SETTING" "$T3CODE_THREAD_ID" "$HOST_KEPT" "${HOST_REMOVED-removed}" "$PATH" "$SHELLOPTS"; exit 7',
+              cwd: "sub",
+            })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        ).pipe(
+          Effect.provide(
+            providerShell((cwd, { HOST_REMOVED: _removed, ...inherited }) =>
+              // A PATH without the wrapper's own tools, which it still needs to record the end.
+              // Neither sh nor PowerShell (-NoProfile) reads startup files that could add to it.
+              Effect.succeed({
+                ...inherited,
+                AGENT_SETTING: `set for ${cwd}`,
+                PATH,
+                SHELL: "/bin/sh",
+                // bash as /bin/sh takes this as its own option; dash ignores it.
+                SHELLOPTS: "errexit",
+              }),
+            ),
+          ),
+          Effect.provideService(HostProcess.Environment, {
+            ...(hostHasPath ? process.env : hostWithoutPath),
+            HOST_KEPT: "kept",
+            HOST_REMOVED: "host",
+          }),
+        );
+        const [seen, commandPath, shellOptions] = NodeFS.readFileSync(
+          started.logPath,
+          "utf8",
+        ).split(/\r?\n/);
+        // Read for the chat's folder, as the agent's own settings were, though it ran below it.
+        assert.equal(started.shell, isWindowsHost ? "powershell" : "sh");
+        assert.equal(seen, `set for ${chat.workspace} ${chat.threadId} kept removed`);
+        assert.equal(commandPath, PATH);
+        assert.match(shellOptions ?? "", /errexit/);
+        const task = yield* taskOf(chat.threadId, started.taskId);
+        assert.equal(task?.status, "failed");
+        assert.match(task?.result ?? "", /^Exited with code 7 after /);
+      }),
+  );
 
   it.effect(
     "starts a Windows command from a hidden wrapper, with the host environment under its agent's in Unicode, each name once, writing no value and reading none to start",

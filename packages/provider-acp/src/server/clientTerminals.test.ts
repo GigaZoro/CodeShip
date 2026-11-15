@@ -9,6 +9,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 
 import {
   makeAcpClientTerminals,
@@ -87,7 +88,10 @@ describe("AcpClientTerminals", () => {
       yield* Effect.addFinalizer(() => terminals.disposeAll);
       const terminal = yield* terminals.create({
         sessionId: "devin",
-        command: 'printf "%s\\n" "$T3_ACP_MCP_NODE" | tr a-z A-Z',
+        // Shell source runs in the host's shell: cmd.exe on Windows, sh elsewhere.
+        command: isWindowsHost
+          ? `echo %T3_ACP_MCP_NODE%| "${process.execPath}" -e "process.stdin.on('data', (data) => process.stdout.write(String(data).toUpperCase()))"`
+          : 'printf "%s\\n" "$T3_ACP_MCP_NODE" | tr a-z A-Z',
       });
       const exit = yield* terminals.waitForExit({ sessionId: "devin", ...terminal });
       const output = yield* terminals.output({ sessionId: "devin", ...terminal });
