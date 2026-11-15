@@ -387,7 +387,14 @@ stay two variables. The wrapper is a hidden PowerShell process and reads no
 variable: it takes cmd and PowerShell from the system directory, so neither the agent's `PATH`
 nor a `SystemRoot` its settings move or drop can change which ones run. It runs the command in
 a console of its own with no window and writes the exit status once the command ends, so a Ctrl+C,
-Ctrl+Break or close event in that console can end the command but never the wrapper. When the
+Ctrl+Break or close event in that console can end the command but never the wrapper. The
+command's script first puts Git for Windows' `bin` folder on its `PATH`, so a bare `bash` or `sh`
+runs Git Bash and not System32's `bash.exe`, which is WSL's and has no node or `C:/` paths. It
+finds the folder itself, with the command's environment and folder: through `git --exec-path` of
+the `git` on that `PATH`, which also sees past a package manager's shim, then in the standard
+install folders. Without Git Bash it defines `bash` and `sh` as an error that names where it
+looked. Windows' own search, which a program the command starts may use, still tries System32
+before `PATH`. When the
 provider is turned off or not running, or cannot read them, including
 Claude settings an organization's policy helper computes (a `policyHelper` or a per-OS
 `policyHelpers` entry, neither of which `resolveSettings` applies), the call fails and nothing

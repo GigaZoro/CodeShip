@@ -27,8 +27,8 @@ it("names the shell t3_command_run uses on each platform and how to chain on Win
   expect(description).toContain("Windows PowerShell 5.1");
   expect(description).toContain("no `&&` or `||`");
   expect(description).toContain("$LASTEXITCODE");
-  expect(description).toContain("WSL's bash");
-  expect(description).toContain("Git\\bin\\bash.exe");
+  expect(description).toContain("a `bash` or `sh` in the command runs Git Bash");
+  expect(description).toContain("through `wsl`");
 });
 
 // The runner reports one of these in every result; the description has to name each.

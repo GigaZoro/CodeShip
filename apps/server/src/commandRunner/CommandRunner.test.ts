@@ -1298,6 +1298,139 @@ describe.runIf(isWindowsHost)("Windows only", () => {
     );
   });
 
+  it.layer(layerTest, { excludeTestServices: true })("a Windows command's bash", (it) => {
+    const system = NodePath.join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+    const powershellFolder = NodePath.join(system, "WindowsPowerShell", "v1.0");
+    const installFolders = ["PROGRAMFILES", "PROGRAMW6432", "PROGRAMFILES(X86)", "LOCALAPPDATA"];
+    // WSL's bash has no cygpath, and prints /usr/bin/node or /mnt/c/... for node. Git Bash shows
+    // a HOME under TEMP as /tmp/..., so the home is compared as a Windows path.
+    const nodeAndHome = "'command -v node; cygpath -w $HOME'";
+    const isFolder = (printed: string | undefined, folder: string) =>
+      NodeFS.realpathSync.native(printed ?? "").toLowerCase() ===
+      NodeFS.realpathSync.native(folder).toLowerCase();
+    const without = (env: Readonly<Record<string, string>>, names: ReadonlyArray<string>) =>
+      Object.fromEntries(
+        Object.entries(env).filter(([name]) => !names.includes(name.toUpperCase())),
+      );
+    const runBash = (
+      name: string,
+      command: string,
+      env: (setup: {
+        readonly inherited: Readonly<Record<string, string>>;
+        readonly workspace: string;
+        /** Not Git Bash, and first on PATH, as System32's WSL bash.exe often is. */
+        readonly otherBash: string;
+        /** A folder that does not exist. */
+        readonly nowhere: string;
+        /** Install variables that name no Git. */
+        readonly noInstalls: Record<string, string>;
+      }) => Record<string, string>,
+    ) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(name);
+        const otherBash = NodePath.join(chat.workspace, "other-bash");
+        NodeFS.mkdirSync(otherBash);
+        NodeFS.copyFileSync(
+          NodePath.join(system, "whoami.exe"),
+          NodePath.join(otherBash, "bash.exe"),
+        );
+        const nowhere = NodePath.join(chat.workspace, "nowhere");
+        const noInstalls = {
+          ProgramFiles: nowhere,
+          ProgramW6432: nowhere,
+          "ProgramFiles(x86)": nowhere,
+          LOCALAPPDATA: nowhere,
+        };
+        const started = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), { command })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        ).pipe(
+          Effect.provide(
+            providerShell((_cwd, inherited) =>
+              Effect.succeed(
+                env({ inherited, workspace: chat.workspace, otherBash, nowhere, noInstalls }),
+              ),
+            ),
+          ),
+        );
+        return {
+          row: yield* commandRow(started.taskId),
+          lines: NodeFS.readFileSync(started.logPath, "utf8").trim().split(/\r?\n/),
+          workspace: chat.workspace,
+        };
+      });
+
+    it.effect("runs Git Bash for bash and sh, which see the Windows home and node", () =>
+      Effect.gen(function* () {
+        const { row, lines, workspace } = yield* runBash(
+          "command-win-git-bash",
+          `bash -c ${nodeAndHome}; sh -c ${nodeAndHome}`,
+          ({ inherited, workspace, otherBash }) => ({
+            ...without(inherited, ["PATH", "HOME"]),
+            HOME: workspace,
+            PATH: [
+              otherBash,
+              NodePath.dirname(process.execPath),
+              Object.entries(inherited).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "",
+            ].join(";"),
+          }),
+        );
+        assert.lengthOf(lines, 4);
+        for (const [node, printedHome] of [lines.slice(0, 2), lines.slice(2)]) {
+          assert.match(node ?? "", /^\/[a-z]\/.+\/node(\.exe)?$/i);
+          assert.isTrue(isFolder(printedHome, workspace), `${printedHome} is not the workspace`);
+        }
+        assert.equal(row?.exit_code, 0);
+      }),
+    );
+
+    it.effect(
+      "finds Git Bash through a git that only the command's PATH names, in any case and whatever GIT_EXEC_PATH says",
+      () =>
+        Effect.gen(function* () {
+          const git = NodeChildProcess.execFileSync("where.exe", ["git"], { encoding: "utf8" })
+            .split(/\r?\n/)[0]!
+            .trim();
+          const { row, lines, workspace } = yield* runBash(
+            "command-win-git-shim",
+            "bash -c 'cygpath -w $HOME'",
+            ({ inherited, workspace, otherBash, nowhere, noInstalls }) => {
+              // A launcher outside the install, as a package manager's shim is.
+              const shim = NodePath.join(workspace, "git-shim");
+              NodeFS.mkdirSync(shim, { recursive: true });
+              NodeFS.writeFileSync(NodePath.join(shim, "git.cmd"), `@"${git}" %*\r\n`);
+              return {
+                ...without(inherited, ["PATH", "HOME", "GIT_EXEC_PATH", ...installFolders]),
+                ...noInstalls,
+                HOME: workspace,
+                GIT_EXEC_PATH: nowhere,
+                pAtH: [otherBash, shim, system, powershellFolder].join(";"),
+              };
+            },
+          );
+          assert.isTrue(isFolder(lines.at(-1), workspace), `${lines.at(-1)} is not the workspace`);
+          assert.equal(row?.exit_code, 0);
+        }),
+    );
+
+    it.effect("fails naming Git Bash when it finds none", () =>
+      Effect.gen(function* () {
+        const { row, lines } = yield* runBash(
+          "command-win-no-git-bash",
+          `bash -c ${nodeAndHome}`,
+          ({ inherited, otherBash, noInstalls }) => ({
+            ...without(inherited, ["PATH", ...installFolders]),
+            ...noInstalls,
+            PATH: [otherBash, system, powershellFolder].join(";"),
+          }),
+        );
+        assert.include(lines.join("\n"), "bash: no Git Bash found");
+        assert.equal(row?.exit_code, 127);
+      }),
+    );
+  });
+
   it.layer(layerTest, { excludeTestServices: true })(
     "a Windows command whose wrapper ended",
     (it) => {
