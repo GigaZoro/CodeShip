@@ -2731,8 +2731,8 @@ const catalog: MessageCatalog = {
     "Основа: {base}. Відкрийте шар, щоб переглянути його або злити стек до цього шару.",
   Battery: "Акумулятор",
   "Battery saver": "Економія заряду",
-  "Before a thread whose worktree has unmerged changes settles on its own, commit them and open a pull request. Off keeps those threads active.":
-    "Перш ніж чат, у worktree якого є незлиті зміни, завершиться сам, закомітьте їх і відкрийте пул-реквест. Якщо вимкнено, такі чати залишаються активними.",
+  "Before a thread you wrote in settles on its own, commit its worktree's unmerged changes and open a pull request. A thread you never wrote in, such as a scheduled run or a subagent, stays active instead. Off keeps every such thread active.":
+    "Перш ніж чат, у якому ви писали, завершиться сам, закомітьте незлиті зміни в його worktree і відкрийте пул-реквест. Чат, у якому ви не писали, наприклад запланований запуск чи субагент, натомість залишається активним. Якщо вимкнено, усі такі чати залишаються активними.",
   "Before the cache expires (beta)": "Перед завершенням терміну дії кешу (бета)",
   Behavior: "Поведінка",
   "Behind {branch}": "Позаду {branch}",

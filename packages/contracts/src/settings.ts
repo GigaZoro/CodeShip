@@ -1556,8 +1556,10 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   /**
-   * Before auto-settling a thread whose worktree holds unmerged work, commit it and open a pull
-   * request. Off keeps those threads active instead; either way the work stays in view.
+   * Before auto-settling a thread the user wrote in from a client whose worktree holds unmerged
+   * work, commit it and open a pull request. A thread the user never wrote in, such as a scheduled
+   * run or a subagent, stays active instead. Off keeps those threads active; either way the work
+   * stays in view.
    */
   sidebarAutoSettleOpensPullRequests: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),

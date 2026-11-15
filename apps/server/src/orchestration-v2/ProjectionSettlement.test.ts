@@ -4,6 +4,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2AppThread,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
@@ -11,6 +12,7 @@ import {
   ProviderThreadId,
   RunId,
   RuntimeRequestId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -340,6 +342,52 @@ it.effect("sql: the user-authored message time ignores agent notifications", () 
       DateTime.formatIso(shellThread!.latestUserAuthoredMessageAt!),
       DateTime.formatIso(written),
     );
+  }).pipe(Effect.provide(layerSql)),
+);
+
+it.effect("sql: only a message the user wrote counts as written in the thread", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* createThread("scheduled-run");
+    const message = (
+      id: string,
+      origin: Pick<
+        OrchestrationV2ConversationMessage,
+        "createdBy" | "creationSource" | "scheduledTaskId"
+      >,
+    ) =>
+      store.apply({
+        id: EventId.make(`event:written:${id}`),
+        type: "message.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...origin,
+          id: MessageId.make(`message:written:${id}`),
+          threadId,
+          runId: null,
+          nodeId: null,
+          role: "user",
+          text: id,
+          attachments: [],
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+    // A scheduled run's prompt carries the creator and source of its task.
+    yield* message("prompt", {
+      createdBy: "user",
+      creationSource: "web",
+      scheduledTaskId: ScheduledTaskId.make("task"),
+    });
+    yield* message("agent", { createdBy: "agent", creationSource: "mcp" });
+    // Recovering after a network or usage-limit stop sends "continue" as the user.
+    yield* message("recovery", { createdBy: "user", creationSource: "server" });
+    assert.isFalse(yield* store.hasUserWrittenMessage(threadId));
+
+    yield* message("typed", { createdBy: "user", creationSource: "mobile" });
+    assert.isTrue(yield* store.hasUserWrittenMessage(threadId));
   }).pipe(Effect.provide(layerSql)),
 );
 

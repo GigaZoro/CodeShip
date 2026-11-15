@@ -397,13 +397,20 @@ uncommitted files or commits the default branch does not have yet, so unshipped
 work does not slip out of view. Commits count as merged once they reach the
 default branch or the branch's pull request merges.
 
-Automatic settlement keeps that work in view too. Before such a thread settles on
-its own, T3.CodeShip commits its changes and opens a pull request, then settles it.
-With **Keep threads with a PR** on, the thread stays active with its new pull
-request. Turn off **Open a PR for unmerged work** in **Settings → Threads** to keep
-these threads active instead. A thread also stays active when its pull request
-cannot be opened, for example in a repository without a remote. A thread whose
-pull request was closed settles without a new one.
+Automatic settlement keeps that work in view too. Before such a thread you wrote
+in settles on its own, T3.CodeShip commits its changes and opens a pull request,
+then settles it. With **Keep threads with a PR** on, the thread stays active with
+its new pull request. Turn off **Open a PR for unmerged work** in **Settings →
+Threads** to keep these threads active instead. A thread also stays active when
+its pull request cannot be opened, for example in a repository without a remote.
+A thread whose pull request was closed settles without a new one.
+
+A thread you never wrote in, such as a scheduled run, a subagent or a chat an
+agent started, never gets a pull request this way: where a thread you wrote in
+would get one, it stays active instead, because the task or agent that started
+it decides how that work lands. Once you write in it from the app, it is treated
+like any thread you wrote in. Messages T3.CodeShip sends for you, such as the
+automatic "continue" after a network or usage-limit stop, do not count.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a

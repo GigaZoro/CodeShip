@@ -203,6 +203,18 @@ describe("isAutoSettlementCandidate", () => {
   });
 });
 
+describe("dropExpiredHolds", () => {
+  it("drops only the holds that have run out", () => {
+    const holds = new Map([
+      ["expired", 1_000],
+      ["ends-now", 2_000],
+      ["running", 3_000],
+    ]);
+    ThreadSettlementService.dropExpiredHolds(holds, 2_000);
+    expect([...holds.keys()]).toEqual(["running"]);
+  });
+});
+
 describe("resolveAutoSettlementAt", () => {
   it("keeps threads with a PR from inactivity settlement only when asked", () => {
     const input = {
@@ -636,6 +648,8 @@ interface HarnessOptions {
   readonly existingWorktreePaths?: ReadonlyArray<string>;
   readonly unmergedWork?: VcsUnmergedWorkResult;
   readonly hasPrimaryRemote?: boolean;
+  /** Threads only agents or scheduled tasks wrote in; the user wrote in every other thread. */
+  readonly unwrittenThreadIds?: ReadonlyArray<ThreadId>;
   readonly onDispatch?: (command: AutoSettleCommand) => Effect.Effect<void>;
   readonly onScriptRun?: (
     input: ProjectSetupScriptRunner.ProjectSetupScriptRunnerInput,
@@ -762,6 +776,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
               : snapshot.threads.filter((thread) => thread.id === threadId),
           ),
         ),
+      hasUserWrittenMessage: (threadId) =>
+        Effect.succeed(!(options.unwrittenThreadIds ?? []).includes(threadId)),
       getThread: (threadId) => {
         const thread = options.currentThreads?.find((candidate) => candidate.id === threadId);
         return thread
@@ -993,11 +1009,26 @@ describe("ThreadSettlementServiceV2 worker", () => {
           { name: "closed PR", work: pushed, pr: "closed", settles: true, opensPr: false },
           { name: "setting off", work: unmerged, pr: null, settles: false, opensPr: false },
           { name: "no remote", work: unmerged, pr: null, settles: false, opensPr: false },
+          // Agents wrote its prompts. Settling would run the settle script in its worktree, which
+          // can be the checkout its parent still works in.
+          { name: "subagent", work: unmerged, pr: null, settles: false, opensPr: false },
+          // Agents and scheduled runs own how their work lands; auto-settle never publishes it.
+          { name: "nobody wrote", work: unmerged, pr: null, settles: false, opensPr: false },
         ] as const;
         for (const testCase of cases) {
-          const thread = makeThread(`worktree-${testCase.name}`, {
+          const threadId = ThreadId.make(`worktree-${testCase.name}`);
+          const thread = makeThread(threadId, {
             branch: "feature",
             worktreePath: "/worktrees/feature",
+            ...(testCase.name === "subagent"
+              ? {
+                  lineage: {
+                    parentThreadId: ThreadId.make("parent"),
+                    relationshipToParent: "subagent",
+                    rootThreadId: ThreadId.make("parent"),
+                  },
+                }
+              : {}),
           });
           const fixture = yield* makeHarness({
             snapshot: makeSnapshot([thread]),
@@ -1009,6 +1040,8 @@ describe("ThreadSettlementServiceV2 worker", () => {
             existingWorktreePaths: ["/worktrees/feature"],
             ...(testCase.work === undefined ? {} : { unmergedWork: testCase.work }),
             hasPrimaryRemote: testCase.name !== "no remote",
+            unwrittenThreadIds:
+              testCase.name === "nobody wrote" || testCase.name === "subagent" ? [threadId] : [],
             branchPullRequest: () =>
               Effect.succeed(testCase.pr === null ? null : makeBranchPullRequest(testCase.pr)),
           });
@@ -1462,6 +1495,91 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* startHarness(service, fixture.activation, fixture.snapshotReads);
           expect(lookups).toEqual([{ freshGitState: true }]);
           assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect(
+    "a thread nobody wrote in does not hold back the pull request of one sharing its worktree",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          // The scheduled run sorts first, so its check runs before the user's thread every sweep.
+          const scheduled = makeThread("shared-scheduled", {
+            branch: "feature",
+            worktreePath: "/worktrees/feature",
+            updatedAt: DateTime.makeUnsafe("2026-08-19T00:00:00.000Z"),
+          });
+          const written = makeThread("shared-written", {
+            branch: "feature",
+            worktreePath: "/worktrees/feature",
+          });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([scheduled, written]),
+            settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
+            existingWorktreePaths: ["/worktrees/feature"],
+            unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
+            unwrittenThreadIds: [scheduled.id],
+          });
+
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            // A check of the same worktree in flight keeps the other thread for one sweep at most.
+            yield* fixture.publishEvent({
+              type: "run.background-work-cancelled",
+              id: EventId.make("event:shared-written"),
+              threadId: written.id,
+              occurredAt: DateTime.makeUnsafe(NOW),
+              payload: {
+                runId: RunId.make("run:shared-written"),
+                restartCancelledBackgroundWork: [],
+              },
+            });
+            yield* Queue.take(fixture.snapshotReads);
+            yield* service.drain;
+            const openedFor = (yield* Ref.get(fixture.stackedActions)).map(
+              (input) => input.threadId,
+            );
+            expect(new Set(openedFor)).toEqual(new Set([written.id]));
+            assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
+  it.effect("checks a thread nobody wrote in again as soon as the settings change", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const thread = makeThread("unwritten-held", {
+          branch: "feature",
+          worktreePath: "/worktrees/feature",
+        });
+        const lookups: Array<Parameters<GitManager.GitManager["Service"]["branchPullRequest"]>[1]> =
+          [];
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([thread]),
+          settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
+          existingWorktreePaths: ["/worktrees/feature"],
+          unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
+          unwrittenThreadIds: [thread.id],
+          branchPullRequest: (_input, lookupOptions) =>
+            Effect.sync(() => lookups.push(lookupOptions)).pipe(Effect.as(null)),
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          expect(lookups).toEqual([{ freshGitState: true }]);
+          yield* fixture.updateSettings({ sidebarAutoSettleAfterDays: 2 });
+          yield* Queue.take(fixture.snapshotReads);
+          yield* service.drain;
+          expect(lookups).toEqual([{ freshGitState: true }, { freshGitState: true }]);
+          assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+          assert.deepStrictEqual(yield* Ref.get(fixture.stackedActions), []);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),

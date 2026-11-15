@@ -258,6 +258,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "projectId"
   | "branch"
   | "worktreePath"
+  | "lineage"
   | "pullRequests"
   | "linkedPullRequest"
   | "branchPullRequest"
@@ -663,6 +664,10 @@ export interface ProjectionStoreV2Shape {
   readonly getSettlementCandidates: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
+  /** Whether the user wrote in the thread; agents' messages and scheduled tasks' prompts do not count. */
+  readonly hasUserWrittenMessage: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly getThreadsWithPullRequests: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadPullRequests>, ProjectionStoreV2Error>;
@@ -7244,6 +7249,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
+    // Mirrors the orchestrator's sentByUserFromClient: server recoveries, reviews and answers carry
+    // createdBy user too, and a scheduled run's prompt carries its task's creator.
+    const hasUserWrittenMessage: ProjectionStoreV2Shape["hasUserWrittenMessage"] = (threadId) =>
+      sql<{ readonly written: number }>`
+        SELECT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_messages message
+          WHERE message.thread_id = ${threadId} AND message.role = 'user'
+            AND json_extract(message.payload_json, '$.createdBy') = 'user'
+            AND json_extract(message.payload_json, '$.creationSource') IN ('web', 'mobile')
+            AND json_extract(message.payload_json, '$.scheduledTaskId') IS NULL
+        ) AS written
+      `.pipe(
+        Effect.map((rows) => rows[0]?.written === 1),
+        Effect.mapError(controlReadError(threadId)),
+      );
+
     const getOpenRemoteDelegatedTasks: ProjectionStoreV2Shape["getOpenRemoteDelegatedTasks"] = sql<{
       readonly thread_id: string;
       readonly subagent_id: string;
@@ -8038,6 +8059,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       findGuestShareThreadId: readOnReader(findGuestShareThreadId),
       getThread: readOnReader(getThread),
       getSettlementCandidates: readOnReader(getSettlementCandidates),
+      hasUserWrittenMessage: readOnReader(hasUserWrittenMessage),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadWorktreePaths: readOnReader(getThreadWorktreePaths),
       getActiveTurnWorkspaces: readOnReader(getActiveTurnWorkspaces),

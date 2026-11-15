@@ -53,6 +53,12 @@ const UNMERGED_WORK_RECHECK_MS = HOUR_MS;
 const UNMERGED_WORK_RETRY_AFTER_FAILURE_MS = 6 * HOUR_MS;
 const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 
+/**
+ * Open a pull request for a worktree's unmerged work, or keep the thread active. Keeping it active
+ * holds the check for every thread on the worktree, or for this thread only.
+ */
+type UnmergedWorkAction = "open-pull-request" | "keep-worktree-active" | "keep-thread-active";
+
 function toMillis(value: DateTime.Utc | null | undefined): number | null {
   return value == null ? null : DateTime.toEpochMillis(value);
 }
@@ -149,6 +155,11 @@ function pullRequestSettles(
   const pullRequestAtMs = Date.parse(terminalAt);
   if (Number.isNaN(pullRequestAtMs)) return false;
   return pullRequestAtMs >= userAnchorMs;
+}
+
+/** Drops holds that have run out, so threads and worktrees that are gone leave memory. */
+export function dropExpiredHolds<K>(holds: Map<K, number>, nowMs: number): void {
+  for (const [key, untilMs] of holds) if (untilMs <= nowMs) holds.delete(key);
 }
 
 export function isAutoSettlementCandidate(
@@ -328,25 +339,43 @@ export const make = Effect.gen(function* () {
   const settleActionRunAt = new Map<ThreadId, number>();
   // Keyed by worktree path: the unmerged work belongs to the worktree, whichever thread found it.
   const unmergedWorkHeldUntilMs = new Map<string, number>();
+  // A thread the user never wrote in may not open a pull request, so it holds only itself: its
+  // hold must not keep a thread on the same worktree that may open one from opening it.
+  const threadsHeldUntilMs = new Map<ThreadId, number>();
   // A worktree another thread or sweep is checking counts as held until that check sets its hold.
   const worktreesBeingChecked = new Set<string>();
   const holdsUnmergedWork = (cwd: string, nowMs: number) =>
     (unmergedWorkHeldUntilMs.get(cwd) ?? 0) > nowMs || worktreesBeingChecked.has(cwd);
+  const holdsThread = (threadId: ThreadId, nowMs: number) =>
+    (threadsHeldUntilMs.get(threadId) ?? 0) > nowMs;
+  const holdUnmergedWork = (
+    threadId: ThreadId,
+    cwd: string,
+    action: UnmergedWorkAction,
+    untilMs: number,
+  ) => {
+    if (action === "keep-thread-active") threadsHeldUntilMs.set(threadId, untilMs);
+    else unmergedWorkHeldUntilMs.set(cwd, untilMs);
+  };
 
   const checkUnmergedWork = Effect.fnUntraced(function* (
     thread: ProjectionStore.ProjectionSettlementCandidate,
     cwd: string,
-    opensPullRequests: boolean,
+    action: UnmergedWorkAction,
     nowMs: number,
   ) {
     const hold = (durationMs: number) => {
-      unmergedWorkHeldUntilMs.set(cwd, nowMs + durationMs);
+      holdUnmergedWork(thread.id, cwd, action, nowMs + durationMs);
       return false;
+    };
+    const release = () => {
+      unmergedWorkHeldUntilMs.delete(cwd);
+      threadsHeldUntilMs.delete(thread.id);
+      return true;
     };
     const work = yield* gitWorkflow.unmergedWork({ cwd });
     if (work.changedFileCount === 0 && work.unmergedCommitCount === 0) {
-      unmergedWorkHeldUntilMs.delete(cwd);
-      return true;
+      return release();
     }
     const pullRequest =
       work.refName === null
@@ -357,11 +386,10 @@ export const make = Effect.gen(function* () {
       pullRequest?.state === "closed" ||
       (pullRequest?.state === "open" && work.changedFileCount === 0)
     ) {
-      unmergedWorkHeldUntilMs.delete(cwd);
-      return true;
+      return release();
     }
     if (
-      !opensPullRequests ||
+      action !== "open-pull-request" ||
       work.refName === null ||
       !(yield* gitWorkflow.localStatus({ cwd })).hasPrimaryRemote
     ) {
@@ -403,7 +431,8 @@ export const make = Effect.gen(function* () {
 
   /**
    * False keeps the thread active so its worktree's unmerged work stays in view. That work gets a
-   * pull request first when the setting allows; the link it adds sweeps the thread again.
+   * pull request first when the setting allows and the user wrote in the thread; the link it adds
+   * sweeps the thread again.
    */
   const releasesUnmergedWork = Effect.fnUntraced(function* (
     thread: ProjectionStore.ProjectionSettlementCandidate,
@@ -412,26 +441,34 @@ export const make = Effect.gen(function* () {
   ) {
     const cwd = thread.worktreePath;
     if (cwd === null || !(yield* fileSystem.exists(cwd))) return true;
-    if (holdsUnmergedWork(cwd, nowMs)) return false;
+    if (holdsThread(thread.id, nowMs) || holdsUnmergedWork(cwd, nowMs)) return false;
     worktreesBeingChecked.add(cwd);
-    return yield* checkUnmergedWork(thread, cwd, opensPullRequests, nowMs).pipe(
-      Effect.catchCauseIf(
-        (cause) => !Cause.hasInterruptsOnly(cause),
-        (cause) =>
-          Effect.logWarning("checking unmerged work before automatic settlement failed", {
-            threadId: thread.id,
-            cause: Cause.pretty(cause),
-          }).pipe(
-            Effect.andThen(
-              Effect.sync(() => {
-                unmergedWorkHeldUntilMs.set(cwd, nowMs + UNMERGED_WORK_RECHECK_MS);
-                return false;
-              }),
+    return yield* Effect.gen(function* () {
+      // Only a thread the user wrote in is theirs to publish; agents and scheduled tasks decide how
+      // the work of the threads they started lands.
+      const action: UnmergedWorkAction = !opensPullRequests
+        ? "keep-worktree-active"
+        : (yield* projections.hasUserWrittenMessage(thread.id))
+          ? "open-pull-request"
+          : "keep-thread-active";
+      return yield* checkUnmergedWork(thread, cwd, action, nowMs).pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("checking unmerged work before automatic settlement failed", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            }).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  holdUnmergedWork(thread.id, cwd, action, nowMs + UNMERGED_WORK_RECHECK_MS);
+                  return false;
+                }),
+              ),
             ),
-          ),
-      ),
-      Effect.ensuring(Effect.sync(() => worktreesBeingChecked.delete(cwd))),
-    );
+        ),
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => worktreesBeingChecked.delete(cwd))));
   });
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
@@ -441,6 +478,12 @@ export const make = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings;
     if (!autoSettlementConfigured(settings)) {
       return;
+    }
+    if (threadId === undefined) {
+      // An archived, deleted or hand-settled thread is no candidate, so only this drops its hold.
+      const sweptAtMs = DateTime.toEpochMillis(yield* DateTime.now);
+      dropExpiredHolds(unmergedWorkHeldUntilMs, sweptAtMs);
+      dropExpiredHolds(threadsHeldUntilMs, sweptAtMs);
     }
     const readCandidates = projections.getSettlementCandidates(threadId);
     // A stopped thread's own lookup must not queue behind full scans (see threadSweeps).
@@ -579,7 +622,7 @@ export const make = Effect.gen(function* () {
       (thread) =>
         thread.worktreePath === null ||
         lookupCwdByThreadId.get(thread.id) !== thread.worktreePath ||
-        !holdsUnmergedWork(thread.worktreePath, nowMs),
+        (!holdsThread(thread.id, nowMs) && !holdsUnmergedWork(thread.worktreePath, nowMs)),
     );
     const groups = Map.groupBy(unheldCandidates, lookupKey);
 
@@ -844,6 +887,7 @@ export const make = Effect.gen(function* () {
         lastSettlementSettings = key;
         // Held threads follow the new rules now rather than after their recheck delay.
         unmergedWorkHeldUntilMs.clear();
+        threadsHeldUntilMs.clear();
         return fullSweeps.enqueue(undefined);
       }),
     );

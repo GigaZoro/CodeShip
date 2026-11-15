@@ -1,3 +1,7 @@
+## 2026-11-16 — Automatic settlement opens pull requests only for threads you wrote in
+
+- Automatic settlement used to open a pull request for any thread with unmerged worktree work, including a subagent's or a scheduled run's, so work that agents had not finished or that had failed review went up for merge. Now only a thread you wrote in from the app gets one; messages T3.CodeShip sends for you, such as the automatic "continue" after a stop, do not count. A thread you never wrote in, such as a scheduled run or a subagent, stays active with its work in view instead; once you write in it from the app, it can get one too.
+
 ## 2026-11-16 — `bash` in a Windows agent command runs Git Bash, not WSL
 
 - On Windows, a `bash` or `sh` in a command an agent runs with `t3_command_run` now starts Git Bash, which reads `C:/` paths and finds node, instead of WSL's bash, which can do neither. CodeShip finds Git Bash through the `git` on the command's PATH or in the standard install folders, and leaves that PATH as it is, so `git` in the command is still the one it names. Without Git Bash, `bash` fails with an error that says where CodeShip looked; WSL's bash stays reachable through `wsl`. A program the command starts that runs `bash` itself can still get WSL's, so give it Git Bash's full path.
