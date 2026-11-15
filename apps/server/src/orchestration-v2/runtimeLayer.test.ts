@@ -13676,6 +13676,7 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
     "fixed-fresh",
     "chain-expired",
     "legacy-chain-expired",
+    "compacted-chain-expired",
     "manual-expired",
     "reset-expired",
     "restart-expired",
@@ -13894,7 +13895,9 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
         });
       }
       let command = failover!;
-      if (scenario === "chain-expired" || scenario === "legacy-chain-expired") {
+      if (scenario.endsWith("chain-expired")) {
+        // The source ends before the resumed run starts, so a compaction there reads past it.
+        if (scenario === "compacted-chain-expired") yield* TestClock.adjust("1 second");
         yield* orchestrator.dispatch(command);
         const resumed = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
         const { automaticContinuationOfRunId: _automatic, ...legacy } = resumed;
@@ -13911,6 +13914,34 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
                 completedAt: now,
               },
             },
+            ...(scenario === "compacted-chain-expired"
+              ? [
+                  {
+                    id: EventId.make(`${threadId}:compaction`),
+                    type: "turn-item.updated" as const,
+                    threadId,
+                    occurredAt: now,
+                    payload: {
+                      id: TurnItemId.make(`${threadId}:compaction`),
+                      type: "compaction" as const,
+                      driver: null,
+                      threadId,
+                      runId: resumed.id,
+                      nodeId: resumed.rootNodeId,
+                      providerThreadId: null,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: 100,
+                      status: "completed" as const,
+                      title: null,
+                      startedAt: now,
+                      completedAt: now,
+                      updatedAt: now,
+                    },
+                  },
+                ]
+              : []),
           ],
         });
         command = {

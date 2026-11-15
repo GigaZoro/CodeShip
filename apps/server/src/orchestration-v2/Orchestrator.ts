@@ -7193,9 +7193,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
         return { cancelUnsettledEffects: undefined };
       }
-      const source = continuationSource(candidate, projection);
-      const message = projection.messages.find((item) => item.id === source.userMessageId);
-      if (message?.scheduledTaskId === undefined) return null;
+      const scheduledSource = (
+        from: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
+      ) => {
+        const source = continuationSource(candidate, from);
+        const message = from.messages.find((item) => item.id === source.userMessageId);
+        return message === undefined ? undefined : { source, message };
+      };
+      // A compacted read keeps only recent runs' messages; the continuations can start earlier.
+      const found =
+        scheduledSource(projection) ??
+        scheduledSource(yield* getProjectionWithPendingEvents(command.threadId, events));
+      if (found?.message.scheduledTaskId === undefined) return null;
+      const { source, message } = found;
       const task = yield* projectionStore
         .getScheduledTaskRecoveryState(message.scheduledTaskId, source.requestedAt)
         .pipe(
