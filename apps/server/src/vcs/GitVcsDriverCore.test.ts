@@ -1574,6 +1574,27 @@ describe("rejected git refs", () => {
   );
 });
 
+it.live("returns the result of a command that exited while the event loop was blocked", () =>
+  Effect.gen(function* () {
+    const cwd = yield* makeTmpDir();
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const result = yield* driver.execute({
+      operation: "GitVcsDriver.test.blockedPastDeadline",
+      cwd,
+      args: ["-c", "alias.pause=!sleep 0.1", "pause"],
+      timeoutMs: 500,
+      progress: {
+        // In the check phase, as a busy server's work is, so its timers run before the next poll.
+        onProcessStarted: () =>
+          Effect.sync(() => {
+            setImmediate(() => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000));
+          }),
+      },
+    });
+    assert.equal(result.exitCode, 0);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.layer(layerTest)("GitVcsDriver core integration", (it) => {
   it.effect("keeps large change sets available for status and commit preparation", () =>
     Effect.gen(function* () {

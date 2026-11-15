@@ -42,6 +42,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
+import { timeoutProcessOption } from "../process/processDeadline.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { removeEmptyDirectory } from "./removeEmptyDirectory.ts";
 import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
@@ -1089,8 +1090,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const timeoutMs = input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : input.timeoutMs;
       const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
       const appendTruncationMarker = input.appendTruncationMarker ?? false;
+      // Starting Git and running it each get the whole limit, so a slow start does not shorten the run.
+      const withDeadline = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        timeoutMs === null
+          ? effect
+          : effect.pipe(
+              timeoutProcessOption(timeoutMs),
+              Effect.flatMap((result) =>
+                Effect.fromOption(
+                  result,
+                  () =>
+                    new GitCommandError({
+                      ...gitCommandContext(commandInput),
+                      detail: GIT_COMMAND_TIMED_OUT_DETAIL,
+                    }),
+                ),
+              ),
+            );
 
-      const runGitCommand = Effect.fn("runGitCommand")(function* () {
+      const startGitProcess = Effect.fnUntraced(function* () {
         const trace2Monitor = yield* createTrace2Monitor(commandInput, input.progress).pipe(
           Effect.provideService(Path.Path, path),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -1133,51 +1151,58 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 }),
             ),
           );
-        if (input.progress?.onProcessStarted) yield* input.progress.onProcessStarted();
+        return { trace2Monitor, child };
+      });
 
-        const [stdout, stderr, exitCode] = yield* Effect.all(
-          [
-            collectOutput(
-              commandInput,
-              child.stdout,
-              maxOutputBytes,
-              appendTruncationMarker,
-              input.progress?.onStdoutLine,
-              input.keepLineCallbacksAfterTruncation,
-            ),
-            collectOutput(
-              commandInput,
-              child.stderr,
-              maxOutputBytes,
-              appendTruncationMarker,
-              input.progress?.onStderrLine,
-              input.keepLineCallbacksAfterTruncation,
-            ),
-            child.exitCode.pipe(
-              Effect.mapError(
-                (cause) =>
-                  new GitCommandError({
-                    ...gitCommandContext(commandInput),
-                    detail: "Failed to read Git process exit code.",
-                    cause,
-                  }),
+      const runGitCommand = Effect.fn("runGitCommand")(function* () {
+        const { trace2Monitor, child } = yield* withDeadline(startGitProcess());
+        const waitForExit = Effect.fnUntraced(function* () {
+          if (input.progress?.onProcessStarted) yield* input.progress.onProcessStarted();
+          return yield* Effect.all(
+            [
+              collectOutput(
+                commandInput,
+                child.stdout,
+                maxOutputBytes,
+                appendTruncationMarker,
+                input.progress?.onStdoutLine,
+                input.keepLineCallbacksAfterTruncation,
               ),
-            ),
-            input.stdin === undefined
-              ? Effect.void
-              : Stream.run(Stream.encodeText(Stream.make(input.stdin)), child.stdin).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new GitCommandError({
-                        ...gitCommandContext(commandInput),
-                        detail: "Failed to write Git process input.",
-                        cause,
-                      }),
-                  ),
+              collectOutput(
+                commandInput,
+                child.stderr,
+                maxOutputBytes,
+                appendTruncationMarker,
+                input.progress?.onStderrLine,
+                input.keepLineCallbacksAfterTruncation,
+              ),
+              child.exitCode.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new GitCommandError({
+                      ...gitCommandContext(commandInput),
+                      detail: "Failed to read Git process exit code.",
+                      cause,
+                    }),
                 ),
-          ],
-          { concurrency: "unbounded" },
-        ).pipe(Effect.map(([stdout, stderr, exitCode]) => [stdout, stderr, exitCode] as const));
+              ),
+              input.stdin === undefined
+                ? Effect.void
+                : Stream.run(Stream.encodeText(Stream.make(input.stdin)), child.stdin).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new GitCommandError({
+                          ...gitCommandContext(commandInput),
+                          detail: "Failed to write Git process input.",
+                          cause,
+                        }),
+                    ),
+                  ),
+            ],
+            { concurrency: "unbounded" },
+          ).pipe(Effect.map(([stdout, stderr, exitCode]) => [stdout, stderr, exitCode] as const));
+        });
+        const [stdout, stderr, exitCode] = yield* withDeadline(waitForExit());
         yield* trace2Monitor.flush;
 
         if (!input.allowNonZeroExit && exitCode !== 0) {
@@ -1201,24 +1226,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         } satisfies GitVcsDriver.ExecuteGitResult;
       });
 
-      const execution = runGitCommand().pipe(Effect.scoped);
-      if (timeoutMs === null) {
-        return yield* execution;
-      }
-
-      return yield* execution.pipe(
-        Effect.timeoutOption(timeoutMs),
-        Effect.flatMap((result) =>
-          Effect.fromOption(
-            result,
-            () =>
-              new GitCommandError({
-                ...gitCommandContext(commandInput),
-                detail: GIT_COMMAND_TIMED_OUT_DETAIL,
-              }),
-          ),
-        ),
-      );
+      return yield* runGitCommand().pipe(Effect.scoped);
     },
   );
 

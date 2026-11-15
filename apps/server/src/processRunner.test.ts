@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { isWindowsCommandNotFound } from "@t3tools/provider-core/server/snapshotProbe";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -230,6 +231,26 @@ describe("runProcess", () => {
       expect(result.stdoutTruncated).toBe(true);
       expect(result.stderrTruncated).toBe(false);
     }),
+  );
+
+  it.live("returns the result of a process that exited while the event loop was blocked", () =>
+    Effect.gen(function* () {
+      const runner = yield* ProcessRunner.ProcessRunner;
+      let blocked = false;
+      const result = yield* runner.run({
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('started'); setTimeout(() => {}, 100);"],
+        timeout: "500 millis",
+        onStdoutChunk: () => {
+          if (blocked) return;
+          blocked = true;
+          // In the check phase, as a busy server's work is, so its timers run before the next poll.
+          setImmediate(() => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000));
+        },
+      });
+
+      expect(result.code).toBe(0);
+    }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer)))),
   );
 
   it.effect("writes stdin before waiting for exit", () =>
