@@ -1051,7 +1051,10 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         const retired = retireHost(true);
         yield* settleObservedChildren("failed");
         yield* updateThread({ status: "error" });
-        yield* Effect.tryPromise(() => retired.close()).pipe(Effect.ignore, Effect.forkIn(scope));
+        yield* Effect.tryPromise({
+          try: () => retired.close(),
+          catch: (cause) => new MuseSdkError({ operation: "close", cause }),
+        }).pipe(Effect.ignore, Effect.forkIn(scope));
       });
       const finish = Effect.fnUntraced(function* (
         turn: ActiveTurn,

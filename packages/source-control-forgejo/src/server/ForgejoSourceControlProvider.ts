@@ -421,7 +421,7 @@ export const make = Effect.gen(function* () {
           }
           return results;
         };
-        const key = JSON.stringify([repo.command, repo.baseUrl, repo.login, repo.repository]);
+        const key = `${repo.command ?? ""}\n${repo.baseUrl}\n${repo.login}\n${repo.repository}`;
         let unfiltered = unfilteredPulls.get(key);
         let firstPage: ReadonlyArray<ForgejoPull> | undefined;
         if (!unfiltered) {

@@ -392,6 +392,8 @@ describe("Needs you", () => {
 
     const question = {
       ...thread("question", false),
+      updatedAt: "2026-06-01T11:00:00.000Z",
+      settledOverride: null,
       hasPendingUserInput: true,
       pendingUserInputAt: "2026-06-01T11:00:00.000Z",
       snoozedAt: "2026-06-01T11:30:00.000Z",

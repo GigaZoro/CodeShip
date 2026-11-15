@@ -63,7 +63,7 @@ it.effect(
         assert.equal(finished.phase, saveFails ? "failed" : "succeeded");
         if (saveFails) assert.equal(finished.message, "Could not save sign-in.");
       }
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -95,7 +95,7 @@ it.effect(
         .subscribe("owner")
         .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
       assert.equal(state.phase, "succeeded");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("distinguishes pending method discovery from an agent with no sign-in methods", () =>

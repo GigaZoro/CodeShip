@@ -350,10 +350,7 @@ const SETTINGS_SCREENS = {
   SettingsMachines: createNativeStackScreen({
     screen: MachinesRouteScreen,
     linking: "settings/machines",
-    options: () => ({
-      ...SETTINGS_PAGE_OPTIONS,
-      title: t("Machines"),
-    }),
+    options: () => settingsPage(t("Machines")),
   }),
   SettingsAuth: createNativeStackScreen({
     screen: SettingsAuthRouteScreen,

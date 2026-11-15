@@ -389,7 +389,7 @@ it.effect(
       // The meta carries the whole login command, never `<agent> --acp login`.
       assert.deepEqual(h.terminalSpawn()?.shell, "/opt/kimi/kimi");
       assert.deepEqual(h.terminalSpawn()?.args, ["login"]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 it.effect("surfaces the agent error message when authenticate fails with AcpRequestError", () =>
   Effect.gen(function* () {

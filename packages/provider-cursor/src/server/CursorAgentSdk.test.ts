@@ -84,7 +84,6 @@ const cursorSdkMock = vi.hoisted(() => {
     storedRuns = storedRuns.map((run) =>
       run.id === runId ? { ...run, status: "cancelled" } : run,
     );
-    staleRunActive = storedRuns.some((run) => run.status === "running");
   });
 
   return {
@@ -102,13 +101,8 @@ const cursorSdkMock = vi.hoisted(() => {
     setAgentCloseFailure: (failure: unknown) => {
       agentCloseFailure = failure;
     },
-    setStaleRunActive: (active: boolean) => {
-      staleRunActive = active;
-      storedRuns = active ? [{ id: "run-stale", status: "running" }] : [];
-    },
     setStoredRuns: (runs: Array<{ readonly id: string; readonly status: string }>) => {
       storedRuns = runs;
-      staleRunActive = runs.some((run) => run.status === "running");
     },
   };
 });
