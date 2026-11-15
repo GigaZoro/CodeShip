@@ -799,6 +799,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly launchArgs?: string;
   readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly homeLoginUsage?: boolean;
 }) {
   const spawnedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
   const { client, initialize } = yield* withCodexAppServerClient(input);
@@ -840,9 +841,10 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
           // Only a confirmed native route may probe or publish the login's quota.
           const nativeUsage =
             config !== undefined && codexRoutesSpendNativeQuota(accountResponse, config.config);
-          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
-            ? readCodexRateLimits(client, deadlineMs)
-            : Effect.undefined;
+          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> =
+            nativeUsage || input.homeLoginUsage === true
+              ? readCodexRateLimits(client, deadlineMs)
+              : Effect.undefined;
           return readUsage.pipe(
             Effect.map((rateLimits) => ({
               config: config?.config,
@@ -1050,8 +1052,8 @@ function accountProbeStatus(
       status: "error",
       auth: { status: "unauthenticated" },
       message: codexHome
-        ? `Codex CLI is not authenticated. Run \`codex login\` with CODEX_HOME set to ${quotePath(codexHome)} and try again.`
-        : "Codex CLI is not authenticated. Run `codex login` and try again.",
+        ? `Codex CLI is not authenticated. Sign in in Settings → Providers & models → Codex, or run \`codex login\` with CODEX_HOME set to ${quotePath(codexHome)}.`
+        : "Codex CLI is not authenticated. Sign in in Settings → Providers & models → Codex, or run `codex login`.",
     };
   }
 
@@ -1067,6 +1069,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     readonly launchArgs?: string;
     readonly cwd: string;
     readonly environment?: NodeJS.ProcessEnv;
+    readonly homeLoginUsage?: boolean;
   }) => Effect.Effect<
     CodexAppServerProviderSnapshot,
     CodexErrors.CodexAppServerError,
@@ -1105,6 +1108,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     CODEX_AUTH_PROBE_TIMEOUT_MS,
     resolvedEnvironment,
   );
+  const sharesSubscription = managedAuth?.subscriptionSharing === true;
   const probeResult = yield* probe({
     probeTimeoutMs,
     binaryPath: codexSettings.binaryPath,
@@ -1112,6 +1116,8 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     launchArgs: resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment),
     cwd: process.cwd(),
     environment: resolvedEnvironment,
+    // A sharing launch has no OpenAI login of its own, yet spends the connected account's quota.
+    ...(sharesSubscription ? { homeLoginUsage: true } : {}),
   }).pipe(
     // Process teardown can outlast the work budget without discarding a completed snapshot.
     Effect.timeoutOption(Duration.millis(probeTimeoutMs)),
@@ -1190,7 +1196,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
     : login;
   const usageLimits =
-    !snapshot.nativeUsage && !accountStatus.message
+    !snapshot.nativeUsage && !sharesSubscription && !accountStatus.message
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
       : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
         ? makeUnavailableUsageLimits({
