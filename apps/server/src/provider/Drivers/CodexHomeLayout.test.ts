@@ -1,11 +1,18 @@
 import * as NodeSqlite from "node:sqlite";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - These tests verify exact hard-link identities on every host OS.
+import * as NodeFSP from "node:fs/promises";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import { lock } from "proper-lockfile";
 
 import { CodexSettings } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -29,7 +36,9 @@ const decodeCodexSettings = (input: {
 
 const makeTempDir = Effect.fn("CodexHomeLayout.test.makeTempDir")(function* (prefix: string) {
   const fileSystem = yield* FileSystem.FileSystem;
-  return yield* fileSystem.makeTempDirectoryScoped({ prefix });
+  return yield* fileSystem
+    .makeTempDirectoryScoped({ prefix })
+    .pipe(Effect.flatMap(fileSystem.realPath));
 });
 
 const writeTextFile = Effect.fn("CodexHomeLayout.test.writeTextFile")(function* (
@@ -50,6 +59,58 @@ const backupsOf = Effect.fn("CodexHomeLayout.test.backupsOf")(function* (
   const names = yield* fileSystem.readDirectory(directory);
   return names.filter((name) => name.startsWith(`${entryName}.t3-backup-`));
 });
+
+// Setup names what it leaves beside a file with a random v4 UUID; tests number theirs in the same
+// shape.
+const setupId = (id: number) => `${id.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`;
+const asideOf = (entryPath: string, id = 0) => `${entryPath}.t3-aside-${setupId(id)}`;
+const pendingLinkOf = (entryPath: string) => `${entryPath}.t3-link-${setupId(0)}`;
+
+const makeWindowsHome = Effect.fn("CodexHomeLayout.test.makeWindowsHome")(function* (
+  sharedHome: string,
+) {
+  const path = yield* Path.Path;
+  const home = yield* makeTempDir("t3code-codex-shadow-");
+  const layout = yield* resolveCodexHomeLayout(
+    decodeCodexSettings({ homePath: sharedHome, shadowHomePath: home }),
+  );
+  return {
+    home,
+    config: path.join(home, "config.toml"),
+    materialize: materializeCodexShadowHome(layout).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+    ),
+  };
+});
+
+const replaceFile = Effect.fn("CodexHomeLayout.test.replaceFile")(function* (
+  filePath: string,
+  contents: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  yield* writeTextFile(`${filePath}.tmp`, contents);
+  yield* fileSystem.rename(`${filePath}.tmp`, filePath);
+});
+
+const fileIdentity = (filePath: string) =>
+  Effect.promise(async () => {
+    const info = await NodeFSP.stat(filePath, { bigint: true });
+    return `${info.dev}:${info.ino}`;
+  });
+
+// Windows hard-links a symlink itself, where Node on macOS links the file it points to.
+const windowsLink = (fileSystem: FileSystem.FileSystem) => (from: string, to: string) =>
+  fileSystem.readLink(from).pipe(
+    Effect.matchEffect({
+      onFailure: () => fileSystem.link(from, to),
+      onSuccess: (linked) => fileSystem.symlink(linked, to),
+    }),
+  );
+
+const refused = (method: string, code: string) =>
+  Effect.fail(
+    PlatformError.systemError({ _tag: "Unknown", module: "FileSystem", method, cause: { code } }),
+  );
 
 it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
   describe("resolveCodexHomeLayout", () => {
@@ -582,6 +643,1092 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         }),
     );
 
+    it.effect(
+      "adopts Windows account config writes and refreshes other accounts' stale links",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const sharedConfig = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(sharedConfig, 'model = "shared"\n');
+          const first = yield* makeWindowsHome(sharedHome);
+          const second = yield* makeWindowsHome(sharedHome);
+          yield* first.materialize;
+          yield* second.materialize;
+          const originalIdentity = yield* fileIdentity(first.config);
+          expect(yield* fileIdentity(second.config)).toBe(originalIdentity);
+          expect(yield* fileIdentity(sharedConfig)).toBe(originalIdentity);
+
+          const updated = '[[skills.config]]\npath = "skills/example"\nenabled = false\n';
+          yield* replaceFile(first.config, updated);
+          const updatedIdentity = yield* fileIdentity(first.config);
+          expect(updatedIdentity).not.toBe(originalIdentity);
+          const messages: unknown[] = [];
+          yield* first.materialize.pipe(
+            Effect.provide(Logger.layer([Logger.make(({ message }) => messages.push(message))])),
+          );
+          expect(yield* fileSystem.readFileString(sharedConfig)).toBe(updated);
+          expect(yield* fileIdentity(sharedConfig)).toBe(updatedIdentity);
+          expect(JSON.stringify(messages)).toContain("Adopted");
+
+          yield* second.materialize;
+          yield* first.materialize;
+          for (const account of [first, second]) {
+            expect(yield* fileSystem.readFileString(account.config)).toBe(updated);
+            expect(yield* fileIdentity(account.config)).toBe(updatedIdentity);
+            expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+          }
+        }),
+    );
+
+    it.effect.each([
+      "atomic",
+      "in-place",
+      "shared-in-place",
+      "missing-record",
+      "invalid-record",
+      "stale-mtime",
+    ] as const)("backs up Windows config copies when neither side matches: %s", (change) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const sharedConfig = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(sharedConfig, "original");
+        if (change === "stale-mtime") {
+          yield* Effect.promise(() => NodeFSP.utimes(sharedConfig, 1, 1));
+        }
+        const account = yield* makeWindowsHome(sharedHome);
+        yield* account.materialize;
+        const other = yield* makeWindowsHome(sharedHome);
+        yield* other.materialize;
+        if (change === "stale-mtime") {
+          yield* replaceFile(account.config, "own changed config");
+          yield* writeTextFile(sharedConfig, "modified");
+          yield* Effect.promise(() => NodeFSP.utimes(sharedConfig, 1, 1));
+        } else if (change === "shared-in-place") yield* writeTextFile(sharedConfig, "new shared");
+        else yield* replaceFile(sharedConfig, "new shared");
+        if (change === "in-place") yield* writeTextFile(account.config, "own changed config");
+        else yield* replaceFile(account.config, "own changed config");
+        const stateDirectory = path.join(account.home, ".t3-shared-files");
+        if (change === "missing-record") {
+          yield* fileSystem.remove(stateDirectory, { recursive: true, force: true });
+        } else if (change === "invalid-record") {
+          yield* writeTextFile(path.join(stateDirectory, "config.toml.json"), "{invalid");
+        }
+        if (change === "in-place") {
+          const fullFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            // The account's own file is back at its path when its backup copy fails.
+            copyFile: () =>
+              fileSystem.remove(account.config, { force: true }).pipe(
+                Effect.andThen(fileSystem.link(other.config, account.config)),
+                Effect.andThen(
+                  Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "copyFile",
+                      cause: { code: "ENOSPC" },
+                    }),
+                  ),
+                ),
+              ),
+          });
+          yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, fullFs));
+          expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+          expect(yield* fileSystem.readFileString(account.config)).toBe("own changed config");
+        }
+        const messages: unknown[] = [];
+        yield* account.materialize.pipe(
+          Effect.provide(Logger.layer([Logger.make(({ message }) => messages.push(message))])),
+        );
+
+        const backups = yield* backupsOf(account.home, "config.toml");
+        expect(backups).toHaveLength(1);
+        expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+          "own changed config",
+        );
+        expect(JSON.stringify(messages)).toContain(backups[0]);
+        expect(yield* fileSystem.readFileString(sharedConfig)).toBe(
+          change === "stale-mtime" ? "modified" : "new shared",
+        );
+        expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(sharedConfig));
+        if (change === "in-place") {
+          yield* writeTextFile(other.config, "later write through another account");
+          expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+            "own changed config",
+          );
+        }
+        yield* account.materialize;
+        expect(yield* backupsOf(account.home, "config.toml")).toEqual(backups);
+      }),
+    );
+
+    it.effect(
+      "keeps Windows config copies when rename is denied and reconciles on a later setup",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          for (const reconciliation of ["adopt", "backup", "relink"] as const) {
+            const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+            const sharedConfig = path.join(sharedHome, "config.toml");
+            yield* writeTextFile(sharedConfig, "original");
+            const account = yield* makeWindowsHome(sharedHome);
+            yield* account.materialize;
+            if (reconciliation !== "relink") yield* replaceFile(account.config, "account edit");
+            if (reconciliation !== "adopt") yield* replaceFile(sharedConfig, "shared edit");
+            const identity = yield* fileIdentity(account.config);
+            const lockedFs = FileSystem.FileSystem.of({
+              ...fileSystem,
+              rename: (from, to) =>
+                from === account.config || to === account.config || from === sharedConfig
+                  ? Effect.fail(
+                      new PlatformError.PlatformError(
+                        new PlatformError.SystemError({
+                          _tag: "PermissionDenied",
+                          module: "FileSystem",
+                          method: "rename",
+                          cause: { code: "EPERM" },
+                        }),
+                      ),
+                    )
+                  : fileSystem.rename(from, to),
+            });
+            const messages: unknown[] = [];
+            yield* account.materialize.pipe(
+              Effect.provideService(FileSystem.FileSystem, lockedFs),
+              Effect.provide(Logger.layer([Logger.make(({ message }) => messages.push(message))])),
+            );
+            expect(yield* fileIdentity(account.config)).toBe(identity);
+            expect(yield* fileSystem.readFileString(account.config)).toBe(
+              reconciliation === "relink" ? "original" : "account edit",
+            );
+            expect(yield* fileSystem.readFileString(sharedConfig)).toBe(
+              reconciliation === "adopt" ? "original" : "shared edit",
+            );
+            expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+            expect(JSON.stringify(messages)).toContain("could not be linked");
+            expect(
+              (yield* fileSystem.readDirectory(account.home)).filter((name) =>
+                name.includes(".t3-link"),
+              ),
+            ).toEqual([]);
+
+            yield* account.materialize;
+            expect(yield* fileSystem.readFileString(sharedConfig)).toBe(
+              reconciliation === "adopt" ? "account edit" : "shared edit",
+            );
+            expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(sharedConfig));
+            const backups = yield* backupsOf(account.home, "config.toml");
+            expect(backups).toHaveLength(reconciliation === "backup" ? 1 : 0);
+            if (reconciliation === "backup") {
+              expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+                "account edit",
+              );
+            }
+          }
+        }),
+    );
+
+    it.effect.each([
+      { side: "shared", stage: "capture" },
+      { side: "shared", stage: "install" },
+      { side: "account", stage: "capture" },
+      { side: "account", stage: "install" },
+    ] as const)("preserves a $side save immediately before Windows $stage", ({ side, stage }) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shared = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(shared, "original");
+        const account = yield* makeWindowsHome(sharedHome);
+        yield* account.materialize;
+        yield* replaceFile(side === "shared" ? account.config : shared, "first edit");
+        const destination = side === "shared" ? shared : account.config;
+        let saved = false;
+        const save = Effect.gen(function* () {
+          if (saved) return;
+          saved = true;
+          yield* replaceFile(destination, "concurrent save").pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
+        });
+        const racingFs = FileSystem.FileSystem.of({
+          ...fileSystem,
+          link: (from, to) =>
+            stage === "install" && to === destination
+              ? save.pipe(Effect.andThen(fileSystem.link(from, to)))
+              : fileSystem.link(from, to),
+          rename: (from, to) =>
+            (stage === "capture" && from === destination) ||
+            (stage === "install" && to === destination)
+              ? save.pipe(Effect.andThen(fileSystem.rename(from, to)))
+              : fileSystem.rename(from, to),
+        });
+        yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, racingFs));
+        expect(saved).toBe(true);
+        expect(yield* fileSystem.readFileString(destination)).toBe(
+          side === "account" && stage === "capture" ? "first edit" : "concurrent save",
+        );
+        expect(yield* fileSystem.readFileString(shared)).toBe(
+          side === "shared" ? "concurrent save" : "first edit",
+        );
+        const backups = yield* backupsOf(account.home, "config.toml");
+        expect(backups).toHaveLength(1);
+        expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+          side === "shared" ? "first edit" : stage === "capture" ? "concurrent save" : "original",
+        );
+        yield* account.materialize;
+        expect(yield* fileSystem.readFileString(shared)).toBe(
+          side === "shared" ? "concurrent save" : "first edit",
+        );
+      }),
+    );
+
+    it.effect.each(["prepare a link", "adopt the account copy", "move the shared file"] as const)(
+      "keeps Windows account and shared files in place when setup cannot %s",
+      (stage) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shared = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(shared, "shared");
+          const account = yield* makeWindowsHome(sharedHome);
+          if (stage === "prepare a link") yield* writeTextFile(account.config, "account");
+          else {
+            yield* account.materialize;
+            yield* replaceFile(account.config, "account");
+          }
+          const failingFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            link: (from, to) =>
+              stage === "prepare a link" ||
+              (from.startsWith(`${account.config}.t3-link-`) && to === shared)
+                ? refused("link", "EXDEV")
+                : fileSystem.link(from, to),
+            rename: (from, to) =>
+              stage === "move the shared file" && from === shared
+                ? refused("rename", "EPERM")
+                : fileSystem.rename(from, to),
+          });
+          const messages: unknown[] = [];
+          yield* account.materialize.pipe(
+            Effect.provideService(FileSystem.FileSystem, failingFs),
+            Effect.provide(Logger.layer([Logger.make(({ message }) => messages.push(message))])),
+          );
+          // The refusal is reported once, with no failed recovery of a move that never happened.
+          expect(messages).toHaveLength(1);
+          expect(yield* fileSystem.readFileString(account.config)).toBe("account");
+          expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+          expect(yield* fileSystem.readFileString(shared)).toBe("shared");
+          expect(
+            (yield* fileSystem.readDirectory(sharedHome)).filter((name) =>
+              name.includes(".t3-aside"),
+            ),
+          ).toEqual([]);
+        }),
+    );
+
+    it.effect.each(["late write", "another server", "interrupted", "taken over"] as const)(
+      "keeps the shared Windows file when an adoption races: %s",
+      (race) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shared = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(shared, "original");
+          const account = yield* makeWindowsHome(sharedHome);
+          yield* account.materialize;
+          yield* replaceFile(account.config, "account edit");
+          const markers = fileSystem
+            .readDirectory(sharedHome)
+            .pipe(
+              Effect.map((names) =>
+                names.filter((name) => name.startsWith("config.toml.t3-aside")),
+              ),
+            );
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const otherServerAttempts: string[] = [];
+          const otherServer = Effect.promise(() =>
+            lock(path.join(sharedHome, ".t3-shared-files"), {
+              lockfilePath: path.join(sharedHome, ".t3-shared-files.lock"),
+              realpath: false,
+            }).then(
+              (unlock) => unlock().then(() => "acquired"),
+              (error: NodeJS.ErrnoException) =>
+                error.code === "ELOCKED" ? "blocked" : Promise.reject(error),
+            ),
+          ).pipe(Effect.flatMap((attempt) => Effect.sync(() => otherServerAttempts.push(attempt))));
+          const racingFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            link: (from, to) =>
+              fileSystem
+                .link(from, to)
+                .pipe(
+                  Effect.tap(() =>
+                    race !== "late write" ||
+                    !from.startsWith(`${account.config}.t3-link-`) ||
+                    to !== shared
+                      ? Effect.void
+                      : markers.pipe(
+                          Effect.flatMap(([marker]) =>
+                            fileSystem.writeFileString(
+                              path.join(sharedHome, marker!),
+                              "late write",
+                            ),
+                          ),
+                        ),
+                  ),
+                ),
+            rename: (from, to) =>
+              race === "late write" || from !== shared || !to.includes(".t3-aside")
+                ? fileSystem.rename(from, to)
+                : race === "another server"
+                  ? otherServer.pipe(Effect.andThen(fileSystem.rename(from, to)))
+                  : race === "taken over"
+                    ? // A server that took over a stale lock puts back what this live setup moved aside.
+                      fileSystem
+                        .rename(from, to)
+                        .pipe(
+                          Effect.andThen(fileSystem.link(to, from)),
+                          Effect.andThen(fileSystem.remove(to)),
+                        )
+                    : fileSystem
+                        .writeFileString(shared, "concurrent save")
+                        .pipe(
+                          Effect.andThen(Deferred.succeed(entered, undefined)),
+                          Effect.andThen(Deferred.await(release)),
+                          Effect.andThen(fileSystem.rename(from, to)),
+                        ),
+          });
+          const run = account.materialize.pipe(
+            Effect.provideService(FileSystem.FileSystem, racingFs),
+          );
+          if (race === "interrupted") {
+            const adoption = yield* Effect.forkChild(run);
+            yield* Deferred.await(entered);
+            const interrupting = yield* Fiber.interrupt(adoption).pipe(
+              Effect.forkChild({ startImmediately: true }),
+            );
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(interrupting);
+          } else yield* run;
+          if (race === "another server") {
+            yield* otherServer;
+            expect(otherServerAttempts).toEqual(["blocked", "acquired"]);
+          }
+
+          expect(yield* fileSystem.readFileString(shared)).toBe(
+            {
+              "late write": "account edit",
+              "another server": "account edit",
+              interrupted: "concurrent save",
+              "taken over": "original",
+            }[race],
+          );
+          expect(yield* markers).toEqual([]);
+          if (race === "taken over") {
+            // The holder's setup fails with both sides intact, and the next setup adopts.
+            expect(yield* fileSystem.readFileString(account.config)).toBe("account edit");
+            yield* account.materialize;
+            expect(yield* fileSystem.readFileString(shared)).toBe("account edit");
+          }
+          const backups = yield* backupsOf(sharedHome, "config.toml");
+          expect(backups).toHaveLength(race === "late write" ? 1 : 0);
+          if (race === "late write") {
+            expect(yield* fileSystem.readFileString(path.join(sharedHome, backups[0]!))).toBe(
+              "late write",
+            );
+          }
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "keeps Windows files readable when a path setup links becomes a symlink",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          for (const { replaced, during } of [
+            { replaced: "account", during: "link" },
+            { replaced: "account", during: "rename" },
+            { replaced: "shared", during: "link" },
+            { replaced: "shared", during: "rename" },
+          ] as const) {
+            const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+            const shared = path.join(sharedHome, "config.toml");
+            yield* writeTextFile(shared, "original");
+            const account = yield* makeWindowsHome(sharedHome);
+            yield* account.materialize;
+            yield* replaceFile(account.config, "account edit");
+            // Each side becomes a symlink to the other, as a configuration may legitimately set.
+            const [swappedPath, swappedTarget] =
+              replaced === "account" ? [account.config, shared] : [shared, account.config];
+            let swapped = false;
+            const swap = (now: boolean) =>
+              Effect.suspend(() => {
+                if (!now || swapped) return Effect.void;
+                swapped = true;
+                return fileSystem
+                  .remove(swappedPath)
+                  .pipe(Effect.andThen(fileSystem.symlink(swappedTarget, swappedPath)));
+              });
+            const swappingFs = FileSystem.FileSystem.of({
+              ...fileSystem,
+              link: (from, to) =>
+                swap(during === "link" && from === swappedPath).pipe(
+                  Effect.andThen(windowsLink(fileSystem)(from, to)),
+                ),
+              rename: (from, to) =>
+                swap(during === "rename" && from === shared).pipe(
+                  Effect.andThen(fileSystem.rename(from, to)),
+                ),
+            });
+            // The setup after the swap must leave both paths readable too.
+            for (let setup = 0; setup < 2; setup++) {
+              yield* account.materialize.pipe(
+                Effect.provideService(FileSystem.FileSystem, swappingFs),
+              );
+              expect(swapped).toBe(true);
+              expect(yield* fileSystem.readLink(swappedPath)).toBe(swappedTarget);
+              expect(yield* fileSystem.readFileString(shared)).toBe(
+                replaced === "account" && during === "link" ? "original" : "account edit",
+              );
+              expect(yield* fileSystem.readFileString(account.config)).toBe(
+                replaced === "account" && during === "link" ? "original" : "account edit",
+              );
+              expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+              expect(yield* backupsOf(sharedHome, "config.toml")).toEqual([]);
+            }
+          }
+        }),
+    );
+
+    it.effect("finishes linking a Windows account file when setup is interrupted mid-capture", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shared = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(shared, "original");
+        const account = yield* makeWindowsHome(sharedHome);
+        yield* account.materialize;
+        yield* replaceFile(shared, "shared edit");
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const pausingFs = FileSystem.FileSystem.of({
+          ...fileSystem,
+          rename: (from, to) =>
+            from === account.config
+              ? Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.andThen(fileSystem.rename(from, to)),
+                )
+              : fileSystem.rename(from, to),
+        });
+        const setup = yield* account.materialize.pipe(
+          Effect.provideService(FileSystem.FileSystem, pausingFs),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(entered);
+        const interrupting = yield* Fiber.interrupt(setup).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(interrupting);
+        expect(yield* fileSystem.readFileString(account.config)).toBe("shared edit");
+        expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+        expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+      }),
+    );
+
+    it.effect(
+      "keeps a Windows account copy still linked elsewhere until its backup is published",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shared = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(shared, "original");
+          const account = yield* makeWindowsHome(sharedHome);
+          const other = yield* makeWindowsHome(sharedHome);
+          yield* account.materialize;
+          yield* other.materialize;
+          yield* replaceFile(shared, "new shared");
+          // Written in place, the change is the other account's file too.
+          yield* writeTextFile(account.config, "own changed config");
+          const refusingFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            rename: (from, to) =>
+              from !== account.config && to.includes(".t3-backup-")
+                ? replaceFile(account.config, "writer save").pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(Path.Path, path),
+                    Effect.andThen(
+                      Effect.fail(
+                        PlatformError.systemError({
+                          _tag: "PermissionDenied",
+                          module: "FileSystem",
+                          method: "rename",
+                          cause: { code: "EPERM" },
+                        }),
+                      ),
+                    ),
+                  )
+                : fileSystem.rename(from, to),
+          });
+          yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, refusingFs));
+          expect(yield* fileSystem.readFileString(account.config)).toBe("writer save");
+          expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+
+          yield* account.materialize;
+          yield* writeTextFile(other.config, "later write through another account");
+          const backups = yield* backupsOf(account.home, "config.toml");
+          const backedUp = yield* Effect.forEach(backups, (name) =>
+            fileSystem.readFileString(path.join(account.home, name)),
+          );
+          expect(backedUp.toSorted()).toEqual(["own changed config", "writer save"]);
+          expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+        }),
+    );
+
+    it.effect("backs up what a linked Windows copy holds when it changes as it is duplicated", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shared = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(shared, "original");
+        const account = yield* makeWindowsHome(sharedHome);
+        const other = yield* makeWindowsHome(sharedHome);
+        yield* account.materialize;
+        yield* other.materialize;
+        yield* replaceFile(shared, "new shared");
+        yield* writeTextFile(account.config, "own changed config");
+        const aside = asideOf(account.config);
+        yield* fileSystem.rename(account.config, aside);
+        yield* fileSystem.link(shared, account.config);
+        // Windows may not update a file's write time until its writer closes it.
+        const keepTimes = Effect.promise(() => NodeFSP.utimes(aside, 1000, 1000));
+        yield* keepTimes;
+        let edited = false;
+        const editingFs = FileSystem.FileSystem.of({
+          ...fileSystem,
+          copyFile: (from, to) =>
+            fileSystem.copyFile(from, to).pipe(
+              Effect.andThen(
+                Effect.suspend(() => {
+                  if (from !== aside || edited) return Effect.void;
+                  edited = true;
+                  return fileSystem
+                    .writeFileString(aside, "OWN CHANGED CONFIG")
+                    .pipe(Effect.andThen(keepTimes));
+                }),
+              ),
+            ),
+        });
+        yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, editingFs));
+        expect(edited).toBe(true);
+        expect(yield* fileSystem.readFileString(aside)).toBe("OWN CHANGED CONFIG");
+        expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+
+        yield* account.materialize;
+        yield* writeTextFile(other.config, "later write through another account");
+        const backups = yield* backupsOf(account.home, "config.toml");
+        expect(backups).toHaveLength(1);
+        expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+          "OWN CHANGED CONFIG",
+        );
+        expect(yield* fileSystem.exists(aside)).toBe(false);
+      }),
+    );
+
+    it.effect.each([
+      "before installing",
+      "after installing",
+      "while the shared file could not be inspected",
+      "before the shared file went",
+      "before the shared file's folder went",
+      "with its backup refused while the shared file was aside",
+    ] as const)("recovers a linked Windows account copy a setup stopped %s left aside", (stage) =>
+      Effect.gen(function* () {
+        if (stage === "before the shared file's folder went" && !symlinksSupported) return;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shared = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(shared, "original");
+        const account = yield* makeWindowsHome(sharedHome);
+        const other = yield* makeWindowsHome(sharedHome);
+        yield* account.materialize;
+        yield* other.materialize;
+        yield* replaceFile(shared, "new shared");
+        yield* writeTextFile(account.config, "own changed config");
+        const aside = asideOf(account.config);
+        yield* fileSystem.rename(account.config, aside);
+        yield* writeTextFile(`${aside}.t3-copy`, "partial copy");
+        const backupRefused = stage === "with its backup refused while the shared file was aside";
+        const sharedGone =
+          stage === "before the shared file went" ||
+          stage === "before the shared file's folder went";
+        if (stage === "after installing" || backupRefused) {
+          yield* fileSystem.link(shared, account.config);
+        }
+        if (sharedGone) yield* fileSystem.remove(shared);
+        if (stage === "before the shared file's folder went") {
+          const dotfiles = yield* makeTempDir("t3code-codex-dotfiles-");
+          yield* fileSystem.symlink(path.join(dotfiles, "moved", "config.toml"), shared);
+        }
+        if (backupRefused) yield* fileSystem.rename(shared, asideOf(shared));
+        const stoppedFs = FileSystem.FileSystem.of({
+          ...fileSystem,
+          stat: (filePath) =>
+            stage === "while the shared file could not be inspected" && filePath === shared
+              ? refused("stat", "EACCES")
+              : fileSystem.stat(filePath),
+          rename: (from, to) =>
+            backupRefused && to.startsWith(`${account.config}.t3-backup-`)
+              ? refused("rename", "EPERM")
+              : fileSystem.rename(from, to),
+        });
+        yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, stoppedFs));
+
+        const asidesIn = (directory: string) =>
+          fileSystem
+            .readDirectory(directory)
+            .pipe(Effect.map((names) => names.filter((name) => name.includes(".t3-aside"))));
+        expect(yield* asidesIn(sharedHome)).toEqual([]);
+        if (backupRefused) {
+          // The shared file comes back, and the account's own copy stays aside until a setup can
+          // back it up.
+          expect(yield* fileSystem.readFileString(shared)).toBe("new shared");
+          expect(yield* asidesIn(account.home)).toEqual([path.basename(aside)]);
+          expect(yield* fileSystem.readFileString(aside)).toBe("own changed config");
+          expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+          expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+          yield* account.materialize;
+          expect(yield* asidesIn(account.home)).toEqual([]);
+          const backups = yield* backupsOf(account.home, "config.toml");
+          expect(backups).toHaveLength(1);
+          expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+            "own changed config",
+          );
+          return;
+        }
+        expect(yield* asidesIn(account.home)).toEqual([]);
+        if (sharedGone) {
+          expect(yield* fileSystem.readFileString(account.config)).toBe("own changed config");
+          expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+          return;
+        }
+        yield* writeTextFile(other.config, "later write through another account");
+        const backups = yield* backupsOf(account.home, "config.toml");
+        expect(backups).toHaveLength(1);
+        expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+          "own changed config",
+        );
+        expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+      }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "puts back a Windows shared file or symlink a stopped setup left aside for an account linking to it",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const windowsFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            link: windowsLink(fileSystem),
+          });
+          for (const aside of ["file", "symlink"] as const) {
+            const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+            const shared = path.join(sharedHome, "config.toml");
+            const dotfile = path.join(yield* makeTempDir("t3code-codex-dotfiles-"), "config.toml");
+            yield* writeTextFile(aside === "file" ? shared : dotfile, "original");
+            if (aside === "symlink") yield* fileSystem.symlink(dotfile, shared);
+            const account = yield* makeWindowsHome(sharedHome);
+            yield* fileSystem.symlink(shared, account.config);
+            yield* fileSystem.rename(shared, asideOf(shared));
+            yield* account.materialize.pipe(
+              Effect.provideService(FileSystem.FileSystem, windowsFs),
+            );
+            expect(yield* fileSystem.readFileString(shared)).toBe("original");
+            if (aside === "symlink") expect(yield* fileSystem.readLink(shared)).toBe(dotfile);
+            expect(yield* fileSystem.exists(asideOf(shared))).toBe(false);
+            expect(yield* backupsOf(sharedHome, "config.toml")).toEqual([]);
+            expect(yield* fileSystem.readLink(account.config)).toBe(shared);
+          }
+        }),
+    );
+
+    it.effect("backs up a folder or junction a stopped Windows setup left aside", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        for (const kind of ["folder", "junction"] as const) {
+          if (kind === "junction" && !symlinksSupported) continue;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shared = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(shared, "shared");
+          const account = yield* makeWindowsHome(sharedHome);
+          const aside = asideOf(account.config);
+          const folder = kind === "folder" ? aside : yield* makeTempDir("t3code-codex-folder-");
+          yield* writeTextFile(path.join(folder, "own.toml"), "own");
+          if (kind === "junction") yield* fileSystem.symlink(folder, aside);
+          // Windows cannot hard-link a junction, which is a folder.
+          const junctionFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            link: (from, to) => fileSystem.link(from === aside ? folder : from, to),
+          });
+          yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, junctionFs));
+          const backups = yield* backupsOf(account.home, "config.toml");
+          expect(backups).toHaveLength(1);
+          expect(
+            yield* fileSystem.readFileString(path.join(account.home, backups[0]!, "own.toml")),
+          ).toBe("own");
+          expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+        }
+      }),
+    );
+
+    it.effect("keeps Windows files that only look like setup leftovers", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shared = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(shared, "shared");
+        const account = yield* makeWindowsHome(sharedHome);
+        const lookalikes = [
+          `${shared}.t3-aside-personal`,
+          `${shared}.t3-aside-personal.t3-copy`,
+          `${account.config}.t3-aside-personal`,
+          `${account.config}.t3-aside-personal.t3-copy`,
+          // Setup removes its own unfinished duplicate only together with the aside it copies.
+          `${asideOf(account.config)}.t3-copy`,
+          // Setup never generates the nil UUID or any other non-v4 one.
+          `${account.config}.t3-aside-00000000-0000-0000-0000-000000000000`,
+          `${account.config}.t3-aside-00000000-0000-0000-0000-000000000000.t3-copy`,
+          `${account.config}.t3-link-00000000-0000-0000-0000-000000000000`,
+          `${account.config}.t3-link`,
+          // Setup prepares links only beside account files.
+          pendingLinkOf(shared),
+        ];
+        yield* Effect.forEach(lookalikes, (file) => writeTextFile(file, file));
+        yield* account.materialize;
+        // The second setup finds the account already linked.
+        yield* account.materialize;
+        expect(
+          yield* Effect.forEach(lookalikes, (file) => fileSystem.readFileString(file)),
+        ).toEqual(lookalikes);
+        expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+      }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "neither reads nor writes a Windows shared-file record through a link",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          for (const linked of ["record", "record folder"] as const) {
+            const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+            const shared = path.join(sharedHome, "config.toml");
+            yield* writeTextFile(shared, "original");
+            const account = yield* makeWindowsHome(sharedHome);
+            yield* account.materialize;
+            const stateDirectory = path.join(account.home, ".t3-shared-files");
+            const record = path.join(stateDirectory, "config.toml.json");
+            const recordText = yield* fileSystem.readFileString(record);
+            const personal = yield* makeTempDir("t3code-personal-");
+            const personalFile = path.join(personal, "config.toml.json");
+            yield* writeTextFile(personalFile, "personal notes");
+            if (linked === "record") {
+              yield* fileSystem.remove(record);
+              yield* fileSystem.symlink(personalFile, record);
+            } else {
+              yield* fileSystem.remove(stateDirectory, { recursive: true });
+              yield* fileSystem.symlink(personal, stateDirectory);
+            }
+            yield* account.materialize;
+            expect(yield* fileSystem.readFileString(personalFile)).toBe("personal notes");
+
+            // A valid record behind the link would let setup adopt the account's edit.
+            yield* writeTextFile(personalFile, recordText);
+            yield* replaceFile(account.config, "account edit");
+            yield* account.materialize;
+            expect(yield* fileSystem.readFileString(personalFile)).toBe(recordText);
+            expect(yield* fileSystem.readFileString(shared)).toBe("original");
+            expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+            const backups = yield* backupsOf(account.home, "config.toml");
+            expect(backups).toHaveLength(1);
+            expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+              "account edit",
+            );
+          }
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "replaces a dangling Windows account symlink with the shared file",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shared = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(shared, "shared");
+          const account = yield* makeWindowsHome(sharedHome);
+          yield* fileSystem.symlink(path.join(account.home, "missing.toml"), account.config);
+          yield* account.materialize;
+          expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(shared));
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "adopts Windows config into its shared symlink target",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const dotfiles = yield* makeTempDir("t3code-dotfiles-");
+          const target = path.join(dotfiles, "codex.toml");
+          const shared = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(target, "original");
+          yield* fileSystem.symlink(target, shared);
+          const account = yield* makeWindowsHome(sharedHome);
+          yield* account.materialize;
+          yield* replaceFile(account.config, "account edit");
+          yield* account.materialize;
+          expect(yield* fileSystem.readLink(shared)).toBe(target);
+          expect(yield* fileSystem.readFileString(target)).toBe("account edit");
+          expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(target));
+          const interrupted = asideOf(target);
+          yield* fileSystem.rename(target, interrupted);
+          yield* account.materialize;
+          expect(yield* fileSystem.readLink(shared)).toBe(target);
+          expect(yield* fileSystem.readFileString(target)).toBe("account edit");
+          expect(yield* fileSystem.exists(interrupted)).toBe(false);
+        }),
+    );
+
+    it.effect.each(["missing", "recreated", "untouched"] as const)(
+      "recovers Windows reconciliation leftovers with the shared file %s",
+      (sharedState) =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shared = path.join(sharedHome, "config.toml");
+          yield* writeTextFile(shared, "original");
+          const account = yield* makeWindowsHome(sharedHome);
+          yield* account.materialize;
+          const interrupted = asideOf(shared);
+          if (sharedState !== "untouched") yield* fileSystem.rename(shared, interrupted);
+          yield* fileSystem.link(account.config, pendingLinkOf(account.config));
+          if (sharedState === "recreated") {
+            yield* writeTextFile(shared, "recreated");
+            yield* writeTextFile(asideOf(shared, 1), "crashed copy");
+          }
+          yield* writeTextFile(`${shared}.t3-backup-old`, "preserved");
+          yield* writeTextFile(`${shared}.t3-link`, "pending");
+          const staleLock = path.join(sharedHome, ".t3-shared-files.lock");
+          yield* fileSystem.makeDirectory(staleLock);
+          yield* Effect.promise(() => NodeFSP.utimes(staleLock, 1, 1));
+          // Backups made in the same instant stay apart without checking which names exist.
+          const backupBlindFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            exists: (entry) =>
+              entry.includes(".t3-backup-") ? Effect.succeed(false) : fileSystem.exists(entry),
+          });
+          yield* account.materialize.pipe(
+            Effect.provideService(FileSystem.FileSystem, backupBlindFs),
+          );
+          expect(yield* fileSystem.readFileString(shared)).toBe(
+            sharedState === "recreated" ? "recreated" : "original",
+          );
+          expect(yield* fileSystem.exists(interrupted)).toBe(false);
+          expect(yield* fileSystem.exists(pendingLinkOf(account.config))).toBe(false);
+          expect(yield* fileSystem.exists(staleLock)).toBe(false);
+          const backups = yield* backupsOf(sharedHome, "config.toml");
+          const backedUp = yield* Effect.forEach(backups, (name) =>
+            fileSystem.readFileString(path.join(sharedHome, name)),
+          );
+          expect(backedUp.toSorted()).toEqual(
+            sharedState === "recreated" ? ["crashed copy", "original", "preserved"] : ["preserved"],
+          );
+          expect(
+            (yield* fileSystem.readDirectory(account.home)).filter((name) =>
+              /\.t3-(backup-|aside-|link|shared-files\.lock)/.test(name),
+            ),
+          ).toEqual([]);
+        }),
+    );
+
+    it.effect(
+      "does not block direct layouts or unrelated Windows homes behind a stalled home",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const account = yield* makeWindowsHome(sharedHome);
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const blockedFs = FileSystem.FileSystem.of({
+            ...fileSystem,
+            readDirectory: (directory) =>
+              directory === sharedHome
+                ? Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.andThen(fileSystem.readDirectory(directory)),
+                  )
+                : fileSystem.readDirectory(directory),
+          });
+          const blocked = yield* account.materialize.pipe(
+            Effect.provideService(FileSystem.FileSystem, blockedFs),
+            Effect.forkChild,
+          );
+          yield* Deferred.await(entered);
+          const direct = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome }),
+          );
+          const other = yield* makeWindowsHome(yield* makeTempDir("t3code-codex-other-"));
+          yield* Effect.gen(function* () {
+            const directRun = yield* materializeCodexShadowHome(direct).pipe(
+              Effect.provideService(HostProcess.Platform, "win32"),
+              Effect.forkChild({ startImmediately: true }),
+            );
+            expect(directRun.pollUnsafe()?._tag).toBe("Success");
+            yield* other.materialize;
+            yield* Fiber.interrupt(blocked);
+          }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+        }),
+    );
+
+    it.effect("refreshes Windows content fingerprints only when linked metadata changes", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shared = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(shared, "original");
+        const account = yield* makeWindowsHome(sharedHome);
+        yield* account.materialize;
+        let reads = 0;
+        const trackedFs = FileSystem.FileSystem.of({
+          ...fileSystem,
+          readFile: (file) =>
+            Effect.sync(() => reads++).pipe(Effect.andThen(fileSystem.readFile(file))),
+        });
+        yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, trackedFs));
+        expect(reads).toBe(0);
+        yield* writeTextFile(shared, "in-place edit to shared file");
+        yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, trackedFs));
+        expect(reads).toBe(1);
+        yield* replaceFile(account.config, "next account edit");
+        yield* account.materialize;
+        expect(yield* fileSystem.readFileString(shared)).toBe("next account edit");
+        expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+      }),
+    );
+
+    it.effect("keeps large Windows file edits as backups without hashing or adopting them", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shared = path.join(sharedHome, "history.jsonl");
+        const original = "x".repeat(1024 * 1024 + 1);
+        yield* writeTextFile(shared, original);
+        const account = yield* makeWindowsHome(sharedHome);
+        const history = path.join(account.home, "history.jsonl");
+        let reads = 0;
+        const trackedFs = FileSystem.FileSystem.of({
+          ...fileSystem,
+          readFile: (file) =>
+            Effect.sync(() => reads++).pipe(Effect.andThen(fileSystem.readFile(file))),
+        });
+        yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, trackedFs));
+        yield* replaceFile(history, `${original}account edit`);
+        yield* account.materialize.pipe(Effect.provideService(FileSystem.FileSystem, trackedFs));
+        expect(reads).toBe(0);
+        expect(yield* fileSystem.readFileString(shared)).toBe(original);
+        const backups = yield* backupsOf(account.home, "history.jsonl");
+        expect(backups).toHaveLength(1);
+        expect(yield* fileSystem.readFileString(path.join(account.home, backups[0]!))).toBe(
+          `${original}account edit`,
+        );
+      }),
+    );
+
+    it.effect("serializes concurrent Windows materializations across accounts sharing a home", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const sharedConfig = path.join(sharedHome, "config.toml");
+        yield* writeTextFile(sharedConfig, "original");
+        const first = yield* makeWindowsHome(sharedHome);
+        const second = yield* makeWindowsHome(sharedHome);
+        yield* first.materialize;
+        yield* second.materialize;
+        yield* replaceFile(first.config, "edited");
+        let readers = 0;
+        let maximumReaders = 0;
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const trackedFs = FileSystem.FileSystem.of({
+          ...fileSystem,
+          readDirectory: (directory) =>
+            Effect.gen(function* () {
+              readers += 1;
+              maximumReaders = Math.max(maximumReaders, readers);
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              return yield* fileSystem.readDirectory(directory).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    readers -= 1;
+                  }),
+                ),
+              );
+            }),
+        });
+        const adopting = yield* first.materialize.pipe(
+          Effect.provideService(FileSystem.FileSystem, trackedFs),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(entered);
+        yield* Effect.all(
+          [
+            Deferred.succeed(release, undefined),
+            Fiber.join(adopting),
+            first.materialize,
+            second.materialize,
+          ],
+          { concurrency: "unbounded" },
+        ).pipe(Effect.provideService(FileSystem.FileSystem, trackedFs));
+
+        expect(maximumReaders).toBe(1);
+        expect(yield* fileSystem.readFileString(sharedConfig)).toBe("edited");
+        for (const account of [first, second]) {
+          expect(yield* fileIdentity(account.config)).toBe(yield* fileIdentity(sharedConfig));
+          expect(yield* backupsOf(account.home, "config.toml")).toEqual([]);
+        }
+      }),
+    );
+
     it.effect("shares the main home on Windows without symlinks, except SQLite files", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -603,10 +1750,33 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         );
 
         yield* materializeOnWindows;
+        const [backup] = yield* backupsOf(shadowHome, "config.toml");
+        expect(backup).toBeDefined();
+        expect(yield* fileSystem.readFileString(path.join(shadowHome, backup!))).toBe(
+          'model = "stale"\n',
+        );
+        const originalIdentity = yield* fileIdentity(sharedConfig);
+        expect(yield* fileIdentity(path.join(shadowHome, "config.toml"))).toBe(originalIdentity);
+        const before = yield* Effect.promise(() => NodeFSP.stat(sharedConfig, { bigint: true }));
+        yield* materializeOnWindows;
+        expect(yield* fileIdentity(path.join(shadowHome, "config.toml"))).toBe(originalIdentity);
+        expect(
+          yield* Effect.promise(() => NodeFSP.stat(sharedConfig, { bigint: true })),
+        ).toMatchObject({
+          ino: before.ino,
+          dev: before.dev,
+          ctimeNs: before.ctimeNs,
+          nlink: before.nlink,
+        });
         // Codex replaces config.toml atomically, which breaks a hard link.
         yield* writeTextFile(`${sharedConfig}.tmp`, 'model = "updated"\n');
         yield* fileSystem.rename(`${sharedConfig}.tmp`, sharedConfig);
         yield* materializeOnWindows;
+
+        expect(yield* fileIdentity(path.join(shadowHome, "config.toml"))).toBe(
+          yield* fileIdentity(sharedConfig),
+        );
+        expect(yield* backupsOf(shadowHome, "config.toml")).toEqual([backup]);
 
         expect(
           yield* fileSystem.readFileString(path.join(shadowHome, "sessions", "rollout.jsonl")),

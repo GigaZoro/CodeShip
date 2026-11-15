@@ -61,9 +61,12 @@ Then add a second Codex instance in **Settings > Providers & models**:
 
 Both instances must use the same **CODEX_HOME path**. T3.CodeShip prepares the shared
 state in the shadow directory; do not populate it by copying your whole Codex
-home. If the shadow directory already has its own copy of something it shares,
-T3.CodeShip renames that copy with a `.t3-backup-<time>` suffix rather than
-deleting it.
+home. On Windows, changes an account makes to shared configuration reach the shared
+home when T3.CodeShip next prepares that account, including on provider refresh.
+Files larger than 1 MiB are kept as backups instead of adopted into the shared home.
+If both copies changed, or T3.CodeShip cannot tell where a copy came from, it keeps
+the account's copy with a `.t3-backup-<time>-<id>` suffix and uses the shared one. Existing
+copies in a shadow directory are also kept aside this way rather than deleted.
 
 The shadow account needs its own `auth.json` file. If Codex uses an OS credential
 store, configure file storage for this setup. See

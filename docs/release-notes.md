@@ -1,3 +1,7 @@
+## 2026-11-15 — Windows Codex accounts keep configuration changes
+
+- Skill toggles and other Codex configuration changes made through an added account on Windows now survive provider refresh and reach the shared Codex home, including configurations linked to a dotfiles folder. Conflicting, unrecognized or oversized copies are kept as backups instead of being replaced.
+
 ## 2026-11-15 — Git commands that finished are no longer reported as timed out, and idle chats stop starting git
 
 - When the server stalled, for example while agents loaded the computer, a git command or other command that had already finished could be reported as timed out, and the action that ran it failed. A command that finished before its time limit now counts as finished, and starting it no longer eats into its limit.

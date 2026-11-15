@@ -1,5 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Linking without elevation on Windows needs junctions and exact file IDs, which Effect's FileSystem lacks.
 import * as NodeFSP from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - SHA-256 fingerprints compare bounded file contents, not filesystem timestamps.
+import * as NodeCrypto from "node:crypto";
 
 import { ProviderDriverKind, type CodexSettings } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -7,10 +9,15 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import * as PlatformError from "effect/PlatformError";
+import { lock } from "proper-lockfile";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 
 export interface CodexHomeLayout {
   readonly mode: "direct" | "authOverlay";
@@ -44,8 +51,27 @@ const PRIVATE_ENTRY_NAMES = new Set([
   "models_cache.json",
   "cloud-config-bundle-cache.json",
 ]);
+const WINDOWS_LINK_STATE_DIRECTORY = ".t3-shared-files";
 // Finder maintains metadata separately for each directory, including shadow homes.
-const SHADOW_LOCAL_ENTRY_NAMES = new Set(["log", "memories", "tmp", ".DS_Store"]);
+const SHADOW_LOCAL_ENTRY_NAMES = new Set([
+  "log",
+  "memories",
+  "tmp",
+  ".DS_Store",
+  WINDOWS_LINK_STATE_DIRECTORY,
+]);
+// Driver starts and managed refreshes can reconcile the same files through different accounts.
+const windowsMaterializations = new Map<
+  string,
+  { semaphore: Semaphore.Semaphore; users: number }
+>();
+const WINDOWS_CONTENT_FINGERPRINT_LIMIT = 1024n * 1024n;
+const WINDOWS_RECONCILIATION_ENTRY = /\.t3-(?:backup-|aside-|link|shared-files\.lock)/;
+// Setup moves a file aside to `<name>.t3-aside-<uuid>` and prepares an account file's link at
+// `<name>.t3-link-<uuid>`; only that random v4 UUID marks a name as setup's own. An aside stays
+// until it is linked back, discarded as the recorded shared copy or backed up.
+const WINDOWS_LEFTOVER =
+  /^(.+)\.t3-(aside|link)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 // Shadow homes may create local runtime locks first; replace them with shared links because they guard shared state.
 const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set([
   "mcp-oauth-locks",
@@ -93,14 +119,7 @@ export class CodexShadowHomeFileSystemError extends Schema.TaggedError<CodexShad
   "CodexShadowHomeFileSystemError",
   {
     ...CodexShadowHomeContext,
-    operation: Schema.Literals([
-      "readLink",
-      "makeDirectory",
-      "readDirectory",
-      "remove",
-      "symlink",
-      "stat",
-    ]),
+    operation: Schema.Literals(["readLink", "makeDirectory", "readDirectory", "remove", "symlink"]),
     path: Schema.String,
     targetPath: Schema.optional(Schema.String),
     entryName: Schema.optional(Schema.String),
@@ -132,6 +151,15 @@ export class CodexShadowHomePrivateEntrySymlinkError extends Schema.TaggedError<
 ) {
   override get message(): string {
     return `Codex shadow home private entry '${this.entryName}' at '${this.path}' must be a real file, not a symlink.`;
+  }
+}
+
+class CodexSharedFileChangedError extends Schema.TaggedError<CodexSharedFileChangedError>()(
+  "CodexSharedFileChangedError",
+  { path: Schema.String },
+) {
+  override get message(): string {
+    return `Codex file '${this.path}' changed while it was being moved aside.`;
   }
 }
 
@@ -231,16 +259,21 @@ const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
 const SQLITE_SIDECAR = /-(?:wal|shm|journal)$/i;
 const isSqliteSidecar = (name: string) => SQLITE_FILE.test(name) && SQLITE_SIDECAR.test(name);
 
-// An account's own copy moves to `<name>.t3-backup-<time>` beside it rather than being deleted.
+// The id keeps backups made at the same moment, even by different servers, from replacing each other.
+const backupPathFor = (basePath: string) =>
+  DateTime.now.pipe(
+    Effect.map(
+      (now) =>
+        `${basePath}.t3-backup-${DateTime.formatIso(now).replaceAll(/[:.]/g, "-")}-${NodeCrypto.randomUUID().slice(0, 8)}`,
+    ),
+  );
+
+// An account's own copy moves to `<name>.t3-backup-<time>-<id>` beside it rather than being deleted.
 const backUpEntry = Effect.fn("CodexHomeLayout.backUpEntry")(function* (
   fileSystem: FileSystem.FileSystem,
   entryPath: string,
 ): Effect.fn.Return<string, PlatformError.PlatformError> {
-  const stamp = DateTime.formatIso(yield* DateTime.now).replaceAll(/[:.]/g, "-");
-  let backupPath = `${entryPath}.t3-backup-${stamp}`;
-  for (let copy = 2; yield* fileSystem.exists(backupPath); copy += 1) {
-    backupPath = `${entryPath}.t3-backup-${stamp}-${copy}`;
-  }
+  const backupPath = yield* backupPathFor(entryPath);
   yield* fileSystem.rename(entryPath, backupPath);
   return backupPath;
 });
@@ -353,27 +386,411 @@ const replaceOwnCopy = Effect.fn("CodexHomeLayout.replaceOwnCopy")(function* (in
   );
 });
 
-// Windows symlinks need Developer Mode or elevation; hard links do not. Codex may replace a shared
-// file, so re-link whenever the account's copy is no longer the same file.
-const shareFileOnWindows = (target: string, link: string) =>
-  Effect.tryPromise(async () => {
-    const [shared, current] = await Promise.all([
-      NodeFSP.stat(target, { bigint: true }),
-      NodeFSP.lstat(link, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return undefined;
-        throw error;
+const WindowsLinkRecord = Schema.Struct({
+  target: Schema.String,
+  identity: Schema.String,
+  version: Schema.String,
+  fingerprint: Schema.optional(Schema.String),
+});
+const decodeWindowsLinkRecord = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(WindowsLinkRecord),
+);
+const encodeWindowsLinkRecord = Schema.encodeSync(Schema.fromJsonString(WindowsLinkRecord));
+
+const windowsFileVersion = Effect.fn("CodexHomeLayout.windowsFileVersion")(function* (
+  filePath: string,
+) {
+  const info = yield* Effect.tryPromise(() => NodeFSP.lstat(filePath, { bigint: true }));
+  return {
+    identity: `${info.dev}:${info.ino}`,
+    version: `${info.size}:${info.mtimeNs}`,
+    size: info.size,
+    links: info.nlink,
+    regular: info.isFile(),
+    symlink: info.isSymbolicLink(),
+  };
+});
+
+const windowsFileFingerprint = Effect.fn("CodexHomeLayout.windowsFileFingerprint")(function* (
+  filePath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const before = yield* windowsFileVersion(filePath);
+  if (!before.regular || before.size > WINDOWS_CONTENT_FINGERPRINT_LIMIT) {
+    return { ...before, fingerprint: `metadata:${before.identity}:${before.version}` };
+  }
+  const bytes = yield* fileSystem.readFile(filePath);
+  const after = yield* windowsFileVersion(filePath);
+  return {
+    ...after,
+    fingerprint:
+      before.identity === after.identity &&
+      before.version === after.version &&
+      BigInt(bytes.length) <= WINDOWS_CONTENT_FINGERPRINT_LIMIT
+        ? `sha256:${NodeCrypto.createHash("sha256").update(bytes).digest("hex")}`
+        : undefined,
+  };
+});
+
+const isMissingPath = (error: { readonly cause?: unknown }) =>
+  error.cause instanceof Error && "code" in error.cause && error.cause.code === "ENOENT";
+
+// link never replaces a path, so a file a writer recreated between our checks is kept.
+const linkUnlessPresent = (fileSystem: FileSystem.FileSystem, existing: string, newPath: string) =>
+  fileSystem.link(existing, newPath).pipe(
+    Effect.as(true),
+    Effect.catchReason("PlatformError", "AlreadyExists", () => Effect.succeed(false)),
+  );
+
+const windowsLeftoverPath = (entryPath: string, kind: "aside" | "link") =>
+  `${entryPath}.t3-${kind}-${NodeCrypto.randomUUID()}`;
+
+// lstat reports Windows junctions as symbolic links too.
+const isWindowsSymlink = (entryPath: string) =>
+  windowsFileVersion(entryPath).pipe(
+    Effect.map((info) => info.symlink),
+    Effect.catchIf(isMissingPath, () => Effect.succeed(false)),
+  );
+
+const windowsContentHash = Effect.fn("CodexHomeLayout.windowsContentHash")(function* (
+  filePath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const hash = yield* fileSystem.stream(filePath).pipe(
+    Stream.runFold(
+      () => NodeCrypto.createHash("sha256"),
+      (hash, chunk) => hash.update(chunk),
+    ),
+  );
+  return hash.digest("hex");
+});
+
+// A backup still linked to other accounts would change with their later writes, so a linked file
+// is duplicated, and it leaves its aside path only once the duplicate is published.
+const backUpWindowsAside = Effect.fn("CodexHomeLayout.backUpWindowsAside")(function* (
+  aside: string,
+  entryPath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const backupPath = yield* backupPathFor(entryPath);
+  const before = yield* windowsFileVersion(aside);
+  if (!before.regular || before.links === 1n) {
+    yield* fileSystem.rename(aside, backupPath);
+    return backupPath;
+  }
+  const copy = `${aside}.t3-copy`;
+  yield* Effect.gen(function* () {
+    yield* fileSystem.copyFile(aside, copy);
+    // Windows may leave a file's write time unchanged until its writer closes it, so only content
+    // shows the duplicate holds what the aside does.
+    const [copied, current] = yield* Effect.forEach([copy, aside], (file) =>
+      windowsContentHash(file),
+    );
+    if ((yield* windowsFileVersion(aside)).identity !== before.identity || copied !== current) {
+      return yield* new CodexSharedFileChangedError({ path: entryPath });
+    }
+    yield* fileSystem.rename(copy, backupPath);
+  }).pipe(
+    Effect.ensuring(fileSystem.remove(copy, { force: true }).pipe(Effect.ignore({ log: true }))),
+  );
+  yield* fileSystem.remove(aside);
+  return backupPath;
+});
+
+const recoverWindowsAside = Effect.fn("CodexHomeLayout.recoverWindowsAside")(function* (
+  entryPath: string,
+  aside: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  // An unfinished duplicate exists only beside its aside, which keeps the content until a duplicate
+  // is published, so it is redundant.
+  yield* fileSystem.remove(`${aside}.t3-copy`, { force: true });
+  const info = yield* windowsFileVersion(aside);
+  // Windows hard-links a symlink itself, so a symlink goes back as it was. One Windows cannot link,
+  // such as a junction, is backed up like a folder so it cannot block later setups.
+  const linkedBack = info.regular
+    ? yield* linkUnlessPresent(fileSystem, aside, entryPath)
+    : info.symlink
+      ? yield* linkUnlessPresent(fileSystem, aside, entryPath).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("A Codex link setup had moved aside could not be put back.", {
+              path: entryPath,
+              error,
+            }).pipe(Effect.as(undefined)),
+          ),
+        )
+      : undefined;
+  // A setup stopped right after linking one back leaves both paths on the same file.
+  if (
+    linkedBack === true ||
+    (linkedBack === false && info.identity === (yield* windowsFileVersion(entryPath)).identity)
+  ) {
+    return yield* fileSystem.remove(aside);
+  }
+  const backupPath = yield* backUpWindowsAside(aside, entryPath);
+  yield* Effect.logWarning("Backed up a Codex file that setup had moved aside.", {
+    path: entryPath,
+    backupPath,
+  });
+}, Effect.uninterruptible);
+
+// Servers sharing a Codex home reconcile its files one at a time, so none restores a file another
+// has just moved aside. A crashed or stalled holder's lock goes stale; a stalled holder taken over
+// that way fails its setup, and what it moved aside stays recoverable.
+const withSharedFileLock = <A, E, R>(lockPath: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const services = yield* Effect.context<never>();
+      yield* Effect.acquireRelease(
+        Effect.tryPromise(() =>
+          lock(lockPath, {
+            lockfilePath: `${lockPath}.lock`,
+            realpath: false,
+            stale: 10_000,
+            retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
+            onCompromised: (error) =>
+              Effect.runSyncWith(services)(
+                Effect.logWarning("A Codex shared-file lock was taken over during setup.", {
+                  path: lockPath,
+                  error,
+                }),
+              ),
+          }),
+        ),
+        (release) => Effect.tryPromise(() => release()).pipe(Effect.ignoreCause({ log: true })),
+      );
+      return yield* effect;
+    }),
+  );
+
+// Under the shared-file lock, any leftover was left by a setup that never finished. A prepared link
+// is only a second name setup gave a file it was linking.
+const recoverWindowsLeftovers = Effect.fn("CodexHomeLayout.recoverWindowsLeftovers")(function* (
+  entryPath: string,
+  preparedLinks: boolean,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const directory = path.dirname(entryPath);
+  yield* Effect.forEach(
+    yield* fileSystem.readDirectory(directory),
+    (name) => {
+      const leftover = WINDOWS_LEFTOVER.exec(name);
+      if (leftover?.[1] !== path.basename(entryPath)) return Effect.void;
+      const leftoverPath = path.join(directory, name);
+      if (leftover[2] === "aside") return recoverWindowsAside(entryPath, leftoverPath);
+      return preparedLinks ? fileSystem.remove(leftoverPath) : Effect.void;
+    },
+    { discard: true },
+  );
+});
+
+// Metadata skips redundant hashes; only captured content can authorize discarding a copy.
+const shareFileOnWindows = Effect.fn("CodexHomeLayout.shareFileOnWindows")(function* (
+  sharedPath: string,
+  link: string,
+  accountSymlinked: boolean,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  // Each side gets its file back even when the other side's leftovers cannot be recovered or the
+  // shared path no longer resolves; reconciling waits until both sides are recovered.
+  const accountRecovered = yield* recoverWindowsLeftovers(link, true).pipe(
+    Effect.as(true),
+    Effect.catch((error) =>
+      Effect.logWarning(
+        "What a stopped setup left beside a Codex account file could not be recovered yet.",
+        { path: link, error },
+      ).pipe(Effect.as(false)),
+    ),
+  );
+  const resolved = yield* resolveSymlinkTarget(sharedPath);
+  const target = path.join(
+    yield* fileSystem.realPath(path.dirname(resolved)),
+    path.basename(resolved),
+  );
+  const pending = windowsLeftoverPath(link, "link");
+  // The account's path can change at any moment, so an adoption installs a name setup owns.
+  const source = windowsLeftoverPath(link, "link");
+  yield* recoverWindowsLeftovers(target, false);
+  // An account that links to the shared path needs only the shared file back.
+  if (!accountRecovered || accountSymlinked || !(yield* fileSystem.exists(target))) return;
+  const recordPath = path.join(
+    path.dirname(link),
+    WINDOWS_LINK_STATE_DIRECTORY,
+    `${path.basename(link)}.json`,
+  );
+  // A record is setup's own file; one behind a link could describe or overwrite anything.
+  const recordLinked =
+    (yield* isWindowsSymlink(path.dirname(recordPath))) || (yield* isWindowsSymlink(recordPath));
+  if (recordLinked) {
+    yield* Effect.logWarning(
+      "A Codex shared-file record is behind a link, so it is not used; unrecognized copies will be kept aside.",
+      { path: recordPath },
+    );
+  }
+  const recordText = recordLinked
+    ? undefined
+    : yield* fileSystem
+        .readFileString(recordPath)
+        .pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.void));
+  const record =
+    recordText === undefined
+      ? undefined
+      : yield* decodeWindowsLinkRecord(recordText).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "A Codex shared-file record is invalid; unrecognized copies will be kept aside.",
+              {
+                path: recordPath,
+                error,
+              },
+            ).pipe(Effect.as(undefined)),
+          ),
+        );
+  const shared = yield* windowsFileVersion(target);
+  // exists follows links, so a dangling symlink here would never be replaced.
+  const current = yield* windowsFileVersion(link).pipe(
+    Effect.catchIf(isMissingPath, () => Effect.void),
+  );
+  const matchesContent = (info: { readonly fingerprint: string | undefined }) =>
+    record?.target === target &&
+    record.fingerprint?.startsWith("sha256:") === true &&
+    record.fingerprint === info.fingerprint;
+  const recordInstalled = Effect.gen(function* () {
+    if (recordLinked) return;
+    const installed = yield* windowsFileFingerprint(link);
+    const sharedNow = yield* windowsFileVersion(target);
+    if (installed.identity !== sharedNow.identity || installed.fingerprint === undefined) return;
+    yield* writeFileStringAtomically({
+      filePath: recordPath,
+      contents: encodeWindowsLinkRecord({
+        target,
+        identity: installed.identity,
+        version: installed.version,
+        fingerprint: installed.fingerprint,
       }),
-    ]);
-    if (current?.ino === shared.ino && current.dev === shared.dev) return;
-    const pending = `${link}.t3-link`;
-    await NodeFSP.rm(pending, { force: true });
-    await NodeFSP.link(target, pending);
-    // Windows refuses to replace a file Codex holds open; the next setup retries.
-    await NodeFSP.rename(pending, link).catch(async (error: unknown) => {
-      await NodeFSP.rm(pending, { force: true });
-      throw error;
     });
   });
+  if (current?.identity === shared.identity) {
+    if (
+      record?.target !== target ||
+      record.identity !== current.identity ||
+      record.version !== current.version ||
+      record.fingerprint === undefined
+    ) {
+      yield* recordInstalled;
+    }
+    return;
+  }
+
+  // Windows links a symlink itself, so a shared path that became one after it was resolved is left
+  // for the next setup to resolve again.
+  const preparePending = () =>
+    fileSystem.link(target, pending).pipe(
+      Effect.andThen(windowsFileVersion(pending)),
+      Effect.map((info) => info.regular),
+    );
+  yield* Effect.gen(function* () {
+    // Cross-volume or denied links fail here, before either user's path is moved.
+    if (!(yield* preparePending())) return;
+    if (current !== undefined) {
+      const own = yield* windowsFileFingerprint(link);
+      const stale = own.identity === record?.identity && matchesContent(own);
+      if (
+        !stale &&
+        own.regular &&
+        own.size <= WINDOWS_CONTENT_FINGERPRINT_LIMIT &&
+        matchesContent(yield* windowsFileFingerprint(target))
+      ) {
+        yield* fileSystem.link(link, source);
+        const held = yield* windowsFileVersion(source);
+        // Windows links a symlink itself, so only the regular file fingerprinted above is adopted; a
+        // file put in its place since is reconciled by the next setup.
+        if (!held.regular || held.identity !== own.identity) return;
+        const adopting = windowsLeftoverPath(target, "aside");
+        const adoptMoved = Effect.gen(function* () {
+          const installed =
+            matchesContent(yield* windowsFileFingerprint(adopting)) &&
+            (yield* linkUnlessPresent(fileSystem, source, target));
+          if (!installed) {
+            yield* recoverWindowsAside(target, adopting);
+            return false;
+          }
+          // Node cannot deny other Windows handles, so a writer that opened the old file can still
+          // change it; only a copy that still matches its record is discarded.
+          if (matchesContent(yield* windowsFileFingerprint(adopting))) {
+            yield* fileSystem.remove(adopting);
+            return true;
+          }
+          const backupPath = yield* backUpWindowsAside(adopting, target);
+          yield* Effect.logWarning("Kept a Codex shared file that changed while it was replaced.", {
+            path: target,
+            backupPath,
+          });
+          return true;
+        }).pipe(
+          // Other accounts and the shared home read this path, so it must not stay moved aside.
+          Effect.onError(() =>
+            recoverWindowsAside(target, adopting).pipe(Effect.ignore({ log: true })),
+          ),
+        );
+        // A refused move leaves nothing to recover.
+        const adopted = yield* fileSystem
+          .rename(target, adopting)
+          .pipe(Effect.andThen(adoptMoved), Effect.uninterruptible);
+        if (adopted) {
+          yield* recordInstalled;
+          return yield* Effect.logInfo(
+            "Adopted a Codex account's shared-file change into the shared home.",
+            { path: link, targetPath: target },
+          );
+        }
+        yield* fileSystem.remove(source);
+        yield* fileSystem.remove(pending);
+        if (!(yield* preparePending())) return;
+      }
+
+      const aside = windowsLeftoverPath(link, "aside");
+      const settle = Effect.gen(function* () {
+        const info = yield* windowsFileFingerprint(aside);
+        const installed = yield* linkUnlessPresent(fileSystem, pending, link);
+        const verified = stale && info.identity === record?.identity && matchesContent(info);
+        if (verified && installed && matchesContent(yield* windowsFileFingerprint(aside))) {
+          yield* fileSystem.remove(aside);
+          return installed;
+        }
+        const backupPath = yield* backUpWindowsAside(aside, link);
+        yield* Effect.logWarning("Moved an unrecognized Codex account's shared-file copy aside.", {
+          path: link,
+          backupPath,
+        });
+        return installed;
+      }).pipe(
+        Effect.onError(() => recoverWindowsAside(link, aside).pipe(Effect.ignore({ log: true }))),
+      );
+      // A refused move leaves nothing to recover; cancellation after it could leave the account
+      // without the file.
+      const installed = yield* fileSystem
+        .rename(link, aside)
+        .pipe(Effect.andThen(settle), Effect.uninterruptible);
+      if (!installed) return;
+    } else {
+      const installed = yield* linkUnlessPresent(fileSystem, pending, link);
+      if (!installed) return;
+    }
+    yield* recordInstalled;
+  }).pipe(
+    Effect.ensuring(
+      Effect.forEach(
+        [pending, source],
+        (leftover) =>
+          fileSystem.remove(leftover, { force: true }).pipe(Effect.ignore({ log: true })),
+        { discard: true },
+      ),
+    ),
+  );
+});
 
 const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (input: {
   readonly fileSystem: FileSystem.FileSystem;
@@ -394,27 +811,28 @@ const ensureSymlink = Effect.fn("CodexHomeLayout.ensureSymlink")(function* (inpu
     if (SQLITE_FILE.test(input.entryName)) return;
     const targetType = yield* input.fileSystem.stat(target).pipe(
       Effect.map((info) => info.type),
+      // A shared path that cannot be inspected is still reconciled as a file, so what a stopped
+      // setup left beside it and beside the account file is recovered.
       Effect.catchTags({
         PlatformError: (cause) =>
           cause.reason._tag === "NotFound"
             ? Effect.void
-            : new CodexShadowHomeFileSystemError({
-                sharedHomePath: input.sharedHomePath,
-                effectiveHomePath: input.effectiveHomePath,
-                operation: "stat",
-                path: target,
-                entryName: input.entryName,
-                cause,
-              }),
+            : Effect.logWarning(
+                "A shared Codex path could not be inspected; it is reconciled as a file.",
+                { path: target, error: cause },
+              ),
       }),
     );
-    // Codex's temporary files can vanish between listing the home and linking them.
-    if (targetType === undefined) return;
     if (targetType !== "Directory") {
-      if (state._tag === "Symlink" && path.resolve(path.dirname(link), state.target) === target) {
-        return;
-      }
-      return yield* shareFileOnWindows(target, link).pipe(
+      return yield* withSharedFileLock(
+        path.join(input.sharedHomePath, WINDOWS_LINK_STATE_DIRECTORY),
+        shareFileOnWindows(
+          target,
+          link,
+          state._tag === "Symlink" && path.resolve(path.dirname(link), state.target) === target,
+        ),
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, input.fileSystem),
         Effect.catch((error) =>
           Effect.logWarning(
             "A shared Codex file could not be linked; this account keeps its own.",
@@ -540,113 +958,170 @@ const ensureShadowAuthIsPrivate = Effect.fn("CodexHomeLayout.ensureShadowAuthIsP
   },
 );
 
-export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome")(function* (
-  layout: CodexHomeLayout,
-) {
-  if (layout.mode !== "authOverlay") return;
-  const effectiveHomePath = layout.effectiveHomePath;
-  if (!effectiveHomePath) return;
-  if (layout.sharedHomePath === effectiveHomePath) {
-    return yield* new CodexShadowHomePathConflictError({
+export const materializeCodexShadowHome = Effect.fn("materializeCodexShadowHome")(
+  function* (layout: CodexHomeLayout) {
+    if (layout.mode !== "authOverlay") return;
+    const effectiveHomePath = layout.effectiveHomePath;
+    if (!effectiveHomePath) return;
+    if (layout.sharedHomePath === effectiveHomePath) {
+      return yield* new CodexShadowHomePathConflictError({
+        sharedHomePath: layout.sharedHomePath,
+        effectiveHomePath,
+      });
+    }
+
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+
+    const makeDirectory = (directoryPath: string) =>
+      fileSystem.makeDirectory(directoryPath, { recursive: true }).pipe(
+        Effect.catchTags({
+          PlatformError: (cause) =>
+            new CodexShadowHomeFileSystemError({
+              sharedHomePath: layout.sharedHomePath,
+              effectiveHomePath,
+              operation: "makeDirectory",
+              path: directoryPath,
+              cause,
+            }),
+        }),
+      );
+
+    yield* Effect.all(
+      [
+        makeDirectory(layout.sharedHomePath),
+        makeDirectory(effectiveHomePath),
+        ...KNOWN_SHARED_DIRECTORIES.map((directory) =>
+          makeDirectory(path.join(layout.sharedHomePath, directory)),
+        ),
+      ],
+      { concurrency: "unbounded" },
+    );
+
+    const readEntryNames = (directory: string) =>
+      fileSystem.readDirectory(directory).pipe(
+        Effect.catchTags({
+          PlatformError: (cause) =>
+            new CodexShadowHomeFileSystemError({
+              sharedHomePath: layout.sharedHomePath,
+              effectiveHomePath,
+              operation: "readDirectory",
+              path: directory,
+              cause,
+            }),
+        }),
+      );
+    const windows = yield* HostProcess.isWindows;
+    // What a stopped Windows setup left behind is recovered even if the file it belongs to is gone.
+    const leftoverEntry = (name: string, preparedLinks: boolean) => {
+      const leftover = windows ? WINDOWS_LEFTOVER.exec(name) : null;
+      return leftover?.[2] === "aside" || preparedLinks ? leftover?.[1] : undefined;
+    };
+    const sharedEntryNames = yield* readEntryNames(layout.sharedHomePath);
+    const accountLeftoverNames = windows
+      ? (yield* readEntryNames(effectiveHomePath)).flatMap(
+          (name) => leftoverEntry(name, true) ?? [],
+        )
+      : [];
+    const entries = new Set<string>(KNOWN_SHARED_DIRECTORIES);
+    for (const entryName of [
+      ...sharedEntryNames.map((name) => leftoverEntry(name, false) ?? name),
+      ...accountLeftoverNames,
+    ]) {
+      if (
+        !PRIVATE_ENTRY_NAMES.has(entryName) &&
+        !SHADOW_LOCAL_ENTRY_NAMES.has(entryName) &&
+        !isSqliteSidecar(entryName) &&
+        !WINDOWS_RECONCILIATION_ENTRY.test(entryName)
+      ) {
+        entries.add(entryName);
+      }
+    }
+
+    yield* Effect.forEach(
+      PRIVATE_ENTRY_NAMES,
+      (entryName) =>
+        entryName === "auth.json"
+          ? Effect.void
+          : removePrivateSymlink({
+              fileSystem,
+              sharedHomePath: layout.sharedHomePath,
+              effectiveHomePath,
+              entryName,
+            }),
+      { discard: true },
+    );
+
+    yield* settleSqliteFiles({
+      fileSystem,
+      sharedHomePath: layout.sharedHomePath,
+      effectiveHomePath,
+      windows,
+    });
+
+    yield* Effect.forEach(
+      entries,
+      (entryName) => {
+        if (PRIVATE_ENTRY_NAMES.has(entryName)) {
+          return Effect.void;
+        }
+        return ensureSymlink({
+          fileSystem,
+          sharedHomePath: layout.sharedHomePath,
+          effectiveHomePath,
+          entryName,
+        });
+      },
+      { discard: true },
+    );
+
+    yield* ensureShadowAuthIsPrivate({
+      fileSystem,
       sharedHomePath: layout.sharedHomePath,
       effectiveHomePath,
     });
-  }
-
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-
-  const makeDirectory = (directoryPath: string) =>
-    fileSystem.makeDirectory(directoryPath, { recursive: true }).pipe(
-      Effect.catchTags({
-        PlatformError: (cause) =>
-          new CodexShadowHomeFileSystemError({
-            sharedHomePath: layout.sharedHomePath,
-            effectiveHomePath,
-            operation: "makeDirectory",
-            path: directoryPath,
-            cause,
-          }),
-      }),
-    );
-
-  yield* Effect.all(
-    [
-      makeDirectory(layout.sharedHomePath),
-      makeDirectory(effectiveHomePath),
-      ...KNOWN_SHARED_DIRECTORIES.map((directory) =>
-        makeDirectory(path.join(layout.sharedHomePath, directory)),
-      ),
-    ],
-    { concurrency: "unbounded" },
-  );
-
-  const sharedEntryNames = yield* fileSystem.readDirectory(layout.sharedHomePath).pipe(
-    Effect.catchTags({
-      PlatformError: (cause) =>
-        new CodexShadowHomeFileSystemError({
-          sharedHomePath: layout.sharedHomePath,
-          effectiveHomePath,
-          operation: "readDirectory",
-          path: layout.sharedHomePath,
-          cause,
-        }),
-    }),
-  );
-  const entries = new Set<string>(KNOWN_SHARED_DIRECTORIES);
-  for (const entryName of sharedEntryNames) {
-    if (
-      !PRIVATE_ENTRY_NAMES.has(entryName) &&
-      !SHADOW_LOCAL_ENTRY_NAMES.has(entryName) &&
-      !isSqliteSidecar(entryName)
-    ) {
-      entries.add(entryName);
-    }
-  }
-
-  yield* Effect.forEach(
-    PRIVATE_ENTRY_NAMES,
-    (entryName) =>
-      entryName === "auth.json"
-        ? Effect.void
-        : removePrivateSymlink({
-            fileSystem,
-            sharedHomePath: layout.sharedHomePath,
-            effectiveHomePath,
-            entryName,
-          }),
-    { discard: true },
-  );
-
-  yield* settleSqliteFiles({
-    fileSystem,
-    sharedHomePath: layout.sharedHomePath,
-    effectiveHomePath,
-    windows: yield* HostProcess.isWindows,
-  });
-
-  yield* Effect.forEach(
-    entries,
-    (entryName) => {
-      if (PRIVATE_ENTRY_NAMES.has(entryName)) {
-        return Effect.void;
+  },
+  (effect, layout) =>
+    Effect.gen(function* () {
+      const effectiveHomePath = layout.effectiveHomePath;
+      if (layout.mode !== "authOverlay" || !effectiveHomePath || !(yield* HostProcess.isWindows)) {
+        return yield* effect;
       }
-      return ensureSymlink({
-        fileSystem,
-        sharedHomePath: layout.sharedHomePath,
-        effectiveHomePath,
-        entryName,
-      });
-    },
-    { discard: true },
-  );
-
-  yield* ensureShadowAuthIsPrivate({
-    fileSystem,
-    sharedHomePath: layout.sharedHomePath,
-    effectiveHomePath,
-  });
-});
+      const fileSystem = yield* FileSystem.FileSystem;
+      const sharedHome = yield* fileSystem
+        .makeDirectory(layout.sharedHomePath, { recursive: true })
+        .pipe(
+          Effect.andThen(fileSystem.realPath(layout.sharedHomePath)),
+          Effect.mapError(
+            (cause) =>
+              new CodexShadowHomeFileSystemError({
+                sharedHomePath: layout.sharedHomePath,
+                effectiveHomePath,
+                operation: "makeDirectory",
+                path: layout.sharedHomePath,
+                cause,
+              }),
+          ),
+        );
+      yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const entry = windowsMaterializations.get(sharedHome) ?? {
+            semaphore: Semaphore.makeUnsafe(1),
+            users: 0,
+          };
+          entry.users += 1;
+          windowsMaterializations.set(sharedHome, entry);
+          return entry;
+        }),
+        (entry) => entry.semaphore.withPermit(effect),
+        (entry) =>
+          Effect.sync(() => {
+            entry.users -= 1;
+            if (entry.users === 0) windowsMaterializations.delete(sharedHome);
+          }),
+      );
+    }),
+);
 
 export function codexContinuationIdentity(layout: CodexHomeLayout) {
   return {
