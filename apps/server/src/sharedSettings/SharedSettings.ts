@@ -1394,8 +1394,8 @@ const make = Effect.gen(function* () {
 
 /**
  * `updateAccountConfigs` on a machine whose account writes take the hooks `hooksFor` gives for
- * their patch and the accounts a change for all machines names, or none, and run `catchUp` once
- * they are saved.
+ * their patch and the accounts a change for all machines names, or none, and run `catchUp` before
+ * they return.
  */
 const updateAccountConfigsWith = (
   sharing: AccountSharingDrivers,
@@ -1404,7 +1404,7 @@ const updateAccountConfigsWith = (
     patch: ServerSettingsPatch,
     forAllMachines: ReadonlyArray<ProviderInstanceId> | undefined,
   ) => Effect.Effect<Settings.SettingsWriteHooks, ServerSettingsError>,
-  catchUp: Effect.Effect<void>,
+  catchUp: Effect.Effect<void, ServerSettingsError>,
 ): SharedSettings["Service"]["updateAccountConfigs"] =>
   Effect.fn("SharedSettings.updateAccountConfigs")(function* (changes, options) {
     const forAllMachines = options?.forAllMachines === true;
@@ -1422,6 +1422,8 @@ const updateAccountConfigsWith = (
     const mutationsOf = (latest: ServerSettings) =>
       accountConfigMutations(latest.providerInstances, planned);
     if (!forAllMachines && Object.keys(patch).length === 0 && mutationsOf(current)?.length === 0) {
+      // Another write of these values can still be on its way to the registry.
+      yield* catchUp;
       return current;
     }
     const saved = yield* settings.updateProviderInstance(

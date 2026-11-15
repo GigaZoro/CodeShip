@@ -591,6 +591,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
   const mutator: ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutatorShape = {
     reconcile,
     reloadSecrets,
+    settled: semaphore.withPermits(1)(Effect.void),
   };
 
   return { registry, mutator };

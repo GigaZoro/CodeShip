@@ -1031,17 +1031,26 @@ describe("ProviderInstanceRegistry secret environment", () => {
     const invalidated: Array<ReadonlyArray<string>> = [];
     const created: Array<ResolvedProviderInstanceEnvironment> = [];
     const configs: Array<unknown> = [];
+    // A test can hold a build open, as a slow provider start does.
+    let createHold: Effect.Effect<void> = Effect.void;
     const driver: AnyProviderDriver = {
       driverKind,
       metadata: { displayName: "Fake" },
       configSchema,
       defaultConfig: () => ({}),
       create: (input) =>
-        Effect.sync(() => {
-          created.push(input.environment);
-          configs.push(input.config);
-          return { instanceId: input.instanceId, enabled: input.enabled } as ProviderInstance;
-        }),
+        Effect.suspend(() => createHold).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              created.push(input.environment);
+              configs.push(input.config);
+              return { instanceId: input.instanceId, enabled: input.enabled } as ProviderInstance;
+            }),
+          ),
+        ),
+    };
+    const holdCreates = (hold: Effect.Effect<void>) => {
+      createHold = hold;
     };
     const gate = Deferred.makeUnsafe<void>();
     const resolver = Layer.succeed(SecretResolver.SecretResolver, {
@@ -1080,7 +1089,7 @@ describe("ProviderInstanceRegistry secret environment", () => {
       yield* PubSub.take(changes);
       return built;
     });
-    return { vault, reads, invalidated, created, configs, make, makeGated, gate };
+    return { vault, reads, invalidated, created, configs, make, makeGated, gate, holdCreates };
   }
 
   it.effect("starts an instance with the secret its environment points at", () => {
@@ -1186,6 +1195,33 @@ describe("ProviderInstanceRegistry secret environment", () => {
       expect(yield* registry.getInstance(instanceId)).toBeDefined();
       expect(yield* registry.listUnavailable).toEqual([]);
       expect(fixture.created).toHaveLength(1);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("settles once a secret reload has rebuilt the instance it retired", () => {
+    const fixture = setup({ [secret.reference]: "sk-live" });
+    return Effect.gen(function* () {
+      const { registry, mutator } = yield* fixture.make;
+      const buildStarted = yield* Deferred.make<void>();
+      const releaseBuild = yield* Deferred.make<void>();
+      fixture.holdCreates(
+        Deferred.succeed(buildStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseBuild)),
+        ),
+      );
+
+      fixture.vault.set(secret.reference, "sk-rotated");
+      const reload = yield* Effect.forkChild(mutator.reloadSecrets(instanceId));
+      yield* Deferred.await(buildStarted);
+      expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+      const settled = yield* Effect.forkChild(
+        mutator.settled.pipe(Effect.andThen(registry.getInstance(instanceId))),
+        { startImmediately: true },
+      );
+      yield* Deferred.succeed(releaseBuild, undefined);
+      yield* Fiber.join(reload);
+
+      expect(yield* Fiber.join(settled)).toBeDefined();
     }).pipe(Effect.scoped);
   });
 

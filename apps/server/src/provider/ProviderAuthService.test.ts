@@ -5,6 +5,7 @@ import {
   ProviderSessionId,
   ProviderSetupError,
   ProviderThreadId,
+  ServerSettingsError,
   ThreadId,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ThreadShell,
@@ -140,7 +141,7 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
     onLookup?: Effect.Effect<void>;
     onListThreads?: (instances: ProviderInstance[]) => void;
     /** Runs when the service waits for the registry to run saved credentials. */
-    catchUp?: Effect.Effect<void>;
+    catchUp?: Effect.Effect<void, ServerSettingsError>;
   } = {},
 ) {
   const actions: string[] = [];
@@ -376,7 +377,7 @@ const makeSubscriptionHarness = Effect.fn("ProviderAuthService.test.makeSubscrip
   function* (
     initial: ProviderInstance,
     replaceDuringFirstLookup?: ProviderInstance,
-    catchUp: Effect.Effect<void> = Effect.void,
+    catchUp: Effect.Effect<void, ServerSettingsError> = Effect.void,
   ) {
     const changes = yield* PubSub.unbounded<void>();
     let current: ProviderInstance | undefined = initial;
@@ -538,6 +539,24 @@ describe("ProviderAuthService", () => {
 
       yield* service.logout({ instanceId });
       assert.deepStrictEqual(actions.slice(-2), ["native-logout", "registry-caught-up"]);
+    }),
+  );
+
+  it.effect("reports a finished sign-in the registry could not run as a setup error", () =>
+    Effect.gen(function* () {
+      const { service } = yield* makeHarness({
+        catchUp: Effect.fail(
+          new ServerSettingsError({ settingsPath: "test settings", operation: "read-file" }),
+        ),
+      });
+      yield* service.start({ instanceId }, owner);
+
+      const error = yield* Effect.flip(
+        service.complete({ instanceId, flowId, callbackUrl }, owner),
+      );
+      assert.instanceOf(error, ProviderSetupError);
+      assert.strictEqual(error.instanceId, instanceId);
+      assert.strictEqual(error.operation, "reload");
     }),
   );
 

@@ -139,7 +139,7 @@ export const seedDevReplayInstance = Effect.fn(
  * Reconciles the registry with the current settings on every saved change, and on a writer's
  * `catchUp`. Both read the settings and check what is applied under one lock, so the last to run
  * applies the newest instances, an older map never replaces a newer one, and a catch-up never
- * returns while a reconcile is still building instances.
+ * returns while the registry is still building instances. A catch-up's failure reaches its writer.
  */
 export const layerSettingsSync = (
   settingsChanges: Stream.Stream<ServerSettings>,
@@ -162,23 +162,24 @@ export const layerSettingsSync = (
       );
       // A failed current read must leave the registry intact.
       const reconcileCurrent = (skipWhenApplied: boolean) =>
-        lock
-          .withPermits(1)(
-            Effect.gen(function* () {
-              const configMap = yield* currentConfigMap;
-              const last = yield* Ref.get(applied);
-              if (skipWhenApplied && last !== undefined && Equal.equals(configMap, last)) return;
-              yield* Ref.set(applied, undefined);
-              yield* mutator.reconcile(configMap);
-              yield* Ref.set(applied, configMap);
-            }),
-          )
-          .pipe(logFailure);
+        lock.withPermits(1)(
+          Effect.gen(function* () {
+            const configMap = yield* currentConfigMap;
+            const last = yield* Ref.get(applied);
+            // The registry also rebuilds instances itself, as on a secret reload.
+            if (skipWhenApplied && last !== undefined && Equal.equals(configMap, last)) {
+              return yield* mutator.settled;
+            }
+            yield* Ref.set(applied, undefined);
+            yield* mutator.reconcile(configMap);
+            yield* Ref.set(applied, configMap);
+          }),
+        );
 
       // The subscription predates the seed read, so a queued change can be older than the seed.
       // Every change reconciles, as a reconcile also retries instances still waiting for secrets.
       yield* settingsChanges.pipe(
-        Stream.runForEach(() => reconcileCurrent(false)),
+        Stream.runForEach(() => reconcileCurrent(false).pipe(logFailure)),
         Effect.forkScoped,
       );
 

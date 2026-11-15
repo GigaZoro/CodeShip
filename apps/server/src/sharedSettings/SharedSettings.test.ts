@@ -1197,6 +1197,35 @@ it.effect("a built-in provider shares only its name and whether it is on", () =>
   }),
 );
 
+it.effect("an account change that is already saved still waits for the registry", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(NOW));
+    const instances = yield* Ref.make<ReadonlyArray<string>>([]);
+    const catchUps = yield* Ref.make(0);
+    const local = workAccount("a");
+    const saved = { ...local, config: { ...local.config, autoCompactWindow: "400000" } };
+    yield* Effect.gen(function* () {
+      const shared = yield* SharedSettings.SharedSettings;
+      // Another write of the same value can still be on its way to the registry.
+      yield* shared.updateAccountConfigs({ [WORK]: { autoCompactWindow: "400000" } });
+      expect(yield* Ref.get(catchUps)).toBe(1);
+    }).pipe(
+      Effect.provide(
+        machine(
+          { providerInstances: { [WORK]: saved } },
+          instances,
+          undefined,
+          undefined,
+          HERE,
+          Layer.succeed(ProviderInstanceRegistrySync.ProviderInstanceRegistrySync, {
+            catchUp: Ref.update(catchUps, (count) => count + 1),
+          }),
+        ),
+      ),
+    );
+  }),
+);
+
 const CLAUDE_BUILT_IN = ProviderInstanceId.make("claudeAgent");
 
 it.effect(

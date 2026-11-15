@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -166,15 +167,61 @@ const initialConfigMap = deriveProviderInstanceConfigMap(DEFAULT_SERVER_SETTINGS
 const layerSync = (
   changes: Queue.Queue<ServerSettings>,
   reconcile: (configMap: ProviderInstanceConfigMap) => Effect.Effect<void>,
+  settled: Effect.Effect<void> = Effect.void,
 ) =>
   layerSettingsSync(Stream.fromQueue(changes), initialConfigMap).pipe(
     Layer.provideMerge(
-      Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({ reconcile }),
+      Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({
+        reconcile,
+        settled,
+      }),
     ),
     Layer.provideMerge(ServerSettingsService.layerTest()),
   );
 
 describe("layerSettingsSync", () => {
+  effectIt.effect("a catch-up of applied settings waits for the registry's own rebuilds", () =>
+    Effect.gen(function* () {
+      const reconciled: Array<ProviderInstanceConfigMap> = [];
+      let settledCalls = 0;
+      const reconcile = (configMap: ProviderInstanceConfigMap) =>
+        Effect.sync(() => {
+          reconciled.push(configMap);
+        });
+      const settled = Effect.sync(() => {
+        settledCalls += 1;
+      });
+
+      yield* Effect.gen(function* () {
+        const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+        yield* sync.catchUp;
+
+        expect(reconciled).toEqual([]);
+        expect(settledCalls).toBe(1);
+      }).pipe(
+        Effect.provide(layerSync(yield* Queue.unbounded<ServerSettings>(), reconcile, settled)),
+      );
+    }),
+  );
+
+  effectIt.effect("a catch-up fails when the reconcile it runs fails", () =>
+    Effect.gen(function* () {
+      const reconcile = () => Effect.die("provider start failed");
+
+      yield* Effect.gen(function* () {
+        const settings = yield* ServerSettingsService;
+        const sync = yield* ProviderInstanceRegistrySync.ProviderInstanceRegistrySync;
+        yield* settings.updateProviderInstance({
+          operation: "create",
+          instanceId,
+          instance: { driver: codexDriver },
+        });
+
+        expect(Exit.isFailure(yield* Effect.exit(sync.catchUp))).toBe(true);
+      }).pipe(Effect.provide(layerSync(yield* Queue.unbounded<ServerSettings>(), reconcile)));
+    }),
+  );
+
   effectIt.effect(
     "a catch-up waits for a reconcile building other instances, then applies its own",
     () =>

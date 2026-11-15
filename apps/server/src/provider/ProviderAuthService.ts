@@ -77,7 +77,20 @@ export const makeProviderAuthService = Effect.gen(function* () {
   // A sign-in or sign-out can save the account's credentials, which the registry runs in the
   // background. Its caller hears of it once the registry runs them, so a turn it starts at once
   // does not use the account's old instance.
-  const afterCredentialsSaved = <A>(result: A) => Effect.as(registrySync.catchUp, result);
+  const credentialsRunning = (instanceId: ProviderInstanceId) =>
+    registrySync.catchUp.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderSetupError({
+            instanceId,
+            operation: "reload",
+            detail: "The server could not reload this account after its sign-in changed.",
+            cause,
+          }),
+      ),
+    );
+  const afterCredentialsSaved = (state: ProviderAuthState) =>
+    Effect.as(credentialsRunning(state.instanceId), state);
   const whenSignedIn = (state: ProviderAuthState) =>
     state.phase === "succeeded" ? afterCredentialsSaved(state) : Effect.succeed(state);
 
@@ -324,9 +337,10 @@ export const makeProviderAuthService = Effect.gen(function* () {
           }),
         );
       },
-      Effect.flatMap((loggedOut) =>
-        loggedOut ? afterCredentialsSaved(true) : Effect.succeed(false),
-      ),
+      (effect, input) =>
+        Effect.flatMap(effect, (loggedOut) =>
+          loggedOut ? Effect.as(credentialsRunning(input.instanceId), true) : Effect.succeed(false),
+        ),
     ),
   });
 });
