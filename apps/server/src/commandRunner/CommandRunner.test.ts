@@ -26,6 +26,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -193,6 +194,7 @@ const commandRow = (taskId: string) =>
     const sql = yield* SqlClient.SqlClient;
     const rows = yield* sql<{
       readonly status: string;
+      readonly exit_code: number | null;
       readonly pid: number | null;
       readonly started_at: string;
       readonly delivered_at: string | null;
@@ -201,7 +203,8 @@ const commandRow = (taskId: string) =>
       readonly lost_reason: string | null;
       readonly lost_output: string | null;
     }>`
-      SELECT status, pid, started_at, delivered_at, last_alive_at, probe_error, lost_reason, lost_output
+      SELECT status, exit_code, pid, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
+        lost_output
       FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
@@ -629,90 +632,50 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         }),
     );
 
-    it.effect("waits while a probe cannot tell whether its wrapper runs, and stops nothing", () =>
-      Effect.gen(function* () {
-        const chat = yield* liveChat("command-probe-unknown");
-        const probes = yield* Queue.unbounded<void>();
-        const kill = process.kill.bind(process);
-        yield* withServer((runner) =>
-          Effect.gen(function* () {
-            const started = yield* runner.run(callerOf(chat.threadId), {
-              command: ORPHANING_COMMAND,
-            });
-            yield* awaitFile(NodePath.join(chat.workspace, "ready"));
-            const wrapperPid = (yield* commandRow(started.taskId))!.pid!;
-            // A probe failure that is not ESRCH, as an overloaded or restricted host can give.
-            const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-              if (pid !== wrapperPid || signal !== 0) return kill(pid, signal);
-              Queue.offerUnsafe(probes, undefined);
-              throw Object.assign(new Error(`kill EIO ${pid}`), { code: "EIO" });
-            });
-            yield* Effect.addFinalizer(() => Effect.sync(() => probe.mockRestore()));
-            NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
-            yield* awaitFile(NodePath.join(chat.workspace, "orphaned"));
-            // Its wrapper is gone, and the check that made the first later probe has finished.
-            yield* Queue.clear(probes);
-            yield* Queue.take(probes);
-            yield* Queue.take(probes);
-            const waiting = yield* commandRow(started.taskId);
-            assert.equal(waiting?.status, "running");
-            assert.equal(waiting?.probe_error, "EIO");
-            assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
-            probe.mockRestore();
-            yield* nextWake(chat.threadId);
-            const lost = yield* commandRow(started.taskId);
-            assert.equal(lost?.lost_reason, "gone");
-            assert.equal(lost?.probe_error, "ESRCH");
-            assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
-          }),
-        );
-      }),
-    );
-
-    it.effect("logs commands lost together once, as a wave, in the losses log", () =>
-      Effect.gen(function* () {
-        const chats = yield* Effect.forEach(["one", "two", "three"], (name) =>
-          liveChat(`command-wave-${name}`),
-        );
-        const { logsDir } = yield* ServerConfig.ServerConfig;
-        yield* withServer((runner) =>
-          Effect.gen(function* () {
-            yield* Effect.forEach(chats, (chat) =>
-              runner.run(callerOf(chat.threadId), {
-                command: "until [ -e go ]; do sleep 0.05; done; kill -9 $PPID",
-              }),
-            );
-            for (const chat of chats) NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
-            yield* wakesOf(chats.map((chat) => chat.threadId));
-            // Checked in a pass after the one that lost the last of them, which logged the wave.
-            yield* runner.run(callerOf(chats[0]!.threadId), { command: "true" });
-            yield* nextWake(chats[0]!.threadId);
-          }),
-        );
-        const entries = NodeFS.readFileSync(
-          NodePath.join(logsDir, CommandRunner.LOSS_LOG_FILE),
-          "utf8",
-        )
-          .trim()
-          .split("\n")
-          .map(
-            (line) =>
-              JSON.parse(line) as {
-                readonly lost: number;
-                readonly runs: ReadonlyArray<{
-                  readonly threadId: string;
-                  readonly lostReason: string;
-                }>;
-              },
-          )
-          .filter((entry) =>
-            entry.runs.some((run) => chats.some((chat) => chat.threadId === run.threadId)),
+    it.effect(
+      "waits while a probe cannot tell whether its wrapper runs, stopping nothing and still trimming its log",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-probe-unknown");
+          const probes = yield* Queue.unbounded<void>();
+          const kill = process.kill.bind(process);
+          yield* withServer((runner) =>
+            Effect.gen(function* () {
+              const started = yield* runner.run(callerOf(chat.threadId), {
+                // As ORPHANING_COMMAND, with a log too large once `go` exists.
+                command: `${STOP_NOTING_CHILD} until [ -e go ]; do sleep 0.05; done; head -c 9000000 /dev/zero | tr '\\0' x; echo; kill -9 $PPID; echo > orphaned; wait`,
+              });
+              yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+              const wrapperPid = (yield* commandRow(started.taskId))!.pid!;
+              // A probe failure that is not ESRCH, as an overloaded or restricted host can give.
+              const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+                if (pid !== wrapperPid || signal !== 0) return kill(pid, signal);
+                Queue.offerUnsafe(probes, undefined);
+                throw Object.assign(new Error(`kill EIO ${pid}`), { code: "EIO" });
+              });
+              yield* Effect.addFinalizer(() => Effect.sync(() => probe.mockRestore()));
+              NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
+              yield* awaitFile(NodePath.join(chat.workspace, "orphaned"));
+              // Its wrapper is gone, and the check that made the first later probe has finished.
+              yield* Queue.clear(probes);
+              yield* Queue.take(probes);
+              yield* Queue.take(probes);
+              const waiting = yield* commandRow(started.taskId);
+              assert.equal(waiting?.status, "running");
+              assert.equal(waiting?.probe_error, "EIO");
+              assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+              const log = NodeFS.readFileSync(started.logPath, "utf8");
+              assert.match(log, /^\[CodeShip removed earlier output to keep this log small\]\n/);
+              assert.isBelow(log.length, 8 * 1024 * 1024);
+              probe.mockRestore();
+              yield* nextWake(chat.threadId);
+              const lost = yield* commandRow(started.taskId);
+              assert.equal(lost?.lost_reason, "gone");
+              assert.equal(lost?.probe_error, "ESRCH");
+              assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+            }),
           );
-        assert.lengthOf(entries, 1);
-        // Logged once more than half the running commands were lost, which two of three already are.
-        assert.isAtLeast(entries[0]!.lost, 2);
-        assert.deepEqual([...new Set(entries[0]!.runs.map((run) => run.lostReason))], ["gone"]);
-      }),
+        }),
     );
   });
 
@@ -985,6 +948,158 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   });
 });
 
+type LossWave = {
+  readonly time: string;
+  readonly lost: number;
+  readonly running: number;
+  readonly runs: ReadonlyArray<{ readonly taskId: string; readonly lostReason: string | null }>;
+};
+
+/** The waves in the losses log, oldest first. */
+const lossWaves = Effect.map(ServerConfig.ServerConfig, ({ logsDir }) => {
+  const file = NodePath.join(logsDir, CommandRunner.LOSS_LOG_FILE);
+  if (!NodeFS.existsSync(file)) return [];
+  return NodeFS.readFileSync(file, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as LossWave);
+});
+
+/** Once `go` exists it kills its wrapper, so it ends without an exit status. */
+const LOSING_COMMAND = "until [ -e go ]; do sleep 0.05; done; kill -9 $PPID";
+const go = (chat: { readonly workspace: string }) =>
+  NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
+
+/**
+ * Runs a command to its end. It starts once the pass under way, and the wave it noted, are done,
+ * so its end is seen in a later pass.
+ */
+const nextPass = (runner: CommandRunner.CommandRunner["Service"], threadId: ThreadId) =>
+  runner.run(callerOf(threadId), { command: "true" }).pipe(Effect.andThen(nextWake(threadId)));
+
+// Each has a database and logs folder of its own, since a wave counts every loss of the last minute.
+describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
+  it.layer(layerTest, { excludeTestServices: true })("lost together", (it) => {
+    it.effect("is logged once, and not again by the next server", () =>
+      Effect.gen(function* () {
+        const chats = yield* Effect.forEach(["one", "two", "three"], (name) =>
+          liveChat(`command-wave-${name}`),
+        );
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            yield* Effect.forEach(chats, (chat) =>
+              runner.run(callerOf(chat.threadId), { command: LOSING_COMMAND }),
+            );
+            for (const chat of chats) go(chat);
+            yield* wakesOf(chats.map((chat) => chat.threadId));
+            yield* nextPass(runner, chats[0]!.threadId);
+          }),
+        );
+        // It counts the same losses, and finds them logged.
+        yield* withServer((runner) => nextPass(runner, chats[0]!.threadId));
+        const waves = yield* lossWaves;
+        assert.lengthOf(waves, 1);
+        // Logged once more than half the running commands were lost, which two of three already are.
+        assert.isAtLeast(waves[0]!.lost, 2);
+        assert.deepEqual([...new Set(waves[0]!.runs.map((run) => run.lostReason))], ["gone"]);
+      }),
+    );
+  });
+
+  it.layer(layerTest, { excludeTestServices: true })("lost across a restart", (it) => {
+    it.effect("counts the losses an earlier server recorded in the last minute", () =>
+      Effect.gen(function* () {
+        const chats = yield* Effect.forEach(["one", "two", "three"], (name) =>
+          liveChat(`command-wave-restart-${name}`),
+        );
+        const [one, two] = [chats[0]!, chats[1]!];
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            yield* Effect.forEach(chats, (chat) =>
+              runner.run(callerOf(chat.threadId), { command: LOSING_COMMAND }),
+            );
+            go(one);
+            yield* nextWake(one.threadId);
+            yield* nextPass(runner, one.threadId);
+          }),
+        );
+        // One lost while two run is no wave.
+        assert.lengthOf(yield* lossWaves, 0);
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            go(two);
+            yield* nextWake(two.threadId);
+            yield* nextPass(runner, two.threadId);
+          }),
+        );
+        const waves = yield* lossWaves;
+        assert.deepEqual(
+          waves.map(({ lost, running }) => ({ lost, running })),
+          [{ lost: 2, running: 1 }],
+        );
+      }),
+    );
+  });
+
+  it.layer(layerTest, { excludeTestServices: true })("lost alone", (it) => {
+    it.effect("is the only running command lost, and kept 14 days whatever the log's size", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-wave-alone");
+        const { logsDir } = yield* ServerConfig.ServerConfig;
+        const now = yield* DateTime.now;
+        const daysAgo = (days: number) =>
+          DateTime.formatIso(DateTime.subtractDuration(now, Duration.days(days)));
+        const run = {
+          taskId: "task-earlier",
+          threadId: "thread-earlier",
+          pid: 1,
+          lostReason: "gone",
+          probeError: "ESRCH",
+          startedAt: daysAgo(15),
+          lastAliveAt: null,
+          endedAt: daysAgo(15),
+        };
+        // The recent wave is over 1 MiB, more than a log rotated by size would keep.
+        const waves = [
+          { time: daysAgo(15), lost: 1, running: 0, runs: [run] },
+          {
+            time: daysAgo(6),
+            lost: 8000,
+            running: 0,
+            runs: Array.from({ length: 8000 }, () => run),
+          },
+        ];
+        NodeFS.mkdirSync(logsDir, { recursive: true });
+        NodeFS.writeFileSync(
+          NodePath.join(logsDir, CommandRunner.LOSS_LOG_FILE),
+          waves.map((wave) => `${JSON.stringify(wave)}\n`).join(""),
+        );
+        const started = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const started = yield* runner.run(callerOf(chat.threadId), {
+              command: LOSING_COMMAND,
+            });
+            go(chat);
+            yield* nextWake(chat.threadId);
+            yield* nextPass(runner, chat.threadId);
+            return started;
+          }),
+        );
+        const logged = yield* lossWaves;
+        const latest = logged.at(-1);
+        assert.deepEqual(
+          logged.map(({ time, lost, running }) => ({ time, lost, running })),
+          [
+            { time: waves[1]!.time, lost: 8000, running: 0 },
+            { time: latest?.time, lost: 1, running: 0 },
+          ],
+        );
+        assert.equal(latest?.runs[0]?.taskId, started.taskId);
+      }),
+    );
+  });
+});
+
 /** Whether `pid` is still running once it has had a moment to end after being stopped. */
 const stillRunning = (pid: number) =>
   NodeChildProcess.execFileSync(
@@ -1032,42 +1147,64 @@ describe.runIf(isWindowsHost)("Windows only", () => {
   });
 
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
+    // Send returns once the command's own handler has the event. It takes it, so the command goes on,
+    // and C# 5, which Windows PowerShell compiles, has no newer syntax.
     const consoleApi = [
       "Add-Type -Namespace T3Test -Name Console -MemberDefinition '",
-      '[DllImport("kernel32.dll")] public static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint group);',
-      '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();',
-      '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);',
+      '[DllImport("kernel32.dll")] private static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint group);',
       "public delegate bool Handler(uint ctrlEvent);",
-      "private static readonly Handler ignoreBreak = ctrlEvent => ctrlEvent == 1;",
       '[DllImport("kernel32.dll")] private static extern bool SetConsoleCtrlHandler(Handler handler, bool add);',
-      "public static void IgnoreBreak() { SetConsoleCtrlHandler(ignoreBreak, true); }",
+      "private static readonly System.Threading.ManualResetEvent got = new System.Threading.ManualResetEvent(false);",
+      "private static uint wanted;",
+      "private static readonly Handler take = ctrlEvent => { if (ctrlEvent != wanted) return false; got.Set(); return true; };",
+      "public static bool Send(uint ctrlEvent) { wanted = ctrlEvent; return SetConsoleCtrlHandler(null, false) && SetConsoleCtrlHandler(take, true) && GenerateConsoleCtrlEvent(ctrlEvent, 0) && got.WaitOne(60000); }",
       "'",
     ].join("\n");
     it.effect.each([
-      ["Ctrl+C", "command-win-ctrl-c", "[void][T3Test.Console]::GenerateConsoleCtrlEvent(0, 0)"],
-      [
-        "Ctrl+Break",
-        "command-win-ctrl-break",
-        // Windows PowerShell breaks into its debugger on Ctrl+Break and waits there for input, so the
-        // command ignores it; every other process in its console still gets it.
-        "[T3Test.Console]::IgnoreBreak(); [void][T3Test.Console]::GenerateConsoleCtrlEvent(1, 0)",
-      ],
-      [
-        // As taskkill without /F does to a console program whose console has a window.
-        "a close message for its window, if it has one",
-        "command-win-close",
-        "$window = [T3Test.Console]::GetConsoleWindow(); if ($window -ne [IntPtr]::Zero) { [void][T3Test.Console]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }",
-      ],
+      ["Ctrl+C", "command-win-ctrl-c", 0],
+      ["Ctrl+Break", "command-win-ctrl-break", 1],
     ] as const)("records the exit status of a command whose console gets %s", ([, name, event]) =>
       Effect.gen(function* () {
         const chat = yield* liveChat(name);
         yield* withServer((runner) =>
           Effect.gen(function* () {
             const started = yield* runner.run(callerOf(chat.threadId), {
-              command: [consoleApi, event, "Start-Sleep 5", "exit 3"].join("\n"),
+              command: [
+                consoleApi,
+                `if (-not [T3Test.Console]::Send(${event})) { exit 90 }`,
+                "exit 3",
+              ].join("\n"),
             });
             yield* nextWake(chat.threadId);
-            assert.equal((yield* commandRow(started.taskId))?.status, "exited");
+            const row = yield* commandRow(started.taskId);
+            assert.equal(row?.status, "exited");
+            assert.equal(row?.exit_code, 3);
+          }),
+        );
+      }),
+    );
+
+    it.effect("records the exit status of a command whose console closes", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-win-console-closed");
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const started = yield* runner.run(callerOf(chat.threadId), {
+              // Its console's host is a child of cmd, the first process in that console.
+              command: [
+                '$cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId',
+                "$conhost = Get-CimInstance Win32_Process -Filter \"ParentProcessId=$cmd AND Name='conhost.exe'\"",
+                "if (-not $conhost) { exit 93 }",
+                "Stop-Process -Id $conhost.ProcessId -Force",
+                // Ends with its console; this only keeps a command that does not from hanging the test.
+                "Start-Sleep 60",
+                "exit 94",
+              ].join("\n"),
+            });
+            yield* nextWake(chat.threadId);
+            const row = yield* commandRow(started.taskId);
+            assert.equal(row?.status, "exited");
+            assert.notInclude([93, 94], row?.exit_code);
           }),
         );
       }),

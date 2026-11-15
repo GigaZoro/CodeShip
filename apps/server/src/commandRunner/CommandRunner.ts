@@ -17,7 +17,6 @@ import {
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { RotatingFileSink } from "@t3tools/shared/logging";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
@@ -68,10 +67,9 @@ const KILL_GRACE = Duration.seconds(5);
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
 /** More than half the running commands lost within this window is a wave, logged once. */
-const WAVE_WINDOW_MS = 60_000;
+const WAVE_WINDOW = Duration.minutes(1);
+/** Holds each wave for RETENTION, like the records it names; at most one wave starts a minute. */
 export const LOSS_LOG_FILE = "command-losses.ndjson";
-// A wave's entry is a few KB, so this keeps far more than the week a diagnosis looks back.
-const LOSS_LOG_MAX_BYTES = 1024 * 1024;
 const COMMAND_DRIVER = ProviderDriverKind.make("command");
 const TRIMMED_MARKER = "[CodeShip removed earlier output to keep this log small]\n";
 // Win32_ProcessStartup's Create_Unicode_Environment (without it the block is ANSI).
@@ -162,7 +160,28 @@ interface CommandRunRow {
  */
 type LostReason = "no-pid" | "gone" | "rebooted" | "pid-reused";
 
-const encodeLossLine = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+/** One line of the losses log: the commands lost together, and how many still ran. */
+const LossWave = Schema.fromJsonString(
+  Schema.Struct({
+    time: Schema.String,
+    lost: Schema.Number,
+    running: Schema.Number,
+    runs: Schema.Array(
+      Schema.Struct({
+        taskId: Schema.String,
+        threadId: Schema.String,
+        pid: Schema.NullOr(Schema.Number),
+        lostReason: Schema.NullOr(Schema.String),
+        probeError: Schema.NullOr(Schema.String),
+        startedAt: Schema.String,
+        lastAliveAt: Schema.NullOr(Schema.String),
+        endedAt: Schema.NullOr(Schema.String),
+      }),
+    ),
+  }),
+);
+const encodeLossWave = Schema.encodeEffect(LossWave);
+const decodeLossWave = Schema.decodeUnknownOption(LossWave);
 
 interface Loss {
   readonly lost_reason: LostReason;
@@ -583,25 +602,58 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.ignore({ log: true }));
   });
 
-  /** Losses within the last WAVE_WINDOW_MS, and whether they were logged as a wave. */
+  /** Losses within the last WAVE_WINDOW, and whether they were logged as a wave. */
   const recentLosses: Array<{ readonly at: number; readonly row: CommandRunRow }> = [];
   let waveLogged = false;
   const lossLogPath = path.join(logsDir, LOSS_LOG_FILE);
-  const lossLog = yield* Effect.try(
-    () =>
-      new RotatingFileSink({
-        filePath: lossLogPath,
-        maxBytes: LOSS_LOG_MAX_BYTES,
-        maxFiles: 1,
-        throwOnError: true,
-      }),
-  ).pipe(
-    Effect.catch(() =>
-      Effect.logWarning("command-runner.loss-log-unavailable", { filePath: lossLogPath }).pipe(
-        Effect.as(undefined),
-      ),
+
+  /** Each line of the losses log, with its wave when the line reads as one. */
+  const readLossLog = fs.readFileString(lossLogPath).pipe(
+    Effect.map((text) =>
+      text
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => ({ line, wave: Option.getOrUndefined(decodeLossWave(line)) })),
     ),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed([])),
   );
+
+  /**
+   * Losses an earlier server recorded within the window still count toward a wave, and a wave it
+   * logged is not logged again: one that holds any of them is the log's last, since the next
+   * starts only once the window is empty.
+   */
+  const resumeWave = Effect.gen(function* () {
+    const since = DateTime.formatIso(DateTime.subtractDuration(yield* DateTime.now, WAVE_WINDOW));
+    const earlier = yield* sql<CommandRunRow>`
+      SELECT * FROM command_runs WHERE status = 'lost' AND ended_at > ${since}
+    `;
+    for (const row of earlier) {
+      if (row.ended_at !== null) recentLosses.push({ at: Date.parse(row.ended_at), row });
+    }
+    if (earlier.length === 0) return;
+    const ids = new Set(earlier.map((row) => row.task_id));
+    const last = (yield* readLossLog).at(-1)?.wave;
+    waveLogged = last?.runs.some((run) => ids.has(run.taskId)) ?? false;
+  });
+
+  /**
+   * Adds a wave to the losses log and drops those from before `keepSince`. A line that does not
+   * read as a wave cannot be dated, so it stays. The log is replaced whole, so no line is torn.
+   */
+  const appendLossWave = Effect.fn("CommandRunner.appendLossWave")(function* (
+    wave: typeof LossWave.Type,
+    keepSince: string,
+  ) {
+    const line = yield* encodeLossWave(wave);
+    const kept = (yield* readLossLog).filter(
+      (entry) => entry.wave === undefined || entry.wave.time >= keepSince,
+    );
+    const temp = `${lossLogPath}.tmp`;
+    yield* fs.makeDirectory(logsDir, { recursive: true });
+    yield* fs.writeFileString(temp, [...kept.map((entry) => entry.line), line].join("\n") + "\n");
+    yield* fs.rename(temp, lossLogPath);
+  });
 
   /**
    * Ends a command gone without an exit status, keeping what shows how: its output before
@@ -629,37 +681,40 @@ const make = Effect.gen(function* () {
   /** More than half the running commands lost within a minute share a cause; logged once. */
   const noteWave = Effect.fn("CommandRunner.noteWave")(function* () {
     const now = yield* DateTime.now;
-    const cutoff = DateTime.toEpochMillis(now) - WAVE_WINDOW_MS;
+    const cutoff = DateTime.toEpochMillis(DateTime.subtractDuration(now, WAVE_WINDOW));
     recentLosses.splice(0, recentLosses.length, ...recentLosses.filter(({ at }) => at > cutoff));
     if (recentLosses.length === 0) waveLogged = false;
     const running = [...watched.values()].filter((row) => row.status === "running").length;
-    if (waveLogged || recentLosses.length < 2 || recentLosses.length <= running) return;
+    if (waveLogged || recentLosses.length <= running) return;
     waveLogged = true;
     yield* Effect.logWarning("command-runner.loss-wave", {
       lost: recentLosses.length,
       running,
       filePath: lossLogPath,
     });
-    if (lossLog === undefined) return;
-    const entry = {
-      time: DateTime.formatIso(now),
-      lost: recentLosses.length,
-      running,
-      runs: recentLosses.map(({ row }) => ({
-        taskId: row.task_id,
-        threadId: row.thread_id,
-        pid: row.pid,
-        lostReason: row.lost_reason,
-        probeError: row.probe_error,
-        startedAt: row.started_at,
-        lastAliveAt: row.last_alive_at,
-        endedAt: row.ended_at,
-      })),
-    };
-    yield* encodeLossLine(entry).pipe(
-      Effect.flatMap((line) => Effect.try(() => lossLog.write(`${line}\n`))),
-      Effect.catch(() =>
-        Effect.logWarning("command-runner.loss-log-write-failed", { filePath: lossLogPath }),
+    yield* appendLossWave(
+      {
+        time: DateTime.formatIso(now),
+        lost: recentLosses.length,
+        running,
+        runs: recentLosses.map(({ row }) => ({
+          taskId: row.task_id,
+          threadId: row.thread_id,
+          pid: row.pid,
+          lostReason: row.lost_reason,
+          probeError: row.probe_error,
+          startedAt: row.started_at,
+          lastAliveAt: row.last_alive_at,
+          endedAt: row.ended_at,
+        })),
+      },
+      DateTime.formatIso(DateTime.subtractDuration(now, RETENTION)),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("command-runner.loss-log-write-failed", {
+          filePath: lossLogPath,
+          cause,
+        }),
       ),
     );
   });
@@ -1261,6 +1316,12 @@ const make = Effect.gen(function* () {
    * which are lost.
    */
   const adopt = Effect.gen(function* () {
+    // Before adoptRow, whose losses are this server's own.
+    yield* resumeWave.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("command-runner.resume-wave-failed", { cause }),
+      ),
+    );
     const open = yield* projections.getOpenCommandTasks;
     const openById = new Map<string, ProjectionStore.ProjectionOpenCommandTask>(
       open.map((task) => [task.taskId, task]),
