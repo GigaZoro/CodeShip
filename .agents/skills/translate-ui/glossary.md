@@ -10,10 +10,11 @@ message passes only when every word in it is listed here.
 - Products and services: T3.CodeShip, CodeShip, T3, T3 Connect, T3 Chat, Codex, Claude, Claude Code, Cursor,
   Grok, OpenCode, Antigravity, Pi, Muse Code, ChatGPT, OpenAI, GitHub, GitLab, Bitbucket,
   Azure DevOps, Forgejo, git.cafe, Tailscale, 1Password, Clerk, Expo, ThreadPage, SnapShot,
-  Ultrathink, Google, Google Play, App Store, Bing, Brave Search, DuckDuckGo, Ecosia, Kagi.
+  Ultrathink, Google, Google Play, App Store, Bing, Brave Search, DuckDuckGo, Ecosia, Kagi,
+  Anthropic, OpenRouter, Zen.
 - Platforms and system features: Android, iOS, macOS, Mac mini, Linux, WSL, Windows, CarPlay,
   VoiceOver, Face ID, Sidecar, Live Activities, live activity, Liquid Glass, Material,
-  Material You, One UI, Bluetooth.
+  Material You, One UI, Bluetooth, PowerShell.
 - Technical terms: MCP, ACP, SSH, PR, CLI, API, URL, JSON, HTML, PDF, GPU, PID, UI, ID, OK, px,
   Trace ID, t3.json, Git, git, worktree, push, pull, raw, Markdown, webhook, cron, ghq, npm, `npx t3`,
   Conventional Commits, Auto, Enter, Esc, Tab, Ctrl-C, ⌘K. Model ids stay as written too.
@@ -62,6 +63,11 @@ message passes only when every word in it is listed here.
 | queue / queued                            | черга / у черзі                               |
 | plan / plan mode                          | план / режим планування                       |
 | terminal                                  | термінал                                      |
+| voice input / dictation                   | голосове введення / диктування                |
+| transcription / transcribe / transcript   | транскрипція / транскрибувати / транскрипт    |
+| speech model / on-device                  | модель мовлення / на пристрої                 |
+| screen reader                             | читач екрана                                  |
+| side question                             | побічне запитання                             |
 | settings                                  | налаштування                                  |
 | appearance                                | вигляд                                        |
 | keybindings                               | комбінації клавіш                             |
