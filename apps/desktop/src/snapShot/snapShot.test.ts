@@ -466,11 +466,10 @@ describe("toElectronAccelerator", () => {
 });
 
 describe("isWaylandSession", () => {
-  effectIt.effect(
+  effectIt.effect.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
     "falls back to a live runtime directory socket when session variables are stripped",
     () =>
       Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) !== "linux") return;
         yield* Effect.promise(async () => {
           const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
           const { createServer } = await import("node:net");

@@ -9,6 +9,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { PROJECT_FAVICON_EXTENSIONS, isProjectFaviconPath } from "@t3tools/shared/projectFavicon";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -364,10 +365,9 @@ function fakeSymlinkFinder(
 const listedPaths = (searchIndex: WorkspaceSearchIndex.WorkspaceSearchIndex["Service"]) =>
   searchIndex.list().pipe(Effect.map((result) => result.entries.map((entry) => entry.path)));
 
-it.effect("reads symlinks again after the watcher reports a change", () =>
+it.effect.skipIf(isWindowsHost)("reads symlinks again after the watcher reports a change", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) === "win32") return;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-symlink-watch-" });
@@ -405,10 +405,9 @@ it.effect("reads symlinks again after the watcher reports a change", () =>
   ).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("answers from the last symlink scan while a slow rescan runs", () =>
+it.effect.skipIf(isWindowsHost)("answers from the last symlink scan while a slow rescan runs", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) === "win32") return;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-symlink-stale-" });
@@ -443,38 +442,38 @@ it.effect("answers from the last symlink scan while a slow rescan runs", () =>
   ).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("keeps symlinks once the watcher subscribes after starting late", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) === "win32") return;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-symlink-watch-" });
-      yield* fileSystem.writeFileString(path.join(cwd, "a.ts"), "");
-      yield* fileSystem.symlink("a.ts", path.join(cwd, "link.ts"));
-      const { directorySearch } = fakeSymlinkFinder([], { watchFailures: 2 });
+it.effect.skipIf(isWindowsHost)(
+  "keeps symlinks once the watcher subscribes after starting late",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-symlink-watch-" });
+        yield* fileSystem.writeFileString(path.join(cwd, "a.ts"), "");
+        yield* fileSystem.symlink("a.ts", path.join(cwd, "link.ts"));
+        const { directorySearch } = fakeSymlinkFinder([], { watchFailures: 2 });
 
-      const searchIndex = yield* WorkspaceSearchIndex.make(cwd);
-      const scansAfterRound: number[] = [];
-      for (let round = 0; round < 5; round += 1) {
-        expect(yield* listedPaths(searchIndex)).toEqual(["link.ts"]);
-        expect(yield* listedPaths(searchIndex)).toEqual(["link.ts"]);
-        scansAfterRound.push(directorySearch.mock.calls.length);
-        yield* TestClock.adjust("1 minute");
-      }
+        const searchIndex = yield* WorkspaceSearchIndex.make(cwd);
+        const scansAfterRound: number[] = [];
+        for (let round = 0; round < 5; round += 1) {
+          expect(yield* listedPaths(searchIndex)).toEqual(["link.ts"]);
+          expect(yield* listedPaths(searchIndex)).toEqual(["link.ts"]);
+          scansAfterRound.push(directorySearch.mock.calls.length);
+          yield* TestClock.adjust("1 minute");
+        }
 
-      // An unwatched scan serves reads only briefly; the third has a watcher and is kept.
-      expect(scansAfterRound).toEqual([1, 2, 3, 3, 3]);
-    }),
-  ).pipe(Effect.provide(testLayer)),
+        // An unwatched scan serves reads only briefly; the third has a watcher and is kept.
+        expect(scansAfterRound).toEqual([1, 2, 3, 3, 3]);
+      }),
+    ).pipe(Effect.provide(testLayer)),
 );
 
-it.effect(
+it.effect.skipIf(isWindowsHost)(
   "lists a symlink the watcher indexed once, with the link's kind, and drops rejected ones",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) === "win32") return;
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-symlink-dupe-" });
@@ -513,10 +512,9 @@ it.effect(
     ).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("finds symlinks in folders past the first page of the index", () =>
+it.effect.skipIf(isWindowsHost)("finds symlinks in folders past the first page of the index", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) === "win32") return;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-symlink-pages-" });
