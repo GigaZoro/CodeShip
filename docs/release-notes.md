@@ -1,3 +1,7 @@
+## 2026-11-15 — A cancelled terminal open no longer leaves its shell running
+
+- When opening a terminal was cancelled just as its shell started, for example because the app disconnected, the shell could keep running with no terminal to reach it. It now always belongs to its terminal, which shows its output and can stop it.
+
 ## 2026-11-15 — Claude accounts show their banked resets
 
 - **Usage → Limits** now shows how many banked resets a Claude account has and when the next one expires, and **Use reset** uses the one that expires first. Agents' `usage` lists each reset: its kind (5-hour, weekly, full or Fable), how many are left, when it expires, whether it can be used now or only at a limit, and whether it is paused, plus whether Claude offers the account its weekly 5-hour reset and when that is next available. CodeShip asks Claude's own `/limit-reset` in a hidden terminal, on macOS too, at most every six hours and again when the account reaches a limit, and asking never uses a reset.
