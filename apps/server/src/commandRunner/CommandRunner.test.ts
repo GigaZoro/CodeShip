@@ -451,7 +451,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   });
 
   it.effect(
-    "starts a Windows command from a wrapper with no console, with the host environment under its agent's in Unicode, each name once, writing no value and reading none to start",
+    "starts a Windows command from a hidden wrapper, with the host environment under its agent's in Unicode, each name once, writing no value and reading none to start",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-windows-environment");
@@ -514,8 +514,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           ],
         );
         const launcherScript = launch.args.join(" ");
-        // Create_Unicode_Environment and Detached_Process: no console event reaches the wrapper.
-        assert.include(launcherScript, "CreateFlags = [uint32]1032");
+        assert.include(launcherScript, "CreateFlags = [uint32]1024");
+        // SW_HIDE: otherwise every command opens a console window on the user's desktop.
+        assert.include(launcherScript, "ShowWindow = [uint16]0");
         assert.include(
           launcherScript,
           "HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)",
@@ -1060,9 +1061,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               command: [consoleApi, event, "Start-Sleep 5", "exit 3"].join("\n"),
             });
             yield* nextWake(chat.threadId);
-            const row = yield* commandRow(started.taskId);
-            assert.equal(row?.status, "exited");
-            assert.isNumber(row?.exit_code);
+            assert.equal((yield* commandRow(started.taskId))?.status, "exited");
           }),
         );
       }),

@@ -310,8 +310,8 @@ is also a scope outside the service's cgroup (`AgentScope` with `survivesRestart
 Windows through `Win32_Process.Create`, outside the server's job. Neither the desktop app, the
 launcher nor the service manager reaches it. A wrapper writes its output to a capped log under
 the state directory and its exit status to a file it renames into place, so a reader never sees
-half a status. On Windows the wrapper has no console, so a console event the command gets
-(Ctrl+C, or its console closing) cannot end it first. The command is an app-owned task on its
+half a status. On Windows the command runs in a console apart from its wrapper's, so a console event the command
+gets (Ctrl+C, or its console closing) cannot end the wrapper first. The command is an app-owned task on its
 thread, recorded like a delegated task, with a `command_runs` row holding its pid and that process's start time. Startup adopts every
 row not yet delivered: a status file means it ended; a live pid with the same start time is
 watched again, and a pid whose check fails for a reason other than "no such process" is checked
