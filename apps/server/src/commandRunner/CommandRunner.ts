@@ -707,16 +707,16 @@ const make = Effect.gen(function* () {
         });
         yield* settle({ ...row, probe_error: probe.code });
       }
-      return;
-    }
-    // Written once a wall-clock minute, for the next server; a loss writes the exact time.
-    const seen: CommandRunRow = { ...row, last_alive_at: yield* nowIso };
-    const minuteOf = (at: string | null) =>
-      at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
-    if (minuteOf(row.last_alive_at) === minuteOf(seen.last_alive_at)) {
-      watched.set(row.task_id, seen);
     } else {
-      yield* settle(seen);
+      // Written once a wall-clock minute, for the next server; a loss writes the exact time.
+      const seen: CommandRunRow = { ...row, last_alive_at: yield* nowIso };
+      const minuteOf = (at: string | null) =>
+        at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
+      if (minuteOf(row.last_alive_at) === minuteOf(seen.last_alive_at)) {
+        watched.set(row.task_id, seen);
+      } else {
+        yield* settle(seen);
+      }
     }
     if (!windows) yield* trimLog(row);
   });
