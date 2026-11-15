@@ -1667,6 +1667,8 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
   ] as const)("reads %s from the home directory", ([launchArgs, assertOptions]) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      // A --settings Claude Code rejects is left out, so only Claude's own engine can judge it.
+      yield* useRealResolver();
       const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-home-" });
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-home-cwd-" });
       yield* fileSystem.makeDirectory(NodePath.join(home, ".claude"));

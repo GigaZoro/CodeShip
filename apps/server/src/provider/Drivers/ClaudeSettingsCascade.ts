@@ -11,6 +11,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Claude Code's ownership and real-path checks need lstat and the native realpath, which FileSystem lacks.
 import * as NodeFSP from "node:fs/promises";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -22,6 +23,9 @@ import {
 import { claudeConfigDirOf, runClaudeWorker } from "./ClaudeWorker.ts";
 
 type ClaudeLaunchArgs = Partial<Pick<ClaudeSettings, "launchArgs">> | undefined;
+
+// The Claude CLI takes the next token as this flag's value even when it starts with `--`.
+export const claudeLaunchArgParseOptions = { valueFlags: ["append-system-prompt"] };
 
 export class ClaudeSettingsLaunchArgError extends Schema.TaggedError<ClaudeSettingsLaunchArgError>()(
   "ClaudeSettingsLaunchArgError",
@@ -60,8 +64,9 @@ const decodeClaudeSettingsObject = Schema.decodeUnknownEffect(
 
 /**
  * Reads the --settings launch argument: a value starting with a brace is inline
- * JSON, anything else is a file path relative to the cwd. makeClaudeQueryOptions
- * merges the result beneath T3's own settings.
+ * JSON, anything else is a file path that expands a leading ~ and is otherwise
+ * relative to the thread's cwd (the project or its worktree).
+ * makeClaudeQueryOptions merges the result beneath T3's own settings.
  */
 export const readClaudeLaunchArgSettings = Effect.fn("ClaudeAdapterV2.readLaunchArgSettings")(
   function* (input: {
@@ -71,7 +76,8 @@ export const readClaudeLaunchArgSettings = Effect.fn("ClaudeAdapterV2.readLaunch
     readonly path: Path.Path;
   }) {
     if (input.settings === undefined) return undefined;
-    const value = parseCliArgs(input.settings.launchArgs ?? "").flags.settings;
+    const value = parseCliArgs(input.settings.launchArgs ?? "", claudeLaunchArgParseOptions).flags
+      .settings;
     if (value === undefined) return undefined;
     const trimmed = value?.trim() ?? "";
     if (trimmed.length === 0) return yield* new ClaudeSettingsLaunchArgError({});
@@ -82,7 +88,10 @@ export const readClaudeLaunchArgSettings = Effect.fn("ClaudeAdapterV2.readLaunch
         Effect.mapError((cause) => new ClaudeSettingsLaunchArgError({ cause })),
       )) as ClaudeSdkSettings;
     }
-    const filePath = input.path.resolve(input.cwd ?? ".", trimmed);
+    const filePath = input.path.resolve(
+      input.cwd ?? ".",
+      expandHomePath(trimmed, yield* HostProcess.HomeDirectory),
+    );
     return (yield* input.fileSystem.readFileString(filePath).pipe(
       Effect.flatMap(decodeClaudeSettingsObject),
       Effect.mapError((cause) => new ClaudeSettingsLaunchArgError({ path: filePath, cause })),

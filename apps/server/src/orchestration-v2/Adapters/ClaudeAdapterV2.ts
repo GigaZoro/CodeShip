@@ -183,6 +183,7 @@ import {
   readClaudeSettingsEnv,
 } from "../../provider/Drivers/ClaudeSkills.ts";
 import {
+  claudeLaunchArgParseOptions,
   claudeProjectConfigRoot,
   claudeSdkShapedSettings,
   claudeSettingSources,
@@ -380,8 +381,6 @@ function mergeClaudeStreamUsage(
   };
 }
 export const CLAUDE_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CLAUDE_PROVIDER);
-// The Claude CLI takes the next token as this flag's value even when it starts with `--`.
-const claudeLaunchArgParseOptions = { valueFlags: ["append-system-prompt"] };
 
 const CLAUDE_SCRIPT_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx"];
 // The SDK has no control-request deadline; the CLI waits up to 30 s per MCP server.
