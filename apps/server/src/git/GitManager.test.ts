@@ -1008,8 +1008,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         },
       ];
       const gate = {
-        matches: (args: ReadonlyArray<string>) =>
-          args[0] === "for-each-ref" && args.at(-1) === "refs/heads/feature/racing-upstream",
+        matches: (args: ReadonlyArray<string>) => args.join(" ") === "config --list -z",
         reached: yield* Deferred.make<void>(),
         release: yield* Deferred.make<void>(),
       };
@@ -1739,24 +1738,32 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect("one branch PR lookup reads the remotes and each config key once", () =>
+  // Each git spawn blocks a Windows server's event loop for ~130 ms, so a sweep over many
+  // worktrees must read what they share (configuration, remotes, refs) once per repository.
+  it.effect("branch PR lookups of a repository's worktrees share one read of its git state", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
       const remoteDir = yield* createBareRemote();
       yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
-      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
-      yield* runGit(repoDir, ["checkout", "-b", "feature/local-only"]);
+      const worktrees: Array<{ readonly cwd: string; readonly branch: string }> = [];
+      for (const name of ["a", "b", "c"]) {
+        const branch = `feature/shared-read-${name}`;
+        const cwd = NodePath.join(yield* makeTempDir("t3code-git-manager-wt-"), name);
+        yield* runGit(repoDir, ["worktree", "add", "-b", branch, cwd]);
+        yield* runGit(cwd, ["push", "-u", "origin", branch]);
+        worktrees.push({ cwd, branch });
+      }
       const gitCommands: string[] = [];
       const { manager } = yield* makeManager({ gitCommands });
 
-      yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature/local-only" });
+      for (const worktree of worktrees) yield* manager.branchPullRequest(worktree);
 
-      const startsWith = (prefix: string) =>
-        gitCommands.filter((command) => command.startsWith(prefix));
-      const configReads = startsWith("config --get ");
-      expect(startsWith("remote")).toHaveLength(1);
-      expect(configReads).toEqual([...new Set(configReads)]);
+      expect({
+        configReads: gitCommands.filter((command) => command.startsWith("config --get")),
+        remoteListings: gitCommands.filter((command) => command === "remote"),
+        snapshotReads: gitCommands.filter((command) => command === "config --list -z"),
+      }).toEqual({ configReads: [], remoteListings: [], snapshotReads: ["config --list -z"] });
     }),
   );
 

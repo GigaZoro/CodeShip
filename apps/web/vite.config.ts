@@ -97,8 +97,10 @@ const unitTestProject = {
   },
 } satisfies TestProjectInlineConfiguration;
 
-// Hash checkout paths to ports 61000-64999; Vitest's fixed port collides under inherited strictPort.
-const browserTestApiPort = 61_000 + ((Hash.string(import.meta.dirname) >>> 0) % 4_000);
+// Hash checkout paths to ports 20000-31999; Vitest's fixed port collides under inherited strictPort.
+// Below every OS's ephemeral range: Windows reserves blocks inside 49152+ (listen EACCES) that a
+// hashed port in that range can land in, and Linux hands out 32768+.
+const browserTestApiPort = 20_000 + ((Hash.string(import.meta.dirname) >>> 0) % 12_000);
 
 const browserTestProject = {
   extends: true,

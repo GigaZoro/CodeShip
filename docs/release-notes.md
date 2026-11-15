@@ -1,3 +1,9 @@
+## 2026-11-16 — The server stays responsive while it looks up pull requests on Windows
+
+- On Windows, every git process the server started froze it for about 130 ms, and the pull request lookups of a sweep started about 14 per thread. With many threads the server stalled for minutes: git commands timed out at 30 s, and Machine health runs and scheduled runs failed to register MCP or prepare their worktrees. The lookups now read a repository's configuration and refs once, with two git processes shared by all of its threads and worktrees, instead of per thread.
+- `check:changed` no longer fails on Windows with `listen EACCES` when a checkout's web browser test port falls inside a block the system reserves; the port now comes from a range below the system's own.
+- A pull request refresh still sees a branch pushed a moment ago, and an action that acts on the answer (settling a thread, removing a worktree) still reads git fresh.
+
 ## 2026-11-16 — A finished run no longer goes back to waiting and blocks its queue
 
 - When a delegated task or command finished just after its parent's run completed, the parent could go back to waiting and lose its checkpoint, and the next queued message did not start until CodeShip restarted. A task result now changes only the parent's task bookkeeping, and the server refuses any write that would put a finished run back to an earlier state or drop its checkpoint. Checkpoint capture, a provider's final events and shutdown recovery now each read a run and write it while holding the thread, so none of them can write a state another change has already replaced.
