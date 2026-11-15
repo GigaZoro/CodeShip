@@ -222,8 +222,21 @@ const makeBoxThread = Effect.gen(function* () {
   } satisfies BoxThread;
 });
 
-/** The box's projects: more than a page, with this repository's last. */
+const boxScratchProject = ProjectId.make("project:box-scratch");
+
+/** The box's projects: its No project, more than a page of others, and this repository's last. */
 const boxProjects: ReadonlyArray<Project> = [
+  {
+    id: boxScratchProject,
+    title: "No project",
+    workspaceRoot: "/srv/scratch",
+    repositoryIdentity: null,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    deletedAt: null,
+  },
   ...Array.from({ length: 120 }, (_, index) => ({
     id: ProjectId.make(`project:box-other-${index}`),
     title: `other ${index}`,
@@ -255,10 +268,9 @@ const boxProjects: ReadonlyArray<Project> = [
   },
 ];
 
-const boxScratchProject = ProjectId.make("project:box-scratch");
-
 /** The box's own accounts: its codex instance is not named like the laptop's. */
 const boxCodex = ProviderInstanceId.make("codex_box");
+const boxClaude = ProviderInstanceId.make("claudeAgent_box");
 const readyProvider = {
   enabled: true,
   installed: true,
@@ -269,11 +281,7 @@ const readyProvider = {
 };
 const boxProviders = [
   { ...readyProvider, instanceId: boxCodex, driver },
-  {
-    ...readyProvider,
-    instanceId: ProviderInstanceId.make("claudeAgent_box"),
-    driver: ProviderDriverKind.make("claudeAgent"),
-  },
+  { ...readyProvider, instanceId: boxClaude, driver: ProviderDriverKind.make("claudeAgent") },
 ] as unknown as ReadonlyArray<ServerProvider>;
 
 const serveBox = (thread: BoxThread) => {
@@ -787,23 +795,6 @@ const mcpClient = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-
-/** The box's only provider: a Claude instance, under its own id. */
-const boxClaude: ServerProvider = {
-  instanceId: ProviderInstanceId.make("claude-box"),
-  driver: ProviderDriverKind.make("claudeAgent"),
-  enabled: true,
-  installed: true,
-  version: "test",
-  status: "ready",
-  auth: { status: "authenticated" },
-  checkedAt: "2026-09-13T00:00:00.000Z",
-  models: [
-    { slug: "claude-sonnet-4-6", name: "Claude Sonnet", isCustom: false, capabilities: null },
-  ],
-  slashCommands: [],
-  skills: [],
-};
 
 const adapter = {
   instanceId,
@@ -1910,12 +1901,24 @@ it.effect.each(["tail-error", "middle-error", "reply-fallback", "cancel-refill"]
               result,
             });
           }
-          const pages = reads.filter((read) => read.itemId === undefined);
-          expect(pages.map((read) => read.afterPosition)).toEqual([undefined, 99, 199, 299]);
-          expect(pages.map((read) => read.maxCharsPerItem)).toEqual([undefined, 1, 1, undefined]);
+          // Scan pages name their view; the status read delegate_task makes does not.
+          const pages = reads.filter((read) => read.view !== undefined);
+          // The result budget ends a whole page at 11 history items and a truncated one near 72,
+          // so the last 3 items after the truncated pages fit one whole page and the last 55 do not.
+          expect(pages.map((read) => read.afterPosition)).toEqual(
+            middle ? [undefined, 10, 82, 154, 225, 296] : [undefined, 10, 82, 154, 226, 298],
+          );
+          expect(pages.map((read) => read.maxCharsPerItem)).toEqual([
+            20_000,
+            1,
+            1,
+            1,
+            1,
+            middle ? 1 : 20_000,
+          ]);
           const refills = reads.filter((read) => read.itemId !== undefined);
           expect(refills[0]).toMatchObject({ itemId: "selected", textOffset: middle ? 1 : 20_000 });
-          if (scenario !== "cancel-refill") expect(refills).toHaveLength(middle ? 2 : 1);
+          if (scenario !== "cancel-refill") expect(refills).toHaveLength(middle ? 3 : 2);
         }),
       ).pipe(
         Effect.provide(NodeHttpServer.layerTest),
@@ -2031,28 +2034,31 @@ it.effect.each([
             result,
           });
         }
-        const pages = reads.filter((read) => read.itemId === undefined);
+        // Scan pages name their view; the status read delegate_task makes does not.
+        const pages = reads.filter((read) => read.view !== undefined);
+        // The result budget ends a page of history at about 70 items, and the tail read in
+        // "growing" after 69 of the 102 items past position 299.
         const positions =
           scenario === "cancelled" || scenario === "interrupted"
-            ? [undefined, 99, 199, 299]
+            ? [undefined, 69, 139, 209, 279]
             : scenario === "later-run"
-              ? [undefined, 299, 99, 199, 299]
+              ? [undefined, 299, 69, 139, 209, 279, 348]
               : scenario === "shrinking"
-                ? [undefined, 299, 99]
+                ? [undefined, 299, 69, 139]
                 : scenario === "growing"
-                  ? [undefined, 299, 99, 199, 299, 399]
+                  ? [undefined, 299, 368]
                   : [undefined, 299];
         expect(pages.map((read) => read.afterPosition)).toEqual(positions);
         expect(
           pages.every(
             (read) =>
-              read.view === "messages" && read.limit === 100 && read.maxCharsPerItem === undefined,
+              read.view === "messages" && read.limit === 100 && read.maxCharsPerItem === 20_000,
           ),
         ).toBe(true);
         const refills = reads.filter((read) => read.itemId !== undefined);
-        expect(refills).toHaveLength(scenario === "long" ? 2 : 0);
-        if (scenario === "long")
-          expect(refills.map((read) => read.textOffset)).toEqual([20_000, 70_000]);
+        expect(refills.map((read) => read.textOffset)).toEqual(
+          scenario === "long" ? [20_000, 40_000, 60_000, 80_000] : [],
+        );
       }),
     ).pipe(
       Effect.provide(NodeHttpServer.layerTest),
@@ -3104,9 +3110,7 @@ it.effect("a task naming another driver there never runs its model on the parent
         },
       });
       expect(result.isError).toBe(false);
-      expect((yield* Ref.get(thread.launchedWith))?.modelSelection.instanceId).toBe(
-        boxClaude.instanceId,
-      );
+      expect((yield* Ref.get(thread.launchedWith))?.modelSelection.instanceId).toBe(boxClaude);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

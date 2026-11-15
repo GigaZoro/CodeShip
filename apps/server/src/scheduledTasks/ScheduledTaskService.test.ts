@@ -1672,6 +1672,7 @@ const withRunConditions = <A, E>(
           ServerSettings.layerTest(),
           memory,
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            isNonGitProject: () => Effect.succeed(false),
             launch: (input) =>
               Queue.offer(launches, input).pipe(
                 Effect.as({
@@ -2776,7 +2777,9 @@ it.effect(
               ManagedPolicy.layerTest(),
               ServerSettings.layerTest(),
               MemoryAdmission.layerTest(),
-              Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+              Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+                isNonGitProject: () => Effect.succeed(false),
+              }),
               Layer.mock(ThreadManagementService.ThreadManagementService)({
                 getThreadShell: (threadId) =>
                   Effect.succeed({ deletedAt: null, folder: folders.get(threadId) } as never),
@@ -2881,6 +2884,7 @@ it.effect("a group change during a launch moves the chat it starts", () =>
           ServerSettings.layerTest(),
           MemoryAdmission.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            isNonGitProject: () => Effect.succeed(false),
             launch: (input) =>
               Effect.flatten(Ref.get(duringLaunch)).pipe(
                 Effect.andThen(Effect.sync(() => folders.set("thread:new", input.folder))),
@@ -2943,7 +2947,9 @@ it.effect(
               ManagedPolicy.layerTest(),
               ServerSettings.layerTest(),
               MemoryAdmission.layerTest(),
-              Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+              Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+                isNonGitProject: () => Effect.succeed(false),
+              }),
               Layer.mock(ThreadManagementService.ThreadManagementService)({
                 getMessageCount: () => Effect.succeed(1),
                 // The user moved the chat out of the task's group before the restart.
@@ -3075,6 +3081,7 @@ it.effect(
               MemoryAdmission.layerTest(),
               // The prompt landed, and the launch is still finishing when the server stops.
               Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+                isNonGitProject: () => Effect.succeed(false),
                 launch: (input) =>
                   Deferred.succeed(launched, input.threadId).pipe(Effect.andThen(Effect.never)),
               }),

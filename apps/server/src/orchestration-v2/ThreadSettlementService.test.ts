@@ -1480,7 +1480,10 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* markDelivery("child-delivered");
           yield* service.drain;
 
-          expect(yield* Ref.get(fixture.candidateReads)).toEqual([undefined, undefined, undefined]);
+          // Three full sweeps, each on the background readers.
+          expect(yield* Ref.get(fixture.candidateReads)).toEqual(
+            Array.from({ length: 3 }, () => ({ threadId: undefined, background: true })),
+          );
           expect((yield* Ref.get(fixture.commands)).map((command) => command.threadId)).toEqual([
             child.id,
           ]);
@@ -1910,7 +1913,8 @@ describe("ThreadSettlementServiceV2 worker", () => {
         const fixture = yield* makeHarness({
           snapshot: makeSnapshot([thread]),
           settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleOpensPullRequests: false },
-          existingWorktreePaths: ["/worktrees/feature"],
+          // Branch lookups run in the worktree only while it has .git.
+          existingWorktreePaths: ["/worktrees/feature", "/worktrees/feature/.git"],
           unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
           branchPullRequest: (_input, lookupOptions) =>
             Effect.sync(() => lookups.push(lookupOptions)).pipe(
@@ -1936,7 +1940,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
           // The settling lookup and the unmerged-work check read fresh git state before acting.
           expect(lookups).toEqual([
-            { refresh: false },
+            { refresh: false, confirmTerminal: false },
             { freshGitState: true },
             { freshGitState: true },
           ]);

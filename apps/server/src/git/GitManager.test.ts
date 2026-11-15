@@ -53,6 +53,7 @@ import {
 } from "@t3tools/provider-core/server/textGenerationOperations";
 import * as WorkerProcessSpawner from "../process/WorkerProcessSpawner.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as CheckoutCloner from "../vcs/CheckoutCloner.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "../vcs/VcsProjectConfig.ts";
@@ -695,10 +696,12 @@ function makeManager(input?: {
         }),
       ).pipe(Layer.provide(WorkerProcessSpawner.layer))
     : WorkerProcessSpawner.layer;
-  const gitVcsDriver = input?.gitConfigReads
-    ? Layer.effect(
-        GitVcsDriver.GitVcsDriver,
-        GitVcsDriver.make.pipe(
+  // `GitVcsDriver.layer` brings its own worker spawner; build from `make` so git starts through
+  // the spawner above, which records and gates its commands.
+  const gitVcsDriver = Layer.effect(
+    GitVcsDriver.GitVcsDriver,
+    input?.gitConfigReads
+      ? GitVcsDriver.make.pipe(
           Effect.map((service) =>
             GitVcsDriver.GitVcsDriver.of({
               ...service,
@@ -708,9 +711,9 @@ function makeManager(input?: {
                 ),
             }),
           ),
-        ),
-      )
-    : GitVcsDriver.layer;
+        )
+      : GitVcsDriver.make,
+  ).pipe(Layer.provide(CheckoutCloner.layer));
   const layerVcsDriver = (watchesGitSpawns ? Layer.fresh(gitVcsDriver) : gitVcsDriver).pipe(
     Layer.provide(layerGitDriverSpawner),
     Layer.provideMerge(VcsProcess.layer),
@@ -1876,12 +1879,13 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         gitCommands,
         providerScenario: { prListSequence: [[merged], [merged]] },
       });
+      // Background sweeps skip the settled-PR confirmation, as they confirm before acting.
       const gitCommandsDuring = (options?: { readonly freshGitState: true }) =>
         Effect.gen(function* () {
           const before = gitCommands.length;
           const pullRequest = yield* manager.branchPullRequest(
             { cwd: repoDir, branch: "feature/merged-lookup" },
-            options,
+            { confirmTerminal: false, ...options },
           );
           expect(pullRequest?.state).toBe("merged");
           return gitCommands.length - before;
@@ -3086,6 +3090,13 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
                         }),
                         { stderr: "HTTP/1.1 200 OK" },
                       );
+                    // A remembered match is read again before it is returned.
+                    const single = /^\/api\/v1\/repos\/acme\/web\/pulls\/(\d+)$/.exec(url.pathname);
+                    if (single !== null)
+                      return output(
+                        JSON.stringify(pulls.find((pull) => pull.number === Number(single[1]))),
+                        { stderr: "HTTP/1.1 200 OK" },
+                      );
                     expect(url.pathname).toBe("/api/v1/repos/acme/web/pulls");
                     paths.push(url.pathname + url.search);
                     const page = Number(url.searchParams.get("page"));
@@ -3100,15 +3111,24 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       );
       const { manager } = yield* makeManager({ sourceControlProvider: sourceControl });
       expect(yield* manager.branchPullRequest({ cwd: repoDir, branch: "missing" })).toBeNull();
+      // #71 and #72 were updated at the same time; the newer pull request wins.
       expect(yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature" })).toMatchObject({
-        number: 71,
+        number: 72,
         state: "open",
         baseRef: "release/arbitrary",
       });
-      expect(paths).toHaveLength(4);
-      pulls[70] = { ...pulls[70]!, state: "closed", merged: true };
-      pulls[71] = { ...pulls[71]!, state: "closed", merged: true };
-      pulls.push({ ...pulls[70]!, number: 76, state: "open", merged: false });
+      // The ignored `head=` probe doubles as the first page of the one scan both branches share.
+      expect(paths).toEqual([
+        "/api/v1/repos/acme/web/pulls?state=all&head=missing&sort=recentupdate&limit=50&page=1",
+        "/api/v1/repos/acme/web/pulls?state=all&sort=recentupdate&limit=50&page=2",
+        "/api/v1/repos/acme/web/pulls?state=all&sort=recentupdate&limit=50&page=3",
+      ]);
+      // Closing or opening a pull request bumps its update time, which moves it to the list's front.
+      const updated_at = "2026-10-26T00:00:00Z";
+      const merged = pulls
+        .splice(70, 2)
+        .map((pull) => ({ ...pull, state: "closed", merged: true, updated_at }));
+      pulls.unshift({ ...merged[0]!, number: 76, state: "open", merged: false }, ...merged);
       expect(
         yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature" }, { refresh: true }),
       ).toMatchObject({ number: 76, state: "open" });
