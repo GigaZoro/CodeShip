@@ -1023,6 +1023,8 @@ export type OrchestratorMcpListScheduledTasksInput =
 
 export const OrchestratorMcpListScheduledTasksResult = Schema.Struct({
   tasks: Schema.Array(OrchestratorMcpScheduledTask),
+  /** The machine's `SCHEDULED_TASK_CLAIM_PROTOCOL`; absent from versions before it. */
+  claimProtocol: Schema.optional(Schema.Int),
 });
 export type OrchestratorMcpListScheduledTasksResult =
   typeof OrchestratorMcpListScheduledTasksResult.Type;

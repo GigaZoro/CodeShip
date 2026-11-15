@@ -72,6 +72,7 @@ import {
   ProviderRequestKind,
   type RuntimeMode,
   MAX_SCHEDULED_TASK_CHANGED_BY_CLIENT_LENGTH,
+  SCHEDULED_TASK_CLAIM_PROTOCOL,
   type ScheduledTask,
   ScheduledTaskId,
   type ScheduledTaskProjectMachineOrder,
@@ -2796,6 +2797,7 @@ const make = Effect.gen(function* () {
                 task,
               ),
           ),
+          claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
         };
       },
     ),

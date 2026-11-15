@@ -114,6 +114,11 @@ function skipReasonText(
         "{machine} couldn't reach enough of the other machines to make sure no other machine would run it, so it didn't run it.",
         { machine },
       );
+    case "other_version":
+      return t(
+        "{machine} left it to {other}, which runs another version of T3.CodeShip: on different versions both could run it. Update T3.CodeShip on both machines.",
+        { machine, other: run.ranOn === null ? t("another machine") : machineLabel(run.ranOn) },
+      );
     case "usage_limited":
       return usageLimitSkipText(run.usageLimit, formatTime);
     case "memory":

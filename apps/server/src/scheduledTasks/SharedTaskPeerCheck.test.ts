@@ -1,5 +1,10 @@
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, OrchestratorMcpFailure, ScheduledTaskId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  OrchestratorMcpFailure,
+  SCHEDULED_TASK_CLAIM_PROTOCOL,
+  ScheduledTaskId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -112,7 +117,10 @@ const claim = (
 const peerTask =
   (lastRun: unknown, fields: Record<string, unknown> = {}) =>
   () =>
-    Effect.succeed({ tasks: [{ scheduledTaskId: TASK, lastRun, ...fields }] });
+    Effect.succeed({
+      tasks: [{ scheduledTaskId: TASK, lastRun, ...fields }],
+      claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+    });
 
 const EARLIER_RUN = { at: "2026-09-09T10:00:00.000Z", outcome: "completed" };
 
@@ -413,15 +421,24 @@ it.effect.each([
   {
     name: "the task is not there",
     input: {
-      answer: () => Effect.succeed({ tasks: [{ scheduledTaskId: "another-task", extra: 1 }] }),
+      answer: () =>
+        Effect.succeed({
+          tasks: [{ scheduledTaskId: "another-task", extra: 1 }],
+          claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
+        }),
     },
+    reason: "It does not have this task yet.",
+  },
+  {
+    name: "the task is not there on a machine before claim protocols",
+    input: { answer: () => Effect.succeed({ tasks: [{ scheduledTaskId: "another-task" }] }) },
     reason: "It does not have this task yet.",
   },
   {
     name: "it lists a task this version cannot tell the id of",
     input: { answer: () => Effect.succeed({ tasks: [{ id: TASK }] }) },
     reason: MISMATCH,
-    unreadable: true,
+    otherVersion: true,
   },
   {
     name: "the client cannot read its answer",
@@ -430,34 +447,57 @@ it.effect.each([
         Effect.fail(new OrchestratorMcpFailure({ code: "version_mismatch", message: MISMATCH })),
     },
     reason: MISMATCH,
-    unreadable: true,
+    otherVersion: true,
   },
   {
     name: "it predates lastRun",
     input: { answer: () => Effect.succeed({ tasks: [{ scheduledTaskId: TASK }] }) },
     reason: MISMATCH,
-    unreadable: true,
+    otherVersion: true,
   },
   {
     name: "its answer is not a list of tasks",
     input: { answer: () => Effect.succeed({ tasks: null }) },
     reason: MISMATCH,
-    unreadable: true,
+    otherVersion: true,
   },
   {
     name: "its answer about the task does not decode",
     input: { answer: peerTask({ at: OCCURRENCE, outcome: "paused" }) },
     reason: MISMATCH,
-    unreadable: true,
+    otherVersion: true,
   },
-])("a peer is unchecked when $name", ({ input, reason, unreadable }) =>
+])("a peer is unchecked when $name", ({ input, reason, otherVersion }) =>
   check(input).pipe(
     Effect.map((result) => {
       expect(result.ranOn).toBeNull();
       expect(result.unchecked).toEqual([{ environmentId: PEER, reason }]);
-      expect(result.unreadable).toEqual(unreadable === true ? [PEER] : []);
+      expect(result.otherVersion).toEqual(otherVersion === true ? [PEER] : []);
     }),
   ),
+);
+
+// Machines on different claim protocols can each decide an occurrence is theirs, so the asker
+// learns of one whether or not it has the occurrence.
+it.effect.each([
+  { name: "the same protocol", claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL, other: false },
+  { name: "a newer protocol", claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL + 1, other: true },
+  { name: "no protocol, as before there was one", claimProtocol: undefined, other: true },
+])("a peer that answers on $name is reported as on another version or not", (row) =>
+  Effect.gen(function* () {
+    const answer = (lastRun: unknown) => () =>
+      Effect.succeed({
+        tasks: [{ scheduledTaskId: TASK, lastRun }],
+        ...(row.claimProtocol === undefined ? {} : { claimProtocol: row.claimProtocol }),
+      });
+    const ran = yield* check({ answer: answer({ at: OCCURRENCE, outcome: "completed" }) });
+    expect(ran.ranOn).toBe(PEER);
+    expect(ran.otherVersion).toEqual(row.other ? [PEER] : []);
+    const idle = yield* check({ answer: answer(null) });
+    expect(idle.ranOn).toBeNull();
+    expect(idle.unchecked).toEqual([]);
+    expect(idle.otherVersion).toEqual(row.other ? [PEER] : []);
+  }),
 );
 
 it.effect.each([

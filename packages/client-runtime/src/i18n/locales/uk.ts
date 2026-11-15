@@ -1377,6 +1377,10 @@ const catalog: MessageCatalog = {
     "{machine} не в мережі. Її MCP-сервери з’являться після повторного підключення.",
   "{machine} is on a version that cannot hold these settings. Update it.":
     "{machine} має версію, яка не може зберігати ці налаштування. Оновіть її.",
+  "{machine} leaves its runs to {other}, which runs another version of T3.CodeShip. Update T3.CodeShip on both machines.":
+    "{machine} залишає запуски для {other}, де працює інша версія T3.CodeShip. Оновіть T3.CodeShip на обох комп’ютерах.",
+  "{machine} left it to {other}, which runs another version of T3.CodeShip: on different versions both could run it. Update T3.CodeShip on both machines.":
+    "{machine} залишив його для {other}, де працює інша версія T3.CodeShip: на різних версіях його могли б запустити обидва. Оновіть T3.CodeShip на обох комп’ютерах.",
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it last, at {time}": "Востаннє запущено на {machine} о {time}",
   "{machine} ran it.": "Його виконав {machine}.",
@@ -2344,6 +2348,7 @@ const catalog: MessageCatalog = {
     "Інший запис робочого стола використовує ім’я помічника захоплення. Перейменуйте його, перш ніж продовжити.",
   "Another device saved newer shared appearance and layout settings before the changes made here were saved, so its version replaced them.":
     "Інший пристрій зберіг новіші спільні налаштування вигляду й розташування раніше, ніж збереглися зміни, зроблені тут, тому його версія їх замінила.",
+  "another machine": "іншого комп’ютера",
   "Another machine found no work: {detail}":
     "На іншому комп’ютері перевірка не виявила роботи: {detail}",
   "Another machine found no work.": "На іншому комп’ютері перевірка не виявила роботи.",
@@ -3720,8 +3725,6 @@ const catalog: MessageCatalog = {
   confused: "збентеження",
   connect: "підключити",
   Connect: "Підключити",
-  "Connect to {machine} to decide here. The step stays on its pending list.":
-    "Підключіться до {machine}, щоб вирішити тут. Крок залишається в його списку очікування.",
   "Connect {apps} before using it.": "Підключіть {apps} перед використанням.",
   "Connect {clientName}": "Підключити {clientName}",
   "Connect {environment} and try again.": "Підключіть {environment} і спробуйте ще раз.",
@@ -3794,6 +3797,8 @@ const catalog: MessageCatalog = {
   "Connect ThreadPage": "Підключити ThreadPage",
   "Connect ThreadPage to see the steps only you can do, from every machine.":
     "Підключіть ThreadPage, щоб бачити кроки, які можете зробити лише ви, з усіх комп’ютерів.",
+  "Connect to {machine} to decide here. The step stays on its pending list.":
+    "Підключіться до {machine}, щоб вирішити тут. Крок залишається в його списку очікування.",
   "Connect to {name}": "Підключитися до {name}",
   "Connect to a server to check releases.": "Підключіться до сервера, щоб перевірити випуски.",
   "Connect to a T3.CodeShip server to browse its pull requests.":
@@ -10985,6 +10990,8 @@ const catalog: MessageCatalog = {
   Skipped: "Пропущено",
   "Skipped {cookies}": "Пропущено: {cookies}",
   "Skipped {time}: {machine} ran it": "Пропущено {time}: запустив {machine}",
+  "Skipped {time}: {machine} runs another version of T3.CodeShip. Update both machines.":
+    "Пропущено {time}: на {machine} працює інша версія T3.CodeShip. Оновіть обидва комп’ютери.",
   "Skipped {time}: too few machines answered to confirm it":
     "Пропущено {time}: відповіло замало комп’ютерів, щоб це підтвердити",
   "Skipped {when}": "Пропущено {when}",
@@ -12710,6 +12717,8 @@ const catalog: MessageCatalog = {
     "Цей комп’ютер офлайн. Показано останні відомі посилання.",
   "This machine is on your T3 Connect account. Use it as a fallback route.":
     "Цей комп’ютер є у вашому обліковому записі T3 Connect. Використайте його як резервний маршрут.",
+  "This machine left it to {other}, which runs another version of T3.CodeShip: on different versions both could run it. Update T3.CodeShip on both machines.":
+    "Цей комп’ютер залишив його для {other}, де працює інша версія T3.CodeShip: на різних версіях його могли б запустити обидва. Оновіть T3.CodeShip на обох комп’ютерах.",
   "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.":
     "Цей комп’ютер зв’яже {name} у відповідь тим самим кроком, тож другий код сполучення вводити там не потрібно. Пов’язані середовища мають бути ввімкнені й там.",
   "This machine was off or asleep at that time, and catching up is off.":

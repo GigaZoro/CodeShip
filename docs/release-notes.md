@@ -1,3 +1,7 @@
+## 2026-11-15 — A one-machine task no longer runs twice when its machines run different versions
+
+- A task shared with **One machine** could run on two machines in the same occurrence when one of them ran an older T3.CodeShip, because the two followed different rules for deciding who runs it. Machines now tell each other which rules they follow. When a machine that would run the task is on other rules, this one leaves the occurrence to it and records a skip that names that machine; the task row and **Run history** say to update T3.CodeShip on both machines.
+
 ## 2026-11-15 — Agents can read each account's usage
 
 - Agents asking `orchestrator_capabilities` with `usage: true` now get each Claude and Codex account's usage: the plan, the 5-hour, weekly and model weekly meters (such as Fable's) with their resets, paid credits or extra usage, Codex's banked resets, and whether the account may be used now (never while it waits out a limit). With `environmentId` they read a linked machine's accounts. A reading older than 10 minutes is read again, at most once every 10 minutes. Paid credits Codex reports spent are dropped. An account whose usage cannot be read shows a reason code instead. Each account has a key that is the same on every machine and contains no account id or e-mail. Claude's banked resets are not read yet.

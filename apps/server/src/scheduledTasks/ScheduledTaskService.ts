@@ -379,6 +379,7 @@ interface ScheduledTaskRow {
   readonly decision_ran_on?: string | null;
   readonly decision_unchecked_json?: string | null;
   readonly decision_unconfirmed?: number | null;
+  readonly decision_other_version?: number | null;
   /** From scheduled_task_catch_up: null when the task keeps the default. */
   readonly catch_up_missed_run?: number | null;
   /** From scheduled_task_run_conditions: null when the task has none. */
@@ -765,6 +766,7 @@ const decodeRow = Effect.fnUntraced(
               ranOn: row.decision_ran_on,
               unchecked: yield* decodeUncheckedJson(row.decision_unchecked_json),
               ...(row.decision_unconfirmed === 1 ? { unconfirmed: true } : {}),
+              ...(row.decision_other_version === 1 ? { otherVersion: true } : {}),
             };
     return yield* decodeTask({
       id: row.task_id,
@@ -1051,14 +1053,14 @@ export const layer = Layer.effect(
         unchecked_json TEXT NOT NULL
       )
     `;
-    if (
-      !(yield* sql<{
-        name: string;
-      }>`PRAGMA table_info(scheduled_task_one_machine_decision)`).some(
-        (column) => column.name === "unconfirmed",
-      )
-    ) {
+    const decisionColumns = (yield* sql<{
+      name: string;
+    }>`PRAGMA table_info(scheduled_task_one_machine_decision)`).map((column) => column.name);
+    if (!decisionColumns.includes("unconfirmed")) {
       yield* sql`ALTER TABLE scheduled_task_one_machine_decision ADD COLUMN unconfirmed INTEGER NOT NULL DEFAULT 0`;
+    }
+    if (!decisionColumns.includes("other_version")) {
+      yield* sql`ALTER TABLE scheduled_task_one_machine_decision ADD COLUMN other_version INTEGER NOT NULL DEFAULT 0`;
     }
     // Which machine holds an occurrence of a one-machine task. Every machine keeps a copy, so one
     // that cannot reach the holder still learns of it from the others.
@@ -1268,6 +1270,8 @@ export const layer = Layer.effect(
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json,
         (SELECT unconfirmed FROM scheduled_task_one_machine_decision od
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unconfirmed,
+        (SELECT other_version FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_other_version,
         (SELECT enabled FROM scheduled_task_catch_up c
           WHERE c.task_id = scheduled_tasks.task_id) AS catch_up_missed_run,
         (SELECT json_object('command', rc.command, 'timeoutSeconds', rc.timeout_seconds)
@@ -1374,6 +1378,8 @@ export const layer = Layer.effect(
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json,
         (SELECT unconfirmed FROM scheduled_task_one_machine_decision od
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unconfirmed,
+        (SELECT other_version FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_other_version,
         (SELECT enabled FROM scheduled_task_catch_up c
           WHERE c.task_id = scheduled_tasks.task_id) AS catch_up_missed_run,
         (SELECT json_object('command', rc.command, 'timeoutSeconds', rc.timeout_seconds)
@@ -3234,14 +3240,16 @@ export const layer = Layer.effect(
     ) =>
       sql`
         INSERT INTO scheduled_task_one_machine_decision
-          (task_id, decided_at, ran_on, unchecked_json, unconfirmed)
+          (task_id, decided_at, ran_on, unchecked_json, unconfirmed, other_version)
         VALUES (${taskId}, ${decision.at}, ${decision.ranOn},
-          ${JSON.stringify(decision.unchecked)}, ${decision.unconfirmed === true ? 1 : 0})
+          ${JSON.stringify(decision.unchecked)}, ${decision.unconfirmed === true ? 1 : 0},
+          ${decision.otherVersion === true ? 1 : 0})
         ON CONFLICT (task_id) DO UPDATE SET
           decided_at = excluded.decided_at,
           ran_on = excluded.ran_on,
           unchecked_json = excluded.unchecked_json,
-          unconfirmed = excluded.unconfirmed
+          unconfirmed = excluded.unconfirmed,
+          other_version = excluded.other_version
       `;
 
     // A takeover changes the holder's own copy first, so every other copy may trust it; the
@@ -3272,7 +3280,8 @@ export const layer = Layer.effect(
               EXISTS (
                 SELECT 1 FROM scheduled_task_runs
                 WHERE task_id = ${input.taskId} AND scheduled_for = ${occurrence}
-                  AND outcome = 'skipped' AND skip_reason IN ('unconfirmed', 'ran_elsewhere')
+                  AND outcome = 'skipped'
+                  AND skip_reason IN ('unconfirmed', 'ran_elsewhere', 'other_version')
               ) AS gave_up,
               COALESCE((
                 SELECT scheduled_for = ${occurrence} AND thread_id IS NOT NULL
@@ -3494,6 +3503,7 @@ export const layer = Layer.effect(
           return next;
         });
         // `ranOn` null: no other machine confirmed the occurrence was free, so it went to none.
+        // With `decision.otherVersion`, `ranOn` follows another claim protocol.
         const skipOccurrence = Effect.fnUntraced(function* (
           ranOn: EnvironmentId | null,
           next: string | null,
@@ -3516,15 +3526,26 @@ export const layer = Layer.effect(
                 taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
               ),
             );
-          yield* ranOn === null
+          const skipReason =
+            decision?.otherVersion === true
+              ? "other_version"
+              : ranOn === null
+                ? "unconfirmed"
+                : "ran_elsewhere";
+          yield* skipReason === "other_version"
             ? Effect.logWarning(
-                "Skipping a one-machine task run no other machine confirmed was free",
-                { taskId: task.id },
+                "Skipping a one-machine task run: a machine that may run it follows another claim protocol",
+                { taskId: task.id, environmentId: ranOn },
               )
-            : Effect.logInfo("Skipping a one-machine task run another machine has", {
-                taskId: task.id,
-                ranOn,
-              });
+            : ranOn === null
+              ? Effect.logWarning(
+                  "Skipping a one-machine task run no other machine confirmed was free",
+                  { taskId: task.id },
+                )
+              : Effect.logInfo("Skipping a one-machine task run another machine has", {
+                  taskId: task.id,
+                  ranOn,
+                });
           yield* insertRunRecord({
             id: `${task.id}:${occurrence}:skipped`,
             taskId: task.id,
@@ -3533,9 +3554,8 @@ export const layer = Layer.effect(
             startedAt: iso(now),
             completedAt: iso(now),
             outcome: "skipped",
-            ...(ranOn === null
-              ? { skipReason: "unconfirmed" }
-              : { skipReason: "ran_elsewhere", ranOn }),
+            skipReason,
+            ...(ranOn === null ? {} : { ranOn }),
             failover: null,
             // That machine's own check found no work, so the occurrence ran nowhere.
             ...(noWork === null
@@ -3637,16 +3657,15 @@ export const layer = Layer.effect(
         ) {
           return yield* watch(watched, decision);
         }
-        // A machine ahead that answered unreadably is up and may be running it outside the claims,
-        // as an older version does; one that could not be reached is left to them.
-        const unreadableAhead = plan.order
-          .slice(0, plan.rank)
-          .find((id) => answer.unreadable.includes(id));
-        if (unreadableAhead !== undefined) {
-          return yield* watch(
-            { environmentId: unreadableAhead, ended: false },
-            { ...decision, ranOn: unreadableAhead },
-          );
+        // A machine on another claim protocol may decide the occurrence is its own whatever this
+        // one does, and an older one runs it outside the claims, so it is left to that machine.
+        const otherVersion = plan.order.find((id) => answer.otherVersion.includes(id));
+        if (otherVersion !== undefined) {
+          return yield* skipOccurrence(otherVersion, next, {
+            ...decision,
+            ranOn: otherVersion,
+            otherVersion: true,
+          });
         }
         if (watched === null) return yield* takeOccurrence(null, answer.liveRunsElsewhere);
         // The machines between the one whose run ended and this one were watching it too. The

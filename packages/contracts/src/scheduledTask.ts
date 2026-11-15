@@ -270,8 +270,16 @@ export const ScheduledTaskRunSkipReason = Schema.Literals([
   "live_run_limit",
   /** This machine's memory read short, so nothing new started on it. */
   "memory",
+  /** A machine that would run this one-machine task follows another claim protocol, named in `ranOn`. */
+  "other_version",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
+
+/**
+ * How this build checks, claims and settles one-machine occurrences. Machines that follow different
+ * ones can each decide the occurrence is theirs, so raise it with any change to that protocol.
+ */
+export const SCHEDULED_TASK_CLAIM_PROTOCOL = 1;
 
 export const DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS = 60;
 export const MAX_RUN_CONDITION_TIMEOUT_SECONDS = 600;
@@ -375,7 +383,8 @@ export const ScheduledTaskRunRecord = Schema.Struct({
   skipReason: Schema.NullOr(Schema.Union([ScheduledTaskRunSkipReason, Schema.String])),
   /**
    * The machine that settled a one-machine occurrence this one skipped: it ran it, or its chat
-   * from the task's last run was still working.
+   * from the task's last run was still working. For `other_version`, the machine on another
+   * claim protocol.
    */
   ranOn: Schema.NullOr(EnvironmentId),
   /**
@@ -512,6 +521,8 @@ export const ScheduledTaskOneMachineDecision = Schema.Struct({
   unchecked: Schema.Array(Schema.Struct({ environmentId: EnvironmentId, reason: Schema.String })),
   /** This one skipped it: too few of the machines answered to confirm it was free to run here. */
   unconfirmed: Schema.optional(Schema.Boolean),
+  /** This one skipped it: `ranOn` follows another claim protocol, so the two can't agree who runs it. */
+  otherVersion: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTaskOneMachineDecision = typeof ScheduledTaskOneMachineDecision.Type;
 

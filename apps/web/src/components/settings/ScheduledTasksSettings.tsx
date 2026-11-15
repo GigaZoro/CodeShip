@@ -1596,8 +1596,17 @@ function useSharedTaskView(task: ScheduledTask) {
 type SharedTaskView = ReturnType<typeof useSharedTaskView>;
 
 function copyWarnings(view: SharedTaskView, environmentId: EnvironmentId, task: ScheduledTask) {
-  const unchecked = view.oneMachine ? (task.lastOneMachineDecision?.unchecked ?? []) : [];
+  const decision = view.oneMachine ? task.lastOneMachineDecision : null;
+  const unchecked = decision?.unchecked ?? [];
   return [
+    ...(decision?.otherVersion === true && decision.ranOn !== null
+      ? [
+          t(
+            "{machine} leaves its runs to {other}, which runs another version of T3.CodeShip. Update T3.CodeShip on both machines.",
+            { machine: view.labelOf(environmentId), other: view.labelOf(decision.ranOn) },
+          ),
+        ]
+      : []),
     ...unchecked.map((entry) =>
       t("{machine} couldn't check {other}: {reason}", {
         machine: view.labelOf(environmentId),
@@ -1625,6 +1634,15 @@ function lastOneMachineDecisionLabel(
   const time = new Date(decision.at).toLocaleString(getFormattingLocale());
   if (decision.unconfirmed === true) {
     return t("Skipped {time}: too few machines answered to confirm it", { time });
+  }
+  if (decision.otherVersion === true && decision.ranOn !== null) {
+    return t(
+      "Skipped {time}: {machine} runs another version of T3.CodeShip. Update both machines.",
+      {
+        time,
+        machine: view.labelOf(decision.ranOn),
+      },
+    );
   }
   return decision.ranOn === null
     ? t("{machine} ran it last, at {time}", { machine: view.labelOf(environmentId), time })
