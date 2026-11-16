@@ -67,14 +67,14 @@ describe("nextThreadActivitySnapshot", () => {
     ).toEqual([
       null,
       "Working",
-      "Needs your input",
+      "Input needed",
       null,
       null,
-      "Needs your input",
+      "Input needed",
       null,
       null,
       null,
-      "Needs your input",
+      "Input needed",
       null,
       "Done",
     ]);

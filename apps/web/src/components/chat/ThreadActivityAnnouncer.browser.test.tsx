@@ -130,9 +130,9 @@ describe("ThreadActivityAnnouncer", () => {
     expect(heard).toEqual([
       ["Working", ""],
       ["Working", "T3.CodeShip: Checking the repo"],
-      ["Needs approval", "T3.CodeShip: Checking the repo"],
-      ["Needs approval", "T3.CodeShip: Checking the repo"],
-      ["Needs approval", "Running rg"],
+      ["Approval needed", "T3.CodeShip: Checking the repo"],
+      ["Approval needed", "T3.CodeShip: Checking the repo"],
+      ["Approval needed", "Running rg"],
     ]);
   });
 
@@ -153,7 +153,7 @@ describe("ThreadActivityAnnouncer", () => {
 
     await expect
       .element(detail)
-      .toHaveTextContent("T3.CodeShip: Checking the repo. Needs approval");
+      .toHaveTextContent("T3.CodeShip: Checking the repo. Approval needed");
     await expect.element(status).toHaveTextContent("Working");
   });
 });
