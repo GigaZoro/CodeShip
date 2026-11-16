@@ -154,19 +154,20 @@ const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
   client: undefined,
 });
 
-/** Resolves once `file` exists. Its folder is watched before the first look, so none is missed. */
+/**
+ * Resolves once `file` exists, from its state rather than folder events: on macOS a file made just
+ * after `fs.watch` returns can raise none, and a sandbox refuses the watch.
+ */
 const awaitFile = (file: string) =>
   Effect.callback<void>((resume) => {
-    let done = false;
-    const finish = () => {
-      if (done || !NodeFS.existsSync(file)) return;
-      done = true;
-      watcher.close();
+    const look = () => {
+      if (!NodeFS.existsSync(file)) return;
+      NodeFS.unwatchFile(file, look);
       resume(Effect.void);
     };
-    const watcher = NodeFS.watch(NodePath.dirname(file), finish);
-    finish();
-    return Effect.sync(() => watcher.close());
+    NodeFS.watchFile(file, { interval: 20 }, look);
+    look();
+    return Effect.sync(() => NodeFS.unwatchFile(file, look));
   });
 
 /** Resolves once each of `threadIds` has been offered a wake. */
