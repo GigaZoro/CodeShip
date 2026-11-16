@@ -36,6 +36,7 @@ it("drops strict MCP mode, and only that, next to an administrator's managed-mcp
     cwd: undefined,
     managedMcpConfig: true,
     onStderr: () => {},
+    onSpawnedStderr: () => {},
     spawnVia: undefined,
   });
 
