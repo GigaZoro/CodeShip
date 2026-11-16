@@ -224,18 +224,20 @@ export const CodexDriver: ProviderDriver<
     const hasOwnHome = config.homePath.trim() || config.shadowHomePath.trim();
     const privateHome = codexAccountShadowHomePath(pathService, stateDir, instanceId);
     // An added account, or the built-in one set to a private login, signs in to its own auth
-    // folder; the rest links to the shared Codex home.
-    const homeLayout = yield* resolveCodexHomeLayout(
-      hasOwnHome
-        ? config
-        : config.privateLogin === true
-          ? { ...config, homePath: environmentHome?.trim() ?? "", shadowHomePath: privateHome }
-          : environmentHome?.trim()
-            ? { ...config, homePath: environmentHome }
-            : instanceId !== defaultInstanceIdForDriver(DRIVER_KIND)
-              ? { ...config, shadowHomePath: privateHome }
-              : config,
-    );
+    // folder; the rest links to the shared Codex home, which the environment's CODEX_HOME names
+    // when no home is set.
+    const homeConfig = hasOwnHome
+      ? !config.homePath.trim() && environmentHome?.trim()
+        ? { ...config, homePath: environmentHome }
+        : config
+      : config.privateLogin === true
+        ? { ...config, homePath: environmentHome?.trim() ?? "", shadowHomePath: privateHome }
+        : environmentHome?.trim()
+          ? { ...config, homePath: environmentHome }
+          : instanceId !== defaultInstanceIdForDriver(DRIVER_KIND)
+            ? { ...config, shadowHomePath: privateHome }
+            : config;
+    const homeLayout = yield* resolveCodexHomeLayout(homeConfig);
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampBaseIdentity = withInstanceIdentity({
       instanceId,
@@ -338,7 +340,7 @@ export const CodexDriver: ProviderDriver<
         accentColor,
         environment,
         enabled,
-        config: { ...config, homePath: homeLayout.effectiveHomePath ?? "" },
+        config: homeConfig,
       },
       {
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
