@@ -140,6 +140,18 @@ describe("storage cleanup settings", () => {
   });
 });
 
+describe("usage reset redemption settings", () => {
+  it("starts off with a 48 hour wait, and drops the per-account list it replaced", () => {
+    const decoded = decodeServerSettings({ autoUseResetCredits: ["claudeAgent"] });
+    expect(decoded).not.toHaveProperty("autoUseResetCredits");
+    expect([decoded.redeemUsageResets, decoded.maxPlanResetWaitHours]).toEqual([false, 48]);
+  });
+
+  it("refuses a wait longer than a week", () => {
+    expect(() => decodeServerSettingsPatch({ maxPlanResetWaitHours: 169 })).toThrow();
+  });
+});
+
 describe("ServerSettings usage price overrides", () => {
   const prices = { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 };
 

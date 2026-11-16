@@ -21,6 +21,7 @@ export const legacyCodeShipMigrationNames = [
   "CommandRuns",
   "ManualStepReviewLanguages",
   "PullRequestReviewGuideLanguages",
+  "CommandRunLossEvidence",
 ] as const;
 
 type MigrationRow = { readonly id: number; readonly name: string };

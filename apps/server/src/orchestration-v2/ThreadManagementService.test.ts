@@ -247,6 +247,7 @@ it.effect(
         accountRouting: Layer.succeed(AccountRouting.AccountRouting, {
           accountsWithRoom: () => Effect.succeed([]),
           scheduledRunBlock: () => Effect.succeed(null),
+          releaseAllowedHolds: Effect.succeed(false),
           route: (input) =>
             Effect.sync(() => {
               routeInputs.push(input);
@@ -286,6 +287,7 @@ it.effect(
           projectId,
           currentInstanceId: null,
           started: false,
+          scheduled: false,
         },
       ]);
       expect(dispatched).toMatchObject([
@@ -313,6 +315,7 @@ it.effect("a buffered provider wake-up stays on its account when routing would m
       accountRouting: Layer.succeed(AccountRouting.AccountRouting, {
         accountsWithRoom: () => Effect.succeed([]),
         scheduledRunBlock: () => Effect.succeed(null),
+        releaseAllowedHolds: Effect.succeed(false),
         route: (input) =>
           Effect.sync(() => {
             routeInputs.push(input);

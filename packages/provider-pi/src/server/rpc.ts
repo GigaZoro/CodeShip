@@ -12,8 +12,10 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { stopWindowsProcessTree, withWindowsTreeRoot } from "@t3tools/shared/windowsProcessTree";
 import {
   MAX_TOOL_OUTPUT_IMAGES,
   MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH,
@@ -213,7 +215,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
   const spawnCommand = yield* resolveSpawnCommand(options.command, [...options.args], {
     env: options.env,
   }).pipe(Effect.mapError((cause) => new PiRpcError({ operation: "spawn", cause })));
-  const child = yield* spawner
+  const { handle: child, root } = yield* spawner
     .spawn(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
@@ -225,46 +227,37 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
         stdin: { stream: "pipe", endOnDone: false },
       }),
     )
-    .pipe(Effect.mapError((cause) => new PiRpcError({ operation: "spawn", cause })));
+    .pipe(
+      withWindowsTreeRoot,
+      Effect.mapError((cause) => new PiRpcError({ operation: "spawn", cause })),
+    );
 
   let childExited = false;
   let diagnosingStdoutClose = false;
 
   const killProcessGroup = (signal: NodeJS.Signals): boolean => {
     try {
-      if (platform === "win32") {
-        process.kill(Number(child.pid), signal);
-      } else {
-        signalProcessGroup(Number(child.pid), signal);
-      }
+      signalProcessGroup(Number(child.pid), signal);
       return true;
     } catch {
       return false;
     }
   };
 
-  const hasExited = (): boolean => {
-    if (childExited) return true;
-    try {
-      if (platform === "win32") process.kill(Number(child.pid), 0);
-      else signalProcessGroup(Number(child.pid), 0);
-      return false;
-    } catch {
-      return true;
-    }
-  };
+  const hasExited = (): boolean =>
+    childExited || !isProcessAlive(Number(child.pid), signalProcessGroup);
 
-  // Windows process.kill leaves extension children and pipes alive; taskkill /T reaps the tree.
-  const terminateWindowsTree = Effect.gen(function* () {
-    if (hasExited()) return;
-    const taskkill = yield* spawner.spawn(
-      ChildProcess.make("taskkill", ["/PID", String(child.pid), "/T", "/F"]),
-    );
-    yield* taskkill.exitCode;
-  }).pipe(Effect.scoped, Effect.ignore);
-
+  // Windows process.kill leaves extension children and pipes alive, also after Pi exited. Each
+  // walk starts PowerShell, so terminate and the scope's finalizer share one.
   const terminateProcess =
-    platform === "win32" ? terminateWindowsTree : terminatePiProcess(killProcessGroup, hasExited);
+    platform === "win32"
+      ? yield* Effect.cached(
+          stopWindowsProcessTree(root).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.ignore({ log: "Error" }),
+          ),
+        )
+      : terminatePiProcess(killProcessGroup, hasExited);
 
   // Register teardown immediately after spawn so interrupted setup cannot leak a detached process.
   yield* Scope.addFinalizer(scope, terminateProcess.pipe(Effect.ignore, Effect.uninterruptible));

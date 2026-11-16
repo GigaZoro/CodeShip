@@ -1534,6 +1534,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
           threadId: parentThreadId,
           runId: parentRun.id,
           occurredAt: now,
+          reopensTerminalRun: true,
           payload: { ...parentRun, status: "running", completedAt: null },
         },
       ],

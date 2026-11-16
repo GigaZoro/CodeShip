@@ -1,6 +1,7 @@
 import { ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
+import { usageAccountKey } from "@t3tools/provider-core/server/usageLimits";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -23,35 +24,44 @@ export function makeCodexConsumeResetCredit<E, C>(input: {
   readonly openClient: Effect.Effect<CodexClient.CodexAppServerClient["Service"], E, Scope.Scope>;
   /** Fails when the login can no longer spend credits for the account this instance reports. */
   readonly checkAccount?: Effect.Effect<void, C>;
-  readonly snapshot: Pick<ManagedServerProvider, "getSnapshot" | "refresh">;
+  readonly snapshot: Pick<ManagedServerProvider, "refreshAfterRedemption">;
 }): NonNullable<ProviderInstance["consumeResetCredit"]> {
   const failure = (detail: string, cause?: unknown) =>
     new ProviderDriverError({ driver: DRIVER, instanceId: input.instanceId, detail, cause });
-  return () =>
-    input.coordinator
-      .redeem(input.accountHome, (idempotencyKey) =>
-        Effect.gen(function* () {
-          if (input.checkAccount) yield* input.checkAccount;
-          const client = yield* input.openClient;
-          const response = yield* client.request("account/rateLimitResetCredit/consume", {
-            idempotencyKey,
-          });
-          return response.outcome;
-        }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
-      )
-      .pipe(
-        Effect.mapError((cause) =>
-          isProviderDriverError(cause)
-            ? cause
-            : failure("Codex could not redeem the reset credit.", cause),
+  return (request) =>
+    ResetCreditCoordinator.redeemThenReadUsage({
+      redeem: input.coordinator
+        .redeem(
+          input.accountHome,
+          (idempotencyKey) =>
+            Effect.gen(function* () {
+              if (input.checkAccount) yield* input.checkAccount;
+              const client = yield* input.openClient;
+              // The login can switch accounts after the claim was decided; never spend another's.
+              if (request?.accountKey !== undefined) {
+                const read = yield* client.request("account/rateLimits/read", null);
+                if (usageAccountKey(read.accountId) !== request.accountKey) {
+                  return yield* failure(
+                    "The Codex login now holds another account, so its reset was not used.",
+                  );
+                }
+              }
+              const response = yield* client.request("account/rateLimitResetCredit/consume", {
+                idempotencyKey,
+              });
+              return response.outcome;
+            }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
+          undefined,
+          request?.attemptKey,
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            isProviderDriverError(cause)
+              ? cause
+              : failure("Codex could not redeem the reset credit.", cause),
+          ),
         ),
-        Effect.flatMap((outcome) =>
-          ResetCreditCoordinator.confirmRedemption({
-            outcome,
-            getSnapshot: input.snapshot.getSnapshot,
-            refresh: input.snapshot.refresh,
-            providerName: "Codex",
-          }),
-        ),
-      );
+      readUsage: input.snapshot.refreshAfterRedemption,
+      provider: "Codex",
+    });
 }

@@ -1,10 +1,12 @@
 import {
+  MAX_PLAN_RESET_WAIT_HOURS,
   UsageLimitRecoveryChoice,
   usageLimitRecoveryChoice,
   usageLimitRecoveryPatch,
 } from "@t3tools/contracts/settings";
 import { SettingsMenuRow } from "./components/SettingsMenuRow";
-import { msg, t, type Message } from "../../lib/i18n";
+import { msg, t, tn, type Message } from "../../lib/i18n";
+import { NumberField } from "../../components/ui/NumberField";
 import { Button } from "../../components/ui/Button";
 import {
   scheduledTaskPlacementOptions,
@@ -94,6 +96,8 @@ export function AutoSettleSettingsRows(props: {
       autoResumeLimitedThreads?: boolean;
       snoozeLimitedThreads?: boolean;
       failoverLimitedThreads?: boolean;
+      redeemUsageResets?: boolean;
+      maxPlanResetWaitHours?: number;
       continueThreadsAfterServerUpdate?: boolean;
       retryThreadsAfterNetworkErrors?: boolean;
     },
@@ -120,6 +124,11 @@ export function AutoSettleSettingsRows(props: {
   const recoveryChoice = usageLimitRecoveryChoice(referenceSettings);
   const recoveryMixed = (["autoResumeLimitedThreads", "failoverLimitedThreads"] as const).some(
     (key) => uniformMobileSetting(displayTargets, key) === null,
+  );
+  // Servers without the redeemer would drop its settings.
+  const redeemerSupported = displayTargets.every(
+    (target) =>
+      target.environment.serverConfig.environment.capabilities.usageResetRedeemer === true,
   );
 
   return (
@@ -149,6 +158,38 @@ export function AutoSettleSettingsRows(props: {
               disabled={disabledFor("snoozeLimitedThreads")}
               onValueChange={(value) => writeToAll({ snoozeLimitedThreads: value })}
             />
+            {redeemerSupported ? (
+              <SettingsSwitchRow
+                icon="arrow.clockwise"
+                label={t("Redeem usage resets automatically")}
+                subtitle={
+                  managedSettingReason(displayTargets, "redeemUsageResets") ??
+                  t(
+                    "When a Claude or Codex account's limit is out, claim one of its banked resets, but only if the plan reset is further away than the wait below or the reset would otherwise expire unused.",
+                  )
+                }
+                value={uniformMobileSetting(displayTargets, "redeemUsageResets")}
+                disabled={disabledFor("redeemUsageResets")}
+                onValueChange={(value) => writeToAll({ redeemUsageResets: value })}
+              />
+            ) : null}
+            {redeemerSupported && referenceSettings.redeemUsageResets ? (
+              <View className="flex-row items-center gap-4 px-4 py-4 android:min-h-14 android:py-3">
+                <View className="w-[22px] android:w-6" />
+                <Text className="flex-1 text-foreground text-lg android:text-base">
+                  {t("Hours to wait for a plan reset")}
+                </Text>
+                <NumberField
+                  label={t("Hours to wait for a plan reset")}
+                  min={0}
+                  max={MAX_PLAN_RESET_WAIT_HOURS}
+                  formatValue={(value) => tn(value, "{count} hour", "{count} hours")}
+                  value={referenceSettings.maxPlanResetWaitHours}
+                  disabled={disabledFor("maxPlanResetWaitHours")}
+                  onValueChange={(value) => writeToAll({ maxPlanResetWaitHours: value })}
+                />
+              </View>
+            ) : null}
             <SettingsSwitchRow
               icon="wifi"
               label={t("Retry after network errors")}

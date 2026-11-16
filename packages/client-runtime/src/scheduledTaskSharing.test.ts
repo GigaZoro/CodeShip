@@ -474,6 +474,7 @@ describe("mergeScheduledTaskRuns", () => {
   });
 
   it("orders every machine's runs newest first and drops a skip only when the machine it names settled the occurrence itself", () => {
+    const eight = "2026-11-07T08:00:00.000Z";
     const nine = "2026-11-07T09:00:00.000Z";
     const ten = "2026-11-07T10:00:00.000Z";
     const eleven = "2026-11-07T11:00:00.000Z";
@@ -497,6 +498,7 @@ describe("mergeScheduledTaskRuns", () => {
           run("a-11", "11:00", { scheduledFor: eleven, outcome: "skipped", skipReason: "no_work" }),
           run("a-10", "10:00", { scheduledFor: ten }),
           run("a-manual", "08:30"),
+          run("a-8", "08:00", { scheduledFor: eight }),
         ],
       },
       {
@@ -537,6 +539,13 @@ describe("mergeScheduledTaskRuns", () => {
             outcome: "skipped",
             skipReason: "missed",
           }),
+          // Asks to update T3.CodeShip, so it stays though that machine ran it.
+          run("b-8", "08:05", {
+            scheduledFor: eight,
+            outcome: "skipped",
+            skipReason: "other_version",
+            ranOn: A,
+          }),
         ],
       },
     ]);
@@ -550,6 +559,8 @@ describe("mergeScheduledTaskRuns", () => {
       "env-b:b-missed",
       "env-b:b-9",
       "env-a:a-manual",
+      "env-b:b-8",
+      "env-a:a-8",
     ]);
   });
 });

@@ -334,9 +334,10 @@ optional cancellation reason.
 
 Runs a shell command that ends (tests, a build, an install, a push, a deploy, a long script) as an app-owned task of
 the calling thread, started outside the provider and the server so a restart does not cut it.
-It takes `command`, an optional `cwd` (the thread's checkout by default), `label`, and
-`timeoutMinutes` (default 60, at most 720), and returns the `taskId`, the log path and the
-timeout. The command gets the whole environment the calling agent's own shell commands get in
+It takes `command`, an optional `cwd` (the thread's checkout by default), `label`,
+`timeoutMinutes` (default 60, at most 720), and `shell`, whose one value `bash` runs the command
+unchanged in bash on every OS: the user's shell when it is bash, else `bash` from `PATH`, and Git
+Bash on Windows. It returns the `taskId`, the log path and the timeout. The command gets the whole environment the calling agent's own shell commands get in
 the thread's folder: the host environment without the server's own variables, then the
 variables set on the agent's provider account, which every provider starts its agent with, then
 its provider's rules. For Claude that is
@@ -379,12 +380,28 @@ host's ANSI code page survives. T3.CodeShip merges only spellings that differ in
 Codex's `set` does, and moves each name it sets to the end; Windows folds other letters by a
 table only it has and that can change between versions, so the launcher keeps the last of the
 spellings Windows reads as one name with .NET's `OrdinalIgnoreCase`, and `Straße` and `STRASSE`
-stay two variables. The wrapper reads no variable but its exit status: the launcher
-hands it PowerShell's path from the system directory, so neither the agent's `PATH` nor a
-`SystemRoot` its settings move or drop can change which PowerShell runs, and a command's own
-`ERRORLEVEL`, which cmd would expand in place of the exit status, reaches the script as
-`T3CODE_COMMAND_ERRORLEVEL` and is put back before the command runs. When the provider is
-turned off or not running, or cannot read them, including
+stay two variables. The wrapper is a hidden PowerShell process and reads no
+variable: it takes cmd and PowerShell from the system directory, so neither the agent's `PATH`
+nor a `SystemRoot` its settings move or drop can change which ones run. It runs the command in
+a console of its own with no window and writes the exit status once the command ends, so a Ctrl+C,
+Ctrl+Break or close event in that console can end the command but never the wrapper. The
+command reads its input from `NUL`, as from `/dev/null` elsewhere, so a command that reads input
+ends instead of waiting on a console nobody can type in. A `shell: "bash"` command goes unchanged
+into a file, and its script starts Git Bash's `bash.exe` through `Process.Start` with that file's
+path, in double quotes and with forward slashes, as its only argument: PowerShell 5.1 drops every
+`"` inside an argument it passes to a program, while Cygwin reads a double-quoted path literally
+and a forward slash never as an escape. Any other command's script first makes `bash` and `sh`,
+with or without `.exe`, PowerShell aliases of Git
+Bash's and not System32's `bash.exe`, which is WSL's and has no node or `C:/` paths. An alias,
+unlike a function, passes every argument as written, `--` included.
+It leaves `PATH` alone: Git's `bin` folder also holds a `git.exe`, which would take the place of
+the `git` the command names, such as a wrapper or a package manager's shim. It finds Git Bash
+itself, with the command's environment and folder: through `git --exec-path` of the `git` on that
+`PATH`, which also sees past a shim and is stopped, with what it started, when it does not answer
+within 10 s, then in the standard install folders. Without Git Bash a `shell: "bash"` command
+fails, and `bash` and `sh` are an error, each naming where it looked. A program the command starts that runs `bash` itself still
+gets WSL's. When the
+provider is turned off or not running, or cannot read them, including
 Claude settings an organization's policy helper computes (a `policyHelper` or a per-OS
 `policyHelpers` entry, neither of which `resolveSettings` applies), the call fails and nothing
 runs. The command's end completes the task through the same durable delivery as a delegated

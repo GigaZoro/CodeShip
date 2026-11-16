@@ -33,6 +33,7 @@ import type {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   ScheduledTask,
+  ScheduledTaskFailingCheck,
   ScheduledTaskId,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
@@ -44,6 +45,7 @@ import type {
 import {
   MAX_RUN_CONDITION_TIMEOUT_SECONDS,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
+  RUN_CONDITION_FAILING_STREAK,
 } from "@t3tools/contracts";
 import {
   DEFAULT_WEBHOOK_PROMPT,
@@ -64,6 +66,7 @@ import {
   runConditionHelpText,
   runConditionInput,
   runConditionInvalidText,
+  failedCheckReason,
   shownNoWorkSkip,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import {
@@ -565,6 +568,39 @@ function TaskNoWorkSkip({
   return (
     <Tooltip>
       <TooltipTrigger render={<span tabIndex={0} className={className} />}>{text}</TooltipTrigger>
+      <TooltipPopup side="top">{text}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/** The sentence for a run condition whose last checks all failed, without a tooltip of its own. */
+export function FailingCheckSentence({ failing }: { readonly failing: ScheduledTaskFailingCheck }) {
+  const count = String(RUN_CONDITION_FAILING_STREAK);
+  const reason = failedCheckReason(failing.check);
+  const when = <ScheduledRelativeLabel value={failing.at} />;
+  return reason === null
+    ? tx("The last {count} checks failed, latest {when}", { count, when })
+    : tx("The last {count} checks failed, latest {when}: {reason}", { count, when, reason });
+}
+
+/** A run condition that keeps failing. Each of those runs started anyway, so nothing else shows it. */
+function TaskFailingCheck({ task }: { readonly task: Pick<ScheduledTask, "failingCheck"> }) {
+  const failing = task.failingCheck ?? null;
+  if (failing === null) return null;
+  const text = <FailingCheckSentence failing={failing} />;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            tabIndex={0}
+            className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-warning-foreground"
+          />
+        }
+      >
+        <TriangleAlertIcon aria-hidden className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">{text}</span>
+      </TooltipTrigger>
       <TooltipPopup side="top">{text}</TooltipPopup>
     </Tooltip>
   );
@@ -1323,6 +1359,7 @@ function LinkedScheduledTaskRow({
             </span>
           ) : null}
           <TaskNoWorkSkip task={task} />
+          <TaskFailingCheck task={task} />
         </div>
       }
       control={
@@ -1597,8 +1634,17 @@ function useSharedTaskView(task: ScheduledTask) {
 type SharedTaskView = ReturnType<typeof useSharedTaskView>;
 
 function copyWarnings(view: SharedTaskView, environmentId: EnvironmentId, task: ScheduledTask) {
-  const unchecked = view.oneMachine ? (task.lastOneMachineDecision?.unchecked ?? []) : [];
+  const decision = view.oneMachine ? task.lastOneMachineDecision : null;
+  const unchecked = decision?.unchecked ?? [];
   return [
+    ...(decision?.otherVersion === true && decision.ranOn !== null
+      ? [
+          t(
+            "{machine} leaves its runs to {other}, which runs another version of T3.CodeShip. Update T3.CodeShip on both machines.",
+            { machine: view.labelOf(environmentId), other: view.labelOf(decision.ranOn) },
+          ),
+        ]
+      : []),
     ...unchecked.map((entry) =>
       t("{machine} couldn't check {other}: {reason}", {
         machine: view.labelOf(environmentId),
@@ -1626,6 +1672,15 @@ function lastOneMachineDecisionLabel(
   const time = new Date(decision.at).toLocaleString(getFormattingLocale());
   if (decision.unconfirmed === true) {
     return t("Skipped {time}: too few machines answered to confirm it", { time });
+  }
+  if (decision.otherVersion === true && decision.ranOn !== null) {
+    return t(
+      "Skipped {time}: {machine} runs another version of T3.CodeShip. Update both machines.",
+      {
+        time,
+        machine: view.labelOf(decision.ranOn),
+      },
+    );
   }
   return decision.ranOn === null
     ? t("{machine} ran it last, at {time}", { machine: view.labelOf(environmentId), time })
@@ -1891,6 +1946,7 @@ function ScheduledTaskRow({
           <RunStatusBadge task={task} />
           <TaskLastRun environmentId={environmentId} task={task} />
           <TaskNoWorkSkip task={task} />
+          <TaskFailingCheck task={task} />
           {task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread" ? (
             <ScheduledTaskThreadLink environmentId={environmentId} threadId={task.threadId} />
           ) : null}
@@ -2034,6 +2090,7 @@ function SharedTaskCopyLine({
       <RunStatusBadge task={task} />
       <TaskLastRun environmentId={environmentId} task={task} />
       <TaskNoWorkSkip task={task} />
+      <TaskFailingCheck task={task} />
       {decision ? <span>{decision}</span> : null}
       {task.lastRunError ? <RunError error={task.lastRunError} /> : null}
       <TaskWarnings
@@ -3094,7 +3151,7 @@ function ScheduledTaskEditorForm({
     if (
       schedule.type === "webhook" &&
       schedule.signature &&
-      (!schedule.signature.header ||
+      ((!("scheme" in schedule.signature) && !schedule.signature.header) ||
         (!schedule.signature.secret &&
           !(liveTask?.schedule.type === "webhook" && liveTask.webhook?.hasSecret)))
     ) {
@@ -4004,7 +4061,7 @@ function ScheduledTaskEditorForm({
                   <div className="min-w-0 space-y-1">
                     <Label htmlFor="scheduled-task-signature">{t("Require signature")}</Label>
                     <p className="text-sm text-muted-foreground">
-                      {t("Reject requests without a valid HMAC-SHA256 signature of the body.")}
+                      {t("Reject requests without a valid signature.")}
                     </p>
                   </div>
                   <Switch
@@ -4017,50 +4074,82 @@ function ScheduledTaskEditorForm({
                 </div>
                 {draft.signatureEnabled ? (
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <Field label={t("Header")} htmlFor="scheduled-task-signature-header">
-                      <Input
-                        id="scheduled-task-signature-header"
-                        value={draft.signatureHeader}
-                        onChange={(event) =>
-                          setDraft((current) => ({
-                            ...current,
-                            signatureHeader: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                    <Field label={t("Prefix")} htmlFor="scheduled-task-signature-prefix">
-                      <Input
-                        id="scheduled-task-signature-prefix"
-                        value={draft.signaturePrefix}
-                        placeholder={t("None")}
-                        onChange={(event) =>
-                          setDraft((current) => ({
-                            ...current,
-                            signaturePrefix: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                    <Field label={t("Encoding")} htmlFor="scheduled-task-signature-encoding">
+                    <Field label={t("Scheme")} htmlFor="scheduled-task-signature-scheme">
                       <Select
-                        value={draft.signatureEncoding}
+                        value={draft.signatureScheme}
                         onValueChange={(value) =>
                           setDraft((current) => ({
                             ...current,
-                            signatureEncoding: value === "base64" ? "base64" : "hex",
+                            signatureScheme:
+                              value === "standard-webhooks" ? "standard-webhooks" : "hmac-sha256",
                           }))
                         }
                       >
-                        <SelectTrigger size="sm" id="scheduled-task-signature-encoding">
-                          <SelectValue>{draft.signatureEncoding}</SelectValue>
+                        <SelectTrigger size="sm" id="scheduled-task-signature-scheme">
+                          <SelectValue>
+                            {draft.signatureScheme === "standard-webhooks"
+                              ? t("Standard Webhooks")
+                              : t("HMAC-SHA256 of the body")}
+                          </SelectValue>
                         </SelectTrigger>
                         <SelectPopup>
-                          <SelectItem value="hex">{"hex"}</SelectItem>
-                          <SelectItem value="base64">{"base64"}</SelectItem>
+                          <SelectItem value="hmac-sha256">
+                            {t("HMAC-SHA256 of the body")}
+                          </SelectItem>
+                          <SelectItem value="standard-webhooks">
+                            {t("Standard Webhooks")}
+                          </SelectItem>
                         </SelectPopup>
                       </Select>
                     </Field>
+                    {draft.signatureScheme === "hmac-sha256" ? (
+                      <>
+                        <Field label={t("Header")} htmlFor="scheduled-task-signature-header">
+                          <Input
+                            id="scheduled-task-signature-header"
+                            value={draft.signatureHeader}
+                            onChange={(event) =>
+                              setDraft((current) => ({
+                                ...current,
+                                signatureHeader: event.target.value,
+                              }))
+                            }
+                          />
+                        </Field>
+                        <Field label={t("Prefix")} htmlFor="scheduled-task-signature-prefix">
+                          <Input
+                            id="scheduled-task-signature-prefix"
+                            value={draft.signaturePrefix}
+                            placeholder={t("None")}
+                            onChange={(event) =>
+                              setDraft((current) => ({
+                                ...current,
+                                signaturePrefix: event.target.value,
+                              }))
+                            }
+                          />
+                        </Field>
+                        <Field label={t("Encoding")} htmlFor="scheduled-task-signature-encoding">
+                          <Select
+                            value={draft.signatureEncoding}
+                            onValueChange={(value) =>
+                              setDraft((current) => ({
+                                ...current,
+                                signatureEncoding: value === "base64" ? "base64" : "hex",
+                              }))
+                            }
+                          >
+                            <SelectTrigger size="sm" id="scheduled-task-signature-encoding">
+                              <SelectValue>{draft.signatureEncoding}</SelectValue>
+                            </SelectTrigger>
+                            <SelectPopup>
+                              <SelectItem value="hex">{"hex"}</SelectItem>
+                              <SelectItem value="base64">{"base64"}</SelectItem>
+                            </SelectPopup>
+                          </Select>
+                        </Field>
+                      </>
+                    ) : null}
                     <Field label={t("Secret")} htmlFor="scheduled-task-signature-secret">
                       <Input
                         id="scheduled-task-signature-secret"
@@ -4070,7 +4159,9 @@ function ScheduledTaskEditorForm({
                         placeholder={
                           liveTask?.schedule.type === "webhook" && liveTask.webhook?.hasSecret
                             ? t("Unchanged")
-                            : t("Shared secret")
+                            : draft.signatureScheme === "standard-webhooks"
+                              ? t("Secret starting with whsec_")
+                              : t("Shared secret")
                         }
                         onChange={(event) =>
                           setDraft((current) => ({

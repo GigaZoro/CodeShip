@@ -205,9 +205,14 @@ that would run the task, in the project's folder:
 | 10                                             | Nothing starts. **Run history** lists the time as skipped, and the task's row shows the reason. |
 | Anything else, no answer in time, cannot start | The chat starts anyway, and **Run history** says the check failed.                              |
 
-The reason is the last line the command prints. If that line is JSON with a
-`reason` field, such as `{"needsRun": false, "reason": "No open pull requests"}`,
-the field is used.
+The reason is the last line the command prints. When the output ends with a
+JSON object, on one line or indented over several, its `reason` field (or
+`error`, when it has no `reason`) is used instead, such as
+`{"needsRun": false, "reason": "No open pull requests"}`.
+
+When the last 3 scheduled checks on a machine all fail, the task's row shows a
+warning with the latest reason, since each of those runs started anyway. The
+next check that answers 0 or 10 clears it.
 
 The command is one program with its arguments, for example
 `node ~/scripts/has-work.mjs --project app`. It does not run in a shell, so the
@@ -237,7 +242,10 @@ Things to know:
 - **Run history** keeps the last 10 skipped times apart from the last 50 runs,
   so a task that skips often does not push its real runs out.
 - Agents set it with `schedule_task` (`runCondition`) and read it, with the last
-  skipped time and its reason, from `list_scheduled_tasks`.
+  skipped time and its reason and a check that keeps failing
+  (`failingCheck`), from `list_scheduled_tasks`. Its `runCounts` counts every
+  run and skip on that machine over the last 7 and 30 days, by outcome and
+  skip reason, so the share of skipped times can be measured.
 
 ### Read and write ThreadPage from a check
 
@@ -412,10 +420,12 @@ A task's **Runs** choice keeps a copy of it on each of your machines:
   has it, or their run failed (for example when a machine is offline or out of
   usage), and more than half of the machines recorded its claim. While another
   machine is still running it, the machine keeps asking every few minutes and
-  runs the task itself if that run fails, until the next run is due. A machine
-  ahead of it that answers in a way its version cannot read counts as running
-  it, so it never runs twice; **Settings → Machines & access → Linked
-  environments** says which machine to update. A run you or an agent stop stays
+  runs the task itself if that run fails, until the next run is due. Machines
+  on different versions of T3.CodeShip can each decide a time is theirs, so a
+  machine that finds another one in the order on a different version leaves
+  the task to it and says to update both machines, in the task's row and in
+  **Run history**; **Settings → Machines & access → Linked environments** says
+  which machine is behind. A run you or an agent stop stays
   stopped. A fixed time is the same time on machines in
   different time zones, each at its own local hour, so it still runs once. The
   order belongs to the project, so changing it in one task changes it for every
@@ -483,9 +493,13 @@ GitHub user.
 For GitHub, turn on **Require signature**, keep the header
 `x-hub-signature-256`, hex encoding and the `sha256=` prefix, and enter the
 same secret in the repository's webhook settings with content type
-`application/json`. Requests without a valid signature are rejected. Set this
-up on desktop or web; mobile keeps an existing signature check but can't turn
-one on.
+`application/json`. For a service that signs with
+[Standard Webhooks](https://www.standardwebhooks.com/), such as ThreadPage,
+choose the **Standard Webhooks** scheme and enter its `whsec_` secret. Such a
+request is also rejected when its `webhook-timestamp` is more than 5 minutes
+from when it arrived, and a repeated `webhook-id` runs only once. Requests
+without a valid signature are rejected. Set this up on desktop or web; mobile
+keeps an existing signature check but can't turn one on.
 
 To run only for some requests, add **Filters**. Each one tests a value named
 like a placeholder, without the braces, such as `headers.x-github-event` equals

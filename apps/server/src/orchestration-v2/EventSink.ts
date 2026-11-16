@@ -1,6 +1,9 @@
 import {
   CommandId,
+  isOrchestrationV2TerminalRunStatus,
   type OrchestrationV2Run,
+  OrchestrationV2RunStatus,
+  CheckpointId,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Subagent,
@@ -49,6 +52,23 @@ export class EventSinkWriteError extends Schema.TaggedError<EventSinkWriteError>
 ) {
   override get message(): string {
     return `Failed to write ${this.eventCount} orchestration V2 event(s).`;
+  }
+}
+
+/** A run.updated that would undo a commit its writer did not see: a reopened run or a lost checkpoint. */
+export class EventSinkRunRegressionError extends Schema.TaggedError<EventSinkRunRegressionError>()(
+  "EventSinkRunRegressionError",
+  {
+    commandId: Schema.optional(CommandId),
+    runId: RunId,
+    storedStatus: OrchestrationV2RunStatus,
+    nextStatus: OrchestrationV2RunStatus,
+    storedCheckpointId: Schema.NullOr(CheckpointId),
+    nextCheckpointId: Schema.NullOr(CheckpointId),
+  },
+) {
+  override get message(): string {
+    return `Refused run.updated for ${this.runId}: ${this.storedStatus} (checkpoint ${this.storedCheckpointId ?? "none"}) to ${this.nextStatus} (checkpoint ${this.nextCheckpointId ?? "none"}).`;
   }
 }
 
@@ -108,11 +128,6 @@ export interface EventSinkV2Shape {
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
-    /**
-     * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
-     * The batch must not also change that run's lifecycle.
-     */
-    readonly updateDelegatedCompletionOnly?: boolean;
     readonly unlessNativeThreadOwned?: Pick<
       OrchestrationV2ProviderThread,
       "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
@@ -204,8 +219,6 @@ export interface EventSinkV2Shape {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
     };
-    /** Like writeWithEffects' updateDelegatedCompletionOnly, for this run's run.updated only. */
-    readonly updateDelegatedCompletionOnlyRunId?: RunId;
   }) => Effect.Effect<
     {
       readonly receipt: CommandReceiptStore.CommandReceiptV2;
@@ -389,7 +402,87 @@ const layerBase: Layer.Layer<
         });
       });
 
-    const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
+    // Writers build run.updated from a projection they read before this transaction, so a commit in
+    // between (a checkpoint capture) must not be undone. Replay applies history as recorded.
+    const guardRunRegressions =
+      /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
+      Effect.fnUntraced(function* (
+        events: ReadonlyArray<OrchestrationV2DomainEvent>,
+        commandId: CommandId | undefined,
+      ) {
+        const latest = new Map<RunId, Pick<OrchestrationV2Run, "status" | "checkpointId">>();
+        for (const event of events) {
+          if (event.type === "run.created") {
+            latest.set(event.payload.id, event.payload);
+            continue;
+          }
+          if (event.type !== "run.updated") continue;
+          const next = event.payload;
+          let current = latest.get(next.id);
+          if (current === undefined) {
+            const rows = yield* sql<{
+              readonly status: OrchestrationV2Run["status"];
+              readonly checkpoint_id: string | null;
+            }>`
+              SELECT status, json_extract(payload_json, '$.checkpointId') AS checkpoint_id
+              FROM orchestration_v2_projection_runs
+              WHERE run_id = ${next.id}
+              LIMIT 1
+            `;
+            const row = rows[0];
+            current =
+              row === undefined
+                ? undefined
+                : {
+                    status: row.status,
+                    checkpointId:
+                      row.checkpoint_id === null ? null : CheckpointId.make(row.checkpoint_id),
+                  };
+          }
+          latest.set(next.id, next);
+          if (current === undefined) continue;
+          const reopened =
+            isOrchestrationV2TerminalRunStatus(current.status) &&
+            !isOrchestrationV2TerminalRunStatus(next.status) &&
+            event.reopensTerminalRun !== true;
+          const lostCheckpoint = current.checkpointId !== null && next.checkpointId === null;
+          if (!reopened && !lostCheckpoint) continue;
+          const error = new EventSinkRunRegressionError({
+            ...(commandId === undefined ? {} : { commandId }),
+            runId: next.id,
+            storedStatus: current.status,
+            nextStatus: next.status,
+            storedCheckpointId: current.checkpointId,
+            nextCheckpointId: next.checkpointId,
+          });
+          yield* Effect.logError("orchestration_v2.run_regression_refused").pipe(
+            Effect.annotateLogs({
+              commandId: commandId ?? null,
+              threadId: event.threadId,
+              runId: next.id,
+              storedStatus: current.status,
+              nextStatus: next.status,
+              storedCheckpointId: current.checkpointId,
+              nextCheckpointId: next.checkpointId,
+            }),
+          );
+          return yield* error;
+        }
+      });
+
+    const normalizeEvents = Effect.fnUntraced(function* (
+      input: ReadonlyArray<OrchestrationV2DomainEvent>,
+      commandId: CommandId | undefined,
+    ) {
+      // Only run.delegated-completion-updated changes a cohort, so a stale run cannot carry an old one.
+      const events = input.map((event): OrchestrationV2DomainEvent => {
+        if (event.type !== "run.updated" || event.payload.delegatedCompletion === undefined) {
+          return event;
+        }
+        const { delegatedCompletion: _delegatedCompletion, ...payload } = event.payload;
+        return { ...event, payload };
+      });
+      yield* guardRunRegressions(events, commandId);
       const runOrdinals = new Map(
         events.flatMap((event) =>
           event.type === "run.created" || event.type === "run.updated"
@@ -397,7 +490,7 @@ const layerBase: Layer.Layer<
             : [],
         ),
       );
-      return Effect.forEach(
+      return yield* Effect.forEach(
         events,
         (event): Effect.Effect<OrchestrationV2DomainEvent, unknown> =>
           event.type === "turn-item.updated"
@@ -410,7 +503,7 @@ const layerBase: Layer.Layer<
             : Effect.succeed(event),
         { concurrency: 1 },
       );
-    };
+    });
 
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
@@ -445,28 +538,6 @@ const layerBase: Layer.Layer<
         return yield* runOutcomes.prepare(storedEvents);
       });
 
-    // The enclosing write or commit span already traces this per-event projection merge.
-    const updateDelegatedCompletionOnly = Effect.fnUntraced(function* (
-      events: ReadonlyArray<OrchestrationV2DomainEvent>,
-      includesRun: (runId: RunId) => boolean,
-    ) {
-      return yield* Effect.forEach(events, (event) =>
-        Effect.gen(function* () {
-          if (event.type !== "run.updated" || !includesRun(event.payload.id)) return event;
-          const { runs } = yield* projectionStore.getThreadRecords(event.threadId, ["runs"], {
-            runIds: [event.payload.id],
-          });
-          const current = runs[0];
-          return current === undefined
-            ? event
-            : {
-                ...event,
-                payload: { ...current, delegatedCompletion: event.payload.delegatedCompletion },
-              };
-        }),
-      );
-    });
-
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
       input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0],
     ) {
@@ -494,15 +565,11 @@ const layerBase: Layer.Layer<
             `;
             if (owners.length > 0) return { committed: [], outcomes: [] };
           }
-          // Checkpoint capture can finish after a cohort writer reads its parent run.
-          // Merge in this transaction so the event log and projection keep that completion.
-          const events = input.updateDelegatedCompletionOnly
-            ? yield* updateDelegatedCompletionOnly(input.events, () => true)
-            : input.events;
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(events)
-              : events,
+              ? yield* guardUserInputCancellations(input.events)
+              : input.events,
+            input.commandId,
           );
           const committed = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
@@ -580,6 +647,7 @@ const layerBase: Layer.Layer<
               input.guardPendingUserInputCancellations === true
                 ? yield* guardUserInputCancellations(input.events)
                 : input.events,
+              input.commandId,
             );
             const storedEvents = yield* eventStore.append({
               ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
@@ -645,6 +713,7 @@ const layerBase: Layer.Layer<
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(input.events)
               : input.events,
+            input.commandId,
           );
           const storedEvents = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
@@ -677,7 +746,7 @@ const layerBase: Layer.Layer<
             };
           }
 
-          const normalized = yield* normalizeEvents(events);
+          const normalized = yield* normalizeEvents(events, undefined);
           const storedEvents = yield* eventStore.append({ events: normalized });
           const outcomes = yield* applyStoredEvents(storedEvents);
           yield* effectOutbox.enqueue(effects);
@@ -819,12 +888,7 @@ const layerBase: Layer.Layer<
             }
           }
 
-          const runId = input.updateDelegatedCompletionOnlyRunId;
-          const normalized = yield* normalizeEvents(
-            runId === undefined
-              ? input.events
-              : yield* updateDelegatedCompletionOnly(input.events, (id) => id === runId),
-          );
+          const normalized = yield* normalizeEvents(input.events, input.commandId);
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
             events: normalized,

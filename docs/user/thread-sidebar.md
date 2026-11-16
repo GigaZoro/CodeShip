@@ -405,13 +405,20 @@ uncommitted files or commits the default branch does not have yet, so unshipped
 work does not slip out of view. Commits count as merged once they reach the
 default branch or the branch's pull request merges.
 
-Automatic settlement keeps that work in view too. Before such a thread settles on
-its own, T3.CodeShip commits its changes and opens a pull request, then settles it.
-With **Keep threads with a PR** on, the thread stays active with its new pull
-request. Turn off **Open a PR for unmerged work** in **Settings → Threads** to keep
-these threads active instead. A thread also stays active when its pull request
-cannot be opened, for example in a repository without a remote. A thread whose
-pull request was closed settles without a new one.
+Automatic settlement keeps that work in view too. Before such a thread you wrote
+in settles on its own, T3.CodeShip commits its changes and opens a pull request,
+then settles it. With **Keep threads with a PR** on, the thread stays active with
+its new pull request. Turn off **Open a PR for unmerged work** in **Settings →
+Threads** to keep these threads active instead. A thread also stays active when
+its pull request cannot be opened, for example in a repository without a remote.
+A thread whose pull request was closed settles without a new one.
+
+A thread you never wrote in, such as a scheduled run, a subagent or a chat an
+agent started, never gets a pull request this way: where a thread you wrote in
+would get one, it stays active instead, because the task or agent that started
+it decides how that work lands. Once you write in it from the app, it is treated
+like any thread you wrote in. Messages T3.CodeShip sends for you, such as the
+automatic "continue" after a network or usage-limit stop, do not count.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a
@@ -534,14 +541,17 @@ until it resets. When the provider gives no reset, CodeShip holds the account fo
 hours from the refusal, or for its shortest reported usage window when that is shorter.
 Five hours is the session window for Claude and ChatGPT subscriptions. A newer usage
 check showing room does not shorten this hold; a run on that account that started
-after the refusal and got an answer does, even while it is still working. When Claude
+after the refusal and got an answer does, even while it is still working. A held Codex account
+is freed early, from a hold with a reset time too, as soon as Codex itself says it may be used
+again, such as after a banked reset was used; CodeShip asks Codex at most every 10 minutes. When Claude
 attributes the limit to one model family's weekly window, such as Opus, only that family
 is held. A run of a model in that family that got an answer lifts it early; a run of
 another model, or a newer usage check, does not. Agent launches (`t3_thread_launch`,
 `delegate_task`, `create_threads`), Auto and named, respect the hold; a thread you create
 in the app is not refused. Used-up usage windows still block until the last of them
 resets. A used-up window that reports no reset blocks for at most the same hold, counted
-from when CodeShip first saw it used up. If none is free, the thread waits as above, and moves to the first
+from when CodeShip first saw it used up. A Codex account that Codex says may not be used now
+is skipped, even while its meters show room, until its fullest usage window resets. If none is free, the thread waits as above, and moves to the first
 account that gets usage back unless you stop it, snooze it or cancel its auto-resume; a thread
 hidden by **Hide limited threads until the limit resets** moves too, with or without
 **Resume when the limit resets**, and shows again. It moves when that account's last
@@ -551,9 +561,9 @@ sign it in to a different account. Some providers' terms forbid using extra
 accounts to get around limits. With this on, a scheduled task whose account has hit
 its limit starts its new thread on the first other account with usage left, and
 its **Run history** says which account it used and why. **Usage → Limits** shows which
-account a limited thread continues on right now. When no other account has room, an
-account set to **Use reset credits automatically** redeems a banked reset and continues the
-thread; see [Track subscription limits](usage.md#track-subscription-limits). When an
+account a limited thread continues on right now. When no other account has room, a
+thread waiting on an account whose banked reset was just redeemed continues there; see
+[Track subscription limits](usage.md#track-subscription-limits). When an
 account's login is rejected before the agent does any work, the thread sends its message
 again on the first other signed-in account with usage left, right away or as soon as one
 gets usage back within a day.
@@ -582,7 +592,9 @@ too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`
 starts it there. A new thread starts on the primary provider's first account in its
 account order. With account switching enabled in **Settings → Threads**, it starts on the first
 signed-in one that has usage left, or, when none has, on the signed-in one whose limit ends
-first, and switches accounts at usage limits. A thread whose account signed out moves the
+first, and switches accounts at usage limits. A scheduled task on Auto starts its new thread on
+the account with usage left whose weekly limit resets soonest, so usage that would reset unused
+is spent first. A thread whose account signed out moves the
 same way on its next message. The turn a
 finished background command starts stays on the account that ran the command,
 because only that session has its result; if that account is out of usage, the

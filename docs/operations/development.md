@@ -222,11 +222,12 @@ for the security model.
 ## Checks
 
 `vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
-changed files, `knip:check` when code or a manifest changes, the generated GraphQL checks, typecheck
+changed files, `knip:check` when code or a manifest changes, the third-party license notices, the generated GraphQL checks, typecheck
 of the affected packages and their dependents, the test files beside the changed files, and the
 test files that import a changed file directly or through test-support code (a `*.testkit.ts`, a
-`testkit/`, `testing/`, `test/` or `fixtures/` folder). The walk stops at production code, so a
-provider's replay suites run when its adapter changes, but not every test that loads the server.
+`testkit/`, `testing/`, `test/` or `fixtures/` folder), and the test files beside each production
+file that imports a changed file. The walk goes no further into production code, so a provider's
+replay suites and the service built on a changed module run, but not every test that loads the server.
 It also runs the checks that read other files: the agent context budget when the server is
 affected, and React Compiler coverage for only the changed web and mobile files. It maps
 files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
@@ -274,7 +275,8 @@ script, so on Windows open the workspace through WSL.
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
-Windows investigation while that suite is not a required gate.
+Windows investigation while that suite is not a required gate. A full `apps/server` run there
+splits into eight duration-balanced shards.
 
 ### Unused code
 

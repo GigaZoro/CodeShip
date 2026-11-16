@@ -778,6 +778,10 @@ export interface ProjectionStoreV2Shape {
   readonly getSettlementCandidates: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionSettlementCandidate>, ProjectionStoreV2Error>;
+  /** Whether the user wrote in the thread; agents' messages and scheduled tasks' prompts do not count. */
+  readonly hasUserWrittenMessage: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly getThreadsWithPullRequests: (
     threadId?: ThreadId,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadPullRequests>, ProjectionStoreV2Error>;
@@ -1178,6 +1182,15 @@ export function applyToProjection(
             : run,
         ),
       };
+    case "run.delegated-completion-updated":
+      return {
+        ...base,
+        runs: base.runs.map((run) =>
+          run.id === event.payload.runId
+            ? { ...run, delegatedCompletion: event.payload.delegatedCompletion }
+            : run,
+        ),
+      };
     case "run-attempt.created":
     case "run-attempt.updated":
       return withLocalVisibleTurnItems({
@@ -1408,6 +1421,9 @@ const encodeThreadUpdatedAt = Schema.encodeEffect(
 const encodeRunPayload = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2RunJsonSchema));
 const encodeRestartCancelledBackgroundWork = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema.fields.restartCancelledBackgroundWork),
+);
+const encodeDelegatedCompletion = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2RunJsonSchema.fields.delegatedCompletion),
 );
 const encodeRunAttemptPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2RunAttemptJsonSchema),
@@ -2663,6 +2679,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 '$.restartCancelledBackgroundWork',
                 json(${workJson})
               )
+              WHERE run_id = ${event.payload.runId} AND thread_id = ${event.threadId}
+            `;
+              break;
+            }
+            case "run.delegated-completion-updated": {
+              const cohortJson = yield* encodeDelegatedCompletion(
+                event.payload.delegatedCompletion,
+              );
+              yield* sql`
+              UPDATE orchestration_v2_projection_runs
+              SET payload_json = json_set(payload_json, '$.delegatedCompletion', json(${cohortJson}))
               WHERE run_id = ${event.payload.runId} AND thread_id = ${event.threadId}
             `;
               break;
@@ -9197,6 +9224,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
+    // Mirrors the orchestrator's sentByUserFromClient: server recoveries, reviews and answers carry
+    // createdBy user too, and a scheduled run's prompt carries its task's creator.
+    const hasUserWrittenMessage: ProjectionStoreV2Shape["hasUserWrittenMessage"] = (threadId) =>
+      sql<{ readonly written: number }>`
+        SELECT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_messages message
+          WHERE message.thread_id = ${threadId} AND message.role = 'user'
+            AND json_extract(message.payload_json, '$.createdBy') = 'user'
+            AND json_extract(message.payload_json, '$.creationSource') IN ('web', 'mobile')
+            AND json_extract(message.payload_json, '$.scheduledTaskId') IS NULL
+        ) AS written
+      `.pipe(
+        Effect.map((rows) => rows[0]?.written === 1),
+        Effect.mapError(controlReadError(threadId)),
+      );
+
     const getOpenRemoteDelegatedTasks: ProjectionStoreV2Shape["getOpenRemoteDelegatedTasks"] = sql<{
       readonly thread_id: string;
       readonly subagent_id: string;
@@ -10207,6 +10250,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       findGuestShareThreadId: readOnReader(findGuestShareThreadId),
       getThread: readOnReader(getThread),
       getSettlementCandidates: readOnReader(getSettlementCandidates),
+      hasUserWrittenMessage: readOnReader(hasUserWrittenMessage),
       getThreadsWithPullRequests: readOnReader(getThreadsWithPullRequests),
       getThreadTitles: readOnReader(getThreadTitles),
       getThreadLinkMetadata: readOnReader(getThreadLinkMetadata),

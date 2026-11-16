@@ -12,6 +12,7 @@ import {
   type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertSchedule,
   scheduledTaskThreadMode,
+  type ScheduledTaskWebhookSignatureScheme,
   type ModelSelection,
   type RuntimeMode,
   type ProviderInteractionMode,
@@ -186,6 +187,7 @@ export interface DraftState extends PromptFileDraft {
   /** The project's machine order as edited here; null until the user moves a machine. */
   readonly sharedMachineOrder: ReadonlyArray<EnvironmentId> | null;
   readonly signatureEnabled: boolean;
+  readonly signatureScheme: ScheduledTaskWebhookSignatureScheme;
   readonly signatureHeader: string;
   readonly signatureEncoding: "hex" | "base64";
   readonly signaturePrefix: string;
@@ -213,6 +215,7 @@ export function runConditionLostOnTarget(input: {
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
+  signatureScheme: "hmac-sha256",
   signatureHeader: "x-hub-signature-256",
   signatureEncoding: "hex",
   signaturePrefix: "sha256=",
@@ -320,14 +323,16 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
     const secret = draft.signatureSecret.trim();
     return {
       type: "webhook",
-      signature: draft.signatureEnabled
-        ? {
-            header: draft.signatureHeader.trim(),
-            encoding: draft.signatureEncoding,
-            prefix: draft.signaturePrefix,
-            ...(secret ? { secret } : {}),
-          }
-        : null,
+      signature: !draft.signatureEnabled
+        ? null
+        : draft.signatureScheme === "standard-webhooks"
+          ? { scheme: "standard-webhooks", ...(secret ? { secret } : {}) }
+          : {
+              header: draft.signatureHeader.trim(),
+              encoding: draft.signatureEncoding,
+              prefix: draft.signaturePrefix,
+              ...(secret ? { secret } : {}),
+            },
       maxDeliveryAgeMinutes,
       ...(replayKey || coalesceKey || coalesceWindowSeconds !== undefined
         ? {
@@ -405,14 +410,21 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     sharedExcludedEnvironmentIds: task.shared?.excludedEnvironmentIds ?? [],
     sharedRunOn: task.shared?.runOn ?? "every",
     sharedMachineOrder: null,
-    ...(schedule.type === "webhook" && schedule.signature !== null
-      ? {
-          signatureEnabled: true,
-          signatureHeader: schedule.signature.header,
-          signatureEncoding: schedule.signature.encoding,
-          signaturePrefix: schedule.signature.prefix,
-        }
-      : { signatureEnabled: false, ...WEBHOOK_SIGNATURE_DEFAULTS }),
+    ...(schedule.type !== "webhook" || schedule.signature === null
+      ? { signatureEnabled: false, ...WEBHOOK_SIGNATURE_DEFAULTS }
+      : "scheme" in schedule.signature
+        ? {
+            ...WEBHOOK_SIGNATURE_DEFAULTS,
+            signatureEnabled: true,
+            signatureScheme: schedule.signature.scheme,
+          }
+        : {
+            signatureEnabled: true,
+            signatureScheme: "hmac-sha256",
+            signatureHeader: schedule.signature.header,
+            signatureEncoding: schedule.signature.encoding,
+            signaturePrefix: schedule.signature.prefix,
+          }),
     signatureSecret: "",
     replayKey: schedule.type === "webhook" ? (schedule.dedupe?.replayKey ?? "") : "",
     coalesceKey: schedule.type === "webhook" ? (schedule.dedupe?.coalesceKey ?? "") : "",

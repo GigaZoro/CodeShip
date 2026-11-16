@@ -243,7 +243,7 @@ claim.
 A claim is a compare-and-set. A machine takes a free copy for itself, or one
 held by the machine it names in `replaces`: a third machine's copy once the
 holder's own copy agreed, and the holder's own copy once the holder gave that
-occurrence up (recorded it skipped, `unconfirmed` or `ran_elsewhere`) or its
+occurrence up (recorded it skipped, `unconfirmed`, `ran_elsewhere` or `other_version`) or its
 run of it failed after reaching a chat and nobody stopped it. It hands on only
 a copy it holds. Age never frees a claim: a holder still claiming or starting
 its run looks idle to the machines watching it, and only its own copy knows. A
@@ -257,13 +257,19 @@ Every machine waits its rank times a grace period, asks the machines in the
 order (`list_scheduled_tasks`, which also finds a run started without a claim,
 such as one on an older version), then claims. The check decodes only the
 fields it reads, and only the asked task's entry, so a version that changes any
-other field never hides its run. A machine ahead that answers but in a way
-this one cannot read (too old to report runs, an entry that does not decode, an
-entry without an id it reads when none matches, or an answer the client fails
-as `version_mismatch`; a JSON-RPC error is not one) is up and may run the
-occurrence outside the claims, so it is watched
-like a running holder; one that cannot be reached is left to the claims, which
-is what lets a later machine take over from one that is off. Every recheck
+other field never hides its run. The answer also names the machine's
+`SCHEDULED_TASK_CLAIM_PROTOCOL`, raised with every change to how occurrences are
+checked, claimed or settled: machines on different protocols can each decide an
+occurrence is theirs, and one from before the number runs it outside the claims.
+So a machine that sees any member holding the task on another protocol, or answering in a way
+it cannot read (too old to report runs, an entry that does not decode, an entry
+without an id it reads when none matches, or an answer the client fails as
+`version_mismatch`; a JSON-RPC error is not one), runs none of its occurrences:
+it records each skipped, `other_version`, naming that machine, and the task list
+asks to update both. The older machine then runs it alone; two machines on
+different newer protocols both skip until one is updated. A machine that cannot
+be reached is left to the claims, which is what lets a later machine take over
+from one that is off. Every recheck
 while watching asks all the machines again, not only the one watched, since
 another may hold a run outside the claims by then. The link listing keeps the
 unreadable version as `versionWarning`, in memory, until a listing or a call

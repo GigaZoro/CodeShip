@@ -5,7 +5,7 @@ import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 
 import { describe, expect, it, vi } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
@@ -134,7 +134,7 @@ describe("terminatePosixOwnedProcessTree", () => {
     }),
   );
 
-  it.live.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+  it.live.skipIf(!isLinuxHost)(
     "preserves exact argv and strips wrapper-only environment before exec",
     () =>
       Effect.gen(function* () {
@@ -215,7 +215,7 @@ describe("terminatePosixOwnedProcessTree", () => {
       }),
   );
 
-  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+  it.skipIf(!isLinuxHost)(
     "contains a packaged-runtime command without requiring cgroup delegation",
     () => {
       const scratchRoot = NodePath.join(process.cwd(), "tmp");
@@ -817,7 +817,7 @@ describe("terminatePosixOwnedProcessTree", () => {
     }),
   );
 
-  it.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+  it.skipIf(!isLinuxHost)(
     "snapshots /proc when a process exits while its entry is being typed",
     () => {
       const fs = NodeModule.createRequire(import.meta.url)("node:fs") as typeof NodeFS;

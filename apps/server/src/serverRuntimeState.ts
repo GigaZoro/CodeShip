@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { formatHostForUrl, isWildcardHost } from "@t3tools/shared/hostClassification";
 import packageJson from "../package.json" with { type: "json" };
 import type * as ServerConfig from "./config.ts";
@@ -130,17 +131,6 @@ export const clearPersistedServerRuntimeState = Effect.fn(
     }),
   );
 });
-
-/** Signal 0 only probes existence; EPERM still means alive. */
-export const isProcessAlive = (pid: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
-  }
-};
 
 /**
  * When `pid` started, in epoch milliseconds, to tell a process from a later one that reuses

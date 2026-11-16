@@ -14,6 +14,7 @@ import type {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { redactSensitiveText, stripTerminalEscapes } from "@t3tools/shared/redaction";
 import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
 
@@ -262,9 +263,10 @@ function replaceUnsafeControlCharacters(value: string): string {
 }
 
 function redactProviderFailureText(value: string): string {
-  return replaceUnsafeControlCharacters(value)
+  // URLs are rebuilt only after redaction, which finds user info by the URL's own `@`.
+  return redactSensitiveText(replaceUnsafeControlCharacters(stripTerminalEscapes(value)))
     .replace(/\bhttps?:\/\/[^\s<>"']+/giu, redactUrl)
-    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/giu, "$1 [REDACTED]")
+    .replace(/\b(Basic)\s+[^\s,;]+/giu, "$1 [REDACTED]")
     .replace(
       /(["'][\w-]*(?:access[_-]?token|api[_-]?key|authorization|credential|password|secret|token)["']\s*:\s*["'])[^"']*(["'])/giu,
       "$1[REDACTED]$2",
@@ -273,7 +275,6 @@ function redactProviderFailureText(value: string): string {
       /((?<![\w-])[\w-]*(?:access[_-]?token|api[_-]?key|authorization|credential|password|secret|token)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
       "$1[REDACTED]",
     )
-    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/gu, "[REDACTED]")
     .trim();
 }
 

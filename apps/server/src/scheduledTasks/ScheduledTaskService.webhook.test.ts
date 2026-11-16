@@ -11,6 +11,7 @@ import {
   ScheduledTaskWebhookDeliveryId,
   SecretRequestError,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
@@ -485,6 +486,68 @@ it.effect("checks the configured signature and keeps the secret write-only", () 
         ["accepted", true],
         ["rejected_signature", false],
       ]);
+    }),
+  ),
+);
+
+it.effect("verifies Standard Webhooks deliveries and replays them by webhook-id", () =>
+  withService(({ service }) =>
+    Effect.gen(function* () {
+      const secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+      const notBase64 = yield* service
+        .upsert(
+          yield* webhookTaskInput({
+            schedule: {
+              type: "webhook",
+              signature: { scheme: "standard-webhooks", secret: "whsec_not base64!" },
+            },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )
+        .pipe(Effect.flip);
+      assert.include(notBase64.message, "whsec_");
+      const { task } = yield* service.upsert(
+        yield* webhookTaskInput({
+          schedule: { type: "webhook", signature: { scheme: "standard-webhooks", secret } },
+        }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      assert.deepEqual(task.schedule, {
+        type: "webhook",
+        signature: { scheme: "standard-webhooks" },
+        maxDeliveryAgeMinutes: null,
+        dedupe: { replayKey: "{{headers.webhook-id}}" },
+      });
+
+      const sentAt = yield* Clock.currentTimeMillis;
+      const timestamp = String(Math.floor(sentAt / 1000));
+      const signed = `v1,${NodeCrypto.createHmac("sha256", Buffer.from(secret.slice(6), "base64"))
+        .update(`msg_1.${timestamp}.`)
+        .update(pullRequestBody)
+        .digest("base64")}`;
+      const headers = {
+        "content-type": "application/json",
+        "webhook-id": "msg_1",
+        "webhook-timestamp": timestamp,
+        "webhook-signature": signed,
+      };
+      const deliver = (overrides: Partial<ScheduledTaskService.WebhookTriggerRequest>) =>
+        service
+          .triggerWebhook(requestFor(task, overrides))
+          .pipe(
+            Effect.map((result) => (result._tag === "accepted" ? result.outcome : result._tag)),
+          );
+      assert.equal(
+        yield* deliver({ headers: { ...headers, "webhook-signature": "v1,Zm9yZ2Vk" } }),
+        "rejected_signature",
+      );
+      assert.equal(yield* deliver({}), "rejected_signature");
+
+      yield* TestClock.adjust("6 minutes");
+      assert.equal(yield* deliver({ headers }), "rejected_signature");
+      const heldByRelay = { headers, receivedAt: DateTime.formatIso(DateTime.makeUnsafe(sentAt)) };
+      assert.equal(yield* deliver(heldByRelay), "accepted");
+      assert.equal(yield* deliver(heldByRelay), "duplicate");
     }),
   ),
 );

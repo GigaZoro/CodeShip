@@ -12,7 +12,8 @@ import * as Path from "effect/Path";
 import * as BootService from "../cloud/bootService.ts";
 import * as ManagedEndpointRuntime from "../cloud/ManagedEndpointRuntime.ts";
 import type * as ServerConfig from "../config.ts";
-import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
+import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import {
   buildTriageContext,
   buildTriageSeedPrompt,

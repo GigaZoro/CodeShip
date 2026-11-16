@@ -27,6 +27,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { isWindowsRenameLock } from "./atomicWrite.ts";
 import * as HostProcess from "./HostProcess.ts";
+import { isProcessAlive } from "./processProbe.ts";
 
 export const CLOUDFLARED_VERSION = "2026.10.4";
 // Minimum for --output support; older connectors exit on that flag.
@@ -235,15 +236,6 @@ function parseLockOwnerPid(owner: string): number | null {
   if (separator <= 0) return null;
   const pid = Number(owner.slice(0, separator));
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as { readonly code?: unknown }).code !== "ESRCH";
-  }
 }
 
 const wrapInstallFailure =
@@ -555,7 +547,7 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
         let recovered = owners.length === 0;
         for (const entry of owners) {
           const pid = parseLockOwnerPid(entry);
-          if (pid !== null && !processIsAlive(pid)) {
+          if (pid !== null && !isProcessAlive(pid)) {
             yield* releaseOwnedLock(lockPath, entry);
             recovered = true;
           }

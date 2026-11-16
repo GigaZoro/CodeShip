@@ -234,6 +234,29 @@ describe("new thread model fallback", () => {
       }).selection?.options,
     ).toEqual(expected);
   });
+  const weekly = {
+    ...window,
+    id: "seven_day",
+    kind: "weekly",
+    label: "Weekly",
+    usedPercent: 70,
+    windowDurationMins: 10_080,
+    resetsAt: "2026-09-08T12:00:00.000Z",
+  } as const;
+  it.each([
+    { answer: true, windows: [{ ...window, usedPercent: 100 }], held: undefined },
+    // A no with room left holds the account until its fullest window resets.
+    { answer: false, windows: [window, weekly], held: weekly },
+  ])("believes the provider's answer $answer over its percentages", ({ answer, windows, held }) => {
+    expect(
+      exhaustedUsageWindow(
+        provider({
+          usageLimits: { checkedAt: limited.checkedAt, windows, usageAllowed: answer },
+        }),
+        now,
+      ),
+    ).toEqual(held);
+  });
   it.each([undefined, "invalid"])("treats an unknown reset as exhausted: %s", (resetsAt) => {
     expect(
       exhaustedUsageWindow(
@@ -315,6 +338,8 @@ describe("new thread model fallback", () => {
     ["claudeAgent", ["seven_day_fable"], "claude-opus-5-5", false, undefined, undefined],
     ["claudeAgent", ["seven_day_fable"], "claude-fable-5-1", true, undefined, undefined],
     ["claudeAgent", ["seven_day"], "claude-opus-5-5", true, undefined, undefined],
+    // Fable's weekly meter is a share of the weekly allowance, so a spent week holds Fable too.
+    ["claudeAgent", ["seven_day"], "claude-fable-5-2", true, undefined, undefined],
     ["cursor", ["autoPercentUsed"], "claude-opus-5-5", false, undefined, undefined],
     ["cursor", ["autoPercentUsed"], "composer-2.5", false, undefined, undefined],
     ["cursor", ["autoPercentUsed", "apiPercentUsed"], "composer-2.5", true, undefined, undefined],

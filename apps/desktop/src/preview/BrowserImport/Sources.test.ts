@@ -14,7 +14,6 @@ import * as NodeSqlite from "node:sqlite";
 import type { BrowserImportPathContext } from "./Sources.ts";
 import {
   BROWSER_IMPORT_SOURCES,
-  chromiumProcessIsAlive,
   chromiumSingletonLockIsHeld,
   firefoxSymlinkLockIsHeld,
   resolveCookieDatabase,
@@ -159,41 +158,6 @@ describe("chromiumSingletonLockIsHeld", () => {
       );
       assert.isTrue(yield* chromiumSingletonLockIsHeld("current-host-0", "current-host", probe));
       assert.strictEqual(probes, 0);
-    }),
-  );
-});
-
-describe("chromiumProcessIsAlive", () => {
-  it.effect("returns false only when signal 0 reports a missing process", () =>
-    Effect.gen(function* () {
-      const missing = Object.assign(new Error("missing"), { code: "ESRCH" });
-      const denied = Object.assign(new Error("denied"), { code: "EPERM" });
-      assert.isFalse(
-        yield* chromiumProcessIsAlive(4321, () => {
-          throw missing;
-        }),
-      );
-      assert.isTrue(
-        yield* chromiumProcessIsAlive(4321, () => {
-          throw denied;
-        }),
-      );
-      assert.isTrue(
-        yield* chromiumProcessIsAlive(4321, () => {
-          throw undefined;
-        }),
-      );
-      assert.isTrue(
-        yield* chromiumProcessIsAlive(4321, () => {
-          throw "unknown failure";
-        }),
-      );
-      assert.isTrue(
-        yield* chromiumProcessIsAlive(4321, () => {
-          throw null;
-        }),
-      );
-      assert.isTrue(yield* chromiumProcessIsAlive(4321, () => true));
     }),
   );
 });

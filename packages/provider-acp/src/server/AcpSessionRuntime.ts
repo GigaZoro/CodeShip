@@ -36,7 +36,13 @@ import {
   RAISE_OOM_SCORE_LINE,
 } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive as isProcessAliveByProbe } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
+import {
+  stopWindowsProcessTree,
+  withWindowsTreeRoot,
+  type WindowsProcessTreeRoot,
+} from "@t3tools/shared/windowsProcessTree";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { redactProviderOutput } from "@t3tools/provider-core/server/providerOutput";
@@ -178,7 +184,6 @@ export class AcpProcessGroupTerminationError extends Schema.TaggedError<AcpProce
   {
     detail: Schema.String,
     pid: Schema.optionalKey(Schema.Int),
-    exitCode: Schema.optionalKey(Schema.Number),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -335,15 +340,6 @@ export interface SweepStaleLinuxCgroupSiblingsOptions {
   readonly remove?: (siblingPath: string) => void;
 }
 
-function defaultCgroupOwnerIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (cause) {
-    return (cause as NodeJS.ErrnoException | undefined)?.code !== "ESRCH";
-  }
-}
-
 function defaultReadCgroupPopulated(siblingPath: string): "0" | "1" | undefined {
   const state = /(?:^|\n)populated ([01])(?:\n|$)/.exec(
     NodeFS.readFileSync(NodePath.join(siblingPath, "cgroup.events"), "utf8"),
@@ -356,7 +352,7 @@ export function sweepStaleLinuxCgroupSiblings(
   options: SweepStaleLinuxCgroupSiblingsOptions = {},
 ): void {
   const currentPid = options.currentPid ?? process.pid;
-  const isProcessAlive = options.isProcessAlive ?? defaultCgroupOwnerIsAlive;
+  const isProcessAlive = options.isProcessAlive ?? isProcessAliveByProbe;
   const readPopulated = options.readPopulated ?? defaultReadCgroupPopulated;
   const remove = options.remove ?? ((siblingPath: string) => NodeFS.rmdirSync(siblingPath));
   try {
@@ -1028,46 +1024,15 @@ export function terminatePosixOwnedProcessTree(input: {
   }).pipe(withWallClock);
 }
 
-function windowsTaskkillResultIsSuccess(exitCode: number, _output?: string): boolean {
-  return exitCode === 0;
-}
-
-const terminateWindowsProcessTreeWithTaskkill = (
-  pid: number,
-): Effect.Effect<void, AcpProcessGroupTerminationError, ChildProcessSpawner.ChildProcessSpawner> =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const taskkill = yield* spawner.spawn(
-        ChildProcess.make("taskkill", ["/PID", String(pid), "/T", "/F"]),
-      );
-      const outputFiber = yield* Stream.decodeText(taskkill.all).pipe(
-        Stream.mkString,
-        Effect.forkScoped,
-      );
-      const exitCode = Number(yield* taskkill.exitCode);
-      const output = yield* Fiber.join(outputFiber);
-      // A missing leader cannot prove that inherited descendants exited.
-      if (windowsTaskkillResultIsSuccess(exitCode, output)) return;
-      const trimmedOutput = output.trim();
-      return yield* new AcpProcessGroupTerminationError({
-        detail: `taskkill exited ${exitCode} for ACP process tree ${pid}`,
-        pid,
-        exitCode,
-        ...(trimmedOutput.length === 0
-          ? {}
-          : { cause: trimmedOutput.length > 500 ? trimmedOutput.slice(0, 500) : trimmedOutput }),
-      });
-    }),
-  ).pipe(
-    Effect.mapError((cause) =>
-      isAcpProcessGroupTerminationError(cause)
-        ? cause
-        : new AcpProcessGroupTerminationError({
-            cause,
-            detail: `Failed to run taskkill for ACP process tree ${pid}`,
-            pid,
-          }),
+const stopAcpWindowsProcessTree = (root: WindowsProcessTreeRoot) =>
+  stopWindowsProcessTree(root).pipe(
+    Effect.mapError(
+      (cause) =>
+        new AcpProcessGroupTerminationError({
+          cause,
+          detail: `Failed to stop ACP process tree ${root.pid}`,
+          pid: root.pid,
+        }),
     ),
   );
 
@@ -1473,7 +1438,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ELECTRON_RUN_AS_NODE: "1",
           T3_ACP_CGROUP_WRAPPER: "1",
         };
-  const child = yield* spawner
+  const { handle: child, root: childTreeRoot } = yield* spawner
     .spawn(
       ChildProcess.make(containedSpawnCommand.command, containedSpawnCommand.args, {
         ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
@@ -1489,6 +1454,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     )
     .pipe(
       Effect.provideService(Scope.Scope, runtimeScope),
+      withWindowsTreeRoot,
       Effect.mapError(
         (cause) =>
           new EffectAcpErrors.AcpSpawnError({
@@ -1573,12 +1539,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         return cause?.code === "ESRCH" ? Effect.succeed(false) : Effect.fail(error);
       }),
     );
+  // Each walk starts PowerShell, so terminating the group and the scope's finalizer share one.
+  const stopChildTree = yield* Effect.cached(
+    stopAcpWindowsProcessTree(childTreeRoot).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    ),
+  );
   const terminateWindowsProcessTree =
-    options.windowsProcessTreeTerminator ??
-    ((pid: number) =>
-      terminateWindowsProcessTreeWithTaskkill(pid).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      ));
+    options.windowsProcessTreeTerminator?.(Number(child.pid)) ?? stopChildTree;
   const terminatePosixProcessTree = Effect.fn("AcpSessionRuntime.terminatePosixProcessTree")(
     function* (grace: Duration.Input, platformOverride?: NodeJS.Platform) {
       const platform = platformOverride ?? options.processGroupPlatform;
@@ -1614,7 +1582,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       });
     }
     if (options.processGroupPlatform === "win32") {
-      return yield* terminateWindowsProcessTree(Number(child.pid));
+      return yield* terminateWindowsProcessTree;
     }
     if (linuxCgroupLease !== undefined) {
       if (posixController !== undefined) {
@@ -1647,9 +1615,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   if (options.ownDetachedProcessGroup === true) {
     const forceTerminateOwnedProcessGroup =
       hostPlatform === "win32"
-        ? terminateWindowsProcessTreeWithTaskkill(Number(child.pid)).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          )
+        ? stopChildTree
         : linuxCgroupLease !== undefined
           ? terminateLinuxCgroupLease(linuxCgroupLease)
           : options.ownDescendantProcessGroups === true

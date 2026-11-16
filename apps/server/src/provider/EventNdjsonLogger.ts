@@ -8,6 +8,7 @@ import type { ThreadId } from "@t3tools/contracts";
 import type * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeAsyncRotatingFileSink } from "@t3tools/shared/logging";
 import { errorTag } from "@t3tools/shared/observability";
+import { redactJsonText } from "@t3tools/shared/redaction";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -610,7 +611,9 @@ const drainPending = Effect.fnUntraced(function* (input: {
 });
 
 const serializeEvent = Effect.fnUntraced(function* (event: unknown) {
+  // Provider frames carry the signed-in account, such as Codex's `account/read` reply.
   return yield* encodeUnknownJsonString(event).pipe(
+    Effect.map(redactJsonText),
     Effect.catch((error) =>
       logWarning("failed to serialize provider event log record", {
         errorTag: errorTag(error),

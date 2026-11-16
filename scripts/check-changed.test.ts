@@ -259,7 +259,8 @@ describe("check:changed", () => {
   });
 
   // A provider's replay suite reaches its adapter through the adapter's testkit
-  // and the fixture index, which is how 40b1b72673 broke one unseen.
+  // and the fixture index, which is how 40b1b72673 broke one unseen. A service's
+  // own tests reach it through the service.
   const reachSources: Record<string, string> = {
     "server/Adapter.ts": "export const run = 1;\n",
     "server/Adapter.testkit.ts": 'import { run } from "./Adapter.ts";\n',
@@ -279,14 +280,14 @@ describe("check:changed", () => {
     "server/Barrel.test.ts": 'import { code } from "@t3/core";\n',
   };
   it.each([
-    ["server/Adapter.ts", ["server/testkit/Replay.integration.test.ts"]],
+    ["server/Adapter.ts", ["server/Service.test.ts", "server/testkit/Replay.integration.test.ts"]],
     [
       "server/testkit/fixtures/case/transcript.ndjson",
       ["server/testkit/Replay.integration.test.ts"],
     ],
     ["core/src/failure.ts", ["server/Failure.test.ts"]],
     ["core/src/index.ts", []],
-  ])("selects the tests that reach %s through test code", (changed, expected) => {
+  ])("selects the tests that reach %s", (changed, expected) => {
     assert.deepStrictEqual(
       testsReaching({
         changed: [changed],
@@ -599,6 +600,7 @@ it("checks changed source paths through the Windows launcher", () => {
   });
   expect(calls.some(({ args }) => args[0] === "fmt" && args.includes(project.source))).toBe(true);
   expect(calls.some(({ args }) => args[0] === "run" && args.includes("typecheck"))).toBe(true);
+  expect(calls.some(({ args }) => args.join(" ") === "run licenses:check")).toBe(true);
   expect(calls.filter(({ args }) => args[0] === "install")).toEqual([
     { args: ["install", "--frozen-lockfile", "--prefer-offline"], cwd: project.root },
   ]);
@@ -684,7 +686,8 @@ it("installs Chromium before web browser tests and runs none without it", () => 
 });
 
 it.each([
-  ["install", "install --lockfile-only"],
+  ["unused patches", "install --lockfile-only"],
+  ["third-party licenses", "run licenses:check"],
   ["lint", "lint"],
 ])("reports a failing %s step with its output", (step, failing) => {
   using project = launcherFixture();
@@ -702,10 +705,14 @@ it.each([
     "--ignore-scripts",
   ]);
   expect(install?.cwd).not.toBe(project.root);
-  expect(result.stdout + result.stderr).toContain(`fixture stdout: ${step}`);
-  expect(result.stdout + result.stderr).toContain(`fixture stderr: ${step}`);
-  expect(result.stdout).toContain(step === "install" ? "FAIL  unused patches" : "FAIL  lint");
-  if (step === "lint") expect(result.stdout).toContain("pass  unused patches");
+  const command = failing.split(" ")[0];
+  expect(result.stdout + result.stderr).toContain(`fixture stdout: ${command}`);
+  expect(result.stdout + result.stderr).toContain(`fixture stderr: ${command}`);
+  expect(result.stdout).toContain(`FAIL  ${step}`);
+  if (step === "lint") {
+    expect(result.stdout).toContain("pass  unused patches");
+    expect(result.stdout).toContain("pass  third-party licenses");
+  }
   expect(
     NodeFS.existsSync(NodePath.join(project.root, "node_modules/.cache/check-changed.json")),
   ).toBe(false);

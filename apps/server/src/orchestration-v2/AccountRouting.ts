@@ -23,6 +23,7 @@ import {
 import {
   exhaustedUsageWindow,
   isSubscriptionAccount,
+  nextWeeklyResetMs,
   usageHoldMs,
   usageScopeCoversModel,
   usageWindowLimitEnd,
@@ -267,7 +268,7 @@ function runnableModel(
 }
 
 /** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
-export function usableModel(
+function usableModel(
   provider: ServerProvider,
   input: Pick<AccountRoutingContext, "settings"> & {
     readonly projectId: ProjectId;
@@ -324,12 +325,15 @@ interface AccountSearch extends AccountRoutingContext {
   readonly driver: ProviderDriverKind;
   readonly projectId: ProjectId;
   readonly model: string;
+  /** Order accounts with room by their next weekly reset on `model` first, then the saved order. */
+  readonly preferEarliestReset?: boolean;
 }
 
 /**
- * Accounts of `driver` that can run `model` now, highest in the saved account order first. An
- * account that must sign in to an MCP server again comes after every account that need not, since
- * its agents would run without that server's tools.
+ * Accounts of `driver` that can run `model` now, highest in the saved account order first, or with
+ * `preferEarliestReset` the one whose weekly usage resets first, since room it leaves unused is lost
+ * at its reset. An account that must sign in to an MCP server again comes after every account that
+ * need not, since its agents would run without that server's tools.
  */
 export function accountsWithRoom(
   input: AccountSearch & McpSignIns,
@@ -338,12 +342,24 @@ export function accountsWithRoom(
   const eligible = input.providers.flatMap((provider) => {
     if (provider.driver !== input.driver) return [];
     const model = modelWithRoom(provider, input);
-    return model === null ? [] : [{ instanceId: provider.instanceId, model }];
+    return model === null
+      ? []
+      : [
+          {
+            instanceId: provider.instanceId,
+            model,
+            resetAt: input.preferEarliestReset
+              ? (nextWeeklyResetMs(provider, input.nowMs, model) ?? Infinity)
+              : Infinity,
+          },
+        ];
   });
   const ordered = orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
     eligible,
-  );
+  )
+    .toSorted((a, b) => (a.resetAt === b.resetAt ? 0 : a.resetAt - b.resetAt))
+    .map(({ instanceId, model }) => ({ instanceId, model }));
   const signedIn = (account: { readonly instanceId: ProviderInstanceId }) =>
     pendingSignIns(input, account.instanceId).length === 0;
   return [...ordered.filter(signedIn), ...ordered.filter((account) => !signedIn(account))];
@@ -388,9 +404,9 @@ function firstAccountWithRoomAgain(input: AccountSearch) {
 
 /**
  * Where an Auto selection runs: its provider's Auto model. With account switching on, a thread keeps
- * an account with room, so its session never restarts needlessly, unless it must sign in to an MCP
- * server again and the top account with room need not; else the top one with room. With none, it keeps
- * an account that can still run, else the signed-in one whose limit ends first. Off: as named.
+ * an account with room unless it must sign in to an MCP server again and the top one need not; else
+ * the top one with room (for a scheduled run, the soonest weekly reset). With none, it keeps one that
+ * can still run, else the signed-in one whose limit ends first. Off: as named.
  */
 export function routeAutoAccount(
   input: AccountRoutingContext &
@@ -401,6 +417,8 @@ export function routeAutoAccount(
       readonly currentInstanceId: ProviderInstanceId | null;
       /** A thread that already ran keeps its provider. */
       readonly started: boolean;
+      /** A scheduled task's run, which spends the room that would be lost first. */
+      readonly scheduled?: boolean;
     },
 ): ModelSelection {
   if (input.selection.autoAccount !== true) return input.selection;
@@ -418,7 +436,12 @@ export function routeAutoAccount(
   const current = input.providers.find(
     (provider) => provider.instanceId === input.currentInstanceId && provider.driver === driver,
   );
-  const search = { ...input, driver, model: selection.model };
+  const search = {
+    ...input,
+    driver,
+    model: selection.model,
+    preferEarliestReset: input.scheduled === true,
+  };
   const pickTarget = () => {
     if (current !== undefined) {
       const model = modelWithRoom(current, search);
@@ -657,6 +680,21 @@ export function usageBlock(
 
 /** A limited account's usage is read again at most this often, so a limit that ended early frees it. */
 const USAGE_PROBE_INTERVAL_MS = 60 * 60_000;
+/**
+ * A held Codex account is read this long after its refusal and as often after, since Codex says
+ * whether the account may be used again, as after a banked reset.
+ */
+const ALLOWED_PROBE_INTERVAL_MS = 10 * 60_000;
+/** How often the held accounts are listed to find the ones due a read. */
+const HOLD_RELEASE_SCAN_MS = 60_000;
+
+/** Whether a fresh reading frees a held account. */
+type ReadingFrees = (provider: ServerProvider, nowMs: number) => boolean;
+/** The ten-minute Codex path frees only on Codex's explicit yes; silence leaves the hourly path. */
+const providerAllows: ReadingFrees = (provider) => provider.usageLimits?.usageAllowed === true;
+const usageHasRoom: ReadingFrees = (provider, nowMs) =>
+  provider.usageLimits?.usageAllowed !== false &&
+  exhaustedUsageWindow(provider, nowMs) === undefined;
 
 export class AccountRouting extends Context.Service<
   AccountRouting,
@@ -667,6 +705,7 @@ export class AccountRouting extends Context.Service<
       readonly projectId: ProjectId;
       readonly currentInstanceId: ProviderInstanceId | null;
       readonly started: boolean;
+      readonly scheduled?: boolean;
     }) => Effect.Effect<ModelSelection>;
     /**
      * Subscription accounts that can run this model, in failover order, with accounts that must
@@ -725,6 +764,12 @@ export class AccountRouting extends Context.Service<
       readonly projectId: ProjectId;
       readonly delegates: ReadonlyArray<ProviderDriverKind>;
     }) => Effect.Effect<UsageBlock | null>;
+    /**
+     * Reads the usage of each held Codex account at most every 10 minutes, and lifts its holds as
+     * soon as Codex says the account may be used again. True when it lifted one. A failed read
+     * leaves the hold to its reset.
+     */
+    readonly releaseAllowedHolds: Effect.Effect<boolean>;
   }
 >()("t3/orchestration-v2/AccountRouting") {}
 
@@ -877,25 +922,28 @@ export const layer = Layer.effect(
       return { block, providers, recordedLimits };
     });
     const probedAt = yield* Ref.make(new Map<ProviderInstanceId, number>());
-    // Only a reading taken after the last refusal can say it no longer holds, as when the
-    // provider reset the account early. A wrong lift costs one refused turn an hour.
+    // Only a full read after the last refusal can say it no longer holds; a streamed update moves
+    // `checkedAt` without reading the permission. A wrong lift costs one refused turn an hour. The
+    // provider's own answer outranks its percentages, and the lift ends at the read, so a refusal
+    // recorded after it still holds.
     const probeAccount = Effect.fn("AccountRouting.probeAccount")(
-      function* (instanceId: ProviderInstanceId, lastRefusedAtMs: number) {
+      function* (instanceId: ProviderInstanceId, lastRefusedAtMs: number, frees: ReadingFrees) {
         const providers = yield* providerRegistry
           .refreshInstance(instanceId)
           .pipe(Effect.timeout(USAGE_PROBE_TIMEOUT));
         const provider = providers.find((entry) => entry.instanceId === instanceId);
         const usage = provider?.usageLimits;
-        const now = yield* DateTime.now;
+        const readAtMs = Date.parse(usage?.accountReadAt ?? usage?.checkedAt ?? "");
         if (
+          provider === undefined ||
           usage === undefined ||
           usage.unavailable !== undefined ||
-          Date.parse(usage.checkedAt) <= lastRefusedAtMs ||
-          exhaustedUsageWindow(provider, DateTime.toEpochMillis(now)) !== undefined
+          !(readAtMs > lastRefusedAtMs) ||
+          !frees(provider, DateTime.toEpochMillis(yield* DateTime.now))
         ) {
           return false;
         }
-        yield* projections.liftUsageLimitHolds(instanceId, now);
+        yield* projections.liftUsageLimitHolds(instanceId, DateTime.makeUnsafe(readAtMs));
         yield* Effect.logInfo("orchestration-v2.account-routing.probe-found-room", { instanceId });
         return true;
       },
@@ -909,7 +957,60 @@ export const layer = Layer.effect(
           ),
         ),
     );
+    const releaseScannedAt = yield* Ref.make(-Infinity);
     return {
+      releaseAllowedHolds: Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const nowMs = DateTime.toEpochMillis(now);
+        const scan = yield* Ref.modify(releaseScannedAt, (last) =>
+          nowMs - last >= HOLD_RELEASE_SCAN_MS ? [true, nowMs] : [false, last],
+        );
+        if (!scan) return false;
+        const providers = yield* providerRegistry.getProviders;
+        const recorded = yield* readLimits(now, providers);
+        // ChatGPT's app cap is not ordinary usage, so its holds keep the hourly path.
+        const held = providers.flatMap((provider) => {
+          const refusals = recorded.get(provider.instanceId) ?? [];
+          return provider.enabled &&
+            provider.driver === CODEX_DRIVER &&
+            refusals.length > 0 &&
+            refusals.every((refusal) => refusal.appCap === undefined)
+            ? [
+                {
+                  instanceId: provider.instanceId,
+                  lastRefusedAtMs: Math.max(
+                    ...refusals.map((refusal) => Date.parse(refusal.refusedAt)),
+                  ),
+                },
+              ]
+            : [];
+        });
+        const due = yield* Ref.modify(probedAt, (probed) => {
+          const accounts = held.filter(
+            ({ instanceId, lastRefusedAtMs }) =>
+              nowMs - Math.max(lastRefusedAtMs, probed.get(instanceId) ?? -Infinity) >=
+              ALLOWED_PROBE_INTERVAL_MS,
+          );
+          if (accounts.length === 0) return [accounts, probed] as const;
+          const next = new Map(probed);
+          for (const { instanceId } of accounts) next.set(instanceId, nowMs);
+          return [accounts, next] as const;
+        });
+        const found = yield* Effect.forEach(
+          due,
+          ({ instanceId, lastRefusedAtMs }) =>
+            probeAccount(instanceId, lastRefusedAtMs, providerAllows),
+          { concurrency: "unbounded" },
+        );
+        return found.some(Boolean);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("orchestration-v2.account-routing.hold-release-failed", {
+            cause,
+          }).pipe(Effect.as(false)),
+        ),
+        Effect.withSpan("AccountRouting.releaseAllowedHolds"),
+      ),
       scheduledRunBlock: Effect.fn("AccountRouting.scheduledRunBlock")(
         function* (input) {
           const read = yield* readUsageBlock(input);
@@ -942,6 +1043,7 @@ export const layer = Layer.effect(
                     Date.parse(refusal.refusedAt),
                   ),
                 ),
+                usageHasRoom,
               ),
             { concurrency: "unbounded" },
           );

@@ -697,7 +697,6 @@ interface ProviderInstanceCardProps {
   readonly headerAction?: ReactNode | undefined;
   readonly setup?: ReactNode;
   readonly runtime?: ReactNode;
-  readonly usageLimits?: ReactNode;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
@@ -777,7 +776,6 @@ export function ProviderInstanceCard({
   headerAction,
   setup,
   runtime,
-  usageLimits,
   hiddenModels,
   favoriteModels,
   modelOrder,
@@ -1370,8 +1368,6 @@ export function ProviderInstanceCard({
           }
         />
       </SettingsSection>
-
-      {usageLimits}
 
       {setup || environmentFields.length > 0 ? (
         <SettingsSection title={t("Setup")}>

@@ -4,6 +4,7 @@ import {
   OrchestratorMcpClaimScheduledTaskOccurrenceResult,
   OrchestratorMcpScheduledOccurrence,
   OrchestratorMcpScheduledTask,
+  SCHEDULED_TASK_CLAIM_PROTOCOL,
   type ScheduledTaskId,
   ScheduledTaskNoWorkSkip,
 } from "@t3tools/contracts";
@@ -22,7 +23,10 @@ import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 // Only what the check reads, and only for this task, so a change to any other field or task in a
 // peer's answer never hides its run.
 const decodePeerTaskList = Schema.decodeUnknownOption(
-  Schema.Struct({ tasks: Schema.Array(Schema.Unknown) }),
+  Schema.Struct({
+    tasks: Schema.Array(Schema.Unknown),
+    claimProtocol: Schema.optional(Schema.Unknown),
+  }),
 );
 const decodePeerTask = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -67,10 +71,10 @@ export interface PeerCheckResult {
     readonly reason: string;
   }>;
   /**
-   * The unchecked machines that answered, so they are up, but not in a way that says whether they
-   * have the occurrence, such as one on a version whose answer this one cannot read.
+   * Machines that answered, so they are up, on another claim protocol than this one's or in a way
+   * this one cannot read. Each may decide the occurrence is its own whatever this one does.
    */
-  readonly unreadable: ReadonlyArray<EnvironmentId>;
+  readonly otherVersion: ReadonlyArray<EnvironmentId>;
 }
 
 export interface PeerClaimResult {
@@ -90,8 +94,8 @@ interface PeerAnswer {
   readonly environmentId: EnvironmentId;
   /** Why it could not be asked; null when it answered. */
   readonly reason: string | null;
-  /** It answered, so it is up, but its answer does not say whether it has the occurrence. */
-  readonly unreadable: boolean;
+  /** It answered, on another claim protocol or in a way this one cannot read. */
+  readonly otherVersion: boolean;
   readonly has: "working" | "completed" | null;
   readonly noWork: PeerCheckResult["noWork"];
   readonly liveRuns: number;
@@ -180,7 +184,7 @@ const make = Effect.gen(function* () {
           noWork: null,
           liveRunsElsewhere: [],
           unchecked: [],
-          unreadable: [],
+          otherVersion: [],
         };
       }
       // A late run of the occurrence before starts inside this one's window, so only the occurrence
@@ -191,10 +195,10 @@ const make = Effect.gen(function* () {
           ? Date.parse(startedAt) >= Date.parse(input.since)
           : occurrence !== null && Date.parse(occurrence) >= Date.parse(input.occurrence);
       const askOne = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
-        const unchecked = (reason: string, unreadable = false): PeerAnswer => ({
+        const unchecked = (reason: string, otherVersion = false): PeerAnswer => ({
           environmentId,
           reason,
-          unreadable,
+          otherVersion,
           has: null,
           noWork: null,
           liveRuns: 0,
@@ -243,10 +247,12 @@ const make = Effect.gen(function* () {
               !Predicate.hasProperty(candidate, "scheduledTaskId") ||
               typeof candidate.scheduledTaskId !== "string",
           );
+          // Without the task it cannot run it, whichever protocol it follows.
           return unidentified ? yield* unreadable : unchecked("It does not have this task yet.");
         }
         const decoded = decodePeerTask(entry);
         if (Option.isNone(decoded)) return yield* unreadable;
+        const otherVersion = listed.value.claimProtocol !== SCHEDULED_TASK_CLAIM_PROTOCOL;
         const task = decoded.value;
         // A version before `lastRun` reports no run it started outside the claims.
         if (task.lastRun === undefined) return yield* unreadable;
@@ -264,7 +270,7 @@ const make = Effect.gen(function* () {
         ): PeerAnswer => ({
           environmentId,
           reason: null,
-          unreadable: false,
+          otherVersion,
           has,
           noWork,
           liveRuns,
@@ -305,7 +311,9 @@ const make = Effect.gen(function* () {
             ? []
             : [{ environmentId: answer.environmentId, reason: answer.reason }],
         ),
-        unreadable: answers.flatMap((answer) => (answer.unreadable ? [answer.environmentId] : [])),
+        otherVersion: answers.flatMap((answer) =>
+          answer.otherVersion ? [answer.environmentId] : [],
+        ),
       };
     },
   );

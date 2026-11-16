@@ -94,10 +94,27 @@ const ScheduledTaskWebhookSignatureFields = {
   }),
 };
 
-export const ScheduledTaskWebhookSignature = Schema.Struct(
-  ScheduledTaskWebhookSignatureFields,
-).annotate({ description: "HMAC-SHA256 check on the raw body." });
+const ScheduledTaskStandardWebhookSignatureFields = {
+  scheme: Schema.Literal("standard-webhooks"),
+};
+
+const standardWebhooksDescription =
+  "Standard Webhooks (webhook-id, webhook-timestamp, webhook-signature; whsec_ secret). Refuses timestamps over 5 min off. Replay key defaults to webhook-id.";
+
+/** Standard Webhooks comes first: a union member ignores keys it does not declare. */
+export const ScheduledTaskWebhookSignature = Schema.Union([
+  Schema.Struct(ScheduledTaskStandardWebhookSignatureFields).annotate({
+    description: standardWebhooksDescription,
+  }),
+  Schema.Struct(ScheduledTaskWebhookSignatureFields).annotate({
+    description: "HMAC-SHA256 of the raw body with the secret.",
+  }),
+]);
 export type ScheduledTaskWebhookSignature = typeof ScheduledTaskWebhookSignature.Type;
+export type ScheduledTaskWebhookSignatureScheme = "hmac-sha256" | "standard-webhooks";
+
+/** The replay key a Standard Webhooks task uses when it sets none. */
+export const STANDARD_WEBHOOKS_REPLAY_KEY = "{{headers.webhook-id}}";
 
 /** Matches how long the relay holds a request for an offline environment. */
 export const MAX_WEBHOOK_DELIVERY_AGE_MINUTES = 24 * 60;
@@ -176,19 +193,29 @@ const ScheduledTaskWebhookSchedule = Schema.Struct({
   description: "Run on each webhook request.",
 });
 
+const ScheduledTaskWebhookSecretFields = {
+  secret: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "Default: stored secret.",
+  }),
+  secretRef: Schema.optional(SecretRef).annotate({
+    description: "From `request_secret`. Instead of `secret`. Spent by this save.",
+  }),
+};
+
 const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
   type: Schema.Literal("webhook"),
   signature: Schema.optional(
     Schema.NullOr(
-      Schema.Struct({
-        ...ScheduledTaskWebhookSignatureFields,
-        secret: Schema.optional(TrimmedNonEmptyString).annotate({
-          description: "Default: stored secret.",
-        }),
-        secretRef: Schema.optional(SecretRef).annotate({
-          description: "From `request_secret`. Instead of `secret`. Spent by this save.",
-        }),
-      }),
+      Schema.Union([
+        Schema.Struct({
+          ...ScheduledTaskStandardWebhookSignatureFields,
+          ...ScheduledTaskWebhookSecretFields,
+        }).annotate({ description: standardWebhooksDescription }),
+        Schema.Struct({
+          ...ScheduledTaskWebhookSignatureFields,
+          ...ScheduledTaskWebhookSecretFields,
+        }).annotate({ description: "HMAC-SHA256 of the raw body with the secret." }),
+      ]),
     ),
   ).annotate({
     description: "Omit for URL token only.",
@@ -270,8 +297,16 @@ export const ScheduledTaskRunSkipReason = Schema.Literals([
   "live_run_limit",
   /** This machine's memory read short, so nothing new started on it. */
   "memory",
+  /** A machine that would run this one-machine task follows another claim protocol, named in `ranOn`. */
+  "other_version",
 ]);
 export type ScheduledTaskRunSkipReason = typeof ScheduledTaskRunSkipReason.Type;
+
+/**
+ * How this build checks, claims and settles one-machine occurrences. Machines that follow different
+ * ones can each decide the occurrence is theirs, so raise it with any change to that protocol.
+ */
+export const SCHEDULED_TASK_CLAIM_PROTOCOL = 1;
 
 export const DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS = 60;
 export const MAX_RUN_CONDITION_TIMEOUT_SECONDS = 600;
@@ -328,7 +363,10 @@ export const ScheduledTaskRunCheck = Schema.Struct({
   outcome: Schema.Union([ScheduledTaskRunCheckOutcome, Schema.String]),
   failure: Schema.NullOr(Schema.Union([ScheduledTaskRunCheckFailure, Schema.String])),
   exitCode: Schema.NullOr(Schema.Int),
-  /** From the command's output: its JSON `reason`, else its last line. Why, for one that could not start. */
+  /**
+   * From the command's output: the `reason` or `error` of the JSON object it ends with, else its
+   * last line. Why, for one that could not start.
+   */
   detail: Schema.NullOr(Schema.String),
 });
 export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
@@ -375,7 +413,8 @@ export const ScheduledTaskRunRecord = Schema.Struct({
   skipReason: Schema.NullOr(Schema.Union([ScheduledTaskRunSkipReason, Schema.String])),
   /**
    * The machine that settled a one-machine occurrence this one skipped: it ran it, or its chat
-   * from the task's last run was still working.
+   * from the task's last run was still working. For `other_version`, the machine on another
+   * claim protocol.
    */
   ranOn: Schema.NullOr(EnvironmentId),
   /**
@@ -392,15 +431,44 @@ export const ScheduledTaskRunRecord = Schema.Struct({
 });
 export type ScheduledTaskRunRecord = typeof ScheduledTaskRunRecord.Type;
 
+/**
+ * How a task's occurrences on one machine ended over some UTC days. Run history keeps only the
+ * newest skips, so these counts are what the share of idle runs is measured from.
+ */
+export const ScheduledTaskRunCounts = Schema.Struct({
+  /** Occurrences by outcome; a running one counts once it ends. Outcomes with none are left out. */
+  outcomes: Schema.Record(Schema.String, NonNegativeInt),
+  /** The skipped occurrences by skip reason. */
+  skipReasons: Schema.Record(Schema.String, NonNegativeInt),
+});
+export type ScheduledTaskRunCounts = typeof ScheduledTaskRunCounts.Type;
+
+export const ScheduledTaskRecentRunCounts = Schema.Struct({
+  last7Days: ScheduledTaskRunCounts,
+  last30Days: ScheduledTaskRunCounts,
+});
+export type ScheduledTaskRecentRunCounts = typeof ScheduledTaskRecentRunCounts.Type;
+
 /** The latest occurrence a task's run condition skipped. */
 export const ScheduledTaskNoWorkSkip = Schema.Struct({
   at: IsoDateTime,
   /** The scheduled time it skipped. */
   scheduledFor: Schema.NullOr(IsoDateTime),
-  /** From the command's output: its JSON `reason`, else its last line. */
+  /** The check's `detail`. */
   reason: Schema.NullOr(Schema.String),
 });
 export type ScheduledTaskNoWorkSkip = typeof ScheduledTaskNoWorkSkip.Type;
+
+/** How many scheduled checks in a row must fail before a task shows its run condition as failing. */
+export const RUN_CONDITION_FAILING_STREAK = 3;
+
+/** The latest answer of a run condition whose last `RUN_CONDITION_FAILING_STREAK` checks on this machine failed. */
+export const ScheduledTaskFailingCheck = Schema.Struct({
+  /** When the latest failed check started. */
+  at: IsoDateTime,
+  check: ScheduledTaskRunCheck,
+});
+export type ScheduledTaskFailingCheck = typeof ScheduledTaskFailingCheck.Type;
 
 export const ScheduledTaskWebhookEndpoint = Schema.Struct({
   path: TrimmedNonEmptyString,
@@ -512,6 +580,8 @@ export const ScheduledTaskOneMachineDecision = Schema.Struct({
   unchecked: Schema.Array(Schema.Struct({ environmentId: EnvironmentId, reason: Schema.String })),
   /** This one skipped it: too few of the machines answered to confirm it was free to run here. */
   unconfirmed: Schema.optional(Schema.Boolean),
+  /** This one skipped it: `ranOn` follows another claim protocol, so the two can't agree who runs it. */
+  otherVersion: Schema.optional(Schema.Boolean),
 });
 export type ScheduledTaskOneMachineDecision = typeof ScheduledTaskOneMachineDecision.Type;
 
@@ -664,6 +734,8 @@ export const ScheduledTask = Schema.Struct({
   runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunCondition)),
   /** Null until a run condition first skips an occurrence. Kept after the condition is cleared: it is history. */
   lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
+  /** Null unless the task has a run condition that keeps failing. Absent from servers without it. */
+  failingCheck: Schema.optional(Schema.NullOr(ScheduledTaskFailingCheck)),
   /** When the run condition of the occurrence due now started; null while none is running. */
   runCheckStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The scheduled time that run condition is for; null while none is running. */
@@ -719,6 +791,8 @@ export const LinkedScheduledTask = Schema.Struct({
   shared: Schema.Boolean,
   /** Absent from servers without run conditions. */
   lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
+  /** Absent from servers that do not report it. */
+  failingCheck: Schema.optional(Schema.NullOr(ScheduledTaskFailingCheck)),
 });
 export type LinkedScheduledTask = typeof LinkedScheduledTask.Type;
 

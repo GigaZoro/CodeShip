@@ -1428,6 +1428,10 @@ const catalog: MessageCatalog = {
     "{machine} не в мережі. Її MCP-сервери з’являться після повторного підключення.",
   "{machine} is on a version that cannot hold these settings. Update it.":
     "{machine} має версію, яка не може зберігати ці налаштування. Оновіть її.",
+  "{machine} leaves its runs to {other}, which runs another version of T3.CodeShip. Update T3.CodeShip on both machines.":
+    "{machine} залишає запуски для {other}, де працює інша версія T3.CodeShip. Оновіть T3.CodeShip на обох комп’ютерах.",
+  "{machine} left it to {other}, which runs another version of T3.CodeShip: on different versions both could run it. Update T3.CodeShip on both machines.":
+    "{machine} залишив його для {other}, де працює інша версія T3.CodeShip: на різних версіях його могли б запустити обидва. Оновіть T3.CodeShip на обох комп’ютерах.",
   "{machine} pull request routing": "Маршрутизація пул-реквестів для {machine}",
   "{machine} ran it last, at {time}": "Востаннє запущено на {machine} о {time}",
   "{machine} ran it.": "Його виконав {machine}.",
@@ -1928,6 +1932,8 @@ const catalog: MessageCatalog = {
     "Оренда закінчується після вказаної кількості хвилин, навіть якщо пристрій використовується.",
   "A lease ends after the lease minutes even while in use. Saving restarts this host, which releases its devices.":
     "Оренда закінчується після вказаної кількості хвилин, навіть якщо пристрій використовується. Збереження перезапускає цей хост, що звільняє його пристрої.",
+  "A limit whose plan reset is this close is waited out and keeps its banked reset.":
+    "Ліміт, скидання тарифу якого так близько, перечікується, а накопичене скидання зберігається.",
   "A limited thread continues on the highest account in this list that still has usage left.":
     "Чат, що досяг ліміту, продовжується на найвищому обліковому записі цього списку, у якого ще є ліміт.",
   "a linked environment": "пов’язане середовище",
@@ -2461,6 +2467,7 @@ const catalog: MessageCatalog = {
     "Інший запис робочого стола використовує ім’я помічника захоплення. Перейменуйте його, перш ніж продовжити.",
   "Another device saved newer shared appearance and layout settings before the changes made here were saved, so its version replaced them.":
     "Інший пристрій зберіг новіші спільні налаштування вигляду й розташування раніше, ніж збереглися зміни, зроблені тут, тому його версія їх замінила.",
+  "another machine": "іншого комп’ютера",
   "Another machine found no work: {detail}":
     "На іншому комп’ютері перевірка не виявила роботи: {detail}",
   "Another machine found no work.": "На іншому комп’ютері перевірка не виявила роботи.",
@@ -2885,8 +2892,8 @@ const catalog: MessageCatalog = {
     "Основа: {base}. Відкрийте шар, щоб переглянути його або злити стек до цього шару.",
   Battery: "Акумулятор",
   "Battery saver": "Економія заряду",
-  "Before a thread whose worktree has unmerged changes settles on its own, commit them and open a pull request. Off keeps those threads active.":
-    "Перш ніж чат, у worktree якого є незлиті зміни, завершиться сам, закомітьте їх і відкрийте пул-реквест. Якщо вимкнено, такі чати залишаються активними.",
+  "Before a thread you wrote in settles on its own, commit its worktree's unmerged changes and open a pull request. A thread you never wrote in, such as a scheduled run or a subagent, stays active instead. Off keeps every such thread active.":
+    "Перш ніж чат, у якому ви писали, завершиться сам, закомітьте незлиті зміни в його worktree і відкрийте пул-реквест. Чат, у якому ви не писали, наприклад запланований запуск чи субагент, натомість залишається активним. Якщо вимкнено, усі такі чати залишаються активними.",
   "Before the cache expires (beta)": "Перед завершенням терміну дії кешу (бета)",
   Behavior: "Поведінка",
   "Behind {branch}": "Позаду {branch}",
@@ -2901,6 +2908,7 @@ const catalog: MessageCatalog = {
     "Порожні тарифи кешу використовують ціну входу. Введіть 0 для безкоштовних токенів. Використання зіставленої моделі враховується як модель, з якою її зіставлено.",
   "Blank profile": "Порожній профіль",
   Block: "Заблокувати",
+  "blocked by your organization's policy": "заблоковано політикою вашої організації",
   "Blocked on me": "Чекають на мене",
   Blue: "Синій",
   "Blue / yellow (tritanopia)": "Синій / жовтий (тританопія)",
@@ -3930,8 +3938,6 @@ const catalog: MessageCatalog = {
   confused: "збентеження",
   connect: "підключити",
   Connect: "Підключити",
-  "Connect to {machine} to decide here. The step stays on its pending list.":
-    "Підключіться до {machine}, щоб вирішити тут. Крок залишається в його списку очікування.",
   "Connect {apps} before using it.": "Підключіть {apps} перед використанням.",
   "Connect {clientName}": "Підключити {clientName}",
   "Connect {environment} and try again.": "Підключіть {environment} і спробуйте ще раз.",
@@ -4005,6 +4011,8 @@ const catalog: MessageCatalog = {
     "Підключіть ThreadPage, щоб бачити кроки, які можете зробити лише ви, з усіх комп’ютерів.",
   "Connect to {environment} with dictation access to continue.":
     "Підключіться до {environment} з доступом до диктування, щоб продовжити.",
+  "Connect to {machine} to decide here. The step stays on its pending list.":
+    "Підключіться до {machine}, щоб вирішити тут. Крок залишається в його списку очікування.",
   "Connect to {name}": "Підключитися до {name}",
   "Connect to {name} first.": "Спочатку підключіться до {name}.",
   "Connect to a server to check releases.": "Підключіться до сервера, щоб перевірити випуски.",
@@ -4710,6 +4718,7 @@ const catalog: MessageCatalog = {
   "Could not sign DPoP proof.": "Не вдалося підписати доказ DPoP.",
   "Could not sign out of {server}": "Не вдалося вийти з {server}",
   "Could not snooze thread": "Не вдалося відкласти чат",
+  "could not start": "не вдалося запустити",
   "Could not start {count} review guides": {
     one: "Не вдалося запустити {count} посібник із рев’ю",
     few: "Не вдалося запустити {count} посібники з рев’ю",
@@ -5829,6 +5838,7 @@ const catalog: MessageCatalog = {
     "Наявні термінали з’являться тут, коли інший клієнт відкриє термінал.",
   exists: "існує",
   "exit {code}": "вихід {code}",
+  "exit code {code}": "код виходу {code}",
   "Exit full screen": "Вийти з повноекранного режиму",
   "Exit picture in picture": "Вийти з режиму «картинка в картинці»",
   Exited: "Завершено",
@@ -6548,6 +6558,7 @@ const catalog: MessageCatalog = {
   "Hint: Try again. If the problem continues, copy the trace ID.":
     "Підказка: спробуйте ще раз. Якщо проблема не зникає, скопіюйте trace ID.",
   "History did not advance.": "Історія не просунулася.",
+  "HMAC-SHA256 of the body": "HMAC-SHA256 тіла запиту",
   Hold: "Утримання",
   "Hold {shortcut} or press twice to quit": "Утримуйте {shortcut} або натисніть двічі, щоб вийти",
   "Hold mode also quits on two quick presses.":
@@ -6580,6 +6591,7 @@ const catalog: MessageCatalog = {
     other: "години",
   },
   Hours: "Години",
+  "Hours to wait for a plan reset": "Годин очікування скидання тарифу",
   "How new worktrees in this project populate git submodules.":
     "Як нові worktree в цьому проєкті заповнюють git-підмодулі.",
   "How new worktrees populate git submodules. Projects and their t3.json can override it.":
@@ -8090,6 +8102,7 @@ const catalog: MessageCatalog = {
     "Пристроїв Android немає в списку, бо пошук пристроїв повідомив про проблему.",
   "No Android virtual devices found. Create one in Android Studio's Device Manager, then refresh.":
     "Віртуальних пристроїв Android не знайдено. Створіть один у Device Manager в Android Studio, а потім оновіть.",
+  "no answer in time": "немає відповіді вчасно",
   "No app on this device can show this format. Save or share it to open it elsewhere.":
     "Жоден застосунок на цьому пристрої не може показати цей формат. Збережіть його або поділіться, щоб відкрити деінде.",
   "No approval pending": "Немає схвалень в очікуванні",
@@ -8579,6 +8592,8 @@ const catalog: MessageCatalog = {
     "Досягнуто квоти розпізнавання мовлення на пристрої. Дайте пристрою відпочити або зарядіть його, а потім повторіть.",
   "On-device voice transcription is not available for this device language.":
     "Голосова транскрипція на пристрої недоступна для мови цього пристрою.",
+  "On, waiting up to {hours} h for a plan reset.":
+    "Увімкнено, очікування скидання тарифу до {hours} год.",
   Once: "Один раз",
   "Once is not available here": "Одноразовий запуск тут недоступний",
   "Once, {date} at {time}": "Один раз, {date} о {time}",
@@ -9870,6 +9885,7 @@ const catalog: MessageCatalog = {
   "Red / green (protanopia)": "Червоний / зелений (протанопія)",
   "Red & green": "Червоний і зелений",
   "Red & green (default)": "Червоний і зелений (за замовчуванням)",
+  "Redeem usage resets automatically": "Автоматично використовувати скидання лімітів",
   "Redirect address": "Адреса переспрямування",
   "Redirecting to authorize T3 Connect for your CLI…":
     "Перенаправлення для авторизації T3 Connect для вашого CLI…",
@@ -9952,8 +9968,7 @@ const catalog: MessageCatalog = {
   "Regular chat": "Звичайний чат",
   "Reinstall Antigravity": "Перевстановити Antigravity",
   "Reinstall helper": "Перевстановити помічник",
-  "Reject requests without a valid HMAC-SHA256 signature of the body.":
-    "Відхиляти запити без дійсного підпису тіла за HMAC-SHA256.",
+  "Reject requests without a valid signature.": "Відхиляти запити без дійсного підпису.",
   "Rejected · HTTP {status}": "Відхилено · HTTP {status}",
   "Related threads": "Пов’язані чати",
   "Relative paths require an active project in this environment.":
@@ -10874,6 +10889,7 @@ const catalog: MessageCatalog = {
     many: "Заплановані завдання: останні запуски {count} завдань не вдалися",
     other: "Заплановані завдання: останні запуски {count} завдання не вдалися",
   },
+  Scheme: "Схема",
   "Screen reader": "Читач екрана",
   "screen reader announcements": "оголошення для читача екрана",
   "Screen reader announcements": "Оголошення для читача екрана",
@@ -11013,6 +11029,7 @@ const catalog: MessageCatalog = {
   Secret: "Секрет",
   "Secret providers": "Провайдери секретів",
   "Secret resolved": "Секрет зчитано",
+  "Secret starting with whsec_": "Секрет, що починається з whsec_",
   Secrets: "Секрети",
   Sections: "Розділи",
   "Secure connection to {host}'s tunnel failed":
@@ -11669,6 +11686,8 @@ const catalog: MessageCatalog = {
   Skipped: "Пропущено",
   "Skipped {cookies}": "Пропущено: {cookies}",
   "Skipped {time}: {machine} ran it": "Пропущено {time}: запустив {machine}",
+  "Skipped {time}: {machine} runs another version of T3.CodeShip. Update both machines.":
+    "Пропущено {time}: на {machine} працює інша версія T3.CodeShip. Оновіть обидва комп’ютери.",
   "Skipped {time}: too few machines answered to confirm it":
     "Пропущено {time}: відповіло замало комп’ютерів, щоб це підтвердити",
   "Skipped {when}": "Пропущено {when}",
@@ -11835,6 +11854,7 @@ const catalog: MessageCatalog = {
   Standard: "Стандартний",
   "Standard Android navigation bar and side rail.":
     "Стандартна панель навігації Android і бічна панель.",
+  "Standard Webhooks": "Standard Webhooks",
   "Star on GitHub": "Зірка на GitHub",
   "Starring…": "Додавання зірки…",
   start: "запустити",
@@ -12593,6 +12613,7 @@ const catalog: MessageCatalog = {
     "Кольорова схема, якій сторінкам радять віддавати перевагу. «Як у системі» відповідає налаштуванню вашої ОС.",
   "The command and its arguments. It runs on the machine {provider} runs on.":
     "Команда та її аргументи. Вона виконується на комп’ютері, де працює {provider}.",
+  "the command could not be read": "не вдалося прочитати команду",
   "The comment could not be saved": "Не вдалося зберегти коментар",
   "The composer is busy; try again once it is ready.":
     "Поле повідомлення зайняте; спробуйте ще раз, коли воно буде готове.",
@@ -12775,6 +12796,10 @@ const catalog: MessageCatalog = {
   "The keybinding was not saved.": "Комбінацію клавіш не збережено.",
   "The keybindings file was not opened.": "Файл комбінацій клавіш не відкрито.",
   "The labels could not be read.": "Не вдалося прочитати мітки.",
+  "The last {count} checks failed, latest {when}":
+    "Останні {count} перевірки не вдалися, остання {when}",
+  "The last {count} checks failed, latest {when}: {reason}":
+    "Останні {count} перевірки не вдалися, остання {when}: {reason}",
   "The last attempt failed: {reason}": "Остання спроба не вдалася: {reason}",
   "The license manifest could not load.": "Не вдалося завантажити маніфест ліцензій.",
   "The license manifest request failed with status {status}.":
@@ -13542,6 +13567,8 @@ const catalog: MessageCatalog = {
     "Цей комп’ютер офлайн. Показано останні відомі посилання.",
   "This machine is on your T3 Connect account. Use it as a fallback route.":
     "Цей комп’ютер є у вашому обліковому записі T3 Connect. Використайте його як резервний маршрут.",
+  "This machine left it to {other}, which runs another version of T3.CodeShip: on different versions both could run it. Update T3.CodeShip on both machines.":
+    "Цей комп’ютер залишив його для {other}, де працює інша версія T3.CodeShip: на різних версіях його могли б запустити обидва. Оновіть T3.CodeShip на обох комп’ютерах.",
   "This machine links {name} back in the same step, so no second pairing code is typed there. Linked environments must be on there too.":
     "Цей комп’ютер зв’яже {name} у відповідь тим самим кроком, тож другий код сполучення вводити там не потрібно. Пов’язані середовища мають бути ввімкнені й там.",
   "This machine was off or asleep at that time, and catching up is off.":
@@ -14677,7 +14704,6 @@ const catalog: MessageCatalog = {
   "Use regular sign-in instead": "Натомість використовувати звичайний вхід",
   "Use remote version of {ref}": "Використати віддалену версію {ref}",
   "Use reset": "Скинути",
-  "Use reset credits automatically": "Використовувати кредити скидання автоматично",
   "Use Set up another way.": "Скористайтеся пунктом «Налаштувати іншим способом».",
   "Use skills available to the selected provider.":
     "Використовувати навички, доступні вибраному провайдеру.",
@@ -14927,6 +14953,7 @@ const catalog: MessageCatalog = {
     "Зачекайте хвилину. T3.CodeShip повторить спробу сам.",
   "Wait a moment. T3.CodeShip retries on its own.":
     "Зачекайте хвилину. T3.CodeShip повторить спробу сам.",
+  "Wait at most {hours} hours for a plan reset": "Чекати скидання тарифу щонайбільше {hours} год",
   "Wait for attachments to finish preparing before rewinding.":
     "Дочекайтеся завершення підготовки вкладень перед поверненням.",
   "Wait for file uploads before stashing this prompt":
@@ -15079,9 +15106,9 @@ const catalog: MessageCatalog = {
   When: "Коли",
   "When {app} opens the sign-in page, choose what it may do and approve with your T3 Connect account.":
     "Коли {app} відкриє сторінку входу, виберіть, що йому дозволено, і схваліть через свій обліковий запис T3 Connect.",
+  "When a Claude or Codex account's limit is out, claim one of its banked resets, but only if the plan reset is further away than the wait below or the reset would otherwise expire unused.":
+    "Коли ліміт облікового запису Claude або Codex вичерпано, використовуйте один із його накопичених скидань, але лише якщо скидання тарифу далі, ніж вказане нижче очікування, або скидання інакше згорить невикористаним.",
   "When a thread hits a usage limit": "Коли чат досягає ліміту використання",
-  "When a thread stops on this account's usage limit and no other account continues it, redeem a banked reset credit and continue the thread. A limit that resets within 30 minutes is waited out.":
-    "Коли чат зупиняється на ліміті використання цього облікового запису і жоден інший обліковий запис його не продовжує, використати накопичений кредит скидання та продовжити чат. Якщо ліміт скинеться менш ніж за 30 хвилин, чат дочекається скидання.",
   "When an agent hands work to a child task without naming a model, the task runs on the model set for its role. Unset roles use the thread's own model.":
     "Коли агент передає роботу дочірньому завданню без указання моделі, завдання виконується на моделі, заданій для його ролі. Для незаданих ролей використовується модель самого чату.",
   "When expression": "Вираз умови",

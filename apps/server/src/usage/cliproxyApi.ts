@@ -267,10 +267,12 @@ const CODEX_HUB: HubProvider = {
       usageLimits: {
         ...codexRateLimitsToLimits({
           checkedAt,
-          snapshot: {
-            planType: planType ?? null,
-            primary: toWindow(usage.rate_limit?.primary_window),
-            secondary: toWindow(usage.rate_limit?.secondary_window),
+          read: {
+            rateLimits: {
+              planType: planType ?? null,
+              primary: toWindow(usage.rate_limit?.primary_window),
+              secondary: toWindow(usage.rate_limit?.secondary_window),
+            },
           },
         }),
         ...(available

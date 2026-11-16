@@ -1,8 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
+import type { ProviderConsumeResetCreditOutcome } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
@@ -10,7 +12,7 @@ import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 describe("ResetCreditCoordinator", () => {
   it.effect("re-sends the same idempotency key after a failed attempt, then clears it", () =>
     Effect.gen(function* () {
-      const { redeem } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+      const { redeem, redemptions } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
       const keys = yield* Ref.make<ReadonlyArray<string>>([]);
       const attempts = yield* Ref.make(0);
       const consume = (key: string) =>
@@ -31,6 +33,9 @@ describe("ResetCreditCoordinator", () => {
       assert.strictEqual(seen.length, 3);
       assert.strictEqual(seen[0], seen[1]);
       assert.notStrictEqual(seen[1], seen[2]);
+      // The failed attempt counts too: it may have used the credit.
+      assert.strictEqual(yield* redemptions("acct"), 3);
+      assert.strictEqual(yield* redemptions("acct-b"), 0);
     }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
   );
 
@@ -50,6 +55,26 @@ describe("ResetCreditCoordinator", () => {
       const seen = yield* Ref.get(keys);
       assert.strictEqual(seen.length, 2);
       assert.notStrictEqual(seen[0], seen[1]);
+    }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
+  );
+
+  it.effect("sends a fixed key as given and leaves the pending key alone", () =>
+    Effect.gen(function* () {
+      const { redeem } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+      const keys = yield* Ref.make<ReadonlyArray<string>>([]);
+      const consume = (key: string) =>
+        Ref.update(keys, (seen) => [...seen, key]).pipe(Effect.as("reset" as const));
+
+      yield* redeem("acct", consume, undefined, "banked-reset:a:codex:1");
+      yield* redeem("acct", consume, undefined, "banked-reset:a:codex:1");
+      yield* redeem("acct", consume);
+
+      const seen = yield* Ref.get(keys);
+      assert.deepStrictEqual(seen.slice(0, 2), [
+        "banked-reset:a:codex:1",
+        "banked-reset:a:codex:1",
+      ]);
+      assert.notStrictEqual(seen[2], "banked-reset:a:codex:1");
     }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
   );
 
@@ -79,6 +104,33 @@ describe("ResetCreditCoordinator", () => {
     }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
   );
 
+  it.effect("runs work on an account after the redemption holding it, and on another at once", () =>
+    Effect.gen(function* () {
+      const { redeem, runLocked } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
+      const order = yield* Ref.make<ReadonlyArray<string>>([]);
+      const log = (event: string) => Ref.update(order, (seen) => [...seen, event]);
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const redemption = yield* redeem("acct", () =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(log("redeemed")),
+          Effect.as("reset" as const),
+        ),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+
+      const read = yield* runLocked("acct", log("read")).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* runLocked("acct-b", log("other account"));
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(redemption);
+      yield* Fiber.join(read);
+      assert.deepStrictEqual(yield* Ref.get(order), ["other account", "redeemed", "read"]);
+    }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
+  );
+
   it.effect("keeps different accounts independent", () =>
     Effect.gen(function* () {
       const { redeem } = yield* ResetCreditCoordinator.ResetCreditCoordinator;
@@ -101,29 +153,69 @@ describe("ResetCreditCoordinator", () => {
       assert.strictEqual(yield* Ref.get(peak), 2);
     }).pipe(Effect.provide(ResetCreditCoordinator.layerTest)),
   );
+});
 
-  it.effect("re-probes after a reset until the limits are fresh, then gives up", () =>
+describe("redeemThenReadUsage", () => {
+  const WARNING =
+    "The reset was applied, but Claude could not confirm the new limits. Refresh to check.";
+  const redeemThenRead = (
+    reads: Ref.Ref<number>,
+    redeem: Effect.Effect<ProviderConsumeResetCreditOutcome, "nothing used" | "lost">,
+    confirmedFromRead = 1,
+  ) =>
+    ResetCreditCoordinator.redeemThenReadUsage({
+      redeem,
+      readUsage: Ref.updateAndGet(reads, (count) => count + 1).pipe(
+        Effect.flatMap((count) => Effect.forkChild(Effect.succeed(count >= confirmedFromRead))),
+      ),
+      usedNothing: (error) => error === "nothing used",
+      provider: "Claude",
+    }).pipe(Effect.result);
+
+  it.effect.each([
+    ["a confirmed reset", "reset", 1, { outcome: "reset" }, 1],
+    ["a reset its third read confirms", "reset", 3, { outcome: "reset" }, 3],
+    ["an unconfirmed reset", "reset", Infinity, { outcome: "reset", warning: WARNING }, 4],
+    ["an unconfirmed other outcome", "noCredit", Infinity, { outcome: "noCredit" }, 1],
+  ] as const)("reads usage after %s", ([, outcome, confirmedFromRead, expected, expectedReads]) =>
     Effect.gen(function* () {
-      const stale = { usageLimits: { checkedAt: "t0", windows: [] } };
-      const run = (freshFrom: number) =>
-        Effect.gen(function* () {
-          const probes = yield* Ref.make(0);
-          const refresh = Ref.updateAndGet(probes, (n) => n + 1).pipe(
-            Effect.map((n) =>
-              n >= freshFrom ? { usageLimits: { checkedAt: `t${n}`, windows: [] } } : stale,
-            ),
-          );
-          const fiber = yield* ResetCreditCoordinator.refreshAfterRedemption({
-            outcome: "reset",
-            getSnapshot: Effect.succeed(stale),
-            refresh,
-          }).pipe(Effect.forkChild);
-          yield* TestClock.adjust("1 minute");
-          return { confirmed: yield* Fiber.join(fiber), probes: yield* Ref.get(probes) };
-        });
+      const reads = yield* Ref.make(0);
+      const redemption = yield* redeemThenRead(
+        reads,
+        Effect.succeed(outcome),
+        confirmedFromRead,
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 minute");
+      assert.deepStrictEqual(yield* Fiber.join(redemption), Result.succeed(expected));
+      assert.strictEqual(yield* Ref.get(reads), expectedReads);
+    }),
+  );
 
-      assert.deepStrictEqual(yield* run(3), { confirmed: true, probes: 3 });
-      assert.deepStrictEqual(yield* run(Infinity), { confirmed: false, probes: 4 });
+  it.effect.each([
+    ["may have used a reset", "lost", 1],
+    ["used nothing", "nothing used", 0],
+  ] as const)(
+    "fails as a redemption that %s did, reading usage only if it may have",
+    ([, error, expectedReads]) =>
+      Effect.gen(function* () {
+        const reads = yield* Ref.make(0);
+        const result = yield* redeemThenRead(reads, Effect.fail(error));
+        assert.deepStrictEqual(result, Result.fail(error));
+        assert.strictEqual(yield* Ref.get(reads), expectedReads);
+      }),
+  );
+
+  it.effect("reads usage when the redemption is interrupted", () =>
+    Effect.gen(function* () {
+      const reads = yield* Ref.make(0);
+      const started = yield* Deferred.make<void>();
+      const redemption = yield* redeemThenRead(
+        reads,
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(redemption);
+      assert.strictEqual(yield* Ref.get(reads), 1);
     }),
   );
 });

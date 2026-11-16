@@ -406,6 +406,7 @@ const buildRegistryOverSnapshot = Effect.fn("buildRegistryOverSnapshot")(functio
       refresh: Ref.get(snapshot),
       streamChanges: Stream.empty,
       applyUsageLimits: () => Effect.void,
+      refreshAfterRedemption: Effect.die("unused"),
     },
     orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
     textGeneration: {} as ProviderInstance["textGeneration"],
@@ -579,7 +580,7 @@ it.layer(
           checkCodexProviderStatus(defaultCodexSettings, () =>
             Effect.succeed(
               makeCodexProbeSnapshot({
-                rateLimits: { snapshot: { planType }, resetCredits: null },
+                rateLimits: { rateLimits: { planType } },
               }),
             ),
           );
@@ -602,8 +603,7 @@ it.layer(
           email: string,
           rateLimits: CodexAppServerProviderSnapshot["rateLimits"] = {
             accountId: "workspace-1",
-            snapshot: { primary: { usedPercent: 78, windowDurationMins: 10080 } },
-            resetCredits: null,
+            rateLimits: { primary: { usedPercent: 78, windowDurationMins: 10080 } },
           },
         ) =>
           checkCodexProviderStatus(
@@ -629,8 +629,7 @@ it.layer(
         assert.strictEqual((yield* statusFor("other@example.com")).usageLimits, undefined);
         const unconfirmed = yield* statusFor("test@example.com", {
           accountId: "workspace-2",
-          snapshot: { primary: { usedPercent: 10 } },
-          resetCredits: null,
+          rateLimits: { primary: { usedPercent: 10 } },
         });
         assert.strictEqual(unconfirmed.usageLimits, undefined);
         const signedOut = yield* statusFor("test@example.com", { failure: "Signed out." });
@@ -1636,6 +1635,7 @@ it.layer(
                 ),
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
+                refreshAfterRedemption: Effect.die("unused"),
               },
               orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
               textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1778,6 +1778,7 @@ it.layer(
               ),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -1884,6 +1885,7 @@ it.layer(
               refresh: Effect.succeed(failedProvider),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2177,6 +2179,7 @@ it.layer(
                 refresh: Ref.update(probes, (count) => count + 1).pipe(Effect.as(provider)),
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
+                refreshAfterRedemption: Effect.die("unused"),
               },
               invalidateCaches: Ref.update(invalidations, (count) => count + 1).pipe(
                 Effect.andThen(
@@ -2367,6 +2370,7 @@ it.layer(
               refresh: Effect.succeed(provider),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              refreshAfterRedemption: Effect.die("unused"),
             },
             snapshotForCwd: () =>
               Ref.update(scans, (count) => count + 1).pipe(
@@ -2456,6 +2460,7 @@ it.layer(
             refresh: Effect.succeed(provider),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
           },
           snapshotForCwd: (directory) =>
             Ref.update(scannedDirectories, (directories) => [...directories, directory]).pipe(
@@ -2559,6 +2564,7 @@ it.layer(
             refresh: Effect.succeed(unhealthyProvider),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
           },
           snapshotForCwd: () => Ref.get(scanResult),
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2687,6 +2693,7 @@ it.layer(
             refresh: Ref.get(machineProvider),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
           },
           snapshotForCwd: () => Ref.get(scanResult),
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
@@ -2797,6 +2804,7 @@ it.layer(
               }),
               streamChanges: Stream.empty,
               applyUsageLimits: () => Effect.void,
+              refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -2897,6 +2905,7 @@ it.layer(
                 refresh: Effect.as(refresh, snapshot),
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
+                refreshAfterRedemption: Effect.die("unused"),
               },
               orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
               textGeneration: {} as ProviderInstance["textGeneration"],
@@ -3040,6 +3049,7 @@ it.layer(
             }),
             streamChanges: Stream.fromPubSub(changes),
             applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],
@@ -3164,6 +3174,7 @@ it.layer(
             refresh: Effect.succeed(refreshedProvider),
             streamChanges: Stream.fromPubSub(changes),
             applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],
@@ -3265,6 +3276,7 @@ it.layer(
             refresh: Effect.succeed(initialProvider),
             streamChanges: Stream.fromPubSub(changes),
             applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],
@@ -3454,6 +3466,7 @@ it.layer(
               refresh: Effect.succeed(authoritativeProvider),
               streamChanges: Stream.fromPubSub(changes),
               applyUsageLimits: () => Effect.void,
+              refreshAfterRedemption: Effect.die("unused"),
             },
             orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
@@ -3558,6 +3571,7 @@ it.layer(
             refresh: Effect.die(new Error("simulated refresh failure")),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.void,
+            refreshAfterRedemption: Effect.die("unused"),
           },
           orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
           textGeneration: {} as ProviderInstance["textGeneration"],
@@ -4611,7 +4625,11 @@ it.layer(
           { ...firstParty, email: "ada@example.com" },
           { CLAUDE_CONFIG_DIR: "/home/ada/.claude-work" },
         );
-        assert.strictEqual(saved.auth.profileId, "claude.ai:/home/ada/.claude-work");
+        // The profile id carries the resolved path, which gains a drive letter on Windows.
+        assert.strictEqual(
+          saved.auth.profileId,
+          `claude.ai:${(yield* Path.Path).resolve("/home/ada/.claude-work")}`,
+        );
 
         const tokenA = yield* statusFor(token, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-ada" });
         const tokenB = yield* statusFor(token, { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-bob" });

@@ -37,6 +37,7 @@ import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as ResetCreditRedemption from "./ResetCreditRedemption.ts";
+import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as FinalReview from "./FinalReview.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
@@ -167,6 +168,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
     Layer.mergeAll(
       McpAppModelContext.layer,
       PreviewAgentActivity.layer,
+      ThreadCommandExecutor.layer,
       layerCheckpointServiceProvided,
       layerEventSink,
       IdAllocator.layer,
@@ -227,6 +229,7 @@ const layerCheckpointCaptureServiceProvided = CheckpointCaptureService.layer.pip
       layerCheckpointServiceProvided,
       layerEventSink,
       IdAllocator.layer,
+      ThreadCommandExecutor.layer,
       ProjectionStore.layer,
     ),
   ),
@@ -441,6 +444,7 @@ export const layerProduction = Layer.mergeAll(
       ),
     ),
   ),
+  UsageResetRedeemer.layer,
   NetworkRecoveryWorker.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -465,7 +469,7 @@ export const layerProduction = Layer.mergeAll(
   Layer.provideMerge(layerProjectService),
   // ThreadManagementService reads it optionally; without it auto-account turns keep their account.
   Layer.provide(AccountRouting.layer.pipe(Layer.provide(ProjectionStore.layer))),
-  // The usage-limit recovery worker redeems reset credits for accounts set to use them.
+  // The usage reset redeemer claims banked resets, and the MCP capabilities read its last claim.
   Layer.provide(ResetCreditRedemption.layer.pipe(Layer.provide(ProjectionStore.layer))),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),

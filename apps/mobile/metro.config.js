@@ -50,13 +50,12 @@ async function writeFileIfChanged(filePath, contents) {
 async function generateMobileThirdPartyLicenses() {
   await fs.promises.mkdir(generatedLicenseModuleRoot, { recursive: true });
   const generatorVersion = (await fs.promises.stat(licenseGeneratorSource)).mtimeMs;
-  const { generateThirdPartyLicenseManifest } = await import(
+  const { generateThirdPartyLicenseManifest, shippedThirdPartyLicenses } = await import(
     `${pathToFileURL(licenseGeneratorSource).href}?version=${String(generatorVersion)}`
   );
-  const manifest = await generateThirdPartyLicenseManifest({
-    configFile: path.join(workspaceRoot, "third-party-licenses.config.json"),
-    packageManifests: [{ bundle: "mobile", path: path.join(__dirname, "package.json") }],
-  });
+  const manifest = await generateThirdPartyLicenseManifest(
+    shippedThirdPartyLicenses(pathToFileURL(`${workspaceRoot}${path.sep}`)).mobile,
+  );
 
   await Promise.all([
     writeFileIfChanged(

@@ -2,6 +2,7 @@ import * as DateTime from "effect/DateTime";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import type * as CodexSchema from "effect-codex-app-server/schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -38,23 +39,24 @@ describe("codexRateLimitsToLimits", () => {
     expect(
       codexRateLimitsToLimits({
         checkedAt,
-        snapshot: { limitId: "spark" },
-        rateLimitsByLimitId: { codex: snapshot },
+        read: { rateLimits: { limitId: "spark" }, rateLimitsByLimitId: { codex: snapshot } },
       }),
-    ).toEqual({ checkedAt, windows });
+    ).toEqual({ checkedAt, plan: "enterprise_cbp_usage_based", windows });
     expect(codexRateLimitsToUpdate(snapshot)).toEqual({ windows });
   });
 
   it("keeps a seat-based workspace with a zero credit cap usable while its plan windows have room", () => {
     const usageLimits = codexRateLimitsToLimits({
       checkedAt,
-      snapshot: {
-        limitId: "codex",
-        planType: "team",
-        rateLimitReachedType: null,
-        primary: { usedPercent: 0, resetsAt: 1_784_000_000, windowDurationMins: 300 },
-        secondary: { usedPercent: 14, resetsAt: 1_784_500_000, windowDurationMins: 10080 },
-        individualLimit: { remainingPercent: 0, resetsAt: 1_796_083_200 },
+      read: {
+        rateLimits: {
+          limitId: "codex",
+          planType: "team",
+          rateLimitReachedType: null,
+          primary: { usedPercent: 0, resetsAt: 1_784_000_000, windowDurationMins: 300 },
+          secondary: { usedPercent: 14, resetsAt: 1_784_500_000, windowDurationMins: 10080 },
+          individualLimit: { remainingPercent: 0, resetsAt: 1_796_083_200 },
+        },
       },
     });
     expect(
@@ -83,14 +85,17 @@ describe("codexRateLimitsToLimits", () => {
     expect(
       codexRateLimitsToLimits({
         checkedAt,
-        snapshot: {
-          planType: "plus",
-          primary: { usedPercent: 12, resetsAt: 1_784_000_000, windowDurationMins: 300 },
-          secondary: { usedPercent: 47, resetsAt: 1_784_500_000, windowDurationMins: 10080 },
+        read: {
+          rateLimits: {
+            planType: "plus",
+            primary: { usedPercent: 12, resetsAt: 1_784_000_000, windowDurationMins: 300 },
+            secondary: { usedPercent: 47, resetsAt: 1_784_500_000, windowDurationMins: 10080 },
+          },
         },
       }),
     ).toEqual({
       checkedAt,
+      plan: "plus",
       windows: [
         {
           id: "primary",
@@ -116,7 +121,7 @@ describe("codexRateLimitsToLimits", () => {
     expect(
       codexRateLimitsToLimits({
         checkedAt,
-        snapshot: { planType: "free", primary: { usedPercent: 80, resetsAt: null } },
+        read: { rateLimits: { planType: "free", primary: { usedPercent: 80, resetsAt: null } } },
       }).windows,
     ).toEqual([
       {
@@ -139,10 +144,12 @@ describe("codexRateLimitsToLimits", () => {
     expect(
       codexRateLimitsToLimits({
         checkedAt,
-        snapshot: spark,
-        rateLimitsByLimitId: {
-          codex_bengalfox: spark,
-          codex: { secondary: { usedPercent: 42, windowDurationMins: 10080 } },
+        read: {
+          rateLimits: spark,
+          rateLimitsByLimitId: {
+            codex_bengalfox: spark,
+            codex: { secondary: { usedPercent: 42, windowDurationMins: 10080 } },
+          },
         },
       }).windows,
     ).toEqual([
@@ -156,15 +163,68 @@ describe("codexRateLimitsToLimits", () => {
     ]);
   });
 
-  it.each([undefined, null, {}])(
-    "supports legacy reads with no bucket map: %j",
-    (rateLimitsByLimitId) => {
-      const snapshot = { primary: { usedPercent: 12, windowDurationMins: 300 } };
-      expect(codexRateLimitsToLimits({ checkedAt, snapshot, rateLimitsByLimitId })).toEqual(
-        codexRateLimitsToLimits({ checkedAt, snapshot }),
-      );
-    },
-  );
+  it.each([null, {}])("supports legacy reads with no bucket map: %j", (rateLimitsByLimitId) => {
+    const rateLimits = { primary: { usedPercent: 12, windowDurationMins: 300 } };
+    expect(
+      codexRateLimitsToLimits({ checkedAt, read: { rateLimits, rateLimitsByLimitId } }),
+    ).toEqual(codexRateLimitsToLimits({ checkedAt, read: { rateLimits } }));
+  });
+
+  it("publishes the account by key, its plan, credits, usage permission and each banked reset", () => {
+    const read: CodexSchema.V2GetAccountRateLimitsResponse = {
+      accountId: "account-1",
+      ordinaryUsageAllowed: false,
+      rateLimits: {
+        planType: "pro",
+        primary: { usedPercent: 100, windowDurationMins: 300 },
+        credits: { balance: "12.50", hasCredits: true, unlimited: false },
+      },
+      rateLimitResetCredits: {
+        availableCount: 1,
+        credits: [
+          {
+            id: "credit-secret",
+            status: "available",
+            resetType: "codexRateLimits",
+            grantedAt: 1_784_000_000,
+            expiresAt: 1_786_000_000,
+          },
+          { id: "credit-old", status: "redeemed", resetType: "unknown", grantedAt: 1_783_000_000 },
+        ],
+      },
+    };
+    const limits = codexRateLimitsToLimits({ checkedAt, read });
+    expect(limits).toMatchObject({
+      // The first 16 hex digits of sha256("account-1"): the same on every machine.
+      accountKey: "07e998012c1137de",
+      plan: "pro",
+      credits: { balance: "12.50", unlimited: false },
+      usageAllowed: false,
+      resetCredits: {
+        availableCount: 1,
+        nextExpiresAt: "2026-08-06T07:06:40.000Z",
+        credits: [
+          {
+            program: "codexRateLimits",
+            kind: "full",
+            status: "available",
+            grantedAt: "2026-07-14T03:33:20.000Z",
+            expiresAt: "2026-08-06T07:06:40.000Z",
+          },
+          {
+            program: "unknown",
+            kind: "full",
+            status: "redeemed",
+            grantedAt: "2026-07-02T13:46:40.000Z",
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(limits)).not.toMatch(/account-1|credit-secret|credit-old/);
+    expect(
+      codexRateLimitsToLimits({ checkedAt, read: { rateLimits: {}, ordinaryUsageAllowed: null } }),
+    ).not.toHaveProperty("usageAllowed");
+  });
 });
 
 describe("codexRateLimitsToUpdate", () => {
@@ -208,6 +268,31 @@ describe("codexRateLimitsToUpdate", () => {
       ],
     });
     expect(codexRateLimitsToUpdate({ planType: "plus" })).toBeUndefined();
+  });
+
+  it("carries a credit balance only when a turn's reading changes it", () => {
+    const credits = { balance: "4.00", hasCredits: true, unlimited: false };
+    expect(codexRateLimitsToUpdate({ credits })).toEqual({
+      windows: [],
+      credits: { balance: "4.00", unlimited: false },
+    });
+    expect(codexRateLimitsToUpdate({ credits }, { credits: { ...credits } })).toBeUndefined();
+    expect(mergeCodexRateLimits({ credits }, { primary: { usedPercent: 3 } })?.credits).toBe(
+      credits,
+    );
+  });
+
+  it("drops credits the account no longer has, in a read and in a turn's update", () => {
+    const spent = { balance: "0", hasCredits: false, unlimited: false };
+    const rateLimits = { primary: { usedPercent: 12, windowDurationMins: 300 }, credits: spent };
+    expect(codexRateLimitsToLimits({ checkedAt, read: { rateLimits } }).credits).toBeUndefined();
+    expect(
+      codexRateLimitsToUpdate(
+        { credits: spent },
+        { credits: { balance: "4.00", hasCredits: true, unlimited: false } },
+      ),
+    ).toEqual({ windows: [], credits: null });
+    expect(codexRateLimitsToUpdate({ credits: spent }, { credits: spent })).toBeUndefined();
   });
 
   it("ignores Spark notifications so they cannot overwrite the main allowance", () => {
@@ -290,7 +375,9 @@ describe("mergeCodexRateLimits", () => {
     expect(retained).toEqual({ ...snapshot, primary: null, individualLimit });
     const cleared = mergeCodexRateLimits(retained, { individualLimit: null });
     expect(cleared).toEqual({ ...snapshot, primary: null, individualLimit: null });
-    expect(codexRateLimitsToLimits({ checkedAt, snapshot: cleared! }).windows).toEqual([]);
+    expect(codexRateLimitsToLimits({ checkedAt, read: { rateLimits: cleared! } }).windows).toEqual(
+      [],
+    );
   });
 
   it("ignores a model-specific snapshot so it cannot replace the main allowance", () => {

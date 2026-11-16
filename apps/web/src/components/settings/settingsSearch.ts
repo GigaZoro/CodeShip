@@ -480,6 +480,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "redeem-usage-resets",
+    title: msg("Redeem usage resets automatically"),
+    to: "/settings/threads",
+    searchTerms: [
+      "banked reset claim limit-reset credit claude codex usage plan reset wait hours expire",
+    ],
+  },
+  {
     id: "threadpage-token",
     title: msg("ThreadPage token"),
     to: "/settings/threads",

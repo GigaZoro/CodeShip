@@ -13,8 +13,10 @@ import {
   agentScopeLauncherScript,
 } from "./AgentScope.ts";
 import * as HostProcess from "./HostProcess.ts";
+import { isDarwinHost } from "./testing/hostPlatform.ts";
 
-const MAX_NICE = 19;
+// `nice` takes a macOS process to 20 but a Linux one only to 19.
+const MAX_NICE = isDarwinHost ? 20 : 19;
 
 describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("agent priority", () => {
   it("runs the agent, and what it starts, below the server's CPU priority", () => {

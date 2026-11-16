@@ -1090,8 +1090,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         },
       ];
       const gate = {
-        matches: (args: ReadonlyArray<string>) =>
-          args[0] === "for-each-ref" && args.at(-1) === "refs/heads/feature/racing-upstream",
+        matches: (args: ReadonlyArray<string>) => args.join(" ") === "config --list -z",
         reached: yield* Deferred.make<void>(),
         release: yield* Deferred.make<void>(),
       };
@@ -1207,7 +1206,9 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         },
       });
       const lookup = manager.branchPullRequest({ cwd: repoDir, branch: "feature/settled" });
-      const freshLookups = () => gitCommands.filter((args) => args === "remote").length;
+      // A settled answer rereads the repository's snapshot once, for its fingerprint; a recheck
+      // reads it again to look the PR up on fresh git state.
+      const snapshotReads = () => gitCommands.filter((args) => args === "config --list -z").length;
 
       expect((yield* lookup)?.state).toBe("merged");
       gitCommands.length = 0;
@@ -1219,7 +1220,6 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         "for-each-ref",
         "for-each-ref",
       ]);
-      expect(freshLookups()).toBe(0);
       gitCommands.length = 0;
       yield* manager.branchPullRequest(
         { cwd: repoDir, branch: "feature/settled" },
@@ -1232,21 +1232,21 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       yield* runGit(repoDir, ["commit", "-m", "New work"]);
       gitCommands.length = 0;
       expect((yield* lookup)?.state).toBe("merged");
-      expect(freshLookups()).toBe(1);
+      expect(snapshotReads()).toBeGreaterThan(1);
       gitCommands.length = 0;
       yield* lookup;
-      expect(freshLookups()).toBe(0);
+      expect(snapshotReads()).toBe(1);
 
-      // Remembered git state expires after 5 minutes; that rereads git without a recheck.
+      // The snapshot expires after a minute; that rereads git without a recheck.
       yield* TestClock.adjust("10 minutes");
       gitCommands.length = 0;
       expect((yield* lookup)?.state).toBe("merged");
-      expect(freshLookups()).toBe(1);
+      expect(snapshotReads()).toBe(2);
 
       yield* TestClock.adjust("5 minutes");
       gitCommands.length = 0;
       expect((yield* lookup)?.state).toBe("merged");
-      expect(freshLookups()).toBe(2);
+      expect(snapshotReads()).toBeGreaterThan(2);
 
       // A new PR from the reused branch shows on the next host query.
       yield* TestClock.adjust("5 minutes");
@@ -1900,24 +1900,32 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect("one branch PR lookup reads the remotes and each config key once", () =>
+  // Each git spawn blocks a Windows server's event loop for ~130 ms, so a sweep over many
+  // worktrees must read what they share (configuration, remotes, refs) once per repository.
+  it.effect("branch PR lookups of a repository's worktrees share one read of its git state", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
       const remoteDir = yield* createBareRemote();
       yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
-      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
-      yield* runGit(repoDir, ["checkout", "-b", "feature/local-only"]);
+      const worktrees: Array<{ readonly cwd: string; readonly branch: string }> = [];
+      for (const name of ["a", "b", "c"]) {
+        const branch = `feature/shared-read-${name}`;
+        const cwd = NodePath.join(yield* makeTempDir("t3code-git-manager-wt-"), name);
+        yield* runGit(repoDir, ["worktree", "add", "-b", branch, cwd]);
+        yield* runGit(cwd, ["push", "-u", "origin", branch]);
+        worktrees.push({ cwd, branch });
+      }
       const gitCommands: string[] = [];
       const { manager } = yield* makeManager({ gitCommands });
 
-      yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature/local-only" });
+      for (const worktree of worktrees) yield* manager.branchPullRequest(worktree);
 
-      const startsWith = (prefix: string) =>
-        gitCommands.filter((command) => command.startsWith(prefix));
-      const configReads = startsWith("config --get");
-      expect(startsWith("remote")).toHaveLength(1);
-      expect(configReads).toEqual([...new Set(configReads)]);
+      expect({
+        configReads: gitCommands.filter((command) => command.startsWith("config --get")),
+        remoteListings: gitCommands.filter((command) => command === "remote"),
+        snapshotReads: gitCommands.filter((command) => command === "config --list -z"),
+      }).toEqual({ configReads: [], remoteListings: [], snapshotReads: ["config --list -z"] });
     }),
   );
 

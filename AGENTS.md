@@ -103,7 +103,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 ## Verifying
 
-- Before you push, run `vp run check:changed`. It runs CI's fast checks for changed files: format, lint, knip, typecheck of affected packages and dependents, the tests beside changes and those that import them directly or through test-support code (testkits, fixtures), and the cross-file checks those miss. Upstream CI still runs the full test suites; the fork's CI does not, so these are the last tests before main.
+- Before you push, run `vp run check:changed`. It runs CI's fast checks for changed files: format, lint, knip, typecheck of affected packages and dependents, the tests beside changes, those that import them directly or through test-support code (testkits, fixtures) and those beside the production files that import them, and the cross-file checks those miss. Upstream CI still runs the full test suites; the fork's CI does not, so these are the last tests before main.
 - While you iterate, run `vp test run <files>`. For big files, add `-t "<name>"`.
 - A test run keeps the version of each file it loaded first. Do not edit files while a run that reads them is in flight, and run again after an edit before you trust its pass or failure. `check:changed` fails a run whose files changed while it ran.
 - Use `vp run typecheck`; it caches per package. Each package runs `effect-tsgo tsrs --noEmit`, the Rust TypeScript 7 checker with Effect's diagnostics built in. There is no `typescript` package to run.

@@ -10,6 +10,7 @@ import {
   type SecretReference,
   type SecretRequestAnswerInput,
   type ThreadId,
+  isOrchestrationV2TerminalRunStatus,
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 
@@ -129,7 +130,7 @@ const make = Effect.gen(function* () {
         return yield* new SecretRequestError({ reason: "already_answered" });
       }
       const run = records.runs.find((candidate) => candidate.id === item.runId);
-      if (run === undefined || ThreadManagementService.isTerminalRunStatus(run.status)) {
+      if (run === undefined || isOrchestrationV2TerminalRunStatus(run.status)) {
         return yield* new SecretRequestError({ reason: "agent_stopped" });
       }
       const secret =

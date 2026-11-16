@@ -274,6 +274,7 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
         refresh: Effect.die("unused"),
         resolveMaintenance: () => Effect.die("unused"),
         applyUsageLimits: () => Effect.die("unused"),
+        refreshAfterRedemption: Effect.die("unused"),
         streamChanges: Stream.empty,
       },
     };

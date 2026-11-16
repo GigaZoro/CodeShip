@@ -207,6 +207,86 @@ describe("makeManagedServerProvider", () => {
       }),
     ).pipe(Effect.provide(layerAlwaysRunTest)),
   );
+  it.effect("reads usage after a redemption past its caller, dropping the resets read before", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls = yield* Ref.make(0);
+        const invalidations = yield* Ref.make(0);
+        const probeStarted = yield* Deferred.make<void>();
+        const releaseProbe = yield* Deferred.make<void>();
+        const usage = (checkedAt: string, usedPercent: number) => ({
+          checkedAt,
+          windows: [{ id: "five_hour", kind: "session" as const, label: "Session", usedPercent }],
+        });
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: () => false,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Effect.gen(function* () {
+            const count = yield* Ref.updateAndGet(calls, (count) => count + 1);
+            if (count === 2) {
+              yield* Deferred.succeed(probeStarted, undefined);
+              yield* Deferred.await(releaseProbe);
+              return {
+                ...refreshedSnapshotSecond,
+                usageLimits: {
+                  checkedAt: refreshedSnapshotSecond.checkedAt,
+                  windows: [],
+                  unavailable: { reason: "probeFailed" },
+                },
+              } satisfies ServerProvider;
+            }
+            // The first read got the resets but not the usage.
+            return count === 1
+              ? ({
+                  ...refreshedSnapshot,
+                  usageLimits: {
+                    checkedAt: refreshedSnapshot.checkedAt,
+                    windows: [],
+                    unavailable: { reason: "probeFailed" },
+                    resetCredits: { availableCount: 1, credits: [] },
+                  },
+                } satisfies ServerProvider)
+              : ({
+                  ...enrichedSnapshotSecond,
+                  usageLimits: usage(enrichedSnapshotSecond.checkedAt, 0),
+                } satisfies ServerProvider);
+          }),
+          invalidateUsageCache: Ref.update(invalidations, (count) => count + 1),
+          refreshOnInterval: false,
+        });
+        yield* provider.streamChanges.pipe(Stream.take(1), Stream.runDrain);
+        assert.isDefined((yield* provider.getSnapshot).usageLimits?.resetCredits);
+
+        const read = yield* Deferred.make<Fiber.Fiber<boolean>>();
+        const caller = yield* provider.refreshAfterRedemption.pipe(
+          Effect.tap((fiber) => Deferred.succeed(read, fiber)),
+          Effect.flatMap(Fiber.join),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(probeStarted);
+        assert.isUndefined((yield* provider.getSnapshot).usageLimits?.resetCredits);
+        // A streamed update is no read of the account, so it confirms no reset.
+        yield* provider.applyUsageLimits({
+          ...usage("2026-04-10T00:00:02.500Z", 100),
+          available: true,
+        });
+        assert.isUndefined((yield* provider.getSnapshot).usageLimits?.unavailable);
+        yield* Fiber.interrupt(caller);
+        yield* Deferred.succeed(releaseProbe, undefined);
+        assert.isFalse(yield* Fiber.join(yield* Deferred.await(read)));
+        const kept = (yield* provider.getSnapshot).usageLimits;
+        assert.strictEqual(kept?.windows[0]?.usedPercent, 100);
+        assert.isUndefined(kept?.resetCredits);
+
+        assert.isTrue(yield* provider.refreshAfterRedemption.pipe(Effect.flatMap(Fiber.join)));
+        assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 0);
+        assert.strictEqual(yield* Ref.get(invalidations), 2);
+      }),
+    ).pipe(Effect.provide(layerAlwaysRunTest)),
+  );
   it.effect("keeps the waiting usage refresh's claim when the running one is interrupted", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -839,6 +919,7 @@ describe("makeManagedServerProvider", () => {
         assert.strictEqual(update?.auth.label, "tier-1");
         assert.deepStrictEqual(update?.usageLimits, {
           checkedAt: "2026-04-10T00:05:00.000Z",
+          accountReadAt: "2026-04-10T00:00:01.000Z",
           windows: [
             { id: "five_hour", kind: "session", label: "Session", usedPercent: 10 },
             {

@@ -156,7 +156,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const { stateDir } = yield* ServerConfig.ServerConfig;
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
-    const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
     const catalogService = yield* ModelCatalog.ModelCatalog;
     const modelCatalog = catalogService
       .current(DRIVER_KIND)
@@ -237,6 +236,21 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
           : { kind: "path", path: ownConfigDir };
     const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(ownConfigDir);
     const claudeEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
+    // The snapshot below does not exist yet; a read finishes only once it does.
+    const limitResets: ClaudeResetCredits.ClaudeLimitResets =
+      yield* ClaudeResetCredits.makeClaudeLimitResets({
+        accountConfigPath,
+        loginKey: configDir,
+        terminal: {
+          binaryPath: effectiveConfig.binaryPath,
+          environment: claudeEnvironment,
+          cwd: path.join(stateDir, "limit-reset"),
+        },
+        onRead: Effect.suspend(() => snapshot.refresh).pipe(Effect.asVoid),
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
     const { CLAUDE_CODE_OAUTH_TOKEN: _existingToken, ...regularLoginEnvironment } = processEnv;
     const readLoginExpiry = readClaudeLoginExpiry({
       configDir,
@@ -404,7 +418,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       },
       {
         scopedLimitNames,
-        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        // A newly reached limit is when Claude's resets matter, so it starts a read of them.
+        onUsageLimits: (update) =>
+          snapshot.applyUsageLimits(update).pipe(
+            Effect.andThen(snapshot.getSnapshot),
+            Effect.flatMap(({ usageLimits }) =>
+              usageLimits && !usageLimits.unavailable
+                ? limitResets.current(usageLimits)
+                : Effect.void,
+            ),
+            Effect.asVoid,
+          ),
         onAuthenticationFailed: authenticationFailure.record.pipe(Effect.andThen(republishAuth)),
         onAuthenticated: authenticationFailure.clear.pipe(
           Effect.flatMap((hadFailure) => (hadFailure ? republishAuth : Effect.void)),
@@ -439,11 +463,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       () =>
         probeClaudeCapabilities(effectiveConfig, processEnv, stateDir).pipe(
           Effect.flatMap((capabilities) =>
-            ClaudeResetCredits.readClaudeOrganizationId(accountConfigPath).pipe(
-              Effect.map((workspaceId) => ({
+            ClaudeResetCredits.readClaudeAccountIdentity(accountConfigPath).pipe(
+              Effect.map((identity) => ({
                 _tag: "fresh" as const,
-                capabilities:
-                  workspaceId === undefined ? capabilities : { ...capabilities, workspaceId },
+                capabilities: { ...capabilities, ...identity },
               })),
             ),
           ),
@@ -460,9 +483,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                 Effect.flatMap((capabilities) =>
                   capabilities === undefined
                     ? Effect.fail(error)
-                    : ClaudeResetCredits.readClaudeOrganizationId(accountConfigPath).pipe(
-                        Effect.flatMap((workspaceId) =>
-                          workspaceId === capabilities.workspaceId
+                    : ClaudeResetCredits.readClaudeAccountIdentity(accountConfigPath).pipe(
+                        Effect.flatMap((identity) =>
+                          identity.workspaceId === capabilities.workspaceId &&
+                          identity.accountKey === capabilities.accountKey
                             ? Effect.succeed({
                                 _tag: "fallback" as const,
                                 capabilities: withoutUsage(capabilities),
@@ -507,12 +531,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               stateDir,
               catalog,
               scopedLimitNames,
-              (version) =>
-                ClaudeResetCredits.readClaudeResetCredits(configDir, version).pipe(
-                  Effect.provideService(HttpClient.HttpClient, httpClient),
-                  Effect.provideService(FileSystem.FileSystem, fileSystem),
-                  Effect.provideService(Path.Path, path),
-                ),
+              limitResets.current,
               readLoginExpiry,
             ),
           ),
@@ -581,56 +600,41 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       Effect.forkScoped,
     );
 
-    // Same rules as Codex: serialised on the config directory that holds the
-    // login, one request id kept until Claude answers (a cooldown or rate
-    // limit is an answer), then a re-probe.
     const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = Effect.fn(
       "ClaudeDriver.consumeResetCredit",
     )(
-      function* (creditId) {
+      function* (request) {
         const current = yield* snapshot.getSnapshot;
-        const credits = current.usageLimits?.resetCredits;
-        const grantId =
-          creditId === undefined
-            ? credits?.nextCreditId
-            : credits?.options?.some((option) => option.creditId === creditId)
-              ? creditId
-              : undefined;
-        if (!grantId || !current.version) return { outcome: "noCredit" as const };
-        const version = current.version;
-        const outcome = yield* resetCreditCoordinator.redeem(
-          configDir,
-          (requestId) =>
-            ClaudeResetCredits.consumeClaudeResetCredit({
-              configDir,
-              accountConfigPath,
-              version,
-              grantId,
-              requestId,
-            }),
-          ClaudeResetCredits.isSettledClaudeResetCreditFailure,
-        );
-        return yield* ResetCreditCoordinator.confirmRedemption({
-          outcome,
-          getSnapshot: snapshot.getSnapshot,
-          refresh: Cache.invalidateAll(capabilitiesProbeCache).pipe(
-            Effect.andThen(snapshot.refresh),
-          ),
-          providerName: "Claude",
+        const forAccount = request?.accountKey ?? current.usageLimits?.accountKey;
+        const chosen =
+          request?.creditId === undefined
+            ? undefined
+            : ClaudeResetCredits.offeredResetKind(
+                current.usageLimits?.resetCredits,
+                request.creditId,
+              );
+        // The option the user chose is gone once its grants are spent or expired.
+        if (request?.creditId !== undefined && chosen === undefined) {
+          return { outcome: "noCredit" as const };
+        }
+        return yield* ResetCreditCoordinator.redeemThenReadUsage({
+          redeem: limitResets.claim(forAccount, request?.kind ?? chosen),
+          readUsage: snapshot.refreshAfterRedemption,
+          usedNothing: (error) =>
+            error._tag === "ClaudeLimitResetError" &&
+            (error.reason === "unavailable" || error.reason === "accountChanged"),
+          provider: "Claude",
         });
       },
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
       Effect.mapError(
         (cause) =>
           new ProviderDriverError({
             driver: DRIVER_KIND,
             instanceId,
             detail:
-              cause._tag === "ClaudeResetCreditError"
+              cause._tag === "ClaudeLimitResetError"
                 ? cause.message
-                : "Claude could not redeem the reset.",
+                : "Claude could not use the reset.",
             cause,
           }),
       ),

@@ -28,6 +28,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   answerableAfterRestart,
@@ -412,6 +413,7 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -1315,6 +1317,42 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  // Shutdown does not drain admitted commands, so a group reads and commits under the locks they
+  // plan under, taken before its writer transaction. Commands nest a parent's lock around a child's,
+  // a fork source's around its target's and a chat's around its side chats', so taking the oldest
+  // thread's lock first cannot deadlock with them.
+  const withThreadLocks = Effect.fn("ProviderRuntimeRecoveryService.withThreadLocks")(function* <
+    A,
+    E,
+    R,
+  >(threadIds: ReadonlyArray<ThreadId>, effect: Effect.Effect<A, E, R>) {
+    const ordered =
+      threadIds.length < 2
+        ? threadIds
+        : (yield* Effect.forEach(threadIds, (threadId) =>
+            projections.getThread(threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderRuntimeRecoveryError({
+                    operation: "read-projections",
+                    threadId,
+                    cause,
+                  }),
+              ),
+            ),
+          ))
+            .toSorted(
+              (left, right) =>
+                DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt) ||
+                (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+            )
+            .map((thread) => thread.id);
+    return yield* ordered.reduceRight<Effect.Effect<A, E, R>>(
+      (locked, threadId) => threadDispatch.withLock(threadId, locked),
+      effect,
+    );
+  });
+
   const reconcile = Effect.fn("ProviderRuntimeRecoveryService.reconcile")(function* (
     trigger: "startup" | "shutdown",
   ) {
@@ -1346,10 +1384,11 @@ export const make = Effect.gen(function* () {
     const grouped = trigger === "shutdown" && threadIds.length > 1;
     const groupSize = grouped ? 32 : 1;
     for (let offset = 0; offset < threadIds.length; offset += groupSize) {
+      const group = threadIds.slice(offset, offset + groupSize);
       const cancelledEffectIds: string[] = [];
       // Read and decide on the writer so shared sessions see earlier updates in this group.
       const reconcileGroup = Effect.gen(function* () {
-        for (const threadId of threadIds.slice(offset, offset + groupSize)) {
+        for (const threadId of group) {
           const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
             Effect.mapError(
               (cause) =>
@@ -1385,7 +1424,10 @@ export const make = Effect.gen(function* () {
           retiredEffects += result.retiredEffects;
         }
       });
-      yield* (grouped ? eventSink.withProviderBatch(reconcileGroup) : reconcileGroup).pipe(
+      yield* withThreadLocks(
+        group,
+        grouped ? eventSink.withProviderBatch(reconcileGroup) : reconcileGroup,
+      ).pipe(
         Effect.mapError((cause) =>
           isProviderRuntimeRecoveryError(cause)
             ? cause
@@ -1617,4 +1659,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(ProviderRuntimeRecoveryService, make);
+export const layer = Layer.effect(ProviderRuntimeRecoveryService, make).pipe(
+  Layer.provide(ThreadCommandExecutor.layer),
+);

@@ -13,12 +13,13 @@ Sync the T3.CodeShip fork with the original project it was forked from, bring th
 - Read AGENTS.md at the repository root before starting and follow it: its verification commands, its test rules, no repo-wide checks (`vp check`, `vp run -r test`, `vp run -r typecheck`), no dev servers, never kill processes by name pattern, and never touch ~/.t3/userdata.
 - Before resolving conflicts, read the ThreadPage thread Work/CodeShip → Decisions with the ThreadPage tools and follow its decisions about fork versus upstream behaviour.
 - Decide every choice that is not about money yourself. Never ask the user.
+- A run is bounded: at most 3 merges (upstream once, then main at most twice) and 3 hours from `begin`. `node scripts/upstream-sync.ts`, run inside the sync worktree, keeps that count and clock, so a busy main cannot keep the run re-merging. Before each long step (resolving conflicts, localizing, each check run), run `node scripts/upstream-sync.ts status`; when its `minutesLeft` is 0, stop and hold (step 9).
 
 ## Steps
 
 1. In `~/Projects/CodeShip` run `git fetch upstream` and `git fetch origin`. If `git merge-base --is-ancestor upstream/main origin/main` succeeds, there is nothing new: report "Already up to date with upstream (<upstream/main short sha>)" and go to Finish.
-2. Create a worktree from origin/main on a new branch named after today's local date: `git worktree add ../CodeShip-sync-YYYY-MM-DD -b sync/upstream-YYYY-MM-DD origin/main`. If that branch or folder already exists from an earlier run, add a suffix such as -2, and use the branch and folder you created, suffix included, in every later step. Run `vp i` in it.
-3. In the worktree: `git merge --no-ff upstream/main -m "chore: sync with upstream t3code (<upstream/main short sha>)"`.
+2. Create a worktree from origin/main on a new branch named after today's local date: `git worktree add ../CodeShip-sync-YYYY-MM-DD -b sync/upstream-YYYY-MM-DD origin/main`. If that branch or folder already exists from an earlier run, add a suffix such as -2, and use the branch and folder you created, suffix included, in every later step. Run `vp i` in it. The commit it starts from is the run's frozen base: never pull, rebase or merge origin/main into the branch yourself.
+3. In the worktree run `node scripts/upstream-sync.ts begin`. It merges upstream/main into the frozen base as `chore: sync with upstream t3code (<upstream/main short sha>)` (merge 1 of 3), starts the run's clock, and prints `base` (the frozen commit) and `conflicts` (the files left to resolve). Commit the resolution with `git commit --no-edit`. On a sync branch a held run pushed, it reports `resumed` instead: upstream is merged already, and this run gets its own 3 merges and 3 hours.
 4. Resolve every conflict:
    - Keep T3.CodeShip naming, brand components, icons and doc wording wherever upstream brings back T3 Code branding. Apply the same rename to new upstream user-facing text and docs that say "T3 Code".
    - Leave internal identifiers as they are, as the fork did: package scopes (@t3tools/_), environment variables (T3CODE\__), skill folder names under .agents/skills, and URLs that point at upstream resources.
@@ -28,25 +29,28 @@ Sync the T3.CodeShip fork with the original project it was forked from, bring th
    - A product guess is a conflict where both behaviours cannot be kept and no Decisions note settles it, so the resolution drops or reverses something the fork changed on purpose. Resolve it in favour of upstream's behaviour on the branch, note both behaviours, and treat it as open: the sync does not land (step 9).
 5. Localize: follow section 3 and step 4.1 of the `upstream-sync` skill (`.agents/skills/upstream-sync/SKILL.md`: make upstream's new text translatable, then translate it with the `translate-ui` skill) until `vp lint apps/web/src apps/mobile/src apps/desktop/src` reports no `t3code/no-untranslated-text` findings and `node scripts/i18n-catalog.ts check` passes. Commit that work on the branch as `fix(i18n): translate upstream text from <upstream/main short sha>`.
 6. Release notes. Prepend one dated entry to docs/release-notes.md as AGENTS.md and docs/operations/release.md describe: `## YYYY-MM-DD — Updates from T3 Code`, then up to 7 bullets on what the new upstream commits change for users (`git log --no-merges --format='%h %s' <previous upstream sha>..upstream/main`), in the product's voice with T3.CodeShip naming. Commit it as `docs: release notes for upstream sync <upstream/main short sha>`.
-7. Verify in the worktree, always against origin/main:
-   a. `CHECK_CHANGED_TIMEOUT=3600 vp run check:changed origin/main`. Pass origin/main explicitly: after the merge, the default base can be upstream/main. It runs format, lint, knip, translations, release notes, typecheck of the affected packages and their dependents, and the tests beside every changed file.
+7. Verify in the worktree, always against the run's base, the `base` that `node scripts/upstream-sync.ts status` prints:
+   a. `CHECK_CHANGED_TIMEOUT=3600 vp run check:changed <base>`. Pass the base explicitly: after the merge, the default base can be upstream/main. It runs format, lint, knip, translations, release notes, typecheck of the affected packages and their dependents, and the tests beside every changed file.
    b. The full test suite (`vp run --filter ./<package dir> test`) of each package where you edited files while resolving, localizing or fixing, and always apps/server/src/orchestration-v2/UsageLimitRecoveryWorker.test.ts if anything under apps/server/src/orchestration-v2 or packages/contracts/src/settings.ts changed.
    c. `vp run --filter @t3tools/desktop ensure:electron`, then `vp run build:desktop`: the build CI's "Build and Typecheck" job runs. Main must build at the commit you push.
    - If browser tests cannot start because Playwright's Chromium is missing, install it the way .github/workflows/ci.yml does and rerun them. Tests that never ran do not count as passing.
    - Rerun each failing test file alone. If it passes alone twice, it is a load flake: it does not block, and all of this run's flakes share one follow-up (step 10).
-   - Only a test can be excused as pre-existing. Format, lint, knip, translations, release notes, typecheck and the desktop build pass at the commit you push: if one fails on origin/main too, fix it in this run, or hold (step 9).
-   - For every other failing test, check whether main has it too: run the same test file in a temporary checkout of origin/main (`git worktree add --detach ../CodeShip-base-YYYY-MM-DD origin/main`, then `vp i`), and remove that worktree when you are done.
-     - It passes on origin/main: the sync caused it. Fix its root cause on the branch, as earlier syncs did for tests one side broke against the other side's code.
-     - It fails on origin/main and is the sync's to fix: fix it in this run too. It is the sync's when it comes from the fork's divergence from upstream (the rebrand, a fork change meeting upstream's code or tests) or sits in a file the merge touched.
-     - It fails on origin/main and is not the sync's: leave it and give it its own follow-up (step 10). It does not block landing; for these alone this overrides the ship skill's "never land red".
+   - Only a test can be excused as pre-existing. Format, lint, knip, translations, release notes, typecheck and the desktop build pass at the commit you push: if one fails on the base too, fix it in this run, or hold (step 9).
+   - For every other failing test, check whether main has it too: run the same test file in a temporary checkout of the base (`git worktree add --detach ../CodeShip-base-YYYY-MM-DD <base>`, then `vp i`), and remove that worktree when you are done.
+     - It passes on the base: the sync caused it. Fix its root cause on the branch, as earlier syncs did for tests one side broke against the other side's code.
+     - It fails on the base and is the sync's to fix: fix it in this run too. It is the sync's when it comes from the fork's divergence from upstream (the rebrand, a fork change meeting upstream's code or tests) or sits in a file the merge touched.
+     - It fails on the base and is not the sync's: leave it and give it its own follow-up (step 10). It does not block landing; for these alone this overrides the ship skill's "never land red".
    - Commit fixes as `fix: <what> after upstream sync`, and rerun 7a to 7c until they pass.
 8. Land when 7a to 7c pass, apart from load-flaky and pre-existing failing tests that each have a follow-up, and no product guess is open:
-   - Land with the `ship` skill: a fast-forward push of the branch to main, never `--force` or `--force-with-lease`. Run its `/simplify` step on your own edits only (conflict resolutions, localization, fixes), not on upstream's commits.
-   - Never rebase the sync branch: it holds the upstream merge. If origin/main moved meanwhile, `git fetch origin` and `git merge origin/main` into the branch, resolve conflicts (in docs/release-notes.md keep every entry, yours on top), rerun 7a to 7c, and push again.
-   - Leave `~/Projects/CodeShip` as it is: skip the ship skill's fast-forward of the main checkout. Ship deletes the branch and removes the worktree.
-9. Hold: if a check still fails after you traced it to its cause and tried to fix it, or a product guess is open, do not touch main:
-   - Commit what you have, run `git push -u origin <sync branch>` from the worktree, then remove the worktree with `git worktree remove <sync folder>` (run from `~/Projects/CodeShip`), using the names step 2 created. The branch stays on GitHub.
-   - File one follow-up for the sync (step 10) naming each failing check (command and the failing tests or errors) and each open product guess (both behaviours, the evidence, and what the branch does now). Its next step is to finish and land the sync by this task's rules.
+   - Run the `ship` skill's `/simplify` step on your own edits only (conflict resolutions, localization, fixes), not on upstream's commits, and rerun 7a to 7c if it changed anything.
+   - Then run `node scripts/upstream-sync.ts land` in the worktree instead of pushing yourself. It pushes the branch to main only as a fast-forward of the base you verified; never push to main any other way, and never rebase the sync branch: it holds the upstream merge. Act on its `status`:
+     - `landed`: it is on main. Finish with the ship skill's cleanup (delete the branch, remove the worktree), but leave `~/Projects/CodeShip` as it is: skip its fast-forward of the main checkout.
+     - `verify`: main had moved, so it merged main into the branch (one more merge; a conflict only in docs/release-notes.md is resolved with your entry on top). Rerun 7a against the new `base` it prints and 7c, fix on the branch what the merge broke, then run `land` again.
+     - `hold`: main conflicts with the sync (it aborted that merge, so the branch is as you verified it), or the run is out of merges or time. Go to step 9 with its `reason` and `conflicts`.
+     - `push-failed`: the push itself failed. If it is an authentication error, stop as Context says; otherwise hold (step 9) with the error.
+9. Hold: if a check still fails after you traced it to its cause and tried to fix it, a product guess is open, the run is out of time, or `land` held, do not touch main:
+   - Commit what you have; if a merge is still unresolved, run `git merge --abort` first and list the files it left in conflict. Then run `git push -u origin <sync branch>` from the worktree, then remove the worktree with `git worktree remove <sync folder>` (run from `~/Projects/CodeShip`), using the names step 2 created. The branch stays on GitHub.
+   - File one follow-up for the sync (step 10) naming the hold's reason, every file that conflicted (each merge's `conflicts` from `node scripts/upstream-sync.ts status`, and which merge), each failing check (command and the failing tests or errors) and each open product guess (both behaviours, the evidence, and what the branch does now). Its next step is to finish and land the sync by this task's rules.
 10. Follow-ups:
     - Before filing, search Work/CodeShip for an open thread about the same failure (test file, check name, or conflict). If one exists, add a note with this run's evidence instead of a new thread, and do not start it again while a chat is working on it (its notes say so).
     - Otherwise create a thread in the CodeShip folder under Work: a title that states the problem, and a first note with the evidence, the next step, the acceptance criteria as a checklist, and the last line "To start it, mention @CodeShip in a note in this thread."
@@ -59,7 +63,8 @@ Keep it short:
 
 - The machine it ran on.
 - Upstream range merged (old and new short shas) and the number of new upstream commits.
-- Outcome: up to date, landed (the main sha it landed as), or held (the branch, and why).
+- Outcome: up to date, landed (the main sha it landed as), or held (the branch, the hold's reason, and every file that conflicted, by merge).
+- Bounds: merges used of 3 and time used of 3 hours, from `node scripts/upstream-sync.ts status`.
 - Localization: how many strings were wrapped, how many messages were translated, and anything left English on purpose.
 - Conflicts resolved: one line per area on how; product guesses and the Decisions notes you followed.
 - Checks: each command and its result, load flakes, and pre-existing failures (fixed, or the follow-up).

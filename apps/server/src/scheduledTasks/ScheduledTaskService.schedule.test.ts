@@ -807,6 +807,7 @@ it.effect.each([
         Layer.succeed(AccountRouting.AccountRouting, {
           accountsWithRoom: () => Effect.succeed([]),
           scheduledRunBlock: () => Effect.succeed(null),
+          releaseAllowedHolds: Effect.succeed(false),
           route: (input) => Effect.succeed(input.selection),
           failoverLaunch: (input) =>
             Effect.succeed({

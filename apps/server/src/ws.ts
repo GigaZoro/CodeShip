@@ -2640,7 +2640,10 @@ export const layerWsRpc = (
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
             if ("sourceId" in input) return yield* usageLimitSources.consumeResetCredit(input);
-            return yield* resetCreditRedemption.redeem(input.instanceId, input.creditId);
+            return yield* resetCreditRedemption.redeem(
+              input.instanceId,
+              input.creditId === undefined ? undefined : { creditId: input.creditId },
+            );
           }),
         [WS_METHODS.providerRetryUsageLimit]: (input) =>
           accountRouting.retryAccount(input.instanceId).pipe(

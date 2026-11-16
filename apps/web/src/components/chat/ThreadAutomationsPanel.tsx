@@ -1,7 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
-import { CalendarClockIcon, PinIcon, PlayIcon, Settings2Icon } from "lucide-react";
+import {
+  CalendarClockIcon,
+  PinIcon,
+  PlayIcon,
+  Settings2Icon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { useId, useState } from "react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -25,6 +31,7 @@ import { shownNoWorkSkip } from "@t3tools/client-runtime/scheduled-task-run-cond
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { cn } from "../../lib/utils";
 import {
+  FailingCheckSentence,
   ScheduledRelativeLabel,
   NoWorkSkipSentence,
   ScheduledTaskScheduleLine,
@@ -142,7 +149,14 @@ function ThreadAutomationRow(props: {
             }
           >
             <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
-              <CalendarClockIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+              {task.failingCheck ? (
+                <TriangleAlertIcon
+                  aria-hidden
+                  className={cn(THREAD_DETAILS_PANEL_ICON_CLASS, "text-warning-foreground")}
+                />
+              ) : (
+                <CalendarClockIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+              )}
               <span
                 className={cn(
                   "absolute -right-1 -top-1 size-1.5 rounded-full",
@@ -163,6 +177,12 @@ function ThreadAutomationRow(props: {
               </span>
               <span id={`${descriptionId}-status`} className="sr-only">
                 {t(LAST_RUN_LABEL[task.lastRunStatus])}
+                {task.failingCheck ? (
+                  <>
+                    {" · "}
+                    <FailingCheckSentence failing={task.failingCheck} />
+                  </>
+                ) : null}
               </span>
             </span>
           </TooltipTrigger>
@@ -183,6 +203,11 @@ function ThreadAutomationRow(props: {
             {noWorkSkip !== null ? (
               <p className="text-muted-foreground">
                 <NoWorkSkipSentence skip={noWorkSkip} />
+              </p>
+            ) : null}
+            {task.failingCheck ? (
+              <p className="text-warning-foreground">
+                <FailingCheckSentence failing={task.failingCheck} />
               </p>
             ) : null}
             <p className="text-muted-foreground">{taskThreadRelation(task, props.threadId)}</p>

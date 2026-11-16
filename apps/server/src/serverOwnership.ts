@@ -32,9 +32,9 @@ import {
   legacyOwnerStartTimeCommand,
 } from "./legacyServerOwner.ts";
 import * as ProcessRunner from "./processRunner.ts";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import {
   clearPersistedServerRuntimeState,
-  isProcessAlive,
   persistServerRuntimeState,
   readPersistedServerRuntimeState,
   type PersistedServerRuntimeState,

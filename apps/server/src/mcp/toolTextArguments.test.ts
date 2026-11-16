@@ -53,7 +53,8 @@ const tools = new Map(
 // "`tool` with …" or "`tool` takes …" up to the end of its clause; code spans may hold "." or ";".
 const TOOL_ARGUMENT_CLAUSE = /`([a-z][a-z0-9_]*)` (?:with|takes)\b((?:`[^`]*`|[^`.;\n])*)/g;
 const CODE_SPAN = /`([^`]*)`/g;
-const ASSIGNMENT = /`([A-Za-z_][\w.]*)\s*[:=][^`]*`/g;
+// A Windows drive path such as `C:/` is no assignment.
+const ASSIGNMENT = /`(?![A-Za-z]:[\\/])([A-Za-z_][\w.]*)\s*[:=][^`]*`/g;
 
 function argumentProblems(
   source: string,

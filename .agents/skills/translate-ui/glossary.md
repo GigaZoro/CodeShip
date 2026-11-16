@@ -17,7 +17,7 @@ message passes only when every word in it is listed here.
   Material You, One UI, Bluetooth, PowerShell.
 - Technical terms: MCP, ACP, SSH, PR, CLI, API, URL, JSON, HTML, PDF, GPU, PID, UI, ID, OK, px,
   Trace ID, t3.json, Git, git, worktree, push, pull, raw, Markdown, webhook, cron, ghq, npm, `npx t3`,
-  Conventional Commits, Auto, Enter, Esc, Tab, Ctrl-C, ⌘K. Model ids stay as written too.
+  Conventional Commits, Standard Webhooks, Auto, Enter, Esc, Tab, Ctrl-C, ⌘K. Model ids stay as written too.
 - The font preview sample: The quick brown fox jumps over the lazy dog.
 
 ## Terms

@@ -22,16 +22,19 @@ import {
   ScheduledTaskWebhookDeliveryId,
   DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
   DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
+  RUN_CONDITION_FAILING_STREAK,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
   defaultCatchUpMissedRun,
   type ModelSelection,
   type ScheduledTaskListRunsInput,
   type ScheduledTaskListRunsResult,
   ScheduledTaskDelegateProviders,
+  ScheduledTaskFailingCheck,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskRunCheck,
   ScheduledTaskRunCondition,
   ScheduledTaskRunRecord,
+  type ScheduledTaskRecentRunCounts,
   type ScheduledTaskRunSkipReason,
   ScheduledTaskRunFailover,
   ScheduledTaskRunUsageLimit,
@@ -46,6 +49,8 @@ import {
   type ScheduledTaskRotateWebhookTokenInput,
   type ScheduledTaskWebhookDeliveryOutcome,
   type ScheduledTaskWebhookFilter,
+  type ScheduledTaskWebhookSignature,
+  STANDARD_WEBHOOKS_REPLAY_KEY,
   type ScheduledTaskListResult,
   type ScheduledTaskMutationResult,
   type ScheduledTaskRunNowInput,
@@ -64,6 +69,7 @@ import {
   type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertInput,
   type ProviderDriverKind,
+  isOrchestrationV2TerminalRunStatus,
   managedPolicyDeniedMessage,
   resolveProjectProviderInstanceEnabled,
   scheduledTaskThreadMode,
@@ -93,6 +99,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as NetworkRecoveryWorker from "../orchestration-v2/NetworkRecoveryWorker.ts";
@@ -143,7 +150,11 @@ import {
   dedupeError,
 } from "./webhookDedupe.ts";
 import { describeFailedWebhookFilter, findFailedWebhookFilter } from "./webhookFilter.ts";
-import { constantTimeEquals, verifyWebhookSignature } from "./webhookVerification.ts";
+import {
+  constantTimeEquals,
+  standardWebhooksKey,
+  verifyWebhookSignature,
+} from "./webhookVerification.ts";
 
 export const WEBHOOK_ROUTE_PREFIX = "/api/hooks";
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -187,10 +198,13 @@ const LIVE_RUN_CHECK_LIMIT = 2 * MAX_SCHEDULED_TASK_MAX_LIVE_RUNS;
 type StalledWork = NonNullable<
   Effect.Success<ReturnType<typeof ThreadManagementService.stalledWork>>
 >;
-// Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over 90 days.
+// Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over
+// 90 days. Daily counts are kept as long.
 const RUN_HISTORY_WINDOW_MS = 90 * 24 * 60 * MINUTE_MS;
 const runHistoryCutoff = (startedAt: string) =>
   DateTime.formatIso(DateTime.makeUnsafe(Date.parse(startedAt) - RUN_HISTORY_WINDOW_MS));
+/** The UTC day `scheduled_task_daily_counts` files an ISO time under. */
+const utcDay = (isoTime: string) => isoTime.slice(0, 10);
 const WEBHOOK_DEDUPE_DELIVERY_RETENTION = 20;
 const WEBHOOK_FILTERED_DELIVERY_RETENTION = 20;
 const WEBHOOK_DEDUPE_LOG_PER_MINUTE = 10;
@@ -286,6 +300,31 @@ export type WebhookTriggerResult =
 const webhookFilters = (filters: ReadonlyArray<ScheduledTaskWebhookFilter> | undefined) =>
   filters?.length ? { filters } : {};
 
+type UpsertWebhookSignature = Extract<
+  ScheduledTaskUpsertInput["schedule"],
+  { readonly type: "webhook" }
+>["signature"];
+type WebhookDedupe = Extract<ScheduledTask["schedule"], { readonly type: "webhook" }>["dedupe"];
+
+const storedWebhookSignature = (
+  signature: UpsertWebhookSignature,
+): ScheduledTaskWebhookSignature | null => {
+  if (signature == null) return null;
+  if ("scheme" in signature) return { scheme: signature.scheme };
+  return {
+    header: signature.header.toLowerCase(),
+    encoding: signature.encoding,
+    prefix: signature.prefix,
+  };
+};
+
+/** Standard Webhooks senders retry with the same `webhook-id`, so it is the replay key unless one is set. */
+const webhookDedupe = (signature: UpsertWebhookSignature, dedupe: WebhookDedupe) => {
+  if (signature == null || !("scheme" in signature) || dedupe?.replayKey !== undefined)
+    return dedupe === undefined ? {} : { dedupe };
+  return { dedupe: { ...dedupe, replayKey: STANDARD_WEBHOOKS_REPLAY_KEY } };
+};
+
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeRunRecord = Schema.decodeUnknownOption(ScheduledTaskRunRecord);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
@@ -319,6 +358,9 @@ const decodeRunConditionJson = Schema.decodeUnknownEffect(
 );
 const decodeNoWorkSkipJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTaskNoWorkSkip),
+);
+const decodeFailingCheckJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ScheduledTaskFailingCheck),
 );
 const ChangedByJson = Schema.fromJsonString(ScheduledTaskChangedBy);
 const decodeChangedByJson = Schema.decodeUnknownEffect(ChangedByJson);
@@ -402,12 +444,15 @@ interface ScheduledTaskRow {
   readonly decision_ran_on?: string | null;
   readonly decision_unchecked_json?: string | null;
   readonly decision_unconfirmed?: number | null;
+  readonly decision_other_version?: number | null;
   /** From scheduled_task_catch_up: null when the task keeps the default. */
   readonly catch_up_missed_run?: number | null;
   /** From scheduled_task_run_conditions: null when the task has none. */
   readonly run_condition_json?: string | null;
   /** The newest no-work skip from scheduled_task_runs; it outlives the condition that made it. */
   readonly no_work_skip_json?: string | null;
+  /** The newest check from scheduled_task_runs while the task's condition keeps failing, else null. */
+  readonly failing_check_json?: string | null;
   /** From scheduled_task_prompt_files: null when the task runs its own prompt. */
   readonly prompt_file_path?: string | null;
   readonly prompt_file_read_at?: string | null;
@@ -595,6 +640,11 @@ export class ScheduledTaskService extends Context.Service<
     readonly listRuns: (
       input: ScheduledTaskListRunsInput,
     ) => Effect.Effect<ScheduledTaskListRunsResult, ScheduledTaskError>;
+    /** Each task's occurrences here by outcome and skip reason; a task with none in 30 days is left out. */
+    readonly recentRunCounts: () => Effect.Effect<
+      ReadonlyMap<ScheduledTaskId, ScheduledTaskRecentRunCounts>,
+      ScheduledTaskError
+    >;
     readonly rotateWebhookToken: (
       input: ScheduledTaskRotateWebhookTokenInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -803,6 +853,7 @@ const decodeRow = Effect.fnUntraced(
               ranOn: row.decision_ran_on,
               unchecked: yield* decodeUncheckedJson(row.decision_unchecked_json),
               ...(row.decision_unconfirmed === 1 ? { unconfirmed: true } : {}),
+              ...(row.decision_other_version === 1 ? { otherVersion: true } : {}),
             };
     return yield* decodeTask({
       id: row.task_id,
@@ -859,6 +910,14 @@ const decodeRow = Effect.fnUntraced(
               row.no_work_skip_json === null
                 ? null
                 : yield* decodeNoWorkSkipJson(row.no_work_skip_json),
+          }),
+      ...(row.failing_check_json === undefined
+        ? {}
+        : {
+            failingCheck:
+              row.failing_check_json === null
+                ? null
+                : yield* decodeFailingCheckJson(row.failing_check_json),
           }),
       ...(row.last_run_trigger === null ? {} : { lastRunScheduledFor: row.last_run_scheduled_for }),
       ...(row.prompt_file_path === undefined
@@ -1092,14 +1151,14 @@ export const layer = Layer.effect(
         unchecked_json TEXT NOT NULL
       )
     `;
-    if (
-      !(yield* sql<{
-        name: string;
-      }>`PRAGMA table_info(scheduled_task_one_machine_decision)`).some(
-        (column) => column.name === "unconfirmed",
-      )
-    ) {
+    const decisionColumns = (yield* sql<{
+      name: string;
+    }>`PRAGMA table_info(scheduled_task_one_machine_decision)`).map((column) => column.name);
+    if (!decisionColumns.includes("unconfirmed")) {
       yield* sql`ALTER TABLE scheduled_task_one_machine_decision ADD COLUMN unconfirmed INTEGER NOT NULL DEFAULT 0`;
+    }
+    if (!decisionColumns.includes("other_version")) {
+      yield* sql`ALTER TABLE scheduled_task_one_machine_decision ADD COLUMN other_version INTEGER NOT NULL DEFAULT 0`;
     }
     // Which machine holds an occurrence of a one-machine task. Every machine keeps a copy, so one
     // that cannot reach the holder still learns of it from the others.
@@ -1216,6 +1275,86 @@ export const layer = Layer.effect(
       UPDATE scheduled_task_runs SET skip_reason = 'live_run_limit'
       WHERE skip_reason = 'last_run_working'
     `;
+    // Each task's occurrences by the UTC day they started, outcome and skip reason ('' for none).
+    // Run history drops all but the newest skips, so idle runs are counted here, by triggers that
+    // see every run row written or settled, an older build's too; history's pruning is not counted.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const existed = yield* sql`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_task_daily_counts'
+        `;
+        if (existed.length === 0) {
+          // Day first: the prune and the recent counts each read a range of days.
+          yield* sql`
+            CREATE TABLE scheduled_task_daily_counts (
+              task_id TEXT NOT NULL,
+              day TEXT NOT NULL,
+              outcome TEXT NOT NULL,
+              skip_reason TEXT NOT NULL,
+              count INTEGER NOT NULL,
+              PRIMARY KEY (day, task_id, outcome, skip_reason)
+            ) WITHOUT ROWID
+          `;
+          // The runs history still holds are all there is to count from before the table.
+          yield* sql`
+            INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+            SELECT task_id, substr(started_at, 1, 10), outcome, coalesce(skip_reason, ''), count(*)
+            FROM scheduled_task_runs WHERE outcome <> 'running'
+            GROUP BY 1, 2, 3, 4
+          `;
+        }
+        // Recreated each start, so a changed definition replaces the stored one.
+        yield* sql`DROP TRIGGER IF EXISTS scheduled_task_runs_count_insert`;
+        yield* sql`DROP TRIGGER IF EXISTS scheduled_task_runs_count_update`;
+        yield* sql`DROP TRIGGER IF EXISTS scheduled_tasks_count_delete`;
+        yield* sql`
+          CREATE TRIGGER scheduled_task_runs_count_insert
+          AFTER INSERT ON scheduled_task_runs
+          WHEN NEW.outcome <> 'running'
+          BEGIN
+            INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+            VALUES (NEW.task_id, substr(NEW.started_at, 1, 10), NEW.outcome,
+              coalesce(NEW.skip_reason, ''), 1)
+            ON CONFLICT (day, task_id, outcome, skip_reason) DO UPDATE SET count = count + 1;
+          END
+        `;
+        yield* sql`
+          CREATE TRIGGER scheduled_task_runs_count_update
+          AFTER UPDATE OF task_id, started_at, outcome, skip_reason ON scheduled_task_runs
+          WHEN OLD.task_id IS NOT NEW.task_id OR OLD.started_at IS NOT NEW.started_at
+            OR OLD.outcome IS NOT NEW.outcome OR OLD.skip_reason IS NOT NEW.skip_reason
+          BEGIN
+            UPDATE scheduled_task_daily_counts SET count = count - 1
+            WHERE OLD.outcome <> 'running' AND task_id = OLD.task_id
+              AND day = substr(OLD.started_at, 1, 10) AND outcome = OLD.outcome
+              AND skip_reason = coalesce(OLD.skip_reason, '');
+            INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+            SELECT NEW.task_id, substr(NEW.started_at, 1, 10), NEW.outcome,
+              coalesce(NEW.skip_reason, ''), 1
+            WHERE NEW.outcome <> 'running'
+            ON CONFLICT (day, task_id, outcome, skip_reason) DO UPDATE SET count = count + 1;
+          END
+        `;
+        // A trigger, so a task an older build deletes leaves no counts for a new task of its id.
+        yield* sql`
+          CREATE TRIGGER scheduled_tasks_count_delete
+          AFTER DELETE ON scheduled_tasks
+          BEGIN
+            DELETE FROM scheduled_task_daily_counts WHERE task_id = OLD.task_id;
+          END
+        `;
+        // The rename above moved the counts of the skips history still holds; this moves the rest,
+        // such as those an older build recorded and then pruned.
+        yield* sql`
+          INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+          SELECT task_id, day, outcome, 'live_run_limit', count FROM scheduled_task_daily_counts
+          WHERE skip_reason = 'last_run_working'
+          ON CONFLICT (day, task_id, outcome, skip_reason) DO UPDATE
+            SET count = count + excluded.count
+        `;
+        yield* sql`DELETE FROM scheduled_task_daily_counts WHERE skip_reason = 'last_run_working'`;
+      }),
+    );
     // Outlives the task so a stale copy on another machine is removed, not restored.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_shared_deletions (
@@ -1253,6 +1392,25 @@ export const layer = Layer.effect(
         ? (resolveScheduledTaskDefaultModelSelection(settings, task.projectId) ??
           task.modelSelection)
         : task.modelSelection;
+
+    // This machine's newest checks: a one-machine skip records another machine's answer, with `ran_on`.
+    const latestLocalChecks = (taskId: ScheduledTaskId | Statement.Fragment) => sql`
+      SELECT run_id, started_at, check_json FROM scheduled_task_runs
+      WHERE task_id = ${taskId} AND check_json IS NOT NULL AND ran_on IS NULL
+      ORDER BY started_at DESC, run_id DESC
+      LIMIT ${RUN_CONDITION_FAILING_STREAK}
+    `;
+    const failingCheckColumn = sql`(
+      SELECT CASE WHEN COUNT(*) = ${RUN_CONDITION_FAILING_STREAK}
+          AND SUM(json_extract(latest.check_json, '$.outcome') = 'failed') = COUNT(*)
+        THEN json_extract(json_group_array(
+          json_object('at', latest.started_at, 'check', json(latest.check_json))
+          ORDER BY latest.started_at DESC, latest.run_id DESC
+        ), '$[0]') END
+      FROM (${latestLocalChecks(sql`scheduled_tasks.task_id`)}) latest
+      WHERE EXISTS (SELECT 1 FROM scheduled_task_run_conditions rc
+        WHERE rc.task_id = scheduled_tasks.task_id)
+    )`;
 
     const selectAllRows = () =>
       sql<ScheduledTaskRow>`
@@ -1310,6 +1468,8 @@ export const layer = Layer.effect(
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json,
         (SELECT unconfirmed FROM scheduled_task_one_machine_decision od
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unconfirmed,
+        (SELECT other_version FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_other_version,
         (SELECT enabled FROM scheduled_task_catch_up c
           WHERE c.task_id = scheduled_tasks.task_id) AS catch_up_missed_run,
         (SELECT json_object('command', rc.command, 'timeoutSeconds', rc.timeout_seconds)
@@ -1320,6 +1480,7 @@ export const layer = Layer.effect(
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
           ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+        ${failingCheckColumn} AS failing_check_json,
         (SELECT path FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
         (SELECT read_at FROM scheduled_task_prompt_files pf
@@ -1417,6 +1578,8 @@ export const layer = Layer.effect(
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unchecked_json,
         (SELECT unconfirmed FROM scheduled_task_one_machine_decision od
           WHERE od.task_id = scheduled_tasks.task_id) AS decision_unconfirmed,
+        (SELECT other_version FROM scheduled_task_one_machine_decision od
+          WHERE od.task_id = scheduled_tasks.task_id) AS decision_other_version,
         (SELECT enabled FROM scheduled_task_catch_up c
           WHERE c.task_id = scheduled_tasks.task_id) AS catch_up_missed_run,
         (SELECT json_object('command', rc.command, 'timeoutSeconds', rc.timeout_seconds)
@@ -1427,6 +1590,7 @@ export const layer = Layer.effect(
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
           ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+        ${failingCheckColumn} AS failing_check_json,
         (SELECT path FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
         (SELECT read_at FROM scheduled_task_prompt_files pf
@@ -1913,6 +2077,13 @@ export const layer = Layer.effect(
                 AND (outcome = 'skipped' OR started_at < ${runHistoryCutoff(record.startedAt)})
             END
           )
+          -- The failing-check mark reads these; pruning one would bring back older answers.
+          AND run_id NOT IN (SELECT run_id FROM (${latestLocalChecks(record.taskId)}))
+        `),
+        // Every task's, so a task that stopped running does not keep its counts.
+        Effect.andThen(sql`
+          DELETE FROM scheduled_task_daily_counts
+          WHERE day < ${utcDay(runHistoryCutoff(record.startedAt))}
         `),
       );
     const insertRunRecord = (record: Parameters<typeof writeRunRecord>[0]) =>
@@ -2173,7 +2344,7 @@ export const layer = Layer.effect(
       if (
         run === null ||
         run.status === "completed" ||
-        !ThreadManagementService.isTerminalRunStatus(run.status)
+        !isOrchestrationV2TerminalRunStatus(run.status)
       )
         return;
       const { turnItems, messages } = yield* threadManagement.getProjectThreadRecords(thread, [
@@ -3407,14 +3578,16 @@ export const layer = Layer.effect(
     ) =>
       sql`
         INSERT INTO scheduled_task_one_machine_decision
-          (task_id, decided_at, ran_on, unchecked_json, unconfirmed)
+          (task_id, decided_at, ran_on, unchecked_json, unconfirmed, other_version)
         VALUES (${taskId}, ${decision.at}, ${decision.ranOn},
-          ${JSON.stringify(decision.unchecked)}, ${decision.unconfirmed === true ? 1 : 0})
+          ${JSON.stringify(decision.unchecked)}, ${decision.unconfirmed === true ? 1 : 0},
+          ${decision.otherVersion === true ? 1 : 0})
         ON CONFLICT (task_id) DO UPDATE SET
           decided_at = excluded.decided_at,
           ran_on = excluded.ran_on,
           unchecked_json = excluded.unchecked_json,
-          unconfirmed = excluded.unconfirmed
+          unconfirmed = excluded.unconfirmed,
+          other_version = excluded.other_version
       `;
 
     // A takeover changes the holder's own copy first, so every other copy may trust it; the
@@ -3445,7 +3618,8 @@ export const layer = Layer.effect(
               EXISTS (
                 SELECT 1 FROM scheduled_task_runs
                 WHERE task_id = ${input.taskId} AND scheduled_for = ${occurrence}
-                  AND outcome = 'skipped' AND skip_reason IN ('unconfirmed', 'ran_elsewhere')
+                  AND outcome = 'skipped'
+                  AND skip_reason IN ('unconfirmed', 'ran_elsewhere', 'other_version')
               ) AS gave_up,
               COALESCE((
                 SELECT scheduled_for = ${occurrence} AND thread_id IS NOT NULL
@@ -3667,6 +3841,7 @@ export const layer = Layer.effect(
           return next;
         });
         // `ranOn` null: no other machine confirmed the occurrence was free, so it went to none.
+        // With `decision.otherVersion`, `ranOn` follows another claim protocol.
         const skipOccurrence = Effect.fnUntraced(function* (
           ranOn: EnvironmentId | null,
           next: string | null,
@@ -3689,15 +3864,26 @@ export const layer = Layer.effect(
                 taskError("Could not skip the schedule task run.", { taskId: task.id, cause }),
               ),
             );
-          yield* ranOn === null
+          const skipReason =
+            decision?.otherVersion === true
+              ? "other_version"
+              : ranOn === null
+                ? "unconfirmed"
+                : "ran_elsewhere";
+          yield* skipReason === "other_version"
             ? Effect.logWarning(
-                "Skipping a one-machine task run no other machine confirmed was free",
-                { taskId: task.id },
+                "Skipping a one-machine task run: a machine that may run it follows another claim protocol",
+                { taskId: task.id, environmentId: ranOn },
               )
-            : Effect.logInfo("Skipping a one-machine task run another machine has", {
-                taskId: task.id,
-                ranOn,
-              });
+            : ranOn === null
+              ? Effect.logWarning(
+                  "Skipping a one-machine task run no other machine confirmed was free",
+                  { taskId: task.id },
+                )
+              : Effect.logInfo("Skipping a one-machine task run another machine has", {
+                  taskId: task.id,
+                  ranOn,
+                });
           yield* insertRunRecord({
             id: `${task.id}:${occurrence}:skipped`,
             taskId: task.id,
@@ -3706,9 +3892,8 @@ export const layer = Layer.effect(
             startedAt: iso(now),
             completedAt: iso(now),
             outcome: "skipped",
-            ...(ranOn === null
-              ? { skipReason: "unconfirmed" }
-              : { skipReason: "ran_elsewhere", ranOn }),
+            skipReason,
+            ...(ranOn === null ? {} : { ranOn }),
             failover: null,
             // That machine's own check found no work, so the occurrence ran nowhere.
             ...(noWork === null
@@ -3810,16 +3995,15 @@ export const layer = Layer.effect(
         ) {
           return yield* watch(watched, decision);
         }
-        // A machine ahead that answered unreadably is up and may be running it outside the claims,
-        // as an older version does; one that could not be reached is left to them.
-        const unreadableAhead = plan.order
-          .slice(0, plan.rank)
-          .find((id) => answer.unreadable.includes(id));
-        if (unreadableAhead !== undefined) {
-          return yield* watch(
-            { environmentId: unreadableAhead, ended: false },
-            { ...decision, ranOn: unreadableAhead },
-          );
+        // A machine on another claim protocol may decide the occurrence is its own whatever this
+        // one does, and an older one runs it outside the claims, so it is left to that machine.
+        const otherVersion = plan.order.find((id) => answer.otherVersion.includes(id));
+        if (otherVersion !== undefined) {
+          return yield* skipOccurrence(otherVersion, next, {
+            ...decision,
+            ranOn: otherVersion,
+            otherVersion: true,
+          });
         }
         if (watched === null) return yield* takeOccurrence(null, answer.liveRunsElsewhere);
         // The machines between the one whose run ended and this one were watching it too. The
@@ -4553,21 +4737,15 @@ export const layer = Layer.effect(
         input.schedule.type === "webhook"
           ? {
               type: "webhook",
-              signature:
-                input.schedule.signature == null
-                  ? null
-                  : {
-                      header: input.schedule.signature.header.toLowerCase(),
-                      encoding: input.schedule.signature.encoding,
-                      prefix: input.schedule.signature.prefix,
-                    },
+              signature: storedWebhookSignature(input.schedule.signature),
               maxDeliveryAgeMinutes: input.schedule.maxDeliveryAgeMinutes ?? null,
-              ...(input.schedule.dedupe === undefined
-                ? existingTask?.schedule.type === "webhook" &&
-                  existingTask.schedule.dedupe !== undefined
-                  ? { dedupe: existingTask.schedule.dedupe }
-                  : {}
-                : { dedupe: input.schedule.dedupe }),
+              ...webhookDedupe(
+                input.schedule.signature,
+                input.schedule.dedupe ??
+                  (existingTask?.schedule.type === "webhook"
+                    ? existingTask.schedule.dedupe
+                    : undefined),
+              ),
               ...webhookFilters(
                 // Omitted keeps the stored filters, so a client that predates
                 // them can re-save a task without clearing them.
@@ -4612,6 +4790,17 @@ export const layer = Layer.effect(
                 return yield* taskError("A webhook signature check needs a signing secret.", {
                   taskId: id,
                 });
+              }
+              if (
+                signature != null &&
+                "scheme" in signature &&
+                secret !== null &&
+                standardWebhooksKey(secret) === null
+              ) {
+                return yield* taskError(
+                  "A Standard Webhooks secret is `whsec_` followed by base64.",
+                  { taskId: id },
+                );
               }
               return { token, secret, secretChanged };
             })
@@ -5407,6 +5596,53 @@ export const layer = Layer.effect(
       error: row.error,
     });
 
+    const recentRunCounts: ScheduledTaskService["Service"]["recentRunCounts"] = Effect.fn(
+      "ScheduledTaskService.recentRunCounts",
+    )(function* () {
+      const now = yield* DateTime.now;
+      const daysAgo = (days: number) =>
+        utcDay(DateTime.formatIso(DateTime.subtract(now, { days })));
+      const rows = yield* sql<{
+        readonly task_id: ScheduledTaskId;
+        readonly outcome: string;
+        readonly skip_reason: string;
+        readonly last_7_days: number;
+        readonly last_30_days: number;
+      }>`
+        SELECT task_id, outcome, skip_reason,
+          sum(CASE WHEN day >= ${daysAgo(6)} THEN count ELSE 0 END) AS last_7_days,
+          sum(count) AS last_30_days
+        FROM scheduled_task_daily_counts WHERE day >= ${daysAgo(29)}
+        GROUP BY task_id, outcome, skip_reason
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.mapError((cause) => taskError("Could not count scheduled task runs.", { cause })),
+      );
+      type Counts = { outcomes: Record<string, number>; skipReasons: Record<string, number> };
+      const counts = new Map<ScheduledTaskId, { last7Days: Counts; last30Days: Counts }>();
+      const add = (into: Counts, row: (typeof rows)[number], count: number) => {
+        // Zero when a bucket's runs are all older than the window or settled to another outcome.
+        if (count <= 0) return;
+        into.outcomes[row.outcome] = (into.outcomes[row.outcome] ?? 0) + count;
+        if (row.outcome === "skipped") {
+          into.skipReasons[row.skip_reason] = (into.skipReasons[row.skip_reason] ?? 0) + count;
+        }
+      };
+      for (const row of rows) {
+        let task = counts.get(row.task_id);
+        if (task === undefined) {
+          task = {
+            last7Days: { outcomes: {}, skipReasons: {} },
+            last30Days: { outcomes: {}, skipReasons: {} },
+          };
+          counts.set(row.task_id, task);
+        }
+        add(task.last7Days, row, row.last_7_days);
+        add(task.last30Days, row, row.last_30_days);
+      }
+      return counts;
+    });
+
     const listRuns: ScheduledTaskService["Service"]["listRuns"] = (input) =>
       sql<RunRecordRow>`
         SELECT run_id, trigger, scheduled_for, started_at, completed_at, outcome, thread_id,
@@ -5970,6 +6206,7 @@ export const layer = Layer.effect(
                 secret: row.webhook_secret,
                 headers: request.headers,
                 body: request.body,
+                receivedAtMs: DateTime.toEpochMillis(receivedAt),
               }).pipe(Effect.provideService(Mac.Mac, mac)));
             if (!verified) {
               yield* log("rejected_signature");
@@ -6366,6 +6603,7 @@ export const layer = Layer.effect(
       runNow,
       liveRuns,
       listRuns,
+      recentRunCounts,
       rotateWebhookToken,
       listWebhookDeliveries,
       getWebhookDelivery,

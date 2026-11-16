@@ -140,6 +140,8 @@ class FakePtyAdapter {
   private readonly mode: "sync" | "async";
   private nextPid = 9000;
   exitOnSubscribe: PtyAdapter.PtyExitEvent | undefined;
+  // Runs inside the spawn call, right after the process exists and before the caller gets it.
+  onProcessCreated: (() => void) | undefined;
 
   constructor(mode: "sync" | "async" = "sync") {
     this.mode = mode;
@@ -162,6 +164,7 @@ class FakePtyAdapter {
     const process = new FakePtyProcess(this.nextPid++);
     process.exitOnSubscribe = this.exitOnSubscribe;
     this.processes.push(process);
+    this.onProcessCreated?.();
     if (this.mode === "async") {
       return Effect.tryPromise({
         try: async () => process,
@@ -2730,6 +2733,33 @@ it.layer(
       ]);
       expect(ptyAdapter.processes).toHaveLength(1);
     }),
+  );
+
+  it.effect("an open interrupted right after the shell spawns still owns and follows it", () =>
+    Effect.gen(function* () {
+      const ptyAdapter = new FakePtyAdapter();
+      const { manager } = yield* createManager(5, { ptyAdapter });
+      const exited = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "exited"
+          ? Deferred.succeed(exited, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+      let openFiber: Fiber.Fiber<unknown, unknown> | undefined;
+      ptyAdapter.onProcessCreated = () => openFiber?.interruptUnsafe();
+      openFiber = yield* manager
+        .open(openInput())
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      const exit = yield* Fiber.await(openFiber);
+
+      expect(Exit.hasInterrupts(exit)).toBe(true);
+      const process = ptyAdapter.processes[0]!;
+      const [terminal] = yield* manager.readThread("thread-1");
+      expect(terminal?.pid).toBe(process.pid);
+      process.emitExit({ exitCode: 0, signal: 0 });
+      yield* Deferred.await(exited);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("resyncs bounded history and follows close/reopen across a stalled stream", () =>

@@ -11,7 +11,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
-  type ServerProviderResetCredits,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -384,6 +384,8 @@ function nonEmptyProbeString(value: string): string | undefined {
 export type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
   readonly workspaceId?: string | undefined;
+  /** `usageAccountKey` of the signed-in account, from `.claude.json`. */
+  readonly accountKey?: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
   readonly apiKeySource: string | undefined;
@@ -706,13 +708,9 @@ const probeClaudeCapabilities = (
       ),
     ),
     Effect.onError(() => abortProbe),
+    // Claude's stderr can name the account, so it goes only to the provider status, never the log.
     Effect.tapError((error) =>
-      Effect.logWarning("Claude capability probe failed.", {
-        errorTag: error._tag,
-        ...(error._tag === "ClaudeCapabilitiesProbeFailedError" && error.detail !== undefined
-          ? { reason: error.detail }
-          : {}),
-      }),
+      Effect.logWarning("Claude capability probe failed.", { errorTag: error._tag }),
     ),
   );
 };
@@ -800,7 +798,12 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   modelCatalog: ClaudeModelCatalog = BUNDLED_CLAUDE_MODEL_CATALOG,
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
-  resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
+  /** The account's limit resets, read beside its usage; subscription logins only. */
+  resolveResetCredits?: (
+    usageLimits: ServerProviderUsageLimits,
+  ) => Effect.Effect<
+    Pick<ServerProviderUsageLimits, "resetCredits" | "resetCreditsError" | "resetPrograms">
+  >,
   /** When the saved subscription login stops renewing; undefined when unknown. */
   resolveLoginExpiry?: Effect.Effect<string | undefined>,
 ): Effect.fn.Return<
@@ -1040,7 +1043,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     capabilities.apiKeySource === "none" &&
     (capabilities.tokenSource === "oauth" ||
       capabilities.tokenSource === "CLAUDE_CODE_OAUTH_TOKEN");
-  const usageLimits = !capabilities.usage
+  const usageReading = !capabilities.usage
     ? makeUnavailableUsageLimits({
         checkedAt,
         reason: "probeFailed",
@@ -1062,6 +1065,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
           checkedAt: usageCheckedAt,
           allowStreamedLimits,
         }).limits;
+  const usageLimits = {
+    ...usageReading,
+    ...(capabilities.accountKey ? { accountKey: capabilities.accountKey } : {}),
+    ...(capabilities.subscriptionType ? { plan: capabilities.subscriptionType } : {}),
+  };
   const loginProfileId = customApiEndpoint
     ? undefined
     : yield* claudeLoginProfileId(claudeSettings, capabilities, resolvedEnvironment);
@@ -1070,12 +1078,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     resolveLoginExpiry && loginProfileId?.startsWith("claude.ai:")
       ? yield* resolveLoginExpiry
       : undefined;
-  const resetCredits =
+  const resetFields =
     resolveResetCredits &&
     capabilities.subscriptionType &&
-    !usageLimits.unavailable &&
-    parsedVersion
-      ? yield* resolveResetCredits(parsedVersion)
+    usageLimits.unavailable?.reason !== "unsupported"
+      ? yield* resolveResetCredits(usageLimits)
       : undefined;
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
@@ -1098,7 +1105,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(authMetadata ? authMetadata : {}),
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
-      usageLimits: resetCredits ? { ...usageLimits, resetCredits } : usageLimits,
+      usageLimits: resetFields ? { ...usageLimits, ...resetFields } : usageLimits,
     },
   });
 });

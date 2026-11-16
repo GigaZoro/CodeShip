@@ -426,6 +426,7 @@ export function layerWithRegistry<Error>(
       Layer.mergeAll(
         McpAppModelContext.layerEmpty,
         PreviewAgentActivity.layer,
+        ThreadCommandExecutor.layer,
         layerCheckpointServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,
@@ -491,6 +492,7 @@ export function layerWithRegistry<Error>(
         layerCheckpointServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,
+        ThreadCommandExecutor.layer,
         layerStores,
       ),
     ),

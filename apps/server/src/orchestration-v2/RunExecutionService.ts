@@ -674,7 +674,7 @@ export const layer: Layer.Layer<
     const pendingRootTerminals = new Map<RunAttemptId, Deferred.Deferred<void>>();
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
 
-    const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
+    const commitFinalRunEvents = Effect.fn("RunExecutionService.commitFinalRunEvents")(
       function* (input: {
         readonly run: OrchestrationV2Run;
         readonly rootNode: OrchestrationV2ExecutionNode;
@@ -739,10 +739,10 @@ export const layer: Layer.Layer<
                   },
                 ],
               });
-              yield* input.refreshAfterTurn;
+              return input.refreshAfterTurn.pipe(Effect.as(false));
             }
           }
-          return false;
+          return Effect.succeed(false);
         }
         const allocateEventId = () => idAllocator.allocate.event();
         const reason =
@@ -772,11 +772,8 @@ export const layer: Layer.Layer<
             : [];
         const persistedStatus =
           input.terminal.status === "completed" ? "waiting" : input.terminal.status;
-        // Omit delegatedCompletion; the startup snapshot must not overwrite newer acknowledgements, successors, or Stop barriers.
-        const { delegatedCompletion: _delegatedCompletion, ...runWithoutDelegatedCompletion } =
-          input.run;
         const finalizedRun: OrchestrationV2Run = {
-          ...runWithoutDelegatedCompletion,
+          ...input.run,
           status: persistedStatus,
           completedAt: input.terminal.status === "completed" ? null : completedAt,
         };
@@ -941,21 +938,26 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
-            return false;
+            return Effect.succeed(false);
           }
         } else {
           yield* eventSink.writeWithEffects(finalization);
         }
-        yield* turnAnalytics.runSettled({
-          runId: input.run.id,
-          status: input.terminal.status,
-          completedAt,
-          childrenRunning: hasOpenSubagentProjection && cascadedSubagentEvents.length === 0,
-        });
-        yield* input.refreshAfterTurn;
-        return true;
+        return turnAnalytics
+          .runSettled({
+            runId: input.run.id,
+            status: input.terminal.status,
+            completedAt,
+            childrenRunning: hasOpenSubagentProjection && cascadedSubagentEvents.length === 0,
+          })
+          .pipe(Effect.andThen(input.refreshAfterTurn), Effect.as(true));
       },
     );
+
+    // Commands plan from the run they read under this lock; deciding and committing the terminal
+    // under it keeps a provider terminal from landing between such a read and its write.
+    const writeFinalRunEvents = (input: Parameters<typeof commitFinalRunEvents>[0]) =>
+      threadCommands.withLock(input.run.threadId, commitFinalRunEvents(input)).pipe(Effect.flatten);
 
     const captureRunBaseline = Effect.fn("RunExecutionService.captureBaseline")(function* (
       input: RunBaselineInput,

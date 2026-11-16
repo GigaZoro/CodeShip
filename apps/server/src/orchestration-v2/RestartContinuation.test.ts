@@ -39,6 +39,7 @@ import {
 } from "./RestartBackgroundNote.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -211,6 +212,7 @@ it.effect("recovers an admitted continuation after another crash before provider
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -380,6 +382,7 @@ it.effect.each([
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
         Effect.provide(
           Layer.mergeAll(
+            ThreadCommandExecutor.layer,
             Layer.succeed(RestartResumeRequest, Effect.succeed(resumeRequested)),
             ServerSettings.layerTest({
               continueThreadsAfterServerUpdate: enabled,
@@ -463,6 +466,7 @@ it.effect("lets a cut blocking delegate_task wake its parent like an async task"
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -529,6 +533,7 @@ it.effect.each(["running", "waiting"])(
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
         Effect.provide(
           Layer.mergeAll(
+            ThreadCommandExecutor.layer,
             ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -662,6 +667,7 @@ it.effect("prepares no continuation for background work another provider thread 
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -690,6 +696,7 @@ it.effect("prepares no continuation for background work another provider thread 
     const ownRecovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -807,6 +814,7 @@ it.effect.each([
         const recovery = yield* ProviderRuntimeRecovery.make.pipe(
           Effect.provide(
             Layer.mergeAll(
+              ThreadCommandExecutor.layer,
               ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -979,6 +987,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -1089,6 +1098,7 @@ it.effect.each([
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -1516,6 +1526,7 @@ it.effect("prepares later threads' continuations when one thread fails", () =>
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([brokenThreadId, threadId]),
@@ -1780,6 +1791,7 @@ it.effect("prepares independent continuations together and waits for durable wri
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId, ThreadId.make("thread:second")]),
@@ -1818,6 +1830,7 @@ it.effect("skips restart discovery when no project enables continuation", () =>
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
+          ThreadCommandExecutor.layer,
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
           Layer.mock(EventSink.EventSinkV2)({}),

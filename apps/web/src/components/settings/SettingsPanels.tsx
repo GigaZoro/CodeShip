@@ -5,6 +5,7 @@ import {
   InstallUpdatesAutomaticallySetting,
   ProviderUpdatesSettings,
   UsageLimitRecoverySettings,
+  UsageResetRedeemerSettings,
 } from "./RecoverySettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
@@ -1894,6 +1895,7 @@ export function ThreadsSettingsPanel() {
 
       <SettingsSection id="recovery" title={t("Recovery")}>
         <UsageLimitRecoverySettings />
+        <UsageResetRedeemerSettings />
         <SettingsRow
           {...searchableSetting("retry-threads-after-network-errors")}
           serverScoped
@@ -2062,7 +2064,7 @@ export function ThreadsSettingsPanel() {
               settingKeys={["sidebarAutoSettleOpensPullRequests"]}
               {...searchableSetting("auto-settle-opens-pull-requests")}
               description={t(
-                "Before a thread whose worktree has unmerged changes settles on its own, commit them and open a pull request. Off keeps those threads active.",
+                "Before a thread you wrote in settles on its own, commit its worktree's unmerged changes and open a pull request. A thread you never wrote in, such as a scheduled run or a subagent, stays active instead. Off keeps every such thread active.",
               )}
               control={
                 <ScopedSwitch

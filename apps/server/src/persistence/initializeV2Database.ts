@@ -1,5 +1,6 @@
 import * as NodeWorkerThreads from "node:worker_threads";
 
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -15,16 +16,6 @@ export class V2DatabaseImportError extends Schema.TaggedError<V2DatabaseImportEr
 }
 
 const isV2DatabaseImportError = Schema.is(V2DatabaseImportError);
-
-const isProcessAlive = (pid: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
-  }
-};
 
 // V1 files predate auto_vacuum, and a page backup would keep that. VACUUM INTO compacts the copy and
 // enables incremental mode, so the server can return freed pages; the worker keeps it off the event loop.

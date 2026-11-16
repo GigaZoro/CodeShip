@@ -9,6 +9,7 @@ import {
   type RelayClientInstallProgressStage,
 } from "@t3tools/contracts";
 import { RelayOkResponse } from "@t3tools/contracts/relay";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as Cause from "effect/Cause";
@@ -51,7 +52,6 @@ import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ExternalLauncher from "../process/externalLauncher.ts";
 import {
-  isProcessAlive,
   readLiveServerRuntimeState,
   readPersistedServerRuntimeState,
 } from "../serverRuntimeState.ts";

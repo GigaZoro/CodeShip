@@ -321,7 +321,9 @@
       "version": "0.4.0",
       "license": "Apache-2.0 AND OFL-1.1",
       "generatedNotices": [
-        { "licenseId": "Apache-2.0" },
+        {
+          "licenseId": "Apache-2.0"
+        },
         {
           "licenseId": "OFL-1.1",
           "copyrights": [
@@ -856,6 +858,19 @@
       "name": "iobuffer",
       "license": "MIT",
       "sourceUrl": "https://github.com/image-js/iobuffer"
+    },
+    {
+      "name": "@xterm/headless",
+      "version": "5.5.0",
+      "sourceUrl": "https://github.com/xtermjs/xterm.js",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": [
+          "Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)",
+          "Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)",
+          "Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)"
+        ]
+      }
     }
   ]
 }

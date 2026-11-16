@@ -119,6 +119,7 @@ const runtimePort = Command.make("runtime-port", {
           process.exitCode = 1;
           return;
         }
+        // oxlint-disable-next-line t3code/no-raw-process-probe -- EPERM is another user's process, so not this server
         process.kill(pid, 0);
         process.stdout.write(`${pid} ${port}`);
       } catch {

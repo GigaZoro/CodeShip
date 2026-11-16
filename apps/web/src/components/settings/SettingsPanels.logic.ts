@@ -419,6 +419,10 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "snoozeLimitedThreads",
     "failoverLimitedThreads",
   ]),
+  restorable("/settings/threads", msg("Redeem usage resets automatically"), [
+    "redeemUsageResets",
+    "maxPlanResetWaitHours",
+  ]),
   restorable("/settings/threads", msg("Snooze options"), ["snoozePresets"]),
   restorable("/settings/threads", msg("Response streaming"), ["responseStreamingMode"]),
   restorable("/settings/threads", msg("New thread workspace"), ["defaultThreadEnvMode"]),

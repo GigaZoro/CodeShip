@@ -599,7 +599,8 @@ export interface ScheduledTaskRunOnMachine {
 
 /**
  * Every machine's runs of one shared task, newest first. A skip that names the machine that
- * settled the occurrence is left out when that machine's own record of it is listed.
+ * settled the occurrence is left out when that machine's own record of it is listed, except one
+ * for another claim protocol, which asks the user to update.
  */
 export function mergeScheduledTaskRuns(
   lists: ReadonlyArray<{
@@ -629,6 +630,7 @@ export function mergeScheduledTaskRuns(
     .flatMap(({ environmentId, runs }) =>
       runs.flatMap((run) =>
         run.ranOn !== null &&
+        run.skipReason !== "other_version" &&
         run.scheduledFor !== null &&
         settled.has(occurrenceKey(run.ranOn, run.scheduledFor))
           ? []

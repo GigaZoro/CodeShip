@@ -1,5 +1,8 @@
 import * as Schema from "effect/Schema";
 
+/** The tools that run a `command` in the agent's own shell. */
+export const AGENT_SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash", "Monitor"]);
+
 export const DeviceExpect = Schema.Struct({
   briefs: Schema.optional(Schema.Number),
   recording: Schema.optional(Schema.String),
@@ -848,7 +851,7 @@ export function gradeDevice(expect: typeof DeviceExpect.Type | undefined, run: D
     );
   const variables = new Map<string, string>();
   const shell = run.calls
-    .filter((call) => ["Bash", "Monitor"].includes(call.tool))
+    .filter((call) => AGENT_SHELL_TOOLS.has(call.tool))
     .map(
       (call) =>
         [

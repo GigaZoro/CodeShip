@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as ProcessGroup from "@t3tools/provider-core/server/processGroup";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -1048,15 +1049,6 @@ const agentServer = () =>
       }),
   );
 
-const isRunning = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 effectIt.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   "stops an agent's server through its job's group, and only a listed server",
   () =>
@@ -1069,7 +1061,7 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
       const stops: Array<readonly [string, boolean]> = [];
       yield* scanner.watchAgentCommandStops({
         variable: AGENT_COMMAND_ENV,
-        onStop: (command) => Effect.sync(() => stops.push([command, isRunning(job.pid)])),
+        onStop: (command) => Effect.sync(() => stops.push([command, isProcessAlive(job.pid)])),
         onStopAbandoned: () => Effect.die("the signal reached the job"),
       });
 
@@ -1091,7 +1083,7 @@ effectIt.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
       expect(stops).toEqual([["command-live", true]]);
       // The shell waits on its job, so it exits once the job has.
       yield* Effect.promise(() => job.exited);
-      expect(isRunning(job.pid)).toBe(false);
+      expect(isProcessAlive(job.pid)).toBe(false);
     }).pipe(
       Effect.scoped,
       Effect.provide(

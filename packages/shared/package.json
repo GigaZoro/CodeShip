@@ -99,6 +99,10 @@
       "types": "./src/observability.ts",
       "import": "./src/observability.ts"
     },
+    "./redaction": {
+      "types": "./src/redaction.ts",
+      "import": "./src/redaction.ts"
+    },
     "./otelEnvironment": {
       "types": "./src/otelEnvironment.ts",
       "import": "./src/otelEnvironment.ts"
@@ -395,9 +399,21 @@
       "types": "./src/HostProcess.ts",
       "import": "./src/HostProcess.ts"
     },
+    "./processProbe": {
+      "types": "./src/processProbe.ts",
+      "import": "./src/processProbe.ts"
+    },
+    "./windowsProcessTree": {
+      "types": "./src/windowsProcessTree.ts",
+      "import": "./src/windowsProcessTree.ts"
+    },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",
       "import": "./src/testing/longTempDir.ts"
+    },
+    "./testing/leftoverChild": {
+      "types": "./src/testing/leftoverChild.ts",
+      "import": "./src/testing/leftoverChild.ts"
     },
     "./testing/hostPlatform": {
       "types": "./src/testing/hostPlatform.ts",

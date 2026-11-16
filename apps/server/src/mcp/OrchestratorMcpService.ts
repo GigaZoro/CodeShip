@@ -22,6 +22,7 @@ import {
   OrchestratorMcpFailure,
   type OrchestratorMcpCapabilitiesInput,
   type OrchestratorMcpCapabilitiesResult,
+  type OrchestratorMcpLastRedemption,
   type OrchestratorMcpModelOption,
   type OrchestratorMcpCreateThreadsInput,
   type OrchestratorMcpCreateThreadsResult,
@@ -71,9 +72,11 @@ import {
   ProviderRequestKind,
   type RuntimeMode,
   MAX_SCHEDULED_TASK_CHANGED_BY_CLIENT_LENGTH,
+  SCHEDULED_TASK_CLAIM_PROTOCOL,
   type ScheduledTask,
   ScheduledTaskId,
   type ScheduledTaskProjectMachineOrder,
+  type ScheduledTaskRecentRunCounts,
   type ScheduledTaskUpsertInput,
   scheduledTaskThreadMode,
   type ServerProvider,
@@ -85,6 +88,7 @@ import {
   scheduledTaskSharedProjectKey,
   latestProviderTurnForAttempt,
   SECRET_REQUEST_UNSAVED_NOTE,
+  isOrchestrationV2TerminalRunStatus,
 } from "@t3tools/contracts";
 import {
   getProviderOptionCurrentValue,
@@ -117,6 +121,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
@@ -165,6 +170,7 @@ import {
   taskPrompt,
 } from "./delegatedTaskModes.ts";
 import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
+import { providerUsageFields, publishesUsage, usageReadingStale } from "./orchestratorUsage.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
@@ -460,6 +466,7 @@ function scheduledTaskSummary(
                 : occurrenceOf(task, task.lastNoWorkSkip.scheduledFor),
           },
         }),
+    ...(task.failingCheck == null ? {} : { failingCheck: task.failingCheck }),
     ...(task.schedule.type === "fixed_time" && task.catchUpMissedRun !== undefined
       ? { catchUpMissedRun: task.catchUpMissedRun }
       : {}),
@@ -472,6 +479,11 @@ function scheduledTaskSummary(
     lastRun,
   };
 }
+
+const NO_RECENT_RUN_COUNTS: ScheduledTaskRecentRunCounts = {
+  last7Days: { outcomes: {}, skipReasons: {} },
+  last30Days: { outcomes: {}, skipReasons: {} },
+};
 
 const RUN_CONDITION_NEEDS_FULL_ACCESS =
   "A run condition runs a command without approval, so only a caller with full access can set one.";
@@ -794,7 +806,7 @@ function hasPendingChildRuns(
 ): boolean {
   return childProjection.runs.some(
     (run) =>
-      !ThreadManagementService.isTerminalRunStatus(run.status) &&
+      !isOrchestrationV2TerminalRunStatus(run.status) &&
       !(run.status === "queued" && run.queueHeld === true) &&
       (delegatedRun === undefined || run.ordinal > delegatedRun.ordinal),
   );
@@ -830,7 +842,7 @@ function pendingTaskApproval(
     child.runs
       .filter(
         (run) =>
-          !ThreadManagementService.isTerminalRunStatus(run.status) &&
+          !isOrchestrationV2TerminalRunStatus(run.status) &&
           (run.delegatedTaskId === taskId ||
             // Legacy tasks own only their original run, not later turns in the child thread.
             (run.delegatedTaskId === undefined && run.id === originalRun?.id)),
@@ -987,7 +999,7 @@ function latestTerminalResultRun(
   supersede(awaitingContinuationRun?.id);
   for (const run of projection.runs) {
     if (
-      !ThreadManagementService.isTerminalRunStatus(run.status) ||
+      !isOrchestrationV2TerminalRunStatus(run.status) ||
       (run.status !== "rolled_back" && run.startedAt !== null)
     )
       supersede(run.restartContinuationOfRunId);
@@ -995,7 +1007,7 @@ function latestTerminalResultRun(
   return projection.runs
     .filter(
       (run) =>
-        ThreadManagementService.isTerminalRunStatus(run.status) &&
+        isOrchestrationV2TerminalRunStatus(run.status) &&
         !monitorRunIds.has(run.id) &&
         !supersededRunIds.has(run.id) &&
         run.status !== "rolled_back" &&
@@ -1522,6 +1534,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   // Optional so test runtimes without provider state refuse no launch on a usage limit.
   const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+  const usageResetRedeemer = yield* Effect.serviceOption(UsageResetRedeemer.UsageResetRedeemer);
   const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
@@ -3029,6 +3042,16 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not list scheduled tasks: ${error.message}`),
             ),
           );
+        const runCounts = yield* scheduledTasks
+          .recentRunCounts()
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                "orchestration_error",
+                `Could not count scheduled task runs: ${error.message}`,
+              ),
+            ),
+          );
         return {
           tasks: yield* Effect.forEach(
             tasks
@@ -3041,8 +3064,14 @@ const make = Effect.gen(function* () {
                 scope,
                 { parent, limits, machineOrders: projectMachineOrders ?? [], includePrompt },
                 task,
+              ).pipe(
+                Effect.map((summary) => ({
+                  ...summary,
+                  runCounts: runCounts.get(task.id) ?? NO_RECENT_RUN_COUNTS,
+                })),
               ),
           ),
+          claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,
         };
       },
     ),
@@ -3377,10 +3406,7 @@ const make = Effect.gen(function* () {
             return item.secretStatus;
           }
           const current = projection.runs.find((candidate) => candidate.id === runId);
-          if (
-            current === undefined ||
-            ThreadManagementService.isTerminalRunStatus(current.status)
-          ) {
+          if (current === undefined || isOrchestrationV2TerminalRunStatus(current.status)) {
             yield* record("cancelled");
             return "cancelled" as const;
           }
@@ -3476,7 +3502,21 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope, []);
-      const providers = yield* loadProvidersRechecked();
+      const checkedProviders = yield* loadProvidersRechecked();
+      const nowMs = yield* Clock.currentTimeMillis;
+      const staleUsage =
+        input.usage === true
+          ? checkedProviders.filter(
+              (provider) => publishesUsage(provider) && usageReadingStale(provider, nowMs),
+            )
+          : [];
+      const providers =
+        staleUsage.length === 0
+          ? checkedProviders
+          : yield* recheckInstances(
+              staleUsage.map((provider) => provider.instanceId),
+              checkedProviders,
+            );
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
       const availability = Option.isNone(accountRouting)
@@ -3486,6 +3526,10 @@ const make = Effect.gen(function* () {
             models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
           }
         : yield* accountRouting.value.limits;
+      const redemptions =
+        input.usage === true && Option.isSome(usageResetRedeemer)
+          ? yield* usageResetRedeemer.value.lastRedemptions
+          : new Map<string, OrchestratorMcpLastRedemption>();
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
@@ -3564,8 +3608,17 @@ const make = Effect.gen(function* () {
             ...(limitedUntil != null && availability.estimated.has(provider.instanceId)
               ? { limitedUntilEstimated: true as const }
               : {}),
+            ...(input.usage === true && publishesUsage(provider)
+              ? providerUsageFields(provider, limitedUntil !== undefined, redemptions)
+              : {}),
           };
         }),
+        ...(input.usage === true
+          ? {
+              maxWaitHours: settings.maxPlanResetWaitHours,
+              redeemUsageResets: settings.redeemUsageResets,
+            }
+          : {}),
         features: {
           appOwnedSubagents: true,
           asyncPolling: true,

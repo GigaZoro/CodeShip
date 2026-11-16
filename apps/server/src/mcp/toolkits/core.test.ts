@@ -1230,6 +1230,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
       layerOrchestratorMcpServer({
         scheduledTasks: Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           liveRuns: () => Effect.succeed(0),
+          recentRunCounts: () => Effect.succeed(new Map()),
           list: () =>
             Effect.succeed({
               tasks: [

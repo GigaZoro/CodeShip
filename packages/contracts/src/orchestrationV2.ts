@@ -671,6 +671,23 @@ export const OrchestrationV2RunStatus = Schema.Literals([
 ]);
 export type OrchestrationV2RunStatus = typeof OrchestrationV2RunStatus.Type;
 
+export type OrchestrationV2TerminalRunStatus = Extract<
+  OrchestrationV2RunStatus,
+  "completed" | "failed" | "cancelled" | "interrupted" | "rolled_back"
+>;
+
+export function isOrchestrationV2TerminalRunStatus(
+  status: OrchestrationV2RunStatus,
+): status is OrchestrationV2TerminalRunStatus {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "interrupted" ||
+    status === "rolled_back"
+  );
+}
+
 export const OrchestrationV2DelegatedCompletionTaskDeliveryState = Schema.Literals([
   "pending",
   "claimed",
@@ -776,6 +793,14 @@ export const OrchestrationV2RunBackgroundWorkCancelled = Schema.Struct({
 });
 export type OrchestrationV2RunBackgroundWorkCancelled =
   typeof OrchestrationV2RunBackgroundWorkCancelled.Type;
+
+/** The only way a run's cohort changes, so a cohort writer never carries the rest of a stale run. */
+export const OrchestrationV2RunDelegatedCompletionUpdated = Schema.Struct({
+  runId: RunId,
+  delegatedCompletion: OrchestrationV2DelegatedCompletionCohort,
+});
+export type OrchestrationV2RunDelegatedCompletionUpdated =
+  typeof OrchestrationV2RunDelegatedCompletionUpdated.Type;
 
 export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   Schema.Struct({
@@ -2182,11 +2207,18 @@ export const OrchestrationV2DomainEvent = Schema.Union([
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("run.updated"),
     payload: OrchestrationV2Run,
+    /** Set only by a retry or re-send that restarts a finished run; the sink refuses any other reopening. */
+    reopensTerminalRun: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("run.background-work-cancelled"),
     payload: OrchestrationV2RunBackgroundWorkCancelled,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("run.delegated-completion-updated"),
+    payload: OrchestrationV2RunDelegatedCompletionUpdated,
   }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
@@ -3173,11 +3205,18 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("run.updated"),
     payload: OrchestrationV2RunJson,
+    /** Set only by a retry or re-send that restarts a finished run; the sink refuses any other reopening. */
+    reopensTerminalRun: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("run.background-work-cancelled"),
     payload: OrchestrationV2RunBackgroundWorkCancelled,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("run.delegated-completion-updated"),
+    payload: OrchestrationV2RunDelegatedCompletionUpdated,
   }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,

@@ -19,8 +19,8 @@ import * as ServiceProtection from "../cloud/serviceProtection.ts";
 import { compareExactServiceVersions, SERVICE_ENV_FILE } from "../cloud/serviceProtocol.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import {
-  isProcessAlive,
   readPersistedServerRuntimeState,
   type PersistedServerRuntimeState,
 } from "../serverRuntimeState.ts";

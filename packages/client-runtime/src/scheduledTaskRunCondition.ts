@@ -5,7 +5,9 @@ import {
   MAX_RUN_CONDITION_TIMEOUT_SECONDS,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
   type MemoryShortage,
+  RUN_CONDITION_FAILING_STREAK,
   type ScheduledTask,
+  type ScheduledTaskFailingCheck,
   type ScheduledTaskNoWorkSkip,
   type ScheduledTaskRunCheck,
   type ScheduledTaskRunConditionInput,
@@ -107,6 +109,35 @@ export function noWorkSkipText(skip: ScheduledTaskNoWorkSkip, when: string): str
   return reason === ""
     ? t("Skipped {when}", { when })
     : t("Skipped {when}: {reason}", { when, reason });
+}
+
+/** Why a failed check failed, in a few words: its own answer, else how it failed. */
+export function failedCheckReason(check: ScheduledTaskRunCheck): string | null {
+  const detail = check.detail?.trim() ?? "";
+  if (detail !== "") return detail;
+  switch (check.failure) {
+    case "exit_code":
+      return t("exit code {code}", { code: String(check.exitCode ?? "?") });
+    case "timeout":
+      return t("no answer in time");
+    case "not_started":
+      return t("could not start");
+    case "invalid_command":
+      return t("the command could not be read");
+    case "policy":
+      return t("blocked by your organization's policy");
+    default:
+      return null;
+  }
+}
+
+/** A task row's line for a run condition that keeps failing; `when` is a time, such as "5m ago". */
+export function failingCheckText(failing: ScheduledTaskFailingCheck, when: string): string {
+  const count = String(RUN_CONDITION_FAILING_STREAK);
+  const reason = failedCheckReason(failing.check);
+  return reason === null
+    ? t("The last {count} checks failed, latest {when}", { count, when })
+    : t("The last {count} checks failed, latest {when}: {reason}", { count, when, reason });
 }
 
 /** Run history's line for a one-machine occurrence that another machine's check skipped. */

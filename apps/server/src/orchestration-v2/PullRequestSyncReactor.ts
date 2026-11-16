@@ -9,6 +9,7 @@ import {
   type ThreadPullRequestLink,
   type ThreadPullRequestSnapshot,
   type ThreadPullRequestStack,
+  isOrchestrationV2TerminalRunStatus,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import {
@@ -37,7 +38,6 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { isTerminalRunStatus } from "./ThreadManagementService.ts";
 
 const SLOW_SYNC_INTERVAL_MS = 15 * 60 * 1_000;
 // Every server polls every open linked pull request, and most of them sit untouched for days.
@@ -842,7 +842,8 @@ export const make = Effect.gen(function* () {
           case "thread.settled":
             return refreshUnmergedLinks(event.threadId);
           case "run.updated":
-            return isTerminalRunStatus(event.payload.status) && closeCommands.delete(event.threadId)
+            return isOrchestrationV2TerminalRunStatus(event.payload.status) &&
+              closeCommands.delete(event.threadId)
               ? refreshUnmergedLinks(event.threadId)
               : Effect.void;
           default:

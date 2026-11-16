@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isOrchestrationV2TerminalRunStatus,
   type MessageId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -109,7 +110,7 @@ export const layer = Layer.effectDiscard(
               ({ event }) =>
                 event.type === "run.updated" &&
                 event.payload.id === runId &&
-                ThreadManagementService.isTerminalRunStatus(event.payload.status),
+                isOrchestrationV2TerminalRunStatus(event.payload.status),
             ),
             Stream.runHead,
             Effect.flatMap((ended) =>

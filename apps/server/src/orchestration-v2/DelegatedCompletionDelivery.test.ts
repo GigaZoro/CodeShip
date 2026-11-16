@@ -52,6 +52,7 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
+import { delegatedCompletionUpdated } from "./testkit/DelegatedCompletionCohort.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
@@ -252,7 +253,7 @@ const seedParentWithTerminalTask = (input: {
         },
         {
           id: EventId.make(`event:seed-run:${input.threadId}`),
-          type: "run.updated",
+          type: "run.created",
           threadId: input.threadId,
           runId: input.runId,
           nodeId: input.rootNodeId,
@@ -965,10 +966,9 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
       assert.isFalse(
         upgrade.storedEvents.some(
           (stored) =>
-            stored.event.type === "run.updated" &&
-            stored.event.payload.id === runId &&
-            stored.event.payload.delegatedCompletion?.delivery !== null &&
-            stored.event.payload.delegatedCompletion?.delivery !== undefined,
+            stored.event.type === "run.delegated-completion-updated" &&
+            stored.event.payload.runId === runId &&
+            stored.event.payload.delegatedCompletion.delivery !== null,
         ),
       );
     }),
@@ -1262,7 +1262,6 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
             },
           ],
         });
-        const { delegatedCompletion: _cohort, ...settledRun } = parent;
         const commit = sink.commitCommand;
         let settled = false;
         let planned: OrchestrationV2Run["delegatedCompletion"];
@@ -1272,10 +1271,12 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
               Effect.gen(function* () {
                 if (!settled && input.commandType === commandType) {
                   settled = true;
-                  const plannedRun = input.events.find((event) => event.type === "run.updated");
+                  const plannedCohort = input.events.find(
+                    (event) => event.type === "run.delegated-completion-updated",
+                  );
                   planned =
-                    plannedRun?.type === "run.updated"
-                      ? plannedRun.payload.delegatedCompletion
+                    plannedCohort?.type === "run.delegated-completion-updated"
+                      ? plannedCohort.payload.delegatedCompletion
                       : undefined;
                   // The provider turn ends (or its checkpoint lands) after the command read the run.
                   yield* commit({
@@ -1292,7 +1293,7 @@ it.layer(layerTest)("delegated completion delivery repairs", (it) => {
                         runId,
                         occurredAt: now,
                         payload: {
-                          ...settledRun,
+                          ...parent,
                           status: after,
                           completedAt: now,
                           checkpointId: capture ? checkpointId : null,
@@ -1370,7 +1371,6 @@ const runEvent = (input: {
   readonly now: DateTime.Utc;
   readonly providerThreadId?: ProviderThreadId;
   readonly userMessageId?: MessageId;
-  readonly delegatedCompletion?: OrchestrationV2Run["delegatedCompletion"];
 }) => ({
   id: EventId.make(`event:${input.runId}:${input.status}`),
   type: "run.updated" as const,
@@ -1394,9 +1394,6 @@ const runEvent = (input: {
     completedAt: input.status === "running" ? null : input.now,
     checkpointId: null,
     contextHandoffId: null,
-    ...(input.delegatedCompletion === undefined
-      ? {}
-      : { delegatedCompletion: input.delegatedCompletion }),
   },
 });
 
@@ -1819,7 +1816,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
         ),
       );
       const interruptCohort = interrupted.storedEvents.flatMap(({ event }) =>
-        event.type === "run.updated" && event.payload.id === originRunId
+        event.type === "run.delegated-completion-updated" && event.payload.runId === originRunId
           ? [event.payload.delegatedCompletion]
           : [],
       );
@@ -2229,14 +2226,13 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                   !captured &&
                   input.events.some(
                     (event) =>
-                      event.type === "run.updated" &&
-                      event.payload.id === runId &&
-                      event.payload.delegatedCompletion?.delivery != null,
+                      event.type === "run.delegated-completion-updated" &&
+                      event.payload.runId === runId &&
+                      event.payload.delegatedCompletion.delivery !== null,
                   )
                 ) {
                   captured = true;
-                  // Commit capture after finalize planned its stale waiting snapshot.
-                  const { delegatedCompletion: _cohort, ...captureRun } = waiting;
+                  // Commit capture after finalize planned from the waiting run.
                   yield* sink.commitCommand({
                     commandId: CommandId.make("command:completion-capture-race"),
                     threadId,
@@ -2251,7 +2247,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                         runId,
                         occurredAt: now,
                         payload: {
-                          ...captureRun,
+                          ...waiting,
                           status: "completed",
                           completedAt: now,
                           checkpointId,
@@ -2274,14 +2270,8 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           (spy) => Effect.sync(() => spy.mockRestore()),
         );
         assert.isTrue(captured);
-        assert.equal(committedParentRuns.length, 1);
-        const committedParentRun = committedParentRuns[0];
-        assert.equal(committedParentRun?.status, "completed");
-        assert.deepEqual(committedParentRun?.completedAt, now);
-        assert.equal(committedParentRun?.checkpointId, checkpointId);
-        assert.deepEqual(committedParentRun?.delegatedCompletion?.delivery?.taskIds, [
-          child.taskId,
-        ]);
+        // Finalize changes only the cohort, never the run it read.
+        assert.deepEqual(committedParentRuns, []);
         const finished = yield* orchestrator.getThreadProjection(threadId);
         const completed = finished.runs.find((run) => run.id === runId)!;
         assert.equal(completed.status, "completed");
@@ -5170,6 +5160,12 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
               now,
               providerThreadId: parentProviderThreadId(threadId),
               userMessageId: MessageId.make(`message:seed-user:${threadId}`),
+            }),
+            delegatedCompletionUpdated({
+              id: `event:settled-only-restart:cohort-${suffix}`,
+              threadId,
+              runId,
+              occurredAt: now,
               delegatedCompletion: { disposition: "open", nextGeneration: 2, delivery: null },
             }),
             ...(runningContinuation

@@ -1,4 +1,4 @@
-## 2026-11-15 — Updates from T3 Code
+## 2026-11-16 — Updates from T3 Code
 
 - A first run now opens one Welcome page instead of a three-step wizard.
 - Kiro joins the providers, and Claude Fable 5.2 is in the model picker. The picker checks for new models when it opens, and you can @-mention a model in the composer to name it for the agent.
@@ -7,6 +7,124 @@
 - The computer stays awake while agents work (**Keep awake while agents work**, on by default), and you can send a message while its attachments still upload.
 - T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
+
+## 2026-11-16 — On Windows, stopping a process also stops what it left running
+
+- On Windows, a process that had started another and then exited left that child running when CodeShip stopped it, because `taskkill` finds a process's children only while the process runs. CodeShip now finds them from the parent process id and start time Windows records for each process, also after the parent exited. This covers the commands the server runs (git included), Pi and ACP agent sessions such as Grok, and the Antigravity installation check. The server does this for a command it kills or cancels, or one whose output is still held open when it ends; a command that exits on its own and closes its output skips it, since each stop starts PowerShell. A tree CodeShip cannot end is logged as an error in the server log.
+- On macOS and Linux, a command whose own process had exited is stopped through its process group, and that group's number could by then belong to unrelated processes once the command's process id had been reused. CodeShip now leaves such a group alone: a process id is reused only after a group of that number has ended.
+- Maintainers: `check:changed` on Windows also stops what its git and `vp` runs leave behind. The lint rule `t3code/no-raw-taskkill` refuses a `taskkill` call and points to the shared tree stop in `@t3tools/shared/windowsProcessTree`.
+
+## 2026-11-16 — Scheduled tasks count every run and skip for 90 days
+
+- `list_scheduled_tasks` now returns each task's runs on that machine over the last 7 and 30 days, by outcome and by skip reason, so the share of runs a run condition skipped can be measured. Run history keeps only the newest 10 skips of each kind, so on a task that runs every 30 minutes it covered a few hours. The counts are kept per task and day for 90 days, start from the runs history still holds, and are removed with the task.
+
+## 2026-11-16 — A scheduled task shows a run condition that keeps failing
+
+- A run condition that prints indented JSON, such as PowerShell's `ConvertTo-Json` output, now has its `reason` (or `error`) field recorded as the check's reason. Only the last line, often a lone `}`, was recorded before.
+- When a task's last 3 scheduled checks on a machine all fail, its row in Settings, on linked machines and on mobile, and the thread's Automations panel, show a warning with the latest reason. Each of those runs started anyway, so nothing showed the check was broken. `list_scheduled_tasks` reports it as `failingCheck`.
+
+## 2026-11-16 — Desktop app logs no longer carry e-mail addresses or credentials
+
+- The desktop app's own log lines on screen now replace e-mail addresses with `[email]` and credentials with `[redacted]`, as the server's do. A value logged after its name, such as `"token:"` followed by the token, is now hidden on screen and in OTLP log exports too.
+
+## 2026-11-16 — An agent's POSIX command runs unchanged on Windows
+
+- `t3_command_run` takes `shell: "bash"`, which runs the command as written in bash on every OS. On Windows that is Git Bash, started with the command in a file, so PowerShell 5.1 no longer strips the double quotes from a command such as `grep -E "^# (pass|fail)" results.txt`, which then lost its file argument and waited on its input until the time limit. Without the option a Windows command still runs in PowerShell.
+- A Windows command now reads its input from `NUL`, as a command elsewhere reads `/dev/null`, so one that reads input ends at once instead of waiting until its time limit.
+
+## 2026-11-16 — Server logs and traces no longer carry e-mail addresses or credentials
+
+- Server logs (on screen, in the relay log and exported over OTLP), provider event logs, the trace file and exported traces and metrics now replace e-mail addresses with `[email]` and credentials with `[redacted]`: auth headers, API tokens, private keys, sign-in details in URLs and connection tickets. A provider error that named the signed-in account could reach them before. Provider errors shown in a thread now leave out e-mail addresses too.
+
+## 2026-11-16 — Automatic settlement opens pull requests only for threads you wrote in
+
+- Automatic settlement used to open a pull request for any thread with unmerged worktree work, including a subagent's or a scheduled run's, so work that agents had not finished or that had failed review went up for merge. Now only a thread you wrote in from the app gets one; messages T3.CodeShip sends for you, such as the automatic "continue" after a stop, do not count. A thread you never wrote in, such as a scheduled run or a subagent, stays active with its work in view instead; once you write in it from the app, it can get one too.
+
+## 2026-11-16 — `bash` in a Windows agent command runs Git Bash, not WSL
+
+- On Windows, a `bash` or `sh` in a command an agent runs with `t3_command_run` now starts Git Bash, which reads `C:/` paths and finds node, instead of WSL's bash, which can do neither. CodeShip finds Git Bash through the `git` on the command's PATH or in the standard install folders, and leaves that PATH as it is, so `git` in the command is still the one it names. Without Git Bash, `bash` fails with an error that says where CodeShip looked; WSL's bash stays reachable through `wsl`. A program the command starts that runs `bash` itself can still get WSL's, so give it Git Bash's full path.
+
+## 2026-11-16 — A lost agent command keeps a record of how it ended
+
+- When CodeShip's check of a running command's process fails for a reason other than "no such process", it checks again on its next pass instead of reporting the command lost and stopping what the command started.
+- A command reported lost (`t3_command_run`'s "Ended without an exit status") now keeps on its record why: its process ended without one, the machine restarted, or its process id now names a later process. The record also keeps when the command was last seen running, what the failed check reported, and its last output. When more than half the commands that ran in the minute up to a loss are lost (a lone lost command counts when it was the only one), CodeShip logs one warning and writes the lost commands to `logs/command-losses.ndjson` in its data folder. A command lost within a minute of the one before it joins the same entry. Both hold across a restart of CodeShip, however long it was stopped. An entry lasts as long as its commands' records, 14 days after each command's end reached its chat, and one CodeShip could not write is written once it can.
+- On Windows, stopping a command no longer stops a process that an earlier holder of one of the command's process ids started.
+- On Windows, a Ctrl+C, Ctrl+Break or close event in a command's console no longer ends the process that records its exit status, so the command is no longer reported lost: that process now has a console of its own, and the command's console has no window to close.
+
+## 2026-11-16 — The server stays responsive while it looks up pull requests on Windows
+
+- On Windows, every git process the server started froze it for about 130 ms, and the pull request lookups of a sweep started about 14 per thread. With many threads the server stalled for minutes: git commands timed out at 30 s, and Machine health runs and scheduled runs failed to register MCP or prepare their worktrees. The lookups now read a repository's configuration and refs once, with two git processes shared by all of its threads and worktrees, instead of per thread.
+- `check:changed` no longer fails on Windows with `listen EACCES` when a checkout's web browser test port falls inside a block the system reserves; the port now comes from a range below the system's own.
+- A pull request refresh still sees a branch pushed a moment ago, and an action that acts on the answer (settling a thread, removing a worktree) still reads git fresh.
+
+## 2026-11-16 — A finished run no longer goes back to waiting and blocks its queue
+
+- When a delegated task or command finished just after its parent's run completed, the parent could go back to waiting and lose its checkpoint, and the next queued message did not start until CodeShip restarted. A task result now changes only the parent's task bookkeeping, and the server refuses any write that would put a finished run back to an earlier state or drop its checkpoint. Checkpoint capture, a provider's final events and shutdown recovery now each read a run and write it while holding the thread, so none of them can write a state another change has already replaced.
+
+## 2026-11-16 — The manual Windows server test run fits its time limit
+
+- Maintainers: the Windows Tests workflow now splits a full `apps/server` run into eight shards, balanced by recorded duration, instead of one job that hit the 45-minute limit. Runs of other packages or of chosen files are unchanged.
+
+## 2026-11-16 — Test lint catches early returns hidden behind a platform helper
+
+- **Maintenance:** the `no-platform-early-return-in-tests` lint rule now also flags `if (yield* runsOnWindows) return;` when the helper wraps a host-platform check, and four tests that returned early on Linux now skip instead of reporting a pass.
+
+## 2026-11-15 — Usage resets redeem by one rule on Claude and Codex
+
+- **Redeem usage resets automatically** in **Settings → Recovery** now claims banked resets for every Claude and Codex account on the machine by one rule, with no model involved. When an account's limit is out, CodeShip waits if the limit's plan reset is at most **Wait at most N hours for a plan reset** away (48 by default) and otherwise redeems the banked reset that clears that limit and expires first: a full reset clears any limit, a weekly or 5-hour one its own, a Fable one only Fable's. A reset that would expire unused is redeemed when a limit it clears runs out for the last time before it expires, whatever the wait, and nothing is redeemed while the account can still be used. Claude's weekly 5-hour reset is left for **Use reset**. A claim is made once per limit and plan reset, on Codex even across machines on the same account; for a Claude account signed in on several machines, turn it on on one of them, since two machines could claim at the same moment. It is decided on a fresh, uncached reading of the account, after any **Use reset** on it finishes and with the settings as they are then, and Claude and Codex use nothing once the login holds another account. **Use reset** now spends only the account it was pressed for on Codex too. A claim that used nothing, because the provider refused it or it failed, is tried again after 15 minutes. After a redemption the account's holds lift and its usage is read again.
+- The per-account **Use reset credits automatically** switch became this one setting, which starts off: turn it on if you want it. Agents see the outcome of the account's last claim in `usage`, and `maxWaitHours` and `redeemUsageResets` in `orchestrator_capabilities`.
+
+## 2026-11-15 — Windows test runs no longer fail on POSIX-only command tests or drive-letter paths
+
+- Five server tests still failed on Windows: four ran `printf` in a shell that has none, and one expected a Unix path where Windows adds a drive letter. The POSIX ones now skip and the path test follows the host. The remaining command-runner tests that returned early on Windows also skip, so a run reports them as skipped.
+
+## 2026-11-15 — `check:changed` catches a dependency without a license notice
+
+- Maintainers: `vp run check:changed` now checks the third-party license notices the web and mobile builds generate, so a new dependency without a license file fails there instead of in the release build. `vp run licenses:check` runs the same check on its own.
+
+## 2026-11-15 — A cancelled terminal open no longer leaves its shell running
+
+- When opening a terminal was cancelled just as its shell started, for example because the app disconnected, the shell could keep running with no terminal to reach it. It now always belongs to its terminal, which shows its output and can stop it.
+
+## 2026-11-15 — Claude accounts show their banked resets
+
+- **Usage → Limits** now shows how many banked resets a Claude account has and when the next one expires, and **Use reset** uses the one that expires first. Agents' `usage` lists each reset: its kind (5-hour, weekly, full or Fable), how many are left, when it expires, whether it can be used now or only at a limit, and whether it is paused, plus whether Claude offers the account its weekly 5-hour reset and when that is next available. CodeShip asks Claude's own `/limit-reset` in a hidden terminal, on macOS too, at most every six hours and again when the account reaches a limit, and asking never uses a reset.
+- Accounts that share a Claude login take turns: a read waits for a reset in progress, and reads due meanwhile are made once. Resets read before one was used, or for a different account than the one signed in now, are not shown, and **Use reset** uses nothing once the login has switched to another account, even while Claude starts. After **Use reset** on a Claude or Codex account, CodeShip reads usage again even if the request was cancelled, and says so when that read did not confirm the new limits. A Claude terminal stopped while it starts is always closed, on Windows too, and one that does not start within a minute is closed so the login's other reads go on. CodeShip reads only answers Claude has finished drawing. A screen it does not recognize, or a Claude config it cannot read, gives agents' `usage` a reason code instead of a guess.
+
+## 2026-11-15 — The Windows test lane runs on a runner this repository has
+
+- The on-demand Windows tests waited forever for a runner that only upstream's account provides. They now run on GitHub's own Windows runner, so a Windows test run starts and finishes.
+
+## 2026-11-15 — Agent commands on Windows no longer open a terminal window
+
+- On Windows, every command an agent ran with `t3_command_run` (tests, builds, installs) opened a console window titled `C:\WINDOWS\system32\cmd.exe`, which Windows 11 shows in Windows Terminal, and it stayed open until the command ended. These commands now run in a hidden window. Their output still goes to the chat as before.
+
+## 2026-11-15 — A failed usage check no longer counts as a full one
+
+- An account whose usage check failed, and whose meters then came back during a turn, no longer looks as if its usage was fully read at the failed check. Only a successful check can free an account waiting out a limit.
+- Maintainers: `vp run check:changed` also runs the test files beside each production file that imports a changed file, so a change to a shared helper runs the tests of the services built on it.
+
+## 2026-11-15 — Webhook tasks can check Standard Webhooks signatures, such as ThreadPage's
+
+- A webhook task's **Require signature** now offers a **Standard Webhooks** scheme next to the HMAC-SHA256 one. Enter the sender's `whsec_` secret; requests with a missing or forged `webhook-signature`, or a `webhook-timestamp` more than 5 minutes from when they arrived, are rejected, and a repeated `webhook-id` runs only once. Agents can choose it with `schedule_task` as `signature: { scheme: "standard-webhooks" }`.
+
+## 2026-11-15 — The weekly upstream sync ends within three hours
+
+- The scheduled "weekly sync from T3 Code" task no longer chases a busy main for hours. It merges upstream into the main it started from and, when main moves before it lands, merges main in at most twice more. When main conflicts with the sync, or the run passes 3 merges or 3 hours, it stops, pushes its branch, and names the conflicting files in its report and follow-up. `node scripts/upstream-sync.ts` keeps those bounds.
+
+## 2026-11-15 — A one-machine task no longer runs twice when its machines run different versions
+
+- A task shared with **One machine** could run on two machines in the same occurrence when one of them ran an older T3.CodeShip, because the two followed different rules for deciding who runs it. Machines now tell each other which rules they follow. When a machine that would run the task is on other rules, this one leaves the occurrence to it and records a skip that names that machine; the task row and **Run history** say to update T3.CodeShip on both machines.
+
+## 2026-11-15 — Agents can read each account's usage
+
+- Agents asking `orchestrator_capabilities` with `usage: true` now get each Claude and Codex account's usage: the plan, the 5-hour, weekly and model weekly meters (such as Fable's) with their resets, paid credits or extra usage, Codex's banked resets, and whether the account may be used now (never while it waits out a limit). With `environmentId` they read a linked machine's accounts. A reading older than 10 minutes is read again, at most once every 10 minutes. Paid credits Codex reports spent are dropped. An account whose usage cannot be read shows a reason code instead. Each account has a key that is the same on every machine and contains no account id or e-mail. Claude's banked resets are not read yet.
+- A scheduled task that picks its account automatically now takes, among the accounts with room, the one whose weekly limit resets first, so usage that would reset unused goes first. A task chat whose account still has room stays on it.
+- A Codex account waiting out a usage limit is used again as soon as Codex says it may be, for example after a banked reset was used, instead of at the limit's reset time, even while its meter still shows 100%. CodeShip checks a waiting account at most every 10 minutes; one Codex gives no answer for is checked hourly as before. Only a full usage check made after the limit counts, never a meter update sent during a turn. A Codex account that Codex says may not be used is skipped by automatic account choice even while its meters show room.
+
+## 2026-11-15 — `t3_command_run` reports the shell it used
+
+- The result of `t3_command_run` now names the shell that ran the command (`powershell`, `bash`, `zsh` or `sh`), so an agent that wrote bash syntax for a Windows PowerShell command sees why it failed. A test keeps the tool's description and the shell the runner picks in step.
 
 ## 2026-11-15 — Signing in to an account you just added no longer fails with "no longer available"
 

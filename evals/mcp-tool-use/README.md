@@ -29,13 +29,26 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 
 - `kind`: `bad` reproduces a mistake, `guard` protects correct behavior, `control` is ordinary work.
 - `experience`: the real mistake, in a sentence. `source`: where it happened.
-- `setup`: the fake thread, its `world` (repo, branch, files, PRs, pages), `priorTurns`, and `mocks` for tool results.
+- `setup`: the fake thread, its `world` (repo, branch, files, PRs, pages), `priorTurns`, and `mocks` for tool results. The templates are Linux captures; `"platform": "win32"` moves the case's machine to Windows, with Codex in PowerShell and Claude Code's Bash tool in Git Bash.
 - `setup.priorTurns[].toolCalls[].resultFile`: load a repository-relative file as the tool result instead of copying its contents into the case. An empty `prompt` resumes a top-level thread after its last prior tool result without adding a user message. Side-chat and subagent setups require a nonempty prompt.
-- `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `shellMust`, `textMust`, `finalTextMust` (the last text, once the turn ended), and `linked`. A call's `args` match partially: `~text` is a case-insensitive substring, `"<=N"` / `">=N"` bound a number, `null` matches a missing key, and keys may be dotted paths. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers. Secrets cases use `secret` (see [Secrets cases](#secrets-cases)).
+- `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `shellMust`, `textMust`, `finalTextMust` (the last text, once the turn ended), and `linked`. A call's `args` match partially: `~text` is a case-insensitive substring, `"/regex/"` matches a string by regex, `"<=N"` / `">=N"` bound a number, `null` matches a missing key, and keys may be dotted paths. `shellMustNot` reads only the agent's own shell (Bash, Monitor), where a `t3_command_run` background run is the way out; `shellMust` also reads `t3_command_run` commands. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers. Secrets cases use `secret` (see [Secrets cases](#secrets-cases)).
 
 A `calls` entry with `"succeeded": true` requires a successful validated call. `callsAnyOf` accepts any listed alternative.
 
 Check that the case builds with `--dry-run --case <id>`. Then run it on the text before your fix, where it must fail, and on the text after, where it must pass.
+
+## Windows command cases
+
+`t3_command_run` runs its command in Windows PowerShell 5.1 on Windows, which drops every `"` inside an argument it passes to a program. In `cases/background-work.ndjson`, `windows-posix-command-keeps-its-quotes` (bad) asks for a test run and a quoted `grep` on a Windows machine. It fails unless a `t3_command_run` runs the suite, and fails a call without `shell: "bash"` that passes a quoted command through `bash -c` or uses POSIX syntax PowerShell 5.1 rejects. `windows-powershell-script-stays-in-powershell` (control) keeps a PowerShell script in PowerShell.
+
+Passes per case, the description without `shell` → with it, 3 samples each:
+
+| Case                                          | GPT-6 Luna | GPT-6 Astra |
+| --------------------------------------------- | ---------- | ----------- |
+| windows-posix-command-keeps-its-quotes        | 1/3 → 1/3  | 2/3 → 2/3   |
+| windows-powershell-script-stays-in-powershell | 3/3 (new)  | 3/3 (new)   |
+
+Without `shell`, every failure was a broken command: two quoted a `grep` inside `bash -c` and one sent `status=$?` to PowerShell. With it, no sample sent a broken command and every sample that ran the suite passed `shell: "bash"`; the three failures never ran the suite, because the simulated shell reported an empty checkout. Claude models are not measured yet.
 
 ## Device manager cases
 

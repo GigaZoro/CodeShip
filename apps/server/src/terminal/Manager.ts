@@ -2745,49 +2745,54 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 }
               }
             }
-            const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
-            ptyProcess = spawnResult.process;
-            startedShell = spawnResult.shellLabel;
-
-            const processPid = ptyProcess.pid;
             let eventsActivated = false;
-
             let eventStamp: ReturnType<typeof advanceEventSequence> = {
               updatedAt: session.updatedAt,
               sequence: session.eventSequence,
             };
-            yield* modifyManagerState((state) => {
-              session.process = ptyProcess;
-              session.shell = spawnResult.shell;
-              session.pid = processPid;
-              session.status = "running";
-              // onExit may replay an exit immediately; accept it before subscribing.
-              session.unsubscribeData = spawnResult.process.onData((data) => {
-                if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
-                  return;
+            // Once the shell exists, an interrupt must not land before the session owns it and
+            // delivers its events: the failure path would not run, and output would never drain.
+            yield* Effect.uninterruptible(
+              Effect.gen(function* () {
+                const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
+                ptyProcess = spawnResult.process;
+                startedShell = spawnResult.shellLabel;
+                const spawnedPid = spawnResult.process.pid;
+                yield* modifyManagerState((state) => {
+                  session.process = spawnResult.process;
+                  session.shell = spawnResult.shell;
+                  session.pid = spawnedPid;
+                  session.status = "running";
+                  // onExit may replay an exit immediately; accept it before subscribing.
+                  session.unsubscribeData = spawnResult.process.onData((data) => {
+                    if (!enqueueProcessEvent(session, spawnedPid, { type: "output", data })) {
+                      return;
+                    }
+                    if (eventsActivated) runFork(drainProcessEvents(session, spawnedPid));
+                  });
+                  session.unsubscribeExit = spawnResult.process.onExit((event) => {
+                    if (!enqueueProcessEvent(session, spawnedPid, { type: "exit", event })) {
+                      return;
+                    }
+                    if (eventsActivated) runFork(drainProcessEvents(session, spawnedPid));
+                  });
+                  eventStamp = advanceEventSequence(session);
+                  return [undefined, state] as const;
+                });
+                yield* publishEvent({
+                  type: eventType,
+                  threadId: session.threadId,
+                  terminalId: session.terminalId,
+                  sequence: eventStamp.sequence,
+                  snapshot: snapshot(session),
+                });
+                // Publish startup before draining any events replayed during subscription.
+                eventsActivated = true;
+                if (session.processEventDrainRunning) {
+                  runFork(drainProcessEvents(session, spawnedPid));
                 }
-                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
-              });
-              session.unsubscribeExit = spawnResult.process.onExit((event) => {
-                if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) {
-                  return;
-                }
-                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
-              });
-              eventStamp = advanceEventSequence(session);
-              return [undefined, state] as const;
-            });
-
-            yield* publishEvent({
-              type: eventType,
-              threadId: session.threadId,
-              terminalId: session.terminalId,
-              sequence: eventStamp.sequence,
-              snapshot: snapshot(session),
-            });
-            // Publish startup before draining any events replayed during subscription.
-            eventsActivated = true;
-            if (session.processEventDrainRunning) runFork(drainProcessEvents(session, processPid));
+              }),
+            );
           }),
         ),
       ),

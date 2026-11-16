@@ -78,13 +78,11 @@ const ensureNodePtySpawnHelperExecutable = Effect.fn(function* () {
 
   const helperPath = yield* resolveNodePtySpawnHelperPath;
   if (!helperPath) return;
-  didEnsureSpawnHelperExecutable = true;
-
-  if (!(yield* fs.exists(helperPath))) {
-    return;
+  if (yield* fs.exists(helperPath)) {
+    yield* fs.chmod(helperPath, 0o755).pipe(Effect.orElseSucceed(() => undefined));
   }
-
-  yield* fs.chmod(helperPath, 0o755).pipe(Effect.orElseSucceed(() => undefined));
+  // Set only once done: an interrupted check runs again on the next spawn.
+  didEnsureSpawnHelperExecutable = true;
 });
 
 // node-pty has no public readiness event; ready_datapipe sets pid before our listener.
@@ -256,7 +254,8 @@ const make = Effect.fn("NodePtyAdapter.make")(function* () {
 
   return PtyAdapter.PtyAdapter.of({
     spawn: Effect.fn("NodePtyAdapter.spawn")(function* (input) {
-      yield* ensureNodePtySpawnHelperExecutableCached;
+      // No process exists yet, so this file check stays interruptible inside a caller's masked start.
+      yield* Effect.interruptible(ensureNodePtySpawnHelperExecutableCached);
       // ConPTY ignores node-pty's name option for TERM; set it explicitly to avoid missing/16-color values.
       const env =
         platform === "win32" && input.env["TERM"] === undefined
@@ -281,7 +280,10 @@ const make = Effect.fn("NodePtyAdapter.make")(function* () {
           }),
       });
       if (platform === "win32") {
-        yield* waitForWindowsPid(ptyProcess.nativeProcess, ptyProcess.process, input.shell).pipe(
+        // Readiness can stall, so it stays interruptible inside a caller's uninterruptible start.
+        yield* Effect.interruptible(
+          waitForWindowsPid(ptyProcess.nativeProcess, ptyProcess.process, input.shell),
+        ).pipe(
           Effect.onError(() =>
             Effect.sync(() => ptyProcess.process.disposeExitSubscription()).pipe(
               Effect.andThen(killStartingWindowsPty(ptyProcess.nativeProcess)),

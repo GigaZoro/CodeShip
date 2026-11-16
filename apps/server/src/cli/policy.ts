@@ -11,8 +11,9 @@ import * as CliError from "effect/cli/CliError";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { macosProfile, windowsAdml, windowsAdmx } from "../policy/policyTemplates.ts";
-import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
 const describePolicy = (

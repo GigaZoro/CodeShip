@@ -411,6 +411,17 @@ describe("webhook scheduled tasks", () => {
       maxDeliveryAgeMinutes: null,
       dedupe: {},
     });
+    const standard = taskToDraft({
+      ...webhookTask,
+      schedule: { type: "webhook", signature: { scheme: "standard-webhooks" } },
+    });
+    expect(standard.signatureScheme).toBe("standard-webhooks");
+    expect(scheduleFromDraft(standard)).toEqual({
+      type: "webhook",
+      signature: { scheme: "standard-webhooks" },
+      maxDeliveryAgeMinutes: null,
+      dedupe: {},
+    });
   });
 
   it("round-trips the max age, treats blank as no limit, and rejects an invalid limit", () => {

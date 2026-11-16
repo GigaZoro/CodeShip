@@ -22,12 +22,15 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  RUN_CONDITION_FAILING_STREAK,
   ScheduledTaskChangedBy,
   ScheduledTaskGroupLabel,
+  ScheduledTaskFailingCheck,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
   ScheduledTaskPromptFile,
   ScheduledTaskPromptFilePath,
+  ScheduledTaskRecentRunCounts,
   ScheduledTaskDelegateProviders,
   ScheduledTaskMaxLiveRuns,
   ScheduledTaskRunCondition,
@@ -40,6 +43,7 @@ import {
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
+import { ServerProviderResetKind } from "./providerUsageLimits.ts";
 import { PullRequestState } from "./pullRequest.ts";
 import {
   ThreadLinkedPullRequest,
@@ -302,12 +306,22 @@ export const OrchestratorMcpRunCommandInput = Schema.Struct({
       description: `Default ${ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES}. The command is stopped after it.`,
     }),
   ),
+  shell: Schema.optional(
+    Schema.Literal("bash").annotate({
+      description: "Runs the command, unchanged, in bash on every OS: Git Bash on Windows.",
+    }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpRunCommandInput = typeof OrchestratorMcpRunCommandInput.Type;
 
+export const ORCHESTRATOR_MCP_COMMAND_SHELLS = ["powershell", "bash", "zsh", "sh"] as const;
+
 export const OrchestratorMcpRunCommandResult = Schema.Struct({
   taskId: NodeId,
+  shell: Schema.Literals(ORCHESTRATOR_MCP_COMMAND_SHELLS).annotate({
+    description: "The shell that runs the command.",
+  }),
   logPath: Schema.String,
   timeoutMinutes: PositiveInt,
   next: OrchestratorMcpRunningTaskNext,
@@ -685,8 +699,104 @@ export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
       description: "Match model ids and labels. Replaces the short list.",
     }),
   ),
+  usage: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Add each Claude and Codex account's usage: meters, credits, banked resets. Reads one older than 10 minutes again.",
+    }),
+  ),
 });
 export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
+
+export const OrchestratorMcpUsageMeter = Schema.Struct({
+  /** `session`, `weekly_all`, `weekly_scoped:<model>`, or the provider's own id for another meter. */
+  id: Schema.String,
+  /** The one model a scoped meter limits; null when it limits the account. */
+  model: Schema.NullOr(Schema.String),
+  usedPercent: Schema.Number,
+  windowMinutes: Schema.NullOr(Schema.Number),
+  resetsAt: Schema.NullOr(Schema.String),
+});
+export type OrchestratorMcpUsageMeter = typeof OrchestratorMcpUsageMeter.Type;
+
+export const OrchestratorMcpBankedReset = Schema.Struct({
+  status: Schema.NullOr(Schema.String),
+  grantedAt: Schema.NullOr(Schema.String),
+  expiresAt: Schema.NullOr(Schema.String),
+  program: Schema.String,
+  /** Null when the provider names only a total over its resets. */
+  kind: Schema.NullOr(ServerProviderResetKind),
+  resetsLeft: Schema.optional(Schema.Number),
+  usableNow: Schema.optional(Schema.Boolean),
+  requiresLimit: Schema.optional(Schema.Boolean),
+  paused: Schema.optional(Schema.Boolean),
+});
+export type OrchestratorMcpBankedReset = typeof OrchestratorMcpBankedReset.Type;
+
+/** Why an account's usage, or its banked resets, could not be read. */
+export const OrchestratorMcpUsageError = Schema.Literals([
+  "signed_out",
+  "unsupported",
+  "not_read",
+  "read_failed",
+  /** The provider's terminal showed a screen this server does not know, so nothing was guessed. */
+  "unrecognized_screen",
+]);
+export type OrchestratorMcpUsageError = typeof OrchestratorMcpUsageError.Type;
+
+/** What a claim of a banked reset came to; `failed` is tried again after 15 minutes. */
+export const OrchestratorMcpRedemptionOutcome = Schema.Literals([
+  "reset",
+  "already_used",
+  "not_limited",
+  "no_reset",
+  "failed",
+]);
+export type OrchestratorMcpRedemptionOutcome = typeof OrchestratorMcpRedemptionOutcome.Type;
+
+export const OrchestratorMcpLastRedemption = Schema.Struct({
+  at: Schema.String,
+  outcome: OrchestratorMcpRedemptionOutcome,
+  kind: ServerProviderResetKind,
+  /** `reset-too-far`: the plan reset was past the wait. `reset-expiring`: the reset would lapse unused. */
+  reason: Schema.Literals(["reset-too-far", "reset-expiring"]),
+});
+export type OrchestratorMcpLastRedemption = typeof OrchestratorMcpLastRedemption.Type;
+
+export const OrchestratorMcpProviderUsage = Schema.Struct({
+  /** The same on every machine for one provider account; never the account id itself. */
+  accountKey: Schema.NullOr(Schema.String),
+  plan: Schema.NullOr(Schema.String),
+  measuredAt: Schema.String,
+  meters: Schema.Array(OrchestratorMcpUsageMeter),
+  credits: Schema.NullOr(
+    Schema.Struct({
+      balance: Schema.NullOr(Schema.String),
+      unlimited: Schema.Boolean,
+      currency: Schema.optional(Schema.String),
+    }),
+  ),
+  bankedResets: Schema.NullOr(
+    Schema.Struct({
+      available: Schema.Number,
+      resets: Schema.Array(OrchestratorMcpBankedReset),
+    }),
+  ),
+  bankedResetsError: Schema.optional(OrchestratorMcpUsageError),
+  /** Claude only: which reset programs the account's flags turn on. */
+  resetPrograms: Schema.optional(
+    Schema.Struct({
+      granted: Schema.Boolean,
+      weeklySession: Schema.Boolean,
+      weeklySessionAvailableAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+  /** False while the account is usageLimited or its provider says it may not run (Codex). */
+  usageAllowed: Schema.Boolean,
+  /** The last banked reset this server claimed for the account; null when it has claimed none. */
+  lastRedemption: Schema.NullOr(OrchestratorMcpLastRedemption),
+});
+export type OrchestratorMcpProviderUsage = typeof OrchestratorMcpProviderUsage.Type;
 
 export const OrchestratorMcpModelOption = Schema.Struct({
   id: Schema.String,
@@ -730,6 +840,9 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
       description: "Usage-limited until limitedUntil (provider reset or T3 hold).",
     }),
   ),
+  /** With `usage`, for an enabled Claude or Codex account; null when `usageError` says why. */
+  usage: Schema.optional(Schema.NullOr(OrchestratorMcpProviderUsage)),
+  usageError: Schema.optional(OrchestratorMcpUsageError),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
@@ -766,6 +879,10 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  /** With `usage`: the hours this server waits for a plan reset before it claims a banked one. */
+  maxWaitHours: Schema.optional(Schema.Number),
+  /** With `usage`: whether this server claims banked resets by itself. */
+  redeemUsageResets: Schema.optional(Schema.Boolean),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
@@ -963,6 +1080,9 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   ).annotate({
     description: "The last occurrence its run condition skipped for no work, and why.",
   }),
+  failingCheck: Schema.optional(ScheduledTaskFailingCheck).annotate({
+    description: `Its run condition failed on its last ${RUN_CONDITION_FAILING_STREAK} scheduled checks here, so each run started anyway: the latest answer.`,
+  }),
   catchUpMissedRun: Schema.optional(Schema.Boolean).annotate({
     description: "fixed_time only: a run missed while the app was off runs once when it is back.",
   }),
@@ -985,6 +1105,10 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
     description:
       "The last run here. working: its thread is still going. stopped: a user or agent stopped it on purpose. occurrence: null when run now or by a webhook.",
   }),
+  runCounts: Schema.optional(ScheduledTaskRecentRunCounts).annotate({
+    description:
+      "list_scheduled_tasks only: occurrences here over the last 7 and 30 UTC days, today included.",
+  }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -1006,6 +1130,8 @@ export type OrchestratorMcpListScheduledTasksInput =
 
 export const OrchestratorMcpListScheduledTasksResult = Schema.Struct({
   tasks: Schema.Array(OrchestratorMcpScheduledTask),
+  /** The machine's `SCHEDULED_TASK_CLAIM_PROTOCOL`; absent from versions before it. */
+  claimProtocol: Schema.optional(Schema.Int),
 });
 export type OrchestratorMcpListScheduledTasksResult =
   typeof OrchestratorMcpListScheduledTasksResult.Type;

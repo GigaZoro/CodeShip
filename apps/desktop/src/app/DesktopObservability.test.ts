@@ -1,8 +1,11 @@
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import desktopPackageJson from "../../package.json" with { type: "json" };
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeUtil from "node:util";
+
 import { assert, describe, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -390,6 +393,51 @@ describe("DesktopObservability", () => {
       );
       assert.include(body, '"key":"t3code.desktop.mode","value":{"stringValue":"development"}');
       assert.notInclude(body, "service.mode");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, layerCollector(requests), layerEmptyEnv)),
+    );
+  });
+
+  it.effect("prints and exports logs without e-mail addresses or credentials", () => {
+    const requests: Array<ExportedRequest> = [];
+    const printed: Array<string> = [];
+    const testConsole = {
+      ...globalThis.console,
+      log: (...args: ReadonlyArray<unknown>) => {
+        printed.push(NodeUtil.format(...args));
+      },
+    } satisfies Console.Console;
+    return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-observability-test-",
+      });
+      const layerEnvironment = layerEnvironmentFor(baseDir);
+      yield* writeObservabilitySettings(layerEnvironment, {
+        otlpLogsUrl: "https://settings.example.com/v1/logs",
+      });
+
+      yield* Effect.scoped(
+        Effect.logInfo(
+          "update check failed",
+          { account: "user@example.com" },
+          "token:",
+          "fake-opaque",
+        ).pipe(
+          Effect.provide(DesktopObservability.layer.pipe(Layer.provideMerge(layerEnvironment))),
+          Effect.provideService(Console.Console, testConsole),
+        ),
+      );
+
+      const body = requests.map((request) => request.body).join("\n");
+      const output = printed.join("\n");
+      assert.include(body, "update check failed");
+      assert.include(output, "update check failed");
+      for (const text of [body, output]) {
+        assert.notInclude(text, "user@example.com");
+        assert.notInclude(text, "fake-opaque");
+      }
     }).pipe(
       Effect.scoped,
       Effect.provide(Layer.mergeAll(NodeServices.layer, layerCollector(requests), layerEmptyEnv)),

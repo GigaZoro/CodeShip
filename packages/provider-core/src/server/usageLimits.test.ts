@@ -85,8 +85,17 @@ describe("applyUsageLimitsUpdate", () => {
     expect(next).not.toBe(published);
     expect(next).toEqual({
       checkedAt: "2026-09-03T12:00:05.000Z",
+      accountReadAt: checkedAt,
       windows: [{ ...session, usedPercent: 55 }, weekly],
     });
+    // A later update still names the full read the account fields came from.
+    expect(
+      applyUsageLimitsUpdate({
+        previous: next,
+        checkedAt: "2026-09-03T12:00:09.000Z",
+        update: { windows: [{ ...session, usedPercent: 60 }] },
+      })?.accountReadAt,
+    ).toBe(checkedAt);
   });
 
   it("leaves an unsupported account and an empty update alone", () => {
@@ -151,20 +160,75 @@ describe("applyUsageLimitsUpdate", () => {
     ).toEqual({ ...weekly, usedPercent: 80 });
   });
 
-  it("preserves reset credits and a $0 cap when a streamed window update changes usage", () => {
+  it("preserves reset credits, programs and a $0 cap when a streamed window update changes usage", () => {
     const resetCredits = { availableCount: 2, nextExpiresAt: "2026-10-01T00:00:00.000Z" };
+    const resetPrograms = { granted: true, weeklySession: false };
     const next = applyUsageLimitsUpdate({
-      previous: { ...published, resetCredits, zeroSpendCap: true },
+      previous: { ...published, resetCredits, resetPrograms, zeroSpendCap: true },
       checkedAt: "2026-09-03T12:00:05.000Z",
       update: { windows: [{ ...session, usedPercent: 55 }] },
     });
 
     expect(next).toEqual({
       checkedAt: "2026-09-03T12:00:05.000Z",
+      accountReadAt: checkedAt,
       windows: [{ ...session, usedPercent: 55 }, weekly],
       resetCredits,
       zeroSpendCap: true,
+      resetPrograms,
     });
+    expect(
+      applyUsageLimitsUpdate({
+        previous: { ...published, resetCreditsError: "unrecognizedScreen", resetPrograms },
+        checkedAt: "2026-09-03T12:00:05.000Z",
+        update: { windows: [{ ...session, usedPercent: 55 }] },
+      }),
+    ).toMatchObject({ resetCreditsError: "unrecognizedScreen", resetPrograms });
+  });
+
+  it("drops the credits when an update says the account has none", () => {
+    const credits = { balance: "4.00", unlimited: false };
+    const next = applyUsageLimitsUpdate({
+      previous: { ...published, credits },
+      checkedAt: "2026-09-03T12:00:05.000Z",
+      update: { windows: [], credits: null },
+    });
+    expect(next?.credits).toBeUndefined();
+    expect(
+      applyUsageLimitsUpdate({
+        previous: published,
+        checkedAt,
+        update: { windows: [], credits: null },
+      }),
+    ).toBe(published);
+  });
+
+  it("keeps the provider's yes through a window its read saw at 100%, not through one an update uses up", () => {
+    const allowed = {
+      checkedAt,
+      windows: [{ ...session, usedPercent: 100 }, weekly],
+      usageAllowed: true,
+    };
+    const later = "2026-09-03T12:00:05.000Z";
+    expect(
+      applyUsageLimitsUpdate({
+        previous: allowed,
+        checkedAt: later,
+        update: {
+          windows: [
+            { ...session, usedPercent: 100 },
+            { ...weekly, usedPercent: 30 },
+          ],
+        },
+      })?.usageAllowed,
+    ).toBe(true);
+    expect(
+      applyUsageLimitsUpdate({
+        previous: allowed,
+        checkedAt: later,
+        update: { windows: [{ ...weekly, usedPercent: 100 }] },
+      })?.usageAllowed,
+    ).toBe(false);
   });
 });
 
@@ -189,6 +253,7 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published: live, probed })).toEqual({
       ...probed,
       checkedAt: live.checkedAt,
+      accountReadAt: probed.checkedAt,
       windows: live.windows,
     });
 
@@ -196,6 +261,31 @@ describe("resolveUsageLimitsAfterProbe", () => {
     const newer = { ...probed, checkedAt: "2026-09-03T12:00:06.000Z" };
     expect(resolveUsageLimitsAfterProbe({ published: live, probed: sameTime })).toEqual(sameTime);
     expect(resolveUsageLimitsAfterProbe({ published: live, probed: newer })).toEqual(newer);
+  });
+
+  it("keeps a newer streamed update's credits, and a window it used up withdraws the read's yes", () => {
+    const probed = {
+      ...published,
+      credits: { balance: "4.00", unlimited: false },
+      usageAllowed: true,
+    };
+    const streamed = {
+      checkedAt: "2026-09-03T12:00:05.000Z",
+      windows: [{ ...session, usedPercent: 100 }, weekly],
+      credits: { balance: "1.00", unlimited: false },
+    };
+    expect(resolveUsageLimitsAfterProbe({ published: streamed, probed })).toEqual({
+      checkedAt: streamed.checkedAt,
+      accountReadAt: probed.checkedAt,
+      windows: streamed.windows,
+      credits: streamed.credits,
+      usageAllowed: false,
+    });
+    // The read's yes already weighed a window it saw at 100%.
+    const usedUp = { ...probed, windows: [{ ...session, usedPercent: 100 }, weekly] };
+    expect(
+      resolveUsageLimitsAfterProbe({ published: streamed, probed: usedUp })?.usageAllowed,
+    ).toBe(true);
   });
 
   it.each([
@@ -249,5 +339,24 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published, probed: failed })).toBe(published);
     expect(resolveUsageLimitsAfterProbe({ published, probed: unsupported })).toBe(unsupported);
     expect(resolveUsageLimitsAfterProbe({ published: undefined, probed: failed })).toBe(failed);
+  });
+
+  it("takes the reset fields a failed probe read, dropping the ones it no longer has", () => {
+    const resetPrograms = { granted: true, weeklySession: false };
+    const withGrants = {
+      ...published,
+      resetCredits: { availableCount: 1, credits: [] },
+      resetPrograms,
+    };
+    const failed = {
+      checkedAt,
+      windows: [],
+      unavailable: { reason: "probeFailed" as const },
+      resetPrograms,
+    };
+    expect(resolveUsageLimitsAfterProbe({ published: withGrants, probed: failed })).toEqual({
+      ...published,
+      resetPrograms,
+    });
   });
 });

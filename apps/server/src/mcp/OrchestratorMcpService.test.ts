@@ -3872,6 +3872,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({
               liveRuns: () => Effect.succeed(null),
+              recentRunCounts: () => Effect.succeed(new Map()),
               list: () => Effect.succeed({ tasks }),
               upsert: () =>
                 Ref.update(upserted, (count) => count + 1).pipe(Effect.as({ task: saved })),
@@ -3935,6 +3936,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
                     liveRuns: () => Effect.succeed(null),
+                    recentRunCounts: () => Effect.succeed(new Map()),
                     list: () => Effect.succeed({ tasks: [task({})] }),
                   }),
                 ),
@@ -4109,6 +4111,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
                     liveRuns: () => Effect.succeed(null),
+                    recentRunCounts: () => Effect.succeed(new Map()),
                     list: () => Effect.map(Ref.get(saved), (tasks) => ({ tasks })),
                     upsert: (input) =>
                       Effect.gen(function* () {
@@ -4182,6 +4185,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                   Layer.mock(ScheduledTaskService.ScheduledTaskService)({
                     liveRuns: () => Effect.succeed(null),
+                    recentRunCounts: () => Effect.succeed(new Map()),
                     list: () => Effect.succeed({ tasks: [bound] }),
                     upsert: () =>
                       Ref.update(upserted, (count) => count + 1).pipe(Effect.as({ task: bound })),
@@ -4293,6 +4297,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(RemoteDelegation.RemoteDelegation)({}),
             Layer.mock(ScheduledTaskService.ScheduledTaskService)({
               liveRuns: () => Effect.succeed(null),
+              recentRunCounts: () => Effect.succeed(new Map()),
               list: () => Effect.succeed({ tasks: listed }),
               upsert: (input) =>
                 Ref.update(saved, (strategies) => [...strategies, input.workspaceStrategy]).pipe(
@@ -4894,31 +4899,50 @@ describe("OrchestratorMcpService provider resolution", () => {
         }),
     );
 
-    it.effect("lists a new-thread task's live runs against its limit, and none for others", () =>
-      Effect.gen(function* () {
-        const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
-        // The service counts no live runs for a task its limit does not apply to.
-        const unlimited = { ...existing, id: ScheduledTaskId.make("task:unlimited") };
-        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
-          Effect.provide(
-            service(
-              masterRepository,
-              saved,
-              [{ ...existing, maxLiveRuns: 2 }, unlimited],
-              {},
-              { liveRuns: (task) => Effect.succeed(task.id === unlimited.id ? null : 1) },
+    it.effect(
+      "lists a new-thread task's live runs against its limit and each task's recent run counts, and none for others",
+      () =>
+        Effect.gen(function* () {
+          const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+          // The service counts no live runs for a task its limit does not apply to.
+          const unlimited = { ...existing, id: ScheduledTaskId.make("task:unlimited") };
+          const counts = {
+            last7Days: { outcomes: { skipped: 3 }, skipReasons: { no_work: 3 } },
+            last30Days: {
+              outcomes: { succeeded: 1, skipped: 9 },
+              skipReasons: { no_work: 8, usage_limited: 1 },
+            },
+          };
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+            Effect.provide(
+              service(
+                masterRepository,
+                saved,
+                [{ ...existing, maxLiveRuns: 2 }, unlimited],
+                {},
+                {
+                  liveRuns: (task) => Effect.succeed(task.id === unlimited.id ? null : 1),
+                  recentRunCounts: () => Effect.succeed(new Map([[existing.id, counts]])),
+                },
+              ),
             ),
-          ),
-        );
-        const { tasks } = yield* mcp.listScheduledTasks(client, { projectId });
-        assert.deepEqual(
-          tasks.map((task) => [task.maxLiveRuns, task.liveRuns]),
-          [
-            [2, 1],
-            [undefined, undefined],
-          ],
-        );
-      }),
+          );
+          const { tasks } = yield* mcp.listScheduledTasks(client, { projectId });
+          assert.deepEqual(
+            tasks.map((task) => [task.maxLiveRuns, task.liveRuns, task.runCounts]),
+            [
+              [2, 1, counts],
+              [
+                undefined,
+                undefined,
+                {
+                  last7Days: { outcomes: {}, skipReasons: {} },
+                  last30Days: { outcomes: {}, skipReasons: {} },
+                },
+              ],
+            ],
+          );
+        }),
     );
 
     it.effect(

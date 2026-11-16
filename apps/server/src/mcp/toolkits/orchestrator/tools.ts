@@ -91,7 +91,7 @@ const threadMetadataDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List providers, models, options, runtime modes, and usage-limited accounts for `delegate_task`. Short list. `search` finds others. Any catalog model works.",
+    "List providers, models, options, runtime modes, and usage-limited accounts for `delegate_task`. Short list. `search` finds others. Any catalog model works. `usage` adds each Claude and Codex account's usage meters, resets and banked resets.",
   parameters: OrchestratorMcpCapabilitiesInput,
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
@@ -159,7 +159,7 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
 
 const CommandRunTool = Tool.make("t3_command_run", {
   description:
-    "Run a shell command that ends (tests, build, install, deploy) apart from you. The shell is bash or zsh on macOS and Linux (/bin/sh when the user's shell is neither), so `&&` and `||` work. On Windows it is Windows PowerShell 5.1, which has no `&&` or `||`: chain steps with `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }` between them, or run each step in its own call. Do not escape with `bash`: on Windows it is WSL's bash, which has no node and its own home folder. For Git Bash run `& 'C:\\Program Files\\Git\\bin\\bash.exe' -lc '<command>'`. Only in Full access and the default mode; otherwise use your shell. It keeps running through a restart. Its end wakes you with the exit code and the last output. Not for dev servers or watchers. `task_cancel` stops it.",
+    "Run a shell command that ends (tests, build, install, deploy) apart from you. The shell is bash or zsh on macOS and Linux (/bin/sh when the user's shell is neither), so `&&` and `||` work. On Windows it is Windows PowerShell 5.1, which has no `&&` or `||` and loses every `\"` inside an argument it passes to a program, `bash -c` included. For POSIX syntax pass `shell: \"bash\"`: the command runs unchanged in bash on any OS, on Windows in Git Bash, which reads `C:/` paths and finds node. In PowerShell, chain steps with `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }` between them. There a `bash` or `sh` runs Git Bash and WSL's bash runs through `wsl`, but a program the command starts that runs `bash` itself can still get WSL's, so give it Git Bash's full path. Only in Full access and the default mode; otherwise use your shell. It keeps running through a restart. Its end wakes you with the exit code and the last output. Not for dev servers or watchers. `task_cancel` stops it.",
   parameters: OrchestratorMcpRunCommandInput,
   success: OrchestratorMcpRunCommandResult,
   failure: OrchestratorMcpFailure,

@@ -1,26 +1,128 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - flushSync must write before the process exits.
 import * as NodeFS from "node:fs";
+import * as NodeUtil from "node:util";
+
 import * as Cause from "effect/Cause";
+import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Exit from "effect/Exit";
 import * as ExitRuntime from "effect/Exit";
+import type * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Redactable from "effect/Redactable";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Tracer from "effect/Tracer";
-import { OtlpResource, OtlpTracer, OtlpSerialization } from "effect/observability";
+import { OtlpExporter, OtlpResource, OtlpTracer, OtlpSerialization } from "effect/observability";
 
 import { makeAsyncRotatingFileSink } from "./logging.ts";
+import {
+  layerRedactedOtlpSerialization,
+  redactMessageParts,
+  redactSensitiveText,
+  stringifyRedacted,
+} from "./redaction.ts";
 
 export const OtlpProtocol = Schema.Literals(["http/json", "http/protobuf"]);
 export type OtlpProtocol = typeof OtlpProtocol.Type;
 export const layerOtlpSerialization = (protocol: OtlpProtocol) =>
-  protocol === "http/protobuf" ? OtlpSerialization.layerProtobuf : OtlpSerialization.layerJson;
+  layerRedactedOtlpSerialization(
+    protocol === "http/protobuf" ? OtlpSerialization.layerProtobuf : OtlpSerialization.layerJson,
+  );
+
+/**
+ * The loggers of a T3 Node process: the console, and `otlpLogger` when logs are exported, else span
+ * events. Each one masks the message parts that follow a credential's name, and the console prints
+ * redacted text.
+ */
+export const layerRedactedLoggers = <E, R>(
+  otlpLogger: Effect.Effect<Logger.Logger<unknown, unknown>, E, R> | undefined,
+  protocol: OtlpProtocol,
+) => {
+  const consoleLogger = withRedactedMessage(consolePretty());
+  // Logger.layer replaces the whole set. OTLP includes traced messages as log records, so also
+  // using tracerLogger would duplicate in-span exports.
+  return Logger.layer(
+    otlpLogger === undefined
+      ? [consoleLogger, withRedactedMessage(Logger.tracerLogger)]
+      : [consoleLogger, Effect.map(otlpLogger, withRedactedMessage)],
+    { mergeWithExisting: false },
+  ).pipe(Layer.provide(OtlpExporter.layerFlusher), Layer.provide(layerOtlpSerialization(protocol)));
+};
+
+const withRedactedMessage = <Output>(
+  logger: Logger.Logger<unknown, Output>,
+): Logger.Logger<unknown, Output> =>
+  Logger.make((options) =>
+    logger.log({ ...options, message: redactMessageParts(options.message) }),
+  );
+
+// consolePretty collapses Cause fields via util.inspect; render them with Cause.pretty like standalone arguments.
+const consolePretty = (): Logger.Logger<unknown, void> => {
+  const pretty = Logger.consolePretty();
+  return Logger.make((options) =>
+    pretty.log({
+      ...options,
+      message: Array.isArray(options.message)
+        ? options.message.map(prettyCauseFields)
+        : prettyCauseFields(options.message),
+      fiber: withRedactingConsole(options.fiber),
+    }),
+  );
+};
+
+// Provider errors can name the signed-in account, and HTTP errors carry the request's connection
+// ticket. The pretty logger prints message, cause and annotations through the fiber's console, so
+// it gets one that redacts the text Node would print.
+function withRedactingConsole(fiber: Fiber.Fiber<unknown, unknown>): Fiber.Fiber<unknown, unknown> {
+  const console = fiber.getRef(Console.Console);
+  const redacting: Console.Console = {
+    ...console,
+    log: (...args) => console.log(printable(process.stdout, args)),
+    error: (...args) => console.error(printable(process.stderr, args)),
+  };
+  const getRef = <A>(ref: Context.Reference<A>): A =>
+    (ref as Context.Reference<unknown>) === Console.Console ? (redacting as A) : fiber.getRef(ref);
+  return Object.create(fiber, { getRef: { value: getRef } }) as Fiber.Fiber<unknown, unknown>;
+}
+
+// Formats once, colored as Node's console would for `stream`, and prints that very text: formatting
+// again could print an object differently from what was checked. Strings print whole, since cutting
+// one can split a credential from what marks it, such as a URL's `@`.
+function printable(stream: NodeJS.WriteStream, args: ReadonlyArray<unknown>): string {
+  const colors =
+    stream.isTTY === true &&
+    typeof stream.getColorDepth === "function" &&
+    stream.getColorDepth() > 2;
+  return redactSensitiveText(
+    NodeUtil.formatWithOptions({ colors, maxStringLength: Infinity }, ...args),
+  );
+}
+
+function prettyCauseFields(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  // A message with its own redaction hook already decides how it prints.
+  if (Redactable.isRedactable(value)) return value;
+  // Copy descriptors to preserve symbols without invoking getters.
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  let changed = false;
+  for (const descriptor of Object.values(descriptors)) {
+    if ("value" in descriptor && Cause.isCause(descriptor.value)) {
+      descriptor.value = Cause.pretty(descriptor.value);
+      changed = true;
+    }
+  }
+  return changed ? Object.create(prototype, descriptors) : value;
+}
 
 export interface SignalExport {
   readonly protocol: OtlpProtocol;
@@ -334,12 +436,17 @@ const TRACE_ATTRIBUTE_TRUNCATED_LENGTH = 200;
 const TRACE_ATTRIBUTE_TRUNCATION_SUFFIX = "…[truncated]";
 const ALWAYS_TRUNCATED_TRACE_ATTRIBUTES: ReadonlySet<string> = new Set(["db.query.text"]);
 
+// Redacted before cutting, since a cut can split a credential from what marks it, such as a URL's `@`.
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const redacted = redactSensitiveText(value);
+  return redacted.length <= maxLength
+    ? redacted
+    : `${redacted.slice(0, maxLength)}${TRACE_ATTRIBUTE_TRUNCATION_SUFFIX}`;
+}
+
 function truncateNestedValue(value: unknown): unknown {
-  if (typeof value === "string") {
-    return value.length <= TRACE_ATTRIBUTE_MAX_LENGTH
-      ? value
-      : `${value.slice(0, TRACE_ATTRIBUTE_MAX_LENGTH)}${TRACE_ATTRIBUTE_TRUNCATION_SUFFIX}`;
-  }
+  if (typeof value === "string") return truncateText(value, TRACE_ATTRIBUTE_MAX_LENGTH);
   if (Array.isArray(value)) {
     const truncated = value.map(truncateNestedValue);
     return truncated.some((entry, index) => entry !== value[index]) ? truncated : value;
@@ -364,8 +471,7 @@ export function truncateTraceAttributes(attributes: TraceAttributes): TraceAttri
     if (typeof value === "string" && ALWAYS_TRUNCATED_TRACE_ATTRIBUTES.has(key)) {
       if (value.length <= TRACE_ATTRIBUTE_TRUNCATED_LENGTH) continue;
       truncated ??= { ...attributes };
-      truncated[key] =
-        `${value.slice(0, TRACE_ATTRIBUTE_TRUNCATED_LENGTH)}${TRACE_ATTRIBUTE_TRUNCATION_SUFFIX}`;
+      truncated[key] = truncateText(value, TRACE_ATTRIBUTE_TRUNCATED_LENGTH);
       continue;
     }
     const next = truncateNestedValue(value);
@@ -407,12 +513,6 @@ function spanToTraceRecord(span: SerializableSpan): EffectTraceRecord {
     exit: formatTraceExit(status.exit),
   };
 }
-
-// WebSocket tickets and their DPoP proofs ride in URL queries and stay valid after the request.
-const URL_CREDENTIAL_PARAMS = /(^|[?&"\s])(wsTicket|dpop)=[^&#"\\\s]*/g;
-
-const redactUrlCredentials = (text: string) =>
-  text.replace(URL_CREDENTIAL_PARAMS, "$1$2=<redacted>");
 
 export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: TraceSinkOptions) {
   const sink = yield* makeAsyncRotatingFileSink({
@@ -531,7 +631,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     filePath: options.filePath,
     push(record) {
       try {
-        const text = `${redactUrlCredentials(JSON.stringify(record))}\n`;
+        const text = `${stringifyRedacted(record)}\n`;
         const bytes = Buffer.byteLength(text);
         if (bytes > options.maxBytes) return;
         if (bufferBytes + bytes > maxBufferBytes) {
@@ -562,24 +662,6 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     close: () => flush,
   } satisfies TraceSink;
 });
-
-// Effect's HTTP errors, including failed upgrades, put the request URL in their message.
-export function redactCauseCredentials(cause: Cause.Cause<unknown>): Cause.Cause<unknown> {
-  if (cause.reasons.length === 0 || Cause.hasInterruptsOnly(cause)) {
-    return cause;
-  }
-  const pretty = Cause.pretty(cause);
-  const redacted = redactUrlCredentials(pretty);
-  return redacted === pretty ? cause : Cause.die(new Error(redacted));
-}
-
-function redactExitCredentials(exit: Exit.Exit<unknown, unknown>): Exit.Exit<unknown, unknown> {
-  if (ExitRuntime.isSuccess(exit)) {
-    return exit;
-  }
-  const cause = redactCauseCredentials(exit.cause);
-  return cause === exit.cause ? exit : ExitRuntime.failCause(cause);
-}
 
 class LocalFileSpan implements Tracer.Span {
   readonly _tag = "Span";
@@ -630,7 +712,7 @@ class LocalFileSpan implements Tracer.Span {
       endTime,
       exit: traceExit,
     };
-    this.delegate.end(endTime, redactExitCredentials(traceExit));
+    this.delegate.end(endTime, traceExit);
 
     if (this.sampled) {
       this.push(spanToTraceRecord(this));
@@ -638,22 +720,13 @@ class LocalFileSpan implements Tracer.Span {
   }
 
   attribute(key: string, value: unknown): void {
-    const recorded =
-      (key === "url.full" || key === "url.query") && typeof value === "string"
-        ? redactUrlCredentials(value)
-        : value;
-    this.attributes.set(key, recorded);
-    this.delegate.attribute(key, recorded);
+    this.attributes.set(key, value);
+    this.delegate.attribute(key, value);
   }
 
   event(name: string, startTime: bigint, attributes?: Record<string, unknown>): void {
-    const cause = attributes?.["effect.cause"];
-    const nextAttributes =
-      typeof cause === "string"
-        ? { ...attributes, "effect.cause": redactUrlCredentials(cause) }
-        : (attributes ?? {});
-    this.events.push([name, startTime, nextAttributes]);
-    this.delegate.event(name, startTime, nextAttributes);
+    this.events.push([name, startTime, attributes ?? {}]);
+    this.delegate.event(name, startTime, attributes);
   }
 
   addLinks(links: ReadonlyArray<Tracer.SpanLink>): void {

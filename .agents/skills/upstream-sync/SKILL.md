@@ -14,10 +14,12 @@ new text is translatable and translated, as well as merged.
 
 1. `git remote get-url upstream || git remote add upstream https://github.com/pingdotgg/t3code.git`,
    then `git fetch origin && git fetch upstream main`.
-2. Branch from the latest `origin/main` (`sync/upstream-<date>`), never on `main` itself.
-3. `git merge upstream/main`. Title the merge commit
-   `chore: sync with upstream t3code (<upstream short sha>)`; the body gives the commit count and
-   range and the conflict decisions.
+2. Branch from the latest `origin/main` (`sync/upstream-<date>`) in a new worktree, never on `main`
+   itself. That commit is the sync's base: do not pull, rebase or merge main into the branch.
+3. In that worktree, `node scripts/upstream-sync.ts begin` merges upstream/main as
+   `chore: sync with upstream t3code (<upstream short sha>)` and starts the run's bounds (3 merges,
+   3 hours). Amend the merge commit's body with the commit count and range and the conflict
+   decisions.
 
 ## 2. Resolve conflicts
 
@@ -51,9 +53,15 @@ new text is translatable and translated, as well as merged.
 
 1. Follow the [translate-ui](../translate-ui/SKILL.md) skill until
    `node scripts/i18n-catalog.ts check` passes.
-2. `vp run check:changed`, then run the tests of the packages the sync touched. Fix tests one
-   side broke against the other side's code, as the earlier syncs did.
+2. `vp run check:changed <base>`, with the `base` that `node scripts/upstream-sync.ts status`
+   prints, then run the tests of the packages the sync touched. Fix tests one side broke against
+   the other side's code, as the earlier syncs did.
 3. Spot-check the app in Ukrainian and in the development pseudo-language
    (Settings → General → Language → Pseudo, dev builds only): untranslated text shows up
    without the `⟦…⟧` brackets.
-4. Land it the way the developer asks. Every push to `main` publishes a release.
+4. Land it the way the developer asks. Every push to `main` publishes a release. To land on `main`,
+   run `node scripts/upstream-sync.ts land`: it pushes only a fast-forward of the base you
+   verified, merges a main that moved at most twice (each time asking for the checks again), and
+   holds, naming the files, when main conflicts or the bounds run out.
+   [automations/upstream-sync.md](../../../automations/upstream-sync.md) says what to do with each
+   answer.

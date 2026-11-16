@@ -18,7 +18,12 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { asciiUpperCase, overrideEnvironment } from "@t3tools/shared/shell";
+import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
+import { overrideEnvironment } from "@t3tools/shared/shell";
+import {
+  WINDOWS_PROCESS_TREE_FUNCTIONS,
+  windowsStopTreeArgs,
+} from "@t3tools/shared/windowsProcessTree";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -46,7 +51,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
-import { isProcessAlive, readProcessStartedAt } from "../serverRuntimeState.ts";
+import { readProcessStartedAt } from "../serverRuntimeState.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
 
 /** How often running commands are checked; tests shorten it. */
@@ -65,13 +70,54 @@ const RESULT_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
+/**
+ * More than half the commands that ran within this window lost is a wave. It goes on while each
+ * loss comes within this window of the one before, and is logged as one warning.
+ */
+const WAVE_WINDOW = Duration.minutes(1);
+/**
+ * The waves as the database holds them, rewritten whenever one changes. A wave lasts as long as a
+ * record it holds, which is RETENTION after its command's end was delivered.
+ */
+export const LOSS_LOG_FILE = "command-losses.ndjson";
 const COMMAND_DRIVER = ProviderDriverKind.make("command");
 const TRIMMED_MARKER = "[CodeShip removed earlier output to keep this log small]\n";
-// Win32_ProcessStartup's Create_Unicode_Environment; without it the block is ANSI.
+// Win32_ProcessStartup's Create_Unicode_Environment (without it the block is ANSI).
 const CREATE_UNICODE_ENVIRONMENT = 0x400;
-// cmd expands %ERRORLEVEL% to a variable of that name before the exit code, so the command's own
-// one reaches command.ps1 under this name and the script puts it back.
-const COMMAND_ERRORLEVEL = "T3CODE_COMMAND_ERRORLEVEL";
+// Win32_ProcessStartup's ShowWindow as SW_HIDE: the wrapper's console, which only it uses, opens
+// no window. Windows PowerShell started with no console at all (Detached_Process) exits at once.
+const SW_HIDE = 0;
+
+// Runs command.ps1 in a new console with no window, which the command and what it starts share, so
+// no console event they get (Ctrl+C, Ctrl+Break, that console closing) reaches the wrapper, which
+// outlives them to write the exit status; each rename makes its file appear whole.
+const WINDOWS_WRAPPER = [
+  "$ErrorActionPreference = 'Stop'",
+  "$code = 1",
+  "function Write-T3File($name, $value) {",
+  "  $file = Join-Path $PSScriptRoot $name",
+  `  Set-Content -LiteralPath "$file.tmp" -Value $value`,
+  `  Move-Item -Force -LiteralPath "$file.tmp" -Destination $file`,
+  "}",
+  "try {",
+  `  Write-T3File '${PID_FILE}' $PID`,
+  "  $system = [Environment]::SystemDirectory",
+  "  $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'cmd.exe'))",
+  // cmd only appends the output of PowerShell and everything it starts to the log. Input is NUL,
+  // as /dev/null elsewhere: a command that reads it ends instead of waiting on the hidden console.
+  `  $start.Arguments = '/d /s /c ""' + (Join-Path $system 'WindowsPowerShell\\v1.0\\powershell.exe') + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'command.ps1') + '" < NUL >> "' + (Join-Path $PSScriptRoot '${LOG_FILE}') + '" 2>&1"'`,
+  "  $start.UseShellExecute = $false",
+  "  $start.CreateNoWindow = $true",
+  "  $command = [Diagnostics.Process]::Start($start)",
+  "  $command.WaitForExit()",
+  "  $code = $command.ExitCode",
+  "} catch {",
+  `  Add-Content -LiteralPath (Join-Path $PSScriptRoot '${LOG_FILE}') -Value "CodeShip could not run the command: $_"`,
+  "} finally {",
+  `  Write-T3File '${STATUS_FILE}' $code`,
+  "}",
+  "",
+].join("\r\n");
 
 // Names itself first, then runs the command and outlives it to write its exit status; each rename
 // makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
@@ -110,6 +156,103 @@ interface CommandRunRow {
   readonly deadline_at: string;
   readonly ended_at: string | null;
   readonly delivered_at: string | null;
+  /** The last check that found its process alive, written about once a minute while it runs. */
+  readonly last_alive_at: string | null;
+  /** What the last probe of its pid that did not find it alive reported. */
+  readonly probe_error: string | null;
+  readonly lost_reason: LostReason | null;
+  /** Its output's tail when it was lost. */
+  readonly lost_output: string | null;
+}
+
+/**
+ * Why a command counts as lost: its record names no process, its process is gone, the machine
+ * restarted since it started, or its pid now names a later process.
+ */
+type LostReason = "no-pid" | "gone" | "rebooted" | "pid-reused";
+
+/** One line of the losses log: the commands lost together, and how many still ran when it began. */
+const LossWave = Schema.fromJsonString(
+  Schema.Struct({
+    id: Schema.String,
+    time: Schema.String,
+    lost: Schema.Number,
+    running: Schema.Number,
+    runs: Schema.Array(
+      Schema.Struct({
+        taskId: Schema.String,
+        threadId: Schema.String,
+        pid: Schema.NullOr(Schema.Number),
+        lostReason: Schema.NullOr(Schema.String),
+        probeError: Schema.NullOr(Schema.String),
+        startedAt: Schema.String,
+        lastAliveAt: Schema.NullOr(Schema.String),
+        endedAt: Schema.NullOr(Schema.String),
+      }),
+    ),
+  }),
+);
+const encodeLossWave = Schema.encodeEffect(LossWave);
+
+type LossEvidenceRow = Pick<
+  CommandRunRow,
+  | "task_id"
+  | "thread_id"
+  | "pid"
+  | "lost_reason"
+  | "probe_error"
+  | "started_at"
+  | "last_alive_at"
+  | "ended_at"
+>;
+
+/** What the losses log keeps of each lost command. */
+const lossEvidence = (row: LossEvidenceRow) => ({
+  taskId: row.task_id,
+  threadId: row.thread_id,
+  pid: row.pid,
+  lostReason: row.lost_reason,
+  probeError: row.probe_error,
+  startedAt: row.started_at,
+  lastAliveAt: row.last_alive_at,
+  endedAt: row.ended_at,
+});
+
+/**
+ * Places the losses no wave holds yet, oldest first. One that comes within WAVE_WINDOW after the
+ * latest loss of the last wave joins it. The others wait, and those of the WAVE_WINDOW up to one
+ * start a wave when they are more than half of `commandsAt` it, the commands that ran in that time.
+ */
+export const placeLosses = <L extends { readonly at: number }>(
+  lastLossAt: number | undefined,
+  losses: ReadonlyArray<L>,
+  commandsAt: (at: number) => number,
+) => {
+  const window = Duration.toMillis(WAVE_WINDOW);
+  const joining: Array<L> = [];
+  const waves: Array<{ readonly at: number; readonly losses: Array<L> }> = [];
+  let waiting: Array<L> = [];
+  let latest = lastLossAt;
+  for (const loss of [...losses].sort((a, b) => a.at - b.at)) {
+    if (latest !== undefined && loss.at >= latest && loss.at - latest <= window) {
+      (waves.at(-1)?.losses ?? joining).push(loss);
+      latest = loss.at;
+      continue;
+    }
+    waiting.push(loss);
+    const recent = waiting.filter((other) => other.at > loss.at - window);
+    if (2 * recent.length > commandsAt(loss.at)) {
+      waves.push({ at: loss.at, losses: recent });
+      waiting = waiting.filter((other) => other.at <= loss.at - window);
+      latest = loss.at;
+    }
+  }
+  return { joining, waves, waiting };
+};
+
+interface Loss {
+  readonly lost_reason: LostReason;
+  readonly probe_error: string | null;
 }
 
 /**
@@ -144,13 +287,35 @@ class CommandLaunchError extends Schema.TaggedError<CommandLaunchError>()("Comma
 const failure = (code: OrchestratorMcpFailure["code"], message: string) =>
   new OrchestratorMcpFailure({ code, message });
 
+type CommandShellName = OrchestratorMcpRunCommandResult["shell"];
+
+/** What the tool description (`tools.ts`) says of each shell; the test keeps the two in step. */
+export const COMMAND_SHELL_LABELS: Readonly<Record<CommandShellName, string>> = {
+  powershell: "Windows PowerShell 5.1",
+  bash: "bash",
+  zsh: "zsh",
+  sh: "/bin/sh",
+};
+
 /**
- * bash or zsh as the user's own commands expect; anything else (fish, nu) gets /bin/sh. A path
- * with `=` would read as an assignment to `env`.
+ * Windows runs PowerShell, or Git Bash when asked for bash. Elsewhere bash or zsh as the user's own
+ * commands expect; anything else (fish, nu) gets /bin/sh, and bash comes from PATH when the user's
+ * shell is not bash. A path with `=` would read as an assignment to `env`.
  */
-const posixShell = (env: NodeJS.ProcessEnv) => {
-  const shell = env.SHELL;
-  return shell !== undefined && /^\/(?:[^=]*\/)?(?:ba|z)sh$/.test(shell) ? shell : "/bin/sh";
+export const resolveCommandShell = (
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  requested: OrchestratorMcpRunCommandInput["shell"],
+): { readonly name: CommandShellName; readonly path: string } => {
+  if (platform === "win32") {
+    return requested === "bash"
+      ? { name: "bash", path: "bash.exe" }
+      : { name: "powershell", path: "powershell.exe" };
+  }
+  const match = env.SHELL === undefined ? null : /^\/(?:[^=]*\/)?(ba|z)sh$/.exec(env.SHELL);
+  if (requested === "bash") return { name: "bash", path: match?.[1] === "ba" ? match[0] : "bash" };
+  if (match === null) return { name: "sh", path: "/bin/sh" };
+  return { name: match[1] === "ba" ? "bash" : "zsh", path: match[0] };
 };
 
 /** The options and functions bash, /bin/sh on macOS and many Linux systems, reads from its environment. */
@@ -185,45 +350,83 @@ const posixLaunchEnvironment = (
   return { env, prefix: envArgs.length === 0 ? [] : ["/usr/bin/env", ...envArgs] };
 };
 
+const GIT_BASH_NAMES = ["bash", "sh"].flatMap((name) => [
+  { name, exe: `${name}.exe` },
+  { name: `${name}.exe`, exe: `${name}.exe` },
+]);
+
+const noGitBash = (name: string) =>
+  escapePowerShellStringLiteral(
+    `${name}: no Git Bash found: no bin\\bash.exe in the install of the git on PATH, in Program Files\\Git or in LOCALAPPDATA\\Programs\\Git. Install Git for Windows (https://git-scm.com/download/win); WSL's bash runs through wsl.`,
+  );
+
+// System32's bash.exe is WSL's: no node, no `C:/` paths. Sets $t3GitBash to the bin folder of Git
+// for Windows, whose bash.exe sets up the PATH its own tools need.
+const FIND_GIT_BASH = [
+  "$t3GitBash = & {",
+  WINDOWS_PROCESS_TREE_FUNCTIONS,
+  "  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1",
+  "  if ($git) {",
+  // --exec-path names the install behind a launcher or shim; GIT_EXEC_PATH would replace it. A git
+  // that cannot answer leaves the standard folders, and the error below names where it looked.
+  "    try {",
+  "      $start = [Diagnostics.ProcessStartInfo]::new($git.Path, '--exec-path')",
+  "      $start.UseShellExecute = $false",
+  "      $start.RedirectStandardOutput = $true",
+  "      $start.StandardOutputEncoding = [Text.Encoding]::UTF8",
+  "      $start.EnvironmentVariables.Remove('GIT_EXEC_PATH')",
+  "      $run = [Diagnostics.Process]::Start($start)",
+  "      $out = $run.StandardOutput.ReadToEndAsync()",
+  "      if ($run.WaitForExit(10000)) {",
+  // <install>\<build>\libexec\git-core
+  "        if ($run.ExitCode -eq 0 -and $out.Wait(1000) -and $out.Result.Trim()) { [IO.Path]::GetFullPath([IO.Path]::Combine($out.Result.Trim(), '..', '..', '..')) }",
+  "      } else {",
+  "        [Console]::Error.WriteLine(\"CodeShip stopped 'git --exec-path' ($($git.Path)), which did not answer within 10 s, and looks for Git Bash in the standard install folders.\")",
+  // A shim such as git.cmd runs git in a child process, which stopping the shim alone leaves running.
+  "        $made = Ms $run.StartTime",
+  "        Stop-T3ProcessTree $run.Id $made $made $made",
+  "      }",
+  '    } catch { [Console]::Error.WriteLine("CodeShip could not ask git where Git Bash is: $_") }',
+  "  }",
+  "  foreach ($folder in $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)}) { if ($folder) { [IO.Path]::Combine($folder, 'Git') } }",
+  "  if ($env:LOCALAPPDATA) { [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Git') }",
+  "} | ForEach-Object { [IO.Path]::Combine($_, 'bin') } | Where-Object { [IO.File]::Exists([IO.Path]::Combine($_, 'bash.exe')) } | Select-Object -First 1",
+];
+
+// A PowerShell command's `bash` and `sh` are aliases of Git Bash's (a function would lose a `--`
+// argument), or an error naming it. PATH stays as it is, since Git's bin also holds a git.exe that
+// would replace the command's `git`; a program the command starts that runs `bash` itself still
+// gets WSL's.
+const GIT_BASH_ALIASES = [
+  "if ($t3GitBash) {",
+  ...GIT_BASH_NAMES.map(
+    ({ name, exe }) =>
+      `  Set-Alias -Name '${name}' -Value ([IO.Path]::Combine($t3GitBash, '${exe}'))`,
+  ),
+  "} else {",
+  ...GIT_BASH_NAMES.map(
+    ({ name }) => `  function ${name} { [Console]::Error.WriteLine(${noGitBash(name)}); exit 127 }`,
+  ),
+  "}",
+];
+
 /**
- * Walks `ParentProcessId` from the wrapper, which outlives it (a named Job object does not).
- * Only processes created after the command started count; if the pid now names another process,
- * only children created before it do.
+ * Runs a bash command's script in Git Bash. PowerShell 5.1's call operator drops a `"` inside an
+ * argument, while Process.Start passes them as written: here only the script's path, in double
+ * quotes, which Cygwin reads literally. With forward slashes, which Cygwin also reads as a Windows
+ * path, no backslash can read as an escape (a `\\server` path's would).
  */
-const windowsStopScript = (pid: number, sinceMs: number, identityMs: number | null) =>
-  [
-    "$ErrorActionPreference = 'Stop'",
-    "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
-    `$root = ${pid}; $since = ${sinceMs}; $identity = ${identityMs ?? -1}`,
-    "for ($pass = 0; $pass -lt 5; $pass++) {",
-    "  $all = @(Get-CimInstance Win32_Process)",
-    "  $upper = [long]::MaxValue",
-    "  $targets = @{}",
-    "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
-    "  if ($holder) {",
-    "    $made = Ms $holder.CreationDate",
-    "    if ($identity -ge 0 -and [math]::Abs($made - $identity) -gt 1000) { $upper = $made } else { $targets[$root] = $true }",
-    "  }",
-    "  $queue = New-Object System.Collections.Queue",
-    "  $queue.Enqueue($root)",
-    "  $seen = @{ $root = $true }",
-    "  while ($queue.Count -gt 0) {",
-    "    $id = $queue.Dequeue()",
-    "    foreach ($child in $all) {",
-    "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
-    "      $made = Ms $child.CreationDate",
-    "      $limit = if ($id -eq $root) { $upper } else { [long]::MaxValue }",
-    "      if ($made -ge $since -and $made -lt $limit) {",
-    "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $true; $queue.Enqueue($child.ProcessId)",
-    "      }",
-    "    }",
-    "  }",
-    "  if ($targets.Count -eq 0) { break }",
-    "  foreach ($id in $targets.Keys) {",
-    "    try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { throw } }",
-    "  }",
-    "}",
-  ].join("\n");
+const runInGitBash = (scriptPath: string) => [
+  ...FIND_GIT_BASH,
+  `if (-not $t3GitBash) { [Console]::Error.WriteLine(${noGitBash("bash")}); exit 127 }`,
+  "try {",
+  `  $t3Start = [Diagnostics.ProcessStartInfo]::new([IO.Path]::Combine($t3GitBash, 'bash.exe'), ${escapePowerShellStringLiteral(`"${scriptPath.replaceAll("\\", "/")}"`)})`,
+  "  $t3Start.UseShellExecute = $false",
+  "  $t3Bash = [Diagnostics.Process]::Start($t3Start)",
+  '} catch { [Console]::Error.WriteLine("CodeShip could not start Git Bash: $_"); exit 1 }',
+  "$t3Bash.WaitForExit()",
+  "exit $t3Bash.ExitCode",
+];
 
 /** The last lines of a log, starting at a whole line when the start was cut. */
 const decodeTail = (bytes: Uint8Array, cut: boolean) => {
@@ -304,14 +507,24 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** Whether `pid` is still the process this command started, not a later one reusing it. */
-  const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (row: CommandRunRow) {
-    if (row.pid === null || !isProcessAlive(row.pid) || (yield* rebootedSince(row))) return false;
-    if (row.process_started_at === null) return true;
+  /** Why `pid` no longer names the process this command started; undefined while it does. */
+  const lossOf = Effect.fn("CommandRunner.lossOf")(function* (
+    row: CommandRunRow,
+  ): Effect.fn.Return<Loss | undefined> {
+    const probe_error = row.probe_error;
+    if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
+    if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
+    const probe = probeProcess(row.pid);
+    if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
+    if (row.process_started_at === null) return undefined;
     const startedAt = yield* startedAtOf(row.pid);
     // ps reports whole seconds. Unknown identity stays conservative.
-    return startedAt === undefined || Math.abs(startedAt - row.process_started_at) <= 1_000;
+    return startedAt === undefined || Math.abs(startedAt - row.process_started_at) <= 1_000
+      ? undefined
+      : { lost_reason: "pid-reused", probe_error };
   });
+  const isSameProcess = (row: CommandRunRow) =>
+    lossOf(row).pipe(Effect.map((loss) => loss === undefined));
 
   /** SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period. */
   const killGroup = Effect.fn("CommandRunner.killGroup")(function* (pid: number) {
@@ -334,7 +547,7 @@ const make = Effect.gen(function* () {
 
   /**
    * Stops the command and everything it started: its process group, or on Windows what descends
-   * from its wrapper's pid (`windowsStopScript`), also after the wrapper ended. A group outlives
+   * from its wrapper's pid (`windowsStopTreeArgs`), also after the wrapper ended. A group outlives
    * its wrapper and its id is not reused while any member lives, so short of a reboot, only a live
    * process reusing the wrapper's pid means nothing of the group is left.
    */
@@ -347,12 +560,13 @@ const make = Effect.gen(function* () {
         yield* processRunner
           .run({
             command: "powershell.exe",
-            args: [
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              windowsStopScript(pid, Date.parse(row.started_at), row.process_started_at),
-            ],
+            args: windowsStopTreeArgs({
+              pid,
+              since: Date.parse(row.started_at),
+              ...(row.process_started_at === null
+                ? {}
+                : { created: { from: row.process_started_at, to: row.process_started_at } }),
+            }),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
           })
@@ -367,16 +581,41 @@ const make = Effect.gen(function* () {
       UPDATE command_runs
       SET pid = ${row.pid}, process_started_at = ${row.process_started_at}, unit = ${row.unit},
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
-        delivered_at = ${row.delivered_at}
+        delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
+        probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
+        lost_output = ${row.lost_output}
       WHERE task_id = ${row.task_id}
     `;
 
-  /** Records a watched command's new state; one that is delivered is no longer watched. */
-  const settle = Effect.fn("CommandRunner.settle")(function* (row: CommandRunRow) {
-    yield* writeRow(row);
+  /** A command is watched until its end is delivered. */
+  const remember = (row: CommandRunRow) => {
     if (row.delivered_at === null) watched.set(row.task_id, row);
     else watched.delete(row.task_id);
+  };
+
+  /** Records a watched command's new state. */
+  const settle = Effect.fn("CommandRunner.settle")(function* (row: CommandRunRow) {
+    yield* writeRow(row);
+    remember(row);
   });
+
+  const readTail = (row: CommandRunRow) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fs.open(logPathOf(row), { flag: "r" });
+        const size = Number((yield* file.stat).size);
+        const start = Math.max(0, size - RESULT_TAIL_BYTES);
+        yield* file.seek(BigInt(start), "start");
+        const bytes = yield* file.readAlloc(size - start);
+        return Option.match(bytes, {
+          onNone: () => "",
+          onSome: (read) => decodeTail(read, start > 0),
+        });
+      }),
+    ).pipe(
+      Effect.map((tail) => tail.trimEnd()),
+      Effect.orElseSucceed(() => ""),
+    );
 
   const resultText = Effect.fn("CommandRunner.resultText")(function* (row: CommandRunRow) {
     const elapsed = formatDuration(
@@ -391,20 +630,7 @@ const make = Effect.gen(function* () {
             ? `Ended after ${elapsed} with an unreadable exit status.`
             : `Exited with code ${row.exit_code} after ${elapsed}.`;
     const logPath = logPathOf(row);
-    const tail = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const file = yield* fs.open(logPath, { flag: "r" });
-        const size = Number((yield* file.stat).size);
-        const start = Math.max(0, size - RESULT_TAIL_BYTES);
-        yield* file.seek(BigInt(start), "start");
-        const bytes = yield* file.readAlloc(size - start);
-        return Option.match(bytes, {
-          onNone: () => "",
-          onSome: (read) => decodeTail(read, start > 0),
-        });
-      }),
-    ).pipe(Effect.orElseSucceed(() => ""));
-    const output = tail.trimEnd();
+    const output = yield* readTail(row);
     return [
       ending,
       output === "" ? "No output." : `Last output:\n${output}`,
@@ -487,6 +713,199 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.ignore({ log: true }));
   });
 
+  /** Set while the losses log may not show the waves the database holds. */
+  let logStale = true;
+  /** Set once a write of the log fails and until one succeeds, so the failure is logged once. */
+  let saveFailing = false;
+  const lossLogPath = path.join(logsDir, LOSS_LOG_FILE);
+
+  /** Writes the losses log from the waves in the database, whole, so no line is torn. */
+  const writeLossLog = Effect.gen(function* () {
+    const rows = yield* sql<
+      LossEvidenceRow & {
+        readonly wave_id: string;
+        readonly wave_started_at: string;
+        readonly wave_running: number;
+      }
+    >`
+      SELECT w.wave_id, w.started_at AS wave_started_at, w.running AS wave_running, r.task_id,
+        r.thread_id, r.pid, r.lost_reason, r.probe_error, r.started_at, r.last_alive_at,
+        r.ended_at
+      FROM command_loss_waves w JOIN command_runs r ON r.loss_wave_id = w.wave_id
+      ORDER BY w.started_at, w.wave_id, r.ended_at, r.task_id
+    `;
+    const waves = new Map<
+      string,
+      {
+        readonly time: string;
+        readonly running: number;
+        readonly runs: Array<ReturnType<typeof lossEvidence>>;
+      }
+    >();
+    for (const row of rows) {
+      const wave = waves.get(row.wave_id) ?? {
+        time: row.wave_started_at,
+        running: row.wave_running,
+        runs: [],
+      };
+      wave.runs.push(lossEvidence(row));
+      waves.set(row.wave_id, wave);
+    }
+    if (waves.size === 0) return yield* fs.remove(lossLogPath, { force: true });
+    const lines = yield* Effect.forEach(waves, ([id, wave]) =>
+      encodeLossWave({ id, ...wave, lost: wave.runs.length }),
+    );
+    const temp = `${lossLogPath}.tmp`;
+    yield* fs.makeDirectory(logsDir, { recursive: true });
+    yield* fs.writeFileString(temp, `${lines.join("\n")}\n`);
+    yield* fs.rename(temp, lossLogPath);
+  });
+
+  /**
+   * Ends a command gone without an exit status, keeping what shows how: its output before
+   * anything is stopped, and when it was last seen alive. What it started is not left running.
+   */
+  const recordLoss = Effect.fn("CommandRunner.recordLoss")(function* (
+    row: CommandRunRow,
+    loss: Loss,
+  ) {
+    const output = yield* readTail(row);
+    yield* killTree(row);
+    const endedAt = yield* nowIso;
+    const lost: CommandRunRow = {
+      ...row,
+      ...loss,
+      status: "lost",
+      ended_at: endedAt,
+      lost_output: output === "" ? null : output,
+    };
+    // With the loss, so a server that stops before it is placed leaves it for the next one.
+    yield* sql.withTransaction(
+      writeRow(lost).pipe(
+        Effect.andThen(
+          sql`UPDATE command_runs SET loss_unplaced = 1 WHERE task_id = ${row.task_id}`,
+        ),
+      ),
+    );
+    remember(lost);
+    return lost;
+  });
+
+  const isoAt = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+
+  /**
+   * Places the losses no wave holds yet (placeLosses) from the database alone, each against the
+   * commands that ran when it was lost, so a restart neither misses a wave nor starts one twice.
+   * Warns once for each wave that starts.
+   */
+  const placeWaves = Effect.fn("CommandRunner.placeWaves")(function* (
+    unplaced: ReadonlyArray<{ readonly task_id: string; readonly ended_at: string }>,
+  ) {
+    const window = Duration.toMillis(WAVE_WINDOW);
+    const losses = unplaced.map((row) => ({ taskId: row.task_id, at: Date.parse(row.ended_at) }));
+    const times = losses.map((loss) => loss.at);
+    const [lastWave] = yield* sql<{ readonly wave_id: string; readonly latest: string }>`
+      SELECT loss_wave_id AS wave_id, MAX(ended_at) AS latest FROM command_runs
+      WHERE loss_wave_id IS NOT NULL
+      GROUP BY loss_wave_id ORDER BY latest DESC LIMIT 1
+    `;
+    const spans = (yield* sql<{ readonly started_at: string; readonly ended_at: string | null }>`
+      SELECT started_at, ended_at FROM command_runs
+      WHERE started_at <= ${isoAt(Math.max(...times))}
+        AND (ended_at IS NULL OR ended_at > ${isoAt(Math.min(...times) - window)})
+    `).map((row) => ({
+      start: Date.parse(row.started_at),
+      end: row.ended_at === null ? Number.POSITIVE_INFINITY : Date.parse(row.ended_at),
+    }));
+    const runningBetween = (from: number, to: number) =>
+      spans.filter((span) => span.start <= to && span.end > from).length;
+    const commandsAt = (at: number) => runningBetween(at - window, at);
+    const { joining, waves, waiting } = placeLosses(
+      lastWave === undefined ? undefined : Date.parse(lastWave.latest),
+      losses,
+      commandsAt,
+    );
+    const started = yield* Effect.forEach(waves, (wave) =>
+      random
+        .uuidV4()
+        .pipe(Effect.map((id) => ({ ...wave, id, running: runningBetween(wave.at, wave.at) }))),
+    );
+    const tooOld = DateTime.toEpochMillis(yield* DateTime.now) - window;
+    const placed = [
+      ...joining,
+      ...waves.flatMap((wave) => wave.losses),
+      ...waiting.filter((loss) => loss.at <= tooOld),
+    ];
+    if (placed.length === 0) return;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if (lastWave !== undefined && joining.length > 0) {
+          yield* sql`
+            UPDATE command_runs SET loss_wave_id = ${lastWave.wave_id}
+            WHERE task_id IN ${sql.in(joining.map((loss) => loss.taskId))}
+          `;
+        }
+        for (const wave of started) {
+          yield* sql`
+            INSERT INTO command_loss_waves (wave_id, started_at, running)
+            VALUES (${wave.id}, ${isoAt(wave.at)}, ${wave.running})
+          `;
+          yield* sql`
+            UPDATE command_runs SET loss_wave_id = ${wave.id}
+            WHERE task_id IN ${sql.in(wave.losses.map((loss) => loss.taskId))}
+          `;
+        }
+        yield* sql`
+          UPDATE command_runs SET loss_unplaced = 0
+          WHERE task_id IN ${sql.in(placed.map((loss) => loss.taskId))}
+        `;
+      }),
+    );
+    yield* Effect.forEach(started, (wave) =>
+      Effect.logWarning("command-runner.loss-wave", {
+        lost: wave.losses.length,
+        commands: commandsAt(wave.at),
+        running: wave.running,
+        filePath: lossLogPath,
+      }),
+    );
+    if (joining.length > 0 || started.length > 0) logStale = true;
+  });
+
+  /**
+   * Places the losses no wave holds yet and brings the losses log up to date; a write that fails
+   * is tried again at the next pass.
+   */
+  const noteWave = Effect.fn("CommandRunner.noteWave")(function* () {
+    const unplaced = yield* sql<{ readonly task_id: string; readonly ended_at: string }>`
+      SELECT task_id, ended_at FROM command_runs WHERE loss_unplaced = 1
+    `;
+    if (unplaced.length > 0) yield* placeWaves(unplaced);
+    if (!logStale) return;
+    yield* writeLossLog.pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          logStale = false;
+          saveFailing = false;
+        }),
+      ),
+      Effect.catchCause((cause) =>
+        saveFailing
+          ? Effect.void
+          : Effect.logWarning("command-runner.loss-log-write-failed", {
+              filePath: lossLogPath,
+              cause,
+            }).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  saveFailing = true;
+                }),
+              ),
+            ),
+      ),
+    );
+  });
+
   /** Moves a running command on: its end, its deadline, or its process gone without a status. */
   const check = Effect.fn("CommandRunner.check")(function* (row: CommandRunRow) {
     // stopForTask is still stopping it, and records it once it has.
@@ -499,6 +918,12 @@ const make = Effect.gen(function* () {
           return settle(next).pipe(Effect.andThen(deliver(next)));
         }),
       );
+    const lose = Effect.fn("CommandRunner.lose")(function* (loss: Loss) {
+      // Its wrapper writes the status just before it exits.
+      const late = yield* readExitStatus(row);
+      if (late !== undefined) return yield* ended("exited", late.code, late.endedAt);
+      yield* deliver(yield* recordLoss(row, loss));
+    });
     const exit = yield* readExitStatus(row);
     if (exit !== undefined) {
       yield* trimLog(row);
@@ -509,13 +934,31 @@ const make = Effect.gen(function* () {
       yield* killTree(row);
       return yield* ended("timed_out", null);
     }
-    if (row.pid === null || !isProcessAlive(row.pid)) {
-      // Its wrapper writes the status just before it exits.
-      const late = yield* readExitStatus(row);
-      if (late !== undefined) return yield* ended("exited", late.code, late.endedAt);
-      // Its wrapper was killed; what it started is not left running unwatched.
-      yield* killTree(row);
-      return yield* ended("lost", null);
+    if (row.pid === null) return yield* lose({ lost_reason: "no-pid", probe_error: null });
+    const probe = probeProcess(row.pid);
+    if (probe.state === "gone") {
+      return yield* lose({ lost_reason: "gone", probe_error: probe.code });
+    }
+    if (probe.state === "unknown") {
+      // A probe that cannot tell proves nothing gone, so the next check asks again.
+      if (row.probe_error !== probe.code) {
+        yield* Effect.logWarning("command-runner.probe-failed", {
+          taskId: row.task_id,
+          pid: row.pid,
+          code: probe.code,
+        });
+        yield* settle({ ...row, probe_error: probe.code });
+      }
+    } else {
+      // Written once a wall-clock minute, for the next server; a loss writes the exact time.
+      const seen: CommandRunRow = { ...row, last_alive_at: yield* nowIso };
+      const minuteOf = (at: string | null) =>
+        at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
+      if (minuteOf(row.last_alive_at) === minuteOf(seen.last_alive_at)) {
+        watched.set(row.task_id, seen);
+      } else {
+        yield* settle(seen);
+      }
     }
     if (!windows) yield* trimLog(row);
   });
@@ -529,7 +972,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       ),
-    ),
+    ).pipe(Effect.andThen(noteWave())),
   );
 
   /**
@@ -622,7 +1065,7 @@ const make = Effect.gen(function* () {
    */
   const launch = Effect.fn("CommandRunner.launch")(function* (
     directory: string,
-    command: string,
+    { command, shell }: Pick<OrchestratorMcpRunCommandInput, "command" | "shell">,
     cwd: string,
     /** The command's whole environment, as the calling agent's own shell commands get it. */
     commandEnv: Readonly<Record<string, string>>,
@@ -646,7 +1089,7 @@ const make = Effect.gen(function* () {
           statusPath,
           path.join(directory, PID_FILE),
           ...prefix,
-          posixShell(env),
+          resolveCommandShell(platform, env, shell).path,
           "-c",
           command,
         ],
@@ -657,59 +1100,32 @@ const make = Effect.gen(function* () {
       const pid = yield* spawnDetached(scoped.command, scoped.args, cwd, env);
       return { pid, unit: scoped.unit ?? null };
     }
-    // Win32_Process.Create parents the command under WMI, outside this server's job and tree. Its
+    // Win32_Process.Create parents the wrapper under WMI, outside this server's job and tree. Its
     // startup block is the command's whole environment, which the launcher reads from stdin so no
-    // value reaches the disk. PowerShell first names its cmd parent, the process this command is
-    // known by, and cmd writes the status once PowerShell exits.
+    // value reaches the disk.
     const scriptPath = path.join(directory, "command.ps1");
-    const runPath = path.join(directory, "run.cmd");
-    // The environment merged spellings Windows reads as one, and ERRORLEVEL has no letter it folds
-    // beyond ASCII, so there is at most one.
-    const errorLevel = Object.entries(commandEnv).find(
-      ([name]) => asciiUpperCase(name) === "ERRORLEVEL",
-    );
-    const startupEnv =
-      errorLevel === undefined
-        ? commandEnv
-        : overrideEnvironment(
-            Object.fromEntries(
-              Object.entries(commandEnv).filter(([name]) => name !== errorLevel[0]),
-            ),
-            { [COMMAND_ERRORLEVEL]: errorLevel[1] },
-            "win32",
-          );
+    const wrapperPath = path.join(directory, "run.ps1");
+    const bashScriptPath = path.join(directory, "command.sh");
+    if (shell === "bash") yield* fs.writeFileString(bashScriptPath, command);
     yield* fs.writeFileString(
       scriptPath,
       [
-        "﻿$ErrorActionPreference = 'Continue'",
-        `$t3PidFile = Join-Path $PSScriptRoot '${PID_FILE}'`,
-        `(Get-CimInstance Win32_Process -Filter "ProcessId = $PID").ParentProcessId | Set-Content -LiteralPath "$t3PidFile.tmp"`,
-        `Move-Item -Force -LiteralPath "$t3PidFile.tmp" -Destination $t3PidFile`,
-        ...(errorLevel === undefined
-          ? []
+        "\uFEFF$ErrorActionPreference = 'Continue'",
+        ...(shell === "bash"
+          ? runInGitBash(bashScriptPath)
           : [
-              `[Environment]::SetEnvironmentVariable(${escapePowerShellStringLiteral(errorLevel[0])}, $env:${COMMAND_ERRORLEVEL}); Remove-Item Env:${COMMAND_ERRORLEVEL} -ErrorAction Ignore`,
+              ...FIND_GIT_BASH,
+              ...GIT_BASH_ALIASES,
+              command,
+              "$t3Ok = $?",
+              "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
+              "if (-not $t3Ok) { exit 1 }",
+              "exit 0",
             ]),
-        command,
-        "$t3Ok = $?",
-        "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
-        "if (-not $t3Ok) { exit 1 }",
-        "exit 0",
         "",
       ].join("\r\n"),
     );
-    yield* fs.writeFileString(
-      runPath,
-      [
-        "@echo off",
-        // PowerShell's path is the launcher's argument, since cmd looks in the folder and the agent's
-        // PATH before System32 and the command's environment may move or drop SystemRoot.
-        `"%~1" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0command.ps1" >> "%~dp0${LOG_FILE}" 2>&1`,
-        `> "%~dp0${STATUS_FILE}.tmp" echo %ERRORLEVEL%`,
-        `move /y "%~dp0${STATUS_FILE}.tmp" "%~dp0${STATUS_FILE}" > nul`,
-        "",
-      ].join("\r\n"),
-    );
+    yield* fs.writeFileString(wrapperPath, WINDOWS_WRAPPER);
     yield* fs.writeFileString(logPath, "");
     const created = yield* processRunner.run({
       command: "powershell.exe",
@@ -720,11 +1136,11 @@ const make = Effect.gen(function* () {
         // Windows folds names by a case table only it has, so the launcher keeps the last of the
         // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
         // like a member (Values) hides that member in PowerShell.
-        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${escapePowerShellStringLiteral(`cmd.exe /d /s /c ""${runPath}" "`)} + $powershell + '""'; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId`,
+        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId`,
       ],
       // Base64, since PowerShell decodes stdin with the console code page.
       stdin: Buffer.from(
-        Object.entries(startupEnv)
+        Object.entries(commandEnv)
           .map(([name, value]) => `${name}=${value}`)
           .join("\0"),
         "utf8",
@@ -827,6 +1243,11 @@ const make = Effect.gen(function* () {
       const logPath = path.join(directory, LOG_FILE);
       const result = (taskId: NodeId): OrchestratorMcpRunCommandResult => ({
         taskId,
+        shell: resolveCommandShell(
+          platform,
+          windows ? {} : posixLaunchEnvironment(hostCommandEnv, commandEnv).env,
+          input.shell,
+        ).name,
         logPath,
         timeoutMinutes,
         next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
@@ -940,6 +1361,10 @@ const make = Effect.gen(function* () {
                   deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
                   ended_at: null,
                   delivered_at: null,
+                  last_alive_at: null,
+                  probe_error: null,
+                  lost_reason: null,
+                  lost_output: null,
                 };
                 // Recorded before it starts, so a server that stops in between leaves the next one
                 // a record to adopt it by, never a command nothing watches.
@@ -965,7 +1390,7 @@ const make = Effect.gen(function* () {
                     `Could not start the command: ${recordedRow.failure.message}`,
                   );
                 }
-                const started = yield* launch(directory, input.command, cwd, commandEnv).pipe(
+                const started = yield* launch(directory, input, cwd, commandEnv).pipe(
                   Effect.result,
                 );
                 if (started._tag === "Failure") {
@@ -982,6 +1407,7 @@ const make = Effect.gen(function* () {
                   pid,
                   process_started_at: (yield* startedAtOf(pid)) ?? null,
                   unit,
+                  last_alive_at: yield* nowIso,
                 };
                 watched.set(taskId, launched);
                 // Its pid file names it to the next server if this write is lost.
@@ -1026,7 +1452,7 @@ const make = Effect.gen(function* () {
     // It started before it wrote the file; a later process reusing the pid did not. ps reports
     // whole seconds.
     if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
-      return row;
+      return { ...row, lost_reason: "pid-reused" as const };
     }
     const recovered: CommandRunRow = { ...row, pid, process_started_at: startedAt ?? null };
     yield* writeRow(recovered);
@@ -1072,12 +1498,12 @@ const make = Effect.gen(function* () {
       return;
     }
     // A pid reused by another process means this command ended while no server watched it.
-    if (yield* isSameProcess(row)) {
+    const loss = yield* lossOf(row);
+    if (loss === undefined) {
       watched.set(row.task_id, row);
       return;
     }
-    yield* killTree(row);
-    yield* settle({ ...row, status: "lost", ended_at: yield* nowIso });
+    yield* recordLoss(row, loss);
   });
 
   /**
@@ -1121,7 +1547,10 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Removes delivered commands, and folders left without a record, after RETENTION. */
+  /**
+   * Removes delivered commands, the waves left without one, and folders left without a record,
+   * after RETENTION.
+   */
   const prune = Effect.gen(function* () {
     const cutoff = DateTime.formatIso(DateTime.subtractDuration(yield* DateTime.now, RETENTION));
     const old = yield* sql<{ readonly task_id: string; readonly directory: string }>`
@@ -1136,6 +1565,19 @@ const make = Effect.gen(function* () {
           Effect.ignore({ log: true }),
         ),
     );
+    if (old.length > 0) {
+      // Under the lock, so a log write that read the removed records is followed by another.
+      yield* lock.withPermits(1)(
+        Effect.gen(function* () {
+          yield* sql`
+            DELETE FROM command_loss_waves WHERE wave_id NOT IN (
+              SELECT loss_wave_id FROM command_runs WHERE loss_wave_id IS NOT NULL
+            )
+          `;
+          logStale = true;
+        }),
+      );
+    }
     const recorded = new Set(
       (yield* sql<{ readonly directory: string }>`SELECT directory FROM command_runs`).map((row) =>
         path.basename(row.directory),
@@ -1188,12 +1630,10 @@ const make = Effect.gen(function* () {
             Effect.ensuring(Deferred.succeed(adopted, undefined)),
             Effect.ignoreCause({ log: true }),
           );
-        yield* Effect.forkScoped(
-          prune.pipe(
-            Effect.ignoreCause({ log: true }),
-            Effect.repeat(Schedule.spaced(RETENTION_INTERVAL)),
-          ),
-        );
+        // Before the first pass, which writes the losses log.
+        const pruned = prune.pipe(Effect.ignoreCause({ log: true }));
+        yield* pruned;
+        yield* Effect.forkScoped(pruned.pipe(Effect.delay(RETENTION_INTERVAL), Effect.forever));
         yield* watchOnce.pipe(
           Effect.ignoreCause({ log: true }),
           Effect.repeat(Schedule.spaced(watchInterval)),

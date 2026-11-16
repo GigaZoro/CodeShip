@@ -383,10 +383,10 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     openClient: limits.openClient,
     snapshot,
   });
-  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (creditId) =>
+  const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = (request) =>
     limits.signedIn.pipe(
       Effect.flatMap((present) =>
-        present ? consumeThroughLimitsLogin(creditId) : consumeThroughOwnHome(creditId),
+        present ? consumeThroughLimitsLogin(request) : consumeThroughOwnHome(request),
       ),
     );
   const removeLimitsLogin = limits.controller

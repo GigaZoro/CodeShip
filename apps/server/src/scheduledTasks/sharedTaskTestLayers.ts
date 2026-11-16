@@ -32,7 +32,7 @@ const layerNoPeersRan = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
       noWork: null,
       liveRunsElsewhere: [],
       unchecked: [],
-      unreadable: [],
+      otherVersion: [],
     }),
   claim: () => Effect.succeed({ answered: [], unchecked: [] }),
 });

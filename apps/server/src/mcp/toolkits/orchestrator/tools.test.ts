@@ -3,6 +3,9 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
+import { ORCHESTRATOR_MCP_COMMAND_SHELLS } from "@t3tools/contracts";
+
+import { COMMAND_SHELL_LABELS } from "../../../commandRunner/CommandRunner.ts";
 import { OrchestratorToolkit } from "./tools.ts";
 
 // Oversized page sizes clamp on decode, so the schema has no `maximum`; Codex also drops
@@ -17,15 +20,25 @@ it("states t3_thread_read page size limits in the parameter descriptions", () =>
   }
 });
 
-// Agents on Windows write POSIX syntax because their Bash tool is Git Bash; `&&` then fails in PowerShell 5.1.
-it("names the shell t3_command_run uses on each platform and how to chain on Windows", () => {
+// Agents on Windows write POSIX syntax because their Bash tool is Git Bash; `&&` then fails in
+// PowerShell 5.1, and a `"` inside `bash -c '...'` never reaches bash.
+it("names the shell t3_command_run uses on each platform and how to run POSIX syntax on Windows", () => {
   const description = OrchestratorToolkit.tools.t3_command_run.description ?? "";
   expect(description).toContain("bash or zsh on macOS and Linux");
   expect(description).toContain("Windows PowerShell 5.1");
   expect(description).toContain("no `&&` or `||`");
+  expect(description).toContain('`shell: "bash"`');
   expect(description).toContain("$LASTEXITCODE");
-  expect(description).toContain("WSL's bash");
-  expect(description).toContain("Git\\bin\\bash.exe");
+  expect(description).toContain("a `bash` or `sh` runs Git Bash");
+  expect(description).toContain("through `wsl`");
+});
+
+// The runner reports one of these in every result; the description has to name each.
+it("names every shell t3_command_run can report in its description", () => {
+  const description = OrchestratorToolkit.tools.t3_command_run.description ?? "";
+  for (const shell of ORCHESTRATOR_MCP_COMMAND_SHELLS) {
+    expect(description, shell).toContain(COMMAND_SHELL_LABELS[shell]);
+  }
 });
 
 it("refuses a t3_thread_update whose fields do not fit its action", () => {

@@ -22,8 +22,38 @@ export const ServerProviderUsageWindow = Schema.Struct({
   windowDurationMins: Schema.optional(NonNegativeInt),
   /** When the window was first seen at 100%; absent below 100% and from older servers. */
   exhaustedSince: Schema.optional(IsoDateTime),
+  /** The model a scoped window limits, by the provider's name for it (Claude's `Fable`). */
+  model: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
+
+/** What a banked reset clears: Codex resets are `full`; Claude grants say which limit they reset. */
+export const ServerProviderResetKind = Schema.Literals(["full", "weekly", "five_hour", "fable"]);
+export type ServerProviderResetKind = typeof ServerProviderResetKind.Type;
+
+/** One banked reset or grant, without the provider's id for it. */
+export const ServerProviderResetCredit = Schema.Struct({
+  program: TrimmedNonEmptyString,
+  /** Absent when the provider names only a total over its resets (Claude's held grants). */
+  kind: Schema.optional(ServerProviderResetKind),
+  status: Schema.optional(TrimmedNonEmptyString),
+  grantedAt: Schema.optional(IsoDateTime),
+  expiresAt: Schema.optional(IsoDateTime),
+  resetsLeft: Schema.optional(NonNegativeInt),
+  usableNow: Schema.optional(Schema.Boolean),
+  requiresLimit: Schema.optional(Schema.Boolean),
+  paused: Schema.optional(Schema.Boolean),
+});
+export type ServerProviderResetCredit = typeof ServerProviderResetCredit.Type;
+
+/** Paid usage beyond the plan: Codex credits, or Claude's extra usage. */
+export const ServerProviderUsageCredits = Schema.Struct({
+  /** What is left, in `currency` when it is money; absent when the provider gives no balance. */
+  balance: Schema.optional(TrimmedNonEmptyString),
+  currency: Schema.optional(TrimmedNonEmptyString),
+  unlimited: Schema.Boolean,
+});
+export type ServerProviderUsageCredits = typeof ServerProviderUsageCredits.Type;
 
 /** One kind of banked reset, such as Claude's weekly reset or its Fable-only reset. */
 export const ServerProviderResetCreditOption = Schema.Struct({
@@ -40,10 +70,31 @@ export const ServerProviderResetCredits = Schema.Struct({
   nextExpiresAt: Schema.optional(IsoDateTime),
   /** Pins hub redemption to the displayed credit, including retries from another client. */
   nextCreditId: Schema.optional(TrimmedNonEmptyString),
+  /** Each banked reset, when the provider lists them; it may list fewer than `availableCount`. */
+  credits: Schema.optional(ForwardCompatibleArray(ServerProviderResetCredit)),
   /** Present when resets differ in what they refill; redeem one by its `creditId`. */
   options: Schema.optional(ForwardCompatibleArray(ServerProviderResetCreditOption)),
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
+
+/** Which of Claude's reset programs the account's flags turn on. */
+export const ServerProviderResetPrograms = Schema.Struct({
+  /** Banked grants (`tengu_cedar_ember`), listed in `resetCredits`. */
+  granted: Schema.Boolean,
+  /** The weekly 5-hour reset (`tengu_nifty_lemur`), which Claude shows only at the 5-hour limit. */
+  weeklySession: Schema.Boolean,
+  /** When the weekly 5-hour reset is next available, as Claude said when it was last used. */
+  weeklySessionAvailableAt: Schema.optional(IsoDateTime),
+});
+export type ServerProviderResetPrograms = typeof ServerProviderResetPrograms.Type;
+
+/** Why `resetCredits` is absent although the account has banked resets to read. */
+export const ServerProviderResetCreditsError = Schema.Literals([
+  "signedOut",
+  "unrecognizedScreen",
+  "readFailed",
+]);
+export type ServerProviderResetCreditsError = typeof ServerProviderResetCreditsError.Type;
 
 /** Clear bars for unavailable accounts; retain last good bars after a failed probe. */
 export const ServerProviderUsageLimits = Schema.Struct({
@@ -52,7 +103,24 @@ export const ServerProviderUsageLimits = Schema.Struct({
   /** A $0 monthly spend cap has no percentage, so it cannot be a window. */
   zeroSpendCap: Schema.optional(Schema.Boolean),
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
+  /** The provider account's `usageAccountKey`: equal on every machine, never the id itself. */
+  accountKey: Schema.optional(TrimmedNonEmptyString),
+  plan: Schema.optional(TrimmedNonEmptyString),
+  credits: Schema.optional(ServerProviderUsageCredits),
+  /**
+   * The provider's own answer, at its last usage read, whether the plan's ordinary usage may run;
+   * absent when it gives none. Codex says recovery must not be inferred from percentages or resets,
+   * so `true` outranks a window still shown at 100%.
+   */
+  usageAllowed: Schema.optional(Schema.Boolean),
+  /**
+   * When the last full read gave `accountKey`, `plan`, `usageAllowed` and `resetCredits`, if a
+   * streamed update has moved `checkedAt` past it.
+   */
+  accountReadAt: Schema.optional(IsoDateTime),
   resetCredits: Schema.optional(ServerProviderResetCredits),
+  resetCreditsError: Schema.optional(ServerProviderResetCreditsError),
+  resetPrograms: Schema.optional(ServerProviderResetPrograms),
   externalUsage: Schema.optional(
     Schema.Struct({
       label: TrimmedNonEmptyString,
@@ -73,6 +141,8 @@ export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
 /** Partial updates merge windows by id; omitted windows remain unchanged. */
 export const ProviderUsageLimitsUpdate = Schema.Struct({
   windows: Schema.Array(ServerProviderUsageWindow),
+  /** Null when the account has no credits any more; absent when the update says nothing of them. */
+  credits: Schema.optional(Schema.NullOr(ServerProviderUsageCredits)),
   /** The event contains usable limits independently of a successful background probe. */
   available: Schema.optional(Schema.Literal(true)),
 });

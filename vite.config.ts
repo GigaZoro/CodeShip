@@ -332,6 +332,8 @@ export default defineConfig({
       "t3code/no-platform-early-return-in-tests": "error",
       "t3code/no-polling-loop-in-tests": "error",
       "t3code/no-raw-mcp-registration": "error",
+      "t3code/no-raw-process-probe": "error",
+      "t3code/no-raw-taskkill": "error",
       "t3code/no-remote-git-through-execute": "error",
       "t3code/no-real-time-wait-in-tests": "error",
       "t3code/no-test-in-loop": "error",
@@ -425,6 +427,10 @@ export default defineConfig({
       {
         files: ["apps/server/src/mcp/McpHttpServer.ts"],
         rules: { "t3code/no-raw-mcp-registration": "off" },
+      },
+      {
+        files: ["packages/shared/src/processProbe.ts"],
+        rules: { "t3code/no-raw-process-probe": "off" },
       },
       {
         files: ["apps/web/src/**"],

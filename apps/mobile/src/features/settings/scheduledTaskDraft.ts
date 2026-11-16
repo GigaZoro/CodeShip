@@ -155,14 +155,7 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
     // No secret is sent, so the server keeps the stored one.
     return {
       type: "webhook",
-      signature:
-        draft.signature === null
-          ? null
-          : {
-              header: draft.signature.header,
-              encoding: draft.signature.encoding,
-              prefix: draft.signature.prefix,
-            },
+      signature: draft.signature,
       maxDeliveryAgeMinutes,
       ...(replayKey || coalesceKey || coalesceWindowSeconds !== undefined
         ? {

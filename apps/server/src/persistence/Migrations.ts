@@ -128,7 +128,8 @@ import CodeShipMigration0014 from "./CodeShipMigrations/014_CompactOrchestration
 import CodeShipMigration0015 from "./CodeShipMigrations/015_CommandRuns.ts";
 import CodeShipMigration0016 from "./CodeShipMigrations/016_ManualStepReviewLanguages.ts";
 import CodeShipMigration0017 from "./CodeShipMigrations/017_PullRequestReviewGuideLanguages.ts";
-import CodeShipMigration0018 from "./CodeShipMigrations/018_PayloadIndexesJsonValid.ts";
+import CodeShipMigration0018 from "./CodeShipMigrations/018_CommandRunLossEvidence.ts";
+import CodeShipMigration0019 from "./CodeShipMigrations/019_PayloadIndexesJsonValid.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -246,7 +247,8 @@ const codeShipMigrationEntries = [
   [15, "CommandRuns", CodeShipMigration0015],
   [16, "ManualStepReviewLanguages", CodeShipMigration0016],
   [17, "PullRequestReviewGuideLanguages", CodeShipMigration0017],
-  [18, "PayloadIndexesJsonValid", CodeShipMigration0018],
+  [18, "CommandRunLossEvidence", CodeShipMigration0018],
+  [19, "PayloadIndexesJsonValid", CodeShipMigration0019],
 ] as const;
 
 export const codeShipMigrationManifest = codeShipMigrationEntries.map(

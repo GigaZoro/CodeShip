@@ -21,6 +21,7 @@ import Migration014 from "./CodeShipMigrations/014_CompactOrchestrationIds.ts";
 import Migration015 from "./CodeShipMigrations/015_CommandRuns.ts";
 import Migration016 from "./CodeShipMigrations/016_ManualStepReviewLanguages.ts";
 import Migration017 from "./CodeShipMigrations/017_PullRequestReviewGuideLanguages.ts";
+import Migration018 from "./CodeShipMigrations/018_CommandRunLossEvidence.ts";
 
 const bodies = [
   Migration001,
@@ -40,6 +41,7 @@ const bodies = [
   Migration015,
   Migration016,
   Migration017,
+  Migration018,
 ] as const;
 
 /** Reproduce the released fork history before the ledgers split, including actual schema changes. */

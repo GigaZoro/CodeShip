@@ -33,6 +33,7 @@ import {
 } from "@t3tools/contracts";
 import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import { deriveBlockedOnThreadWait } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as DateTime from "effect/DateTime";
@@ -5465,7 +5466,7 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  it.live.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+  it.live.skipIf(!isLinuxHost)(
     "does not poll the process ledger while a cgroup lease owns teardown",
     () =>
       Effect.gen(function* () {

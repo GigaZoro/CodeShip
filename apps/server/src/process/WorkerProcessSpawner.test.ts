@@ -1,30 +1,70 @@
-// @effect-diagnostics nodeBuiltinImport:off -- the leftover child and its FIFO are real processes and files.
-import * as NodeChildProcess from "node:child_process";
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
+// @effect-diagnostics nodeBuiltinImport:off - one test makes the main thread's execFile throw.
+import type * as NodeChildProcess from "node:child_process";
+import * as NodeModule from "node:module";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
 import { timeoutProcessOption } from "./processDeadline.ts";
 import * as WorkerProcessSpawner from "./WorkerProcessSpawner.ts";
 
 const layer = WorkerProcessSpawner.layer.pipe(Layer.provide(NodeServices.layer));
+// Takes the Windows paths on any host.
+const windowsLayer = WorkerProcessSpawner.layer.pipe(
+  Layer.provide(NodeServices.layer),
+  Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
+);
 
 const node = (script: string, options?: ChildProcess.CommandOptions) =>
   ChildProcess.make(process.execPath, ["-e", script], options);
 
 const quiet = { stdin: "ignore", stdout: "ignore", stderr: "ignore" } as const;
+
+const errorLogs = () => {
+  const messages: Array<unknown> = [];
+  const logged = Deferred.makeUnsafe<void>();
+  const logger = Logger.make(({ logLevel, message, cause }) => {
+    if (logLevel !== "Error") return;
+    messages.push([message, Cause.pretty(cause)]);
+    Deferred.doneUnsafe(logged, Effect.void);
+  });
+  return { messages, logged: Deferred.await(logged), layer: Logger.layer([logger]) };
+};
+
+// Within the scope, the main thread's execFile throws as Node's does for a spawn error like ENOMEM.
+const execFileThrows = (error: Error) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const childProcess = NodeModule.createRequire(import.meta.url)(
+        "node:child_process",
+      ) as typeof NodeChildProcess;
+      const spy = vi.spyOn(childProcess, "execFile").mockImplementation(() => {
+        throw error;
+      });
+      NodeModule.syncBuiltinESMExports();
+      return spy;
+    }),
+    (spy) =>
+      Effect.sync(() => {
+        spy.mockRestore();
+        NodeModule.syncBuiltinESMExports();
+      }),
+  );
 
 describe("WorkerProcessSpawner", () => {
   it.live("relays stdin, output and the exit code", () =>
@@ -118,36 +158,195 @@ describe("WorkerProcessSpawner", () => {
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
-  // The leftover child holds a FIFO open; its death produces EOF without polling.
-  it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-    "a stopped worker kills what a child left running after it exited",
-    () =>
-      Effect.gen(function* () {
-        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-worker-orphan-"));
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+  // The leader exits at once and leaves a child running, which each way of ending the leader reaches.
+  const leaderThatLeftAChild = (leftover: Effect.Success<typeof leaderLeavingChild>) =>
+    Effect.gen(function* () {
+      const leader = yield* leftover.command;
+      yield* leftover.started;
+      assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
+      return leader;
+    });
+
+  it.live("kill ends what a child left running after it exited", () =>
+    Effect.gen(function* () {
+      const leftover = yield* leaderLeavingChild;
+      const leader = yield* leaderThatLeftAChild(leftover);
+
+      yield* leader.kill();
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live("an interrupted command ends what its child left running after it exited", () =>
+    Effect.gen(function* () {
+      const leftover = yield* leaderLeavingChild;
+      const exited = yield* Deferred.make<void>();
+      const command = yield* Effect.forkScoped(
+        Effect.gen(function* () {
+          yield* leaderThatLeftAChild(leftover);
+          yield* Deferred.succeed(exited, undefined);
+          return yield* Effect.never;
+        }).pipe(Effect.scoped),
+      );
+      yield* Deferred.await(exited);
+
+      yield* Fiber.interrupt(command);
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live("releasing a failed command logs no error once nothing of it runs", () => {
+    const errors = errorLogs();
+    return Effect.gen(function* () {
+      yield* Effect.scoped(
+        Effect.flatMap(node("process.exit(1)", quiet), (handle) => handle.exitCode),
+      );
+
+      assert.deepEqual(errors.messages, []);
+    }).pipe(Effect.provide(Layer.merge(layer, errors.layer)));
+  });
+
+  // It exits when the stopped worker closes its stdin, and no one hears of that exit. As in the
+  // server, the spawning fiber has the logger and the spawner's layer does not.
+  const leaderOfWorkerToStop = (errors: ReturnType<typeof errorLogs>) =>
+    node("process.stdin.resume();", { stdout: "ignore", stderr: "ignore" }).pipe(
+      Effect.provide(errors.layer),
+    );
+
+  // PowerShell is missing here, so the walk fails as a denied WMI query does on Windows.
+  it.live.skipIf(isWindowsHost)(
+    "a stopped worker that cannot start another walks the tree and logs to the spawning fiber",
+    () => {
+      const errors = errorLogs();
+      return Effect.gen(function* () {
+        const leader = yield* leaderOfWorkerToStop(errors);
+        const kill = yield* Effect.acquireRelease(
+          Effect.sync(() => vi.spyOn(process, "kill")),
+          (spy) => Effect.sync(() => spy.mockRestore()),
         );
-        const fifo = NodePath.join(dir, "alive");
-        NodeChildProcess.execFileSync("mkfifo", [fifo]);
-        const alive = NodeFS.createReadStream(fifo);
-        yield* Effect.addFinalizer(() => Effect.sync(() => alive.destroy()));
-        const leftoverStarted = new Promise<void>((resolve) => alive.once("open", () => resolve()));
-        const leftoverStopped = new Promise<void>((resolve) =>
-          alive.once("close", () => resolve()),
-        );
-        alive.resume();
-        const leftover =
-          "require('node:fs').openSync(process.argv[1], 'w'); setTimeout(() => {}, 60_000);";
-        const leader = yield* node(
-          `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(leftover)}, ${JSON.stringify(fifo)}], { stdio: "ignore" }).unref();`,
-          quiet,
-        );
-        yield* Effect.promise(() => leftoverStarted);
-        assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
+        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
 
         yield* WorkerProcessSpawner.__testing.stopWorker;
 
-        yield* Effect.promise(() => leftoverStopped);
+        yield* errors.logged;
+        assert.notInclude(
+          kill.mock.calls.map(([pid]) => pid),
+          leader.pid,
+        );
+      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
+    },
+  );
+
+  it.live(
+    "a stopped worker whose tree walk cannot start PowerShell logs it and fails its children",
+    () => {
+      const errors = errorLogs();
+      return Effect.gen(function* () {
+        const leader = yield* leaderOfWorkerToStop(errors);
+        yield* execFileThrows(Object.assign(new Error("spawn ENOMEM"), { code: "ENOMEM" }));
+        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        yield* errors.logged;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(leader.exitCode)));
+      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
+    },
+  );
+
+  // POSIX gives no process the pid of a group that still exists, so one holding it ended the group.
+  it.live.skipIf(isWindowsHost)(
+    "a stopped worker spares the group of a reaped leader whose pid another process took",
+    () =>
+      Effect.gen(function* () {
+        const leader = yield* node("", quiet);
+        yield* leader.exitCode;
+        const kill = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const signal = process.kill.bind(process);
+            return vi
+              .spyOn(process, "kill")
+              .mockImplementation((pid, code) =>
+                pid === leader.pid && code === 0 ? true : signal(pid, code),
+              );
+          }),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        assert.notDeepInclude(kill.mock.calls, [-leader.pid, "SIGKILL"]);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  // Linux hands a ptrace stop to the tracer's waitpid, and Node reports it as an exit of the leader,
+  // which still holds its pid: stopped, or as a zombie if another process kills it there. It runs on
+  // once a stopped worker's thread, its tracer, has ended. libuv stops waiting for it at that stop,
+  // so once ended it stays a zombie until this process exits.
+  describe.runIf(isLinuxHost)("a leader Node reported as exited at a ptrace stop", () => {
+    const tracedStop = [
+      "import ctypes, os, signal, socket, sys, time",
+      "def hold(path):",
+      "    s = socket.socket(socket.AF_UNIX); s.connect(path); s.send(str(os.getpid()).encode()); return s",
+      "if os.fork() == 0:",
+      "    left = hold(sys.argv[2]); time.sleep(300); sys.exit()",
+      "led = hold(sys.argv[1])",
+      "if ctypes.CDLL(None).ptrace(0, 0, None, None) != 0: sys.exit(2)",
+      "os.kill(os.getpid(), signal.SIGSTOP)",
+      "time.sleep(300)",
+    ].join("\n");
+    const kill = (leader: ChildProcessSpawner.ChildProcessHandle) =>
+      leader.kill({ killSignal: "SIGKILL" });
+    const stopWorker = () => WorkerProcessSpawner.__testing.stopWorker;
+    const killedAtExit = WorkerProcessSpawner.__testing.leadersKilledAtExit;
+
+    it.live.each([
+      { state: "still stopped", atExit: Effect.void, through: "kill", end: kill },
+      { state: "still stopped", atExit: Effect.void, through: "a stopped worker", end: stopWorker },
+      { state: "killed as its exit arrived", atExit: killedAtExit, through: "kill", end: kill },
+      {
+        state: "killed as its exit arrived",
+        atExit: killedAtExit,
+        through: "a stopped worker",
+        end: stopWorker,
+      },
+    ])("$state, has its group ended through $through", ({ atExit, end }) =>
+      Effect.gen(function* () {
+        yield* atExit;
+        const led = yield* processPipe;
+        const left = yield* processPipe;
+        const leader = yield* ChildProcess.make(
+          "python3",
+          ["-c", tracedStop, led.path, left.path],
+          quiet,
+        );
+        assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
+        yield* left.started;
+
+        yield* end(leader);
+
+        yield* led.ended;
+        yield* left.ended;
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+  });
+
+  it.live.each([
+    { through: "a new worker", replacement: Effect.void },
+    { through: "no worker", replacement: WorkerProcessSpawner.__testing.failWorkerStarts },
+  ])(
+    "a stopped worker kills what a child left running after it exited, through $through",
+    ({ replacement }) =>
+      Effect.gen(function* () {
+        const leftover = yield* leaderLeavingChild;
+        yield* leaderThatLeftAChild(leftover);
+        yield* replacement;
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        yield* leftover.ended;
       }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });

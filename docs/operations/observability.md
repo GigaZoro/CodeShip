@@ -13,6 +13,15 @@ write a separate server log file, but SSH-managed launches also persist the remo
 stdout/stderr at `~/.t3/ssh-launch/<state>/server.log`. Each managed launch starts that file
 empty, so it holds only the latest launch's output.
 
+Console log lines, every OTLP export (logs, traces and metrics, with the browser traces the server
+forwards and the relay's traces) and trace, relay and provider event log file records pass through
+one redactor, `packages/shared/src/redaction.ts`, as they are written: credentials and the values of
+fields named for one show as `[redacted]`, and e-mail addresses as `[email]`. Logs and spans hold the
+raw values in memory, so a new log or trace sink must redact what it writes. The server and the
+desktop app install their loggers with `layerRedactedLoggers` from
+`packages/shared/src/observability.ts`: loggers print and export a log's message parts apart, so each
+one masks the part after one such as `"Cookie"` or `"token:"`, and the console prints redacted text.
+
 ## Where To Find Things
 
 ### Logs
