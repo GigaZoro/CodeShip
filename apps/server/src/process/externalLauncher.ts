@@ -250,7 +250,7 @@ function fileManagerCommandForPlatform(
     case "darwin":
       return "open";
     case "win32":
-      return resolvePowerShellPath(env);
+      return "explorer";
     default:
       if (shouldUseWindowsHostFromWsl(platform, env)) {
         return env.WSL_DISTRO_NAME?.trim() ? "explorer.exe" : undefined;
@@ -338,7 +338,7 @@ const resolveUsableFileManagerCommand = Effect.fn(
   return undefined;
 });
 
-// Reveal uses PowerShell on WSL, so probe it separately from Explorer availability.
+// Reveal uses PowerShell on Windows/WSL, so probe it separately from Explorer availability.
 // Linux relies on the file-manager gate's handler probe; WSL re-probes because the gate may use Explorer.
 const fileManagerRevealKindForPlatform = Effect.fn(
   "externalLauncher.fileManagerRevealKindForPlatform",

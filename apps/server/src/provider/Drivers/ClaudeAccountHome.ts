@@ -265,9 +265,10 @@ const withClaudeConfigLock = <A, E, R>(configPath: string, task: Effect.Effect<A
           catch: fileSystemFailure("lock", configPath),
         }),
         (release) =>
-          Effect.tryPromise({ try: release, catch: fileSystemFailure("unlock", configPath) }).pipe(
-            Effect.ignoreCause({ log: true }),
-          ),
+          Effect.tryPromise({
+            try: () => release(),
+            catch: fileSystemFailure("unlock", configPath),
+          }).pipe(Effect.ignoreCause({ log: true })),
       );
       return yield* task;
     }),

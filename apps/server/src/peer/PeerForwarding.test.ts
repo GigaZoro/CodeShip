@@ -494,13 +494,14 @@ it.effect("an agent here reaches a thread by the link a tool returned, here or l
       });
       const link = (listed.structuredContent as { threads: ReadonlyArray<{ link: string }> })
         .threads[0]!.link;
-      expect(link).toBe(`<t3-thread://v2/${box.environmentId}/${boxThread}>`);
+      const href = `t3-thread://v2/${box.environmentId}/${boxThread}`;
+      expect(link).toBe(`[${boxThread}](${href})`);
 
       const waited = yield* a.call("thread:laptop-full", "t3_thread_wait", { threadId: link });
       expect(waited.structuredContent).toMatchObject({ threadId: boxThread, status: "completed" });
 
       const sent = yield* a.call("thread:laptop-full", "t3_thread_send", {
-        threadId: link.slice(1, -1),
+        threadId: href,
         message: "Carry on there.",
       });
       expect(sent.structuredContent).toMatchObject({ threadId: boxThread, delivery: "started" });

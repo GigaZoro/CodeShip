@@ -254,6 +254,8 @@ function claudeAuthStatus(
 
 // Bedrock initialization includes backend startup and awsAuthRefresh, taking longer than first-party auth.
 const CAPABILITIES_PROBE_TIMEOUT_MS = 25_000;
+// Bounds the wait for a custom spawn's stderr after Claude exits; a child it started can hold it open.
+const CAPABILITIES_PROBE_STDERR_DRAIN_MS = 1_000;
 // Native CLI startup on Windows can exceed the shared probe deadline.
 const CLAUDE_VERSION_CHECK_TIMEOUT_MS = 20_000;
 
@@ -286,8 +288,7 @@ export function spawnClaudeProbeThroughEnv({
 
 /** Windows runs CreateProcess on the calling thread, so the probe launches from a launcher thread. */
 function spawnClaudeProbeOffThread({ command, args, cwd, env, signal }: ClaudeSpawnOptions) {
-  const child = SpawnWorker.spawnPiped(command, args, { cwd, env, signal, windowsHide: true });
-  return child;
+  return SpawnWorker.spawnPiped(command, args, { cwd, env, signal, windowsHide: true });
 }
 
 export function buildClaudeCapabilitiesProbeQueryOptions(input: {
@@ -297,13 +298,26 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
   readonly cwd: string | undefined;
   readonly managedMcpConfig: boolean;
   readonly onStderr: (chunk: string) => void;
+  /** Receives a custom spawn's stderr, which the SDK neither reads nor drains before it reports the exit. */
+  readonly onSpawnedStderr: (stderr: NodeJS.ReadableStream) => void;
   readonly spawnVia: "env" | "launcher-thread" | undefined;
 }): ClaudeQueryOptions {
+  const spawn =
+    input.spawnVia === "env"
+      ? spawnClaudeProbeThroughEnv
+      : input.spawnVia === "launcher-thread"
+        ? spawnClaudeProbeOffThread
+        : undefined;
   return {
-    ...(input.spawnVia === "env" ? { spawnClaudeCodeProcess: spawnClaudeProbeThroughEnv } : {}),
-    ...(input.spawnVia === "launcher-thread"
-      ? { spawnClaudeCodeProcess: spawnClaudeProbeOffThread }
-      : {}),
+    ...(spawn === undefined
+      ? {}
+      : {
+          spawnClaudeCodeProcess: (options: ClaudeSpawnOptions) => {
+            const child = spawn(options);
+            input.onSpawnedStderr(child.stderr);
+            return child;
+          },
+        }),
     persistSession: false,
     pathToClaudeCodeExecutable: input.executablePath,
     abortController: input.abortController,
@@ -563,6 +577,13 @@ const probeClaudeCapabilities = (
     const homeDirectory = yield* HostProcess.HomeDirectory;
     // Claude names why it refused to start only on stderr.
     let stderr = "";
+    let stderrClosed: Promise<void> = Promise.resolve();
+    const appendStderr = (chunk: string) => {
+      // One character past the cap lets providerOutputHead see the output was cut.
+      if (stderr.length <= PROVIDER_OUTPUT_MAX_CHARS) {
+        stderr = `${stderr}${chunk}`.slice(0, PROVIDER_OUTPUT_MAX_CHARS + 1);
+      }
+    };
     // Workspace probes (no usage) discard models; the machine probe refreshes the shared cache.
     const graceMs = includeStatus
       ? claudeGatewayDiscoveryGraceMs({
@@ -591,19 +612,27 @@ const probeClaudeCapabilities = (
             cwd,
             managedMcpConfig,
             spawnVia,
-            onStderr: (chunk) => {
-              // One character past the cap lets providerOutputHead see the output was cut.
-              if (stderr.length <= PROVIDER_OUTPUT_MAX_CHARS) {
-                stderr = `${stderr}${chunk}`.slice(0, PROVIDER_OUTPUT_MAX_CHARS + 1);
-              }
+            onStderr: appendStderr,
+            onSpawnedStderr: (spawnedStderr) => {
+              stderrClosed = new Promise((resolve) => spawnedStderr.once("close", () => resolve()));
+              spawnedStderr.setEncoding("utf8").on("data", appendStderr);
             },
           }),
         });
         const init = await q.initializationResult();
         return { q, init, graceMs };
       },
-      catch: (cause) => claudeProbeFailure(stderr, cause, homeDirectory, claudeEnvironment),
-    });
+      catch: (cause) => new ClaudeCapabilitiesProbeSdkError({ operation: "initialize", cause }),
+    }).pipe(
+      Effect.catch(({ cause }) =>
+        Effect.promise(() => stderrClosed).pipe(
+          Effect.timeoutOption(CAPABILITIES_PROBE_STDERR_DRAIN_MS),
+          Effect.flatMap(() =>
+            Effect.fail(claudeProbeFailure(stderr, cause, homeDirectory, claudeEnvironment)),
+          ),
+        ),
+      ),
+    );
   }).pipe(
     Effect.timeout(
       resolveProviderProbeTimeoutMs("claude", CAPABILITIES_PROBE_TIMEOUT_MS, environment),

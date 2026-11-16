@@ -8,8 +8,10 @@ import {
   type AuthMcpTokenError,
   type ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -247,3 +249,21 @@ export const linkTo = (
         links.link({ url: peer.url, pairingCode: pairing.credential, access }),
       ),
     );
+
+/**
+ * Runs `effect` with a failed probe retrying at once: the retry waits from when the
+ * failure arrives, which a test on the test clock cannot await.
+ */
+export const retryProbesAtOnce = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const clock = yield* Clock.Clock;
+    return yield* effect.pipe(
+      Effect.provideService(Clock.Clock, {
+        ...clock,
+        sleep: (duration) =>
+          Duration.equals(duration, PeerLinks.PROBE_RETRY_DELAY)
+            ? Effect.void
+            : clock.sleep(duration),
+      }),
+    );
+  });

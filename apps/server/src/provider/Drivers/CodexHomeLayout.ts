@@ -572,9 +572,10 @@ const withSharedFileLock = <A, E, R>(lockPath: string, effect: Effect.Effect<A, 
           catch: fileSystemFailure("lock", lockPath),
         }),
         (release) =>
-          Effect.tryPromise({ try: release, catch: fileSystemFailure("unlock", lockPath) }).pipe(
-            Effect.ignoreCause({ log: true }),
-          ),
+          Effect.tryPromise({
+            try: () => release(),
+            catch: fileSystemFailure("unlock", lockPath),
+          }).pipe(Effect.ignoreCause({ log: true })),
       );
       return yield* effect;
     }),

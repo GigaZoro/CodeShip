@@ -42,6 +42,7 @@ import {
   descriptorOf,
   layerLinkingEnvironment,
   linkTo,
+  retryProbesAtOnce,
   servePeer,
   type ServedPeer,
 } from "./PeerLinks.testkit.ts";
@@ -267,7 +268,7 @@ it.effect(
         expect(yield* Ref.get(b.bearers)).toEqual([]);
         yield* a.sql`UPDATE peer_environment_links SET urls_json = ${JSON.stringify(["http://127.0.0.1:1"])}`;
         const unreachable = yield* a.links.get(box.environmentId);
-        yield* a.links.renew(box.environmentId).pipe(Effect.ignore);
+        yield* a.links.renew(box.environmentId).pipe(Effect.ignore, retryProbesAtOnce);
         expect(yield* a.links.get(box.environmentId)).toEqual(unreachable);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -608,20 +609,21 @@ it.effect("never sends a link's token to an address that stops answering as that
       yield* Ref.set(b.descriptor, descriptorOf("environment-impostor", "Impostor"));
       yield* Ref.set(b.bearers, []);
       const failed = yield* probe(a).pipe(Effect.flip);
-      expect(failed.message).toBe(`Box did not answer: ${b.url} answers as another environment.`);
+      expect(failed.message).toBe(
+        `Box did not answer: ${b.url} answered as another environment, Impostor.`,
+      );
       expect(yield* Ref.get(b.bearers)).toEqual([]);
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["unreachable"]);
 
       // An address that answers an error instead keeps that failure as the cause.
       yield* Ref.set(b.descriptor, box);
       yield* Ref.set(unavailable, true);
-      const refused = yield* a.links.resolve(box.environmentId).pipe(Effect.flip);
-      expect(refused.message).toBe(
-        `Box did not answer: Nothing at ${b.url} answered as a T3.CodeShip environment: it answered HTTP 503.`,
-      );
-      expect(refused.cause).toMatchObject([
-        { reason: "not_a_t3_environment", cause: { _tag: "HttpClientError" } },
-      ]);
+      const refused = yield* a.links
+        .resolve(box.environmentId)
+        .pipe(Effect.flip, retryProbesAtOnce);
+      const notT3 = `${b.url} answered, but not as a T3.CodeShip environment this version understands.`;
+      expect(refused.message).toBe(`Box did not answer: ${notT3}`);
+      expect(refused.cause).toMatchObject([{ reason: "not_a_t3_environment", message: notT3 }]);
       expect(yield* Ref.get(b.bearers)).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -1063,59 +1065,6 @@ it.effect(
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("linking where no T3.CodeShip answers says what answered instead and links nothing", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const impostor = yield* serveApart(descriptorOf("environment-impostor", "Impostor"));
-      const missing = yield* serveRaw(() =>
-        Effect.succeed(HttpServerResponse.empty({ status: 404 })),
-      );
-      const a = yield* makeA(laptop);
-      const failed = yield* a.links
-        .link({
-          url: impostor.url,
-          alternateUrls: [missing, "http://192.168.1.20:3773"],
-          pairingCode: "unused",
-          access: "auto",
-          expectedEnvironmentId: box.environmentId,
-          expectedLabel: "Box",
-        })
-        .pipe(Effect.flip);
-      expect(failed.reason).toBe("unreachable");
-      expect(failed.message).toBe(
-        `This environment could not reach Box: ${new URL(impostor.url).origin} answered as another environment, Impostor. http://192.168.1.20:3773 is plain http, which would send the link's credentials unencrypted. Use its https address, or its Tailscale address.`,
-      );
-      expect(failed.cause).toMatchObject([
-        { reason: "not_a_t3_environment", cause: { _tag: "HttpClientError" } },
-        { message: expect.stringContaining("plain http") },
-      ]);
-      expect(yield* a.links.list).toEqual([]);
-      expect(yield* linkedSessions(impostor)).toEqual([]);
-
-      const unpicked = yield* a.links
-        .link({ url: missing, pairingCode: "unused", access: "auto" })
-        .pipe(Effect.flip);
-      expect(unpicked).toMatchObject({
-        reason: "not_a_t3_environment",
-        message: `Nothing at ${missing} answered as a T3.CodeShip environment: it answered HTTP 404.`,
-      });
-
-      // Every address refused: the message says why.
-      const refused = yield* a.links
-        .link({
-          url: "http://192.168.1.20:3773",
-          pairingCode: "unused",
-          access: "auto",
-          expectedEnvironmentId: box.environmentId,
-          expectedLabel: "Box",
-        })
-        .pipe(Effect.flip);
-      expect(refused.message).toContain("could not reach Box");
-      expect(refused.message).toContain("plain http");
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
 it.live(
   "linking an address with nothing listening says so, unlike one that is not T3.CodeShip",
   () =>
@@ -1215,21 +1164,29 @@ it.effect("linking a picked machine that answers nowhere names it and links noth
   Effect.scoped(
     Effect.gen(function* () {
       const impostor = yield* serveApart(descriptorOf("environment-impostor", "Impostor"));
+      const missing = yield* serveRaw(() =>
+        Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+      );
       const a = yield* makeA(laptop);
       const failed = yield* a.links
         .link({
           url: impostor.url,
-          alternateUrls: ["http://192.168.1.20:3773"],
+          alternateUrls: [missing, "http://192.168.1.20:3773"],
           pairingCode: "unused",
           access: "auto",
           expectedEnvironmentId: box.environmentId,
           expectedLabel: "Box",
         })
-        .pipe(Effect.flip);
+        .pipe(Effect.flip, retryProbesAtOnce);
       expect(failed.reason).toBe("unreachable");
       expect(failed.message).toBe(
-        `This environment could not reach Box: ${new URL(impostor.url).origin} answered as another environment, Impostor. http://192.168.1.20:3773 is plain http, which would send the link's credentials unencrypted. Use its https address, or its Tailscale address.`,
+        `This environment could not reach Box: ${new URL(impostor.url).origin} answered as another environment, Impostor. ${missing} answered, but not as a T3.CodeShip environment this version understands. http://192.168.1.20:3773 is plain http, which would send the link's credentials unencrypted. Use its https address, or its Tailscale address.`,
       );
+      expect(failed.cause).toMatchObject([
+        { reason: "unreachable", message: expect.stringContaining("Impostor") },
+        { reason: "not_a_t3_environment" },
+        { reason: "unreachable", message: expect.stringContaining("plain http") },
+      ]);
       expect(yield* a.links.list).toEqual([]);
       expect(yield* linkedSessions(impostor)).toEqual([]);
 

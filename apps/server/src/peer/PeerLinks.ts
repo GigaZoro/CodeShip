@@ -60,6 +60,8 @@ export const probeTimeout = (origin: string) =>
   isLocalLoopbackHost(new URL(origin).hostname) ? Duration.seconds(3) : Duration.seconds(10);
 /** How long a listing waits on a link's addresses; a real call still gives a waking peer `probeTimeout`. */
 const LIST_PROBE_TIMEOUT = Duration.seconds(3);
+/** How long a failed probe waits before its one retry. */
+export const PROBE_RETRY_DELAY = Duration.seconds(1);
 
 /** Node's TLS verification code in a failed request's cause chain, if any. */
 export const certificateErrorCode = (error: unknown) => {
@@ -310,7 +312,7 @@ const make = Effect.gen(function* () {
       // A brief network drop must not list a live peer as down; the timeout still bounds both tries.
       Effect.retry({
         times: 1,
-        schedule: Schedule.spaced("1 second"),
+        schedule: Schedule.spaced(PROBE_RETRY_DELAY),
         while: (error) => certificateErrorCode(error) === undefined,
       }),
       Effect.timeout(timeout),
@@ -319,13 +321,19 @@ const make = Effect.gen(function* () {
     );
   };
 
-  /** Whether `url` answers as `environmentId`, counting any failure as no. */
+  /** The peer at `origin` when it answers as `environmentId`, or why it does not. */
   const answersAs = Effect.fn("PeerLinks.answersAs")(function* (
-    url: string,
+    origin: string,
     environmentId: EnvironmentId,
   ) {
-    const found = yield* probe(url).pipe(Effect.option);
-    return Option.filter(found, (peer) => peer.environmentId === environmentId);
+    const peer = yield* probe(origin);
+    if (peer.environmentId !== environmentId) {
+      return yield* new PeerLinkError({
+        reason: "unreachable",
+        message: `${origin} answered as another environment, ${peer.label}.`,
+      });
+    }
+    return peer;
   });
 
   const toLink = Effect.fn("PeerLinks.toLink")(function* (row: PeerLinkRow) {
@@ -502,14 +510,7 @@ const make = Effect.gen(function* () {
               message: `${origin} is this machine, not ${name}.`,
             });
           }
-          const descriptor = yield* probe(origin);
-          if (descriptor.environmentId !== environmentId) {
-            return yield* new PeerLinkError({
-              reason: "unreachable",
-              message: `${origin} answered as another environment, ${descriptor.label}.`,
-            });
-          }
-          return { origin, descriptor };
+          return { origin, descriptor: yield* answersAs(origin, environmentId) };
         }).pipe(Effect.result),
       { concurrency: "unbounded" },
     );
@@ -518,12 +519,13 @@ const make = Effect.gen(function* () {
     );
     const first = matching[0];
     if (first === undefined) {
-      const reasons = checked.flatMap((result) =>
-        Result.isFailure(result) ? [result.failure.message] : [],
+      const misses = checked.flatMap((result) =>
+        Result.isFailure(result) ? [result.failure] : [],
       );
       return yield* new PeerLinkError({
         reason: "unreachable",
-        message: `This environment could not reach ${name}: ${reasons.join(" ")}`,
+        message: `This environment could not reach ${name}: ${misses.map((miss) => miss.message).join(" ")}`,
+        cause: misses,
       });
     }
     // Each address is kept once, even when two spellings share an origin.
@@ -684,9 +686,7 @@ const make = Effect.gen(function* () {
     // A race over no addresses never settles.
     if (link.urls.length === 0) return { ...link, status: "unreachable" };
     const answered = yield* Effect.raceAll(
-      link.urls.map((url) =>
-        answersAs(url, link.environmentId).pipe(Effect.flatMap(Effect.fromOption)),
-      ),
+      link.urls.map((url) => answersAs(url, link.environmentId)),
     ).pipe(Effect.timeoutOption(LIST_PROBE_TIMEOUT), Effect.orElseSucceed(Option.none));
     if (Option.isNone(answered)) return { ...link, status: "unreachable" };
     yield* sawVersion(link.environmentId, answered.value.serverVersion);
@@ -784,13 +784,18 @@ const make = Effect.gen(function* () {
       // The token goes only to an address that still answers as this peer,
       // so one that now answers as another machine never receives it. The
       // addresses race, so a silent one never delays one that answers.
+      const misses: Array<PeerLinkError> = [];
       const answered =
         link.urls.length === 0
           ? Option.none()
           : yield* Effect.raceAll(
-              link.urls.map((url) =>
+              link.urls.map((url, index) =>
                 answersAs(url, environmentId).pipe(
-                  Effect.flatMap(Effect.fromOption),
+                  Effect.tapError((miss) =>
+                    Effect.sync(() => {
+                      misses[index] = miss;
+                    }),
+                  ),
                   Effect.map((peer) => ({ url, peer })),
                 ),
               ),
@@ -798,7 +803,8 @@ const make = Effect.gen(function* () {
       if (Option.isNone(answered)) {
         return yield* new PeerLinkError({
           reason: "unreachable",
-          message: `${link.label} did not answer at ${link.urls.join(", ")}.`,
+          message: `${link.label} did not answer: ${misses.map((miss) => miss.message).join(" ")}`,
+          cause: misses,
         });
       }
       const { url, peer } = answered.value;

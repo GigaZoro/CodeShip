@@ -12,6 +12,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -32,6 +33,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { ServerActivation } from "../serverActivation.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
@@ -688,9 +690,32 @@ const UNREACHABLE = "unreachable";
 /** A peer's copy of the occurrence claims, by peer: who holds it there, or that it can't be reached. */
 type PeerCopies = ReadonlyMap<string, string | typeof UNREACHABLE>;
 
-// The task is due one hour after NOW. Each tick fires at `atMs`, and `settled` waits for the
-// change the tick published, so nothing polls. A list of answers is given out in turn, the last
-// one repeating. Peers record claims as a real copy would: one gives its own claim away only
+// The scheduler starts at the first tick, as a server's does after startup, so it reads what the
+// test wrote before then and runs due work only on a tick. `settled` waits for the change the
+// tick published, from a subscription already open, so nothing polls.
+const watchTicks = (
+  service: ScheduledTaskService.ScheduledTaskService["Service"],
+  activated: Deferred.Deferred<void>,
+) =>
+  Effect.gen(function* () {
+    const changes = yield* Queue.unbounded<void>();
+    yield* Effect.forkScoped(
+      service.subscribeList().pipe(Stream.runForEach(() => Queue.offer(changes, undefined))),
+    );
+    // The first list comes after the subscription opens.
+    yield* Queue.take(changes);
+    return {
+      tick: (atMs: number) =>
+        Deferred.succeed(activated, undefined).pipe(
+          Effect.andThen(TestClock.setTime(atMs)),
+          Effect.andThen(TestClock.adjust("6 seconds")),
+        ),
+      settled: Queue.take(changes),
+    };
+  });
+
+// The task is due one hour after NOW. A list of answers is given out in turn, the last one
+// repeating. Peers record claims as a real copy would: one gives its own claim away only
 // when it is in `failed`, its run of the occurrence having failed.
 const runScenario = <A, E>(
   machineOrder: string[] | null,
@@ -725,6 +750,7 @@ const runScenario = <A, E>(
     const failed = yield* Ref.make<ReadonlySet<string>>(new Set());
     const peerClaims = yield* Ref.make<ReadonlyArray<string>>([]);
     const linked = yield* Ref.make<ReadonlyArray<string>>([]);
+    const activated = yield* Deferred.make<void>();
     const peerCheck = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
       linkedEnvironmentIds: Ref.get(linked) as Effect.Effect<ReadonlyArray<never>>,
       linkStatus: Effect.succeed({ enabled: false, links: [] }),
@@ -781,13 +807,6 @@ const runScenario = <A, E>(
             }),
             ScheduledTaskService.CHANGED_IN_APP,
           );
-          const changes = yield* Queue.unbounded<void>();
-          yield* Effect.forkScoped(
-            service.subscribeList().pipe(
-              Stream.drop(1),
-              Stream.runForEach(() => Queue.offer(changes, undefined)),
-            ),
-          );
           return yield* body({
             service,
             sql,
@@ -797,9 +816,7 @@ const runScenario = <A, E>(
             failed,
             peerClaims,
             linked,
-            tick: (atMs) =>
-              TestClock.setTime(atMs).pipe(Effect.andThen(TestClock.adjust("6 seconds"))),
-            settled: Queue.take(changes),
+            ...(yield* watchTicks(service, activated)),
           });
         }).pipe(Effect.scoped),
       [repoProject, plainProject],
@@ -816,7 +833,7 @@ const runScenario = <A, E>(
             }),
         ...(threadManagement === undefined ? {} : { threadManagement }),
       },
-    );
+    ).pipe(Effect.provideService(ServerActivation, Deferred.await(activated)));
   });
 
 const DUE = NOW + HOUR_MS;
@@ -1147,6 +1164,7 @@ it.effect(
 it.effect("a late takeover of the occurrence before does not count as this occurrence's run", () =>
   Effect.gen(function* () {
     const launches = yield* Queue.unbounded<unknown>();
+    const activated = yield* Deferred.make<void>();
     const off = Effect.fail(
       new OrchestratorMcpFailure({ code: "orchestration_error", message: "It is off." }),
     );
@@ -1197,19 +1215,7 @@ it.effect("a late takeover of the occurrence before does not count as this occur
             }),
             ScheduledTaskService.CHANGED_IN_APP,
           );
-          const changes = yield* Queue.unbounded<void>();
-          yield* Effect.forkScoped(
-            service.subscribeList().pipe(
-              Stream.drop(1),
-              Stream.runForEach(() => Queue.offer(changes, undefined)),
-            ),
-          );
-          const scenario = {
-            sql,
-            tick: (atMs: number) =>
-              TestClock.setTime(atMs).pipe(Effect.andThen(TestClock.adjust("6 seconds"))),
-            settled: Queue.take(changes),
-          };
+          const scenario = { sql, ...(yield* watchTicks(service, activated)) };
           yield* fireWhenDue(scenario);
           yield* scenario.tick(Date.parse((yield* nextRunAtOf(sql))!) + 1_000);
           yield* Queue.take(launches);
@@ -1225,7 +1231,7 @@ it.effect("a late takeover of the occurrence before does not count as this occur
         launch: (input) =>
           Queue.offer(launches, input).pipe(Effect.as({ threadId: "thread-1" } as never)),
       },
-    );
+    ).pipe(Effect.provideService(ServerActivation, Deferred.await(activated)));
   }),
 );
 
