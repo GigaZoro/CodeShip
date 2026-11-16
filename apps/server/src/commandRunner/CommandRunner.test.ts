@@ -118,6 +118,27 @@ const providerShell = (shellEnvironment?: ProviderInstance["shellEnvironment"]) 
           : undefined,
       ),
   });
+/** Fails the Windows launch, after its scripts are written, and hands over the launcher's input. */
+const refuseWindowsLaunch = (
+  processRunner: ProcessRunner.ProcessRunner["Service"],
+  launcher: Deferred.Deferred<ProcessRunner.ProcessRunInput>,
+): ProcessRunner.ProcessRunner["Service"] => ({
+  run: (input) =>
+    !input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))
+      ? processRunner.run(input)
+      : Deferred.succeed(launcher, input).pipe(
+          Effect.as({
+            stdout: "",
+            stderr: "Win32_Process.Create returned 9",
+            code: ChildProcessSpawner.ExitCode(1),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          }),
+        ),
+});
 const layerTest = Layer.mergeAll(
   layerThreads,
   Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
@@ -477,23 +498,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
                 }),
             ),
           ),
-          Effect.provideService(ProcessRunner.ProcessRunner, {
-            run: (input) =>
-              !input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))
-                ? processRunner.run(input)
-                : Deferred.succeed(launcher, input).pipe(
-                    Effect.as({
-                      stdout: "",
-                      stderr: "Win32_Process.Create returned 9",
-                      code: ChildProcessSpawner.ExitCode(1),
-                      timedOut: false,
-                      stdoutTruncated: false,
-                      stderrTruncated: false,
-                      stdoutInvalidUtf8: false,
-                      stderrInvalidUtf8: false,
-                    }),
-                  ),
-          }),
+          Effect.provideService(
+            ProcessRunner.ProcessRunner,
+            refuseWindowsLaunch(processRunner, launcher),
+          ),
           Effect.provideService(HostProcess.Platform, "win32"),
           Effect.provideService(HostProcess.Environment, {
             Path: "C:\\host",
@@ -536,6 +544,41 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         for (const file of [runPath, scriptPath]) {
           assert.notInclude(NodeFS.readFileSync(file, "utf8"), "from settings");
         }
+      }),
+  );
+
+  // PowerShell 5.1 drops a `"` inside an argument to a program, so `bash -c '<command>'` lost them.
+  it.effect(
+    "hands a Windows bash command to Git Bash as a file whose path is its only argument, so PowerShell never reads it",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-windows-bash-file");
+        const processRunner = yield* ProcessRunner.ProcessRunner;
+        const launcher = yield* Deferred.make<ProcessRunner.ProcessRunInput>();
+        const command = `grep -E "^# (pass|fail)" results.txt\necho '$t3Ok' "a \\"b\\"" \`date\``;
+        yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command, shell: "bash" }),
+        ).pipe(
+          Effect.flip,
+          Effect.provideService(
+            ProcessRunner.ProcessRunner,
+            refuseWindowsLaunch(processRunner, launcher),
+          ),
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.Environment, { SystemRoot: "C:\\Windows" }),
+        );
+        const launch = yield* Deferred.await(launcher);
+        const folder = NodePath.dirname(
+          /-File "(.+run\.ps1)"/.exec(launch.args.join(" "))?.[1] ?? "",
+        );
+        const bashScript = NodePath.join(folder, "command.sh");
+        assert.equal(NodeFS.readFileSync(bashScript, "utf8"), command);
+        const powershell = NodeFS.readFileSync(NodePath.join(folder, "command.ps1"), "utf8");
+        assert.notInclude(powershell, "results.txt");
+        assert.include(
+          powershell,
+          `ProcessStartInfo]::new([IO.Path]::Combine($t3GitBash, 'bash.exe'), '"${bashScript.replaceAll("\\", "/")}"')`,
+        );
       }),
   );
 
@@ -1376,15 +1419,22 @@ const stillRunning = (pid: number) =>
 
 describe("the shell a command runs in", () => {
   it.each([
-    ["win32", { SHELL: "/bin/zsh" }, "powershell"],
-    ["darwin", { SHELL: "/bin/zsh" }, "zsh"],
-    ["linux", { SHELL: "/usr/bin/bash" }, "bash"],
-    ["linux", { SHELL: "/usr/bin/fish" }, "sh"],
-    ["linux", { SHELL: "/tmp/a=b/bash" }, "sh"],
-    ["linux", {}, "sh"],
-  ] as const)("on %s with %j is %s", (platform, env, name) => {
-    assert.equal(CommandRunner.resolveCommandShell(platform, env).name, name);
-  });
+    ["win32", { SHELL: "/bin/zsh" }, undefined, "powershell", "powershell.exe"],
+    ["win32", { SHELL: "/bin/zsh" }, "bash", "bash", "bash.exe"],
+    ["darwin", { SHELL: "/bin/zsh" }, undefined, "zsh", "/bin/zsh"],
+    ["darwin", { SHELL: "/bin/zsh" }, "bash", "bash", "bash"],
+    ["linux", { SHELL: "/usr/bin/bash" }, undefined, "bash", "/usr/bin/bash"],
+    ["linux", { SHELL: "/usr/bin/bash" }, "bash", "bash", "/usr/bin/bash"],
+    ["linux", { SHELL: "/usr/bin/fish" }, undefined, "sh", "/bin/sh"],
+    ["linux", { SHELL: "/tmp/a=b/bash" }, undefined, "sh", "/bin/sh"],
+    ["linux", { SHELL: "/tmp/a=b/bash" }, "bash", "bash", "bash"],
+    ["linux", {}, undefined, "sh", "/bin/sh"],
+  ] as const)(
+    "on %s with %j, asked for %s, is %s at %s",
+    (platform, env, requested, name, path) => {
+      assert.deepEqual(CommandRunner.resolveCommandShell(platform, env, requested), { name, path });
+    },
+  );
 });
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
@@ -1489,9 +1539,26 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       Object.fromEntries(
         Object.entries(env).filter(([name]) => !names.includes(name.toUpperCase())),
       );
+    const withNodeAndHome = ({
+      inherited,
+      workspace,
+      otherBash,
+    }: {
+      readonly inherited: Readonly<Record<string, string>>;
+      readonly workspace: string;
+      readonly otherBash: string;
+    }) => ({
+      ...without(inherited, ["PATH", "HOME"]),
+      HOME: workspace,
+      PATH: [
+        otherBash,
+        NodePath.dirname(process.execPath),
+        Object.entries(inherited).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "",
+      ].join(";"),
+    });
     const runBash = (
       name: string,
-      command: string,
+      input: { readonly command: string; readonly shell?: "bash" },
       env: (setup: {
         readonly inherited: Readonly<Record<string, string>>;
         readonly workspace: string;
@@ -1520,7 +1587,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         };
         const started = yield* withServer((runner) =>
           runner
-            .run(callerOf(chat.threadId), { command })
+            .run(callerOf(chat.threadId), input)
             .pipe(Effect.tap(() => nextWake(chat.threadId))),
         ).pipe(
           Effect.provide(
@@ -1544,23 +1611,16 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         Effect.gen(function* () {
           const { row, lines, workspace } = yield* runBash(
             "command-win-git-bash",
-            [
-              `bash -c ${nodeAndHome}`,
-              `sh -c ${nodeAndHome}`,
-              `bash.exe -c ${nodeAndHome}`,
-              "bash -c 'echo $1 $2' zero -- one",
-              "'piped' | sh.exe -c 'cat; echo to-stderr >&2; exit 7'",
-            ].join("; "),
-            ({ inherited, workspace, otherBash }) => ({
-              ...without(inherited, ["PATH", "HOME"]),
-              HOME: workspace,
-              PATH: [
-                otherBash,
-                NodePath.dirname(process.execPath),
-                Object.entries(inherited).find(([name]) => name.toUpperCase() === "PATH")?.[1] ??
-                  "",
-              ].join(";"),
-            }),
+            {
+              command: [
+                `bash -c ${nodeAndHome}`,
+                `sh -c ${nodeAndHome}`,
+                `bash.exe -c ${nodeAndHome}`,
+                "bash -c 'echo $1 $2' zero -- one",
+                "'piped' | sh.exe -c 'cat; echo to-stderr >&2; exit 7'",
+              ].join("; "),
+            },
+            withNodeAndHome,
           );
           assert.lengthOf(lines, 9);
           for (const [node, printedHome] of [
@@ -1578,6 +1638,35 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         }),
     );
 
+    // Through PowerShell's `bash -c`, this grep lost its file and waited on the console for input.
+    it.effect(
+      "runs a bash command in Git Bash as written, double quotes included, in its cwd, with no input",
+      () =>
+        Effect.gen(function* () {
+          const { row, lines, workspace } = yield* runBash(
+            "command-win-shell-bash",
+            {
+              shell: "bash",
+              command: [
+                "printf '# pass 1\\n# fail 2\\nok 3\\n' > results.txt",
+                'grep -E "^# (pass|fail)" results.txt',
+                `echo "$(printf '%s' "a \\"b\\"")" 'c d' \\\\`,
+                "cat",
+                'echo "cat: $?"',
+                'cygpath -w "$PWD"',
+                "command -v node",
+                "exit 5",
+              ].join("\n"),
+            },
+            withNodeAndHome,
+          );
+          assert.deepEqual(lines.slice(0, 4), ["# pass 1", "# fail 2", 'a "b" c d \\', "cat: 0"]);
+          assert.isTrue(isFolder(lines[4], workspace), `${lines[4]} is not the workspace`);
+          assert.match(lines[5] ?? "", /^\/[a-z]\/.+\/node(\.exe)?$/i);
+          assert.equal(row?.exit_code, 5);
+        }),
+    );
+
     it.effect(
       "finds Git Bash through a git that only the command's PATH names, in any case and whatever GIT_EXEC_PATH says, and leaves git to it",
       () =>
@@ -1588,7 +1677,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           let calls = "";
           const { row, lines, workspace } = yield* runBash(
             "command-win-git-shim",
-            "git --version; bash -c 'cygpath -w $HOME'",
+            { command: "git --version; bash -c 'cygpath -w $HOME'" },
             ({ inherited, workspace, otherBash, nowhere, noInstalls }) => {
               // A launcher outside the install, as a package manager's shim is.
               const shim = NodePath.join(workspace, "git-shim");
@@ -1624,7 +1713,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           let childPidFile = "";
           const { row, lines, workspace } = yield* runBash(
             "command-win-git-hangs",
-            "bash -c 'cygpath -w $HOME'",
+            { command: "bash -c 'cygpath -w $HOME'" },
             ({ inherited, workspace, otherBash }) => {
               // A shim whose git never answers, in a child of the shim as git.cmd's git is.
               const shim = NodePath.join(workspace, "git-shim");
@@ -1651,11 +1740,14 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         }),
     );
 
-    it.effect("fails naming Git Bash when it finds none", () =>
+    it.effect.each([
+      ["bash in PowerShell", "command-win-no-git-bash", { command: `bash -c ${nodeAndHome}` }],
+      ["shell bash", "command-win-no-git-bash-shell", { command: "echo ran", shell: "bash" }],
+    ] as const)("fails naming Git Bash when it finds none, for %s", ([, name, input]) =>
       Effect.gen(function* () {
         const { row, lines } = yield* runBash(
-          "command-win-no-git-bash",
-          `bash -c ${nodeAndHome}`,
+          name,
+          input,
           ({ inherited, otherBash, noInstalls }) => ({
             ...without(inherited, ["PATH", ...installFolders]),
             ...noInstalls,

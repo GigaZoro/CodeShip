@@ -29,10 +29,23 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 
 - `kind`: `bad` reproduces a mistake, `guard` protects correct behavior, `control` is ordinary work.
 - `experience`: the real mistake, in a sentence. `source`: where it happened.
-- `setup`: the fake thread, its `world` (repo, branch, files, PRs, pages), `priorTurns`, and `mocks` for tool results.
-- `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `textMust`, and `linked`. A `calls` entry with `"succeeded": true` counts only a call T3 answered without an error, such as one that passed input validation. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers.
+- `setup`: the fake thread, its `world` (repo, branch, files, PRs, pages), `priorTurns`, and `mocks` for tool results. The templates are Linux captures; `"platform": "win32"` moves the case's machine to Windows, with Codex in PowerShell and Claude Code's Bash tool in Git Bash.
+- `expect`: the checks, such as `calls`, `callsMustNot`, `maxCalls`, `order`, `textMust`, and `linked`. An `args` value `"/regex/"` matches a string argument by regex, and `null` matches an argument the call left out. A `calls` entry with `"succeeded": true` counts only a call T3 answered without an error, such as one that passed input validation. Device cases also use `device` to check every child brief, forbid raw UI commands, bound failed device actions per user turn, and require artifact paths in completed final answers.
 
 Check that the case builds with `--dry-run --case <id>`. Then run it on the text before your fix, where it must fail, and on the text after, where it must pass.
+
+## Windows command cases
+
+`t3_command_run` runs its command in Windows PowerShell 5.1 on Windows, which drops every `"` inside an argument it passes to a program. In `cases/background-work.ndjson`, `windows-posix-command-keeps-its-quotes` (bad) asks for a test run and a quoted `grep` on a Windows machine. It fails a quoted command passed through `bash -c` and POSIX syntax sent without `shell: "bash"`. `windows-powershell-script-stays-in-powershell` (control) keeps a PowerShell script in PowerShell.
+
+Passes per case, main's text → `shell: "bash"`, 3 samples each:
+
+| Case                                          | GPT-6 Luna | GPT-6 Astra |
+| --------------------------------------------- | ---------- | ----------- |
+| windows-posix-command-keeps-its-quotes        | 1/3 → 2/3  | 2/3 → 2/3   |
+| windows-powershell-script-stays-in-powershell | 3/3 (new)  | 3/3 (new)   |
+
+On main's text, two failures quoted a `grep` inside `bash -c` and one sent `status=$?` to PowerShell. On the new text, no sample did either; the two failures never called `t3_command_run`, because the simulated shell reported a missing checkout. Claude models are not measured yet.
 
 ## Device manager cases
 

@@ -20,14 +20,16 @@ it("states t3_thread_read page size limits in the parameter descriptions", () =>
   }
 });
 
-// Agents on Windows write POSIX syntax because their Bash tool is Git Bash; `&&` then fails in PowerShell 5.1.
-it("names the shell t3_command_run uses on each platform and how to chain on Windows", () => {
+// Agents on Windows write POSIX syntax because their Bash tool is Git Bash; `&&` then fails in
+// PowerShell 5.1, and a `"` inside `bash -c '...'` never reaches bash.
+it("names the shell t3_command_run uses on each platform and how to run POSIX syntax on Windows", () => {
   const description = OrchestratorToolkit.tools.t3_command_run.description ?? "";
   expect(description).toContain("bash or zsh on macOS and Linux");
   expect(description).toContain("Windows PowerShell 5.1");
   expect(description).toContain("no `&&` or `||`");
+  expect(description).toContain('`shell: "bash"`');
   expect(description).toContain("$LASTEXITCODE");
-  expect(description).toContain("a `bash` or `sh` in the command runs Git Bash");
+  expect(description).toContain("a `bash` or `sh` runs Git Bash");
   expect(description).toContain("through `wsl`");
 });
 

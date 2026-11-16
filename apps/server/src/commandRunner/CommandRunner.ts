@@ -99,8 +99,9 @@ const WINDOWS_WRAPPER = [
   `  Write-T3File '${PID_FILE}' $PID`,
   "  $system = [Environment]::SystemDirectory",
   "  $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'cmd.exe'))",
-  // cmd only appends the output of PowerShell and everything it starts to the log.
-  `  $start.Arguments = '/d /s /c ""' + (Join-Path $system 'WindowsPowerShell\\v1.0\\powershell.exe') + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'command.ps1') + '" >> "' + (Join-Path $PSScriptRoot '${LOG_FILE}') + '" 2>&1"'`,
+  // cmd only appends the output of PowerShell and everything it starts to the log. Input is NUL,
+  // as /dev/null elsewhere: a command that reads it ends instead of waiting on the hidden console.
+  `  $start.Arguments = '/d /s /c ""' + (Join-Path $system 'WindowsPowerShell\\v1.0\\powershell.exe') + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'command.ps1') + '" < NUL >> "' + (Join-Path $PSScriptRoot '${LOG_FILE}') + '" 2>&1"'`,
   "  $start.UseShellExecute = $false",
   "  $start.CreateNoWindow = $true",
   "  $command = [Diagnostics.Process]::Start($start)",
@@ -293,18 +294,24 @@ export const COMMAND_SHELL_LABELS: Readonly<Record<CommandShellName, string>> = 
 };
 
 /**
- * Windows runs PowerShell. Elsewhere bash or zsh as the user's own commands expect; anything else
- * (fish, nu) gets /bin/sh. A path with `=` would read as an assignment to `env`.
+ * Windows runs PowerShell, or Git Bash when asked for bash. Elsewhere bash or zsh as the user's own
+ * commands expect; anything else (fish, nu) gets /bin/sh, and bash comes from PATH when the user's
+ * shell is not bash. A path with `=` would read as an assignment to `env`.
  */
 export const resolveCommandShell = (
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
+  requested: OrchestratorMcpRunCommandInput["shell"],
 ): { readonly name: CommandShellName; readonly path: string } => {
-  if (platform === "win32") return { name: "powershell", path: "powershell.exe" };
-  const path = env.SHELL;
-  const match = path === undefined ? null : /^\/(?:[^=]*\/)?(ba|z)sh$/.exec(path);
-  if (path === undefined || match === null) return { name: "sh", path: "/bin/sh" };
-  return { name: match[1] === "ba" ? "bash" : "zsh", path };
+  if (platform === "win32") {
+    return requested === "bash"
+      ? { name: "bash", path: "bash.exe" }
+      : { name: "powershell", path: "powershell.exe" };
+  }
+  const match = env.SHELL === undefined ? null : /^\/(?:[^=]*\/)?(ba|z)sh$/.exec(env.SHELL);
+  if (requested === "bash") return { name: "bash", path: match?.[1] === "ba" ? match[0] : "bash" };
+  if (match === null) return { name: "sh", path: "/bin/sh" };
+  return { name: match[1] === "ba" ? "bash" : "zsh", path: match[0] };
 };
 
 /** The options and functions bash, /bin/sh on macOS and many Linux systems, reads from its environment. */
@@ -396,11 +403,14 @@ const GIT_BASH_NAMES = ["bash", "sh"].flatMap((name) => [
   { name: `${name}.exe`, exe: `${name}.exe` },
 ]);
 
-// System32's bash.exe is WSL's: no node, no `C:/` paths. command.ps1 makes `bash` and `sh` aliases
-// of Git Bash's (a function would lose a `--` argument), or an error naming it. PATH stays as it is,
-// since Git's bin also holds a git.exe that would replace the command's `git`; a program the
-// command starts that runs `bash` itself still gets WSL's.
-const WINDOWS_GIT_BASH = [
+const noGitBash = (name: string) =>
+  escapePowerShellStringLiteral(
+    `${name}: no Git Bash found: no bin\\bash.exe in the install of the git on PATH, in Program Files\\Git or in LOCALAPPDATA\\Programs\\Git. Install Git for Windows (https://git-scm.com/download/win); WSL's bash runs through wsl.`,
+  );
+
+// System32's bash.exe is WSL's: no node, no `C:/` paths. Sets $t3GitBash to the bin folder of Git
+// for Windows, whose bash.exe sets up the PATH its own tools need.
+const FIND_GIT_BASH = [
   "$t3GitBash = & {",
   WINDOWS_COMMAND_TREE_FUNCTION,
   "  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1",
@@ -429,6 +439,13 @@ const WINDOWS_GIT_BASH = [
   "  foreach ($folder in $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)}) { if ($folder) { [IO.Path]::Combine($folder, 'Git') } }",
   "  if ($env:LOCALAPPDATA) { [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Git') }",
   "} | ForEach-Object { [IO.Path]::Combine($_, 'bin') } | Where-Object { [IO.File]::Exists([IO.Path]::Combine($_, 'bash.exe')) } | Select-Object -First 1",
+];
+
+// A PowerShell command's `bash` and `sh` are aliases of Git Bash's (a function would lose a `--`
+// argument), or an error naming it. PATH stays as it is, since Git's bin also holds a git.exe that
+// would replace the command's `git`; a program the command starts that runs `bash` itself still
+// gets WSL's.
+const GIT_BASH_ALIASES = [
   "if ($t3GitBash) {",
   ...GIT_BASH_NAMES.map(
     ({ name, exe }) =>
@@ -436,12 +453,27 @@ const WINDOWS_GIT_BASH = [
   ),
   "} else {",
   ...GIT_BASH_NAMES.map(
-    ({ name }) =>
-      `  function ${name} { [Console]::Error.WriteLine(${escapePowerShellStringLiteral(
-        `${name}: no Git Bash found: no bin\\bash.exe in the install of the git on PATH, in Program Files\\Git or in LOCALAPPDATA\\Programs\\Git. Install Git for Windows (https://git-scm.com/download/win); WSL's bash runs through wsl.`,
-      )}); exit 127 }`,
+    ({ name }) => `  function ${name} { [Console]::Error.WriteLine(${noGitBash(name)}); exit 127 }`,
   ),
   "}",
+];
+
+/**
+ * Runs a bash command's script in Git Bash. PowerShell 5.1's call operator drops a `"` inside an
+ * argument, while Process.Start passes them as written: here only the script's path, in double
+ * quotes, which Cygwin reads literally. With forward slashes, which Cygwin also reads as a Windows
+ * path, no backslash can read as an escape (a `\\server` path's would).
+ */
+const runInGitBash = (scriptPath: string) => [
+  ...FIND_GIT_BASH,
+  `if (-not $t3GitBash) { [Console]::Error.WriteLine(${noGitBash("bash")}); exit 127 }`,
+  "try {",
+  `  $t3Start = [Diagnostics.ProcessStartInfo]::new([IO.Path]::Combine($t3GitBash, 'bash.exe'), ${escapePowerShellStringLiteral(`"${scriptPath.replaceAll("\\", "/")}"`)})`,
+  "  $t3Start.UseShellExecute = $false",
+  "  $t3Bash = [Diagnostics.Process]::Start($t3Start)",
+  '} catch { [Console]::Error.WriteLine("CodeShip could not start Git Bash: $_"); exit 1 }',
+  "$t3Bash.WaitForExit()",
+  "exit $t3Bash.ExitCode",
 ];
 
 /** The last lines of a log, starting at a whole line when the start was cut. */
@@ -1081,7 +1113,7 @@ const make = Effect.gen(function* () {
    */
   const launch = Effect.fn("CommandRunner.launch")(function* (
     directory: string,
-    command: string,
+    { command, shell }: Pick<OrchestratorMcpRunCommandInput, "command" | "shell">,
     cwd: string,
     /** The command's whole environment, as the calling agent's own shell commands get it. */
     commandEnv: Readonly<Record<string, string>>,
@@ -1105,7 +1137,7 @@ const make = Effect.gen(function* () {
           statusPath,
           path.join(directory, PID_FILE),
           ...prefix,
-          resolveCommandShell(platform, env).path,
+          resolveCommandShell(platform, env, shell).path,
           "-c",
           command,
         ],
@@ -1121,16 +1153,23 @@ const make = Effect.gen(function* () {
     // value reaches the disk.
     const scriptPath = path.join(directory, "command.ps1");
     const wrapperPath = path.join(directory, "run.ps1");
+    const bashScriptPath = path.join(directory, "command.sh");
+    if (shell === "bash") yield* fs.writeFileString(bashScriptPath, command);
     yield* fs.writeFileString(
       scriptPath,
       [
         "\uFEFF$ErrorActionPreference = 'Continue'",
-        ...WINDOWS_GIT_BASH,
-        command,
-        "$t3Ok = $?",
-        "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
-        "if (-not $t3Ok) { exit 1 }",
-        "exit 0",
+        ...(shell === "bash"
+          ? runInGitBash(bashScriptPath)
+          : [
+              ...FIND_GIT_BASH,
+              ...GIT_BASH_ALIASES,
+              command,
+              "$t3Ok = $?",
+              "if ($LASTEXITCODE) { exit $LASTEXITCODE }",
+              "if (-not $t3Ok) { exit 1 }",
+              "exit 0",
+            ]),
         "",
       ].join("\r\n"),
     );
@@ -1255,6 +1294,7 @@ const make = Effect.gen(function* () {
         shell: resolveCommandShell(
           platform,
           windows ? {} : posixLaunchEnvironment(hostCommandEnv, commandEnv).env,
+          input.shell,
         ).name,
         logPath,
         timeoutMinutes,
@@ -1398,7 +1438,7 @@ const make = Effect.gen(function* () {
                     `Could not start the command: ${recordedRow.failure.message}`,
                   );
                 }
-                const started = yield* launch(directory, input.command, cwd, commandEnv).pipe(
+                const started = yield* launch(directory, input, cwd, commandEnv).pipe(
                   Effect.result,
                 );
                 if (started._tag === "Failure") {

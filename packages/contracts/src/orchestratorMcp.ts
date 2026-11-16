@@ -289,6 +289,11 @@ export const OrchestratorMcpRunCommandInput = Schema.Struct({
       description: `Default ${ORCHESTRATOR_MCP_COMMAND_DEFAULT_TIMEOUT_MINUTES}. The command is stopped after it.`,
     }),
   ),
+  shell: Schema.optional(
+    Schema.Literal("bash").annotate({
+      description: "Runs the command, unchanged, in bash on every OS: Git Bash on Windows.",
+    }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpRunCommandInput = typeof OrchestratorMcpRunCommandInput.Type;

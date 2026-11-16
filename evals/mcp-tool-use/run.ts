@@ -85,7 +85,7 @@ import {
 } from "./providers.ts";
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
-import { DeviceExpect, gradeDevice } from "./device-grading.ts";
+import { AGENT_SHELL_TOOLS, DeviceExpect, gradeDevice } from "./device-grading.ts";
 import {
   AGENT_DEVICE_SHELL,
   deviceFailure,
@@ -163,8 +163,8 @@ const PriorToolCall = Schema.Struct({
 
 /**
  * One expected call. `args` match partially: `~text` is a case-insensitive substring (`~a|b`: any one),
- * `"<=N"` / `">=N"` bound a number, and keys may be dotted paths. With `succeeded`, only a call
- * answered without an error matches.
+ * `/regex/` a regex, `"<=N"` / `">=N"` bound a number, and keys may be dotted paths. With
+ * `succeeded`, only a call answered without an error matches.
  */
 const McpToolUseCall = Schema.Struct({
   tool: Schema.String,
@@ -266,6 +266,8 @@ export const McpToolUseCase = Schema.Struct({
     harness: Schema.optional(Schema.Literals(["claude", "codex"])),
     /** The Linked environments beta is on, so T3 lists its link tools. */
     linkedEnvironments: Schema.optional(Schema.Boolean),
+    /** The thread's machine runs Windows: the template's OS, shell and paths say so. */
+    platform: Schema.optional(Schema.Literal("win32")),
     /** delegate_task `role` for a delegated child. T3 builds the child's first message from it. */
     delegateRole: Schema.optional(OrchestratorMcpTaskRole),
     context: Schema.optional(Schema.String),
@@ -567,6 +569,20 @@ const NATIVE_SCHEMAS: Readonly<Record<string, Omit<ApiTool, "name">>> = {
   },
 };
 
+/**
+ * Moves a captured Linux request, as JSON text, to Windows: its OS lines, Codex's shell, and its
+ * home paths under `C:\Users\user`. Claude Code's Bash tool stays bash, Git Bash on Windows.
+ */
+export const onWindows = (template: string) =>
+  template
+    .replaceAll("Platform: linux", "Platform: win32")
+    .replace(/OS Version: Linux [^\\"]*/g, "OS Version: Windows 11 Pro 10.0.26200")
+    .replaceAll("<shell>bash</shell>", "<shell>powershell</shell>")
+    .replace(
+      /\/home\/[^/\\"\s]+((?:\/[\w.-]+)*)/g,
+      (_, rest: string) => `C:\\\\Users\\\\user${rest.replaceAll("/", "\\\\")}`,
+    );
+
 /** Rebuilds the parts of a captured request that every case shares. */
 export const buildBase = (
   template: typeof MessagesRequest.Type,
@@ -719,7 +735,7 @@ const buildCodexBase = (
     gitStatusAt: 0,
     environment: {
       cwd: clean(cwd),
-      platform: cwd.startsWith("/Users/") ? "darwin" : "linux",
+      platform: /^[A-Z]:\\/i.test(cwd) ? "win32" : cwd.startsWith("/Users/") ? "darwin" : "linux",
       date: /<current_date>(.*?)<\/current_date>/.exec(joined)?.[1],
     },
     nativeTools,
@@ -1565,8 +1581,12 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
 });
 
 const BOUND = /^([<>]=)(-?\d+(?:\.\d+)?)$/;
-/** Partial match: `~text` is a case-insensitive substring, `<=N` / `>=N` bound a number. */
+/** Partial match: `~text` is a case-insensitive substring, `/regex/` a regex, `<=N` / `>=N` bound a number. */
 const matches = (expected: unknown, actual: unknown): boolean => {
+  if (expected === null) return actual === undefined || actual === null;
+  if (typeof expected === "string" && expected.length > 2 && /^\/.*\/$/s.test(expected)) {
+    return typeof actual === "string" && new RegExp(expected.slice(1, -1)).test(actual);
+  }
   const bound = typeof expected === "string" ? BOUND.exec(expected) : null;
   if (bound !== null) {
     const limit = Number(bound[2]);
@@ -1641,9 +1661,13 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun) =>
     const ended = run.stopReason === "end_turn" && last.includes(expect.endsTurnAfter);
     add(`endsTurnAfter ${expect.endsTurnAfter}`, ended);
   }
-  // Bash and Monitor both take a shell `command`.
+  // The agent's own shell; a t3_command_run `command` is the background run these checks steer to.
   const shell = calls.flatMap((call) =>
-    isRecord(call.input) && typeof call.input.command === "string" ? [call.input.command] : [],
+    AGENT_SHELL_TOOLS.has(call.tool) &&
+    isRecord(call.input) &&
+    typeof call.input.command === "string"
+      ? [call.input.command]
+      : [],
   );
   const test = (pattern: string, value: string) => new RegExp(pattern).test(value);
   for (const p of expect.shellMustNot ?? [])
@@ -2287,9 +2311,11 @@ const main = Effect.gen(function* () {
     role: McpToolUseCase["setup"]["role"],
     deviceAccess: boolean,
     links: boolean,
-  ): Effect.Effect<Base, Schema.SchemaError> =>
-    codex
-      ? decodeCodexCapture(template).pipe(
+    windows: boolean,
+  ): Effect.Effect<Base, Schema.SchemaError> => {
+    const request = windows ? onWindows(template) : template;
+    return codex
+      ? decodeCodexCapture(request).pipe(
           Effect.map((capture) =>
             buildCodexBase(capture.request.provider_native, {
               model: flags.model,
@@ -2301,7 +2327,7 @@ const main = Effect.gen(function* () {
             }),
           ),
         )
-      : decodeCapture(template).pipe(
+      : decodeCapture(request).pipe(
           Effect.flatMap((capture) => {
             const built = buildBase(capture.request.provider_native, {
               model: flags.model,
@@ -2318,20 +2344,22 @@ const main = Effect.gen(function* () {
               : Effect.succeed(built);
           }),
         );
+  };
   // Codex has no native subagents; its cases with that role run as top-level threads.
   const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}`;
-  const base = yield* buildFor("top", true, false);
-  const bases = new Map<string, Base>([["top:true:false", base]]);
+    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.platform === "win32"}`;
+  const base = yield* buildFor("top", true, false, false);
+  const bases = new Map<string, Base>([["top:true:false:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links] = key.split(":") as [
+    const [role = "top", access, links, windows] = key.split(":") as [
       McpToolUseCase["setup"]["role"],
       string,
       string,
+      string,
     ];
-    bases.set(key, yield* buildFor(role, access === "true", links === "true"));
+    bases.set(key, yield* buildFor(role, access === "true", links === "true", windows === "true"));
   }
   const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";

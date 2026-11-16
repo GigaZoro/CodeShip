@@ -22,6 +22,7 @@ import {
   mockOutput,
   normalizeToolInput,
   normalizeToolName,
+  onWindows,
   type SampleRun,
   shellOutput,
   shellRequest,
@@ -57,6 +58,14 @@ it("grades Codex shell and subagent calls with the shared rules", () => {
       { calls, text: "", stopReason: "end_turn" },
     ),
     ["notCalls Agent", "shellMustNot /sleep/"],
+  );
+  const backgroundRun = { step: 1, tool: "t3_command_run", input: { command: "sleep 600" } };
+  assert.deepEqual(
+    failed(
+      { shellMustNot: ["sleep"] },
+      { calls: [backgroundRun], text: "", stopReason: "end_turn" },
+    ),
+    [],
   );
 });
 
@@ -112,7 +121,10 @@ it("passes a good run and names every rule a bad run breaks", () => {
       { tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } },
       { tool: "t3_thread_launch", succeeded: true } as const,
     ],
-    callsMustNot: [{ tool: "delegate_task", args: { runtimeMode: "approval-required" } }],
+    callsMustNot: [
+      { tool: "delegate_task", args: { runtimeMode: "/^approval-/" } },
+      { tool: "delegate_task", args: { clientRequestId: null } },
+    ],
     notCalls: ["t3_thread_send"],
     order: ["orchestrator_capabilities", "delegate_task"],
     minCalls: { orchestrator_capabilities: 1 },
@@ -130,7 +142,12 @@ it("passes a good run and names every rule a bad run breaks", () => {
       {
         step: 1,
         tool: "delegate_task",
-        input: { task: "Prior findings: ...", target: { options: { reasoningEffort: "max" } } },
+        input: {
+          task: "Prior findings: ...",
+          target: { options: { reasoningEffort: "max" } },
+          runtimeMode: "full-access",
+          clientRequestId: "review-1",
+        },
       },
       { step: 1, tool: "t3_thread_launch", input: {}, failed: false },
     ],
@@ -158,7 +175,8 @@ it("passes a good run and names every rule a bad run breaks", () => {
   assert.deepEqual(failed(expect, bad), [
     'calls delegate_task {"task":"~FINDING","target.options":"~max"}',
     "calls t3_thread_launch succeeded",
-    'callsMustNot delegate_task {"runtimeMode":"approval-required"}',
+    'callsMustNot delegate_task {"runtimeMode":"/^approval-/"}',
+    'callsMustNot delegate_task {"clientRequestId":null}',
     "notCalls t3_thread_send",
     "order orchestrator_capabilities > delegate_task",
     "minCalls orchestrator_capabilities >= 1",
@@ -251,6 +269,20 @@ const childCase: McpToolUseCase = {
   prompt: "Push the fix, open a PR against main, and report the PR URL.",
   expect: { calls: [{ tool: "link_pull_request" }], notCalls: ["watch_pull_request"] },
 };
+
+// The paths land inside JSON strings, where each backslash is escaped.
+it("moves a captured request to Windows: its OS, Codex's shell and its home paths", () => {
+  const linux = {
+    claude:
+      "Primary working directory: /home/alice/app/src\n - Platform: linux\n - OS Version: Linux 6.12.107+deb13-amd64",
+    codex: "<cwd>/home/user/app</cwd>\n  <shell>bash</shell>",
+  };
+  assert.deepEqual(JSON.parse(onWindows(JSON.stringify(linux))), {
+    claude:
+      "Primary working directory: C:\\Users\\user\\app\\src\n - Platform: win32\n - OS Version: Windows 11 Pro 10.0.26200",
+    codex: "<cwd>C:\\Users\\user\\app</cwd>\n  <shell>powershell</shell>",
+  });
+});
 
 it("rebuilds the template from this checkout and sends a child T3's task prompt", () => {
   const base = buildBase(template, { model: "claude-sonnet-5-5", keepUserInstructions: false });
