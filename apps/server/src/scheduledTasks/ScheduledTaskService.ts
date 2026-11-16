@@ -4479,19 +4479,6 @@ export const layer = Layer.effect(
         existingTask.projectId !== input.projectId &&
         keptThreadId === existingTask.threadId;
       const threadId = threadMode === "new_thread" || movedOffThread ? null : keptThreadId;
-      // An unchanged destination is not rechecked, so a task on an archived thread stays editable.
-      if (threadId !== null && threadId !== existingTask?.threadId) {
-        yield* requireDestinationThread(threadId, input.projectId, id);
-      }
-      // Refused on save rather than at run time; a disabled task can still be saved, so one
-      // stored above the ceiling can be turned off before its mode is lowered. A task bound to a
-      // thread runs in that thread's mode, which the orchestrator checks instead. Checked before
-      // the save consumes a webhook secret.
-      const modeDenial =
-        input.enabled && threadId === null
-          ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
-          : undefined;
-      if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: id });
       // Omitted keeps the stored choice, so a client that predates sharing can re-save a task.
       const sharedExclusions =
         input.shared === undefined
@@ -4511,6 +4498,19 @@ export const layer = Layer.effect(
           );
         }
       }
+      // An unchanged destination is not rechecked, so a task on an archived thread stays editable.
+      if (threadId !== null && threadId !== existingTask?.threadId) {
+        yield* requireDestinationThread(threadId, input.projectId, id);
+      }
+      // Refused on save rather than at run time; a disabled task can still be saved, so one
+      // stored above the ceiling can be turned off before its mode is lowered. A task bound to a
+      // thread runs in that thread's mode, which the orchestrator checks instead. Checked before
+      // the save consumes a webhook secret.
+      const modeDenial =
+        input.enabled && threadId === null
+          ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
+          : undefined;
+      if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: id });
       const sharedProject =
         sharedExclusions === undefined ? null : yield* sharedProjectOf(input.projectId, id);
       // Omitted keeps the stored choice.
