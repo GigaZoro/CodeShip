@@ -388,13 +388,15 @@ variable: it takes cmd and PowerShell from the system directory, so neither the 
 nor a `SystemRoot` its settings move or drop can change which ones run. It runs the command in
 a console of its own with no window and writes the exit status once the command ends, so a Ctrl+C,
 Ctrl+Break or close event in that console can end the command but never the wrapper. The
-command's script first puts Git for Windows' `bin` folder on its `PATH`, so a bare `bash` or `sh`
-runs Git Bash and not System32's `bash.exe`, which is WSL's and has no node or `C:/` paths. It
-finds the folder itself, with the command's environment and folder: through `git --exec-path` of
-the `git` on that `PATH`, which also sees past a package manager's shim, then in the standard
-install folders. Without Git Bash it defines `bash` and `sh` as an error that names where it
-looked. Windows' own search, which a program the command starts may use, still tries System32
-before `PATH`. When the
+command's script first defines `bash` and `sh`, with or without `.exe`, as PowerShell functions
+that run Git Bash and not System32's `bash.exe`, which is WSL's and has no node or `C:/` paths.
+It leaves `PATH` alone: Git's `bin` folder also holds a `git.exe`, which would take the place of
+the `git` the command names, such as a wrapper or a package manager's shim. It finds Git Bash
+itself, with the command's environment and folder: through `git --exec-path` of the `git` on that
+`PATH`, which also sees past a shim and is stopped, with what it started, when it does not answer
+within 10 s, then in the standard install folders. Without Git Bash it defines `bash` and `sh` as
+an error that names where it looked. A program the command starts that runs `bash` itself still
+gets WSL's. When the
 provider is turned off or not running, or cannot read them, including
 Claude settings an organization's policy helper computes (a `policyHelper` or a per-OS
 `policyHelpers` entry, neither of which `resolveSettings` applies), the call fails and nothing

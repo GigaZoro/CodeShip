@@ -1457,45 +1457,64 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         };
       });
 
-    it.effect("runs Git Bash for bash and sh, which see the Windows home and node", () =>
-      Effect.gen(function* () {
-        const { row, lines, workspace } = yield* runBash(
-          "command-win-git-bash",
-          `bash -c ${nodeAndHome}; sh -c ${nodeAndHome}`,
-          ({ inherited, workspace, otherBash }) => ({
-            ...without(inherited, ["PATH", "HOME"]),
-            HOME: workspace,
-            PATH: [
-              otherBash,
-              NodePath.dirname(process.execPath),
-              Object.entries(inherited).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "",
-            ].join(";"),
-          }),
-        );
-        assert.lengthOf(lines, 4);
-        for (const [node, printedHome] of [lines.slice(0, 2), lines.slice(2)]) {
-          assert.match(node ?? "", /^\/[a-z]\/.+\/node(\.exe)?$/i);
-          assert.isTrue(isFolder(printedHome, workspace), `${printedHome} is not the workspace`);
-        }
-        assert.equal(row?.exit_code, 0);
-      }),
+    it.effect(
+      "runs Git Bash for bash and sh, with or without .exe, which see the Windows home and node and take the command's input",
+      () =>
+        Effect.gen(function* () {
+          const { row, lines, workspace } = yield* runBash(
+            "command-win-git-bash",
+            [
+              `bash -c ${nodeAndHome}`,
+              `sh -c ${nodeAndHome}`,
+              `bash.exe -c ${nodeAndHome}`,
+              "'piped' | sh.exe -c 'cat; echo to-stderr >&2; exit 7'",
+            ].join("; "),
+            ({ inherited, workspace, otherBash }) => ({
+              ...without(inherited, ["PATH", "HOME"]),
+              HOME: workspace,
+              PATH: [
+                otherBash,
+                NodePath.dirname(process.execPath),
+                Object.entries(inherited).find(([name]) => name.toUpperCase() === "PATH")?.[1] ??
+                  "",
+              ].join(";"),
+            }),
+          );
+          assert.lengthOf(lines, 8);
+          for (const [node, printedHome] of [
+            lines.slice(0, 2),
+            lines.slice(2, 4),
+            lines.slice(4, 6),
+          ]) {
+            assert.match(node ?? "", /^\/[a-z]\/.+\/node(\.exe)?$/i);
+            assert.isTrue(isFolder(printedHome, workspace), `${printedHome} is not the workspace`);
+          }
+          // Plain lines, not PowerShell error records, and Git Bash's own exit code.
+          assert.deepEqual(lines.slice(6), ["piped", "to-stderr"]);
+          assert.equal(row?.exit_code, 7);
+        }),
     );
 
     it.effect(
-      "finds Git Bash through a git that only the command's PATH names, in any case and whatever GIT_EXEC_PATH says",
+      "finds Git Bash through a git that only the command's PATH names, in any case and whatever GIT_EXEC_PATH says, and leaves git to it",
       () =>
         Effect.gen(function* () {
           const git = NodeChildProcess.execFileSync("where.exe", ["git"], { encoding: "utf8" })
             .split(/\r?\n/)[0]!
             .trim();
+          let calls = "";
           const { row, lines, workspace } = yield* runBash(
             "command-win-git-shim",
-            "bash -c 'cygpath -w $HOME'",
+            "git --version; bash -c 'cygpath -w $HOME'",
             ({ inherited, workspace, otherBash, nowhere, noInstalls }) => {
               // A launcher outside the install, as a package manager's shim is.
               const shim = NodePath.join(workspace, "git-shim");
               NodeFS.mkdirSync(shim, { recursive: true });
-              NodeFS.writeFileSync(NodePath.join(shim, "git.cmd"), `@"${git}" %*\r\n`);
+              calls = NodePath.join(shim, "calls.txt");
+              NodeFS.writeFileSync(
+                NodePath.join(shim, "git.cmd"),
+                `@echo %*>>"%~dp0calls.txt"\r\n@"${git}" %*\r\n`,
+              );
               return {
                 ...without(inherited, ["PATH", "HOME", "GIT_EXEC_PATH", ...installFolders]),
                 ...noInstalls,
@@ -1505,6 +1524,45 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               };
             },
           );
+          assert.isTrue(isFolder(lines.at(-1), workspace), `${lines.at(-1)} is not the workspace`);
+          // The command's own git is still the shim, not the git beside Git Bash.
+          assert.deepEqual(NodeFS.readFileSync(calls, "utf8").trim().split(/\r?\n/), [
+            "--exec-path",
+            "--version",
+          ]);
+          assert.equal(row?.exit_code, 0);
+        }),
+    );
+
+    it.effect(
+      "stops a git that does not answer, with what it started, and finds Git Bash in the install folders",
+      () =>
+        Effect.gen(function* () {
+          let childPidFile = "";
+          const { row, lines, workspace } = yield* runBash(
+            "command-win-git-hangs",
+            "bash -c 'cygpath -w $HOME'",
+            ({ inherited, workspace, otherBash }) => {
+              // A shim whose git never answers, in a child of the shim as git.cmd's git is.
+              const shim = NodePath.join(workspace, "git-shim");
+              NodeFS.mkdirSync(shim, { recursive: true });
+              childPidFile = NodePath.join(shim, "child.pid");
+              NodeFS.writeFileSync(
+                NodePath.join(shim, "git.cmd"),
+                `@powershell.exe -NoProfile -NonInteractive -Command "Set-Content -LiteralPath '${childPidFile}' -Value $PID; Start-Sleep 300"\r\n`,
+              );
+              return {
+                ...without(inherited, ["PATH", "HOME"]),
+                HOME: workspace,
+                PATH: [otherBash, shim, system, powershellFolder].join(";"),
+              };
+            },
+          );
+          const childPid = Number.parseInt(NodeFS.readFileSync(childPidFile, "utf8"), 10);
+          const left = stillRunning(childPid);
+          if (left) process.kill(childPid); // still runs here
+          assert.isFalse(left);
+          assert.include(lines[0] ?? "", "did not answer within 10 s");
           assert.isTrue(isFolder(lines.at(-1), workspace), `${lines.at(-1)} is not the workspace`);
           assert.equal(row?.exit_code, 0);
         }),

@@ -114,42 +114,6 @@ const WINDOWS_WRAPPER = [
   "",
 ].join("\r\n");
 
-// System32's bash.exe is WSL's, which has no node and cannot read `C:/` paths. command.ps1 puts Git
-// Bash's folder first on its PATH, found with the command's own environment and folder, or makes a
-// bare `bash` and `sh` fail naming it. A program that searches System32 first still gets WSL's.
-const WINDOWS_GIT_BASH = [
-  "$t3GitBash = & {",
-  "  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1",
-  "  if ($git) {",
-  // --exec-path names the install behind a launcher or shim; GIT_EXEC_PATH would replace it. A git
-  // that cannot answer leaves the standard folders, and the error below names where it looked.
-  "    try {",
-  "      $start = [Diagnostics.ProcessStartInfo]::new($git.Path, '--exec-path')",
-  "      $start.UseShellExecute = $false",
-  "      $start.RedirectStandardOutput = $true",
-  "      $start.StandardOutputEncoding = [Text.Encoding]::UTF8",
-  "      $start.EnvironmentVariables.Remove('GIT_EXEC_PATH')",
-  "      $run = [Diagnostics.Process]::Start($start)",
-  "      $out = $run.StandardOutput.ReadToEndAsync()",
-  "      if (-not $run.WaitForExit(10000)) { $run.Kill() } elseif ($run.ExitCode -eq 0 -and $out.Wait(1000) -and $out.Result.Trim()) {",
-  // <install>\<build>\libexec\git-core
-  "        [IO.Path]::GetFullPath([IO.Path]::Combine($out.Result.Trim(), '..', '..', '..'))",
-  "      }",
-  "    } catch {}",
-  "  }",
-  "  foreach ($folder in $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)}) { if ($folder) { [IO.Path]::Combine($folder, 'Git') } }",
-  "  if ($env:LOCALAPPDATA) { [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Git') }",
-  "} | ForEach-Object { [IO.Path]::Combine($_, 'bin') } | Where-Object { [IO.File]::Exists([IO.Path]::Combine($_, 'bash.exe')) } | Select-Object -First 1",
-  "if ($t3GitBash) { $env:PATH = $t3GitBash + ';' + $env:PATH } else {",
-  ...["bash", "sh"].map(
-    (name) =>
-      `  function ${name} { [Console]::Error.WriteLine(${escapePowerShellStringLiteral(
-        `${name}: no Git Bash found: no bin\\bash.exe in the install of the git on PATH, in Program Files\\Git or in LOCALAPPDATA\\Programs\\Git. Install Git for Windows (https://git-scm.com/download/win); WSL's bash runs through wsl.`,
-      )}); exit 127 }`,
-  ),
-  "}",
-];
-
 // Names itself first, then runs the command and outlives it to write its exit status; each rename
 // makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
 const POSIX_WRAPPER = [
@@ -397,20 +361,78 @@ export const WINDOWS_COMMAND_TREE_FUNCTION = [
   "  }",
   "  return $targets",
   "}",
+  // Each pass also stops what the last one's processes started as they ended. A process that ends
+  // before its stop is no error; one still running is.
+  "function Stop-T3CommandTree($root, $since, $identity) {",
+  "  for ($pass = 0; $pass -lt 5; $pass++) {",
+  "    $targets = Get-T3CommandTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root $since $identity",
+  "    if ($targets.Count -eq 0) { return }",
+  "    foreach ($id in $targets.Keys) {",
+  "      try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { throw } }",
+  "    }",
+  "  }",
+  "}",
 ].join("\n");
 
 const windowsStopScript = (pid: number, sinceMs: number, identityMs: number | null) =>
   [
     "$ErrorActionPreference = 'Stop'",
     WINDOWS_COMMAND_TREE_FUNCTION,
-    "for ($pass = 0; $pass -lt 5; $pass++) {",
-    `  $targets = Get-T3CommandTree @(Get-CimInstance Win32_Process) ${pid} ${sinceMs} ${identityMs ?? -1}`,
-    "  if ($targets.Count -eq 0) { break }",
-    "  foreach ($id in $targets.Keys) {",
-    "    try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { throw } }",
-    "  }",
-    "}",
+    `Stop-T3CommandTree ${pid} ${sinceMs} ${identityMs ?? -1}`,
   ].join("\n");
+
+const GIT_BASH_NAMES = ["bash", "sh"].flatMap((name) => [
+  { name, exe: `${name}.exe` },
+  { name: `${name}.exe`, exe: `${name}.exe` },
+]);
+
+// System32's bash.exe is WSL's, which has no node and cannot read `C:/` paths. command.ps1 defines
+// `bash` and `sh` as Git Bash's, found with the command's own environment and folder, or as an
+// error naming it. PATH stays as it is, so `git` and every other name resolve as they would have;
+// a program the command starts that runs `bash` itself still gets WSL's.
+const WINDOWS_GIT_BASH = [
+  "$t3GitBash = & {",
+  WINDOWS_COMMAND_TREE_FUNCTION,
+  "  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1",
+  "  if ($git) {",
+  // --exec-path names the install behind a launcher or shim; GIT_EXEC_PATH would replace it. A git
+  // that cannot answer leaves the standard folders, and the error below names where it looked.
+  "    try {",
+  "      $start = [Diagnostics.ProcessStartInfo]::new($git.Path, '--exec-path')",
+  "      $start.UseShellExecute = $false",
+  "      $start.RedirectStandardOutput = $true",
+  "      $start.StandardOutputEncoding = [Text.Encoding]::UTF8",
+  "      $start.EnvironmentVariables.Remove('GIT_EXEC_PATH')",
+  "      $run = [Diagnostics.Process]::Start($start)",
+  "      $out = $run.StandardOutput.ReadToEndAsync()",
+  "      if ($run.WaitForExit(10000)) {",
+  // <install>\<build>\libexec\git-core
+  "        if ($run.ExitCode -eq 0 -and $out.Wait(1000) -and $out.Result.Trim()) { [IO.Path]::GetFullPath([IO.Path]::Combine($out.Result.Trim(), '..', '..', '..')) }",
+  "      } else {",
+  "        [Console]::Error.WriteLine(\"CodeShip stopped 'git --exec-path' ($($git.Path)), which did not answer within 10 s, and looks for Git Bash in the standard install folders.\")",
+  // A shim such as git.cmd runs git in a child process, which stopping the shim alone leaves running.
+  "        $made = Ms $run.StartTime",
+  "        Stop-T3CommandTree $run.Id $made $made",
+  "      }",
+  '    } catch { [Console]::Error.WriteLine("CodeShip could not ask git where Git Bash is: $_") }',
+  "  }",
+  "  foreach ($folder in $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)}) { if ($folder) { [IO.Path]::Combine($folder, 'Git') } }",
+  "  if ($env:LOCALAPPDATA) { [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Git') }",
+  "} | ForEach-Object { [IO.Path]::Combine($_, 'bin') } | Where-Object { [IO.File]::Exists([IO.Path]::Combine($_, 'bash.exe')) } | Select-Object -First 1",
+  "if ($t3GitBash) {",
+  ...GIT_BASH_NAMES.map(
+    ({ name, exe }) =>
+      `  function ${name} { $t3Exe = [IO.Path]::Combine($t3GitBash, '${exe}'); if ($MyInvocation.ExpectingInput) { $input | & $t3Exe @args } else { & $t3Exe @args } }`,
+  ),
+  "} else {",
+  ...GIT_BASH_NAMES.map(
+    ({ name }) =>
+      `  function ${name} { [Console]::Error.WriteLine(${escapePowerShellStringLiteral(
+        `${name}: no Git Bash found: no bin\\bash.exe in the install of the git on PATH, in Program Files\\Git or in LOCALAPPDATA\\Programs\\Git. Install Git for Windows (https://git-scm.com/download/win); WSL's bash runs through wsl.`,
+      )}); exit 127 }`,
+  ),
+  "}",
+];
 
 /** The last lines of a log, starting at a whole line when the start was cut. */
 const decodeTail = (bytes: Uint8Array, cut: boolean) => {

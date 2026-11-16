@@ -1,6 +1,6 @@
 ## 2026-11-16 — `bash` in a Windows agent command runs Git Bash, not WSL
 
-- On Windows, a `bash` or `sh` in a command an agent runs with `t3_command_run` now starts Git Bash, which reads `C:/` paths and finds node, instead of WSL's bash, which can do neither. CodeShip finds Git Bash through the `git` on the command's PATH or in the standard install folders. Without Git Bash, `bash` fails with an error that says where CodeShip looked; WSL's bash stays reachable through `wsl`. A program the command starts that runs `bash` itself can still get WSL's, so give it Git Bash's full path.
+- On Windows, a `bash` or `sh` in a command an agent runs with `t3_command_run` now starts Git Bash, which reads `C:/` paths and finds node, instead of WSL's bash, which can do neither. CodeShip finds Git Bash through the `git` on the command's PATH or in the standard install folders, and leaves that PATH as it is, so `git` in the command is still the one it names. Without Git Bash, `bash` fails with an error that says where CodeShip looked; WSL's bash stays reachable through `wsl`. A program the command starts that runs `bash` itself can still get WSL's, so give it Git Bash's full path.
 
 ## 2026-11-16 — A lost agent command keeps a record of how it ended
 
