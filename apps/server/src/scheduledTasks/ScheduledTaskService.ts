@@ -3,7 +3,7 @@ import {
   EnvironmentId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
-  type ProjectId,
+  ProjectId,
   ScheduledTask,
   ScheduledTaskChangedBy,
   ScheduledTaskSharing,
@@ -157,6 +157,8 @@ const isLostPromptFileRead = (
 ): error is PromptFileReader.PromptFileReadError =>
   error._tag === "PromptFileReadError" && error.lostConnection;
 const PROMPT_TOO_LONG = "The filled-in prompt is too long.";
+// Recorded in scheduled_task_upgrades once shares stored before origin keys have moved there.
+const ORIGIN_KEYED_SHARES_UPGRADE = "origin-keyed-shares";
 const INTERRUPTED_BY_RESTART = "Run was interrupted by a server restart.";
 const MINUTE_MS = 60_000;
 // An occurrence of a one-machine task counts as run if a machine started it within this
@@ -1093,6 +1095,8 @@ export const layer = Layer.effect(
         run_on TEXT NOT NULL DEFAULT 'every'
       )
     `;
+    // One-time data changes this machine has made, by name.
+    yield* sql`CREATE TABLE IF NOT EXISTS scheduled_task_upgrades (name TEXT PRIMARY KEY)`;
     // The machines a project's one-machine tasks try in order; synced like a shared task.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_project_machine_orders (
@@ -1854,29 +1858,81 @@ export const layer = Layer.effect(
           revision_environment_id = excluded.revision_environment_id
       `;
 
-    // A share keyed before shares were keyed by origin moves to its origin key when it is saved,
-    // and takes its project's machine order along unless that key already has one.
+    const readMachineOrder = Effect.fn("ScheduledTaskService.readMachineOrder")(function* (
+      projectKey: string,
+    ) {
+      const [row] = yield* sql<MachineOrderRow>`
+        SELECT project_json, order_json, revision_at, revision_environment_id
+        FROM scheduled_task_project_machine_orders WHERE project_key = ${projectKey}`;
+      return row === undefined
+        ? undefined
+        : yield* decodeMachineOrderRow({
+            project: row.project_json,
+            order: row.order_json,
+            revision: { at: row.revision_at, environmentId: row.revision_environment_id },
+          });
+    });
+
+    // A share whose project key changes takes its machine order along. A key that has an order
+    // already keeps the newer of the two first, then the machines only the other one ranks.
     const carryMachineOrder = Effect.fn("ScheduledTaskService.carryMachineOrder")(function* (
       from: ScheduledTaskSharing["project"],
       to: ScheduledTaskSharing["project"],
     ) {
-      const fromKey = scheduledTaskSharedProjectKey(from);
       const toKey = scheduledTaskSharedProjectKey(to);
-      if (fromKey === toKey) return;
-      const [held] = yield* sql<{ readonly project_key: string }>`
-        SELECT project_key FROM scheduled_task_project_machine_orders WHERE project_key = ${toKey}`;
-      if (held !== undefined) return;
-      const [row] = yield* sql<MachineOrderRow>`
-        SELECT project_json, order_json, revision_at, revision_environment_id
-        FROM scheduled_task_project_machine_orders WHERE project_key = ${fromKey}`;
-      if (row === undefined) return;
-      const { order } = yield* decodeMachineOrderRow({
-        project: row.project_json,
-        order: row.order_json,
-        revision: { at: row.revision_at, environmentId: row.revision_environment_id },
-      });
+      if (scheduledTaskSharedProjectKey(from) === toKey) return;
+      const carried = yield* readMachineOrder(scheduledTaskSharedProjectKey(from));
+      if (carried === undefined) return;
+      const held = yield* readMachineOrder(toKey);
+      const [first, second] =
+        held === undefined ||
+        compareScheduledTaskSharedRevisions(carried.revision, held.revision) > 0
+          ? [carried.order, held?.order ?? []]
+          : [held.order, carried.order];
+      const order = [...first, ...second.filter((id) => !first.includes(id))];
+      if (held !== undefined && order.every((id, index) => held.order[index] === id)) return;
       yield* writeMachineOrder({ project: to, order, revision: yield* stampOrderRevision(toKey) });
     });
+
+    // Shares were keyed by a fork's upstream remote before they were keyed by its origin. They
+    // move once, with a new revision the other machines take like any edit: a share received
+    // later can carry another machine's origin, which reads as an upstream on a fork of that fork.
+    const moveSharesToOriginKeys = Effect.gen(function* () {
+      const [done] = yield* sql`
+        SELECT name FROM scheduled_task_upgrades WHERE name = ${ORIGIN_KEYED_SHARES_UPGRADE}`;
+      if (done !== undefined) return;
+      const shares = yield* sql<{ readonly task_id: string }>`
+        SELECT task_id FROM scheduled_task_shared`;
+      for (const share of shares) {
+        const id = ScheduledTaskId.make(share.task_id);
+        const task = yield* findTask(id);
+        const from = task?.shared?.project;
+        if (task == null || task.shared == null || from?.type !== "repository") continue;
+        const project = Option.getOrUndefined(yield* projects.getById(task.projectId));
+        const identity =
+          project === undefined ? null : yield* repositoryIdentities.resolve(project.workspaceRoot);
+        const upstream = identity?.canonicalKey;
+        const origin = identity === null ? undefined : repositoryGroupingKeyOf(identity);
+        // oxlint-disable-next-line t3code/no-canonical-key-comparison -- the key that moves is the upstream itself
+        if (from.canonicalKey !== upstream || origin === undefined || origin === upstream) continue;
+        const to = { ...from, canonicalKey: origin };
+        const shared = task.shared;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* writeSharing(id, { ...shared, project: to, revision: yield* stampRevision(id) });
+            yield* carryMachineOrder(from, to);
+          }),
+        );
+      }
+      yield* sql`INSERT INTO scheduled_task_upgrades (name) VALUES (${ORIGIN_KEYED_SHARES_UPGRADE})`;
+    }).pipe(
+      Effect.withSpan("ScheduledTaskService.moveSharesToOriginKeys"),
+      // Not done is tried again at the next start; a share it did not move moves when it is saved.
+      Effect.catchCause((cause) =>
+        Effect.logError("Could not move shared tasks to their origin keys", { cause }),
+      ),
+    );
+    yield* moveSharesToOriginKeys;
 
     const deleteLocalRows = (id: ScheduledTaskId) =>
       sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
@@ -3214,18 +3270,7 @@ export const layer = Layer.effect(
       ]);
       const { stored, order } = yield* sql.withTransaction(
         Effect.gen(function* () {
-          const [row] = yield* sql<MachineOrderRow>`
-            SELECT project_json, order_json, revision_at, revision_environment_id
-            FROM scheduled_task_project_machine_orders WHERE project_key = ${key}
-          `;
-          const storedOrder =
-            row === undefined
-              ? []
-              : (yield* decodeMachineOrderRow({
-                  project: row.project_json,
-                  order: row.order_json,
-                  revision: { at: row.revision_at, environmentId: row.revision_environment_id },
-                })).order;
+          const storedOrder = (yield* readMachineOrder(key))?.order ?? [];
           const order = [...storedOrder, ...known.filter((id) => !storedOrder.includes(id))];
           if (storedOrder.includes(hereEnvironmentId)) return { stored: storedOrder, order };
           yield* writeMachineOrder({
@@ -4357,19 +4402,7 @@ export const layer = Layer.effect(
     )(function* (projectId) {
       const key = scheduledTaskSharedProjectKey(yield* sharedProjectOf(projectId));
       const known = yield* Effect.gen(function* () {
-        const [stored] = yield* sql<MachineOrderRow>`
-          SELECT project_json, order_json, revision_at, revision_environment_id
-          FROM scheduled_task_project_machine_orders
-          WHERE project_key = ${key}
-        `.pipe(NodeSqliteClient.readOnly);
-        const ordered =
-          stored === undefined
-            ? []
-            : (yield* decodeMachineOrderRow({
-                project: stored.project_json,
-                order: stored.order_json,
-                revision: { at: stored.revision_at, environmentId: stored.revision_environment_id },
-              })).order;
+        const ordered = (yield* readMachineOrder(key).pipe(NodeSqliteClient.readOnly))?.order ?? [];
         const cutoff = sharedPullerCutoff(yield* DateTime.now);
         const pullers = yield* sql<{ readonly environment_id: string }>`
           SELECT environment_id FROM scheduled_task_shared_pullers

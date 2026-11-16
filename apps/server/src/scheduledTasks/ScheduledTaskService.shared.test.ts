@@ -13,6 +13,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -132,6 +133,10 @@ const withService = <A, E>(
   body: (
     service: ScheduledTaskService.ScheduledTaskService["Service"],
     sql: SqlClient.SqlClient,
+    /** Runs `next` on the service started again on the same database, as an app restart does. */
+    restart: <B, E2>(
+      next: (service: ScheduledTaskService.ScheduledTaskService["Service"]) => Effect.Effect<B, E2>,
+    ) => Effect.Effect<B, E2>,
   ) => Effect.Effect<A, E>,
   projects: ReadonlyArray<TestSharedProject> = [repoProject, plainProject],
   extras: {
@@ -141,6 +146,8 @@ const withService = <A, E>(
     readonly runConditionCheck?: Layer.Layer<RunConditionCheck.RunConditionCheck>;
     /** Registers no work, so moving the clock days ahead does not tick the poll every 5 seconds. */
     readonly idleScheduler?: boolean;
+    /** Holds the scheduler's due work until it completes, as server startup does. */
+    readonly activation?: Effect.Effect<void>;
     readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   } = {},
 ) =>
@@ -175,9 +182,23 @@ const withService = <A, E>(
           Layer.mock(SecretRequests.SecretRequests)({}),
         ),
       ),
+      // Reaches the scheduler too, so its poll also waits for it.
+      Layer.provide(
+        extras.activation === undefined
+          ? Layer.empty
+          : Layer.succeed(ServerActivation, extras.activation),
+      ),
     );
+    const restart = <B, E2>(
+      next: (service: ScheduledTaskService.ScheduledTaskService["Service"]) => Effect.Effect<B, E2>,
+    ) =>
+      Effect.flatMap(ScheduledTaskService.ScheduledTaskService, next).pipe(
+        Effect.provide(Layer.fresh(layer)),
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orDie,
+      );
     return yield* Effect.gen(function* () {
-      return yield* body(yield* ScheduledTaskService.ScheduledTaskService, sql);
+      return yield* body(yield* ScheduledTaskService.ScheduledTaskService, sql, restart);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory));
 
@@ -552,29 +573,82 @@ it.effect(
             copy(at, { shared: { ...sharedWith(at, upstream), runOn: "one" } }),
           );
           yield* service.applyShared(order(at, [OTHER, HERE_ENVIRONMENT_ID], upstream));
-
-          const saved = (yield* service.upsert(
-            upsertInput({ projectId: forkProject.id }),
-            ScheduledTaskService.CHANGED_IN_APP,
-          )).task;
           const origin = {
             type: "repository",
             canonicalKey: "github.com/acme/repo",
             title: "Fork",
           };
+          yield* service.applyShared(
+            order("2026-09-11T00:00:00.000Z", [HERE_ENVIRONMENT_ID], origin),
+          );
+
+          const saved = (yield* service.upsert(
+            upsertInput({ projectId: forkProject.id }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          )).task;
           expect(saved.shared?.project).toEqual(origin);
           const orders = (yield* service.list()).projectMachineOrders ?? [];
-          expect(
-            orders.find(
-              (entry) =>
-                entry.project.type === "repository" &&
-                entry.project.canonicalKey === origin.canonicalKey,
-            )?.order,
-          ).toEqual([OTHER, HERE_ENVIRONMENT_ID]);
+          expect(orderFor(orders, origin.canonicalKey)).toEqual([HERE_ENVIRONMENT_ID, OTHER]);
         }),
       [forkProject],
     ),
 );
+
+it.effect(
+  "a share stored under a fork's upstream before origin keys moves there once, with its machine order",
+  () =>
+    withService(
+      (service, sql, restart) =>
+        Effect.gen(function* () {
+          const at = "2026-09-10T00:00:00.000Z";
+          const upstream = {
+            type: "repository",
+            canonicalKey: "github.com/upstream/repo",
+            title: "Fork",
+          };
+          const sharedOne = (when: string) =>
+            copy(when, { shared: { ...sharedWith(when, upstream), runOn: "one" } });
+          yield* service.applyShared(sharedOne(at));
+          yield* service.applyShared(order(at, [OTHER, HERE_ENVIRONMENT_ID], upstream));
+          yield* sql`DELETE FROM scheduled_task_upgrades`;
+
+          const moved = yield* restart((restarted) =>
+            Effect.all({
+              task: taskOf(restarted),
+              orders: restarted.list().pipe(Effect.map((list) => list.projectMachineOrders ?? [])),
+              known: restarted.knownMachineIds(ProjectId.make(forkProject.id)),
+            }),
+          );
+          expect(moved.task?.shared?.project).toEqual({
+            ...upstream,
+            canonicalKey: "github.com/acme/repo",
+          });
+          expect(moved.task?.shared?.revision.environmentId).toBe(HERE_ENVIRONMENT_ID);
+          expect(orderFor(moved.orders, "github.com/acme/repo")).toEqual([
+            OTHER,
+            HERE_ENVIRONMENT_ID,
+          ]);
+          expect(moved.known).toContain(OTHER);
+
+          yield* service.applyShared(sharedOne("2026-09-11T00:00:00.000Z"));
+          const kept = yield* restart((restarted) => taskOf(restarted));
+          expect(kept?.shared?.project).toEqual(upstream);
+        }),
+      [forkProject],
+      { idleScheduler: true },
+    ),
+);
+
+const orderFor = (
+  orders: ReadonlyArray<{
+    readonly project: { readonly type: string; readonly canonicalKey?: string };
+    readonly order: ReadonlyArray<string>;
+  }>,
+  canonicalKey: string,
+) =>
+  orders.find(
+    (entry) => entry.project.type === "repository" && entry.project.canonicalKey === canonicalKey,
+  )?.order;
 
 const sharedWith = (at: string, project: Record<string, unknown>) => ({
   revision: { at, environmentId: OTHER },
@@ -807,6 +881,8 @@ const runScenario = <A, E>(
     const failed = yield* Ref.make<ReadonlySet<string>>(new Set());
     const peerClaims = yield* Ref.make<ReadonlyArray<string>>([]);
     const linked = yield* Ref.make<ReadonlyArray<string>>([]);
+    // Due work starts at the first tick, so what a test writes before it is what the scheduler reads.
+    const activated = yield* Deferred.make<void>();
     const peerCheck = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
       linkedEnvironmentIds: Ref.get(linked) as Effect.Effect<ReadonlyArray<never>>,
       linkStatus: Effect.succeed({ enabled: false, links: [] }),
@@ -879,13 +955,17 @@ const runScenario = <A, E>(
             peerClaims,
             linked,
             tick: (atMs) =>
-              TestClock.setTime(atMs).pipe(Effect.andThen(TestClock.adjust("6 seconds"))),
+              TestClock.setTime(atMs).pipe(
+                Effect.andThen(Deferred.succeed(activated, undefined)),
+                Effect.andThen(TestClock.adjust("6 seconds")),
+              ),
             settled: Queue.take(changes),
           });
         }).pipe(Effect.scoped),
       [repoProject, plainProject],
       {
         peerCheck,
+        activation: Deferred.await(activated),
         launch: (input) =>
           Queue.offer(launches, input).pipe(Effect.as({ threadId: "thread-1" } as never)),
         ...(checks === undefined
@@ -1060,10 +1140,6 @@ it.effect("the first machine skips an occurrence another machine already ran", (
       // The scheduler ticks every 5 seconds, so lateness needs a due time already in the past.
       const lateDue = iso(NOW - 2 * MINUTE_MS);
       yield* scenario.sql`UPDATE scheduled_tasks SET next_run_at = ${lateDue}`;
-      yield* scenario.service.setPlacement({
-        ids: ["scheduled-task:shared" as ScheduledTaskId],
-        placement: "pinned",
-      });
       yield* scenario.tick(NOW);
       yield* scenario.settled;
       expect(yield* Ref.get(scenario.peerCalls)).toHaveLength(1);
