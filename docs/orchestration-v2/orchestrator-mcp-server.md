@@ -388,8 +388,9 @@ variable: it takes cmd and PowerShell from the system directory, so neither the 
 nor a `SystemRoot` its settings move or drop can change which ones run. It runs the command in
 a console of its own with no window and writes the exit status once the command ends, so a Ctrl+C,
 Ctrl+Break or close event in that console can end the command but never the wrapper. The
-command's script first defines `bash` and `sh`, with or without `.exe`, as PowerShell functions
-that run Git Bash and not System32's `bash.exe`, which is WSL's and has no node or `C:/` paths.
+command's script first makes `bash` and `sh`, with or without `.exe`, PowerShell aliases of Git
+Bash's and not System32's `bash.exe`, which is WSL's and has no node or `C:/` paths. An alias,
+unlike a function, passes every argument as written, `--` included.
 It leaves `PATH` alone: Git's `bin` folder also holds a `git.exe`, which would take the place of
 the `git` the command names, such as a wrapper or a package manager's shim. It finds Git Bash
 itself, with the command's environment and folder: through `git --exec-path` of the `git` on that

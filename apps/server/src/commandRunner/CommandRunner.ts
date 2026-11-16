@@ -386,10 +386,10 @@ const GIT_BASH_NAMES = ["bash", "sh"].flatMap((name) => [
   { name: `${name}.exe`, exe: `${name}.exe` },
 ]);
 
-// System32's bash.exe is WSL's, which has no node and cannot read `C:/` paths. command.ps1 defines
-// `bash` and `sh` as Git Bash's, found with the command's own environment and folder, or as an
-// error naming it. PATH stays as it is, so `git` and every other name resolve as they would have;
-// a program the command starts that runs `bash` itself still gets WSL's.
+// System32's bash.exe is WSL's: no node, no `C:/` paths. command.ps1 makes `bash` and `sh` aliases
+// of Git Bash's (a function would lose a `--` argument), or an error naming it. PATH stays as it is,
+// since Git's bin also holds a git.exe that would replace the command's `git`; a program the
+// command starts that runs `bash` itself still gets WSL's.
 const WINDOWS_GIT_BASH = [
   "$t3GitBash = & {",
   WINDOWS_COMMAND_TREE_FUNCTION,
@@ -422,7 +422,7 @@ const WINDOWS_GIT_BASH = [
   "if ($t3GitBash) {",
   ...GIT_BASH_NAMES.map(
     ({ name, exe }) =>
-      `  function ${name} { $t3Exe = [IO.Path]::Combine($t3GitBash, '${exe}'); if ($MyInvocation.ExpectingInput) { $input | & $t3Exe @args } else { & $t3Exe @args } }`,
+      `  Set-Alias -Name '${name}' -Value ([IO.Path]::Combine($t3GitBash, '${exe}'))`,
   ),
   "} else {",
   ...GIT_BASH_NAMES.map(

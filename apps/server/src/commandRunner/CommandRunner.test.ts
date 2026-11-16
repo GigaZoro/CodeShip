@@ -1458,7 +1458,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       });
 
     it.effect(
-      "runs Git Bash for bash and sh, with or without .exe, which see the Windows home and node and take the command's input",
+      "runs Git Bash for bash and sh, with or without .exe, which see the Windows home and node and take the command's arguments and input",
       () =>
         Effect.gen(function* () {
           const { row, lines, workspace } = yield* runBash(
@@ -1467,6 +1467,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               `bash -c ${nodeAndHome}`,
               `sh -c ${nodeAndHome}`,
               `bash.exe -c ${nodeAndHome}`,
+              "bash -c 'echo $1 $2' zero -- one",
               "'piped' | sh.exe -c 'cat; echo to-stderr >&2; exit 7'",
             ].join("; "),
             ({ inherited, workspace, otherBash }) => ({
@@ -1480,7 +1481,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               ].join(";"),
             }),
           );
-          assert.lengthOf(lines, 8);
+          assert.lengthOf(lines, 9);
           for (const [node, printedHome] of [
             lines.slice(0, 2),
             lines.slice(2, 4),
@@ -1489,8 +1490,9 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             assert.match(node ?? "", /^\/[a-z]\/.+\/node(\.exe)?$/i);
             assert.isTrue(isFolder(printedHome, workspace), `${printedHome} is not the workspace`);
           }
-          // Plain lines, not PowerShell error records, and Git Bash's own exit code.
-          assert.deepEqual(lines.slice(6), ["piped", "to-stderr"]);
+          // Every argument as written, then plain lines, not PowerShell error records, and Git
+          // Bash's own exit code.
+          assert.deepEqual(lines.slice(6), ["-- one", "piped", "to-stderr"]);
           assert.equal(row?.exit_code, 7);
         }),
     );
