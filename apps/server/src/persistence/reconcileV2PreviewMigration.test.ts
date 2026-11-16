@@ -74,6 +74,7 @@ describe("V2 preview upgrade", () => {
         [92, "CommandRuns"],
         [93, "ManualStepReviewLanguages"],
         [94, "PullRequestReviewGuideLanguages"],
+        [95, "CommandRunLossEvidence"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -191,6 +192,7 @@ describe("V2 preview upgrade", () => {
         [92, "CommandRuns"],
         [93, "ManualStepReviewLanguages"],
         [94, "PullRequestReviewGuideLanguages"],
+        [95, "CommandRunLossEvidence"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

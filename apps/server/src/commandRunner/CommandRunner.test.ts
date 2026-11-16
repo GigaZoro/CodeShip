@@ -949,6 +949,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
 });
 
 type LossWave = {
+  readonly id: string;
   readonly time: string;
   readonly lost: number;
   readonly running: number;
@@ -965,6 +966,32 @@ const lossWaves = Effect.map(ServerConfig.ServerConfig, ({ logsDir }) => {
     .map((line) => JSON.parse(line) as LossWave);
 });
 
+/** A command an earlier server recorded lost, in the wave `waveId` names, if any. */
+const seedLoss = (loss: {
+  readonly taskId: string;
+  readonly directory: string;
+  readonly endedAt: string;
+  readonly waveId: string | null;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status,
+        started_at, deadline_at, ended_at, delivered_at, probe_error, lost_reason, loss_wave_id)
+      VALUES (${loss.taskId}, 'thread-earlier', ${`run-${loss.taskId}`}, 'true', ${loss.directory},
+        ${loss.directory}, 'lost', ${loss.endedAt}, ${loss.endedAt}, ${loss.endedAt},
+        ${loss.endedAt}, 'ESRCH', 'gone', ${loss.waveId})
+    `;
+  });
+
+const seedWave = (waveId: string, startedAt: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO command_loss_waves (wave_id, started_at, running) VALUES (${waveId}, ${startedAt}, 0)
+    `;
+  });
+
 /** Once `go` exists it kills its wrapper, so it ends without an exit status. */
 const LOSING_COMMAND = "until [ -e go ]; do sleep 0.05; done; kill -9 $PPID";
 const go = (chat: { readonly workspace: string }) =>
@@ -976,6 +1003,37 @@ const go = (chat: { readonly workspace: string }) =>
  */
 const nextPass = (runner: CommandRunner.CommandRunner["Service"], threadId: ThreadId) =>
   runner.run(callerOf(threadId), { command: "true" }).pipe(Effect.andThen(nextWake(threadId)));
+
+describe("placing lost commands in waves", () => {
+  it("joins the last wave while each loss comes within a minute of the one before, and starts one from more than half the minute's commands", () => {
+    const lostAt = (...seconds: ReadonlyArray<number>) =>
+      seconds.map((at) => ({ taskId: `task-${at}`, at: at * 1000 }));
+    const place = (
+      lastLossAt: number | undefined,
+      losses: ReadonlyArray<{ readonly taskId: string; readonly at: number }>,
+      now: number,
+      commands: number,
+    ) => {
+      const { joining, starting } = CommandRunner.placeLosses(
+        lastLossAt === undefined ? undefined : lastLossAt * 1000,
+        losses,
+        (now - 60) * 1000,
+        commands,
+      );
+      return {
+        joining: joining.map((loss) => loss.at / 1000),
+        starting: starting.map((loss) => loss.at / 1000),
+      };
+    };
+    assert.deepEqual(place(0, lostAt(100, 50), 100, 3), { joining: [50, 100], starting: [] });
+    // 65 s after the loss before it, so it starts a wave of its own.
+    assert.deepEqual(place(0, lostAt(50, 115), 115, 1), { joining: [50], starting: [115] });
+    assert.deepEqual(place(undefined, lostAt(10, 20), 30, 4), { joining: [], starting: [] });
+    assert.deepEqual(place(undefined, lostAt(10, 20), 30, 3), { joining: [], starting: [10, 20] });
+    // A loss from before the minute that joins no wave stays out of every wave.
+    assert.deepEqual(place(undefined, lostAt(0, 70), 70, 1), { joining: [], starting: [70] });
+  });
+});
 
 // Each has a database and logs folder of its own, since a wave counts every loss of the last minute.
 describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
@@ -1047,56 +1105,60 @@ describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
   });
 
   it.layer(layerTest, { excludeTestServices: true })("lost after another ended", (it) => {
-    it.effect("is no wave when only half the commands of the minute were lost", () =>
-      Effect.gen(function* () {
-        const chat = yield* liveChat("command-wave-half");
-        yield* withServer((runner) =>
-          Effect.gen(function* () {
-            yield* runner.run(callerOf(chat.threadId), { command: LOSING_COMMAND });
-            yield* nextPass(runner, chat.threadId);
-            go(chat);
-            yield* nextWake(chat.threadId);
-            yield* nextPass(runner, chat.threadId);
-          }),
-        );
-        assert.lengthOf(yield* lossWaves, 0);
-      }),
+    it.effect(
+      "is no wave when only half the commands of the minute were lost, though the other ended before a restart",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-wave-half");
+          yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: LOSING_COMMAND }),
+          );
+          // The earlier server saw another command end normally, and delivered its end.
+          const endedAt = DateTime.formatIso(
+            DateTime.subtractDuration(yield* DateTime.now, Duration.seconds(10)),
+          );
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`
+            INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status,
+              exit_code, started_at, deadline_at, ended_at, delivered_at)
+            VALUES ('task-ended', 'thread-earlier', 'run-ended', 'true', ${chat.workspace},
+              ${NodePath.join(chat.workspace, "task-ended")}, 'exited', 0, ${endedAt}, ${endedAt},
+              ${endedAt}, ${endedAt})
+          `;
+          yield* withServer((runner) =>
+            Effect.gen(function* () {
+              go(chat);
+              yield* nextWake(chat.threadId);
+              yield* nextPass(runner, chat.threadId);
+            }),
+          );
+          assert.lengthOf(yield* lossWaves, 0);
+        }),
     );
   });
 
   it.layer(layerTest, { excludeTestServices: true })("lost on both sides of a restart", (it) => {
-    it.effect("goes on as the wave of the minute before, holding each loss once", () =>
+    it.effect("goes on as the wave its losses follow, holding each loss once", () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-wave-continued");
-        const { logsDir } = yield* ServerConfig.ServerConfig;
         const now = yield* DateTime.now;
         const secondsAgo = (seconds: number) =>
           DateTime.formatIso(DateTime.subtractDuration(now, Duration.seconds(seconds)));
-        const lostAt = (taskId: string, seconds: number) => ({
-          taskId,
-          threadId: "thread-earlier",
-          pid: 1,
-          lostReason: "gone",
-          probeError: "ESRCH",
-          startedAt: secondsAgo(seconds + 1),
-          lastAliveAt: null,
-          endedAt: secondsAgo(seconds),
-        });
-        // The earlier server logged a wave 80 s ago, lost one more command 30 s ago, and stopped
-        // before it saved that one.
-        NodeFS.mkdirSync(logsDir, { recursive: true });
-        NodeFS.writeFileSync(
-          NodePath.join(logsDir, CommandRunner.LOSS_LOG_FILE),
-          `${JSON.stringify({ time: secondsAgo(80), lost: 2, running: 0, runs: [lostAt("task-a", 80), lostAt("task-b", 80)] })}\n`,
-        );
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`
-          INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status,
-            started_at, deadline_at, ended_at, delivered_at, probe_error, lost_reason)
-          VALUES ('task-c', 'thread-earlier', 'run-c', 'true', ${chat.workspace}, ${chat.workspace},
-            'lost', ${secondsAgo(31)}, ${secondsAgo(-60)}, ${secondsAgo(30)}, ${secondsAgo(30)},
-            'ESRCH', 'gone')
-        `;
+        // The earlier server began a wave 70 s ago, lost one more command 20 s ago, and stopped
+        // before it placed that one in the wave.
+        yield* seedWave("wave-earlier", secondsAgo(70));
+        for (const [taskId, seconds, waveId] of [
+          ["task-a", 70, "wave-earlier"],
+          ["task-b", 70, "wave-earlier"],
+          ["task-c", 20, null],
+        ] as const) {
+          yield* seedLoss({
+            taskId,
+            directory: NodePath.join(chat.workspace, taskId),
+            endedAt: secondsAgo(seconds),
+            waveId,
+          });
+        }
         const started = yield* withServer((runner) =>
           Effect.gen(function* () {
             const started = yield* runner.run(callerOf(chat.threadId), {
@@ -1110,76 +1172,110 @@ describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
         );
         const waves = yield* lossWaves;
         assert.deepEqual(
-          waves.map(({ time, lost, runs }) => ({
+          waves.map(({ id, time, lost, runs }) => ({
+            id,
             time,
             lost,
             runs: runs.map((run) => run.taskId),
           })),
-          [{ time: secondsAgo(80), lost: 4, runs: ["task-a", "task-b", "task-c", started.taskId] }],
+          [
+            {
+              id: "wave-earlier",
+              time: secondsAgo(70),
+              lost: 4,
+              runs: ["task-a", "task-b", "task-c", started.taskId],
+            },
+          ],
         );
       }),
     );
   });
 
   it.layer(layerTest, { excludeTestServices: true })("lost alone", (it) => {
-    it.effect("is the only running command lost, and kept 14 days whatever the log's size", () =>
+    it.effect(
+      "is the only running command lost, and is logged once the log can be written, by a server that starts minutes later too",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-wave-alone");
+          const { logsDir } = yield* ServerConfig.ServerConfig;
+          const logPath = NodePath.join(logsDir, CommandRunner.LOSS_LOG_FILE);
+          // The log cannot be written while its temporary file's path is taken.
+          NodeFS.mkdirSync(`${logPath}.tmp`, { recursive: true });
+          const started = yield* withServer((runner) =>
+            Effect.gen(function* () {
+              const started = yield* runner.run(callerOf(chat.threadId), {
+                command: LOSING_COMMAND,
+              });
+              go(chat);
+              yield* nextWake(chat.threadId);
+              yield* nextPass(runner, chat.threadId);
+              return started;
+            }),
+          );
+          assert.lengthOf(yield* lossWaves, 0);
+          const sql = yield* SqlClient.SqlClient;
+          const minutesAgo = DateTime.formatIso(
+            DateTime.subtractDuration(yield* DateTime.now, Duration.minutes(3)),
+          );
+          yield* sql`
+            UPDATE command_runs SET ended_at = ${minutesAgo} WHERE task_id = ${started.taskId}
+          `;
+          yield* withServer((runner) =>
+            Effect.gen(function* () {
+              // Each run waits for the pass under way, so at least one write has failed here.
+              yield* nextPass(runner, chat.threadId);
+              yield* nextPass(runner, chat.threadId);
+              assert.lengthOf(yield* lossWaves, 0);
+              NodeFS.rmdirSync(`${logPath}.tmp`);
+              yield* nextPass(runner, chat.threadId);
+              yield* nextPass(runner, chat.threadId);
+            }),
+          );
+          assert.deepEqual(
+            (yield* lossWaves).map(({ lost, running, runs }) => ({
+              lost,
+              running,
+              runs: runs.map((run) => run.taskId),
+            })),
+            [{ lost: 1, running: 0, runs: [started.taskId] }],
+          );
+        }),
+    );
+  });
+
+  it.layer(layerTest, { excludeTestServices: true })("lost long ago", (it) => {
+    it.effect("goes once the records it holds go, 14 days after their ends were delivered", () =>
       Effect.gen(function* () {
-        const chat = yield* liveChat("command-wave-alone");
-        const { logsDir } = yield* ServerConfig.ServerConfig;
+        const chat = yield* liveChat("command-wave-kept");
         const now = yield* DateTime.now;
-        const daysAgo = (days: number) =>
-          DateTime.formatIso(DateTime.subtractDuration(now, Duration.days(days)));
-        const run = {
-          taskId: "task-earlier",
-          threadId: "thread-earlier",
-          pid: 1,
-          lostReason: "gone",
-          probeError: "ESRCH",
-          startedAt: daysAgo(15),
-          lastAliveAt: null,
-          endedAt: daysAgo(15),
-        };
-        // The recent wave is over 1 MiB, more than a log rotated by size would keep.
-        const waves = [
-          { time: daysAgo(15), lost: 1, running: 0, runs: [run] },
-          {
-            time: daysAgo(6),
-            lost: 8000,
-            running: 0,
-            runs: Array.from({ length: 8000 }, () => run),
-          },
-        ];
-        NodeFS.mkdirSync(logsDir, { recursive: true });
-        const logPath = NodePath.join(logsDir, CommandRunner.LOSS_LOG_FILE);
-        NodeFS.writeFileSync(logPath, waves.map((wave) => `${JSON.stringify(wave)}\n`).join(""));
-        // The log cannot be written until its temporary file's path is free again.
-        NodeFS.mkdirSync(`${logPath}.tmp`);
-        const started = yield* withServer((runner) =>
-          Effect.gen(function* () {
-            const started = yield* runner.run(callerOf(chat.threadId), {
-              command: LOSING_COMMAND,
-            });
-            go(chat);
-            yield* nextWake(chat.threadId);
-            yield* nextPass(runner, chat.threadId);
-            assert.lengthOf(yield* lossWaves, 2);
-            NodeFS.rmdirSync(`${logPath}.tmp`);
-            // The second run waits for the pass that saw the first one end, which saved the wave.
-            yield* nextPass(runner, chat.threadId);
-            yield* nextPass(runner, chat.threadId);
-            return started;
-          }),
+        for (const [waveId, days] of [
+          ["wave-old", 15],
+          ["wave-recent", 13],
+        ] as const) {
+          const endedAt = DateTime.formatIso(DateTime.subtractDuration(now, Duration.days(days)));
+          yield* seedWave(waveId, endedAt);
+          yield* seedLoss({
+            taskId: `task-${waveId}`,
+            directory: NodePath.join(chat.workspace, waveId),
+            endedAt,
+            waveId,
+          });
+        }
+        // The second run waits for the first pass, which writes the log.
+        yield* withServer((runner) =>
+          nextPass(runner, chat.threadId).pipe(Effect.andThen(nextPass(runner, chat.threadId))),
         );
-        const logged = yield* lossWaves;
-        const latest = logged.at(-1);
         assert.deepEqual(
-          logged.map(({ time, lost, running }) => ({ time, lost, running })),
-          [
-            { time: waves[1]!.time, lost: 8000, running: 0 },
-            { time: latest?.time, lost: 1, running: 0 },
-          ],
+          (yield* lossWaves).map((wave) => wave.id),
+          ["wave-recent"],
         );
-        assert.equal(latest?.runs[0]?.taskId, started.taskId);
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(
+          (yield* sql<{ readonly wave_id: string }>`SELECT wave_id FROM command_loss_waves`).map(
+            (row) => row.wave_id,
+          ),
+          ["wave-recent"],
+        );
       }),
     );
   });
