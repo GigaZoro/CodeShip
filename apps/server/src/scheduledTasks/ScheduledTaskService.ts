@@ -1135,7 +1135,7 @@ export const layer = Layer.effect(
         PRIMARY KEY (task_id, occurrence_at)
       )
     `;
-    // When a fixed-time run came due while an automatic update drained; it holds the occurrence at
+    // The latest time a fixed-time run came due while an update drained; it holds the occurrence at
     // or before then. The install restarts the server, so the hold outlives the drain and the run
     // starts after it however late. It lasts while the task's next_run_at is next_run_at: a check a
     // restart cut asks again, a one-machine turn moves it along, and a run, skip or edit ends it.
@@ -4004,46 +4004,66 @@ export const layer = Layer.effect(
         ),
       );
       const missed = latestMissedFixedTimeRun(task.schedule, now);
+      const missedAt = missed === null ? task.nextRunAt : iso(missed.at);
       // An update held it, not the app being off, so the task's catch-up choice does not apply. It
       // still gives way to a nearer next time, and to a later time that passed too, the next day's
       // time a one-machine turn carried the hold to included.
-      if (
+      const heldByUpdate =
         held !== undefined &&
+        task.nextRunAt !== null &&
         missed !== null &&
-        DateTime.toEpochMillis(missed.at) <= Date.parse(held.held_at)
-      ) {
-        return missed.catchUp
-          ? yield* runDueOccurrence(task, now, true)
-          : yield* rescheduleMissedRun(task, now, task.nextRunAt, "next_run_sooner");
+        DateTime.toEpochMillis(missed.at) <= Date.parse(held.held_at);
+      if (heldByUpdate) {
+        if (!missed.catchUp) {
+          return yield* rescheduleMissedRun(task, now, missedAt, "next_run_sooner");
+        }
+        // next_run_at is its time, or the later time a one-machine turn asks about it at.
+        if (DateTime.toEpochMillis(missed.at) <= Date.parse(task.nextRunAt)) {
+          return yield* runDueOccurrence(task, now, true);
+        }
+      } else {
+        const deferral = (yield* Ref.get(oneMachineDeferrals)).get(task.id);
+        // A one-machine run that waited its turn and was then reached late keeps its occurrence.
+        if (catchUp && deferral !== undefined && deferral.deferredTo === task.nextRunAt) {
+          return yield* runDueOccurrence(task, now, deferral.catchUp);
+        }
+        if (!catchUp || missed === null || !missed.catchUp) {
+          return yield* rescheduleMissedRun(
+            task,
+            now,
+            missedAt,
+            catchUp ? "next_run_sooner" : "missed",
+          );
+        }
       }
-      const deferral = (yield* Ref.get(oneMachineDeferrals)).get(task.id);
-      // A one-machine run that waited its turn and was then reached late keeps its occurrence.
-      if (catchUp && deferral !== undefined && deferral.deferredTo === task.nextRunAt) {
-        return yield* runDueOccurrence(task, now, deferral.catchUp);
-      }
-      const missedAt = missed === null ? task.nextRunAt : iso(missed.at);
-      if (!catchUp || missed === null || !missed.catchUp) {
-        return yield* rescheduleMissedRun(
-          task,
-          now,
-          missedAt,
-          catchUp ? "next_run_sooner" : "missed",
-        );
-      }
-      // Several missed times run once, for the latest; the one-machine check judges that one.
-      const pointed = yield* sql`
-        UPDATE scheduled_tasks SET next_run_at = ${missedAt}, updated_at = ${iso(now)}
-        WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
-        RETURNING task_id
-      `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not catch up the missed schedule task run.", {
-            taskId: task.id,
-            cause,
+      // Several missed times run once, for the latest; the one-machine check judges that one. A
+      // held one takes its hold along, so a check a restart cuts still runs it.
+      const pointed = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const moved = yield* sql`
+              UPDATE scheduled_tasks SET next_run_at = ${missedAt}, updated_at = ${iso(now)}
+              WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+              RETURNING task_id
+            `;
+            if (heldByUpdate && moved.length > 0) {
+              yield* sql`
+                UPDATE scheduled_task_drain_holds SET next_run_at = ${missedAt}
+                WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+              `;
+            }
+            return moved.length > 0;
           }),
-        ),
-      );
-      if (pointed.length === 0) return;
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not catch up the missed schedule task run.", {
+              taskId: task.id,
+              cause,
+            }),
+          ),
+        );
+      if (!pointed) return;
       yield* Effect.logInfo("Catching up a missed schedule task run", {
         taskId: task.id,
         missedRunAt: missedAt,
@@ -4058,16 +4078,19 @@ export const layer = Layer.effect(
       yield* Effect.forEach(
         tasks,
         (task) => {
-          if (
-            task.schedule.type !== "fixed_time" ||
-            task.nextRunAt === null ||
-            isMissedFixedTimeRun(task.schedule, DateTime.makeUnsafe(task.nextRunAt), now)
-          ) {
-            return Effect.void;
-          }
+          if (task.schedule.type !== "fixed_time" || task.nextRunAt === null) return Effect.void;
+          // A one-machine turn can leave next_run_at short of the next time, which then comes due.
+          const latest = latestMissedFixedTimeRun(task.schedule, now)?.at;
+          const heldAt = DateTime.makeUnsafe(
+            Math.max(
+              Date.parse(task.nextRunAt),
+              latest === undefined ? -Infinity : DateTime.toEpochMillis(latest),
+            ),
+          );
+          if (isMissedFixedTimeRun(task.schedule, heldAt, now)) return Effect.void;
           return sql`
             INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
-            VALUES (${task.id}, ${task.nextRunAt}, ${task.nextRunAt})
+            VALUES (${task.id}, ${iso(heldAt)}, ${task.nextRunAt})
             ON CONFLICT (task_id) DO UPDATE SET
               held_at = excluded.held_at,
               next_run_at = excluded.next_run_at

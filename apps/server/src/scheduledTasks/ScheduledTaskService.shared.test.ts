@@ -24,6 +24,8 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { UpdateDrain } from "../cloud/updateDrain.ts";
+
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -1363,6 +1365,65 @@ it.effect("an update's hold carried to the next day's time does not hold that da
       }),
     schedule,
   );
+});
+
+it.effect("an update that drains over the time a one-machine turn was waiting for holds it", () => {
+  const schedule = {
+    type: "fixed_time",
+    timeOfDay: `${two(dueLocal.hour)}:${two(dueLocal.minute)}`,
+  };
+  const draining = Ref.makeUnsafe(false);
+  const nextDue = DUE + 24 * HOUR_MS;
+  return runScenario(
+    [OTHER, HERE_ENVIRONMENT_ID],
+    NO_RUN_THERE,
+    (scenario) =>
+      Effect.gen(function* () {
+        yield* scenario.service.upsert(
+          upsertInput({
+            shared: oneMachineShared([OTHER, HERE_ENVIRONMENT_ID]),
+            schedule,
+            catchUpMissedRun: false,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        // Watching the other machine's run of the held time ran up to just before the next day's.
+        const watchedTo = iso(nextDue - 5 * MINUTE_MS);
+        yield* scenario.sql`UPDATE scheduled_tasks SET next_run_at = ${watchedTo}`;
+        yield* scenario.sql`
+          INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
+          VALUES ('scheduled-task:shared', ${iso(DUE)}, ${watchedTo})
+        `;
+        // The update drains from just before that time until half an hour after it.
+        yield* Ref.set(draining, true);
+        yield* scenario.tick(nextDue - 4 * MINUTE_MS);
+        yield* scenario.tick(nextDue + 30 * MINUTE_MS);
+        yield* Ref.set(draining, false);
+
+        yield* scenario.tick(nextDue + 31 * MINUTE_MS);
+        yield* scenario.settled;
+        const ran = yield* scenario.service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some(
+              (task) =>
+                task.nextRunAt === iso(nextDue + 24 * HOUR_MS) && task.lastRunStatus !== "running",
+            ),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* fireWhenDue(scenario);
+        yield* Fiber.join(ran);
+        expect(yield* Queue.size(scenario.launches)).toBe(1);
+        expect(
+          (yield* scenario.service.listRuns({ id: "scheduled-task:shared" as ScheduledTaskId }))
+            .runs,
+        ).toMatchObject([
+          { trigger: "catch_up", outcome: "succeeded", scheduledFor: iso(nextDue) },
+        ]);
+      }),
+    schedule,
+  ).pipe(Effect.provideService(UpdateDrain, draining));
 });
 
 // Fires the task when it is next due and waits for what that tick published.
