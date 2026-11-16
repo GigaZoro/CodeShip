@@ -309,7 +309,10 @@ A command an agent starts with `t3_command_run` is not the provider's, so neithe
 a crash cuts it. The [command runner](../../apps/server/src/commandRunner/CommandRunner.ts)
 starts it outside the provider and the server: in its own session, which on Linux under systemd
 is also a scope outside the service's cgroup (`AgentScope` with `survivesRestart`), and on
-Windows through `Win32_Process.Create`, outside the server's job. Neither the desktop app, the
+Windows through `Win32_Process.Create`, outside the server's job. The Windows wrapper and
+failure recovery atomically rename the same start gate, so a WMI request that outlives its
+launcher cannot execute a command reported as unstarted. A launcher failure recovers the
+wrapper's pid with the same identity checks as restart adoption. Neither the desktop app, the
 launcher nor the service manager reaches it. A wrapper writes its output to a capped log under
 the state directory and its exit status to a file it renames into place, so a reader never sees
 half a status. On Windows the command runs in a console apart from its wrapper's, so a console
