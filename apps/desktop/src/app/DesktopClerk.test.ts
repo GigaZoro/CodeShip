@@ -287,7 +287,9 @@ describe("DesktopClerk", () => {
         readFileString: (path) =>
           path === "/tmp/app/package.json"
             ? Effect.succeed(JSON.stringify(metadata))
-            : Effect.die(`unexpected read of ${path}`),
+            : path.endsWith("gpu-cache-electron-version")
+              ? Effect.succeed(process.versions.electron)
+              : Effect.die(`unexpected read of ${path}`),
       });
 
       yield* Effect.scoped(Layer.build(layerDesktopClerk(false, [], "darwin", fileSystemLayer)));
