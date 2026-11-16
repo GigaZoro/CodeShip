@@ -31,6 +31,7 @@ import {
 } from "@t3tools/contracts";
 import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import { deriveBlockedOnThreadWait } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as DateTime from "effect/DateTime";
@@ -4111,103 +4112,104 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
-  it.live("does not poll the process ledger while a cgroup lease owns teardown", () =>
-    Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) !== "linux") return;
-      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const selfInvocation = yield* resolveSelfInvocation();
-      const mockAgentPath = yield* path.fromFileUrl(
-        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
-      );
-      // A directory stands in for cgroupfs: the join wrapper appends the agent
-      // PID to cgroup.procs and stays in this process's cgroup, which is the
-      // cgroup the lease reports.
-      const leasePath = yield* fileSystem.makeTempDirectoryScoped();
-      const procsPath = path.join(leasePath, "cgroup.procs");
-      yield* fileSystem.writeFileString(procsPath, "");
-      const relativePath = AcpSessionRuntime.parseUnifiedCgroupPath(
-        NodeFS.readFileSync("/proc/self/cgroup", "utf8"),
-      );
-      // No unified cgroup on this host means no lease is possible, so there is
-      // nothing for this test to exercise.
-      if (relativePath === undefined) return;
-      const processTree = AcpSessionRuntime.makePosixProcessTreeController("linux");
-      const leasePids = () =>
-        NodeFS.readFileSync(procsPath, "utf8").split(/\s+/).filter(Boolean).map(Number);
-      const isLive = (pid: number) => {
-        const identity = processTree.identity(pid);
-        return identity !== undefined && !AcpSessionRuntime.posixProcessIsZombie(identity);
-      };
-      let leaseExists = true;
-      const linuxCgroupController: AcpSessionRuntime.AcpLinuxCgroupController = {
-        create: () => ({
-          contains: (pid) => leasePids().includes(pid),
-          exists: () => leaseExists,
-          path: leasePath,
-          relativePath,
-          kill: () => {
-            for (const pid of leasePids().filter(isLive)) process.kill(pid, "SIGKILL");
-          },
-          populated: () => leasePids().some(isLive),
-          remove: () => {
-            leaseExists = false;
-          },
-        }),
-      };
-      let childListReads = 0;
-      const posixProcessTreeController: AcpSessionRuntime.AcpPosixProcessTreeController = {
-        ...processTree,
-        childPidsOf: (pid) => {
-          childListReads += 1;
-          return processTree.childPidsOf(pid);
-        },
-      };
-      const instanceId = ProviderInstanceId.make("acp-test-cgroup-ledger-idle");
-      const adapter = yield* makeAcpAdapterV2({
-        instanceId,
-        flavor: {
-          driver: ACP_TEST_DRIVER,
-          capabilities: AcpProviderCapabilitiesV2,
-          makeRuntime: makeMockRuntime({
-            childProcessSpawner,
-            linuxCgroupController,
-            posixProcessTreeController,
-            mockAgentPath,
-            ownDescendantProcessGroups: true,
-            ownDetachedProcessGroup: true,
+  it.live.skipIf(!isLinuxHost)(
+    "does not poll the process ledger while a cgroup lease owns teardown",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        // A directory stands in for cgroupfs: the join wrapper appends the agent
+        // PID to cgroup.procs and stays in this process's cgroup, which is the
+        // cgroup the lease reports.
+        const leasePath = yield* fileSystem.makeTempDirectoryScoped();
+        const procsPath = path.join(leasePath, "cgroup.procs");
+        yield* fileSystem.writeFileString(procsPath, "");
+        const relativePath = AcpSessionRuntime.parseUnifiedCgroupPath(
+          NodeFS.readFileSync("/proc/self/cgroup", "utf8"),
+        );
+        // No unified cgroup on this host means no lease is possible, so there is
+        // nothing for this test to exercise.
+        if (relativePath === undefined) return;
+        const processTree = AcpSessionRuntime.makePosixProcessTreeController("linux");
+        const leasePids = () =>
+          NodeFS.readFileSync(procsPath, "utf8").split(/\s+/).filter(Boolean).map(Number);
+        const isLive = (pid: number) => {
+          const identity = processTree.identity(pid);
+          return identity !== undefined && !AcpSessionRuntime.posixProcessIsZombie(identity);
+        };
+        let leaseExists = true;
+        const linuxCgroupController: AcpSessionRuntime.AcpLinuxCgroupController = {
+          create: () => ({
+            contains: (pid) => leasePids().includes(pid),
+            exists: () => leaseExists,
+            path: leasePath,
+            relativePath,
+            kill: () => {
+              for (const pid of leasePids().filter(isLive)) process.kill(pid, "SIGKILL");
+            },
+            populated: () => leasePids().some(isLive),
+            remove: () => {
+              leaseExists = false;
+            },
           }),
-        },
-        selfInvocation,
-      });
-      const threadId = ThreadId.make("thread-acp-cgroup-ledger-idle");
-      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        cwd: process.cwd(),
-      });
-      const modelSelection = { instanceId, model: "default" } as const;
-      const sessionScope = yield* Scope.fork(yield* Scope.Scope);
-      const runtime = yield* adapter
-        .openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make("provider-session-acp-cgroup-ledger-idle"),
-          modelSelection,
-          runtimePolicy,
-        })
-        .pipe(Effect.provideService(Scope.Scope, sessionScope));
-      yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
-      // The agent's children are listed once, to capture the root it may
-      // signal at teardown, and never again while the session is open.
-      assert.equal(childListReads, 1);
+        };
+        let childListReads = 0;
+        const posixProcessTreeController: AcpSessionRuntime.AcpPosixProcessTreeController = {
+          ...processTree,
+          childPidsOf: (pid) => {
+            childListReads += 1;
+            return processTree.childPidsOf(pid);
+          },
+        };
+        const instanceId = ProviderInstanceId.make("acp-test-cgroup-ledger-idle");
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner,
+              linuxCgroupController,
+              posixProcessTreeController,
+              mockAgentPath,
+              ownDescendantProcessGroups: true,
+              ownDetachedProcessGroup: true,
+            }),
+          },
+          selfInvocation,
+        });
+        const threadId = ThreadId.make("thread-acp-cgroup-ledger-idle");
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const sessionScope = yield* Scope.fork(yield* Scope.Scope);
+        const runtime = yield* adapter
+          .openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("provider-session-acp-cgroup-ledger-idle"),
+            modelSelection,
+            runtimePolicy,
+          })
+          .pipe(Effect.provideService(Scope.Scope, sessionScope));
+        yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+        // The agent's children are listed once, to capture the root it may
+        // signal at teardown, and never again while the session is open.
+        assert.equal(childListReads, 1);
 
-      const agentPid = leasePids()[0];
-      assert.isDefined(agentPid);
-      yield* Scope.close(sessionScope, Exit.void);
-      assert.isFalse(isLive(agentPid!), "closing the session must still tear the agent down");
-      assert.isFalse(leaseExists, "closing the session must remove the lease");
-    }).pipe(Effect.provide(layerTest), Effect.scoped),
+        const agentPid = leasePids()[0];
+        assert.isDefined(agentPid);
+        yield* Scope.close(sessionScope, Exit.void);
+        assert.isFalse(isLive(agentPid!), "closing the session must still tear the agent down");
+        assert.isFalse(leaseExists, "closing the session must remove the lease");
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
   it.effect("negotiates and executes optional native session forks through the ACP runtime", () =>

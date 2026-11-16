@@ -4,7 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { describe, expect, it, vi } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
@@ -133,67 +133,121 @@ describe("terminatePosixOwnedProcessTree", () => {
     }),
   );
 
-  it.live("preserves exact argv and strips wrapper-only environment before exec", () =>
-    Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) !== "linux") return;
-      const lease = AcpSessionRuntime.makeLinuxCgroupController().create();
-      if (lease === undefined) return;
+  it.live.skipIf(!isLinuxHost)(
+    "preserves exact argv and strips wrapper-only environment before exec",
+    () =>
+      Effect.gen(function* () {
+        const lease = AcpSessionRuntime.makeLinuxCgroupController().create();
+        if (lease === undefined) return;
+        const scratchRoot = NodePath.join(process.cwd(), "tmp");
+        NodeFS.mkdirSync(scratchRoot, { recursive: true });
+        const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-"));
+        const linkedNode = NodePath.join(scratch, "T3.CodeShip AppImage 'quoted'");
+        const bareGrok = NodePath.join(scratch, "grok");
+        const relativeBin = NodePath.join(scratch, "relative-bin");
+        const directoryBin = NodePath.join(scratch, "directory-bin");
+        const validBin = NodePath.join(scratch, "valid-bin");
+        const outputPath = NodePath.join(scratch, "argv.json");
+        NodeFS.mkdirSync(relativeBin);
+        NodeFS.mkdirSync(NodePath.join(directoryBin, "grok"), { recursive: true });
+        NodeFS.mkdirSync(validBin);
+        NodeFS.symlinkSync(process.execPath, linkedNode);
+        NodeFS.symlinkSync(process.execPath, bareGrok);
+        NodeFS.symlinkSync(process.execPath, NodePath.join(relativeBin, "grok"));
+        NodeFS.symlinkSync(process.execPath, NodePath.join(validBin, "grok"));
+        expect(
+          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: scratch }),
+        ).toBe(bareGrok);
+        expect(
+          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: "" }),
+        ).toBe(bareGrok);
+        // Undefined PATH searches /usr/bin:/bin; the bareGrok fixture lives only in cwd.
+        expect(
+          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: undefined }),
+        ).toBeUndefined();
+        expect(
+          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("sh", scratch, { PATH: undefined }),
+        ).toBeDefined();
+        expect(
+          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
+            PATH: "relative-bin",
+          }),
+        ).toBe(NodePath.join(relativeBin, "grok"));
+        expect(
+          AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
+            PATH: `directory-bin${NodePath.delimiter}valid-bin`,
+          }),
+        ).toBe(NodePath.join(validBin, "grok"));
+        const target = [
+          'const fs = require("node:fs");',
+          "fs.writeFileSync(process.argv[1], JSON.stringify({",
+          "  args: process.argv.slice(2),",
+          "  electron: process.env.ELECTRON_RUN_AS_NODE,",
+          "  wrapper: process.env.T3_ACP_CGROUP_WRAPPER,",
+          "}));",
+        ].join("\n");
+        const wrapped = AcpSessionRuntime.wrapCommandForLinuxCgroup(lease, linkedNode, [
+          "-e",
+          target,
+          outputPath,
+          "space value",
+          "single'quote",
+          'double"quote',
+        ]);
+        try {
+          const result = NodeChildProcess.spawnSync(wrapped.command, wrapped.args, {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              ELECTRON_RUN_AS_NODE: "1",
+              T3_ACP_CGROUP_WRAPPER: "1",
+            },
+          });
+          expect(result.status, result.stderr).toBe(0);
+          expect(NodeFS.readFileSync(outputPath, "utf8")).toBe(
+            '{"args":["space value","single\'quote","double\\"quote"]}',
+          );
+        } finally {
+          yield* AcpSessionRuntime.terminateLinuxCgroupLease(lease).pipe(Effect.ignore);
+          NodeFS.rmSync(scratch, { recursive: true, force: true });
+        }
+      }),
+  );
+
+  it.skipIf(!isLinuxHost)(
+    "contains a packaged-runtime command without requiring cgroup delegation",
+    () => {
       const scratchRoot = NodePath.join(process.cwd(), "tmp");
       NodeFS.mkdirSync(scratchRoot, { recursive: true });
-      const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-"));
-      const linkedNode = NodePath.join(scratch, "T3.CodeShip AppImage 'quoted'");
-      const bareGrok = NodePath.join(scratch, "grok");
-      const relativeBin = NodePath.join(scratch, "relative-bin");
-      const directoryBin = NodePath.join(scratch, "directory-bin");
-      const validBin = NodePath.join(scratch, "valid-bin");
-      const outputPath = NodePath.join(scratch, "argv.json");
-      NodeFS.mkdirSync(relativeBin);
-      NodeFS.mkdirSync(NodePath.join(directoryBin, "grok"), { recursive: true });
-      NodeFS.mkdirSync(validBin);
-      NodeFS.symlinkSync(process.execPath, linkedNode);
-      NodeFS.symlinkSync(process.execPath, bareGrok);
-      NodeFS.symlinkSync(process.execPath, NodePath.join(relativeBin, "grok"));
-      NodeFS.symlinkSync(process.execPath, NodePath.join(validBin, "grok"));
-      expect(
-        AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: scratch }),
-      ).toBe(bareGrok);
-      expect(AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: "" })).toBe(
-        bareGrok,
+      const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-fake-"));
+      const leasePath = NodePath.join(scratch, "lease with spaces");
+      const outputPath = NodePath.join(scratch, "argv output");
+      NodeFS.mkdirSync(leasePath);
+      NodeFS.writeFileSync(NodePath.join(leasePath, "cgroup.procs"), "");
+      const relativePath = AcpSessionRuntime.parseUnifiedCgroupPath(
+        NodeFS.readFileSync("/proc/self/cgroup", "utf8"),
       );
-      // Undefined PATH searches /usr/bin:/bin; the bareGrok fixture lives only in cwd.
-      expect(
-        AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: undefined }),
-      ).toBeUndefined();
-      expect(
-        AcpSessionRuntime.resolveLinuxCgroupTargetCommand("sh", scratch, { PATH: undefined }),
-      ).toBeDefined();
-      expect(
-        AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
-          PATH: "relative-bin",
-        }),
-      ).toBe(NodePath.join(relativeBin, "grok"));
-      expect(
-        AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
-          PATH: `directory-bin${NodePath.delimiter}valid-bin`,
-        }),
-      ).toBe(NodePath.join(validBin, "grok"));
-      const target = [
-        'const fs = require("node:fs");',
-        "fs.writeFileSync(process.argv[1], JSON.stringify({",
-        "  args: process.argv.slice(2),",
-        "  electron: process.env.ELECTRON_RUN_AS_NODE,",
-        "  wrapper: process.env.T3_ACP_CGROUP_WRAPPER,",
-        "}));",
-      ].join("\n");
-      const wrapped = AcpSessionRuntime.wrapCommandForLinuxCgroup(lease, linkedNode, [
-        "-e",
-        target,
-        outputPath,
-        "space value",
-        "single'quote",
-        'double"quote',
-      ]);
+      expect(relativePath).toBeDefined();
+      const lease: AcpSessionRuntime.AcpLinuxCgroupLease = {
+        contains: () => false,
+        exists: () => true,
+        path: leasePath,
+        relativePath: relativePath!,
+        kill: () => undefined,
+        populated: () => false,
+        remove: () => undefined,
+      };
+      const packagedExecPath = vi.spyOn(process, "execPath", "get").mockReturnValue("/bin/sh");
       try {
+        const wrapped = AcpSessionRuntime.wrapCommandForLinuxCgroup(lease, "/bin/sh", [
+          "-c",
+          'printf "%s\\n" "$0" "$1" "$2" "$3" "${ELECTRON_RUN_AS_NODE-}" "${T3_ACP_CGROUP_WRAPPER-}" > "$4"',
+          "packaged-target",
+          "space value",
+          "single'quote",
+          'double"quote',
+          outputPath,
+        ]);
         const result = NodeChildProcess.spawnSync(wrapped.command, wrapped.args, {
           encoding: "utf8",
           env: {
@@ -204,102 +258,51 @@ describe("terminatePosixOwnedProcessTree", () => {
         });
         expect(result.status, result.stderr).toBe(0);
         expect(NodeFS.readFileSync(outputPath, "utf8")).toBe(
-          '{"args":["space value","single\'quote","double\\"quote"]}',
+          "packaged-target\nspace value\nsingle'quote\ndouble\"quote\n\n\n",
         );
+        expect(NodeFS.readFileSync(NodePath.join(leasePath, "cgroup.procs"), "utf8")).toMatch(
+          /^\d+\n$/,
+        );
+
+        const mismatch = AcpSessionRuntime.wrapCommandForLinuxCgroup(
+          { ...lease, relativePath: "/not-the-current-cgroup" },
+          "/bin/sh",
+          ["-c", 'printf executed > "$0"', outputPath],
+        );
+        NodeFS.rmSync(outputPath);
+        const mismatchResult = NodeChildProcess.spawnSync(mismatch.command, mismatch.args, {
+          encoding: "utf8",
+        });
+        expect(mismatchResult.status, mismatchResult.stderr).toBe(126);
+        expect(NodeFS.existsSync(outputPath)).toBe(false);
+
+        const missingTarget = AcpSessionRuntime.wrapCommandForLinuxCgroup(
+          lease,
+          "/nonexistent-t3-probe",
+          [],
+        );
+        const missingTargetResult = NodeChildProcess.spawnSync(
+          missingTarget.command,
+          missingTarget.args,
+          {
+            encoding: "utf8",
+          },
+        );
+        expect(missingTargetResult.status, missingTargetResult.stderr).toBe(125);
+        // dash runs EXIT traps after failed exec; bash does not, so exercise both.
+        const missingTargetBash = NodeChildProcess.spawnSync("bash", missingTarget.args, {
+          encoding: "utf8",
+        });
+        if ((missingTargetBash.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+          expect(missingTargetBash.status, missingTargetBash.stderr).toBe(125);
+          expect(missingTargetBash.stderr).toContain("/nonexistent-t3-probe");
+        }
       } finally {
-        yield* AcpSessionRuntime.terminateLinuxCgroupLease(lease).pipe(Effect.ignore);
+        packagedExecPath.mockRestore();
         NodeFS.rmSync(scratch, { recursive: true, force: true });
       }
-    }),
+    },
   );
-
-  it("contains a packaged-runtime command without requiring cgroup delegation", () => {
-    if (HostProcess.Platform.defaultValue() !== "linux") return;
-    const scratchRoot = NodePath.join(process.cwd(), "tmp");
-    NodeFS.mkdirSync(scratchRoot, { recursive: true });
-    const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-fake-"));
-    const leasePath = NodePath.join(scratch, "lease with spaces");
-    const outputPath = NodePath.join(scratch, "argv output");
-    NodeFS.mkdirSync(leasePath);
-    NodeFS.writeFileSync(NodePath.join(leasePath, "cgroup.procs"), "");
-    const relativePath = AcpSessionRuntime.parseUnifiedCgroupPath(
-      NodeFS.readFileSync("/proc/self/cgroup", "utf8"),
-    );
-    expect(relativePath).toBeDefined();
-    const lease: AcpSessionRuntime.AcpLinuxCgroupLease = {
-      contains: () => false,
-      exists: () => true,
-      path: leasePath,
-      relativePath: relativePath!,
-      kill: () => undefined,
-      populated: () => false,
-      remove: () => undefined,
-    };
-    const packagedExecPath = vi.spyOn(process, "execPath", "get").mockReturnValue("/bin/sh");
-    try {
-      const wrapped = AcpSessionRuntime.wrapCommandForLinuxCgroup(lease, "/bin/sh", [
-        "-c",
-        'printf "%s\\n" "$0" "$1" "$2" "$3" "${ELECTRON_RUN_AS_NODE-}" "${T3_ACP_CGROUP_WRAPPER-}" > "$4"',
-        "packaged-target",
-        "space value",
-        "single'quote",
-        'double"quote',
-        outputPath,
-      ]);
-      const result = NodeChildProcess.spawnSync(wrapped.command, wrapped.args, {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          ELECTRON_RUN_AS_NODE: "1",
-          T3_ACP_CGROUP_WRAPPER: "1",
-        },
-      });
-      expect(result.status, result.stderr).toBe(0);
-      expect(NodeFS.readFileSync(outputPath, "utf8")).toBe(
-        "packaged-target\nspace value\nsingle'quote\ndouble\"quote\n\n\n",
-      );
-      expect(NodeFS.readFileSync(NodePath.join(leasePath, "cgroup.procs"), "utf8")).toMatch(
-        /^\d+\n$/,
-      );
-
-      const mismatch = AcpSessionRuntime.wrapCommandForLinuxCgroup(
-        { ...lease, relativePath: "/not-the-current-cgroup" },
-        "/bin/sh",
-        ["-c", 'printf executed > "$0"', outputPath],
-      );
-      NodeFS.rmSync(outputPath);
-      const mismatchResult = NodeChildProcess.spawnSync(mismatch.command, mismatch.args, {
-        encoding: "utf8",
-      });
-      expect(mismatchResult.status, mismatchResult.stderr).toBe(126);
-      expect(NodeFS.existsSync(outputPath)).toBe(false);
-
-      const missingTarget = AcpSessionRuntime.wrapCommandForLinuxCgroup(
-        lease,
-        "/nonexistent-t3-probe",
-        [],
-      );
-      const missingTargetResult = NodeChildProcess.spawnSync(
-        missingTarget.command,
-        missingTarget.args,
-        {
-          encoding: "utf8",
-        },
-      );
-      expect(missingTargetResult.status, missingTargetResult.stderr).toBe(125);
-      // dash runs EXIT traps after failed exec; bash does not, so exercise both.
-      const missingTargetBash = NodeChildProcess.spawnSync("bash", missingTarget.args, {
-        encoding: "utf8",
-      });
-      if ((missingTargetBash.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-        expect(missingTargetBash.status, missingTargetBash.stderr).toBe(125);
-        expect(missingTargetBash.stderr).toContain("/nonexistent-t3-probe");
-      }
-    } finally {
-      packagedExecPath.mockRestore();
-      NodeFS.rmSync(scratch, { recursive: true, force: true });
-    }
-  });
 
   it("sends TERM only to the exact captured root while it remains in the child cgroup", () => {
     const fixture = makeController({

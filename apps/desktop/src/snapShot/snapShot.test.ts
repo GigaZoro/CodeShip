@@ -1,5 +1,5 @@
 import { it as effectIt } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -466,11 +466,10 @@ describe("toElectronAccelerator", () => {
 });
 
 describe("isWaylandSession", () => {
-  effectIt.effect(
+  effectIt.effect.skipIf(!isLinuxHost)(
     "falls back to a live runtime directory socket when session variables are stripped",
     () =>
       Effect.gen(function* () {
-        if ((yield* HostProcess.Platform) !== "linux") return;
         yield* Effect.promise(async () => {
           const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
           const { createServer } = await import("node:net");
