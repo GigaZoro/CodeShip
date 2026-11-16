@@ -228,7 +228,10 @@ it.effect.each([
       staleCheckpoints: [],
       rootNodes: [],
       providerTurns: [],
-    } as unknown as ProjectionStore.ProjectionCheckpointRollbackContext;
+    } satisfies Record<
+      keyof ProjectionStore.ProjectionCheckpointRollbackContext,
+      unknown
+    > as unknown as ProjectionStore.ProjectionCheckpointRollbackContext;
     const testLayer = CheckpointRollbackService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -439,13 +442,16 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
         providerSession: undefined,
         checkpoint: { id: checkpointId, scopeId, status: "ready", appRunOrdinal: 0 },
         scope: { id: scopeId, cwd: worktreePath },
-        runsToRollback: [],
+        laterRuns: [],
         targetAttempt: undefined,
         rolledBackAttemptIds: [],
         staleCheckpoints: [],
         rootNodes: [],
         providerTurns: [],
-      } as unknown as ProjectionStore.ProjectionCheckpointRollbackContext;
+      } satisfies Record<
+        keyof ProjectionStore.ProjectionCheckpointRollbackContext,
+        unknown
+      > as unknown as ProjectionStore.ProjectionCheckpointRollbackContext;
       const testLayer = CheckpointRollbackService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
@@ -469,6 +475,7 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThread: () => Effect.succeed(projection.thread),
               getCheckpointRollbackContext: () => Effect.succeed(projection),
+              getRunsWithLostBackgroundWork: () => Effect.succeed([]),
               getShellSnapshot: () =>
                 Effect.succeed({
                   schemaVersion: 1,

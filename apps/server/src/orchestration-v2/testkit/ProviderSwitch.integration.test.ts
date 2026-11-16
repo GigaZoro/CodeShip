@@ -2806,7 +2806,7 @@ describe("orchestration v2 provider switching", () => {
       { background: true, queued: true, sharedHistory: false },
     ],
     [
-      "holds a queued account switch while the replaced session still runs background work",
+      "ends the replaced session's background work when a queued account switch starts",
       { background: true, queued: true, sharedHistory: true },
     ],
   ] as const)("%s", ([, { background, queued, sharedHistory }]) =>
@@ -2919,47 +2919,30 @@ describe("orchestration v2 provider switching", () => {
           );
           yield* worker.drain();
           const afterQueue = yield* orchestrator.getThreadProjection(handoffThreadId);
-          const firstSession = afterQueue.providerSessions.find(
-            (session) => session.providerInstanceId === CLAUDE_MODEL_SELECTION.instanceId,
-          );
-          // Detaching would end the background agents, so the busy session must stay up.
-          assert.deepEqual(yield* Ref.get(closedSessions), []);
-          assert.equal(firstSession?.status, "ready");
-          if (!sharedHistory) {
-            assert.deepEqual(
-              afterQueue.runs.map((run) => [run.providerInstanceId, run.status]),
-              [
-                [CLAUDE_MODEL_SELECTION.instanceId, "completed"],
-                [secondSelection.instanceId, "completed"],
-              ],
-            );
-            return;
-          }
-          // Resuming the native thread beside the busy session would fork its history.
           assert.deepEqual(
-            afterQueue.runs.map((run) => [run.status, run.queueHeld === true]),
-            [
-              ["completed", false],
-              ["queued", true],
-            ],
-          );
-          assert.lengthOf(yield* Ref.get(capturedTurns), 1);
-          yield* Ref.set(backgroundWork, false);
-          yield* orchestrator.dispatch({
-            type: "queue.resume",
-            commandId: CommandId.make("command:handoff-releases-session:resume"),
-            threadId: handoffThreadId,
-          });
-          yield* worker.drain();
-          const resumed = yield* waitForIdle(handoffThreadId);
-          assert.deepEqual(
-            resumed.runs.map((run) => [run.providerInstanceId, run.status]),
+            afterQueue.runs.map((run) => [run.providerInstanceId, run.status]),
             [
               [CLAUDE_MODEL_SELECTION.instanceId, "completed"],
               [secondSelection.instanceId, "completed"],
             ],
           );
-          assert.deepEqual(yield* Ref.get(closedSessions), [firstSession!.id]);
+          if (sharedHistory) {
+            // The move resumes the native thread, so the first account's process must end.
+            assert.lengthOf(yield* Ref.get(closedSessions), 1);
+            assert.deepEqual(
+              afterQueue.providerSessions.map((session) => session.providerInstanceId),
+              [secondSelection.instanceId],
+            );
+            return;
+          }
+          // Detaching would end the background agents, so the busy session must stay up.
+          assert.deepEqual(yield* Ref.get(closedSessions), []);
+          assert.equal(
+            afterQueue.providerSessions.find(
+              (session) => session.providerInstanceId === CLAUDE_MODEL_SELECTION.instanceId,
+            )?.status,
+            "ready",
+          );
           return;
         }
 

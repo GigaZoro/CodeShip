@@ -239,6 +239,8 @@ export interface ProviderTurnStartServiceV2Shape {
     readonly runId: RunId;
     readonly attemptId: RunAttemptId;
     readonly rootNodeId: NodeId;
+    /** The last start attempt's failure; a provider's error names the reason in the run's error. */
+    readonly cause?: unknown;
   }) => Effect.Effect<void, ProviderTurnStartError | ProviderTurnStartRunStateMissingError>;
 }
 
@@ -2309,7 +2311,7 @@ export const layer: Layer.Layer<
           ),
       ),
       failStartingRun: Effect.fn("ProviderTurnStartService.failStartingRun")(
-        function* ({ threadId, runId, attemptId, rootNodeId }) {
+        function* ({ threadId, runId, attemptId, rootNodeId, cause }) {
           const projection = yield* projectionStore.getTurnStartContext(threadId, runId);
           const run = projection.runs.find((candidate) => candidate.id === runId);
           if (
@@ -2325,6 +2327,17 @@ export const layer: Layer.Layer<
           );
           if (rootNode === undefined || attempt === undefined) {
             return yield* new ProviderTurnStartRunStateMissingError({ runId });
+          }
+          // Our own start bookkeeping errors mean nothing to a user; the server logs carry them.
+          if (cause instanceof Error && !isProviderTurnStartError(cause)) {
+            return yield* settleUnstartedRunFailure(
+              { projection, run, attempt, rootNode },
+              {
+                signal: "provider-turn-start-failure",
+                title: "Provider turn failed to start",
+                error: cause,
+              },
+            );
           }
           yield* settleRunBeforeStart({
             run,

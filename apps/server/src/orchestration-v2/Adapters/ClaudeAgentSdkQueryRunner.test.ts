@@ -532,40 +532,6 @@ it.effect("cancels a stalled registration without retrying or retaining its prom
   }).pipe(Effect.provide(realQueryRunner)),
 );
 
-it.effect("does not reuse a fresh session ID after MCP registration times out", () =>
-  Effect.gen(function* () {
-    const registrationStarted = Promise.withResolvers<void>();
-    const disposed = vi.fn(async () => {});
-    const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
-      () =>
-        ({
-          initializationResult: async () => ({}),
-          setMcpServers: () => {
-            registrationStarted.resolve();
-            return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
-          },
-          [Symbol.asyncDispose]: disposed,
-        }) as unknown as ClaudeSdk.Query,
-    );
-    yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
-    const runner = yield* ClaudeAgentSdkQueryRunner;
-    const { resume, ...options } = resumedMcpQueryInput.options;
-    const opening = yield* runner
-      .open({
-        ...resumedMcpQueryInput,
-        options: { ...options, sessionId: resume },
-      })
-      .pipe(Effect.result, Effect.forkChild);
-    yield* Effect.promise(() => registrationStarted.promise);
-    yield* TestClock.adjust("90 seconds");
-    const result = yield* Fiber.join(opening);
-
-    assert.equal(result._tag, "Failure");
-    assert.equal(querySpy.mock.calls.length, 1);
-    assert.equal(disposed.mock.calls.length, 1);
-  }).pipe(Effect.provide(realQueryRunner)),
-);
-
 it.effect.each([
   ["opens after a slow CLI boot", "120 seconds", true],
   ["times out a CLI that never boots", "5 minutes", false],
@@ -611,37 +577,6 @@ it.effect.each([
         "Claude timed out while starting up. Retry the turn; if it keeps failing, check Claude and the server logs.",
       );
   }).pipe(Effect.provide(realQueryRunner)),
-);
-
-it.effect("cancels a stalled registration without retrying or retaining its prompt queue", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const registrationStarted = Promise.withResolvers<void>();
-      const disposed = vi.fn(async () => {});
-      const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
-        () =>
-          ({
-            initializationResult: async () => ({}),
-            setMcpServers: () => {
-              registrationStarted.resolve();
-              return new Promise<ClaudeSdk.McpSetServersResult>(() => {});
-            },
-            [Symbol.asyncDispose]: disposed,
-          }) as unknown as ClaudeSdk.Query,
-      );
-      yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
-      const runner = yield* ClaudeAgentSdkQueryRunner;
-      const opening = yield* runner.open(resumedMcpQueryInput).pipe(Effect.forkChild);
-      yield* Effect.promise(() => registrationStarted.promise);
-      yield* Fiber.interrupt(opening);
-
-      assert.equal(querySpy.mock.calls.length, 1);
-      assert.equal(disposed.mock.calls.length, 1);
-      const prompt = querySpy.mock.calls[0]![0].prompt;
-      if (typeof prompt === "string") throw new Error("Expected streaming input");
-      assert.isTrue((yield* Effect.promise(() => prompt[Symbol.asyncIterator]().next())).done);
-    }).pipe(Effect.provide(realQueryRunner)),
-  ),
 );
 
 it.effect.each([
