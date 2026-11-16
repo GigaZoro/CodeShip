@@ -7204,10 +7204,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const found =
         scheduledSource(projection) ??
         scheduledSource(yield* getProjectionWithPendingEvents(command.threadId, events));
-      if (found?.message.scheduledTaskId === undefined) return null;
-      const { source, message } = found;
+      if (found === undefined) return null;
+      const {
+        source,
+        message: { scheduledTaskId },
+      } = found;
+      if (scheduledTaskId === undefined) return null;
       const task = yield* projectionStore
-        .getScheduledTaskRecoveryState(message.scheduledTaskId, source.requestedAt)
+        .getScheduledTaskRecoveryState(scheduledTaskId, source.requestedAt)
         .pipe(
           Effect.mapError(
             (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
