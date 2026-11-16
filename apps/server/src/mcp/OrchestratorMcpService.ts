@@ -4465,6 +4465,9 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         runId: result.run.id,
         status: result.type === "already_terminal" ? result.run.status : "interrupt_requested",
+        ...(input.runId !== undefined && input.runId !== result.run.id
+          ? { requestedRunId: input.runId }
+          : {}),
       } satisfies OrchestratorMcpThreadInterruptResult;
     }),
   });
