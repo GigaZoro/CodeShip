@@ -47,6 +47,7 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import type { ProjectionStoreV2Error } from "./ProjectionStore.ts";
 import {
@@ -610,6 +611,7 @@ export const layer: Layer.Layer<
   | McpAppModelContext.McpAppModelContext
   | PreviewAgentActivity.PreviewAgentActivity
   | TurnItemPositionStore.TurnItemPositionStoreV2
+  | ThreadCommandExecutor.ThreadCommandExecutor
 > = Layer.effect(
   RunExecutionServiceV2,
   Effect.gen(function* () {
@@ -622,11 +624,12 @@ export const layer: Layer.Layer<
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
     const previewAgentActivity = yield* PreviewAgentActivity.PreviewAgentActivity;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
+    const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const pendingRootTerminals = new Map<RunAttemptId, Deferred.Deferred<void>>();
 
-    const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
+    const commitFinalRunEvents = Effect.fn("RunExecutionService.commitFinalRunEvents")(
       function* (input: {
         readonly run: OrchestrationV2Run;
         readonly rootNode: OrchestrationV2ExecutionNode;
@@ -689,10 +692,10 @@ export const layer: Layer.Layer<
                   },
                 ],
               });
-              yield* input.refreshAfterTurn;
+              return input.refreshAfterTurn;
             }
           }
-          return;
+          return Effect.void;
         }
         const allocateEventId = () => idAllocator.allocate.event();
         const reason =
@@ -873,20 +876,26 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
-            return;
+            return Effect.void;
           }
         } else {
           yield* eventSink.writeWithEffects(finalization);
         }
-        yield* turnAnalytics.runSettled({
-          runId: input.run.id,
-          status: input.terminal.status,
-          completedAt,
-          childrenRunning: hasOpenSubagentProjection && cascadedSubagentEvents.length === 0,
-        });
-        yield* input.refreshAfterTurn;
+        return turnAnalytics
+          .runSettled({
+            runId: input.run.id,
+            status: input.terminal.status,
+            completedAt,
+            childrenRunning: hasOpenSubagentProjection && cascadedSubagentEvents.length === 0,
+          })
+          .pipe(Effect.andThen(input.refreshAfterTurn));
       },
     );
+
+    // Commands plan from the run they read under this lock; deciding and committing the terminal
+    // under it keeps a provider terminal from landing between such a read and its write.
+    const writeFinalRunEvents = (input: Parameters<typeof commitFinalRunEvents>[0]) =>
+      threadDispatch.withLock(input.run.threadId, commitFinalRunEvents(input)).pipe(Effect.flatten);
 
     return RunExecutionServiceV2.of({
       startRootRun: Effect.fn("RunExecutionService.startRootRun")(function* (input) {

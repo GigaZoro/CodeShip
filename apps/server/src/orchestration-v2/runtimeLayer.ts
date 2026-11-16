@@ -164,6 +164,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
     Layer.mergeAll(
       McpAppModelContext.layer,
       PreviewAgentActivity.layer,
+      ThreadCommandExecutor.layer,
       layerCheckpointServiceProvided,
       layerEventSink,
       IdAllocator.layer,

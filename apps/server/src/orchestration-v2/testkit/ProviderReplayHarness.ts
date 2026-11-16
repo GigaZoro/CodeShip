@@ -405,6 +405,7 @@ export function layerWithRegistry<Error>(
       Layer.mergeAll(
         McpAppModelContext.layerEmpty,
         PreviewAgentActivity.layer,
+        ThreadCommandExecutor.layer,
         layerCheckpointServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,
