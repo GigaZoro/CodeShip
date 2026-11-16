@@ -212,21 +212,35 @@ export function materializeReplayTranscriptRuntimeInstructions(
         }
         const lastText = promptPartText(prompt.at(-1));
         const expected = notesFor(promptSessionId);
-        // A recording that switched models mid-thread already carries the
-        // instructions for the model each prompt ran on.
+        // A recording that switched models mid-thread carries the notes for the model each prompt
+        // ran on. A spelled-out block stands for this model's current notes, so a wording change
+        // needs no re-recording; a block that wildcards its runtime info stays as recorded.
         const recordedNotes =
-          lastText === expected || lastText?.startsWith("<runtime_info>") === true
-            ? lastText
-            : undefined;
+          lastText?.startsWith("<runtime_info>") === true ? lastText : undefined;
+        const rebuildNotes =
+          recordedNotes !== undefined &&
+          recordedNotes !== expected &&
+          !recordedNotes.split("</runtime_info>")[0]!.includes("<any>");
         const resend =
           recordedNotes === undefined && deliveredNotes.get(promptSessionId) !== expected;
         pendingPrompt = {
           sessionId: promptSessionId,
-          // Recorders normalize the notes they keep, so a recorded block stands for this model's.
           notes: recordedNotes !== undefined || resend ? expected : undefined,
           compact: false,
           compactionsAtSend: compactionCounts.get(promptSessionId) ?? 0,
         };
+        if (rebuildNotes) {
+          return {
+            ...entry,
+            frame: {
+              ...frame,
+              params: {
+                ...frame.params,
+                prompt: [...prompt.slice(0, -1), { type: "text", text: expected }],
+              },
+            },
+          };
+        }
         if (!resend) return entry;
         return {
           ...entry,
