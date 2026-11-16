@@ -1137,11 +1137,12 @@ export const layer = Layer.effect(
     `;
     // A fixed-time occurrence that came due while an automatic update drained. The install restarts
     // the server, so the hold outlives the drain and the run starts after it however late. It holds
-    // while the task's next_run_at is this value: a check a restart cut asks again, a one-machine
-    // turn moves it along, and a run, skip or edit ends it.
+    // that occurrence while the task's next_run_at is next_run_at: a check a restart cut asks again,
+    // a one-machine turn moves it along, and a run, skip or edit ends it.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_drain_holds (
         task_id TEXT PRIMARY KEY,
+        occurrence_at TEXT NOT NULL,
         next_run_at TEXT NOT NULL
       )
     `;
@@ -1904,9 +1905,9 @@ export const layer = Layer.effect(
       yield* writeMachineOrder({ project: to, order, revision: yield* stampOrderRevision(toKey) });
     });
 
-    // Shares were keyed by a fork's upstream remote before they were keyed by its origin. They
-    // move once, with a new revision the other machines take like any edit: a share received
-    // later can carry another machine's origin, which reads as an upstream on a fork of that fork.
+    // Shares this machine keyed by a fork's upstream move once to its origin, with a new revision.
+    // Not those another machine wrote: there the key can be a clone of that upstream with no other
+    // remote. Not later ones either: a received origin reads as the upstream of a fork of that fork.
     const moveSharesToOriginKeys = Effect.gen(function* () {
       const [done] = yield* sql`
         SELECT name FROM scheduled_task_upgrades WHERE name = ${ORIGIN_KEYED_SHARES_UPGRADE}`;
@@ -1917,7 +1918,14 @@ export const layer = Layer.effect(
         const id = ScheduledTaskId.make(share.task_id);
         const task = yield* findTask(id);
         const from = task?.shared?.project;
-        if (task == null || task.shared == null || from?.type !== "repository") continue;
+        if (
+          task == null ||
+          task.shared == null ||
+          task.shared.revision.environmentId !== hereEnvironmentId ||
+          from?.type !== "repository"
+        ) {
+          continue;
+        }
         const project = Option.getOrUndefined(yield* projects.getById(task.projectId));
         const identity =
           project === undefined ? null : yield* repositoryIdentities.resolve(project.workspaceRoot);
@@ -1937,7 +1945,7 @@ export const layer = Layer.effect(
       yield* sql`INSERT INTO scheduled_task_upgrades (name) VALUES (${ORIGIN_KEYED_SHARES_UPGRADE})`;
     }).pipe(
       Effect.withSpan("ScheduledTaskService.moveSharesToOriginKeys"),
-      // Not done is tried again at the next start; a share it did not move moves when it is saved.
+      // Not done is tried again at the next start.
       Effect.catchCause((cause) =>
         Effect.logError("Could not move shared tasks to their origin keys", { cause }),
       ),
@@ -3986,8 +3994,8 @@ export const layer = Layer.effect(
       );
       const catchUp =
         stored === undefined ? defaultCatchUpMissedRun(task.schedule) : stored.enabled === 1;
-      const [held] = yield* sql`
-        SELECT 1 FROM scheduled_task_drain_holds
+      const [held] = yield* sql<{ readonly occurrence_at: string }>`
+        SELECT occurrence_at FROM scheduled_task_drain_holds
         WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
       `.pipe(
         NodeSqliteClient.readOnly,
@@ -3997,13 +4005,12 @@ export const layer = Layer.effect(
       );
       const missed = latestMissedFixedTimeRun(task.schedule, now);
       // An update held it, not the app being off, so the task's catch-up choice does not apply. It
-      // still gives way to a nearer next time, and to a later time that passed too. A one-machine
-      // turn holds its deferred time, which is after the occurrence.
+      // still gives way to a nearer next time, and to a later time that passed too, the next day's
+      // time a one-machine turn carried the hold to included.
       if (
         held !== undefined &&
-        task.nextRunAt !== null &&
         missed !== null &&
-        DateTime.toEpochMillis(missed.at) <= Date.parse(task.nextRunAt)
+        DateTime.toEpochMillis(missed.at) <= Date.parse(held.occurrence_at)
       ) {
         return missed.catchUp
           ? yield* runDueOccurrence(task, now, true)
@@ -4056,9 +4063,11 @@ export const layer = Layer.effect(
           isMissedFixedTimeRun(task.schedule, DateTime.makeUnsafe(task.nextRunAt), now)
             ? Effect.void
             : sql`
-                INSERT INTO scheduled_task_drain_holds (task_id, next_run_at)
-                VALUES (${task.id}, ${task.nextRunAt})
-                ON CONFLICT (task_id) DO UPDATE SET next_run_at = excluded.next_run_at
+                INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at, next_run_at)
+                VALUES (${task.id}, ${task.nextRunAt}, ${task.nextRunAt})
+                ON CONFLICT (task_id) DO UPDATE SET
+                  occurrence_at = excluded.occurrence_at,
+                  next_run_at = excluded.next_run_at
                 WHERE next_run_at <> excluded.next_run_at
               `.pipe(
                 Effect.mapError((cause) =>
@@ -4425,9 +4434,17 @@ export const layer = Layer.effect(
     const knownMachineIds: ScheduledTaskService["Service"]["knownMachineIds"] = Effect.fn(
       "ScheduledTaskService.knownMachineIds",
     )(function* (projectId) {
-      const key = scheduledTaskSharedProjectKey(yield* sharedProjectOf(projectId));
+      const repository = yield* sharedRepositoryOf(projectId);
       const known = yield* Effect.gen(function* () {
-        const ordered = (yield* readMachineOrder(key).pipe(NodeSqliteClient.readOnly))?.order ?? [];
+        // Every order this project answers to: its shares can be keyed by any of its remotes.
+        const ordered = (yield* readMachineOrders)
+          .filter(({ project }) =>
+            repository === null
+              ? project.type === "none"
+              : project.type === "repository" &&
+                repositoryMatchRank(project, repository.identity) !== -1,
+          )
+          .flatMap(({ order }) => order);
         const cutoff = sharedPullerCutoff(yield* DateTime.now);
         const pullers = yield* sql<{ readonly environment_id: string }>`
           SELECT environment_id FROM scheduled_task_shared_pullers
@@ -4455,14 +4472,13 @@ export const layer = Layer.effect(
         }),
       );
 
-    // Resolved fresh: a project's own identity is a cache that reads blank when cold.
-    const sharedProjectOf = Effect.fn("ScheduledTaskService.sharedProjectOf")(function* (
+    // Null for No project. Resolved fresh: a project's own identity is a cache that reads blank when
+    // cold.
+    const sharedRepositoryOf = Effect.fn("ScheduledTaskService.sharedRepositoryOf")(function* (
       projectId: ProjectId,
       taskId?: ScheduledTaskId,
     ) {
-      if (yield* managedFolders.isScratchProject(projectId)) {
-        return { type: "none" } as const satisfies ScheduledTaskSharing["project"];
-      }
+      if (yield* managedFolders.isScratchProject(projectId)) return null;
       const project = yield* projects.getById(projectId).pipe(
         Effect.map(Option.getOrUndefined),
         Effect.mapError((cause) =>
@@ -4477,11 +4493,29 @@ export const layer = Layer.effect(
           { taskId },
         );
       }
+      return { title: project.title, identity };
+    });
+
+    const sharedProjectOf = Effect.fn("ScheduledTaskService.sharedProjectOf")(function* (
+      projectId: ProjectId,
+      taskId?: ScheduledTaskId,
+      current?: ScheduledTaskSharing["project"],
+    ) {
+      const repository = yield* sharedRepositoryOf(projectId, taskId);
+      if (repository === null) {
+        return { type: "none" } as const satisfies ScheduledTaskSharing["project"];
+      }
+      const { identity } = repository;
+      // A key this checkout still answers to stays: the machine that wrote it may know only that
+      // remote, as a clone of this fork's upstream does.
+      if (current?.type === "repository" && repositoryMatchRank(current, identity) !== -1) {
+        return current;
+      }
       // Origin first, so a fork's copy on a machine without its upstream remote finds it too.
       return {
         type: "repository",
         canonicalKey: repositoryGroupingKeyOf(identity),
-        title: project.title,
+        title: repository.title,
       } as const satisfies ScheduledTaskSharing["project"];
     });
 
@@ -4632,7 +4666,15 @@ export const layer = Layer.effect(
         }
       }
       const sharedProject =
-        sharedExclusions === undefined ? null : yield* sharedProjectOf(input.projectId, id);
+        sharedExclusions === undefined
+          ? null
+          : yield* sharedProjectOf(
+              input.projectId,
+              id,
+              existingTask?.projectId === input.projectId
+                ? existingTask.shared?.project
+                : undefined,
+            );
       // Omitted keeps the stored choice.
       const sharedRunOn = input.shared?.runOn ?? existingTask?.shared?.runOn;
       const machineOrder = input.shared?.machineOrder;

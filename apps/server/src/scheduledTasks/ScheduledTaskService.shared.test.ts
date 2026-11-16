@@ -576,8 +576,26 @@ it.effect.each([
   ),
 );
 
+it.effect("a fork's new share is keyed by its origin", () =>
+  withService(
+    (service) =>
+      Effect.gen(function* () {
+        const saved = (yield* service.upsert(
+          upsertInput({ projectId: forkProject.id }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        )).task;
+        expect(saved.shared?.project).toEqual({
+          type: "repository",
+          canonicalKey: "github.com/acme/repo",
+          title: "Fork",
+        });
+      }),
+    [forkProject],
+  ),
+);
+
 it.effect(
-  "a fork's share is keyed by its origin, and one keyed by its upstream moves there with its machine order",
+  "a share received under a fork's upstream keeps that key and its machine order when saved here",
   () =>
     withService(
       (service) =>
@@ -586,49 +604,45 @@ it.effect(
           const upstream = {
             type: "repository",
             canonicalKey: "github.com/upstream/repo",
-            title: "Fork",
+            title: "Upstream",
           };
           yield* service.applyShared(
             copy(at, { shared: { ...sharedWith(at, upstream), runOn: "one" } }),
           );
           yield* service.applyShared(order(at, [OTHER, HERE_ENVIRONMENT_ID], upstream));
-          const origin = {
-            type: "repository",
-            canonicalKey: "github.com/acme/repo",
-            title: "Fork",
-          };
-          yield* service.applyShared(
-            order("2026-09-11T00:00:00.000Z", [HERE_ENVIRONMENT_ID], origin),
-          );
 
           const saved = (yield* service.upsert(
             upsertInput({ projectId: forkProject.id }),
             ScheduledTaskService.CHANGED_IN_APP,
           )).task;
-          expect(saved.shared?.project).toEqual(origin);
+          expect(saved.shared?.project).toEqual(upstream);
           const orders = (yield* service.list()).projectMachineOrders ?? [];
-          expect(orderFor(orders, origin.canonicalKey)).toEqual([HERE_ENVIRONMENT_ID, OTHER]);
+          expect(orderFor(orders, upstream.canonicalKey)).toEqual([OTHER, HERE_ENVIRONMENT_ID]);
+          expect(orderFor(orders, "github.com/acme/repo")).toBeUndefined();
+          expect(yield* service.knownMachineIds(ProjectId.make(forkProject.id))).toEqual([OTHER]);
         }),
       [forkProject],
     ),
 );
 
+const upstreamShare = {
+  type: "repository",
+  canonicalKey: "github.com/upstream/repo",
+  title: "Fork",
+};
+const upstreamShareOnOne = (when: string) =>
+  copy(when, { shared: { ...sharedWith(when, upstreamShare), runOn: "one" } });
+
 it.effect(
-  "a share stored under a fork's upstream before origin keys moves there once, with its machine order",
+  "a share this machine stored under a fork's upstream before origin keys moves there once, with its machine order",
   () =>
     withService(
       (service, sql, restart) =>
         Effect.gen(function* () {
           const at = "2026-09-10T00:00:00.000Z";
-          const upstream = {
-            type: "repository",
-            canonicalKey: "github.com/upstream/repo",
-            title: "Fork",
-          };
-          const sharedOne = (when: string) =>
-            copy(when, { shared: { ...sharedWith(when, upstream), runOn: "one" } });
-          yield* service.applyShared(sharedOne(at));
-          yield* service.applyShared(order(at, [OTHER, HERE_ENVIRONMENT_ID], upstream));
+          yield* service.applyShared(upstreamShareOnOne(at));
+          yield* sql`UPDATE scheduled_task_shared SET revision_environment_id = ${HERE_ENVIRONMENT_ID}`;
+          yield* service.applyShared(order(at, [OTHER, HERE_ENVIRONMENT_ID], upstreamShare));
           yield* sql`DELETE FROM scheduled_task_upgrades`;
 
           const moved = yield* restart((restarted) =>
@@ -639,19 +653,47 @@ it.effect(
             }),
           );
           expect(moved.task?.shared?.project).toEqual({
-            ...upstream,
+            ...upstreamShare,
             canonicalKey: "github.com/acme/repo",
           });
-          expect(moved.task?.shared?.revision.environmentId).toBe(HERE_ENVIRONMENT_ID);
+          expect(moved.task?.shared?.revision.at.localeCompare(at)).toBe(1);
           expect(orderFor(moved.orders, "github.com/acme/repo")).toEqual([
             OTHER,
             HERE_ENVIRONMENT_ID,
           ]);
           expect(moved.known).toContain(OTHER);
 
-          yield* service.applyShared(sharedOne("2026-09-11T00:00:00.000Z"));
+          yield* service.applyShared(upstreamShareOnOne("2026-09-11T00:00:00.000Z"));
           const kept = yield* restart((restarted) => taskOf(restarted));
-          expect(kept?.shared?.project).toEqual(upstream);
+          expect(kept?.shared?.project).toEqual(upstreamShare);
+        }),
+      [forkProject],
+      { idleScheduler: true },
+    ),
+);
+
+it.effect(
+  "a share another machine stored under a fork's upstream keeps its key at the upgrade",
+  () =>
+    withService(
+      (service, sql, restart) =>
+        Effect.gen(function* () {
+          const at = "2026-09-10T00:00:00.000Z";
+          yield* service.applyShared(upstreamShareOnOne(at));
+          yield* service.applyShared(order(at, [OTHER, HERE_ENVIRONMENT_ID], upstreamShare));
+          yield* sql`DELETE FROM scheduled_task_upgrades`;
+
+          const kept = yield* restart((restarted) =>
+            Effect.all({
+              task: taskOf(restarted),
+              orders: restarted.list().pipe(Effect.map((list) => list.projectMachineOrders ?? [])),
+            }),
+          );
+          expect(kept.task?.shared).toMatchObject({
+            project: upstreamShare,
+            revision: { at, environmentId: OTHER },
+          });
+          expect(orderFor(kept.orders, "github.com/acme/repo")).toBeUndefined();
         }),
       [forkProject],
       { idleScheduler: true },
@@ -1253,8 +1295,8 @@ it.effect("a later machine's turn keeps the update hold on a run it reaches late
         );
         // An update drained past the time; the restart after it comes late.
         yield* scenario.sql`
-          INSERT INTO scheduled_task_drain_holds (task_id, next_run_at)
-          VALUES ('scheduled-task:shared', ${iso(DUE)})
+          INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at, next_run_at)
+          VALUES ('scheduled-task:shared', ${iso(DUE)}, ${iso(DUE)})
         `;
         yield* scenario.tick(DUE + 11 * MINUTE_MS);
         yield* scenario.settled;
@@ -1279,6 +1321,45 @@ it.effect("a later machine's turn keeps the update hold on a run it reaches late
           (yield* scenario.service.listRuns({ id: "scheduled-task:shared" as ScheduledTaskId }))
             .runs,
         ).toMatchObject([{ trigger: "catch_up", outcome: "succeeded", scheduledFor: iso(DUE) }]);
+      }),
+    schedule,
+  );
+});
+
+it.effect("an update's hold carried to the next day's time does not hold that day's run", () => {
+  const schedule = {
+    type: "fixed_time",
+    timeOfDay: `${two(dueLocal.hour)}:${two(dueLocal.minute)}`,
+  };
+  return runScenario(
+    [OTHER, HERE_ENVIRONMENT_ID],
+    NO_RUN_THERE,
+    (scenario) =>
+      Effect.gen(function* () {
+        yield* scenario.service.upsert(
+          upsertInput({
+            shared: oneMachineShared([OTHER, HERE_ENVIRONMENT_ID]),
+            schedule,
+            catchUpMissedRun: false,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        // Watching the other machine's run of the held time ran up to the next day's time.
+        const nextDay = iso(DUE + 24 * HOUR_MS);
+        yield* scenario.sql`UPDATE scheduled_tasks SET next_run_at = ${nextDay}`;
+        yield* scenario.sql`
+          INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at, next_run_at)
+          VALUES ('scheduled-task:shared', ${iso(DUE)}, ${nextDay})
+        `;
+
+        yield* scenario.tick(DUE + 24 * HOUR_MS + 11 * MINUTE_MS);
+        yield* scenario.settled;
+        expect(yield* nextRunAtOf(scenario.sql)).toBe(iso(DUE + 48 * HOUR_MS));
+        expect(yield* Queue.size(scenario.launches)).toBe(0);
+        expect(
+          (yield* scenario.service.listRuns({ id: "scheduled-task:shared" as ScheduledTaskId }))
+            .runs,
+        ).toMatchObject([{ outcome: "skipped", skipReason: "missed", scheduledFor: nextDay }]);
       }),
     schedule,
   );
