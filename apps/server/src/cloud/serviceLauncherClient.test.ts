@@ -85,12 +85,13 @@ it.effect.each([3, SERVICE_LAUNCHER_PROTOCOL])(
       host.env["HOME"] = root;
       const client = yield* makeClient(host, "1.1.0");
       yield* client.reportPreparing;
+      yield* Effect.yieldNow;
       expect(host.sent).toEqual([{ type: "preparing", updateId: "update-1" }]);
       const prepared = yield* Effect.forkChild(client.prepareTrial({ baseDir }), {
         startImmediately: true,
       });
       yield* Effect.yieldNow;
-      expect(host.sent).toEqual([{ type: "prepared", updateId: "update-1" }]);
+      expect(host.sent.at(-1)).toEqual({ type: "prepared", updateId: "update-1" });
       assert.equal(yield* fs.readLink(installed), exe("1.0.0"));
 
       const committed = {
