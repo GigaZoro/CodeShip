@@ -350,6 +350,7 @@ it.effect.each([
             }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getRecoveryThreadIds: () => Effect.succeed([threadId]),
+              getThreadRecords: () => Effect.succeed(makeProjection()),
               getRuntimeRecoveryProjection: () => Effect.succeed(makeProjection()),
             }),
             Layer.mock(EventSink.EventSinkV2)({
@@ -422,6 +423,7 @@ it.effect("lets a cut blocking delegate_task wake its parent like an async task"
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getThreadRecords: () => Effect.succeed(projection),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
@@ -489,6 +491,7 @@ it.effect.each(["running", "waiting"])(
             ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getRecoveryThreadIds: () => Effect.succeed([threadId]),
+              getThreadRecords: () => Effect.succeed(projection),
               getRuntimeRecoveryProjection: () => Effect.succeed(projection),
             }),
             Layer.mock(EventSink.EventSinkV2)({
@@ -623,6 +626,7 @@ it.effect("prepares no continuation for background work another provider thread 
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getThreadRecords: () => Effect.succeed(projection),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
@@ -652,6 +656,7 @@ it.effect("prepares no continuation for background work another provider thread 
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getThreadRecords: () => Effect.succeed(ownWork),
             getRuntimeRecoveryProjection: () => Effect.succeed(ownWork),
           }),
           Layer.mock(EventSink.EventSinkV2)({
@@ -749,6 +754,7 @@ it.effect.each([
               ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getRecoveryThreadIds: () => Effect.succeed([threadId]),
+                getThreadRecords: () => Effect.succeed(projection),
                 getRuntimeRecoveryProjection: () => Effect.succeed(projection),
               }),
               Layer.mock(EventSink.EventSinkV2)({
@@ -902,6 +908,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getThreadRecords: () => Effect.sync(() => projection),
             getRuntimeRecoveryProjection: () => Effect.sync(() => projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
@@ -1370,6 +1377,7 @@ it.effect("prepares later threads' continuations when one thread fails", () =>
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getRecoveryThreadIds: () => Effect.succeed([brokenThreadId, threadId]),
+            getThreadRecords: () => Effect.succeed(makeProjection()),
             getRuntimeRecoveryProjection: (id) =>
               id === brokenThreadId
                 ? Effect.fail(

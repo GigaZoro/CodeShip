@@ -50,6 +50,7 @@ import {
   latestStartedRun,
   mergeRestartCancelledBackgroundWork,
   restartLeavesThreadAsIs,
+  runStopRequested,
   turnCallWork,
 } from "./RestartBackgroundNote.ts";
 
@@ -398,6 +399,28 @@ export const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const unstoppedRestartResumeRun = Effect.fn(
+    "ProviderRuntimeRecoveryService.unstoppedRestartResumeRun",
+  )(function* (projection: RecoveryProjection, now: DateTime.Utc) {
+    const run = restartResumeRun(projection, now);
+    if (run === undefined) return;
+    const { turnItems } = yield* projections
+      .getThreadRecords(projection.thread.id, ["turnItems"], {
+        turnItemRunIds: [run.id],
+        turnItemTypes: ["run_interrupt_request"],
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderRuntimeRecoveryError({
+              operation: "read-projections",
+              threadId: projection.thread.id,
+              cause,
+            }),
+        ),
+      );
+    if (!runStopRequested(run.id, turnItems)) return run;
+  });
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -460,7 +483,7 @@ export const make = Effect.gen(function* () {
       const runs = yield* cutRuns(projection);
       const continuationRun =
         continueAfterRestart && trigger === "startup"
-          ? restartResumeRun(
+          ? yield* unstoppedRestartResumeRun(
               { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
               now,
             )
@@ -1047,7 +1070,7 @@ export const make = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (!continuesAfterRestart(resumeRequested, enabled, projection.thread.projectId)) return;
-        const run = restartResumeRun(projection, yield* DateTime.now);
+        const run = yield* unstoppedRestartResumeRun(projection, yield* DateTime.now);
         if (!run) return;
         const commandId = CommandId.make(`command:restart-prepare:${run.id}`);
         yield* eventSink.writeWithEffects({
@@ -1058,6 +1081,7 @@ export const make = Effect.gen(function* () {
           ],
         });
       }).pipe(
+        (effect) => threadDispatch.withLock(threadId, effect),
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
           (cause) =>

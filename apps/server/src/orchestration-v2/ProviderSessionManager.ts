@@ -64,6 +64,7 @@ import {
   isSettledRun,
   lostBackgroundWorkRecord,
   lostWorkRecordRun,
+  runStopRequested,
 } from "./RestartBackgroundNote.ts";
 import { endDeadNativeSubagent } from "@t3tools/provider-core/server/subagentProjection";
 
@@ -978,7 +979,7 @@ export const layerWithOptions = (
         const wokenFor = input.runs.find(
           (candidate) => candidate.id === run.restartContinuationOfRunId,
         );
-        const wake =
+        const wouldWake =
           wakes !== "never" &&
           work.some(isAwaitedWork) &&
           isSettledRun(run) &&
@@ -987,6 +988,15 @@ export const layerWithOptions = (
             wokenFor !== undefined &&
             isSettledRun(wokenFor) &&
             (wokenFor.restartCancelledBackgroundWork ?? []).some(isAwaitedWork)
+          );
+        const wake =
+          wouldWake &&
+          !runStopRequested(
+            run.id,
+            (yield* projectionStore.getThreadRecords(input.threadId, ["turnItems"], {
+              turnItemRunIds: [run.id],
+              turnItemTypes: ["run_interrupt_request"],
+            })).turnItems,
           );
         return {
           events,

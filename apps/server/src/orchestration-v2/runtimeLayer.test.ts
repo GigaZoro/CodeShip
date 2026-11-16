@@ -6613,13 +6613,16 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  it.effect.each([false, true])(
+  it.effect.each([false, true, "interrupt-before-retry"] as const)(
     "restarts a continuation that failed before its prompt, unless stopped (%s)",
     (stopped) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const eventSink = yield* EventSink.EventSinkV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threads = yield* ThreadManagementService.ThreadManagementService;
         const threadId = ThreadId.make(`runtime-layer-continuation-start-retry-${stopped}`);
         const messageId = (key: string) => MessageId.make(`${threadId}:${key}`);
         yield* orchestrator.dispatch({
@@ -6717,7 +6720,20 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             Stream.runHead,
             Effect.forkScoped,
           );
-        yield* Effect.yieldNow;
+        const retryReady = yield* Deferred.make<void>();
+        const releaseRetry = yield* Deferred.make<void>();
+        const withLock = executor.withLock;
+        let pauseRetry = stopped === "interrupt-before-retry";
+        const pauseBeforeRetry: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] =
+          (key, effect) => {
+            if (key !== threadId || !pauseRetry) return withLock(key, effect);
+            pauseRetry = false;
+            return Deferred.succeed(retryReady, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseRetry)),
+              Effect.andThen(withLock(key, effect)),
+            );
+          };
+        using _lock = vi.spyOn(executor, "withLock").mockImplementation(pauseBeforeRetry);
         const now = yield* DateTime.now;
         yield* write("continuation:failed", { ...continuation, status: "failed" }, [
           {
@@ -6753,13 +6769,49 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             },
           },
         ]);
+        if (stopped === "interrupt-before-retry") {
+          yield* Deferred.await(retryReady);
+          assert.equal((yield* runFor("continuation"))!.status, "failed");
+          assert.isTrue(
+            Option.isNone(
+              yield* outbox.get(EffectOutbox.restartContinuationEffectId(continuation.id)),
+            ),
+          );
+          const interrupted = yield* threads.interruptThread({
+            projectId: ProjectId.make(`${threadId}:project`),
+            threadId,
+            runId: cut.id,
+            commandId: CommandId.make(`${threadId}:interrupt-cut`),
+          });
+          assert.equal(interrupted.type, "interrupt_requested");
+          yield* Deferred.succeed(releaseRetry, undefined);
+        }
         yield* Fiber.join(held);
+        if (stopped === "interrupt-before-retry") {
+          assert.isTrue(
+            Option.isNone(
+              yield* outbox.get(EffectOutbox.restartContinuationEffectId(continuation.id)),
+            ),
+          );
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`${threadId}:late-retry`),
+            threadId,
+            messageId: messageId("late-retry"),
+            text: "Continue where you left off.",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            restartContinuationOfRunId: continuation.id,
+            createdBy: "agent",
+            creationSource: "server",
+          });
+        }
         const retriesOf = Effect.map(orchestrator.getThreadProjection(threadId), ({ runs }) =>
           runs.filter((run) => run.restartContinuationOfRunId === continuation.id),
         );
         yield* worker.drain();
         assert.deepEqual(yield* retriesOf, [], "the retry waits out its backoff");
-        if (stopped) {
+        if (stopped === true) {
           yield* orchestrator.dispatch({
             type: "thread.stop",
             commandId: CommandId.make(`${threadId}:stop`),
@@ -6769,6 +6821,83 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         yield* TestClock.adjust("61 seconds");
         yield* worker.drain();
         assert.lengthOf(yield* retriesOf, stopped ? 0 : 1);
+      }),
+  );
+
+  it.effect.each([
+    ["startup", false],
+    ["startup", true],
+    ["shutdown", false],
+    ["shutdown", true],
+  ] as const)(
+    "%s queues an automatic restart only when no durable Stop exists (%s)",
+    ([trigger, stopped]) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = ThreadId.make(`recovery-stop:${trigger}:${stopped}`);
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}:create`),
+          threadId,
+          projectId: ProjectId.make(`${threadId}:project`),
+          title: "Recovery respects Stop",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:send`),
+          threadId,
+          messageId: MessageId.make(`${threadId}:message`),
+          text: "Work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        const now = yield* DateTime.now;
+        if (stopped) {
+          yield* projections.apply({
+            id: EventId.make(`${threadId}:stop`),
+            type: "turn-item.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make(`${threadId}:stop`),
+              threadId,
+              runId: run.id,
+              nodeId: run.rootNodeId,
+              providerThreadId: run.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "completed",
+              title: "Stop",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "run_interrupt_request",
+              message: "Stopped by user",
+            },
+          });
+        }
+        if (trigger === "startup") yield* recovery.reconcile("startup");
+        else yield* recovery.prepareForShutdown;
+        assert.equal(
+          Option.isSome(yield* outbox.get(EffectOutbox.restartContinuationEffectId(run.id))),
+          !stopped,
+        );
       }),
   );
 
