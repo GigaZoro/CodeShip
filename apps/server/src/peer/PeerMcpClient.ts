@@ -62,8 +62,9 @@ interface PeerCallInput<S extends Schema.Decoder<unknown>> {
   /** The most the tool's result may take as JSON; a larger answer is refused, never read whole. */
   readonly maxResultBytes?: number;
   /**
-   * Top-level arguments a peer may lack because its version already does what they ask. Any other
-   * argument its tool's schema lacks refuses the call, since the peer would drop it unheard.
+   * Top-level arguments a peer may lack because its version already does what they ask; a peer
+   * that lacks one is called without it. Any other argument its tool's schema lacks refuses the
+   * call here, naming the peer's version.
    */
   readonly ignorableArguments?: ReadonlyArray<string>;
 }
@@ -291,18 +292,17 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * Posts `body` in the session `session` gives, and once more after starting a new one when the
-   * peer lost it. The peer may run other code then, so `session` runs again for the new one.
+   * Posts the body `prepared` gives in its session, and once more after starting a new one when the
+   * peer lost it. The peer may run other code then, so `prepared` runs again for the new one.
    */
   const send = Effect.fnUntraced(function* (
     peer: Peer,
-    body: unknown,
-    session: Effect.Effect<
-      string,
+    prepared: Effect.Effect<
+      { readonly sessionId: string; readonly body: unknown },
       OrchestratorMcpFailure | HttpClientError.HttpClientError | Cause.TimeoutError
     >,
   ) {
-    const attempt = Effect.flatMap(session, (sessionId) =>
+    const attempt = Effect.flatMap(prepared, ({ sessionId, body }) =>
       post(peer.url, peer.token, body, {
         ...peer.limitHeader,
         "mcp-session-id": sessionId,
@@ -335,8 +335,10 @@ const make = Effect.gen(function* () {
   const listInputSchemas = Effect.fnUntraced(function* (peer: Peer) {
     const { sessionId, response } = yield* send(
       peer,
-      { jsonrpc: "2.0", id: 1, method: "tools/list" },
-      currentSession(peer),
+      Effect.map(currentSession(peer), (sessionId) => ({
+        sessionId,
+        body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      })),
     );
     const listed = yield* decodeToolsListResponse(
       responseJson(response.headers["content-type"], yield* response.text),
@@ -359,23 +361,29 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * The session to call in, once it refused arguments the peer's tool does not take there: its
-   * server drops them while decoding, so the call would succeed without them. A peer without the
-   * tool is left to say so.
+   * The session to call in and the arguments to send there, once the peer's tool takes them all.
+   * Ignorable arguments it lacks are left out, since its server refuses or drops arguments it
+   * does not list. A peer without the tool is left to say so.
    */
-  const sessionCheckedFor = Effect.fnUntraced(function* (
+  const checkedCall = Effect.fnUntraced(function* (
     peer: Peer,
     input: PeerCallInput<Schema.Decoder<unknown>>,
   ) {
-    const ignorable = new Set(input.ignorableArguments);
-    const checked = Object.fromEntries(
-      Object.entries(input.arguments).filter(([key]) => !ignorable.has(key)),
-    );
-    if (Object.values(checked).every((value) => value === undefined)) {
-      return yield* currentSession(peer);
+    if (Object.values(input.arguments).every((value) => value === undefined)) {
+      return { sessionId: yield* currentSession(peer), toolArguments: input.arguments };
     }
-    const unknownIn = (schemas: ReadonlyMap<string, unknown>) =>
-      schemas.has(input.tool) ? unknownArguments(schemas.get(input.tool), checked) : [];
+    const ignorable = new Set(input.ignorableArguments);
+    const fitTo = (schemas: ReadonlyMap<string, unknown>) => {
+      const lacked = schemas.has(input.tool)
+        ? unknownArguments(schemas.get(input.tool), input.arguments)
+        : [];
+      return {
+        unknown: lacked.filter((key) => !ignorable.has(key)),
+        toolArguments: Object.fromEntries(
+          Object.entries(input.arguments).filter(([key]) => !lacked.includes(key)),
+        ),
+      };
+    };
     // A pass ends without an answer only when another call started a new session while it listed.
     while (true) {
       const sessionId = (yield* Ref.get(sessions)).get(peer.key);
@@ -383,15 +391,17 @@ const make = Effect.gen(function* () {
       if (
         cached !== undefined &&
         cached.sessionId === sessionId &&
-        cached.serverVersion === peer.serverVersion &&
-        unknownIn(cached.schemas).length === 0
+        cached.serverVersion === peer.serverVersion
       ) {
-        return cached.sessionId;
+        const fit = fitTo(cached.schemas);
+        if (fit.unknown.length === 0) {
+          return { sessionId: cached.sessionId, toolArguments: fit.toolArguments };
+        }
       }
       // Listed again before a refusal, since the peer may have restarted since.
       const listed = yield* listInputSchemas(peer);
-      const unknown = unknownIn(listed.schemas);
-      if (unknown.length === 0) return listed.sessionId;
+      const { unknown, toolArguments } = fitTo(listed.schemas);
+      if (unknown.length === 0) return { sessionId: listed.sessionId, toolArguments };
       if (!listed.stillCurrent) continue;
       const them = unknown.length === 1 ? "it" : "them";
       return yield* new OrchestratorMcpFailure({
@@ -431,13 +441,15 @@ const make = Effect.gen(function* () {
     };
     const { response } = yield* send(
       peer,
-      {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: { name: input.tool, arguments: input.arguments },
-      },
-      sessionCheckedFor(peer, input),
+      Effect.map(checkedCall(peer, input), ({ sessionId, toolArguments }) => ({
+        sessionId,
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: input.tool, arguments: toolArguments },
+        },
+      })),
     );
     const body = yield* decodeToolCallResponse(
       responseJson(
