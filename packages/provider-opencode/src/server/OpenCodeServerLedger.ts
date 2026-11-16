@@ -10,7 +10,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { signalProcessGroup } from "@t3tools/shared/processGroup";
 
 const ProcessIdentity = Schema.Struct({ pid: Schema.Int, startTime: Schema.String });
 type ProcessIdentity = typeof ProcessIdentity.Type;
@@ -148,6 +148,18 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
     return Effect.succeed(undefined);
   };
 
+  const observeAll = (
+    pids: ReadonlyArray<number>,
+  ): Effect.Effect<ReadonlyArray<ObservedProcess | undefined>> =>
+    platform === "darwin"
+      ? psDarwin(["-p", pids.join(",")]).pipe(
+          Effect.map((found) =>
+            pids.map((pid) => found.find((candidate) => candidate.pid === pid)),
+          ),
+          Effect.orElseSucceed(() => []),
+        )
+      : Effect.forEach(pids, observe);
+
   const observeGroup = (pgid: number): Effect.Effect<ReadonlyArray<ObservedProcess>> => {
     if (platform === "linux") {
       return fs.readDirectory("/proc").pipe(
@@ -258,12 +270,29 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       pid: entry.pgid,
       port: entry.port,
     });
+    let members: ReadonlyArray<ObservedProcess> = [
+      observed,
+      ...(yield* observeGroup(entry.pgid)).filter(
+        (member) => !member.zombie && member.pid !== observed.pid,
+      ),
+    ];
     signalGroup(entry.pgid, "SIGTERM");
-    for (let attempt = 0; attempt < STOP_POLL_ATTEMPTS && groupExists(entry.pgid); attempt++) {
+    // Only these members prove the group is still the one recorded: once it empties, an
+    // unrelated group can take its number, which `kill(-pgid, 0)` would count as alive.
+    for (let attempt = 0; members.length > 0 && attempt < STOP_POLL_ATTEMPTS; attempt++) {
       yield* Effect.sleep(STOP_POLL_INTERVAL);
+      const now = yield* observeAll(members.map((member) => member.pid));
+      members = members.filter((member, index) => {
+        const current = now[index];
+        return (
+          current !== undefined &&
+          !current.zombie &&
+          current.startTime === member.startTime &&
+          current.pgid === entry.pgid
+        );
+      });
     }
-    // The group never emptied, so its pgid cannot have been reused.
-    if (groupExists(entry.pgid)) signalGroup(entry.pgid, "SIGKILL");
+    if (members.length > 0) signalGroup(entry.pgid, "SIGKILL");
   });
 
   const reapEntry = Effect.fn("OpenCodeServerLedger.reapEntry")(

@@ -30,7 +30,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { signalProcessGroup } from "@t3tools/shared/processGroup";
 import {
   commandFailureReason,
   withProviderFailureReason,

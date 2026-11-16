@@ -5,6 +5,8 @@ import * as NodeReadline from "node:readline";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { layerHeldProcessGroups } from "@t3tools/shared/processGroup";
+import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -19,6 +21,9 @@ import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
 
 const SERVE_ARGS = ["serve", "--hostname=127.0.0.1", "--port=4096"];
+
+// As the server spawns: its spawner holds each detached group until the spawn's scope closes.
+const layerNodeServices = layerHeldProcessGroups.pipe(Layer.provideMerge(NodeServices.layer));
 
 const groupExists = (pgid: number) => {
   try {
@@ -126,25 +131,36 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
   const provideHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.provideService(HostProcess.Platform, platform),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(layerNodeServices),
     );
 
-  it.live("stops an OpenCode server group left by a server that died", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
-      const orphan = yield* spawnGroup(SERVE_ARGS);
-      yield* recordFromDeadServer(stateDir, orphan);
-      expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toHaveLength(1);
+  it.live.each([
+    ["SIGTERM", "sleep 600 & wait"],
+    ["SIGKILL", "trap '' TERM; sleep 600 & wait"],
+  ] as const)(
+    "stops with %s an OpenCode server group left by a server that died, and no group after it",
+    ([signal, script]) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+        const orphan = yield* spawnGroup(SERVE_ARGS, script);
+        yield* recordFromDeadServer(stateDir, orphan);
+        expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toHaveLength(1);
 
-      const restarted = yield* OpenCodeServerLedger.make({ stateDir });
-      yield* restarted.reapOrphans;
+        const restarted = yield* OpenCodeServerLedger.make({ stateDir });
+        const freedGroupSignals = yield* Effect.scoped(
+          watchFreedGroupSignals.pipe(
+            Effect.tap(() => restarted.reapOrphans),
+            Effect.map((freed) => freed.signals()),
+          ),
+        );
 
-      expect(yield* orphan.exited).toBe("SIGTERM");
-      expect(groupExists(orphan.pid)).toBe(false);
-      expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
-    }).pipe(provideHost),
+        expect(yield* orphan.exited).toBe(signal);
+        expect(groupExists(orphan.pid)).toBe(false);
+        expect(freedGroupSignals).toEqual([]);
+        expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+      }).pipe(provideHost),
   );
 
   it.live("records a group whose spawned wrapper already exited", () =>
