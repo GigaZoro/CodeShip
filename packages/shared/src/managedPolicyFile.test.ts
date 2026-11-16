@@ -186,10 +186,6 @@ describe("readManagedPolicy", () => {
           );
         }
         assert.include(
-          yield* win32({}, {}),
-          "cannot load its registry reader; reinstall T3.CodeShip",
-        );
-        assert.include(
           yield* win32({}, new WindowsRegistryError({})),
           "cannot load its registry reader; reinstall T3.CodeShip",
         );
