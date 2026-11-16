@@ -53,6 +53,7 @@ vi.mock("../connection/catalog", () => ({
 }));
 vi.mock("./projects", () => ({ environmentProjects: { projectsAtom: sources.projectsAtom } }));
 vi.mock("./preferences", () => ({ mobilePreferencesAtom: Atom.make(AsyncResult.initial()) }));
+vi.mock("./orchestration", () => ({ orchestrationEnvironment: {} }));
 vi.mock("./threads", () => ({ environmentThreadDetails: {}, environmentThreadShells: {} }));
 vi.mock("./server", () => ({
   serverEnvironment: {},
