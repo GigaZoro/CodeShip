@@ -12,7 +12,7 @@ import {
   compareScheduledTaskSharedRevisions,
   defaultScheduledTaskMachineOrder,
   repositoryGroupingKeyOf,
-  repositoryKeysOf,
+  repositoryMatchRank,
   scheduledTaskSharedProjectKey,
   type OrchestratorMcpSharedScheduledTasksResult,
   type ScheduledTaskApplySharedInput,
@@ -4439,7 +4439,8 @@ export const layer = Layer.effect(
         );
         return scratch.projectId;
       }
-      const matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+      let matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+      let bestRank = Number.POSITIVE_INFINITY;
       let cursor: number | null = 0;
       while (cursor !== null) {
         const page: Effect.Success<ReturnType<typeof projects.listPage>> = yield* projects
@@ -4451,9 +4452,11 @@ export const layer = Layer.effect(
           );
         for (const candidate of page.projects) {
           const identity = yield* repositoryIdentities.resolve(candidate.workspaceRoot);
-          if (identity !== null && repositoryKeysOf(identity).includes(project.canonicalKey)) {
-            matches.push(candidate);
-          }
+          const rank = repositoryMatchRank(project, identity);
+          if (rank === -1 || rank > bestRank) continue;
+          if (rank < bestRank) matches = [];
+          bestRank = rank;
+          matches.push(candidate);
         }
         cursor = page.nextCursor;
       }

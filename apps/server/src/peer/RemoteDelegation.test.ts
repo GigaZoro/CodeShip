@@ -1274,12 +1274,25 @@ const upstreamClone: Project = {
   },
 };
 
+/** A fork of acme/app checked out with acme/app as its upstream remote. */
+const forkOfFork: Project = {
+  ...upstreamClone,
+  id: ProjectId.make("project:box-fork-of-fork"),
+  title: "my app",
+  workspaceRoot: "/srv/my-app",
+  repositoryIdentity: {
+    ...forkIdentity,
+    canonicalKey: "github.com/acme/app",
+    origin: { canonicalKey: "github.com/me/app" },
+  },
+};
+
 it.effect.each([
   {
     side: "here",
     laptopIdentity: forkIdentity,
-    // A clone of the upstream there must not win over the fork's own copy.
-    projects: [...boxProjects, upstreamClone],
+    // Neither a clone of the upstream there nor a fork of the fork may win over its own copy.
+    projects: [...boxProjects, upstreamClone, forkOfFork],
   },
   {
     side: "there",

@@ -155,11 +155,13 @@ describe("scheduled task settings scope", () => {
     );
     expect(matchingProjectId(project("x", "app"), candidates)).toBe("same-name");
     expect(matchingProjectId(project("x", "notes"), candidates)).toBe("");
-    // A fork checked out with its upstream remote finds its copy here before an upstream clone.
+    // A fork checked out with its upstream remote finds its copy here before an upstream clone
+    // and before a fork of the fork.
     const fork = project("x", "app", "github.com/upstream/app", undefined, "github.com/acme/app");
     expect(
       matchingProjectId(fork, [
         project("upstream", "up", "github.com/upstream/app"),
+        project("fork-of-fork", "mine", "github.com/acme/app", undefined, "github.com/me/app"),
         ...candidates,
       ]),
     ).toBe("renamed");

@@ -60,6 +60,14 @@ const forkProject: TestSharedProject = {
   canonicalKey: "github.com/upstream/repo",
   originKey: "github.com/acme/repo",
 };
+/** A fork of that fork, checked out with the fork as its upstream remote. */
+const forkOfForkProject: TestSharedProject = {
+  id: "project-fork-of-fork",
+  title: "Mine",
+  workspaceRoot: "/work/mine",
+  canonicalKey: "github.com/acme/repo",
+  originKey: "github.com/me/repo",
+};
 const plainProject: TestSharedProject = {
   id: "project-plain",
   title: "Plain",
@@ -509,7 +517,13 @@ it.effect.each([
   { name: "a fork's origin", key: "github.com/acme/repo", here: forkProject },
   // Shared before shares were keyed by origin.
   { name: "a fork's upstream", key: "github.com/upstream/repo", here: forkProject },
-])("a copy keyed by $name lands in the matching project", ({ key, here }) =>
+  {
+    name: "a fork's origin, beside a fork of it",
+    key: "github.com/acme/repo",
+    here: forkProject,
+    beside: forkOfForkProject,
+  },
+])("a copy keyed by $name lands in the matching project", ({ key, here, beside }) =>
   withService(
     (service) =>
       Effect.gen(function* () {
@@ -518,7 +532,7 @@ it.effect.each([
         yield* service.applyShared(copy(at, { shared: sharedWith(at, project) }));
         expect((yield* taskOf(service))?.projectId).toBe(here.id);
       }),
-    [here, plainProject],
+    [...(beside === undefined ? [] : [beside]), here, plainProject],
   ),
 );
 

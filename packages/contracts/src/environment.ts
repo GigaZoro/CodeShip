@@ -318,17 +318,25 @@ export function repositoryKeysOf(identity: RepositoryKeyed): ReadonlyArray<strin
   return [...new Set([repositoryGroupingKeyOf(identity), identity.canonicalKey])];
 }
 
+/** `repositoryKeysOf` gives an origin and an upstream at most. */
+const MAX_REPOSITORY_KEYS = 2;
+
 /**
- * Which of `keys` (another machine's, best first) `identity` answers to first, or -1. The lowest
- * rank among candidates wins, so a fork's checkout beats a clone of its upstream.
+ * How closely `candidate` is `source`'s repository, lowest closest, or -1. A shared key ranks by
+ * its place on the source's side, then on the candidate's, so a fork's checkout beats both a
+ * clone of its upstream and a fork of the fork.
  */
 export function repositoryMatchRank(
-  keys: ReadonlyArray<string>,
-  identity: RepositoryKeyed | null | undefined,
+  source: RepositoryKeyed,
+  candidate: RepositoryKeyed | null | undefined,
 ): number {
-  if (identity == null) return -1;
-  const own = repositoryKeysOf(identity);
-  return keys.findIndex((key) => own.includes(key));
+  if (candidate == null) return -1;
+  const theirs = repositoryKeysOf(candidate);
+  for (const [ours, key] of repositoryKeysOf(source).entries()) {
+    const at = theirs.indexOf(key);
+    if (at !== -1) return ours * MAX_REPOSITORY_KEYS + at;
+  }
+  return -1;
 }
 
 export function repositoryGroupingDisplayNameOf(identity: RepositoryIdentity): string | undefined {

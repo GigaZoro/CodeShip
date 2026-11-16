@@ -175,7 +175,7 @@ const make = Effect.gen(function* () {
     }
     const keys = repositoryKeysOf(identity);
     let matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
-    let bestRank = keys.length;
+    let bestRank = Number.POSITIVE_INFINITY;
     let cursor: number | null = 0;
     while (cursor !== null) {
       const listed: Tool.Success<typeof ProjectToolkit.tools.t3_project_list> =
@@ -184,7 +184,7 @@ const make = Effect.gen(function* () {
           limit: 100,
         });
       for (const project of listed.projects) {
-        const rank = repositoryMatchRank(keys, project.repositoryIdentity);
+        const rank = repositoryMatchRank(identity, project.repositoryIdentity);
         if (rank === -1 || rank > bestRank) continue;
         if (rank < bestRank) matches = [];
         bestRank = rank;

@@ -14,7 +14,6 @@ import {
   type RuntimeMode,
   type ProviderInteractionMode,
   type RepositoryKeyed,
-  repositoryKeysOf,
   repositoryMatchRank,
   type ServerSettings,
   type ThreadId,
@@ -423,10 +422,10 @@ export function matchingProjectId(
   }>,
 ): ProjectId | "" {
   const open = candidates.filter((project) => project.archivedAt == null);
-  const keys = source.repositoryIdentity ? repositoryKeysOf(source.repositoryIdentity) : [];
+  const identity = source.repositoryIdentity;
   let closest: { readonly id: ProjectId; readonly rank: number } | undefined;
   for (const project of open) {
-    const rank = repositoryMatchRank(keys, project.repositoryIdentity);
+    const rank = identity ? repositoryMatchRank(identity, project.repositoryIdentity) : -1;
     if (rank !== -1 && (closest === undefined || rank < closest.rank)) {
       closest = { id: project.id, rank };
     }
