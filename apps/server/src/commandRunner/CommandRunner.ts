@@ -20,6 +20,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
+import {
+  WINDOWS_PROCESS_TREE_FUNCTIONS,
+  windowsStopTreeArgs,
+} from "@t3tools/shared/windowsProcessTree";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -346,58 +350,6 @@ const posixLaunchEnvironment = (
   return { env, prefix: envArgs.length === 0 ? [] : ["/usr/bin/env", ...envArgs] };
 };
 
-/**
- * Ids under the wrapper by `ParentProcessId`, which outlives it (a named Job object does not). A
- * child older than its parent, the wrapper included, belongs to an earlier holder of that pid; the
- * wrapper's children also start after the command, and before the pid's holder when that is no
- * longer the wrapper.
- */
-export const WINDOWS_COMMAND_TREE_FUNCTION = [
-  "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
-  "function Get-T3CommandTree($all, $root, $since, $identity) {",
-  "  $targets = @{}",
-  "  $before = [long]::MaxValue",
-  "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
-  "  if ($holder) {",
-  "    $made = Ms $holder.CreationDate",
-  "    if ($identity -ge 0 -and [math]::Abs($made - $identity) -gt 1000) { $before = $made } else { $targets[$root] = $true; $since = [math]::Max($since, $made) }",
-  "  }",
-  "  $queue = New-Object System.Collections.Queue",
-  "  $queue.Enqueue(@($root, $since, $before))",
-  "  $seen = @{ $root = $true }",
-  "  while ($queue.Count -gt 0) {",
-  "    $id, $after, $limit = $queue.Dequeue()",
-  "    foreach ($child in $all) {",
-  "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
-  "      $made = Ms $child.CreationDate",
-  "      if ($made -ge $after -and $made -lt $limit) {",
-  "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $true",
-  "        $queue.Enqueue(@($child.ProcessId, $made, [long]::MaxValue))",
-  "      }",
-  "    }",
-  "  }",
-  "  return $targets",
-  "}",
-  // Each pass also stops what the last one's processes started as they ended. A process that ends
-  // before its stop is no error; one still running is.
-  "function Stop-T3CommandTree($root, $since, $identity) {",
-  "  for ($pass = 0; $pass -lt 5; $pass++) {",
-  "    $targets = Get-T3CommandTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root $since $identity",
-  "    if ($targets.Count -eq 0) { return }",
-  "    foreach ($id in $targets.Keys) {",
-  "      try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { throw } }",
-  "    }",
-  "  }",
-  "}",
-].join("\n");
-
-const windowsStopScript = (pid: number, sinceMs: number, identityMs: number | null) =>
-  [
-    "$ErrorActionPreference = 'Stop'",
-    WINDOWS_COMMAND_TREE_FUNCTION,
-    `Stop-T3CommandTree ${pid} ${sinceMs} ${identityMs ?? -1}`,
-  ].join("\n");
-
 const GIT_BASH_NAMES = ["bash", "sh"].flatMap((name) => [
   { name, exe: `${name}.exe` },
   { name: `${name}.exe`, exe: `${name}.exe` },
@@ -412,7 +364,7 @@ const noGitBash = (name: string) =>
 // for Windows, whose bash.exe sets up the PATH its own tools need.
 const FIND_GIT_BASH = [
   "$t3GitBash = & {",
-  WINDOWS_COMMAND_TREE_FUNCTION,
+  WINDOWS_PROCESS_TREE_FUNCTIONS,
   "  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1",
   "  if ($git) {",
   // --exec-path names the install behind a launcher or shim; GIT_EXEC_PATH would replace it. A git
@@ -432,7 +384,7 @@ const FIND_GIT_BASH = [
   "        [Console]::Error.WriteLine(\"CodeShip stopped 'git --exec-path' ($($git.Path)), which did not answer within 10 s, and looks for Git Bash in the standard install folders.\")",
   // A shim such as git.cmd runs git in a child process, which stopping the shim alone leaves running.
   "        $made = Ms $run.StartTime",
-  "        Stop-T3CommandTree $run.Id $made $made",
+  "        Stop-T3ProcessTree $run.Id $made $made $made",
   "      }",
   '    } catch { [Console]::Error.WriteLine("CodeShip could not ask git where Git Bash is: $_") }',
   "  }",
@@ -595,7 +547,7 @@ const make = Effect.gen(function* () {
 
   /**
    * Stops the command and everything it started: its process group, or on Windows what descends
-   * from its wrapper's pid (`windowsStopScript`), also after the wrapper ended. A group outlives
+   * from its wrapper's pid (`windowsStopTreeArgs`), also after the wrapper ended. A group outlives
    * its wrapper and its id is not reused while any member lives, so short of a reboot, only a live
    * process reusing the wrapper's pid means nothing of the group is left.
    */
@@ -608,12 +560,13 @@ const make = Effect.gen(function* () {
         yield* processRunner
           .run({
             command: "powershell.exe",
-            args: [
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              windowsStopScript(pid, Date.parse(row.started_at), row.process_started_at),
-            ],
+            args: windowsStopTreeArgs({
+              pid,
+              since: Date.parse(row.started_at),
+              ...(row.process_started_at === null
+                ? {}
+                : { created: { from: row.process_started_at, to: row.process_started_at } }),
+            }),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
           })

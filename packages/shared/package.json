@@ -375,9 +375,17 @@
       "types": "./src/processProbe.ts",
       "import": "./src/processProbe.ts"
     },
+    "./windowsProcessTree": {
+      "types": "./src/windowsProcessTree.ts",
+      "import": "./src/windowsProcessTree.ts"
+    },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",
       "import": "./src/testing/longTempDir.ts"
+    },
+    "./testing/leftoverChild": {
+      "types": "./src/testing/leftoverChild.ts",
+      "import": "./src/testing/leftoverChild.ts"
     },
     "./testing/hostPlatform": {
       "types": "./src/testing/hostPlatform.ts",
