@@ -636,7 +636,10 @@ export type OrchestratorMcpThreadInterruptInput = typeof OrchestratorMcpThreadIn
 
 export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
   threadId: ThreadId,
+  /** The resolved restart continuation, or the source whose pending continuation was stopped. */
   runId: Schema.NullOr(RunId),
+  /** Present when the resolved run differs from the caller's run. */
+  requestedRunId: Schema.optional(RunId),
   status: Schema.Union([
     Schema.Literal("interrupt_requested"),
     Schema.Literal("no_active_run"),

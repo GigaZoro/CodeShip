@@ -23,6 +23,19 @@ import * as DateTime from "effect/DateTime";
 type Work = OrchestrationV2RestartCancelledBackgroundWork;
 type Attempt = Pick<OrchestrationV2RunAttempt, "id" | "runId" | "backgroundWorkNote">;
 
+export function latestRestartContinuation(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  run: OrchestrationV2Run,
+): OrchestrationV2Run {
+  let current = run;
+  for (let hops = 0; hops < runs.length; hops++) {
+    const next = runs.find((candidate) => candidate.restartContinuationOfRunId === current.id);
+    if (next === undefined) break;
+    current = next;
+  }
+  return current;
+}
+
 const MAX_LABEL_LENGTH = 160;
 
 function compactLabel(value: unknown, maxLength = MAX_LABEL_LENGTH): string | undefined {

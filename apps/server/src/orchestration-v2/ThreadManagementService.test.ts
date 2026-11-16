@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
   MessageId,
   type OrchestrationV2Command,
   type OrchestrationV2Run,
@@ -12,6 +13,7 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   RunId,
   ScheduledTaskId,
@@ -24,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -36,6 +39,12 @@ import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
+import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 
 it("stamps authoritative provenance on commands that create threads or messages", () => {
   const command: OrchestrationV2Command = {
@@ -77,6 +86,189 @@ it("stamps authoritative provenance on commands that create threads or messages"
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
   Layer.provide(SqlitePersistence.layerMemory),
+);
+
+it.effect.each(["active", "pending", "manual", "unrelated", "ended", "racing"] as const)(
+  "interruptThread follows only the restart chain when its continuation is %s",
+  (scenario) =>
+    Effect.gen(function* () {
+      const database = SqlitePersistence.layerMemory;
+      const runtime = ProviderReplayHarness.layerWithRegistry(
+        { name: "interrupt-restart" },
+        ProviderAdapterRegistry.layerFromAdapters([
+          {
+            instanceId: ProviderInstanceId.make("codex"),
+            driver: ProviderDriverKind.make("codex"),
+            getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+            planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+            openSession: () => Effect.die("Provider execution is disabled in this test"),
+          } as ProviderAdapter.ProviderAdapterV2["Service"],
+        ]),
+        { databaseLayer: database, runEffectWorker: false },
+      );
+      const layer = ThreadManagementService.layer.pipe(
+        Layer.provideMerge(runtime),
+        Layer.provideMerge(ProjectionStore.layer.pipe(Layer.provide(database))),
+        Layer.provideMerge(EffectOutbox.layer.pipe(Layer.provide(database))),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadManagementService.ThreadManagementService;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const projectId = ProjectId.make("project:interrupt-restart");
+        const threadId = ThreadId.make("thread:interrupt-restart");
+        const now = yield* DateTime.now;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("create:interrupt-restart"),
+          projectId,
+          threadId,
+          title: "Restart cancellation",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const send = (id: string, restartContinuationOfRunId?: RunId) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(id),
+            threadId,
+            messageId: MessageId.make(id),
+            text: "Work",
+            attachments: [],
+            dispatchMode: { type: "defer_start" },
+            createdBy: "user",
+            creationSource: "web",
+            ...(restartContinuationOfRunId === undefined ? {} : { restartContinuationOfRunId }),
+          });
+        const update = (run: OrchestrationV2Run) =>
+          projections.apply({
+            id: EventId.make(`update:${run.id}:${run.status}`),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: run,
+          });
+        yield* send("source");
+        const source = (yield* projections.getThreadProjection(threadId)).runs[0]!;
+        yield* update({ ...source, status: "cancelled", completedAt: now });
+        yield* send("middle");
+        const middle = (yield* projections.getThreadProjection(threadId)).runs.at(-1)!;
+        yield* update({
+          ...middle,
+          status: "cancelled",
+          completedAt: now,
+          restartContinuationOfRunId: source.id,
+        });
+        if (scenario !== "pending") {
+          yield* send("latest");
+          const latest = (yield* projections.getThreadProjection(threadId)).runs.at(-1)!;
+          yield* update({
+            ...latest,
+            ...(scenario === "manual"
+              ? { manualContinuationOfRunId: middle.id }
+              : scenario === "unrelated"
+                ? {}
+                : { restartContinuationOfRunId: middle.id }),
+            ...(scenario === "ended" ? { status: "completed", completedAt: now } : {}),
+          });
+        }
+        const before = yield* projections.getThreadProjection(threadId);
+        const latest = before.runs.at(-1)!;
+        if (scenario === "pending") {
+          yield* outbox.enqueue([
+            EffectOutbox.restartContinuationEffect({
+              commandId: CommandId.make("pending-restart"),
+              threadId,
+              sourceRunId: latest.id,
+            }),
+          ]);
+        }
+        // Expose the read/dispatch race without clocks or polling.
+        let reads = 0;
+        const racedService =
+          scenario === "racing"
+            ? yield* ThreadManagementService.ThreadManagementService.pipe(
+                Effect.provide(
+                  ThreadManagementService.layer.pipe(
+                    Layer.provide(
+                      Layer.mock(Orchestrator.OrchestratorV2)({
+                        ...orchestrator,
+                        getThreadRecords: (id, fields, filter) =>
+                          orchestrator.getThreadRecords(id, fields, filter).pipe(
+                            Effect.map((records) => {
+                              const runs = (records as Partial<OrchestrationV2ThreadProjection>)
+                                .runs;
+                              return ++reads === 1 && runs !== undefined
+                                ? { ...records, runs: runs.filter((run) => run.id !== latest.id) }
+                                : records;
+                            }),
+                          ),
+                        restartContinuationPending: () => Effect.succeed(true),
+                      }),
+                    ),
+                    Layer.provide(runtime),
+                    Layer.provide(ServerSettings.layerTest()),
+                    Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
+                  ),
+                ),
+              )
+            : service;
+        const result = yield* racedService
+          .interruptThread({
+            projectId,
+            threadId,
+            runId: source.id,
+            commandId: CommandId.make("interrupt-source"),
+          })
+          .pipe(Effect.result);
+        if (scenario === "manual" || scenario === "unrelated") {
+          expect(Result.isFailure(result) && result.failure).toMatchObject({
+            _tag: "ThreadManagementThreadNotInterruptibleError",
+            runId: source.id,
+          });
+          expect((yield* projections.getThreadProjection(threadId)).runs).toEqual(before.runs);
+          return;
+        }
+        if (Result.isFailure(result)) return yield* result.failure;
+        expect(result.success).toMatchObject({
+          type: scenario === "ended" ? "already_terminal" : "interrupt_requested",
+          run: { id: latest.id },
+        });
+        if (scenario === "pending") {
+          expect(
+            yield* service.interruptThread({
+              projectId,
+              threadId,
+              runId: source.id,
+              commandId: CommandId.make("interrupt-pending-again"),
+            }),
+          ).toMatchObject({ type: "interrupt_requested", run: { id: latest.id } });
+          yield* send("late-restart", latest.id);
+          const after = yield* projections.getThreadProjection(threadId);
+          expect(after.runs).toEqual(before.runs);
+          expect(after.turnItems).toContainEqual(
+            expect.objectContaining({
+              runId: latest.id,
+              type: "run_interrupt_request",
+            }),
+          );
+        } else if (scenario !== "ended") {
+          expect((yield* projections.getThreadProjection(threadId)).runs.at(-1)).toMatchObject({
+            id: latest.id,
+            status: "interrupted",
+          });
+        }
+      }).pipe(Effect.provide(layer));
+    }),
 );
 
 const layerDispatchChokepointTest =
