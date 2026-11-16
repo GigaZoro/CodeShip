@@ -257,10 +257,13 @@ describe("WorkerProcessSpawner", () => {
   );
 
   // POSIX gives no process the pid of a group that still exists, so one holding it ended the group.
-  it.live.skipIf(isWindowsHost)(
-    "a stopped worker spares the group of a reaped leader whose pid another process now holds",
-    () =>
+  describe.skipIf(isWindowsHost)("a stopped worker spares the group of a reaped leader", () => {
+    it.live.each([
+      { took: "after", held: Effect.void },
+      { took: "before", held: WorkerProcessSpawner.__testing.leadersHeldAtExit },
+    ])("whose pid another process took $took its exit arrived", ({ held }) =>
       Effect.gen(function* () {
+        yield* held;
         const leader = yield* node("", quiet);
         yield* leader.exitCode;
         const kill = yield* Effect.acquireRelease(
@@ -279,10 +282,12 @@ describe("WorkerProcessSpawner", () => {
 
         assert.notDeepInclude(kill.mock.calls, [-leader.pid, "SIGKILL"]);
       }).pipe(Effect.scoped, Effect.provide(layer)),
-  );
+    );
+  });
 
   // Linux hands a ptrace stop to the tracer's waitpid, and Node reports it as an exit of the leader,
   // which still holds its pid. It runs on once a stopped worker's thread, its tracer, has ended.
+  // libuv stops waiting for it at that stop, so once ended it stays a zombie until this process exits.
   describe.runIf(isLinuxHost)("a leader Node reported as exited at a ptrace stop", () => {
     const tracedStop = [
       "import ctypes, os, signal, socket, sys, time",

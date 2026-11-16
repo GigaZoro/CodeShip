@@ -30,6 +30,7 @@ const STOP_TREE_TIMEOUT_MS = 30_000;
 const workerSource = `
 const { parentPort } = require("node:worker_threads");
 const { spawn, execFile } = require("node:child_process");
+const { readFileSync } = require("node:fs");
 const { performance } = require("node:perf_hooks");
 const GRACE_MS = 1000;
 const POLL_MS = 10;
@@ -65,9 +66,23 @@ const holdsPid = (pid) => {
     return error.code !== "ESRCH";
   }
 };
+// Linux hands waitpid the ptrace stop of a child that made this process its tracer, and Node reports
+// it as an exit. That leader is still this process's child, stopped; any other holder of its pid
+// took it after a real reap.
+const isTraceStoppedChild = (pid) => {
+  if (process.platform !== "linux") return false;
+  let stat;
+  try {
+    stat = readFileSync("/proc/" + pid + "/stat", "utf8");
+  } catch {
+    return false;
+  }
+  // The command name before these fields is in parentheses and may itself hold spaces or parentheses.
+  const [state, ppid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  return state === "t" && Number(ppid) === process.pid;
+};
 // POSIX gives no process the pid of a group that still exists, so once the leader was reaped, a
-// process holding its pid means the group ended and its id may name another's. Node also reports a
-// ptrace stop as an exit; that leader still holds its pid when the exit arrives, so was not reaped.
+// process holding its pid means the group ended and its id may name another's.
 const groupEnded = (entry) => entry.exit !== null && entry.exit.reaped && holdsPid(entry.child.pid);
 const isAlive = (entry) => {
   if (entry.exit === null) return true;
@@ -177,7 +192,7 @@ const relayOutput = (entry, fd) => {
   stream.on("error", (error) => close({ type: "streamError", id: entry.id, fd, error: describe(error) }));
 };
 
-const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs }) => {
+const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, heldAtExit }) => {
   if (stallMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stallMs);
   let child;
   // The system's clock, which a Windows tree walk compares with process creation times.
@@ -216,10 +231,11 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     post({ type: "spawned", id, root: entry.root });
   });
   child.on("exit", (code, signal) => {
-    entry.exit = { code, signal, reaped: !holdsPid(child.pid) };
+    const held = heldAtExit || holdsPid(child.pid);
+    entry.exit = { code, signal, reaped: !(held && isTraceStoppedChild(child.pid)) };
     post({ type: "exit", id, code, signal, reaped: entry.exit.reaped });
     // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
-    if (code !== 0 && code !== null && process.platform !== "win32" && entry.exit.reaped) {
+    if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
       try {
         process.kill(-child.pid, killSignal);
       } catch {
@@ -426,7 +442,7 @@ interface RemoteChild {
   // Logs through the spawning fiber's logger a failure no fiber awaits, as after its worker stopped.
   readonly report: (error: PlatformError.PlatformError) => void;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
-  // The worker relayed an exit after which no process held the leader's pid.
+  // The worker relayed an exit that reaped the leader, not a ptrace stop Node reports as one.
   reaped: boolean;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
   readonly open: Set<number>;
@@ -558,6 +574,7 @@ let nextId = 0;
 let nextSeq = 0;
 let startStallMs = 0;
 let workerStartsFail = false;
+let leadersHeldAtExit = false;
 
 // An idle worker must not keep the process alive; a referenced child or a pending request does.
 const hold = (connection: Connection) => {
@@ -868,7 +885,13 @@ const launch = (
     };
     connection.children.set(id, child);
     hold(connection);
-    post(connection, { ...message, type: "spawn", id, stallMs: startStallMs });
+    post(connection, {
+      ...message,
+      type: "spawn",
+      id,
+      stallMs: startStallMs,
+      heldAtExit: leadersHeldAtExit,
+    });
     return Effect.sync(() => {
       if (child.starting === undefined) return;
       child.starting = undefined;
@@ -1156,6 +1179,17 @@ export const __testing = {
     () =>
       Effect.sync(() => {
         workerStartsFail = false;
+      }),
+  ),
+  /** Within the scope, another process holds each leader's pid when its exit arrives, as when the
+   * system reused it at once. */
+  leadersHeldAtExit: Effect.acquireRelease(
+    Effect.sync(() => {
+      leadersHeldAtExit = true;
+    }),
+    () =>
+      Effect.sync(() => {
+        leadersHeldAtExit = false;
       }),
   ),
   /** Ends the worker the way a crash does; the next spawn starts a new one. */
