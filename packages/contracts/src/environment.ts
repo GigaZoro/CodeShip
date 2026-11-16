@@ -342,8 +342,44 @@ export const RepositoryIdentity = Schema.Struct({
 });
 export type RepositoryIdentity = typeof RepositoryIdentity.Type;
 
-export function repositoryGroupingKeyOf(identity: RepositoryIdentity): string {
+/** The part of an identity that says which repository a checkout is, on any machine. */
+export type RepositoryKeyed = {
+  readonly canonicalKey: string;
+  readonly origin?: { readonly canonicalKey: string } | undefined;
+};
+
+export function repositoryGroupingKeyOf(identity: RepositoryKeyed): string {
   return identity.origin?.canonicalKey ?? identity.canonicalKey;
+}
+
+/**
+ * Every key a checkout answers to, origin first. A fork with an upstream remote is keyed by the
+ * upstream, and its copy on a machine without that remote by origin, so matching across machines
+ * compares both.
+ */
+export function repositoryKeysOf(identity: RepositoryKeyed): ReadonlyArray<string> {
+  return [...new Set([repositoryGroupingKeyOf(identity), identity.canonicalKey])];
+}
+
+/** `repositoryKeysOf` gives an origin and an upstream at most. */
+const MAX_REPOSITORY_KEYS = 2;
+
+/**
+ * How closely `candidate` is `source`'s repository, lowest closest, or -1. A shared key ranks by
+ * its place on the source's side, then on the candidate's, so a fork's checkout beats both a
+ * clone of its upstream and a fork of the fork.
+ */
+export function repositoryMatchRank(
+  source: RepositoryKeyed,
+  candidate: RepositoryKeyed | null | undefined,
+): number {
+  if (candidate == null) return -1;
+  const theirs = repositoryKeysOf(candidate);
+  for (const [ours, key] of repositoryKeysOf(source).entries()) {
+    const at = theirs.indexOf(key);
+    if (at !== -1) return ours * MAX_REPOSITORY_KEYS + at;
+  }
+  return -1;
 }
 
 export function repositoryGroupingDisplayNameOf(identity: RepositoryIdentity): string | undefined {

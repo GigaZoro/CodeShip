@@ -16,7 +16,10 @@ an agent reaches another environment's threads only through a peer link.
 The canonical key follows the `upstream` remote when one exists, so pull request
 features target the repository a fork tracks. A fork also reports its own
 `origin`, and clients group and label by that, so a fork never collapses into a
-checkout of its upstream.
+checkout of its upstream. Finding a project's copy on another machine, for a
+delegated or shared scheduled task, compares every key each side reports, origin
+first: a copy of the fork on a machine without the `upstream` remote reports only
+its origin.
 
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a

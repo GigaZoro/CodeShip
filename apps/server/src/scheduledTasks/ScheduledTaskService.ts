@@ -3,7 +3,7 @@ import {
   EnvironmentId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
-  type ProjectId,
+  ProjectId,
   ScheduledTask,
   ScheduledTaskChangedBy,
   ScheduledTaskSharing,
@@ -11,6 +11,8 @@ import {
   ScheduledTaskProjectMachineOrder,
   compareScheduledTaskSharedRevisions,
   defaultScheduledTaskMachineOrder,
+  repositoryGroupingKeyOf,
+  repositoryMatchRank,
   scheduledTaskSharedProjectKey,
   type OrchestratorMcpSharedScheduledTasksResult,
   type ScheduledTaskApplySharedInput,
@@ -164,6 +166,8 @@ const isLostPromptFileRead = (
   error._tag === "PromptFileReadError" && error.lostConnection;
 const isOrchestratorDispatchError = Schema.is(OrchestratorDispatchError);
 const PROMPT_TOO_LONG = "The filled-in prompt is too long.";
+// Recorded in scheduled_task_upgrades once shares stored before origin keys have moved there.
+const ORIGIN_KEYED_SHARES_UPGRADE = "origin-keyed-shares";
 const INTERRUPTED_BY_RESTART = "Run was interrupted by a server restart.";
 const MINUTE_MS = 60_000;
 // An occurrence of a one-machine task counts as run if a machine started it within this
@@ -1133,6 +1137,8 @@ export const layer = Layer.effect(
         run_on TEXT NOT NULL DEFAULT 'every'
       )
     `;
+    // One-time data changes this machine has made, by name.
+    yield* sql`CREATE TABLE IF NOT EXISTS scheduled_task_upgrades (name TEXT PRIMARY KEY)`;
     // The machines a project's one-machine tasks try in order; synced like a shared task.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_project_machine_orders (
@@ -1169,6 +1175,25 @@ export const layer = Layer.effect(
         holder_environment_id TEXT NOT NULL,
         claimed_at TEXT NOT NULL,
         PRIMARY KEY (task_id, occurrence_at)
+      )
+    `;
+    // The latest time a fixed-time run came due while an update drained; it holds the occurrence at
+    // or before then. The install restarts the server, so the hold outlives the drain and the run
+    // starts after it however late. It lasts while the task's next_run_at is next_run_at: a check a
+    // restart cut asks again, a one-machine turn moves it along, and a run, skip or edit ends it.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_drain_holds (
+        task_id TEXT PRIMARY KEY,
+        held_at TEXT NOT NULL,
+        next_run_at TEXT NOT NULL
+      )
+    `;
+    yield* sql`
+      DELETE FROM scheduled_task_drain_holds
+      WHERE NOT EXISTS (
+        SELECT 1 FROM scheduled_tasks t
+        WHERE t.task_id = scheduled_task_drain_holds.task_id
+          AND t.next_run_at = scheduled_task_drain_holds.next_run_at
       )
     `;
     // A row means the task's own catch-up choice; without one it follows its schedule's default.
@@ -1897,6 +1922,89 @@ export const layer = Layer.effect(
           revision_environment_id = excluded.revision_environment_id
       `;
 
+    const readMachineOrder = Effect.fn("ScheduledTaskService.readMachineOrder")(function* (
+      projectKey: string,
+    ) {
+      const [row] = yield* sql<MachineOrderRow>`
+        SELECT project_json, order_json, revision_at, revision_environment_id
+        FROM scheduled_task_project_machine_orders WHERE project_key = ${projectKey}`;
+      return row === undefined
+        ? undefined
+        : yield* decodeMachineOrderRow({
+            project: row.project_json,
+            order: row.order_json,
+            revision: { at: row.revision_at, environmentId: row.revision_environment_id },
+          });
+    });
+
+    // A share whose project key changes takes its machine order along. A key that has an order
+    // already keeps the newer of the two first, then the machines only the other one ranks.
+    const carryMachineOrder = Effect.fn("ScheduledTaskService.carryMachineOrder")(function* (
+      from: ScheduledTaskSharing["project"],
+      to: ScheduledTaskSharing["project"],
+    ) {
+      const toKey = scheduledTaskSharedProjectKey(to);
+      if (scheduledTaskSharedProjectKey(from) === toKey) return;
+      const carried = yield* readMachineOrder(scheduledTaskSharedProjectKey(from));
+      if (carried === undefined) return;
+      const held = yield* readMachineOrder(toKey);
+      const [first, second] =
+        held === undefined ||
+        compareScheduledTaskSharedRevisions(carried.revision, held.revision) > 0
+          ? [carried.order, held?.order ?? []]
+          : [held.order, carried.order];
+      const order = [...first, ...second.filter((id) => !first.includes(id))];
+      if (held !== undefined && order.every((id, index) => held.order[index] === id)) return;
+      yield* writeMachineOrder({ project: to, order, revision: yield* stampOrderRevision(toKey) });
+    });
+
+    // Shares this machine keyed by a fork's upstream move once to its origin, with a new revision.
+    // Not those another machine wrote: there the key can be a clone of that upstream with no other
+    // remote. Not later ones either: a received origin reads as the upstream of a fork of that fork.
+    const moveSharesToOriginKeys = Effect.gen(function* () {
+      const [done] = yield* sql`
+        SELECT name FROM scheduled_task_upgrades WHERE name = ${ORIGIN_KEYED_SHARES_UPGRADE}`;
+      if (done !== undefined) return;
+      const shares = yield* sql<{ readonly task_id: string }>`
+        SELECT task_id FROM scheduled_task_shared`;
+      for (const share of shares) {
+        const id = ScheduledTaskId.make(share.task_id);
+        const task = yield* findTask(id);
+        const from = task?.shared?.project;
+        if (
+          task == null ||
+          task.shared == null ||
+          task.shared.revision.environmentId !== hereEnvironmentId ||
+          from?.type !== "repository"
+        ) {
+          continue;
+        }
+        const project = Option.getOrUndefined(yield* projects.getById(task.projectId));
+        const identity =
+          project === undefined ? null : yield* repositoryIdentities.resolve(project.workspaceRoot);
+        const upstream = identity?.canonicalKey;
+        const origin = identity === null ? undefined : repositoryGroupingKeyOf(identity);
+        // oxlint-disable-next-line t3code/no-canonical-key-comparison -- the key that moves is the upstream itself
+        if (from.canonicalKey !== upstream || origin === undefined || origin === upstream) continue;
+        const to = { ...from, canonicalKey: origin };
+        const shared = task.shared;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* writeSharing(id, { ...shared, project: to, revision: yield* stampRevision(id) });
+            yield* carryMachineOrder(from, to);
+          }),
+        );
+      }
+      yield* sql`INSERT INTO scheduled_task_upgrades (name) VALUES (${ORIGIN_KEYED_SHARES_UPGRADE})`;
+    }).pipe(
+      Effect.withSpan("ScheduledTaskService.moveSharesToOriginKeys"),
+      // Not done is tried again at the next start.
+      Effect.catchCause((cause) =>
+        Effect.logError("Could not move shared tasks to their origin keys", { cause }),
+      ),
+    );
+    yield* moveSharesToOriginKeys;
+
     const deleteLocalRows = (id: ScheduledTaskId) =>
       sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
         Effect.andThen(sql`DELETE FROM scheduled_task_sidebar WHERE task_id = ${id}`),
@@ -1905,6 +2013,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_one_machine_decision WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_occurrence_claims WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_catch_up WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_drain_holds WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_run_conditions WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`),
@@ -3353,18 +3462,7 @@ export const layer = Layer.effect(
       ]);
       const { stored, order } = yield* sql.withTransaction(
         Effect.gen(function* () {
-          const [row] = yield* sql<MachineOrderRow>`
-            SELECT project_json, order_json, revision_at, revision_environment_id
-            FROM scheduled_task_project_machine_orders WHERE project_key = ${key}
-          `;
-          const storedOrder =
-            row === undefined
-              ? []
-              : (yield* decodeMachineOrderRow({
-                  project: row.project_json,
-                  order: row.order_json,
-                  revision: { at: row.revision_at, environmentId: row.revision_environment_id },
-                })).order;
+          const storedOrder = (yield* readMachineOrder(key))?.order ?? [];
           const order = [...storedOrder, ...known.filter((id) => !storedOrder.includes(id))];
           if (storedOrder.includes(hereEnvironmentId)) return { stored: storedOrder, order };
           yield* writeMachineOrder({
@@ -3799,17 +3897,29 @@ export const layer = Layer.effect(
           decision: ScheduledTaskOneMachineDecision | null,
         ) {
           const deferredTo = iso(DateTime.makeUnsafe(atMs));
-          yield* sql`
-            UPDATE scheduled_tasks SET next_run_at = ${deferredTo}, updated_at = ${iso(now)}
-            WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
-          `.pipe(
-            Effect.andThen(
-              decision === null ? Effect.void : recordOneMachineDecision(task.id, decision),
-            ),
-            Effect.mapError((cause) =>
-              taskError("Could not defer the schedule task run.", { taskId: task.id, cause }),
-            ),
-          );
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const moved = yield* sql`
+                  UPDATE scheduled_tasks SET next_run_at = ${deferredTo}, updated_at = ${iso(now)}
+                  WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+                  RETURNING task_id
+                `;
+                // An update's hold on this occurrence waits its turn with it.
+                if (moved.length > 0) {
+                  yield* sql`
+                    UPDATE scheduled_task_drain_holds SET next_run_at = ${deferredTo}
+                    WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+                  `;
+                }
+                if (decision !== null) yield* recordOneMachineDecision(task.id, decision);
+              }),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not defer the schedule task run.", { taskId: task.id, cause }),
+              ),
+            );
           yield* Ref.update(oneMachineDeferrals, (current) =>
             new Map(current).set(task.id, {
               occurrenceDueMs,
@@ -4058,36 +4168,77 @@ export const layer = Layer.effect(
       );
       const catchUp =
         stored === undefined ? defaultCatchUpMissedRun(task.schedule) : stored.enabled === 1;
-      const deferral = (yield* Ref.get(oneMachineDeferrals)).get(task.id);
-      // A one-machine run that waited its turn and was then reached late keeps its occurrence.
-      if (catchUp && deferral !== undefined && deferral.deferredTo === task.nextRunAt) {
-        return yield* runDueOccurrence(task, now, deferral.catchUp);
-      }
-      const missed = latestMissedFixedTimeRun(task.schedule, now);
-      const missedAt = missed === null ? task.nextRunAt : iso(missed.at);
-      if (!catchUp || missed === null || !missed.catchUp) {
-        return yield* rescheduleMissedRun(
-          task,
-          now,
-          missedAt,
-          catchUp ? "next_run_sooner" : "missed",
-          "Missed a scheduled run because the server was not running at that time.",
-        );
-      }
-      // Several missed times run once, for the latest; the one-machine check judges that one.
-      const pointed = yield* sql`
-        UPDATE scheduled_tasks SET next_run_at = ${missedAt}, updated_at = ${iso(now)}
+      const [held] = yield* sql<{ readonly held_at: string }>`
+        SELECT held_at FROM scheduled_task_drain_holds
         WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
-        RETURNING task_id
       `.pipe(
+        NodeSqliteClient.readOnly,
         Effect.mapError((cause) =>
-          taskError("Could not catch up the missed schedule task run.", {
-            taskId: task.id,
-            cause,
-          }),
+          taskError("Could not read the task's update hold.", { taskId: task.id, cause }),
         ),
       );
-      if (pointed.length === 0) return;
+      const missed = latestMissedFixedTimeRun(task.schedule, now);
+      const missedAt = missed === null ? task.nextRunAt : iso(missed.at);
+      // An update held it, not the app being off, so the task's catch-up choice does not apply. It
+      // still gives way to a nearer next time, and to a later time that passed too, the next day's
+      // time a one-machine turn carried the hold to included.
+      const heldByUpdate =
+        held !== undefined &&
+        task.nextRunAt !== null &&
+        missed !== null &&
+        DateTime.toEpochMillis(missed.at) <= Date.parse(held.held_at);
+      if (heldByUpdate) {
+        if (!missed.catchUp) {
+          return yield* rescheduleMissedRun(task, now, missedAt, "next_run_sooner");
+        }
+        // next_run_at is its time, or the later time a one-machine turn asks about it at.
+        if (DateTime.toEpochMillis(missed.at) <= Date.parse(task.nextRunAt)) {
+          return yield* runDueOccurrence(task, now, true);
+        }
+      } else {
+        const deferral = (yield* Ref.get(oneMachineDeferrals)).get(task.id);
+        // A one-machine run that waited its turn and was then reached late keeps its occurrence.
+        if (catchUp && deferral !== undefined && deferral.deferredTo === task.nextRunAt) {
+          return yield* runDueOccurrence(task, now, deferral.catchUp);
+        }
+        if (!catchUp || missed === null || !missed.catchUp) {
+          return yield* rescheduleMissedRun(
+            task,
+            now,
+            missedAt,
+            catchUp ? "next_run_sooner" : "missed",
+            "Missed a scheduled run because the server was not running at that time.",
+          );
+        }
+      }
+      // Several missed times run once, for the latest; the one-machine check judges that one. A
+      // held one takes its hold along, so a check a restart cuts still runs it.
+      const pointed = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const moved = yield* sql`
+              UPDATE scheduled_tasks SET next_run_at = ${missedAt}, updated_at = ${iso(now)}
+              WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+              RETURNING task_id
+            `;
+            if (heldByUpdate && moved.length > 0) {
+              yield* sql`
+                UPDATE scheduled_task_drain_holds SET next_run_at = ${missedAt}
+                WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+              `;
+            }
+            return moved.length > 0;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not catch up the missed schedule task run.", {
+              taskId: task.id,
+              cause,
+            }),
+          ),
+        );
+      if (!pointed) return;
       yield* Effect.logInfo("Catching up a missed schedule task run", {
         taskId: task.id,
         missedRunAt: missedAt,
@@ -4095,9 +4246,44 @@ export const layer = Layer.effect(
       yield* runDueOccurrence({ ...task, nextRunAt: missedAt }, now, true);
     });
 
+    const holdForUpdate = Effect.fn("ScheduledTaskService.holdForUpdate")(function* (
+      tasks: ReadonlyArray<ScheduledTask>,
+      now: DateTime.DateTime,
+    ) {
+      yield* Effect.forEach(
+        tasks,
+        (task) => {
+          if (task.schedule.type !== "fixed_time" || task.nextRunAt === null) return Effect.void;
+          // A one-machine turn can leave next_run_at short of the next time, which then comes due.
+          const latest = latestMissedFixedTimeRun(task.schedule, now)?.at;
+          const heldAt = DateTime.makeUnsafe(
+            Math.max(
+              Date.parse(task.nextRunAt),
+              latest === undefined ? -Infinity : DateTime.toEpochMillis(latest),
+            ),
+          );
+          if (isMissedFixedTimeRun(task.schedule, heldAt, now)) return Effect.void;
+          return sql`
+            INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
+            VALUES (${task.id}, ${iso(heldAt)}, ${task.nextRunAt})
+            ON CONFLICT (task_id) DO UPDATE SET
+              held_at = excluded.held_at,
+              next_run_at = excluded.next_run_at
+            WHERE held_at <> excluded.held_at OR next_run_at <> excluded.next_run_at
+          `.pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not hold the schedule task run for an update.", {
+                taskId: task.id,
+                cause,
+              }),
+            ),
+          );
+        },
+        { discard: true },
+      );
+    });
+
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
-      // An automatic update is draining the running turns; due starts follow the install.
-      if (yield* isUpdateDraining()) return;
       const now = yield* localNow;
       const nowMs = DateTime.toEpochMillis(now);
       if (yield* dueTasks.isIdle(nowMs)) return;
@@ -4124,6 +4310,8 @@ export const layer = Layer.effect(
       const tasks = yield* listDueTasks(now).pipe(
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
+      // An automatic update is draining the running turns; due starts follow the install.
+      if (yield* isUpdateDraining()) return yield* holdForUpdate(tasks, now);
       // A task whose check or background run is going has this occurrence in hand already.
       const checking = yield* Ref.get(runChecks);
       const inBackground = yield* Ref.get(backgroundRuns);
@@ -4449,21 +4637,17 @@ export const layer = Layer.effect(
     const knownMachineIds: ScheduledTaskService["Service"]["knownMachineIds"] = Effect.fn(
       "ScheduledTaskService.knownMachineIds",
     )(function* (projectId) {
-      const key = scheduledTaskSharedProjectKey(yield* sharedProjectOf(projectId));
+      const repository = yield* sharedRepositoryOf(projectId);
       const known = yield* Effect.gen(function* () {
-        const [stored] = yield* sql<MachineOrderRow>`
-          SELECT project_json, order_json, revision_at, revision_environment_id
-          FROM scheduled_task_project_machine_orders
-          WHERE project_key = ${key}
-        `.pipe(NodeSqliteClient.readOnly);
-        const ordered =
-          stored === undefined
-            ? []
-            : (yield* decodeMachineOrderRow({
-                project: stored.project_json,
-                order: stored.order_json,
-                revision: { at: stored.revision_at, environmentId: stored.revision_environment_id },
-              })).order;
+        // Every order this project answers to: its shares can be keyed by any of its remotes.
+        const ordered = (yield* readMachineOrders)
+          .filter(({ project }) =>
+            repository === null
+              ? project.type === "none"
+              : project.type === "repository" &&
+                repositoryMatchRank(project, repository.identity) !== -1,
+          )
+          .flatMap(({ order }) => order);
         const cutoff = sharedPullerCutoff(yield* DateTime.now);
         const pullers = yield* sql<{ readonly environment_id: string }>`
           SELECT environment_id FROM scheduled_task_shared_pullers
@@ -4491,14 +4675,13 @@ export const layer = Layer.effect(
         }),
       );
 
-    // Resolved fresh: a project's own identity is a cache that reads blank when cold.
-    const sharedProjectOf = Effect.fn("ScheduledTaskService.sharedProjectOf")(function* (
+    // Null for No project. Resolved fresh: a project's own identity is a cache that reads blank when
+    // cold.
+    const sharedRepositoryOf = Effect.fn("ScheduledTaskService.sharedRepositoryOf")(function* (
       projectId: ProjectId,
       taskId?: ScheduledTaskId,
     ) {
-      if (yield* managedFolders.isScratchProject(projectId)) {
-        return { type: "none" } as const satisfies ScheduledTaskSharing["project"];
-      }
+      if (yield* managedFolders.isScratchProject(projectId)) return null;
       const project = yield* projects.getById(projectId).pipe(
         Effect.map(Option.getOrUndefined),
         Effect.mapError((cause) =>
@@ -4513,10 +4696,29 @@ export const layer = Layer.effect(
           { taskId },
         );
       }
+      return { title: project.title, identity };
+    });
+
+    const sharedProjectOf = Effect.fn("ScheduledTaskService.sharedProjectOf")(function* (
+      projectId: ProjectId,
+      taskId?: ScheduledTaskId,
+      current?: ScheduledTaskSharing["project"],
+    ) {
+      const repository = yield* sharedRepositoryOf(projectId, taskId);
+      if (repository === null) {
+        return { type: "none" } as const satisfies ScheduledTaskSharing["project"];
+      }
+      const { identity } = repository;
+      // A key this checkout still answers to stays: the machine that wrote it may know only that
+      // remote, as a clone of this fork's upstream does.
+      if (current?.type === "repository" && repositoryMatchRank(current, identity) !== -1) {
+        return current;
+      }
+      // Origin first, so a fork's copy on a machine without its upstream remote finds it too.
       return {
         type: "repository",
-        canonicalKey: identity.canonicalKey,
-        title: project.title,
+        canonicalKey: repositoryGroupingKeyOf(identity),
+        title: repository.title,
       } as const satisfies ScheduledTaskSharing["project"];
     });
 
@@ -4532,7 +4734,8 @@ export const layer = Layer.effect(
         );
         return scratch.projectId;
       }
-      const matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+      let matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+      let bestRank = Number.POSITIVE_INFINITY;
       let cursor: number | null = 0;
       while (cursor !== null) {
         const page: Effect.Success<ReturnType<typeof projects.listPage>> = yield* projects
@@ -4544,7 +4747,11 @@ export const layer = Layer.effect(
           );
         for (const candidate of page.projects) {
           const identity = yield* repositoryIdentities.resolve(candidate.workspaceRoot);
-          if (identity?.canonicalKey === project.canonicalKey) matches.push(candidate);
+          const rank = repositoryMatchRank(project, identity);
+          if (rank === -1 || rank > bestRank) continue;
+          if (rank < bestRank) matches = [];
+          bestRank = rank;
+          matches.push(candidate);
         }
         cursor = page.nextCursor;
       }
@@ -4696,7 +4903,15 @@ export const layer = Layer.effect(
           : undefined;
       if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: id });
       const sharedProject =
-        sharedExclusions === undefined ? null : yield* sharedProjectOf(input.projectId, id);
+        sharedExclusions === undefined
+          ? null
+          : yield* sharedProjectOf(
+              input.projectId,
+              id,
+              existingTask?.projectId === input.projectId
+                ? existingTask.shared?.project
+                : undefined,
+            );
       // Omitted keeps the stored choice.
       const sharedRunOn = input.shared?.runOn ?? existingTask?.shared?.runOn;
       const machineOrder = input.shared?.machineOrder;
@@ -4912,6 +5127,11 @@ export const layer = Layer.effect(
                   order: machineOrder,
                   revision: yield* stampOrderRevision(key),
                 });
+              } else if (
+                existingTask?.shared != null &&
+                existingTask.projectId === input.projectId
+              ) {
+                yield* carryMachineOrder(existingTask.shared.project, sharedProject);
               }
             } else if ((yield* storedRevisions(id)).shared !== null) {
               yield* writeDeletion(id, yield* stampRevision(id));

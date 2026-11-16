@@ -1,4 +1,5 @@
 import {
+  AUTOMATIC_UPDATE_INTERVAL_HOURS,
   ProviderUpdatesChoice,
   providerUpdatesChoice,
   providerUpdatesPatch,
@@ -64,6 +65,9 @@ import { isSourceControlProviderOffered } from "@t3tools/client-runtime/operatio
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 type SettingsPage = "threads" | "source-control" | "maintenance";
+
+const automaticUpdateIntervalLabel = (hours: number) =>
+  hours === 0 ? t("No wait") : t("{hours} h", { hours });
 
 const updateLabels = {
   off: msg("Off"),
@@ -721,6 +725,39 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     value={uniform("installUpdatesAutomatically")}
                     disabled={disabledFor("installUpdatesAutomatically")}
                     onValueChange={(value) => write({ installUpdatesAutomatically: value })}
+                  />
+                  <SettingsMenuRow
+                    icon="clock"
+                    label={t("Time between automatic updates")}
+                    description={managedSubtitle(
+                      "minHoursBetweenAutomaticUpdates",
+                      t(
+                        "After a restart, automatic updates wait this long before installing the next release, so a busy machine restarts less often.",
+                      ),
+                    )}
+                    value={
+                      uniform("minHoursBetweenAutomaticUpdates") === null
+                        ? null
+                        : String(uniform("minHoursBetweenAutomaticUpdates"))
+                    }
+                    currentLabel={
+                      uniform("minHoursBetweenAutomaticUpdates") === null
+                        ? t("Mixed")
+                        : automaticUpdateIntervalLabel(
+                            reference!.settings.minHoursBetweenAutomaticUpdates,
+                          )
+                    }
+                    disabled={disabledFor("minHoursBetweenAutomaticUpdates")}
+                    options={AUTOMATIC_UPDATE_INTERVAL_HOURS.map((hours) => ({
+                      value: String(hours),
+                      label: automaticUpdateIntervalLabel(hours),
+                    }))}
+                    onChange={(value) => {
+                      const hours = AUTOMATIC_UPDATE_INTERVAL_HOURS.find(
+                        (option) => String(option) === value,
+                      );
+                      if (hours !== undefined) write({ minHoursBetweenAutomaticUpdates: hours });
+                    }}
                   />
                 </SettingsSection>
                 <SettingsSection title={t("Power")}>

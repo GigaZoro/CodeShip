@@ -4,6 +4,7 @@ import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  type MachineSharedSettingKey,
   ProviderInstanceId,
   ProviderDriverKind,
   ServerSettingsError,
@@ -266,6 +267,7 @@ it.effect.each([
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
           installUpdatesAutomatically: true,
+          minHoursBetweenAutomaticUpdates: 12,
           usageLimitRecovery: "switch-and-resume",
           snoozeLimitedThreads: true,
         })
@@ -280,11 +282,13 @@ it.effect.each([
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
           installUpdatesAutomatically: true,
+          minHoursBetweenAutomaticUpdates: 12,
           usageLimitRecovery: "switch-and-resume",
           snoozeLimitedThreads: true,
         });
         expect(yield* Ref.get(stored)).toMatchObject({
           installUpdatesAutomatically: true,
+          minHoursBetweenAutomaticUpdates: 12,
           enableProviderUpdateChecks: true,
           autoUpdateProviders: true,
           snoozeLimitedThreads: true,
@@ -300,6 +304,7 @@ it.effect.each([
             scheduledTaskModelSelection: selection,
             autoModeModels: { [driver]: auto },
             installUpdatesAutomatically: true,
+            minHoursBetweenAutomaticUpdates: 12,
             usageLimitRecovery: "switch-and-resume",
             snoozeLimitedThreads: true,
           },
@@ -589,3 +594,68 @@ it.effect.each([
     );
   }),
 );
+
+// The tool field agents set each shared preference through, or null when only people set it.
+const AGENT_PREFERENCE_FIELD: Record<MachineSharedSettingKey, string | null> = {
+  defaultModelSelection: "defaultModelSelection",
+  newThreadsUseLastModel: null,
+  scheduledTaskModelSelection: "scheduledTaskModelSelection",
+  fallbackModelSelection: null,
+  textGenerationModelSelection: null,
+  threadTitleInstructions: null,
+  sourceControlWriterModelSelection: null,
+  reviewGuideModelSelection: null,
+  finalReviewByDefault: null,
+  defaultRuntimeMode: null,
+  defaultThreadEnvMode: "defaultThreadEnvMode",
+  responseStreamingMode: null,
+  idleCompaction: null,
+  snoozePresets: null,
+  snoozeLimitedThreads: "snoozeLimitedThreads",
+  autoResumeLimitedThreads: "usageLimitRecovery",
+  failoverLimitedThreads: "usageLimitRecovery",
+  sidebarAutoSettleAfterDays: null,
+  sidebarAutoSettleOnMerge: null,
+  sidebarAutoSettleKeepPullRequests: null,
+  sidebarAutoSettleOpensPullRequests: null,
+  scheduledTaskDefaultPlacement: null,
+  skillAvailability: null,
+  enableAgentBrowserAccess: null,
+  enableAgentDeviceAccess: null,
+  agentTerminalAccess: null,
+  worktreeSubmodules: null,
+  newWorktreesStartFromOrigin: "newWorktreesStartFromOrigin",
+  defaultAutoPull: null,
+  worktreeCleanup: null,
+  branchNamingMode: null,
+  sourceControlWritingStyle: "sourceControlWritingStyle",
+  removeAgentCreditsOnMerge: null,
+  pullRequestMergeMethod: null,
+  reviewGuidesEnabled: null,
+  reviewGuideInstructions: null,
+  importAgentConversations: null,
+  ghqCloneLayout: null,
+  enableProviderUpdateChecks: "enableProviderUpdateChecks",
+  autoUpdateProviders: "providerUpdates",
+  installUpdatesAutomatically: "installUpdatesAutomatically",
+  minHoursBetweenAutomaticUpdates: "minHoursBetweenAutomaticUpdates",
+  continueThreadsAfterServerUpdate: null,
+  backgroundActivity: "backgroundActivity",
+  providerInstanceFailoverOrder: null,
+  redeemUsageResets: null,
+  maxPlanResetWaitHours: null,
+  deviceSettingsProfile: null,
+};
+
+it("lets agents read and set every shared preference meant for them", () => {
+  const writable = Object.keys(
+    EnvironmentToolkit.tools.t3_environment_preferences_update.parametersSchema.fields,
+  );
+  const readable = Object.keys(
+    EnvironmentToolkit.tools.t3_environment_read.successSchema.fields.preferences.fields,
+  );
+  const missing = Object.entries(AGENT_PREFERENCE_FIELD).filter(
+    ([, field]) => field !== null && !(writable.includes(field) && readable.includes(field)),
+  );
+  expect(missing).toEqual([]);
+});

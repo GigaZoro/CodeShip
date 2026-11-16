@@ -34,6 +34,7 @@ import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
+import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { UpdateDrain } from "../cloud/updateDrain.ts";
 
@@ -446,58 +447,137 @@ it.effect(
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("holds a due run while an update drains and starts it right after", () =>
-  Effect.gen(function* () {
-    yield* TestClock.setTime(Date.parse("2026-07-01T09:00:00.000Z"));
-    const launched = yield* Deferred.make<string>();
-    const drain = Ref.makeUnsafe(true);
-    const layerDependencies = Layer.mergeAll(
-      NodeCrypto.layer,
-      Scheduler.layer,
-      ServerSettings.layerTest(),
-      MemoryAdmission.layerTest(),
-      ManagedPolicy.layerTest(),
-      Layer.mock(ThreadLaunchService.ThreadLaunchService)({
-        launch: (input) =>
-          Deferred.succeed(launched, input.title).pipe(
-            Effect.as({ threadId: "thread-drain", resumed: false } as never),
+it.effect.each([
+  { drain: "90 minutes", launches: 1, run: { outcome: "succeeded" } },
+  { drain: "14 hours", launches: 0, run: { outcome: "skipped", skipReason: "next_run_sooner" } },
+] as const)(
+  "never counts a fixed-time run an update's drain held for $drain as missed",
+  ({ drain, launches, run }) =>
+    Effect.gen(function* () {
+      const at = (day: number, hour: number) =>
+        DateTime.makeZonedUnsafe(
+          { year: 2026, month: 7, day, hour, minute: 0, second: 0, millisecond: 0 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        );
+      const isoAt = (day: number, hour: number) =>
+        DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+      yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6)));
+      const launched = yield* Ref.make(0);
+      const layer = runHistoryLayer(() =>
+        Ref.update(launched, (count) => count + 1).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-held"), resumed: false } as never),
+        ),
+      );
+      // The update drains running turns past the task's time, then installs and restarts.
+      const task = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          yield* historyTask("Held by drain", { catchUpMissedRun: false }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        yield* TestClock.adjust(drain);
+        expect(yield* Ref.get(launched)).toBe(0);
+        return task;
+      }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(true)));
+
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const settled = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some(
+              (entry) => entry.nextRunAt === isoAt(2, 7) && entry.lastRunStatus !== "running",
+            ),
           ),
-      }),
-      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-        namedProjectsRoot: "/projects",
-        isScratchProject: () => Effect.succeed(false),
-      }),
-      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-      layerSharedTaskDependencies(),
-      Layer.mock(SecretRequests.SecretRequests)({}),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(settled);
+        expect(yield* Ref.get(launched)).toBe(launches);
+        expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
+          { ...run, scheduledFor: isoAt(1, 7) },
+        ]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("runs a fixed-time run an update held once a restart cut its run condition", () =>
+  Effect.gen(function* () {
+    const at = (day: number, hour: number) =>
+      DateTime.makeZonedUnsafe(
+        { year: 2026, month: 7, day, hour, minute: 0, second: 0, millisecond: 0 },
+        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+      );
+    const isoAt = (day: number, hour: number) => DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+    yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6)));
+    const launched = yield* Ref.make(0);
+    const firstCheck = yield* Deferred.make<void>();
+    const layer = runHistoryLayer(
+      () =>
+        Ref.update(launched, (count) => count + 1).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-held"), resumed: false } as never),
+        ),
+      Layer.empty,
+      MemoryAdmission.layerTest(),
+      layerSharedTaskDependencies(
+        [
+          {
+            id: "project-run-history",
+            title: "Run history",
+            workspaceRoot: "/work/run-history",
+            canonicalKey: null,
+          },
+        ],
+        undefined,
+        // The first check never answers: a restart cuts it.
+        Layer.mock(RunConditionCheck.RunConditionCheck)({
+          run: () =>
+            Deferred.succeed(firstCheck, undefined).pipe(
+              Effect.flatMap((first) =>
+                first
+                  ? Effect.never
+                  : Effect.succeed({ outcome: "run", failure: null, exitCode: 0, detail: null }),
+              ),
+            ),
+        }),
+      ),
     );
-    yield* Effect.gen(function* () {
+    const task = yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const created = yield* service.upsert(
-        yield* decodeUpsertInput({
-          title: "Held by drain",
-          prompt: "Review the open pull requests.",
-          enabled: true,
-          schedule: { type: "interval", everyMs: 60_000 },
-          projectId: "project-drain",
-          workspaceStrategy: { type: "root" },
-          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
+      const { task } = yield* service.upsert(
+        yield* historyTask("Held, then cut", {
+          catchUpMissedRun: false,
+          runCondition: { command: "node ~/check.mjs" },
         }),
         ScheduledTaskService.CHANGED_IN_APP,
       );
-      yield* TestClock.adjust("6 seconds");
-      yield* TestClock.adjust("60 seconds");
-      expect(yield* Deferred.isDone(launched)).toBe(false);
+      yield* TestClock.adjust("90 minutes");
+      return task;
+    }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(true)));
 
-      yield* Ref.set(drain, false);
+    yield* Effect.gen(function* () {
       yield* TestClock.adjust("6 seconds");
-      expect(yield* Deferred.await(launched)).toBe(created.task.title);
-    }).pipe(
-      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
-      Effect.provideService(UpdateDrain, drain),
-    );
+      yield* Deferred.await(firstCheck);
+    }).pipe(Effect.provide(layer));
+
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const settled = yield* service.subscribeList().pipe(
+        Stream.filter(({ tasks }) =>
+          tasks.some(
+            (entry) => entry.nextRunAt === isoAt(2, 7) && entry.lastRunStatus !== "running",
+          ),
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("6 seconds");
+      yield* Fiber.join(settled);
+      expect(yield* Ref.get(launched)).toBe(1);
+      expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
+        { outcome: "succeeded", scheduledFor: isoAt(1, 7) },
+      ]);
+    }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -505,6 +585,9 @@ const runHistoryLayer = (
   launch: ThreadLaunchService.ThreadLaunchService["Service"]["launch"],
   accountRouting: Layer.Layer<never> = Layer.empty,
   memory: Layer.Layer<MemoryAdmission.MemoryAdmission> = MemoryAdmission.layerTest(),
+  sharedDependencies: ReturnType<
+    typeof layerSharedTaskDependencies
+  > = layerSharedTaskDependencies(),
 ) =>
   ScheduledTaskService.layer.pipe(
     Layer.provide(
@@ -520,7 +603,7 @@ const runHistoryLayer = (
           isScratchProject: () => Effect.succeed(false),
         }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-        layerSharedTaskDependencies(),
+        sharedDependencies,
         Layer.mock(SecretRequests.SecretRequests)({}),
         accountRouting,
       ),

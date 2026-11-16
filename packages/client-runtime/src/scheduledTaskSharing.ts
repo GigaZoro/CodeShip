@@ -3,8 +3,10 @@
 import {
   compareScheduledTaskSharedRevisions,
   defaultScheduledTaskMachineOrder,
+  repositoryGroupingKeyOf,
   scheduledTaskSharedProjectKey,
   type EnvironmentId,
+  type RepositoryKeyed,
   type ScheduledTask,
   type ScheduledTaskApplySharedInput,
   type ScheduledTaskId,
@@ -59,7 +61,7 @@ export function sharedProjectReference(input: {
         readonly id: string;
         readonly title: string;
         readonly isScratch?: boolean | undefined;
-        readonly repositoryIdentity?: { readonly canonicalKey: string } | null | undefined;
+        readonly repositoryIdentity?: RepositoryKeyed | null | undefined;
       }
     | undefined;
 }): ScheduledTaskSharedProject | null {
@@ -68,9 +70,10 @@ export function sharedProjectReference(input: {
     return editedShared.project;
   }
   if (project?.isScratch) return { type: "none" };
-  const canonicalKey = project?.repositoryIdentity?.canonicalKey;
-  return project && canonicalKey
-    ? { type: "repository", canonicalKey, title: project.title }
+  const identity = project?.repositoryIdentity;
+  // Keyed as the server keys it on save.
+  return project && identity
+    ? { type: "repository", canonicalKey: repositoryGroupingKeyOf(identity), title: project.title }
     : null;
 }
 

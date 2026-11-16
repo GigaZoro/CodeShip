@@ -16,6 +16,8 @@ import {
   type ModelSelection,
   type RuntimeMode,
   type ProviderInteractionMode,
+  type RepositoryKeyed,
+  repositoryMatchRank,
   type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -454,29 +456,32 @@ export function copyTaskDraft(task: ScheduledTask, title: string): DraftState {
   };
 }
 
-/** Projects are per machine: another machine's copy has the same repository, else the same name. */
+/**
+ * Projects are per machine: another machine's copy has the same repository, its origin before its
+ * upstream, else the same name.
+ */
 export function matchingProjectId(
   source: {
     readonly title: string;
-    readonly repositoryIdentity?: { readonly canonicalKey: string } | null | undefined;
+    readonly repositoryIdentity?: RepositoryKeyed | null | undefined;
   },
   candidates: ReadonlyArray<{
     readonly id: ProjectId;
     readonly title: string;
-    readonly repositoryIdentity?: { readonly canonicalKey: string } | null | undefined;
+    readonly repositoryIdentity?: RepositoryKeyed | null | undefined;
     readonly archivedAt?: string | null | undefined;
   }>,
 ): ProjectId | "" {
   const open = candidates.filter((project) => project.archivedAt == null);
-  const key = source.repositoryIdentity?.canonicalKey;
-  return (
-    (
-      (key === undefined
-        ? undefined
-        : open.find((project) => project.repositoryIdentity?.canonicalKey === key)) ??
-      open.find((project) => project.title === source.title)
-    )?.id ?? ""
-  );
+  const identity = source.repositoryIdentity;
+  let closest: { readonly id: ProjectId; readonly rank: number } | undefined;
+  for (const project of open) {
+    const rank = identity ? repositoryMatchRank(identity, project.repositoryIdentity) : -1;
+    if (rank !== -1 && (closest === undefined || rank < closest.rank)) {
+      closest = { id: project.id, rank };
+    }
+  }
+  return closest?.id ?? open.find((project) => project.title === source.title)?.id ?? "";
 }
 
 export function moveDraftToThread(

@@ -284,8 +284,8 @@ const boxProviders = [
   { ...readyProvider, instanceId: boxClaude, driver: ProviderDriverKind.make("claudeAgent") },
 ] as unknown as ReadonlyArray<ServerProvider>;
 
-const serveBox = (thread: BoxThread) => {
-  return servePeer(box, boxToolkitLayer(thread));
+const serveBox = (thread: BoxThread, projects = boxProjects) => {
+  return servePeer(box, boxToolkitLayer(thread, projects));
 };
 
 const boxRunId = RunId.make("run:box");
@@ -293,7 +293,7 @@ const boxLaterRunId = RunId.make("run:box-later");
 const boxQueuedRunId = RunId.make("run:box-queued");
 const continuationOf = (runId: RunId) => RunId.make(`${runId}:restarted`);
 
-const boxToolkitLayer = (thread: BoxThread) => {
+const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) => {
   const runId = boxRunId;
   const interrupts = new Set<string>();
   const shellOf = (threadId: ThreadId) =>
@@ -771,8 +771,8 @@ const boxToolkitLayer = (thread: BoxThread) => {
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
           Effect.succeed({
-            projects: boxProjects.slice(cursor, cursor + limit),
-            nextCursor: cursor + limit < boxProjects.length ? cursor + limit : null,
+            projects: projects.slice(cursor, cursor + limit),
+            nextCursor: cursor + limit < projects.length ? cursor + limit : null,
           }),
       }),
     ),
@@ -817,8 +817,14 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
-  /** Runs as each follow attempt here starts, on its follower's fiber. */
-  beforeFollow: Effect.Effect<void, Orchestrator.OrchestratorV2Error> = Effect.void,
+  {
+    /** Runs as each follow attempt here starts, on its follower's fiber. */
+    beforeFollow = Effect.void,
+    identity = { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
+  }: {
+    readonly beforeFollow?: Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
+    readonly identity?: RepositoryIdentity;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -882,12 +888,7 @@ const makeLaptop = (
           ),
           Layer.provide(
             Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-              resolve: (cwd) =>
-                Effect.succeed(
-                  cwd === "/home/me/app"
-                    ? ({ canonicalKey: "github.com/acme/app" } as RepositoryIdentity)
-                    : null,
-                ),
+              resolve: (cwd) => Effect.succeed(cwd === "/home/me/app" ? identity : null),
             }),
           ),
         ),
@@ -1465,6 +1466,84 @@ it.effect("a task from a No-project chat runs in the box's No project", () =>
       expect(yield* Ref.get(thread.launchedProject)).toBe(boxScratchProject);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+/** A fork checkout: its primary key is the upstream remote's, its grouping key origin's. */
+const forkIdentity = {
+  canonicalKey: "github.com/upstream/app",
+  locator: {
+    source: "git-remote",
+    remoteName: "upstream",
+    remoteUrl: "git@github.com:upstream/app.git",
+  },
+  origin: { canonicalKey: "github.com/acme/app" },
+} satisfies RepositoryIdentity;
+
+const upstreamClone: Project = {
+  ...boxProjects.at(-1)!,
+  id: ProjectId.make("project:box-upstream"),
+  title: "upstream app",
+  workspaceRoot: "/srv/upstream-app",
+  repositoryIdentity: {
+    canonicalKey: "github.com/upstream/app",
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "git@github.com:upstream/app.git",
+    },
+  },
+};
+
+/** A fork of acme/app checked out with acme/app as its upstream remote. */
+const forkOfFork: Project = {
+  ...upstreamClone,
+  id: ProjectId.make("project:box-fork-of-fork"),
+  title: "my app",
+  workspaceRoot: "/srv/my-app",
+  repositoryIdentity: {
+    ...forkIdentity,
+    canonicalKey: "github.com/acme/app",
+    origin: { canonicalKey: "github.com/me/app" },
+  },
+};
+
+it.effect.each([
+  {
+    side: "here",
+    laptopIdentity: forkIdentity,
+    // Neither a clone of the upstream there nor a fork of the fork may win over its own copy.
+    projects: [...boxProjects, upstreamClone, forkOfFork],
+  },
+  {
+    side: "there",
+    laptopIdentity: { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
+    projects: boxProjects.map((project) =>
+      project.id === boxProject ? { ...project, repositoryIdentity: forkIdentity } : project,
+    ),
+  },
+])(
+  "a fork with an upstream remote $side finds its copy by origin on the other machine",
+  ({ laptopIdentity, projects }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, projects);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, undefined, { identity: laptopIdentity });
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId },
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        expect(yield* Ref.get(thread.launchedProject)).toBe(boxProject);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a task named only by driver runs on the box's own instance of it", () =>
@@ -2308,7 +2387,7 @@ it.effect("a follower that keeps hitting defects fails the task and wakes the pa
       const beforeFollow = Ref.update(attempts, (count) => count + 1).pipe(
         Effect.andThen(Effect.die(new Error("A follow attempt hit a bug: defect-detail-4f1c9e"))),
       );
-      const a = yield* makeLaptop(database, offers, undefined, beforeFollow).pipe(
+      const a = yield* makeLaptop(database, offers, undefined, { beforeFollow }).pipe(
         Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
       );
       yield* linkTo(a.links, b, "full-access");
@@ -2375,7 +2454,7 @@ it.effect.each(["a still-running wait", "a failed attempt"] as const)(
         );
         // Each wait there answers at once that its run is still running.
         yield* Deferred.succeed(thread.finished, undefined);
-        const a = yield* makeLaptop(database, offers, undefined, beforeFollow).pipe(
+        const a = yield* makeLaptop(database, offers, undefined, { beforeFollow }).pipe(
           Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
         );
         yield* linkTo(a.links, b, "full-access");
@@ -2446,7 +2525,7 @@ it.effect("a follower that keeps hitting defects leaves a stop it owes owed", ()
             : Effect.void,
         ),
       );
-      const a = yield* makeLaptop(database, offers, undefined, beforeFollow).pipe(
+      const a = yield* makeLaptop(database, offers, undefined, { beforeFollow }).pipe(
         Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
       );
       yield* a.remote.start();

@@ -328,6 +328,17 @@ describe("sharedProjectReference", () => {
       project: repo,
       expected: { type: "repository", canonicalKey: "github.com/acme/app", title: "PolyBot" },
     },
+    {
+      name: "a fork with its upstream remote, by its origin",
+      project: {
+        ...repo,
+        repositoryIdentity: {
+          canonicalKey: "github.com/upstream/app",
+          origin: { canonicalKey: "github.com/acme/app" },
+        },
+      },
+      expected: { type: "repository", canonicalKey: "github.com/acme/app", title: "PolyBot" },
+    },
     // A project whose identity has not loaded must not read or seed another project's order.
     {
       name: "an unloaded repository identity",
