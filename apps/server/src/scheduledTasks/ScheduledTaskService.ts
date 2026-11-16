@@ -22,12 +22,14 @@ import {
   ScheduledTaskWebhookDeliveryId,
   DEFAULT_RUN_CONDITION_TIMEOUT_SECONDS,
   DEFAULT_SCHEDULED_TASK_MAX_LIVE_RUNS,
+  RUN_CONDITION_FAILING_STREAK,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
   defaultCatchUpMissedRun,
   type ModelSelection,
   type ScheduledTaskListRunsInput,
   type ScheduledTaskListRunsResult,
   ScheduledTaskDelegateProviders,
+  ScheduledTaskFailingCheck,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskRunCheck,
   ScheduledTaskRunCondition,
@@ -92,6 +94,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
 import * as NetworkRecoveryWorker from "../orchestration-v2/NetworkRecoveryWorker.ts";
@@ -342,6 +345,9 @@ const decodeRunConditionJson = Schema.decodeUnknownEffect(
 const decodeNoWorkSkipJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTaskNoWorkSkip),
 );
+const decodeFailingCheckJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ScheduledTaskFailingCheck),
+);
 const ChangedByJson = Schema.fromJsonString(ScheduledTaskChangedBy);
 const decodeChangedByJson = Schema.decodeUnknownEffect(ChangedByJson);
 const encodeChangedByJson = Schema.encodeSync(ChangedByJson);
@@ -417,6 +423,8 @@ interface ScheduledTaskRow {
   readonly run_condition_json?: string | null;
   /** The newest no-work skip from scheduled_task_runs; it outlives the condition that made it. */
   readonly no_work_skip_json?: string | null;
+  /** The newest check from scheduled_task_runs while the task's condition keeps failing, else null. */
+  readonly failing_check_json?: string | null;
   /** From scheduled_task_prompt_files: null when the task runs its own prompt. */
   readonly prompt_file_path?: string | null;
   readonly prompt_file_read_at?: string | null;
@@ -854,6 +862,14 @@ const decodeRow = Effect.fnUntraced(
                 ? null
                 : yield* decodeNoWorkSkipJson(row.no_work_skip_json),
           }),
+      ...(row.failing_check_json === undefined
+        ? {}
+        : {
+            failingCheck:
+              row.failing_check_json === null
+                ? null
+                : yield* decodeFailingCheckJson(row.failing_check_json),
+          }),
       ...(row.last_run_trigger === null ? {} : { lastRunScheduledFor: row.last_run_scheduled_for }),
       ...(row.prompt_file_path === undefined
         ? {}
@@ -1246,6 +1262,25 @@ export const layer = Layer.effect(
           task.modelSelection)
         : task.modelSelection;
 
+    // This machine's newest checks: a one-machine skip records another machine's answer, with `ran_on`.
+    const latestLocalChecks = (taskId: ScheduledTaskId | Statement.Fragment) => sql`
+      SELECT run_id, started_at, check_json FROM scheduled_task_runs
+      WHERE task_id = ${taskId} AND check_json IS NOT NULL AND ran_on IS NULL
+      ORDER BY started_at DESC, run_id DESC
+      LIMIT ${RUN_CONDITION_FAILING_STREAK}
+    `;
+    const failingCheckColumn = sql`(
+      SELECT CASE WHEN COUNT(*) = ${RUN_CONDITION_FAILING_STREAK}
+          AND SUM(json_extract(latest.check_json, '$.outcome') = 'failed') = COUNT(*)
+        THEN json_extract(json_group_array(
+          json_object('at', latest.started_at, 'check', json(latest.check_json))
+          ORDER BY latest.started_at DESC, latest.run_id DESC
+        ), '$[0]') END
+      FROM (${latestLocalChecks(sql`scheduled_tasks.task_id`)}) latest
+      WHERE EXISTS (SELECT 1 FROM scheduled_task_run_conditions rc
+        WHERE rc.task_id = scheduled_tasks.task_id)
+    )`;
+
     const selectAllRows = () =>
       sql<ScheduledTaskRow>`
       SELECT
@@ -1313,6 +1348,7 @@ export const layer = Layer.effect(
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
           ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+        ${failingCheckColumn} AS failing_check_json,
         (SELECT path FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
         (SELECT read_at FROM scheduled_task_prompt_files pf
@@ -1421,6 +1457,7 @@ export const layer = Layer.effect(
           FROM scheduled_task_runs r
           WHERE r.task_id = scheduled_tasks.task_id AND r.skip_reason = 'no_work'
           ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1) AS no_work_skip_json,
+        ${failingCheckColumn} AS failing_check_json,
         (SELECT path FROM scheduled_task_prompt_files pf
           WHERE pf.task_id = scheduled_tasks.task_id) AS prompt_file_path,
         (SELECT read_at FROM scheduled_task_prompt_files pf
@@ -1898,6 +1935,8 @@ export const layer = Layer.effect(
                 AND (outcome = 'skipped' OR started_at < ${runHistoryCutoff(record.startedAt)})
             END
           )
+          -- The failing-check mark reads these; pruning one would bring back older answers.
+          AND run_id NOT IN (SELECT run_id FROM (${latestLocalChecks(record.taskId)}))
         `),
       );
     const insertRunRecord = (record: Parameters<typeof writeRunRecord>[0]) =>

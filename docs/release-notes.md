@@ -1,3 +1,8 @@
+## 2026-11-16 — A scheduled task shows a run condition that keeps failing
+
+- A run condition that prints indented JSON, such as PowerShell's `ConvertTo-Json` output, now has its `reason` (or `error`) field recorded as the check's reason. Only the last line, often a lone `}`, was recorded before.
+- When a task's last 3 scheduled checks on a machine all fail, its row in Settings, on linked machines and on mobile, and the thread's Automations panel, show a warning with the latest reason. Each of those runs started anyway, so nothing showed the check was broken. `list_scheduled_tasks` reports it as `failingCheck`.
+
 ## 2026-11-16 — Desktop app logs no longer carry e-mail addresses or credentials
 
 - The desktop app's own log lines on screen now replace e-mail addresses with `[email]` and credentials with `[redacted]`, as the server's do. A value logged after its name, such as `"token:"` followed by the token, is now hidden on screen and in OTLP log exports too.

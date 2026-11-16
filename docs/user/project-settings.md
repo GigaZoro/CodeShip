@@ -196,9 +196,14 @@ that would run the task, in the project's folder:
 | 10                                             | Nothing starts. **Run history** lists the time as skipped, and the task's row shows the reason. |
 | Anything else, no answer in time, cannot start | The chat starts anyway, and **Run history** says the check failed.                              |
 
-The reason is the last line the command prints. If that line is JSON with a
-`reason` field, such as `{"needsRun": false, "reason": "No open pull requests"}`,
-the field is used.
+The reason is the last line the command prints. When the output ends with a
+JSON object, on one line or indented over several, its `reason` field (or
+`error`, when it has no `reason`) is used instead, such as
+`{"needsRun": false, "reason": "No open pull requests"}`.
+
+When the last 3 scheduled checks on a machine all fail, the task's row shows a
+warning with the latest reason, since each of those runs started anyway. The
+next check that answers 0 or 10 clears it.
 
 The command is one program with its arguments, for example
 `node ~/scripts/has-work.mjs --project app`. It does not run in a shell, so the
@@ -228,7 +233,8 @@ Things to know:
 - **Run history** keeps the last 10 skipped times apart from the last 50 runs,
   so a task that skips often does not push its real runs out.
 - Agents set it with `schedule_task` (`runCondition`) and read it, with the last
-  skipped time and its reason, from `list_scheduled_tasks`.
+  skipped time and its reason and a check that keeps failing
+  (`failingCheck`), from `list_scheduled_tasks`.
 
 ### Read and write ThreadPage from a check
 

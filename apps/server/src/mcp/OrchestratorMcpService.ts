@@ -438,6 +438,7 @@ function scheduledTaskSummary(
                 : occurrenceOf(task, task.lastNoWorkSkip.scheduledFor),
           },
         }),
+    ...(task.failingCheck == null ? {} : { failingCheck: task.failingCheck }),
     ...(task.schedule.type === "fixed_time" && task.catchUpMissedRun !== undefined
       ? { catchUpMissedRun: task.catchUpMissedRun }
       : {}),

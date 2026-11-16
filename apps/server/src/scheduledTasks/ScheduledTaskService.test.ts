@@ -1489,6 +1489,79 @@ it.effect.each([
     ),
 );
 
+it.effect("lists a task's run condition as failing once its last 3 checks here failed", () =>
+  withRunConditions(
+    () => Effect.succeed(FOUND_WORK),
+    ({ service, sql }) =>
+      Effect.gen(function* () {
+        yield* service.upsert(conditionTask(), ScheduledTaskService.CHANGED_IN_APP);
+        const failed = (detail: string): ScheduledTaskRunCheck => ({
+          outcome: "failed",
+          failure: "exit_code",
+          exitCode: 1,
+          detail,
+        });
+        const record = (
+          minute: number,
+          check: ScheduledTaskRunCheck | null,
+          options: {
+            readonly ranOn?: string;
+            readonly trigger?: string;
+            readonly skipReason?: string;
+          } = {},
+        ) => {
+          const at = `2026-11-16T07:${String(minute).padStart(2, "0")}:00.000Z`;
+          const skipReason =
+            options.skipReason ?? (options.ranOn === undefined ? null : "ran_elsewhere");
+          return sql`
+            INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at,
+              outcome, skip_reason, ran_on, check_json)
+            VALUES (${`run:${minute}`}, 'task:checked', ${options.trigger ?? "scheduled"}, ${at},
+              ${at}, ${skipReason === null ? "succeeded" : "skipped"}, ${skipReason},
+              ${options.ranOn ?? null}, ${check === null ? null : JSON.stringify(check)})
+          `.pipe(Effect.as(at));
+        };
+        const failingCheck = service
+          .list()
+          .pipe(Effect.map(({ tasks }) => tasks[0]!.failingCheck ?? null));
+
+        yield* record(0, NO_WORK);
+        yield* record(1, failed("ADO token expired"));
+        yield* record(2, failed("ADO token expired"));
+        // Another machine's answer to a one-machine occurrence is not this machine's check.
+        yield* record(3, NO_WORK, { ranOn: "environment:peer" });
+        assert.isNull(yield* failingCheck);
+
+        const third = yield* record(4, failed("ADO token still expired"));
+        // Run now skips the check, so it neither ends nor extends the streak.
+        yield* record(5, null, { trigger: "manual" });
+        const failing = { at: third, check: failed("ADO token still expired") };
+        assert.deepEqual(yield* failingCheck, failing);
+
+        const withoutCondition = yield* service.upsert(
+          conditionTask({ runCondition: null }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        assert.isNull(withoutCondition.task.failingCheck);
+        assert.isNull(yield* failingCheck);
+        const withCondition = yield* service.upsert(
+          conditionTask(),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        assert.deepEqual(withCondition.task.failingCheck, failing);
+        // The chat was held back for memory after the check passed; later memory skips ran no check.
+        yield* record(6, FOUND_WORK, { skipReason: "memory" });
+        for (let minute = 7; minute <= 16; minute += 1) {
+          yield* record(minute, null, { skipReason: "memory" });
+        }
+        assert.isNull(yield* failingCheck);
+        // Recording a run prunes old skips but keeps the newest checks, so the failures stay cleared.
+        yield* service.runNow({ id: withCondition.task.id });
+        assert.isNull(yield* failingCheck);
+      }),
+  ),
+);
+
 it.effect("a check that finds work starts no chat when memory went short while it ran", () =>
   Effect.gen(function* () {
     const short: MemoryShortage = {

@@ -176,6 +176,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import {
   SCHEDULED_TASK_WEEKDAYS as DAYS,
   describeSchedule,
+  formatFailingCheck,
   formatNoWorkSkip,
   formatNextScheduledTaskRun,
   formatRunAtDate,
@@ -2553,6 +2554,12 @@ function SharedTaskRow({
     );
   const copyFor = (prefix: string, action: string) =>
     group.copies.find((copy) => action === `${prefix}:${copy.environmentId}`);
+  const failingChecks = new Map(
+    group.copies.flatMap((copy) => {
+      const text = formatFailingCheck(copy.task, now);
+      return text === null ? [] : [[copy.environmentId, text] as const];
+    }),
+  );
 
   return (
     <View
@@ -2564,11 +2571,11 @@ function SharedTaskRow({
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={
+        accessibilityLabel={`${
           oneMachine
             ? t("Edit {title}, runs on one machine", { title: task.title })
             : t("Edit {title}, runs on every machine", { title: task.title })
-        }
+        }${[...failingChecks].map(([id, text]) => `, ${labelOf(id)}: ${text}`).join("")}`}
         onPress={() => onEdit(environmentId, task)}
         className="min-w-0 flex-1 gap-1 active:opacity-70"
       >
@@ -2595,6 +2602,11 @@ function SharedTaskRow({
             {copy.task.lastRunError ? (
               <Text className="text-sm text-danger-foreground" numberOfLines={2}>
                 {t("Last run failed: {error}", { error: copy.task.lastRunError })}
+              </Text>
+            ) : null}
+            {failingChecks.has(copy.environmentId) ? (
+              <Text className="text-sm text-warning-foreground" numberOfLines={2}>
+                {failingChecks.get(copy.environmentId)}
               </Text>
             ) : null}
           </View>
@@ -2758,6 +2770,7 @@ function LinkedMachineTasks({
           const project = linkedProjectName(task.projectTitle);
           const lastRun = lastRunText(task, now);
           const noWorkSkip = formatNoWorkSkip(task, now);
+          const failingCheck = formatFailingCheck(task, now);
           return (
             <View
               key={task.id}
@@ -2785,6 +2798,11 @@ function LinkedMachineTasks({
               {noWorkSkip === null ? null : (
                 <Text className="text-sm text-foreground-muted" numberOfLines={1}>
                   {noWorkSkip}
+                </Text>
+              )}
+              {failingCheck === null ? null : (
+                <Text className="text-sm text-warning-foreground" numberOfLines={2}>
+                  {failingCheck}
                 </Text>
               )}
             </View>
@@ -2932,6 +2950,7 @@ function EnvironmentTasks({
     const runThreadId = lastRunThreadId(task);
     const project = projectNameOf(task.projectId);
     const noWorkSkip = formatNoWorkSkip(task, now);
+    const failingCheck = formatFailingCheck(task, now);
     return (
       <View
         key={task.id}
@@ -2943,7 +2962,7 @@ function EnvironmentTasks({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${task.title}${inGroup ? t(", on {machine}", { machine: environment.label }) : ""}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}`}
+          accessibilityLabel={`${task.title}${inGroup ? t(", on {machine}", { machine: environment.label }) : ""}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}${failingCheck === null ? "" : `, ${failingCheck}`}`}
           accessibilityHint={
             runThreadId === null ? t("Opens the task editor.") : t("Opens the task's last run.")
           }
@@ -2976,6 +2995,11 @@ function EnvironmentTasks({
           {noWorkSkip === null ? null : (
             <Text className="text-sm text-foreground-muted" numberOfLines={1}>
               {noWorkSkip}
+            </Text>
+          )}
+          {failingCheck === null ? null : (
+            <Text className="text-sm text-warning-foreground" numberOfLines={2}>
+              {failingCheck}
             </Text>
           )}
           {task.blockedByPolicy ? (

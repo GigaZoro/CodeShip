@@ -32,6 +32,7 @@ import type {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectId,
   ScheduledTask,
+  ScheduledTaskFailingCheck,
   ScheduledTaskId,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
@@ -43,6 +44,7 @@ import type {
 import {
   MAX_RUN_CONDITION_TIMEOUT_SECONDS,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
+  RUN_CONDITION_FAILING_STREAK,
 } from "@t3tools/contracts";
 import {
   DEFAULT_WEBHOOK_PROMPT,
@@ -62,6 +64,7 @@ import {
   runConditionHelpText,
   runConditionInput,
   runConditionInvalidText,
+  failedCheckReason,
   shownNoWorkSkip,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import {
@@ -571,6 +574,39 @@ function TaskNoWorkSkip({
   return (
     <Tooltip>
       <TooltipTrigger render={<span tabIndex={0} className={className} />}>{text}</TooltipTrigger>
+      <TooltipPopup side="top">{text}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/** The sentence for a run condition whose last checks all failed, without a tooltip of its own. */
+export function FailingCheckSentence({ failing }: { readonly failing: ScheduledTaskFailingCheck }) {
+  const count = String(RUN_CONDITION_FAILING_STREAK);
+  const reason = failedCheckReason(failing.check);
+  const when = <ScheduledRelativeLabel value={failing.at} />;
+  return reason === null
+    ? tx("The last {count} checks failed, latest {when}", { count, when })
+    : tx("The last {count} checks failed, latest {when}: {reason}", { count, when, reason });
+}
+
+/** A run condition that keeps failing. Each of those runs started anyway, so nothing else shows it. */
+function TaskFailingCheck({ task }: { readonly task: Pick<ScheduledTask, "failingCheck"> }) {
+  const failing = task.failingCheck ?? null;
+  if (failing === null) return null;
+  const text = <FailingCheckSentence failing={failing} />;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            tabIndex={0}
+            className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-warning-foreground"
+          />
+        }
+      >
+        <TriangleAlertIcon aria-hidden className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">{text}</span>
+      </TooltipTrigger>
       <TooltipPopup side="top">{text}</TooltipPopup>
     </Tooltip>
   );
@@ -1323,6 +1359,7 @@ function LinkedScheduledTaskRow({
             </span>
           ) : null}
           <TaskNoWorkSkip task={task} />
+          <TaskFailingCheck task={task} />
         </div>
       }
       control={
@@ -1906,6 +1943,7 @@ function ScheduledTaskRow({
           <RunStatusBadge task={task} />
           <TaskLastRun environmentId={environmentId} task={task} />
           <TaskNoWorkSkip task={task} />
+          <TaskFailingCheck task={task} />
           {task.shared ? <SharedTaskStatus environmentId={environmentId} task={task} /> : null}
           {task.lastRunError ? <RunError error={task.lastRunError} /> : null}
         </div>
@@ -2046,6 +2084,7 @@ function SharedTaskCopyLine({
       <RunStatusBadge task={task} />
       <TaskLastRun environmentId={environmentId} task={task} />
       <TaskNoWorkSkip task={task} />
+      <TaskFailingCheck task={task} />
       {decision ? <span>{decision}</span> : null}
       {task.lastRunError ? <RunError error={task.lastRunError} /> : null}
       <TaskWarnings

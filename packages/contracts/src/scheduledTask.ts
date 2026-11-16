@@ -363,7 +363,10 @@ export const ScheduledTaskRunCheck = Schema.Struct({
   outcome: Schema.Union([ScheduledTaskRunCheckOutcome, Schema.String]),
   failure: Schema.NullOr(Schema.Union([ScheduledTaskRunCheckFailure, Schema.String])),
   exitCode: Schema.NullOr(Schema.Int),
-  /** From the command's output: its JSON `reason`, else its last line. Why, for one that could not start. */
+  /**
+   * From the command's output: the `reason` or `error` of the JSON object it ends with, else its
+   * last line. Why, for one that could not start.
+   */
   detail: Schema.NullOr(Schema.String),
 });
 export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
@@ -433,10 +436,21 @@ export const ScheduledTaskNoWorkSkip = Schema.Struct({
   at: IsoDateTime,
   /** The scheduled time it skipped. */
   scheduledFor: Schema.NullOr(IsoDateTime),
-  /** From the command's output: its JSON `reason`, else its last line. */
+  /** The check's `detail`. */
   reason: Schema.NullOr(Schema.String),
 });
 export type ScheduledTaskNoWorkSkip = typeof ScheduledTaskNoWorkSkip.Type;
+
+/** How many scheduled checks in a row must fail before a task shows its run condition as failing. */
+export const RUN_CONDITION_FAILING_STREAK = 3;
+
+/** The latest answer of a run condition whose last `RUN_CONDITION_FAILING_STREAK` checks on this machine failed. */
+export const ScheduledTaskFailingCheck = Schema.Struct({
+  /** When the latest failed check started. */
+  at: IsoDateTime,
+  check: ScheduledTaskRunCheck,
+});
+export type ScheduledTaskFailingCheck = typeof ScheduledTaskFailingCheck.Type;
 
 export const ScheduledTaskWebhookEndpoint = Schema.Struct({
   path: TrimmedNonEmptyString,
@@ -687,6 +701,8 @@ export const ScheduledTask = Schema.Struct({
   runCondition: Schema.optional(Schema.NullOr(ScheduledTaskRunCondition)),
   /** Null until a run condition first skips an occurrence. Kept after the condition is cleared: it is history. */
   lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
+  /** Null unless the task has a run condition that keeps failing. Absent from servers without it. */
+  failingCheck: Schema.optional(Schema.NullOr(ScheduledTaskFailingCheck)),
   /** When the run condition of the occurrence due now started; null while none is running. */
   runCheckStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The scheduled time that run condition is for; null while none is running. */
@@ -740,6 +756,8 @@ export const LinkedScheduledTask = Schema.Struct({
   shared: Schema.Boolean,
   /** Absent from servers without run conditions. */
   lastNoWorkSkip: Schema.optional(Schema.NullOr(ScheduledTaskNoWorkSkip)),
+  /** Absent from servers that do not report it. */
+  failingCheck: Schema.optional(Schema.NullOr(ScheduledTaskFailingCheck)),
 });
 export type LinkedScheduledTask = typeof LinkedScheduledTask.Type;
 

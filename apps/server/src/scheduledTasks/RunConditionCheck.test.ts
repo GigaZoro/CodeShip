@@ -215,6 +215,50 @@ describe("RunConditionCheck", () => {
         [
           Effect.succeed(
             output({
+              code: ChildProcessSpawner.ExitCode(10),
+              stdout: `checking\n${JSON.stringify({ ok: true, reason: "No stuck claims", machines: { mac: { ok: true } } }, null, 2)}\n`,
+            }),
+          ),
+          { outcome: "skip", failure: null, exitCode: 10, detail: "No stuck claims" },
+        ],
+        [
+          Effect.succeed(
+            output({
+              code: ChildProcessSpawner.ExitCode(1),
+              stdout: '{\r\n    "ok":  false,\r\n    "error":  "ADO token expired"\r\n}\r\n',
+              stderr: "trace\n",
+            }),
+          ),
+          { outcome: "failed", failure: "exit_code", exitCode: 1, detail: "ADO token expired" },
+        ],
+        [
+          Effect.succeed(
+            output({
+              code: ChildProcessSpawner.ExitCode(10),
+              stdout: 'Result:\n  {\n    "reason": "No work"\n  }\n',
+            }),
+          ),
+          { outcome: "skip", failure: null, exitCode: 10, detail: "No work" },
+        ],
+        [
+          Effect.succeed(
+            output({ stdout: '{\n"items": [\n{\n"id": 1\n}\n],\n"reason": "One item"\n}\n' }),
+          ),
+          { outcome: "run", failure: null, exitCode: 0, detail: "One item" },
+        ],
+        [
+          Effect.succeed(output({ stdout: `${JSON.stringify({ needsRun: true }, null, 2)}\n` })),
+          { outcome: "run", failure: null, exitCode: 0, detail: '{ "needsRun": true }' },
+        ],
+        [
+          Effect.succeed(
+            output({ code: ChildProcessSpawner.ExitCode(10), stdout: '{"reason":"x"}\nDone.\n' }),
+          ),
+          { outcome: "skip", failure: null, exitCode: 10, detail: "Done." },
+        ],
+        [
+          Effect.succeed(
+            output({
               code: ChildProcessSpawner.ExitCode(2),
               stdout: "checking pull requests\n",
               stderr: "auth failed\n",

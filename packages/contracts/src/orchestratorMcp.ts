@@ -22,8 +22,10 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  RUN_CONDITION_FAILING_STREAK,
   ScheduledTaskChangedBy,
   ScheduledTaskGroupLabel,
+  ScheduledTaskFailingCheck,
   ScheduledTaskNoWorkSkip,
   ScheduledTaskPlacement,
   ScheduledTaskPromptFile,
@@ -1020,6 +1022,9 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
     }),
   ).annotate({
     description: "The last occurrence its run condition skipped for no work, and why.",
+  }),
+  failingCheck: Schema.optional(ScheduledTaskFailingCheck).annotate({
+    description: `Its run condition failed on its last ${RUN_CONDITION_FAILING_STREAK} scheduled checks here, so each run started anyway: the latest answer.`,
   }),
   catchUpMissedRun: Schema.optional(Schema.Boolean).annotate({
     description: "fixed_time only: a run missed while the app was off runs once when it is back.",

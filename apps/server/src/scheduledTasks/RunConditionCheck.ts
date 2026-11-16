@@ -76,23 +76,47 @@ const cleanLine = (line: string): string | null => {
 const lastRawLine = (output: string): string | null =>
   output.split(/\r?\n/u).findLast((line) => line.trim() !== "") ?? null;
 
-// Read before cleaning and truncating, so a long JSON line keeps its `reason`.
-const jsonDetail = (line: string): string | null => {
+const parseObject = (text: string): object | null => {
   try {
-    const parsed: unknown = JSON.parse(line);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-    if ("reason" in parsed && typeof parsed.reason === "string") return cleanLine(parsed.reason);
-    if ("error" in parsed && typeof parsed.error === "string") return cleanLine(parsed.error);
-    return null;
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 };
 
+/** What stdout ends with: a JSON object, on one line or over several at any indent, else its last line. */
+function stdoutAnswer(
+  stdout: string,
+): { readonly text: string; readonly json: object | null } | null {
+  const output = stdout.trimEnd();
+  if (output === "") return null;
+  const lines = output.split("\n");
+  // From the last line up: an inner object's opening line leaves the outer braces unclosed, so
+  // the first line that parses through to the end opens the whole answer.
+  let start = output.length + 1;
+  for (const line of lines.toReversed()) {
+    start -= line.length + 1;
+    if (!line.trimStart().startsWith("{")) continue;
+    const text = output.slice(start);
+    const json = parseObject(text);
+    if (json !== null) return { text, json };
+  }
+  return { text: lines.at(-1)!, json: null };
+}
+
+// Read before cleaning and truncating, so a long JSON answer keeps its `reason`.
+const jsonReason = (answer: object): string | null =>
+  "reason" in answer && typeof answer.reason === "string"
+    ? cleanLine(answer.reason)
+    : "error" in answer && typeof answer.error === "string"
+      ? cleanLine(answer.error)
+      : null;
+
 /**
- * Why the check answered as it did: the last stdout line's JSON `reason` or `error`, else that
- * line itself; a failed check prefers stderr's last line to a stdout log line. Output cut at the
- * size cap has lost its real last line, so it is not used.
+ * Why the check answered as it did: the `reason` or `error` of the JSON object stdout ends with,
+ * else that answer itself; a failed check prefers stderr's last line to a stdout log line. Output
+ * cut at the size cap has lost its real ending, so it is not used.
  */
 function runCheckDetail(
   output: {
@@ -103,11 +127,11 @@ function runCheckDetail(
   },
   failedCheck: boolean,
 ): string | null {
-  const stdoutLine = output.stdoutTruncated ? null : lastRawLine(output.stdout);
+  const answer = output.stdoutTruncated ? null : stdoutAnswer(output.stdout);
+  const reason = answer?.json == null ? null : jsonReason(answer.json);
+  if (reason !== null) return reason;
   const stderrLine = output.stderrTruncated ? null : lastRawLine(output.stderr);
-  const fromJson = stdoutLine === null ? null : jsonDetail(stdoutLine);
-  if (fromJson !== null) return fromJson;
-  const stdoutDetail = stdoutLine === null ? null : cleanLine(stdoutLine);
+  const stdoutDetail = answer === null ? null : cleanLine(answer.text);
   const stderrDetail = stderrLine === null ? null : cleanLine(stderrLine);
   return failedCheck ? (stderrDetail ?? stdoutDetail) : (stdoutDetail ?? stderrDetail);
 }

@@ -2747,6 +2747,7 @@ const catalog: MessageCatalog = {
     "Порожні тарифи кешу використовують ціну входу. Введіть 0 для безкоштовних токенів. Використання зіставленої моделі враховується як модель, з якою її зіставлено.",
   "Blank profile": "Порожній профіль",
   Block: "Заблокувати",
+  "blocked by your organization's policy": "заблоковано політикою вашої організації",
   "Blocked on me": "Чекають на мене",
   Blue: "Синій",
   "Blue / yellow (tritanopia)": "Синій / жовтий (тританопія)",
@@ -4462,6 +4463,7 @@ const catalog: MessageCatalog = {
   "Could not shut down device": "Не вдалося вимкнути пристрій",
   "Could not sign out of {server}": "Не вдалося вийти з {server}",
   "Could not snooze thread": "Не вдалося відкласти чат",
+  "could not start": "не вдалося запустити",
   "Could not start {count} review guides": {
     one: "Не вдалося запустити {count} посібник із рев’ю",
     few: "Не вдалося запустити {count} посібники з рев’ю",
@@ -5522,6 +5524,7 @@ const catalog: MessageCatalog = {
     "Наявні термінали з’являться тут, коли інший клієнт відкриє термінал.",
   exists: "існує",
   "exit {code}": "вихід {code}",
+  "exit code {code}": "код виходу {code}",
   "Exit full screen": "Вийти з повноекранного режиму",
   "Exit picture in picture": "Вийти з режиму «картинка в картинці»",
   Exited: "Завершено",
@@ -7647,6 +7650,7 @@ const catalog: MessageCatalog = {
   "No agents yet": "Агентів поки немає",
   "No Android virtual devices found. Create one in Android Studio's Device Manager, then refresh.":
     "Віртуальних пристроїв Android не знайдено. Створіть один у Device Manager в Android Studio, а потім оновіть.",
+  "no answer in time": "немає відповіді вчасно",
   "No app on this device can show this format. Save or share it to open it elsewhere.":
     "Жоден застосунок на цьому пристрої не може показати цей формат. Збережіть його або поділіться, щоб відкрити деінде.",
   "No approval pending": "Немає схвалень в очікуванні",
@@ -11844,6 +11848,7 @@ const catalog: MessageCatalog = {
     "Кольорова схема, якій сторінкам радять віддавати перевагу. «Як у системі» відповідає налаштуванню вашої ОС.",
   "The command and its arguments. It runs on the machine {provider} runs on.":
     "Команда та її аргументи. Вона виконується на комп’ютері, де працює {provider}.",
+  "the command could not be read": "не вдалося прочитати команду",
   "The comment could not be saved": "Не вдалося зберегти коментар",
   "The composer is busy; try again once it is ready.":
     "Поле повідомлення зайняте; спробуйте ще раз, коли воно буде готове.",
@@ -12011,6 +12016,10 @@ const catalog: MessageCatalog = {
   "The keybinding was not saved.": "Комбінацію клавіш не збережено.",
   "The keybindings file was not opened.": "Файл комбінацій клавіш не відкрито.",
   "The labels could not be read.": "Не вдалося прочитати мітки.",
+  "The last {count} checks failed, latest {when}":
+    "Останні {count} перевірки не вдалися, остання {when}",
+  "The last {count} checks failed, latest {when}: {reason}":
+    "Останні {count} перевірки не вдалися, остання {when}: {reason}",
   "The license manifest could not load.": "Не вдалося завантажити маніфест ліцензій.",
   "The license manifest request failed with status {status}.":
     "Запит маніфесту ліцензій завершився помилкою зі статусом {status}.",

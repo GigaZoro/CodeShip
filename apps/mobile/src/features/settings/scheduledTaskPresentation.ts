@@ -1,6 +1,7 @@
 import type { ScheduledTask } from "@t3tools/contracts";
 import { formatTimeAgo } from "@t3tools/client-runtime/scheduled-task-pins";
 import {
+  failingCheckText,
   noWorkSkipText,
   shownNoWorkSkip,
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
@@ -188,4 +189,14 @@ export function formatNoWorkSkip(
   const ago = formatTimeAgo(skip.at, now);
   if (ago === "") return null;
   return noWorkSkipText(skip, ago);
+}
+
+/** The warning line a task row shows while its run condition keeps failing; null when it is not. */
+export function formatFailingCheck(
+  task: Pick<ScheduledTask, "failingCheck">,
+  now: number,
+): string | null {
+  const failing = task.failingCheck ?? null;
+  if (failing === null) return null;
+  return failingCheckText(failing, formatTimeAgo(failing.at, now));
 }
