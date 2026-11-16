@@ -19,6 +19,7 @@ import {
   ProviderInstanceId,
   type ProviderSessionId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -2571,6 +2572,7 @@ type ReleasedWorkCase = {
   readonly name: string;
   readonly reason: "idle_timeout" | "runtime_error" | "manual_shutdown";
   readonly wakes: boolean;
+  readonly stopped?: true;
   /** A shell never wakes a chat; the default is a background task, which does. */
   readonly shell?: true;
   /** The waiting run continues a run that lost background work, or one a restart cut. */
@@ -2580,6 +2582,18 @@ type ReleasedWorkCase = {
 it.effect.each<ReleasedWorkCase>([
   { name: "an idle close wakes a waiting chat", reason: "idle_timeout", wakes: true },
   { name: "a failed session wakes a waiting chat", reason: "runtime_error", wakes: true },
+  {
+    name: "a failed session leaves a stopped chat alone",
+    reason: "runtime_error",
+    stopped: true,
+    wakes: false,
+  },
+  {
+    name: "an idle close leaves a stopped chat alone",
+    reason: "idle_timeout",
+    stopped: true,
+    wakes: false,
+  },
   { name: "a requested close wakes nobody", reason: "manual_shutdown", wakes: false },
   { name: "a lost shell wakes nobody", reason: "idle_timeout", shell: true, wakes: false },
   // Quiet work the agent restarted after a wake would be closed and woken again.
@@ -2603,7 +2617,7 @@ it.effect.each<ReleasedWorkCase>([
   },
 ])(
   "ProviderSessionManagerV2 records the work a release stops: $name",
-  ({ name, reason, shell, continues, wakes }) =>
+  ({ name, reason, shell, continues, wakes, stopped }) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const effect = Effect.gen(function* () {
@@ -2639,6 +2653,35 @@ it.effect.each<ReleasedWorkCase>([
         // A run started again for the turn that replaces the session: its prompt is not built yet.
         const replacing = yield* writeRun(3, "starting");
 
+        if (stopped) {
+          const ids = yield* IdAllocator.IdAllocatorV2;
+          const now = yield* DateTime.now;
+          yield* projectionStore.apply({
+            id: yield* ids.allocate.event(),
+            type: "turn-item.updated",
+            threadId,
+            runId: waiting.id,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make("stop:released-work"),
+              threadId,
+              runId: waiting.id,
+              nodeId: waiting.rootNodeId,
+              providerThreadId: waiting.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "completed",
+              title: "Stop",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "run_interrupt_request",
+              message: "Stopped by user",
+            },
+          });
+        }
         yield* manager.release({ providerSessionId, reason });
 
         assert.deepStrictEqual(yield* rosters, [[], ["build"]]);
