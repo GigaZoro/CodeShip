@@ -1575,7 +1575,21 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           // WMI can finish Create after its caller has been killed.
           const late = yield* processRunner.run(launch);
           assert.equal(late.code, 0);
+          const pid = Number.parseInt(late.stdout.trim(), 10);
+          assert.isAbove(pid, 0);
           yield* awaitFile(NodePath.join(NodePath.dirname(runPath!), "exit-status"));
+          // cmd publishes its status before exiting; Windows keeps its working directory open until then.
+          const exited = yield* processRunner.run({
+            command: "powershell.exe",
+            args: [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `$ErrorActionPreference = 'Stop'; $wrapper = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($wrapper) { $wrapper.WaitForExit() }; exit 0`,
+            ],
+            timeout: Duration.minutes(2),
+          });
+          assert.equal(exited.code, 0, exited.stderr);
           assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "ran")));
           const sql = yield* SqlClient.SqlClient;
           assert.lengthOf(
