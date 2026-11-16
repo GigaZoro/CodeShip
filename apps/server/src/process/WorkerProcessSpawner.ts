@@ -80,7 +80,9 @@ const signalGroup = (entry, signal, done) => {
   }
   try {
     process.kill(-entry.child.pid, signal);
-  } catch {
+  } catch (error) {
+    // The leader exited and its group is empty, so nothing is left to signal.
+    if (entry.exit !== null && error.code === "ESRCH") return done(undefined);
     return fallback();
   }
   done(undefined);
@@ -390,6 +392,8 @@ interface RemoteChild {
   readonly connection: Connection;
   readonly command: ChildProcess.StandardCommand;
   readonly kills: Kills;
+  // Logs a failure to end this child's tree that no caller's fiber sees, as after its worker stopped.
+  readonly report: (error: PlatformError.PlatformError) => void;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
   readonly open: Set<number>;
@@ -520,6 +524,7 @@ let current: Connection | undefined;
 let nextId = 0;
 let nextSeq = 0;
 let startStallMs = 0;
+let workerStartsFail = false;
 
 // An idle worker must not keep the process alive; a referenced child or a pending request does.
 const hold = (connection: Connection) => {
@@ -549,8 +554,9 @@ const sigkill = (pid: number) => {
 };
 
 interface Orphan {
+  readonly child: RemoteChild;
   readonly root: StartedChild;
-  readonly command: ChildProcess.StandardCommand;
+  readonly leaderRuns: boolean;
 }
 
 // Starting PowerShell here would block this thread, so a new worker runs it.
@@ -558,13 +564,23 @@ const killTrees = (trees: ReadonlyArray<Orphan>) => {
   let connection: Connection;
   try {
     connection = connect();
-  } catch {
-    for (const { root } of trees) sigkill(root.pid);
+  } catch (cause) {
+    for (const { child, root, leaderRuns } of trees) {
+      // After a Windows leader exits, its PID may belong to an unrelated process.
+      if (leaderRuns) sigkill(root.pid);
+      child.report(toPlatformError("kill", toError(cause), child.command));
+    }
     return;
   }
-  for (const { root, command } of trees) {
+  for (const { child, root } of trees) {
     const seq = nextSeq++;
-    connection.replies.set(seq, { method: "kill", command, resume: () => {} });
+    connection.replies.set(seq, {
+      method: "kill",
+      command: child.command,
+      resume: (error) => {
+        if (error !== undefined) child.report(error);
+      },
+    });
     hold(connection);
     post(connection, { type: "killTree", root, seq });
   }
@@ -577,11 +593,12 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
   for (const child of children) {
     const root = child.root;
     if (!child.referenced || root === undefined) continue;
+    const leaderRuns = !Deferred.isDoneUnsafe(child.exit);
     if (child.kills === "tree") {
-      trees.push({ root, command: child.command });
+      trees.push({ child, root, leaderRuns });
     } else if (child.kills === "group") {
       sigkill(-root.pid);
-    } else if (!Deferred.isDoneUnsafe(child.exit)) {
+    } else if (leaderRuns) {
       sigkill(root.pid);
     }
   }
@@ -673,6 +690,7 @@ const receive = (connection: Connection, event: WorkerEvent) => {
 
 const connect = (): Connection => {
   if (current !== undefined) return current;
+  if (workerStartsFail) throw new Error("The process spawner worker could not start");
   const worker = new NodeWorkerThreads.Worker(workerSource, {
     eval: true,
     env: NodeWorkerThreads.SHARE_ENV,
@@ -741,6 +759,7 @@ const launch = (
   message: object,
   outputs: ReadonlyMap<number, OutputQueue>,
   kills: Kills,
+  report: RemoteChild["report"],
 ) =>
   Effect.callback<RemoteChild, PlatformError.PlatformError>((resume) => {
     let connection: Connection;
@@ -756,6 +775,7 @@ const launch = (
       connection,
       command,
       kills,
+      report,
       exit: Deferred.makeUnsafe(),
       outputs,
       open: new Set(outputs.keys()),
@@ -807,6 +827,10 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
+  const runFork = Effect.runForkWith(yield* Effect.context<never>());
+  const report = (error: PlatformError.PlatformError) => {
+    runFork(Effect.logError("Could not end a child process tree", error));
+  };
 
   // Each spawn already sits inside the caller's git or process span.
   const spawnStandard = Effect.fnUntraced(function* (command: ChildProcess.StandardCommand) {
@@ -862,15 +886,20 @@ const make = Effect.gen(function* () {
         },
         outputs,
         platform === "win32" ? "tree" : detached ? "group" : "leader",
+        report,
       ),
       (child, exit) =>
-        request(child, "release", {
-          type: "release",
-          referenced: child.referenced,
-          interrupted: Exit.hasInterrupts(exit),
-          signal: killSignal,
-          forceKillAfterMs,
-        }).pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => forget(child)))),
+        // A stopped worker's children were ended by killOrphans, which reports its own failures.
+        (child.connection.stopped === undefined
+          ? request(child, "release", {
+              type: "release",
+              referenced: child.referenced,
+              interrupted: Exit.hasInterrupts(exit),
+              signal: killSignal,
+              forceKillAfterMs,
+            }).pipe(Effect.ignore({ log: "Error" }))
+          : Effect.void
+        ).pipe(Effect.ensuring(Effect.sync(() => forget(child)))),
       // A command cancelled while its start waits behind others stops waiting; the worker drops it.
       { interruptible: true },
     );
@@ -1053,6 +1082,16 @@ export const __testing = {
           startStallMs = 0;
         }),
     ),
+  /** Within the scope, starting a worker fails, as when its thread cannot be created. */
+  failWorkerStarts: Effect.acquireRelease(
+    Effect.sync(() => {
+      workerStartsFail = true;
+    }),
+    () =>
+      Effect.sync(() => {
+        workerStartsFail = false;
+      }),
+  ),
   /** Ends the worker the way a crash does; the next spawn starts a new one. */
   stopWorker: Effect.promise(async () => {
     await current?.worker.terminate();

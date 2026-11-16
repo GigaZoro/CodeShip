@@ -152,8 +152,8 @@ export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
 /**
  * Ends each spawned process with its tree when its scope closes or it is killed, also after it
  * exited, as a process group does on POSIX. A stop starts PowerShell, so this suits spawners that
- * start few processes. An unreferenced process outlives its scope. For a pipeline, the tree is its
- * last process's, whose pid the handle reports.
+ * start few processes. An unreferenced process outlives its scope. A pipeline fails: its handle
+ * reports only the last process, so what an earlier one left running would survive.
  */
 export const endingWindowsTrees = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
@@ -163,6 +163,14 @@ export const endingWindowsTrees = (
     ? spawner
     : ChildProcessSpawner.make(
         Effect.fnUntraced(function* (command) {
+          if (command._tag === "PipedCommand") {
+            return yield* PlatformError.badArgument({
+              module: "ChildProcess",
+              method: "spawn",
+              description:
+                "endingWindowsTrees ends one process's tree; spawn a pipeline's stages one by one",
+            });
+          }
           const { handle, root } = yield* withWindowsTreeRoot(spawner.spawn(command));
           let referenced = true;
           const stopTree = stopWindowsProcessTree(root).pipe(
