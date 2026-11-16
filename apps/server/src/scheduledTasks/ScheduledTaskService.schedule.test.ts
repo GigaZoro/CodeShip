@@ -286,59 +286,58 @@ it.effect(
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("holds a due run while an update drains and starts it right after", () =>
-  Effect.gen(function* () {
-    yield* TestClock.setTime(Date.parse("2026-07-01T09:00:00.000Z"));
-    const launched = yield* Deferred.make<string>();
-    const drain = Ref.makeUnsafe(true);
-    const layerDependencies = Layer.mergeAll(
-      NodeCrypto.layer,
-      Scheduler.layer,
-      ServerSettings.layerTest(),
-      MemoryAdmission.layerTest(),
-      ManagedPolicy.layerTest(),
-      Layer.mock(ThreadLaunchService.ThreadLaunchService)({
-        launch: (input) =>
-          Deferred.succeed(launched, input.title).pipe(
-            Effect.as({ threadId: "thread-drain", resumed: false } as never),
-          ),
-      }),
-      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-        namedProjectsRoot: "/projects",
-        isScratchProject: () => Effect.succeed(false),
-      }),
-      Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-      layerSharedTaskDependencies(),
-      Layer.mock(SecretRequests.SecretRequests)({}),
-    );
-    yield* Effect.gen(function* () {
-      const service = yield* ScheduledTaskService.ScheduledTaskService;
-      const created = yield* service.upsert(
-        yield* decodeUpsertInput({
-          title: "Held by drain",
-          prompt: "Review the open pull requests.",
-          enabled: true,
-          schedule: { type: "interval", everyMs: 60_000 },
-          projectId: "project-drain",
-          workspaceStrategy: { type: "root" },
-          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-        }),
-        ScheduledTaskService.CHANGED_IN_APP,
+it.effect.each([
+  { drain: "90 minutes", launches: 1, run: { outcome: "succeeded" } },
+  { drain: "14 hours", launches: 0, run: { outcome: "skipped", skipReason: "next_run_sooner" } },
+] as const)(
+  "never counts a fixed-time run an update's drain held for $drain as missed",
+  ({ drain, launches, run }) =>
+    Effect.gen(function* () {
+      const at = (day: number, hour: number) =>
+        DateTime.makeZonedUnsafe(
+          { year: 2026, month: 7, day, hour, minute: 0, second: 0, millisecond: 0 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        );
+      const isoAt = (day: number, hour: number) =>
+        DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+      yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6)));
+      const launched = yield* Ref.make(0);
+      const layer = runHistoryLayer(() =>
+        Ref.update(launched, (count) => count + 1).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-held"), resumed: false } as never),
+        ),
       );
-      yield* TestClock.adjust("6 seconds");
-      yield* TestClock.adjust("60 seconds");
-      expect(yield* Deferred.isDone(launched)).toBe(false);
+      // The update drains running turns past the task's time, then installs and restarts.
+      const task = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          yield* historyTask("Held by drain", { catchUpMissedRun: false }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        yield* TestClock.adjust(drain);
+        expect(yield* Ref.get(launched)).toBe(0);
+        return task;
+      }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(true)));
 
-      yield* Ref.set(drain, false);
-      yield* TestClock.adjust("6 seconds");
-      expect(yield* Deferred.await(launched)).toBe(created.task.title);
-    }).pipe(
-      Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
-      Effect.provideService(UpdateDrain, drain),
-    );
-  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const settled = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some(
+              (entry) => entry.nextRunAt === isoAt(2, 7) && entry.lastRunStatus !== "running",
+            ),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(settled);
+        expect(yield* Ref.get(launched)).toBe(launches);
+        expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
+          { ...run, scheduledFor: isoAt(1, 7) },
+        ]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 const runHistoryLayer = (

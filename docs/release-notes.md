@@ -1,3 +1,9 @@
+## 2026-11-16 — A fork finds its project on another machine, and agents and mobile set the update interval
+
+- A delegated task sent to another machine without a project, and a scheduled task shared with other machines, now find the project there by any remote either side knows, the fork's own `origin` first. A fork whose copy on the other machine has no `upstream` remote failed to find it before. A shared task saved before keeps its machine order when it next saves.
+- Agents can read and set **Time between automatic updates** with `t3_environment_read` and `t3_environment_preferences_update` (`minHoursBetweenAutomaticUpdates`), and the mobile app shows it under Settings → Maintenance & about → Updates.
+- A fixed-time scheduled task whose time passes while an automatic update waits for running chats to finish runs once right after the update, even when the wait outlasts the missed-run grace and **Catch up a missed run** is off, unless its next run is nearer. It was recorded as missed before.
+
 ## 2026-11-16 — On Windows, stopping a process also stops what it left running
 
 - On Windows, a process that had started another and then exited left that child running when CodeShip stopped it, because `taskkill` finds a process's children only while the process runs. CodeShip now finds them from the parent process id and start time Windows records for each process, also after the parent exited. This covers the commands the server runs (git included), Pi and ACP agent sessions such as Grok, and the Antigravity installation check. The server does this for a command it kills or cancels, or one whose output is still held open when it ends; a command that exits on its own and closes its output skips it, since each stop starts PowerShell. A tree CodeShip cannot end is logged as an error in the server log.

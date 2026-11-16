@@ -1131,6 +1131,14 @@ export const layer = Layer.effect(
         PRIMARY KEY (task_id, occurrence_at)
       )
     `;
+    // A fixed-time occurrence that came due while an automatic update drained. The install restarts
+    // the server, so the hold outlives the drain and the run starts after it however late.
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS scheduled_task_drain_holds (
+        task_id TEXT PRIMARY KEY,
+        occurrence_at TEXT NOT NULL
+      )
+    `;
     // A row means the task's own catch-up choice; without one it follows its schedule's default.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_catch_up (
@@ -1878,6 +1886,7 @@ export const layer = Layer.effect(
         Effect.andThen(sql`DELETE FROM scheduled_task_one_machine_decision WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_occurrence_claims WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_catch_up WHERE task_id = ${id}`),
+        Effect.andThen(sql`DELETE FROM scheduled_task_drain_holds WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_run_conditions WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_prompt_files WHERE task_id = ${id}`),
         Effect.andThen(sql`DELETE FROM scheduled_task_group WHERE task_id = ${id}`),
@@ -3910,12 +3919,31 @@ export const layer = Layer.effect(
       );
       const catchUp =
         stored === undefined ? defaultCatchUpMissedRun(task.schedule) : stored.enabled === 1;
+      const [held] = yield* sql<{ readonly occurrence_at: string }>`
+        DELETE FROM scheduled_task_drain_holds WHERE task_id = ${task.id} RETURNING occurrence_at
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not read the task's update hold.", { taskId: task.id, cause }),
+        ),
+      );
+      const missed = latestMissedFixedTimeRun(task.schedule, now);
+      // An update held it, not the app being off, so the task's catch-up choice does not apply. It
+      // still gives way to a nearer next time, and to a later time that passed too. A one-machine
+      // turn holds its deferred time, which is after the occurrence.
+      if (
+        held?.occurrence_at === task.nextRunAt &&
+        missed !== null &&
+        DateTime.toEpochMillis(missed.at) <= Date.parse(task.nextRunAt)
+      ) {
+        return missed.catchUp
+          ? yield* runDueOccurrence(task, now, true)
+          : yield* rescheduleMissedRun(task, now, task.nextRunAt, "next_run_sooner");
+      }
       const deferral = (yield* Ref.get(oneMachineDeferrals)).get(task.id);
       // A one-machine run that waited its turn and was then reached late keeps its occurrence.
       if (catchUp && deferral !== undefined && deferral.deferredTo === task.nextRunAt) {
         return yield* runDueOccurrence(task, now, deferral.catchUp);
       }
-      const missed = latestMissedFixedTimeRun(task.schedule, now);
       const missedAt = missed === null ? task.nextRunAt : iso(missed.at);
       if (!catchUp || missed === null || !missed.catchUp) {
         return yield* rescheduleMissedRun(
@@ -3946,9 +3974,35 @@ export const layer = Layer.effect(
       yield* runDueOccurrence({ ...task, nextRunAt: missedAt }, now, true);
     });
 
+    const holdForUpdate = Effect.fn("ScheduledTaskService.holdForUpdate")(function* (
+      tasks: ReadonlyArray<ScheduledTask>,
+      now: DateTime.DateTime,
+    ) {
+      yield* Effect.forEach(
+        tasks,
+        (task) =>
+          task.schedule.type !== "fixed_time" ||
+          task.nextRunAt === null ||
+          isMissedFixedTimeRun(task.schedule, DateTime.makeUnsafe(task.nextRunAt), now)
+            ? Effect.void
+            : sql`
+                INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at)
+                VALUES (${task.id}, ${task.nextRunAt})
+                ON CONFLICT (task_id) DO UPDATE SET occurrence_at = excluded.occurrence_at
+                WHERE occurrence_at <> excluded.occurrence_at
+              `.pipe(
+                Effect.mapError((cause) =>
+                  taskError("Could not hold the schedule task run for an update.", {
+                    taskId: task.id,
+                    cause,
+                  }),
+                ),
+              ),
+        { discard: true },
+      );
+    });
+
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
-      // An automatic update is draining the running turns; due starts follow the install.
-      if (yield* isUpdateDraining()) return;
       const now = yield* localNow;
       const nowMs = DateTime.toEpochMillis(now);
       if (yield* dueTasks.isIdle(nowMs)) return;
@@ -3975,6 +4029,8 @@ export const layer = Layer.effect(
       const tasks = yield* listDueTasks(now).pipe(
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
+      // An automatic update is draining the running turns; due starts follow the install.
+      if (yield* isUpdateDraining()) return yield* holdForUpdate(tasks, now);
       // A task whose check or background run is going has this occurrence in hand already.
       const checking = yield* Ref.get(runChecks);
       const inBackground = yield* Ref.get(backgroundRuns);

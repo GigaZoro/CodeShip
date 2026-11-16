@@ -116,8 +116,10 @@ so the running turns can end and the install follows them. Only turns still runn
 `AUTO_UPDATE_DRAIN_LIMIT` (3 hours) are cut: the wait then becomes the user's rule, background
 work and tool calls only, the last check before the handoff no longer holds off on chats, and the
 log line names the cut threads (`cutThreadIds`); those turns resume after the restart. Scheduled
-starts that came due while draining start right after the install. Since each install restarts the
-server, `minHoursBetweenAutomaticUpdates` (default 4) keeps the next one from installing until the
+starts that came due while draining start right after the install. A fixed-time one is saved as held
+(`scheduled_task_drain_holds`), because the drain and restart can outlast the missed-run grace and
+the held run must not count as missed or depend on its task's catch-up choice. Since each install
+restarts the server, `minHoursBetweenAutomaticUpdates` (default 4) keeps the next one from installing until the
 server has run that long, so a machine that gets many releases a day drains a few times, not at
 every release. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
 the hold once more right before the launcher takes over
