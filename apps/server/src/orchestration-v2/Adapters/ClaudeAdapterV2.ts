@@ -366,6 +366,8 @@ const BACKGROUND_MOVE_TIMEOUT_MS = 5_000;
 const CLAUDE_STDERR_TAIL_LENGTH = 2_048;
 // How long a Stop waits for the CLI to exit before the user is offered Force stop.
 const CLAUDE_STOP_CONFIRM_TIMEOUT_MS = 10_000;
+// The SDK's close gives the CLI this long to exit once its input ends before it escalates.
+const CLAUDE_CLOSE_GRACE = "2 seconds";
 
 const CLAUDE_GROUP_WATCH_SCRIPT = [
   "{ trap '' TERM; read -r _ <&3; kill -TERM 0; sleep 5; kill -KILL 0; } </dev/null >/dev/null 2>&1 &",
@@ -407,11 +409,12 @@ export function spawnClaudeProcessGroup(
 
 /**
  * Windows has no process groups and Node ends only the CLI, so what the CLI left running, such as
- * its MCP servers, is stopped through `stopTree` once it exits, however it exited.
+ * its MCP servers, is stopped through `stopTree` once it exits, however it exited; `ended` settles
+ * when that stop finished.
  */
-export function spawnClaudeProcessTree(
+function spawnClaudeProcessTree(
   options: ClaudeSpawnOptions,
-  stopTree: (root: WindowsProcessTreeRoot) => void,
+  stopTree: (root: WindowsProcessTreeRoot) => Promise<void>,
   onStderr?: (text: string) => void,
 ) {
   const rootOf = windowsTreeRootFromNow();
@@ -424,11 +427,28 @@ export function spawnClaudeProcessTree(
   });
   const root = child.pid === undefined ? undefined : rootOf(child.pid);
   child.stderr.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
-  child.once("exit", () => {
-    if (root !== undefined) stopTree(root);
-  });
-  return child;
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  return {
+    child,
+    exited,
+    ended: root === undefined ? Promise.resolve() : exited.then(() => stopTree(root)),
+  };
 }
+
+type ClaudeWindowsCli = ReturnType<typeof spawnClaudeProcessTree>;
+
+/** Gives each CLI still running the SDK's close grace, kills it, and waits for its tree's stop. */
+const endWindowsClis = (clis: ReadonlySet<ClaudeWindowsCli>) =>
+  Effect.forEach(
+    [...clis],
+    (cli) =>
+      Effect.promise(() => cli.exited).pipe(
+        Effect.timeoutOption(CLAUDE_CLOSE_GRACE),
+        Effect.andThen(Effect.sync(() => cli.child.kill())),
+        Effect.andThen(Effect.promise(() => cli.ended)),
+      ),
+    { concurrency: "unbounded", discard: true },
+  );
 
 export const ClaudeProviderCapabilitiesV2 = {
   sessions: {
@@ -990,6 +1010,9 @@ export const layerQueryRunner: Layer.Layer<
     const platform = yield* HostProcess.Platform;
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const stopWindowsTree = yield* windowsTreeStopper;
+    // The server exits once its layers have closed, which would cut short a tree's stop.
+    const windowsClis = new Set<ClaudeWindowsCli>();
+    yield* Effect.addFinalizer(() => endWindowsClis(windowsClis));
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
     // A failed open leaves no transcript until a prompt was sent, but the CLI refuses a fresh ID
@@ -1085,10 +1108,13 @@ export const layerQueryRunner: Layer.Layer<
                   appendStderr,
                 );
               }
-              return spawnClaudeProcessTree(spawnOptions, stopWindowsTree, (chunk) => {
+              const cli = spawnClaudeProcessTree(spawnOptions, stopWindowsTree, (chunk) => {
                 appendStderr(chunk);
                 options.stderr?.(chunk);
               });
+              windowsClis.add(cli);
+              void cli.ended.then(() => windowsClis.delete(cli));
+              return cli.child;
             });
           let spawnedProcess: ClaudeSpawnedProcess | undefined;
           let processExited = false;

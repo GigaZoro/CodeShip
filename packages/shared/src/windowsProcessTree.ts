@@ -163,16 +163,16 @@ export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
 );
 
 /**
- * A function that starts a stop of a tree and returns at once, for a Node callback such as a
- * child's `exit`. The stop outlives the caller's scope, and a failure is logged.
+ * A function that starts a stop of a tree at once, for a Node callback such as a child's `exit`, and
+ * returns its completion, which never rejects: a failure is logged. The stop outlives the caller's
+ * scope, so code that ends with the server awaits it.
  */
 export const windowsTreeStopper = Effect.map(
   Effect.context<ChildProcessSpawner.ChildProcessSpawner>(),
   (context) => {
-    const runFork = Effect.runForkWith(context);
-    return (root: WindowsProcessTreeRoot): void => {
-      runFork(stopWindowsProcessTree(root).pipe(Effect.ignore({ log: "Error" })));
-    };
+    const runPromise = Effect.runPromiseWith(context);
+    return (root: WindowsProcessTreeRoot): Promise<void> =>
+      runPromise(stopWindowsProcessTree(root).pipe(Effect.ignoreCause({ log: "Error" })));
   },
 );
 

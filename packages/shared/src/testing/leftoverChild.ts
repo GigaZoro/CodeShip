@@ -21,7 +21,7 @@ export const processPipe = Effect.gen(function* () {
     (yield* HostProcess.Platform) === "win32"
       ? `\\\\.\\pipe\\${name}`
       : NodePath.join(NodeOS.tmpdir(), `${name}.sock`);
-  const started = yield* Deferred.make<void>();
+  const started = yield* Deferred.make<number>();
   const ended = yield* Deferred.make<void>();
   const sockets = new Set<NodeNet.Socket>();
   let pid: number | undefined;
@@ -29,8 +29,9 @@ export const processPipe = Effect.gen(function* () {
     sockets.add(socket);
     socket.setEncoding("utf8");
     socket.once("data", (written: string) => {
-      pid = Number(written);
-      Deferred.doneUnsafe(started, Effect.void);
+      const connected = Number(written);
+      pid = connected;
+      Deferred.doneUnsafe(started, Effect.succeed(connected));
     });
     socket.once("close", () => {
       sockets.delete(socket);
@@ -55,7 +56,7 @@ export const processPipe = Effect.gen(function* () {
   );
   return {
     path,
-    /** The process connected. */
+    /** The process connected; its pid. */
     started: Deferred.await(started),
     /** The process ended, or this process closed the pipe. */
     ended: Deferred.await(ended),
@@ -63,29 +64,33 @@ export const processPipe = Effect.gen(function* () {
 });
 
 /**
- * A leader that starts a child and exits at once; the child would run for 5 minutes, past every
- * test's timeout. It holds a `processPipe`, and with `holdsOutput` also the leader's stdout, which
- * then never ends. On Windows the child is detached; on POSIX it stays in the leader's process group.
+ * A leader that starts a child and exits at once, or with `untilInputEnds` once its stdin ends; the
+ * child would run for 5 minutes, past every test's timeout. It holds a `processPipe`, and with
+ * `holdsOutput` also the leader's stdout, which then never ends. On Windows the child is detached; on
+ * POSIX it stays in the leader's process group.
  */
 export const leaderLeavingChild = Effect.fn("leaderLeavingChild")(function* (
-  options: { readonly holdsOutput?: boolean } = {},
+  options: { readonly holdsOutput?: boolean; readonly untilInputEnds?: boolean } = {},
 ) {
   const windows = (yield* HostProcess.Platform) === "win32";
   const pipe = yield* processPipe;
   const child =
     "const s = require('node:net').connect(process.argv[1], () => s.write(String(process.pid)));" +
     " s.on('error', () => {}); s.on('close', () => process.exit()); setTimeout(() => {}, 300_000);";
-  const leader =
-    "const [child, pipe] = process.argv.slice(1);" +
-    " require('node:child_process').spawn(process.execPath, ['-e', child, pipe]," +
-    ` { detached: ${windows}, stdio: ${options.holdsOutput ? "['ignore', 'inherit', 'ignore']" : "'ignore'"}, windowsHide: true }).unref();`;
+  const source =
+    // @effect-diagnostics-next-line preferSchemaOverJson:off - quotes strings into JavaScript source.
+    `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}, ${JSON.stringify(pipe.path)}],` +
+    ` { detached: ${windows}, stdio: ${options.holdsOutput ? "['ignore', 'inherit', 'ignore']" : "'ignore'"}, windowsHide: true }).unref();` +
+    (options.untilInputEnds ? " process.stdin.resume();" : "");
   return {
-    command: ChildProcess.make(process.execPath, ["-e", leader, child, pipe.path], {
-      stdin: "ignore",
+    /** The leader's script, which reads no arguments, for an entry point a test writes to a file. */
+    source,
+    command: ChildProcess.make(process.execPath, ["-e", source], {
+      stdin: options.untilInputEnds ? "pipe" : "ignore",
       stdout: options.holdsOutput ? "pipe" : "ignore",
       stderr: "ignore",
     }),
-    /** The child connected. */
+    /** The child connected; its pid. */
     started: pipe.started,
     /** The child ended, or this process closed the pipe. */
     ended: pipe.ended,

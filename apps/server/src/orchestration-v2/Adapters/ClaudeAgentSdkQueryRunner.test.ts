@@ -26,10 +26,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
-import {
-  stopWindowsProcessTree,
-  type WindowsProcessTreeRoot,
-} from "@t3tools/shared/windowsProcessTree";
+import { probeProcess } from "@t3tools/shared/processProbe";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -41,7 +38,6 @@ import {
   ClaudePromptQueueClosedError,
   layerQueryRunner,
   spawnClaudeProcessGroup,
-  spawnClaudeProcessTree,
 } from "./ClaudeAdapterV2.ts";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
@@ -784,26 +780,24 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
 
 // Node ends only the CLI on Windows, so what it started, such as its MCP servers, outlives it there.
 describe.runIf(isWindowsHost)("the Claude CLI on Windows", () => {
-  it.live("ends what the CLI left running once it exits", () =>
+  it.live("has ended what the CLI left running once the runner has closed", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
-      const exited = yield* Deferred.make<WindowsProcessTreeRoot>();
-
-      spawnClaudeProcessTree(
-        {
-          command: leftover.command.command,
-          args: [...leftover.command.args],
-          cwd: process.cwd(),
-          env: process.env,
-          // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI exits by itself; nothing aborts it.
-          signal: new AbortController().signal,
-        },
-        (root) => Deferred.doneUnsafe(exited, Effect.succeed(root)),
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-cli-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
       );
-      const root = yield* Deferred.await(exited);
-      yield* leftover.started;
-      yield* stopWindowsProcessTree(root);
+      const cli = NodePath.join(dir, "cli.js");
+      NodeFS.writeFileSync(cli, leftover.source);
 
+      const pid = yield* Effect.gen(function* () {
+        const session = yield* openFakeCli(cli);
+        const pid = yield* leftover.started;
+        yield* session.close;
+        return pid;
+      }).pipe(Effect.provide(realQueryRunner));
+
+      assert.strictEqual(probeProcess(pid).state, "gone");
       yield* leftover.ended;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

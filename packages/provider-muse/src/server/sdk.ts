@@ -55,9 +55,29 @@ export interface MuseSdkHostOptions {
   readonly signal?: AbortSignal;
   readonly startupTimeoutMs?: number;
   readonly onProcessExit?: (exit: ProcessExit) => void;
-  /** Stops what the host left running once it exits, on Windows, where the SDK ends only the host. */
-  readonly stopTree?: (root: WindowsProcessTreeRoot) => void;
+  /**
+   * Stops what the host left running once it exits, on Windows, where the SDK ends only the host;
+   * `close` waits for it. A read-only host runs no tools, so it gets a stop only when it exited
+   * uncleanly or its output stayed open, and a probe that ends cleanly costs no PowerShell.
+   */
+  readonly stopTree?: (root: WindowsProcessTreeRoot) => Promise<void>;
 }
+
+/** A host's output closes within this of its exit unless something it left running holds it. */
+const MUSE_OUTPUT_DRAIN_MS = 2_000;
+
+const leftSomethingBehind = (exit: ProcessExit, outputClosed: Promise<unknown>) =>
+  exit.code !== 0 || exit.signal !== null
+    ? Promise.resolve(true)
+    : new Promise<boolean>((resolve) => {
+        const held = setTimeout(() => resolve(true), MUSE_OUTPUT_DRAIN_MS);
+        held.unref();
+        const drained = () => {
+          clearTimeout(held);
+          resolve(false);
+        };
+        outputClosed.then(drained, drained);
+      });
 
 export function makeMuseEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
@@ -165,6 +185,7 @@ export async function createMuseSdkHost(
   const { onProcessExit, stopTree } = options;
   const rootOf = windowsTreeRootFromNow();
   let root: WindowsProcessTreeRoot | undefined;
+  let treeStopped = Promise.resolve();
   const handshake = spawn({
     command: launch.command,
     args: [...launch.args, ...(options.launchArgs ?? []), ...museServeArgs(options)],
@@ -174,7 +195,13 @@ export async function createMuseSdkHost(
     ...(onProcessExit || stopTree
       ? {
           onProcessExit: (exit: ProcessExit) => {
-            if (root !== undefined) stopTree?.(root);
+            const tree = root;
+            if (tree !== undefined && stopTree) {
+              const stop = options.readOnly
+                ? leftSomethingBehind(exit, handshake.exited)
+                : Promise.resolve(true);
+              treeStopped = stop.then((stops) => (stops ? stopTree(tree) : undefined));
+            }
             onProcessExit?.(exit);
           },
         }
@@ -184,7 +211,11 @@ export async function createMuseSdkHost(
   let closePromise: Promise<void> | undefined;
   const close = () => {
     options.signal?.removeEventListener("abort", onAbort);
-    return (closePromise ??= handshake.close().then(() => undefined));
+    // The host exited before `exited` settles, so its tree's stop has begun by then.
+    return (closePromise ??= handshake
+      .close()
+      .finally(() => treeStopped)
+      .then(() => undefined));
   };
   let rejectStartup: (reason: unknown) => void = () => {};
   const onAbort = () => {
