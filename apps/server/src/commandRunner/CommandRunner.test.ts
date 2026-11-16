@@ -1772,6 +1772,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             Effect.try(() => process.kill(childPid)).pipe(Effect.ignore),
           );
           // Only the wrapper, as a stop cut by a restart leaves it.
+          // oxlint-disable-next-line t3code/no-raw-taskkill -- this stops the wrapper alone on purpose
           NodeChildProcess.execFileSync("taskkill", [
             "/PID",
             String((yield* commandRow(started.taskId))!.pid),
