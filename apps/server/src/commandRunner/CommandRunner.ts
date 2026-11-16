@@ -105,7 +105,8 @@ const WINDOWS_WRAPPER = [
   `  Move-Item -Force -LiteralPath "$file.tmp" -Destination $file`,
   "}",
   "try {",
-  `  Write-T3File '${PID_FILE}' $PID`,
+  '  $made = ([DateTimeOffset](Get-CimInstance Win32_Process -Filter "ProcessId = $PID").CreationDate).ToUnixTimeMilliseconds()',
+  `  Write-T3File '${PID_FILE}' "$PID $made"`,
   `  try { [IO.Directory]::Move((Join-Path $PSScriptRoot '${LAUNCH_PENDING}'), (Join-Path $PSScriptRoot '${LAUNCH_STARTED}')) } catch { [Console]::Error.WriteLine('Command launch was cancelled before it started.'); exit 1 }`,
   "  $system = [Environment]::SystemDirectory",
   "  $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'cmd.exe'))",
@@ -142,7 +143,7 @@ type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
  * `lost`: it vanished without an exit status. `stopped`: its task got a result elsewhere
  * (task_cancel, Stop, archive), so the runner stopped it.
  */
-type CommandRunStatus = "running" | "exited" | "timed_out" | "lost" | "stopped";
+type CommandRunStatus = "running" | "exited" | "timed_out" | "lost" | "stopped" | "unstarted";
 
 interface CommandRunRow {
   readonly task_id: string;
@@ -169,7 +170,13 @@ interface CommandRunRow {
   readonly lost_reason: LostReason | null;
   /** Its output's tail when it was lost. */
   readonly lost_output: string | null;
+  readonly launch_error: string | null;
 }
+
+type LaunchResolution =
+  | { readonly outcome: "cancelled" }
+  | { readonly outcome: "started"; readonly row: CommandRunRow }
+  | { readonly outcome: "unresolved" };
 
 /**
  * Why a command counts as lost: its record names no process, its process is gone, the machine
@@ -467,6 +474,8 @@ const make = Effect.gen(function* () {
   );
   /** Commands whose end has not reached their task yet, by task id. */
   const watched = new Map<string, CommandRunRow>();
+  const launching = new Set<string>();
+  const checking = new Set<string>();
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
   /** Open once start() has adopted the commands an earlier server left, so run() never races it. */
@@ -486,10 +495,13 @@ const make = Effect.gen(function* () {
     Effect.all([fs.readFileString(file), fs.stat(file)]).pipe(
       Effect.map(([text, info]) => ({
         value: Number.parseInt(text.trim(), 10),
+        identity: /^\d+\s+\d+$/.test(text.trim()) ? Number(text.trim().split(/\s+/)[1]) : undefined,
         writtenAt: Option.getOrUndefined(info.mtime),
       })),
-      Effect.option,
-      Effect.map(Option.getOrUndefined),
+      Effect.catchIf(
+        (cause) => cause.reason._tag === "NotFound",
+        () => Effect.undefined,
+      ),
     );
 
   /** Its exit code, and when it ended: a command can end while no server watches it. */
@@ -513,24 +525,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** Why `pid` no longer names the process this command started; undefined while it does. */
-  const lossOf = Effect.fn("CommandRunner.lossOf")(function* (
+  const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (
     row: CommandRunRow,
-  ): Effect.fn.Return<Loss | undefined> {
+  ): Effect.fn.Return<"yes" | "unknown" | Loss> {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
     if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
-    if (row.process_started_at === null) return undefined;
+    if (probe.state === "unknown" || row.process_started_at === null) return "unknown";
     const startedAt = yield* startedAtOf(row.pid);
-    // ps reports whole seconds. Unknown identity stays conservative.
-    return startedAt === undefined || Math.abs(startedAt - row.process_started_at) <= 1_000
-      ? undefined
+    // ps reports whole seconds; a failed probe proves neither ownership nor loss.
+    if (startedAt === undefined) return "unknown";
+    return Math.abs(startedAt - row.process_started_at) <= 1_000
+      ? "yes"
       : { lost_reason: "pid-reused", probe_error };
   });
-  const isSameProcess = (row: CommandRunRow) =>
-    lossOf(row).pipe(Effect.map((loss) => loss === undefined));
 
   /** SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period. */
   const killGroup = Effect.fn("CommandRunner.killGroup")(function* (pid: number) {
@@ -561,25 +571,30 @@ const make = Effect.gen(function* () {
     const pid = row.pid;
     if (pid !== null && !(yield* rebootedSince(row))) {
       if (!windows) {
-        if (!isProcessAlive(pid) || (yield* isSameProcess(row))) yield* killGroup(pid);
+        const same = yield* isSameProcess(row);
+        if (same === "unknown") return false;
+        if (!isProcessAlive(pid) || same === "yes") yield* killGroup(pid);
       } else {
-        yield* processRunner
-          .run({
-            command: "powershell.exe",
-            args: windowsStopTreeArgs({
-              pid,
-              since: Date.parse(row.started_at),
-              ...(row.process_started_at === null
-                ? {}
-                : { created: { from: row.process_started_at, to: row.process_started_at } }),
-            }),
-            timeout: Duration.seconds(30),
-            maxOutputBytes: 16_384,
-          })
-          .pipe(Effect.ignore({ log: true }));
+        if (row.process_started_at === null && isProcessAlive(pid)) return false;
+        const stopped = yield* processRunner.run({
+          command: "powershell.exe",
+          args: windowsStopTreeArgs({
+            pid,
+            since: Date.parse(row.started_at),
+            created: row.process_started_at === null
+              ? null
+              : { from: row.process_started_at, to: row.process_started_at },
+          }),
+          timeout: Duration.seconds(30),
+          maxOutputBytes: 16_384,
+        });
+        if (stopped.code !== 0) {
+          return yield* new CommandLaunchError({ detail: "Could not stop the command tree." });
+        }
       }
     }
     if (row.unit !== null) yield* agentScope.stop(row.unit);
+    return true;
   });
 
   const writeRow = (row: CommandRunRow) =>
@@ -589,7 +604,7 @@ const make = Effect.gen(function* () {
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
         probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
-        lost_output = ${row.lost_output}
+        lost_output = ${row.lost_output}, launch_error = ${row.launch_error}
       WHERE task_id = ${row.task_id}
     `;
 
@@ -628,13 +643,15 @@ const make = Effect.gen(function* () {
       Date.parse(row.ended_at ?? row.started_at) - Date.parse(row.started_at),
     );
     const ending =
-      row.status === "timed_out"
-        ? `Timed out and was stopped after ${elapsed}.`
-        : row.status === "lost"
-          ? `Ended after at most ${elapsed} without an exit status: it was killed, or this machine restarted.`
-          : row.exit_code === null
-            ? `Ended after ${elapsed} with an unreadable exit status.`
-            : `Exited with code ${row.exit_code} after ${elapsed}.`;
+      row.status === "unstarted"
+        ? `Could not start the command: ${row.launch_error ?? "the server stopped before launch completed."}`
+        : row.status === "timed_out"
+          ? `Timed out and was stopped after ${elapsed}.`
+          : row.status === "lost"
+            ? `Ended after at most ${elapsed} without an exit status: it was killed, or this machine restarted.`
+            : row.exit_code === null
+              ? `Ended after ${elapsed} with an unreadable exit status.`
+              : `Exited with code ${row.exit_code} after ${elapsed}.`;
     const logPath = logPathOf(row);
     const output = yield* readTail(row);
     return [
@@ -776,7 +793,6 @@ const make = Effect.gen(function* () {
     loss: Loss,
   ) {
     const output = yield* readTail(row);
-    yield* killTree(row);
     const endedAt = yield* nowIso;
     const lost: CommandRunRow = {
       ...row,
@@ -913,101 +929,195 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Moves a running command on: its end, its deadline, or its process gone without a status. */
-  const check = Effect.fn("CommandRunner.check")(function* (row: CommandRunRow) {
-    // stopForTask is still stopping it, and records it once it has.
-    if (row.status === "stopped") return;
-    if (row.status !== "running") return yield* deliver(row);
-    const ended = (status: CommandRunStatus, exitCode: number | null, endedAt?: string) =>
-      (endedAt === undefined ? nowIso : Effect.succeed(endedAt)).pipe(
-        Effect.flatMap((at) => {
-          const next = { ...row, status, exit_code: exitCode, ended_at: at };
-          return settle(next).pipe(Effect.andThen(deliver(next)));
-        }),
+  const closeLaunchGate = Effect.fn("CommandRunner.closeLaunchGate")(function* (
+    row: CommandRunRow,
+  ) {
+    if (!windows) return "legacy" as const;
+    const closed = yield* fs
+      .rename(path.join(row.directory, LAUNCH_PENDING), path.join(row.directory, LAUNCH_CANCELLED))
+      .pipe(
+        Effect.as(true),
+        Effect.catchIf(
+          (cause) => cause.reason._tag === "NotFound",
+          () => Effect.succeed(false),
+        ),
       );
-    const lose = Effect.fn("CommandRunner.lose")(function* (loss: Loss) {
-      // Its wrapper writes the status just before it exits.
-      const late = yield* readExitStatus(row);
-      if (late !== undefined) return yield* ended("exited", late.code, late.endedAt);
-      yield* deliver(yield* recordLoss(row, loss));
-    });
-    const exit = yield* readExitStatus(row);
-    if (exit !== undefined) {
-      yield* trimLog(row);
-      return yield* ended("exited", exit.code, exit.endedAt);
-    }
-    // A deadline that passed while no server ran is enforced at the first check after.
-    if (Date.parse(row.deadline_at) <= DateTime.toEpochMillis(yield* DateTime.now)) {
-      yield* killTree(row);
-      return yield* ended("timed_out", null);
-    }
-    if (row.pid === null) return yield* lose({ lost_reason: "no-pid", probe_error: null });
-    const probe = probeProcess(row.pid);
-    if (probe.state === "gone") {
-      return yield* lose({ lost_reason: "gone", probe_error: probe.code });
-    }
-    if (probe.state === "unknown") {
-      // A probe that cannot tell proves nothing gone, so the next check asks again.
-      if (row.probe_error !== probe.code) {
-        yield* Effect.logWarning("command-runner.probe-failed", {
-          taskId: row.task_id,
-          pid: row.pid,
-          code: probe.code,
-        });
-        yield* settle({ ...row, probe_error: probe.code });
-      }
-    } else {
-      // Written once a wall-clock minute, for the next server; a loss writes the exact time.
-      const seen: CommandRunRow = { ...row, last_alive_at: yield* nowIso };
-      const minuteOf = (at: string | null) =>
-        at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
-      if (minuteOf(row.last_alive_at) === minuteOf(seen.last_alive_at)) {
-        watched.set(row.task_id, seen);
-      } else {
-        yield* settle(seen);
-      }
-    }
-    if (!windows) yield* trimLog(row);
+    if (closed || (yield* fs.exists(path.join(row.directory, LAUNCH_CANCELLED))))
+      return "cancelled" as const;
+    if (yield* fs.exists(path.join(row.directory, LAUNCH_STARTED))) return "started" as const;
+    return "legacy" as const;
   });
 
-  const watchOnce = lock.withPermits(1)(
-    Effect.suspend(() =>
-      Effect.forEach([...watched.values()], (row) =>
-        check(row).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("command-runner.check-failed", { taskId: row.task_id, cause }),
-          ),
-        ),
-      ),
-    ).pipe(Effect.andThen(noteWave())),
-  );
+  /** Slow evidence and process operations belong to one row, never to the shared lock. */
+  const check = Effect.fn("CommandRunner.check")(function* (snapshot: CommandRunRow) {
+    let row = snapshot;
+    if (
+      (row.pid === null || (windows && row.process_started_at === null)) &&
+      (row.status === "running" || row.status === "stopped")
+    ) {
+      const resolution = yield* recoverPid(row);
+      if (resolution.outcome === "unresolved") return;
+      if (resolution.outcome === "cancelled") {
+        return yield* lock.withPermits(1)(
+          Effect.gen(function* () {
+            if (watched.get(row.task_id) !== snapshot) return;
+            const now = yield* nowIso;
+            const next: CommandRunRow = {
+              ...row,
+              status: row.status === "stopped" ? "stopped" : "unstarted",
+              ended_at: row.ended_at ?? now,
+            };
+            if (next.status === "stopped") return yield* settle({ ...next, delivered_at: now });
+            yield* settle(next);
+            yield* deliver(next);
+          }),
+        );
+      }
+      row = resolution.row;
+    }
+    const exit = row.status === "running" ? yield* readExitStatus(row) : undefined;
+    let identity: "yes" | "unknown" | Loss = "yes";
+    if (
+      (row.status === "running" && exit === undefined) ||
+      row.status === "stopped" ||
+      row.status === "timed_out" ||
+      row.status === "lost"
+    ) {
+      if (
+        !windows &&
+        row.pid !== null &&
+        row.process_started_at === null &&
+        isProcessAlive(row.pid)
+      ) {
+        const startedAt = yield* startedAtOf(row.pid);
+        if (startedAt === undefined) return;
+        row = { ...row, process_started_at: startedAt };
+      }
+      identity = yield* isSameProcess(row);
+      if (identity === "unknown") {
+        const probe = row.pid === null ? undefined : probeProcess(row.pid);
+        const code = probe?.state === "unknown" ? probe.code : "identity-unavailable";
+        yield* lock.withPermits(1)(
+          Effect.gen(function* () {
+            if (watched.get(row.task_id) !== snapshot || snapshot.probe_error === code) return;
+            yield* Effect.logWarning("command-runner.probe-failed", {
+              taskId: row.task_id,
+              pid: row.pid,
+              code,
+            });
+            yield* settle({ ...snapshot, probe_error: code });
+          }),
+        );
+        return;
+      }
+    }
+    const loss = typeof identity === "object" ? identity : undefined;
+    const overdue = Date.parse(row.deadline_at) <= DateTime.toEpochMillis(yield* DateTime.now);
+    const next = yield* lock.withPermits(1)(
+      Effect.gen(function* () {
+        if (watched.get(row.task_id) !== snapshot) return undefined;
+        if (row.status !== "running") {
+          if (row !== snapshot) yield* settle(row);
+          return row;
+        }
+        if (exit !== undefined) {
+          const ended: CommandRunRow = {
+            ...row,
+            status: "exited",
+            exit_code: exit.code,
+            ended_at: exit.endedAt ?? (yield* nowIso),
+          };
+          yield* settle(ended);
+          return ended;
+        }
+        if (overdue) {
+          const ended: CommandRunRow = { ...row, status: "timed_out", ended_at: yield* nowIso };
+          yield* settle(ended);
+          return ended;
+        }
+        if (loss !== undefined) {
+          // The wrapper may publish its status between the first read and its process exiting.
+          const late = yield* readExitStatus(row);
+          if (late !== undefined) {
+            const ended: CommandRunRow = {
+              ...row,
+              status: "exited",
+              exit_code: late.code,
+              ended_at: late.endedAt ?? (yield* nowIso),
+            };
+            yield* settle(ended);
+            return ended;
+          }
+          return yield* recordLoss(row, loss);
+        }
+        const seen = { ...row, last_alive_at: yield* nowIso, probe_error: null };
+        const minuteOf = (at: string | null) =>
+          at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
+        if (
+          row.pid !== snapshot.pid ||
+          row.process_started_at !== snapshot.process_started_at ||
+          minuteOf(row.last_alive_at) !== minuteOf(seen.last_alive_at)
+        ) {
+          yield* settle(seen);
+        } else watched.set(row.task_id, seen);
+        return undefined;
+      }),
+    );
+    if (next === undefined) {
+      if (!windows) yield* trimLog(row);
+      return;
+    }
+    if (
+      (next.status === "stopped" || next.status === "timed_out" || next.status === "lost") &&
+      !(yield* killTree(next))
+    )
+      return;
+    yield* trimLog(next);
+    yield* lock.withPermits(1)(
+      Effect.gen(function* () {
+        if (watched.get(next.task_id) !== next) return;
+        if (next.status === "stopped") yield* settle({ ...next, delivered_at: yield* nowIso });
+        else yield* deliver(next);
+      }),
+    );
+  });
 
-  /**
-   * The task got its result elsewhere: a cancel, Stop, or the thread archived. It is recorded as
-   * delivered only once its process is gone, so a server that stops meanwhile leaves the next one
-   * to stop it. The kill runs outside the lock, which it would hold for its grace period.
-   */
+  const checkTask = Effect.fn("CommandRunner.checkTask")(function* (taskId: string) {
+    const row = watched.get(taskId);
+    if (row === undefined || launching.has(taskId) || checking.has(taskId)) return;
+    checking.add(taskId);
+    yield* check(row).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("command-runner.check-failed", { taskId, cause }),
+      ),
+      Effect.ensuring(Effect.sync(() => checking.delete(taskId))),
+    );
+  });
+
+  const watchOnce = Effect.gen(function* () {
+    for (const taskId of watched.keys()) {
+      if (!launching.has(taskId) && !checking.has(taskId)) {
+        yield* Effect.forkScoped(checkTask(taskId), { startImmediately: true });
+      }
+    }
+    yield* lock.withPermits(1)(noteWave());
+  });
+
+  /** Cancellation closes the gate before waiting for any launcher or identity probe. */
   const stopForTask = (taskId: string) =>
-    lock
-      .withPermits(1)(
-        Effect.gen(function* () {
-          const row = watched.get(taskId);
-          if (row === undefined || row.status !== "running") return undefined;
-          const stopped: CommandRunRow = { ...row, status: "stopped", ended_at: yield* nowIso };
-          yield* settle(stopped);
-          return stopped;
-        }),
-      )
-      .pipe(
-        Effect.flatMap((row) =>
-          row === undefined
-            ? Effect.void
-            : killTree(row).pipe(
-                Effect.andThen(nowIso),
-                Effect.flatMap((now) => lock.withPermits(1)(settle({ ...row, delivered_at: now }))),
-              ),
-        ),
-      );
+    lock.withPermits(1)(
+      Effect.gen(function* () {
+        const row = watched.get(taskId);
+        if (row === undefined || row.status !== "running") return;
+        const stopped: CommandRunRow = { ...row, status: "stopped", ended_at: yield* nowIso };
+        // Keep the stop intent even if persistence or the gate is temporarily unavailable.
+        watched.set(taskId, stopped);
+        yield* writeRow(stopped);
+        if ((yield* closeLaunchGate(stopped)) === "cancelled") {
+          yield* settle({ ...stopped, delivered_at: yield* nowIso });
+        }
+      }),
+    );
 
   /**
    * A thread that is archived or deleted keeps nothing running. It looks under the lock, so a
@@ -1105,7 +1215,11 @@ const make = Effect.gen(function* () {
         survivesRestart: true,
       });
       const pid = yield* spawnDetached(scoped.command, scoped.args, cwd, env);
-      return { pid, unit: scoped.unit ?? null };
+      return {
+        pid,
+        process_started_at: (yield* startedAtOf(pid)) ?? null,
+        unit: scoped.unit ?? null,
+      };
     }
     // Win32_Process.Create parents the wrapper under WMI, outside this server's job and tree. Its
     // startup block is the command's whole environment, which the launcher reads from stdin so no
@@ -1134,7 +1248,6 @@ const make = Effect.gen(function* () {
     );
     yield* fs.writeFileString(wrapperPath, WINDOWS_WRAPPER);
     yield* fs.writeFileString(logPath, "");
-    yield* fs.makeDirectory(path.join(directory, LAUNCH_PENDING));
     const created = yield* processRunner.run({
       command: "powershell.exe",
       args: [
@@ -1144,7 +1257,7 @@ const make = Effect.gen(function* () {
         // Windows folds names by a case table only it has, so the launcher keeps the last of the
         // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
         // like a member (Values) hides that member in PowerShell.
-        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId`,
+        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $made = Get-CimInstance Win32_Process -Filter "ProcessId = $($r.ProcessId)"; if ($made) { \"$($r.ProcessId) $(([DateTimeOffset]$made.CreationDate).ToUnixTimeMilliseconds())\" } else { Get-Content -LiteralPath ${escapePowerShellStringLiteral(path.join(directory, PID_FILE))} }`,
       ],
       // Base64, since PowerShell decodes stdin with the console code page.
       stdin: Buffer.from(
@@ -1156,13 +1269,20 @@ const make = Effect.gen(function* () {
       timeout: WINDOWS_LAUNCH_TIMEOUT,
       maxOutputBytes: 16_384,
     });
-    const pid = Number.parseInt(created.stdout.trim(), 10);
+    const [pidText, identityText] = created.stdout.trim().split(/\s+/);
+    const pid = Number(pidText);
+    const identity = Number(identityText);
     if (created.code !== 0 || !Number.isSafeInteger(pid) || pid <= 0) {
       return yield* new CommandLaunchError({
         detail: created.stderr.trim() || "Win32_Process.Create failed.",
       });
     }
-    return { pid, unit: null };
+    if (!Number.isSafeInteger(identity) || identity <= 0) {
+      return yield* new CommandLaunchError({
+        detail: "The launcher did not report the process creation time.",
+      });
+    }
+    return { pid, process_started_at: identity, unit: null };
   });
 
   const run: CommandRunner["Service"]["run"] = Effect.fn("CommandRunner.run")(
@@ -1319,13 +1439,13 @@ const make = Effect.gen(function* () {
                 Effect.ignore({ log: true }),
                 Effect.andThen(Effect.fail(failure("orchestration_error", message))),
               );
-          return yield* lock
+          const prepared = yield* lock
             .withPermits(1)(
               Effect.gen(function* () {
                 const existing = yield* sql<{ readonly task_id: string }>`
             SELECT task_id FROM command_runs WHERE task_id = ${taskId}
           `;
-                if (existing.length > 0) return result(taskId);
+                if (existing.length > 0) return undefined;
                 // Read again here: stopForTask or stopForThread may already have looked for a task
                 // cancelled, or a thread closed, since the request began.
                 const records = yield* threads
@@ -1373,10 +1493,14 @@ const make = Effect.gen(function* () {
                   probe_error: null,
                   lost_reason: null,
                   lost_output: null,
+                  launch_error: null,
                 };
                 // Recorded before it starts, so a server that stops in between leaves the next one
                 // a record to adopt it by, never a command nothing watches.
                 const recordedRow = yield* fs.makeDirectory(directory, { recursive: true }).pipe(
+                  Effect.andThen(
+                    windows ? fs.makeDirectory(path.join(directory, LAUNCH_PENDING)) : Effect.void,
+                  ),
                   Effect.andThen(
                     sql`
                 INSERT INTO command_runs (
@@ -1398,55 +1522,9 @@ const make = Effect.gen(function* () {
                     `Could not start the command: ${recordedRow.failure.message}`,
                   );
                 }
-                const started = yield* launch(directory, input, cwd, commandEnv).pipe(
-                  Effect.result,
-                );
-                if (started._tag === "Failure") {
-                  const recovered = yield* recoverPid(row).pipe(
-                    Effect.tapError((cause) =>
-                      Effect.logError("command-runner.launch-recovery-failed", { taskId, cause }),
-                    ),
-                    Effect.mapError(() =>
-                      failure(
-                        "orchestration_error",
-                        "Could not verify the command's startup. Its task is still recorded; retry with the same clientRequestId.",
-                      ),
-                    ),
-                  );
-                  if (
-                    recovered !== undefined &&
-                    ((yield* readExitStatus(recovered)) !== undefined ||
-                      (yield* isSameProcess(recovered)))
-                  ) {
-                    watched.set(taskId, recovered);
-                    yield* writeRow(recovered);
-                    yield* Effect.logWarning("command-runner.launch-adopted", {
-                      taskId,
-                      pid: recovered.pid,
-                      cause: started.failure,
-                    });
-                    return result(taskId);
-                  }
-                  if (recovered !== undefined) yield* killTree(recovered);
-                  yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`.pipe(
-                    Effect.ignore({ log: true }),
-                  );
-                  return yield* unstarted(
-                    `Could not start the command: ${started.failure.message}`,
-                  );
-                }
-                const { pid, unit } = started.success;
-                const launched: CommandRunRow = {
-                  ...row,
-                  pid,
-                  process_started_at: (yield* startedAtOf(pid)) ?? null,
-                  unit,
-                  last_alive_at: yield* nowIso,
-                };
-                watched.set(taskId, launched);
-                // Its pid file names it to the next server if this write is lost.
-                yield* writeRow(launched).pipe(Effect.ignore({ log: true }));
-                return result(taskId);
+                watched.set(taskId, row);
+                launching.add(taskId);
+                return row;
               }),
             )
             .pipe(
@@ -1459,103 +1537,97 @@ const make = Effect.gen(function* () {
                   ),
               }),
             );
+          if (prepared === undefined) return result(taskId);
+          const started = yield* launch(directory, input, cwd, commandEnv).pipe(
+            Effect.result,
+          );
+          yield* lock
+            .withPermits(1)(
+              Effect.gen(function* () {
+                const current = watched.get(taskId);
+                // A cancellation that won the gate is already delivered; never resurrect it.
+                if (current === undefined) return;
+                const next: CommandRunRow =
+                  started._tag === "Success"
+                    ? { ...current, ...started.success, last_alive_at: yield* nowIso }
+                    : { ...current, launch_error: started.failure.message };
+                watched.set(taskId, next);
+                yield* writeRow(next);
+              }),
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("command-runner.launch-reconcile-failed", { taskId, cause }),
+              ),
+              Effect.ensuring(Effect.sync(() => launching.delete(taskId))),
+            );
+          if (started._tag === "Failure" || watched.get(taskId)?.status === "stopped") {
+            yield* checkTask(taskId);
+          }
+          return result(taskId);
         }),
       );
     },
   );
 
-  /**
-   * A command whose server stopped before it recorded the pid: its wrapper's pid file names it.
-   * Without that file it never started, so its record goes and its task fails with the others.
-   */
-  const recoverPid = Effect.fn("CommandRunner.recoverPid")(function* (row: CommandRunRow) {
-    // A queued WMI Create may outlive its launcher. Closing the gate also protects restart recovery.
-    if (windows) {
-      yield* fs
-        .rename(
-          path.join(row.directory, LAUNCH_PENDING),
-          path.join(row.directory, LAUNCH_CANCELLED),
-        )
-        .pipe(
-          Effect.catchIf(
-            (cause) => cause.reason._tag === "NotFound",
-            () => Effect.void,
-          ),
-        );
-    }
-    const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
-    if (named === undefined || !Number.isSafeInteger(named.value) || named.value <= 0) {
-      if ((yield* readExitStatus(row)) !== undefined) return row;
-      yield* sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`;
-      return undefined;
-    }
-    const pid = named.value;
-    // A wrapper that is gone still names its group, which can outlive it. When it wrote the file
-    // stands in for its start, so a later process under the pid is never taken for it.
-    if (!isProcessAlive(pid)) {
-      return { ...row, pid, process_started_at: named.writtenAt?.getTime() ?? null };
-    }
-    const startedAt = yield* startedAtOf(pid);
-    const writtenAt = named.writtenAt?.getTime();
-    // It started before it wrote the file; a later process reusing the pid did not. ps reports
-    // whole seconds.
-    if (
-      startedAt !== undefined &&
-      (startedAt < Date.parse(row.started_at) - 1_000 ||
-        (writtenAt !== undefined && startedAt > writtenAt + 1_000))
-    ) {
-      return { ...row, lost_reason: "pid-reused" as const };
-    }
-    const recovered: CommandRunRow = { ...row, pid, process_started_at: startedAt ?? null };
-    yield* writeRow(recovered);
-    return recovered;
-  });
+  /** The gate proves non-execution; unreadable evidence proves nothing. */
+  const recoverPid = Effect.fn("CommandRunner.recoverPid")(
+    function* (
+      row: CommandRunRow,
+    ): Effect.fn.Return<LaunchResolution, import("effect/PlatformError").PlatformError> {
+      const gate = yield* closeLaunchGate(row);
+      if (gate === "cancelled") return { outcome: "cancelled" };
+      const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
+      if (named === undefined || !Number.isSafeInteger(named.value) || named.value <= 0) {
+        if ((yield* readExitStatus(row)) !== undefined) return { outcome: "started", row };
+        return { outcome: gate === "started" ? "unresolved" : "cancelled" };
+      }
+      const pid = named.value;
+      let identity = named.identity;
+      if (identity === undefined) {
+        const writtenAt = named.writtenAt?.getTime();
+        if (writtenAt === undefined) return { outcome: "unresolved" };
+        if (isProcessAlive(pid)) {
+          const startedAt = yield* startedAtOf(pid);
+          if (startedAt === undefined) return { outcome: "unresolved" };
+          // An old pid-only file bounds the wrapper's creation time, never a later holder's.
+          identity =
+            startedAt >= Date.parse(row.started_at) - 1_000 && startedAt <= writtenAt + 1_000
+              ? startedAt
+              : writtenAt;
+        } else identity = writtenAt;
+      }
+      return { outcome: "started", row: { ...row, pid, process_started_at: identity } };
+    },
+    Effect.catch((cause) =>
+      Effect.logWarning("command-runner.launch-recovery-failed", { cause }).pipe(
+        Effect.as({ outcome: "unresolved" } as const),
+      ),
+    ),
+  );
 
-  /** What one record an earlier server left needs, given its task if that is still open. */
+  /** Register every undelivered row before trying evidence that can temporarily be unavailable. */
   const adoptRow = Effect.fn("CommandRunner.adoptRow")(function* (
-    stored: CommandRunRow,
+    row: CommandRunRow,
     task: ProjectionStore.ProjectionOpenCommandTask | undefined,
   ) {
-    const row = stored.pid === null ? yield* recoverPid(stored) : stored;
-    if (row === undefined) return;
-    if (row.status === "stopped") {
-      // Its server stopped before the stop was done.
-      yield* killTree(row);
-      return yield* settle({ ...row, delivered_at: yield* nowIso });
+    watched.set(row.task_id, row);
+    if (row.status !== "running" || (task !== undefined && task.threadClosed === null)) return;
+    if (task?.threadClosed != null) {
+      yield* threads
+        .dispatch({
+          type: "delegated_task.command.complete",
+          commandId: CommandId.make(`command:command-task-${task.threadClosed}:${row.task_id}`),
+          parentThreadId: task.parentThreadId,
+          taskId: task.taskId,
+          status: "interrupted",
+          result: `Stopped: the chat was ${task.threadClosed}.`,
+        })
+        .pipe(Effect.ignore({ log: true }));
     }
-    if (row.status !== "running") {
-      watched.set(row.task_id, row);
-      return;
-    }
-    if (task === undefined || task.threadClosed !== null) {
-      // Its task got its result while no server ran (a cancel), or its chat was closed.
-      if (task?.threadClosed != null) {
-        yield* threads
-          .dispatch({
-            type: "delegated_task.command.complete",
-            commandId: CommandId.make(`command:command-task-${task.threadClosed}:${row.task_id}`),
-            parentThreadId: task.parentThreadId,
-            taskId: task.taskId,
-            status: "interrupted",
-            result: `Stopped: the chat was ${task.threadClosed}.`,
-          })
-          .pipe(Effect.ignore);
-      }
-      yield* killTree(row);
-      const now = yield* nowIso;
-      return yield* settle({ ...row, status: "stopped", ended_at: now, delivered_at: now });
-    }
-    if ((yield* readExitStatus(row)) !== undefined) {
-      watched.set(row.task_id, row);
-      return;
-    }
-    // A pid reused by another process means this command ended while no server watched it.
-    const loss = yield* lossOf(row);
-    if (loss === undefined) {
-      watched.set(row.task_id, row);
-      return;
-    }
-    yield* recordLoss(row, loss);
+    const stopped: CommandRunRow = { ...row, status: "stopped", ended_at: yield* nowIso };
+    watched.set(row.task_id, stopped);
+    yield* writeRow(stopped);
   });
 
   /**

@@ -31,6 +31,8 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
 import * as Layer from "effect/Layer";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
@@ -484,9 +486,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const processRunner = yield* ProcessRunner.ProcessRunner;
         const launcher = yield* Deferred.make<ProcessRunner.ProcessRunInput>();
         const refused = yield* withServer((runner) =>
-          runner.run(callerOf(chat.threadId), { command: "Write-Output started" }),
+          runner
+            .run(callerOf(chat.threadId), { command: "Write-Output started" })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
         ).pipe(
-          Effect.flip,
           Effect.provide(
             // Spellings Windows reads as one name; the later one is the value the agent's own get.
             providerShell(
@@ -512,7 +515,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             T3CODE_AUTH_TOKEN: "server only",
           }),
         );
-        assert.include(refused.message, "Win32_Process.Create returned 9");
+        assert.include(
+          (yield* taskOf(chat.threadId, refused.taskId))?.result ?? "",
+          "Win32_Process.Create returned 9",
+        );
         const launch = yield* Deferred.await(launcher);
         assert.deepEqual(
           Buffer.from(launch.stdin ?? "", "base64")
@@ -869,18 +875,21 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const request = { command: "echo started", clientRequestId: "command-unstarted" };
         const unstartable = yield* AgentScope;
         const first = yield* withServer((runner) =>
-          runner.run(callerOf(chat.threadId), request).pipe(Effect.flip),
+          runner
+            .run(callerOf(chat.threadId), request)
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
         ).pipe(
           Effect.provideService(AgentScope, {
             ...unstartable,
             wrap: ({ args }) => Effect.succeed({ command: "/nonexistent/t3-shell", args }),
           }),
         );
-        assert.match(first.message, /^Could not start the command: /);
-        const retried = yield* withServer((runner) =>
-          runner.run(callerOf(chat.threadId), request).pipe(Effect.flip),
+        assert.match(
+          (yield* taskOf(chat.threadId, first.taskId))?.result ?? "",
+          /^Could not start the command: /,
         );
-        assert.equal(retried.message, first.message);
+        const retried = yield* withServer((runner) => runner.run(callerOf(chat.threadId), request));
+        assert.equal(retried.taskId, first.taskId);
         const projection = yield* Orchestrator.OrchestratorV2.pipe(
           Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(chat.threadId)),
         );
@@ -889,7 +898,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           tasks.map((task) => task.status),
           ["failed"],
         );
-        assert.isUndefined(yield* commandRow(tasks[0]!.id));
+        assert.equal((yield* commandRow(tasks[0]!.id))?.status, "unstarted");
       }),
   );
 
@@ -1443,6 +1452,444 @@ describe("the shell a command runs in", () => {
   );
 });
 
+const processOutput = (stdout = "") => ({
+  stdout,
+  stderr: "",
+  code: ChildProcessSpawner.ExitCode(0),
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+});
+
+/** A WMI boundary with explicit launch/probe barriers and no operating-system processes. */
+const windowsFixture = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const probes = yield* Queue.unbounded<void>();
+  const reads = yield* Queue.unbounded<string>();
+  const renamed = yield* Queue.unbounded<string>();
+  const stopped = yield* Queue.unbounded<number>();
+  const processes = new Map<number, { identity: number; alive: boolean; directory: string }>();
+  let nextPid = 2_147_483_000;
+  const fixture = {
+    probes,
+    reads,
+    renamed,
+    stopped,
+    processes,
+    unavailable: false,
+    failGate: false,
+    failRead: "",
+    launches: 0,
+    kills: 0,
+    launch: (_input: ProcessRunner.ProcessRunInput, directory: string) =>
+      Effect.sync(() => {
+        const pid = nextPid++;
+        const identity = Date.now();
+        processes.set(pid, { identity, alive: true, directory });
+        NodeFS.writeFileSync(NodePath.join(directory, "pid"), `${pid} ${identity}`);
+        NodeFS.renameSync(
+          NodePath.join(directory, "launch-pending"),
+          NodePath.join(directory, "launch-started"),
+        );
+        return processOutput(`${pid} ${identity}`);
+      }) as Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError>,
+  };
+  const originalKill = process.kill.bind(process);
+  const spy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    const known = processes.get(pid);
+    if (known === undefined) return originalKill(pid, signal);
+    assert.equal(signal, 0);
+    if (!known.alive) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    return true;
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+  const ioError = (method: string) =>
+    new PlatformError.PlatformError(
+      new PlatformError.SystemError({
+        _tag: "PermissionDenied",
+        module: "FileSystem",
+        method,
+      }),
+    );
+  const layer = Layer.mergeAll(
+    Layer.succeed(HostProcess.Platform, "win32"),
+    Layer.succeed(FileSystem.FileSystem, {
+      ...fs,
+      readFileString: (file, ...args) =>
+        Effect.gen(function* () {
+          yield* Queue.offer(reads, file);
+          if (NodePath.basename(file) === fixture.failRead) return yield* ioError("readFileString");
+          return yield* fs.readFileString(file, ...args);
+        }),
+      rename: (from, to) =>
+        Effect.gen(function* () {
+          if (fixture.failGate && NodePath.basename(from) === "launch-pending")
+            return yield* ioError("rename");
+          yield* fs.rename(from, to);
+          yield* Queue.offer(renamed, to);
+        }),
+    }),
+    Layer.succeed(ProcessRunner.ProcessRunner, {
+      run: (input) =>
+        Effect.gen(function* () {
+          const script = input.args.join(" ");
+          if (script.includes("Win32_Process -MethodName Create")) {
+            fixture.launches++;
+            const wrapper = /-File "(.+run\.ps1)"/.exec(script)?.[1];
+            assert.isDefined(wrapper);
+            return yield* fixture.launch(input, NodePath.dirname(wrapper!));
+          }
+          const stop = /Stop-T3CommandTree (\d+) /.exec(script);
+          if (stop !== null) {
+            fixture.kills++;
+            const pid = Number(stop[1]);
+            const entry = processes.get(pid)!;
+            entry.alive = false;
+            yield* Queue.offer(stopped, pid);
+            return processOutput();
+          }
+          const probe = /Get-Process -Id (\d+)/.exec(script);
+          assert.isNotNull(probe, script);
+          yield* Queue.offer(probes, undefined);
+          if (fixture.unavailable)
+            return yield* new ProcessRunner.ProcessTimeoutError({
+              command: input.command,
+              argumentCount: input.args.length,
+              timeoutMs: 120_000,
+            });
+          return processOutput(new Date(processes.get(Number(probe![1]))!.identity).toISOString());
+        }),
+    }),
+  );
+  return { ...fixture, state: fixture, layer };
+});
+
+it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
+  it.effect(
+    "cancels a held launch while other commands meet their deadlines and deliver completion",
+    () =>
+      Effect.gen(function* () {
+        const held = yield* liveChat("launch-held");
+        const deadline = yield* liveChat("launch-other-deadline");
+        const completed = yield* liveChat("launch-other-completion");
+        const fixture = yield* windowsFixture;
+        const entered = yield* Deferred.make<string>();
+        const release = yield* Deferred.make<void>();
+        const create = fixture.state.launch;
+        let ran = false;
+        fixture.state.launch = (input, directory) =>
+          input.cwd !== held.workspace
+            ? create(input, directory)
+            : Effect.gen(function* () {
+                yield* Deferred.succeed(entered, directory);
+                yield* Deferred.await(release);
+                if (NodeFS.existsSync(NodePath.join(directory, "launch-pending"))) {
+                  ran = true;
+                  return yield* create(input, directory);
+                }
+                return processOutput(`2147483001 ${Date.now()}`);
+              });
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const request = { command: "echo held", clientRequestId: "held" };
+            const pending = yield* runner
+              .run(callerOf(held.threadId), request)
+              .pipe(Effect.forkChild);
+            const directory = yield* Deferred.await(entered);
+            yield* Effect.gen(function* () {
+              // A zero-duration budget makes the first watch deterministically overdue.
+              const due = yield* runner.run(callerOf(deadline.threadId), {
+                command: "echo deadline",
+                timeoutMinutes: 0,
+              });
+              yield* nextWake(deadline.threadId);
+              assert.equal((yield* commandRow(due.taskId))?.status, "timed_out");
+              const done = yield* runner.run(callerOf(completed.threadId), {
+                command: "echo completed",
+              });
+              NodeFS.writeFileSync(
+                NodePath.join(NodePath.dirname(done.logPath), "exit-status"),
+                "0",
+              );
+              yield* nextWake(completed.threadId);
+              assert.equal((yield* taskOf(completed.threadId, done.taskId))?.status, "completed");
+              const same = yield* runner.run(callerOf(held.threadId), request);
+              yield* Orchestrator.OrchestratorV2.pipe(
+                Effect.flatMap((orchestrator) =>
+                  orchestrator.dispatch(cancellationOf(held.threadId, same.taskId)),
+                ),
+              );
+              yield* Queue.take(fixture.renamed).pipe(
+                Effect.repeat({ until: (file) => NodePath.basename(file) === "launch-cancelled" }),
+              );
+              yield* runner.run(callerOf(held.threadId), request);
+              const row = yield* commandRow(same.taskId);
+              assert.equal(row?.status, "stopped");
+              assert.isNotNull(row?.delivered_at);
+              assert.isTrue(NodeFS.existsSync(NodePath.join(directory, "launch-cancelled")));
+            }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+            const result = yield* Fiber.join(pending);
+            assert.isFalse(ran);
+            assert.equal((yield* commandRow(result.taskId))?.status, "stopped");
+            assert.equal(fixture.state.launches, 3);
+            assert.equal(fixture.state.kills, 1);
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+      }),
+  );
+
+  it.effect(
+    "retries a failed gate recovery on a later tick and keeps request retries idempotent",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("launch-gate-error");
+        const fixture = yield* windowsFixture;
+        fixture.state.failGate = true;
+        fixture.state.launch = (input) =>
+          Effect.fail(
+            new ProcessRunner.ProcessTimeoutError({
+              command: input.command,
+              argumentCount: input.args.length,
+              timeoutMs: 120_000,
+            }),
+          );
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const request = { command: "echo never", clientRequestId: "gate-error" };
+            const first = yield* runner.run(callerOf(chat.threadId), request);
+            assert.isNull((yield* commandRow(first.taskId))?.pid);
+            assert.equal(
+              (yield* runner.run(callerOf(chat.threadId), request)).taskId,
+              first.taskId,
+            );
+            fixture.state.failGate = false;
+            yield* nextWake(chat.threadId);
+            assert.equal((yield* commandRow(first.taskId))?.status, "unstarted");
+            assert.match(
+              (yield* taskOf(chat.threadId, first.taskId))?.result ?? "",
+              /^Could not start the command: .*timed out/,
+            );
+            assert.equal(fixture.state.launches, 1);
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+      }),
+  );
+
+  it.effect.each([true, false])(
+    "reports a cancelled gate as unstarted with wrapper alive %s",
+    (alive) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-cancel-wins-${alive}`);
+        const fixture = yield* windowsFixture;
+        fixture.state.launch = (input, directory) =>
+          Effect.gen(function* () {
+            const identity = DateTime.toEpochMillis(yield* DateTime.now);
+            fixture.processes.set(2147483000, { identity, alive, directory });
+            NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${identity}`);
+            return yield* new ProcessRunner.ProcessTimeoutError({
+              command: input.command,
+              argumentCount: input.args.length,
+              timeoutMs: 120_000,
+            });
+          });
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const result = yield* runner.run(callerOf(chat.threadId), { command: "echo never" });
+            yield* nextWake(chat.threadId);
+            assert.equal((yield* commandRow(result.taskId))?.status, "unstarted");
+            assert.match(
+              (yield* taskOf(chat.threadId, result.taskId))?.result ?? "",
+              /^Could not start the command:/,
+            );
+            assert.equal(fixture.state.kills, 0);
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+      }),
+  );
+
+  it.effect.each(["pending", "started", "cancelled"] as const)(
+    "adopts a pid-null row at the %s gate boundary",
+    (gate) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-restart-${gate}`);
+        const fixture = yield* windowsFixture;
+        fixture.state.failGate = true;
+        fixture.state.launch = (input) =>
+          Effect.fail(
+            new ProcessRunner.ProcessTimeoutError({
+              command: input.command,
+              argumentCount: input.args.length,
+              timeoutMs: 120_000,
+            }),
+          );
+        const result = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo recovered" }),
+        ).pipe(Effect.provide(fixture.layer));
+        const directory = NodePath.dirname(result.logPath);
+        const identity = DateTime.toEpochMillis(yield* DateTime.now);
+        fixture.processes.set(2147483000, { identity, alive: true, directory });
+        NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${identity}`);
+        if (gate !== "pending")
+          NodeFS.renameSync(
+            NodePath.join(directory, "launch-pending"),
+            NodePath.join(directory, `launch-${gate}`),
+          );
+        fixture.state.failGate = false;
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            if (gate === "started") {
+              yield* Queue.take(fixture.probes);
+              yield* Queue.take(fixture.probes);
+              assert.equal((yield* commandRow(result.taskId))?.pid, 2147483000);
+              NodeFS.writeFileSync(NodePath.join(directory, "exit-status"), "0");
+            }
+            yield* nextWake(chat.threadId);
+            assert.equal(
+              (yield* commandRow(result.taskId))?.status,
+              gate === "started" ? "exited" : "unstarted",
+            );
+            assert.equal(fixture.state.kills, 0);
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+      }),
+  );
+
+  it.effect.each(["identity", "pid-only"] as const)(
+    "leaves a reused pid unresolved while its probe is unavailable, %s file",
+    (format) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-reused-${format}`);
+        const fixture = yield* windowsFixture;
+        const result = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo original" }),
+        ).pipe(Effect.provide(fixture.layer));
+        yield* forgetPid(result.taskId);
+        const entry = fixture.processes.get(2147483000)!;
+        entry.identity += 10_000;
+        fixture.state.unavailable = true;
+        if (format === "pid-only")
+          NodeFS.writeFileSync(NodePath.join(entry.directory, "pid"), "2147483000");
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* Queue.take(fixture.probes);
+            yield* Queue.take(fixture.probes);
+            const unresolved = yield* commandRow(result.taskId);
+            assert.isNull(unresolved?.pid);
+            assert.equal(unresolved?.status, "running");
+            assert.equal(fixture.state.kills, 0);
+            assert.isTrue(entry.alive);
+            NodeFS.writeFileSync(NodePath.join(entry.directory, "exit-status"), "0");
+            fixture.state.unavailable = false;
+            yield* nextWake(chat.threadId);
+            assert.isTrue(entry.alive);
+            assert.equal(fixture.state.kills, 0);
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+      }),
+  );
+
+  it.effect("does not lose or stop a command when reading its exit status fails", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-status-unreadable");
+      const fixture = yield* windowsFixture;
+      fixture.state.failRead = "exit-status";
+      yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const result = yield* runner.run(callerOf(chat.threadId), {
+            command: "echo completed",
+            timeoutMinutes: 0,
+          });
+          yield* Queue.take(fixture.reads);
+          yield* Queue.take(fixture.reads);
+          assert.equal((yield* commandRow(result.taskId))?.status, "running");
+          assert.equal(fixture.state.kills, 0);
+          NodeFS.writeFileSync(NodePath.join(NodePath.dirname(result.logPath), "exit-status"), "0");
+          fixture.state.failRead = "";
+          yield* nextWake(chat.threadId);
+          assert.equal((yield* taskOf(chat.threadId, result.taskId))?.status, "completed");
+        }),
+      ).pipe(Effect.provide(fixture.layer));
+    }),
+  );
+
+  it.effect.each(["read", "stat"] as const)(
+    "keeps a started command watched when its pid %s fails, then resolves without a restart",
+    (operation) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`command-pid-${operation}-failure`);
+        const fs = yield* FileSystem.FileSystem;
+        const request = { command: "echo recovered", clientRequestId: `pid-${operation}-failure` };
+        let unreadable = true;
+        let launches = 0;
+        const error = new PlatformError.PlatformError(
+          new PlatformError.SystemError({
+            _tag: "PermissionDenied",
+            module: "FileSystem",
+            method: operation,
+          }),
+        );
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const first = yield* runner.run(callerOf(chat.threadId), request).pipe(Effect.result);
+            assert.equal(first._tag, "Success", "ambiguous launch must remain an app-owned task");
+            if (first._tag === "Failure") return yield* first.failure;
+            assert.isNull((yield* commandRow(first.success.taskId))?.pid);
+            const retried = yield* runner.run(callerOf(chat.threadId), request);
+            assert.equal(retried.taskId, first.success.taskId);
+            assert.equal(launches, 1);
+            unreadable = false;
+            NodeFS.writeFileSync(
+              NodePath.join(NodePath.dirname(first.success.logPath), "exit-status"),
+              "0",
+            );
+            yield* nextWake(chat.threadId);
+            assert.equal((yield* taskOf(chat.threadId, first.success.taskId))?.status, "completed");
+          }),
+        ).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readFileString: (file, ...args) =>
+              unreadable && operation === "read" && NodePath.basename(file) === "pid"
+                ? Effect.fail(error)
+                : fs.readFileString(file, ...args),
+            stat: (file) =>
+              unreadable && operation === "stat" && NodePath.basename(file) === "pid"
+                ? Effect.fail(error)
+                : fs.stat(file),
+          }),
+          Effect.provideService(ProcessRunner.ProcessRunner, {
+            run: (input) =>
+              Effect.gen(function* () {
+                assert.isTrue(
+                  input.args.some((arg) => arg.includes("Win32_Process -MethodName Create")),
+                );
+                launches++;
+                const wrapper = /-File "(.+run\.ps1)"/.exec(input.args.join(" "))?.[1];
+                assert.isDefined(wrapper);
+                const directory = NodePath.dirname(wrapper!);
+                NodeFS.writeFileSync(
+                  NodePath.join(directory, "pid"),
+                  `2147483000 ${DateTime.toEpochMillis(yield* DateTime.now)}`,
+                );
+                NodeFS.renameSync(
+                  NodePath.join(directory, "launch-pending"),
+                  NodePath.join(directory, "launch-started"),
+                );
+                return yield* new ProcessRunner.ProcessTimeoutError({
+                  command: input.command,
+                  argumentCount: input.args.length,
+                  timeoutMs: 120_000,
+                });
+              }),
+          }),
+        );
+      }),
+  );
+});
+
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {
   it.layer(layerTest, { excludeTestServices: true })("Windows launch timeouts", (it) => {
@@ -1545,12 +1992,13 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           const processRunner = yield* ProcessRunner.ProcessRunner;
           const launcher = yield* Deferred.make<ProcessRunner.ProcessRunInput>();
           const refused = yield* withServer((runner) =>
-            runner.run(callerOf(chat.threadId), {
-              command: "Set-Content -LiteralPath ran -Value 1",
-              clientRequestId: "launch-before-create",
-            }),
+            runner
+              .run(callerOf(chat.threadId), {
+                command: "Set-Content -LiteralPath ran -Value 1",
+                clientRequestId: "launch-before-create",
+              })
+              .pipe(Effect.tap(() => nextWake(chat.threadId))),
           ).pipe(
-            Effect.flip,
             Effect.provideService(ProcessRunner.ProcessRunner, {
               run: (input) =>
                 !input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))
@@ -1568,9 +2016,12 @@ describe.runIf(isWindowsHost)("Windows only", () => {
                     ),
             }),
           );
-          assert.match(refused.message, /^Could not start the command: .*timed out/);
+          assert.match(
+            (yield* taskOf(chat.threadId, refused.taskId))?.result ?? "",
+            /^Could not start the command: .*timed out/,
+          );
           const launch = yield* Deferred.await(launcher);
-          const runPath = /""(.+run\.cmd)" "/.exec(launch.args.join(" "))?.[1];
+          const runPath = /-File "(.+run\.ps1)"/.exec(launch.args.join(" "))?.[1];
           assert.isDefined(runPath);
           // WMI can finish Create after its caller has been killed.
           const late = yield* processRunner.run(launch);
@@ -1592,14 +2043,13 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           assert.equal(exited.code, 0, exited.stderr);
           assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "ran")));
           const sql = yield* SqlClient.SqlClient;
-          assert.lengthOf(
-            yield* sql`SELECT task_id FROM command_runs WHERE thread_id = ${chat.threadId}`,
-            0,
+          assert.deepEqual(
+            yield* sql`SELECT status FROM command_runs WHERE thread_id = ${chat.threadId}`,
+            [{ status: "unstarted" }],
           );
         }),
     );
   });
-
 
   it("stops, at every level, only processes created after the parent they name", () => {
     const script = [
@@ -1611,13 +2061,19 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       // them; 60 is older than the command.
       "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1), (P 60 10 -3))",
       "(Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t)).Keys | Sort-Object",
+      "try { Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) -1; throw 'unsafe identity' } catch { $_.Exception.Message }",
     ].join("\n");
     const tree = NodeChildProcess.execFileSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
       { encoding: "utf8" },
     );
-    assert.deepEqual(tree.trim().split(/\r?\n/), ["10", "20", "30"]);
+    assert.deepEqual(tree.trim().split(/\r?\n/), [
+      "10",
+      "20",
+      "30",
+      "Cannot stop a live process without its creation time.",
+    ]);
   });
 
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
