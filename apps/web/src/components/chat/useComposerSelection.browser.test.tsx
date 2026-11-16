@@ -147,7 +147,11 @@ it("switches back to the thread's stored model while the session runs on another
         projectModelSelection: null,
         settings: DEFAULT_UNIFIED_SETTINGS,
       }),
-    ).toEqual({ selectedModel: stored.model, modelOptions: { [cursor]: stored.options } });
+    ).toEqual({
+      selectedModel: stored.model,
+      modelOptions: { [cursor]: stored.options },
+      autoAccount: false,
+    });
   });
 });
 
