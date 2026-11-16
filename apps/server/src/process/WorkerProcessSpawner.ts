@@ -70,11 +70,22 @@ const isAlive = (entry) => {
 const stopTree = ({ pid, since, spawnedAt }, done) => {
   const call = " " + [pid, since, since, spawnedAt].join(" ");
   const args = STOP_TREE_ARGS.map((arg, index) => (index === STOP_TREE_ARGS.length - 1 ? arg + call : arg));
-  execFile("powershell.exe", args, { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS }, (error, _stdout, stderr) => {
-    if (!error) return done(undefined);
-    const why = error.killed ? "PowerShell did not finish in time" : String(stderr).trim() || "PowerShell exited " + error.code;
-    done(new Error("Could not stop the process tree of " + pid + ": " + why));
-  });
+  const failed = (why) => done(new Error("Could not stop the process tree of " + pid + ": " + why));
+  try {
+    execFile("powershell.exe", args, { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS }, (error, _stdout, stderr) => {
+      if (!error) return done(undefined);
+      failed(
+        error.killed
+          ? "PowerShell did not finish in time"
+          : typeof error.code === "number"
+            ? "PowerShell exited " + error.code + ": " + String(stderr).trim()
+            : error.message,
+      );
+    });
+  } catch (error) {
+    // Spawn errors such as ENOMEM throw rather than reach the callback.
+    failed(error.message);
+  }
 };
 const signalGroup = (entry, signal, done) => {
   const fallback = () =>
@@ -570,21 +581,31 @@ const stopTreeHere = ({ child, root }: Orphan) => {
     since: root.since,
     created: { from: root.since, to: root.spawnedAt },
   });
-  NodeChildProcess.execFile(
-    "powershell.exe",
-    args,
-    { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS },
-    (error, _stdout, stderr) => {
-      if (error === null) return;
-      const why = error.killed
-        ? "PowerShell did not finish in time"
-        : typeof error.code === "number"
-          ? `PowerShell exited ${error.code}: ${String(stderr).trim()}`
-          : error.message;
-      const cause = new Error(`Could not stop the process tree of ${root.pid}: ${why}`);
-      child.report(toPlatformError("kill", cause, child.command));
-    },
-  );
+  const failed = (why: string) => {
+    const cause = new Error(`Could not stop the process tree of ${root.pid}: ${why}`);
+    child.report(toPlatformError("kill", cause, child.command));
+  };
+  try {
+    NodeChildProcess.execFile(
+      "powershell.exe",
+      args,
+      { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS },
+      (error, _stdout, stderr) => {
+        if (error === null) return;
+        failed(
+          error.killed
+            ? "PowerShell did not finish in time"
+            : typeof error.code === "number"
+              ? `PowerShell exited ${error.code}: ${String(stderr).trim()}`
+              : error.message,
+        );
+      },
+    );
+  } catch (cause) {
+    // Spawn errors such as ENOMEM throw rather than reach the callback, here inside the worker's
+    // exit listener, which must still end the stopped worker's other children.
+    failed(toError(cause).message);
+  }
 };
 
 const killTrees = (trees: ReadonlyArray<Orphan>) => {
@@ -618,12 +639,12 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
     if (!child.referenced || root === undefined) continue;
     if (child.kills === "tree") {
       trees.push({ child, root });
-    } else if (child.kills === "group") {
-      sigkill(-root.pid);
-    } else if (!Deferred.isDoneUnsafe(child.exit)) {
-      // On POSIX an exited leader nobody reaped keeps its pid, so this reaches no other process.
-      sigkill(root.pid);
+      continue;
     }
+    // The stopped worker may have reaped the leader just before it stopped, without relaying the exit.
+    // POSIX hands out pids in turn, so its pid and group id cannot name another process this soon.
+    if (child.kills === "group") sigkill(-root.pid);
+    else if (!Deferred.isDoneUnsafe(child.exit)) sigkill(root.pid);
   }
   if (trees.length > 0) killTrees(trees);
 };

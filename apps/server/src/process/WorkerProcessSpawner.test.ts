@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - one test makes the main thread's execFile throw.
+import type * as NodeChildProcess from "node:child_process";
+import * as NodeModule from "node:module";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -20,6 +24,11 @@ import { timeoutProcessOption } from "./processDeadline.ts";
 import * as WorkerProcessSpawner from "./WorkerProcessSpawner.ts";
 
 const layer = WorkerProcessSpawner.layer.pipe(Layer.provide(NodeServices.layer));
+// Takes the Windows paths on any host.
+const windowsLayer = WorkerProcessSpawner.layer.pipe(
+  Layer.provide(NodeServices.layer),
+  Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
+);
 
 const node = (script: string, options?: ChildProcess.CommandOptions) =>
   ChildProcess.make(process.execPath, ["-e", script], options);
@@ -36,6 +45,26 @@ const errorLogs = () => {
   });
   return { messages, logged: Deferred.await(logged), layer: Logger.layer([logger]) };
 };
+
+// Within the scope, the main thread's execFile throws as Node's does for a spawn error like ENOMEM.
+const execFileThrows = (error: Error) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const childProcess = NodeModule.createRequire(import.meta.url)(
+        "node:child_process",
+      ) as typeof NodeChildProcess;
+      const spy = vi.spyOn(childProcess, "execFile").mockImplementation(() => {
+        throw error;
+      });
+      NodeModule.syncBuiltinESMExports();
+      return spy;
+    }),
+    (spy) =>
+      Effect.sync(() => {
+        spy.mockRestore();
+        NodeModule.syncBuiltinESMExports();
+      }),
+  );
 
 describe("WorkerProcessSpawner", () => {
   it.live("relays stdin, output and the exit code", () =>
@@ -179,22 +208,20 @@ describe("WorkerProcessSpawner", () => {
     }).pipe(Effect.provide(Layer.merge(layer, errors.layer)));
   });
 
+  // It exits when the stopped worker closes its stdin, and no one hears of that exit. As in the
+  // server, the spawning fiber has the logger and the spawner's layer does not.
+  const leaderOfWorkerToStop = (errors: ReturnType<typeof errorLogs>) =>
+    node("process.stdin.resume();", { stdout: "ignore", stderr: "ignore" }).pipe(
+      Effect.provide(errors.layer),
+    );
+
   // PowerShell is missing here, so the walk fails as a denied WMI query does on Windows.
   it.live.skipIf(isWindowsHost)(
     "a stopped worker that cannot start another walks the tree and logs to the spawning fiber",
     () => {
       const errors = errorLogs();
-      const windowsLayer = WorkerProcessSpawner.layer.pipe(
-        Layer.provide(NodeServices.layer),
-        Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
-      );
       return Effect.gen(function* () {
-        // It exits when the stopped worker closes its stdin, and no one hears of that exit. As in
-        // the server, the spawning fiber has the logger and the spawner's layer does not.
-        const leader = yield* node("process.stdin.resume();", {
-          stdout: "ignore",
-          stderr: "ignore",
-        }).pipe(Effect.provide(errors.layer));
+        const leader = yield* leaderOfWorkerToStop(errors);
         const kill = yield* Effect.acquireRelease(
           Effect.sync(() => vi.spyOn(process, "kill")),
           (spy) => Effect.sync(() => spy.mockRestore()),
@@ -208,6 +235,23 @@ describe("WorkerProcessSpawner", () => {
           kill.mock.calls.map(([pid]) => pid),
           leader.pid,
         );
+      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
+    },
+  );
+
+  it.live(
+    "a stopped worker whose tree walk cannot start PowerShell logs it and fails its children",
+    () => {
+      const errors = errorLogs();
+      return Effect.gen(function* () {
+        const leader = yield* leaderOfWorkerToStop(errors);
+        yield* execFileThrows(Object.assign(new Error("spawn ENOMEM"), { code: "ENOMEM" }));
+        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        yield* errors.logged;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(leader.exitCode)));
       }).pipe(Effect.scoped, Effect.provide(windowsLayer));
     },
   );
