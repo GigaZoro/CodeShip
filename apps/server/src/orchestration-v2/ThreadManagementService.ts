@@ -66,6 +66,7 @@ import * as Stream from "effect/Stream";
 import * as AccountRouting from "./AccountRouting.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { latestRestartContinuation } from "./RestartBackgroundNote.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -594,19 +595,6 @@ export const stalledWork = Effect.fnUntraced(function* (
   const quietMs = DateTime.toEpochMillis(now) - DateTime.toEpochMillis(lastActivity);
   return quietMs >= limitMs ? { quietMs, since: lastActivity, stoppable } : undefined;
 });
-
-function latestRestartContinuation(
-  runs: ReadonlyArray<OrchestrationV2Run>,
-  run: OrchestrationV2Run,
-): OrchestrationV2Run {
-  let current = run;
-  for (let hops = 0; hops < runs.length; hops++) {
-    const next = runs.find((candidate) => candidate.restartContinuationOfRunId === current.id);
-    if (next === undefined) break;
-    current = next;
-  }
-  return current;
-}
 
 export function latestActiveRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
@@ -1257,7 +1245,7 @@ const make = Effect.gen(function* () {
   const interruptThread: ThreadManagementServiceShape["interruptThread"] = Effect.fn(
     "ThreadManagementService.interruptThread",
   )(function* (input) {
-    const target = yield* getProjectThreadRecords(input, ["runs", "providerTurns"]);
+    const target = yield* getProjectThreadRecords(input, ["runs"]);
     const explicitRun =
       input.runId === undefined
         ? undefined
@@ -1268,15 +1256,19 @@ const make = Effect.gen(function* () {
         runId: input.runId,
       });
     }
-    if (explicitRun !== undefined && isOrchestrationV2TerminalRunStatus(explicitRun.status)) {
-      return {
-        type: "already_terminal",
-        run: explicitRun as OrchestrationV2Run & {
-          readonly status: OrchestrationV2TerminalRunStatus;
-        },
-      } as const;
+    const activeRun = latestActiveRun(target);
+    const interruptibleRun =
+      explicitRun === undefined ? activeRun : latestRestartContinuation(target.runs, explicitRun);
+    if (
+      explicitRun !== undefined &&
+      activeRun !== undefined &&
+      activeRun.id !== interruptibleRun?.id
+    ) {
+      return yield* new ThreadManagementThreadNotInterruptibleError({
+        threadId: input.threadId,
+        runId: explicitRun.id,
+      });
     }
-    const interruptibleRun = latestActiveRun(target);
     if (interruptibleRun === undefined) {
       if (input.runId === undefined) {
         return { type: "no_active_run" } as const;
@@ -1286,20 +1278,52 @@ const make = Effect.gen(function* () {
         runId: input.runId,
       });
     }
-    if (input.runId !== undefined && interruptibleRun.id !== input.runId) {
+    if (
+      !isActiveRun(interruptibleRun) &&
+      !isOrchestrationV2TerminalRunStatus(interruptibleRun.status)
+    ) {
       return yield* new ThreadManagementThreadNotInterruptibleError({
         threadId: input.threadId,
-        runId: input.runId,
+        runId: interruptibleRun.id,
       });
     }
     const dispatch = yield* orchestrator.dispatch({
       type: "run.interrupt",
       commandId: input.commandId,
       threadId: input.threadId,
-      runId: interruptibleRun.id,
+      runId: explicitRun?.id ?? interruptibleRun.id,
+      onlyIfActive: true,
       ...(input.reason === undefined ? {} : { reason: input.reason }),
     });
-    return { type: "interrupt_requested", run: interruptibleRun, dispatch } as const;
+    // The command resolves again under its lock; a restart may have admitted another run.
+    const interruptedRunId = dispatch.storedEvents.find(
+      ({ event }) =>
+        event.type === "turn-item.updated" && event.payload.type === "run_interrupt_request",
+    )?.event.runId;
+    const current = yield* getProjectThreadRecords(input, ["runs"]);
+    const selectedRun = current.runs.find((candidate) => candidate.id === interruptibleRun.id);
+    if (selectedRun === undefined) {
+      return yield* new ThreadManagementRunNotFoundError({
+        threadId: input.threadId,
+        runId: interruptibleRun.id,
+      });
+    }
+    const run =
+      current.runs.find((candidate) => candidate.id === interruptedRunId) ??
+      latestRestartContinuation(current.runs, selectedRun);
+    if (
+      interruptedRunId === undefined &&
+      isOrchestrationV2TerminalRunStatus(run.status) &&
+      !(yield* orchestrator.restartContinuationPending(run))
+    ) {
+      return {
+        type: "already_terminal",
+        run: run as OrchestrationV2Run & {
+          readonly status: OrchestrationV2TerminalRunStatus;
+        },
+      } as const;
+    }
+    return { type: "interrupt_requested", run, dispatch } as const;
   });
 
   const forceStopThread: ThreadManagementServiceShape["forceStopThread"] = Effect.fn(

@@ -134,6 +134,7 @@ import {
   continuationSource,
   continuationStartRetryDelayMs,
   isRestartContinuationSource,
+  latestRestartContinuation,
   isSettledRun,
   promptNeverDelivered,
   restartHeldBySnooze,
@@ -12531,7 +12532,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         turnItemStatuses: ["pending", "running", "waiting"],
       },
     );
-    const run = projection.runs.find((candidate) => candidate.id === command.runId);
+    const selectedRun = projection.runs.find((candidate) => candidate.id === command.runId);
+    const run =
+      selectedRun === undefined
+        ? undefined
+        : latestRestartContinuation(projection.runs, selectedRun);
+    if (
+      run !== undefined &&
+      projection.runs.some((candidate) => isActiveRun(candidate) && candidate.id !== run.id)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run ${command.runId} is not interruptible.`,
+      });
+    }
+    if (run !== undefined && run.status !== "queued" && !isActiveRun(run)) {
+      if (yield* awaitsRestartContinuation(run).pipe(mapDispatchError(command))) {
+        // Intake checks this durable marker under the same lock before starting a continuation.
+        const now = yield* DateTime.now;
+        yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
+        if (command.holdQueue === true) {
+          yield* holdStoppedThread({ command, events, projection, cohortRunIds: [run.id], now });
+        }
+        return;
+      }
+      if (command.onlyIfActive === true) return;
+    }
     const rootNode =
       run?.rootNodeId === null
         ? undefined
@@ -14810,6 +14837,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           // Someone may have answered, or the run is attended.
           command.type === "runtime-request.decline-unattended" ||
           command.type === "thread.stop" ||
+          // A run may finish before its interrupt acquires the lock.
+          command.type === "run.interrupt" ||
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||

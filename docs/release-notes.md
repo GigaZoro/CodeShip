@@ -1,3 +1,7 @@
+## 2026-11-16 — Run cancellation survives server restarts
+
+- Cancelling agent work by its run ID also stops the runs that continue it after a server restart, including a continuation waiting to start. Manual continuations and unrelated later turns stay untouched. MCP results identify the run cancellation reached and preserve the requested run ID when it differs.
+
 ## 2026-11-16 — Desktop app logs no longer carry e-mail addresses or credentials
 
 - The desktop app's own log lines on screen now replace e-mail addresses with `[email]` and credentials with `[redacted]`, as the server's do. A value logged after its name, such as `"token:"` followed by the token, is now hidden on screen and in OTLP log exports too.
