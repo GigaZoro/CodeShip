@@ -63,12 +63,7 @@ it.each(["resume", "draft", "question"] as const)(
     );
     await using screen = await render(view());
     using _timers = fakeTimers();
-    const stop = screen
-      .getByRole("button", { name: "Stop generation" })
-      .element() as HTMLButtonElement;
-    const { x, y, width, height } = stop.getBoundingClientRect();
-    const target = () =>
-      document.elementFromPoint(x + width / 2, y + height / 2)?.closest("button");
+    const stop = screen.getByRole("button", { name: "Stop agent" }).element() as HTMLButtonElement;
     await act(() => stop.click());
     await act(() =>
       (
@@ -86,23 +81,24 @@ it.each(["resume", "draft", "question"] as const)(
       }),
     );
     const action = { resume: "Resume thread", draft: "Submit message", question: "Submit" }[mode];
-    expect(screen.getByRole("button", { name: "Stop generation" }).query()).toBeNull();
-    expect(target()).toBe(screen.getByRole("button", { name: action, exact: true }).element());
+    expect(screen.getByRole("button", { name: "Stop agent" }).query()).toBeNull();
+    const target = () =>
+      screen.getByRole("button", { name: action, exact: true }).element() as HTMLButtonElement;
     await act(() => {
-      for (let i = 0; i < 20; i++) target()?.click();
+      for (let i = 0; i < 20; i++) target().click();
     });
     await act(() => vi.advanceTimersByTime(499));
-    await act(() => target()?.click());
+    await act(() => target().click());
     expect(props.onResume).not.toHaveBeenCalled();
     expect(props.onSubmitMessage).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
     await act(() => vi.advanceTimersByTime(1));
-    await act(() => target()?.click());
+    await act(() => target().click());
     expect(
       { resume: props.onResume, draft: props.onSubmitMessage, question: submit }[mode],
     ).toHaveBeenCalledTimes(1);
     await screen.rerender(view());
-    expect(screen.getByRole("button", { name: "Stop generation" }).element()).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Stop agent" }).element()).toBeEnabled();
   },
 );
 
@@ -111,17 +107,13 @@ it("allows retry after ten seconds and protects a late stop", async () => {
   await using screen = await render(<ComposerPrimaryActions {...props} />);
   using _timers = fakeTimers();
   await act(() =>
-    (
-      screen.getByRole("button", { name: "Stop generation" }).element() as HTMLButtonElement
-    ).click(),
+    (screen.getByRole("button", { name: "Stop agent" }).element() as HTMLButtonElement).click(),
   );
   await act(() => vi.advanceTimersByTime(9_999));
   expect(screen.getByRole("button", { name: "Stopping", exact: true }).element()).toBeDisabled();
   await act(() => vi.advanceTimersByTime(1));
   await act(() =>
-    (
-      screen.getByRole("button", { name: "Stop generation" }).element() as HTMLButtonElement
-    ).click(),
+    (screen.getByRole("button", { name: "Stop agent" }).element() as HTMLButtonElement).click(),
   );
   await screen.rerender(
     <ComposerPrimaryActions {...props} isRunning={false} canInterrupt={false} canResume />,
@@ -137,9 +129,7 @@ it("keeps Stop pending across a permission failure", async () => {
   const props = setup();
   await using screen = await render(<ComposerPrimaryActions {...props} />);
   await act(() =>
-    (
-      screen.getByRole("button", { name: "Stop generation" }).element() as HTMLButtonElement
-    ).click(),
+    (screen.getByRole("button", { name: "Stop agent" }).element() as HTMLButtonElement).click(),
   );
   await screen.rerender(
     <ComposerPrimaryActions {...props} canOperateThread={false} canInterrupt={false} />,
@@ -155,14 +145,12 @@ it("keeps a pending stop when the run id clears and resets it for a different ru
   const props = setup();
   await using screen = await render(<ComposerPrimaryActions {...props} runId="first" />);
   await act(() =>
-    (
-      screen.getByRole("button", { name: "Stop generation" }).element() as HTMLButtonElement
-    ).click(),
+    (screen.getByRole("button", { name: "Stop agent" }).element() as HTMLButtonElement).click(),
   );
   await screen.rerender(<ComposerPrimaryActions {...props} runId={null} />);
   expect(screen.getByRole("button", { name: "Stopping", exact: true }).element()).toBeDisabled();
   await screen.rerender(<ComposerPrimaryActions {...props} runId="second" />);
-  expect(screen.getByRole("button", { name: "Stop generation" }).element()).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Stop agent" }).element()).toBeEnabled();
 });
 
 it("swaps the collapsed composer's send button for Stop while a turn can be stopped", async () => {
@@ -183,9 +171,7 @@ it("swaps the collapsed composer's send button for Stop while a turn can be stop
   await expect.element(screen.getByRole("button", { name: "Send message" })).toBeVisible();
   await screen.rerender(collapsed());
   await act(() =>
-    (
-      screen.getByRole("button", { name: "Stop generation" }).element() as HTMLButtonElement
-    ).click(),
+    (screen.getByRole("button", { name: "Stop agent" }).element() as HTMLButtonElement).click(),
   );
   expect(onInterrupt).toHaveBeenCalledTimes(1);
   await expect
