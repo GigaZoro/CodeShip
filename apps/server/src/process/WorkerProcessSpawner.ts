@@ -36,6 +36,7 @@ const GRACE_MS = 1000;
 const POLL_MS = 10;
 const HIGH_WATER_BYTES = 1 << 20;
 const STAT_STATE = 0;
+const STAT_PPID = 1;
 const STAT_START_TIME = 19;
 const STOP_TREE_ARGS = ${JSON.stringify(WINDOWS_STOP_TREE_ARGS)};
 const STOP_TREE_TIMEOUT_MS = ${STOP_TREE_TIMEOUT_MS};
@@ -82,7 +83,17 @@ const nap = new Int32Array(new SharedArrayBuffer(4));
 const killAsExitArrives = (pid) => {
   process.kill(pid, "SIGKILL");
   const until = performance.now() + GRACE_MS;
-  while (procStat(pid)[STAT_STATE] !== "Z" && performance.now() < until) Atomics.wait(nap, 0, 0, 1);
+  while (procStat(pid)[STAT_STATE] !== "Z") {
+    if (performance.now() > until) throw new Error("Leader " + pid + " did not become a zombie");
+    Atomics.wait(nap, 0, 0, 1);
+  }
+};
+// Start times count clock ticks, so only this process's own child with the start time recorded at
+// spawn is the leader.
+const isLeader = (entry) => {
+  if (entry.startTime === undefined) return false;
+  const stat = procStat(entry.child.pid);
+  return stat[STAT_PPID] === String(process.pid) && stat[STAT_START_TIME] === entry.startTime;
 };
 // POSIX gives no process the pid of a group that still exists, so once the leader was reaped, a
 // process holding its pid means the group ended and its id may name another's.
@@ -195,7 +206,7 @@ const relayOutput = (entry, fd) => {
   stream.on("error", (error) => close({ type: "streamError", id: entry.id, fd, error: describe(error) }));
 };
 
-const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, leaderAtExit }) => {
+const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, killLeaderAtExit }) => {
   if (stallMs > 0) Atomics.wait(nap, 0, 0, stallMs);
   let child;
   // The system's clock, which a Windows tree walk compares with process creation times.
@@ -210,7 +221,8 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     id,
     child,
     root: { pid: child.pid, since, spawnedAt: Date.now() },
-    // Until its exit event the child is unreaped, so the pid is still its own.
+    // Until its exit event the child is unreaped, so the pid is still its own. Without a readable
+    // /proc it stays unknown and every exit counts as a reap, as on macOS.
     startTime: process.platform === "linux" ? procStat(child.pid)[STAT_START_TIME] : undefined,
     exit: null,
     started: false,
@@ -236,14 +248,11 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     post({ type: "spawned", id, root: entry.root });
   });
   child.on("exit", (code, signal) => {
-    if (leaderAtExit === "killed") killAsExitArrives(child.pid);
+    if (killLeaderAtExit) killAsExitArrives(child.pid);
     // Linux hands waitpid the ptrace stop of a child that made this process its tracer, and Node
     // reports it as an exit. That leader still holds its pid, stopped or, once killed, as a zombie;
-    // a holder with another start time took the pid after a real reap.
-    const held = leaderAtExit === "held" || holdsPid(child.pid);
-    const leaderHolds =
-      held && entry.startTime !== undefined && procStat(child.pid)[STAT_START_TIME] === entry.startTime;
-    entry.exit = { code, signal, reaped: !leaderHolds };
+    // any other holder took the pid after a real reap.
+    entry.exit = { code, signal, reaped: !isLeader(entry) };
     post({ type: "exit", id, code, signal, reaped: entry.exit.reaped });
     // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
     if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
@@ -585,7 +594,7 @@ let nextId = 0;
 let nextSeq = 0;
 let startStallMs = 0;
 let workerStartsFail = false;
-let leaderAtExit: "held" | "killed" | undefined;
+let killLeadersAtExit = false;
 
 // An idle worker must not keep the process alive; a referenced child or a pending request does.
 const hold = (connection: Connection) => {
@@ -901,7 +910,7 @@ const launch = (
       type: "spawn",
       id,
       stallMs: startStallMs,
-      leaderAtExit,
+      killLeaderAtExit: killLeadersAtExit,
     });
     return Effect.sync(() => {
       if (child.starting === undefined) return;
@@ -1169,17 +1178,6 @@ const make = Effect.gen(function* () {
   return ChildProcessSpawner.make(spawnCommand);
 });
 
-const atLeaderExit = (mode: "held" | "killed") =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      leaderAtExit = mode;
-    }),
-    () =>
-      Effect.sync(() => {
-        leaderAtExit = undefined;
-      }),
-  );
-
 /** @internal Exported for tests. */
 export const __testing = {
   /** Within the scope, the worker blocks this long before each start, as a slow CreateProcessW does. */
@@ -1203,12 +1201,17 @@ export const __testing = {
         workerStartsFail = false;
       }),
   ),
-  /** Within the scope, another process holds each leader's pid when its exit arrives, as when the
-   * system reused it at once. */
-  leadersHeldAtExit: atLeaderExit("held"),
   /** Within the scope, each Linux leader at a ptrace stop is killed as its exit arrives, before the
    * worker looks at its pid. */
-  leadersKilledAtExit: atLeaderExit("killed"),
+  leadersKilledAtExit: Effect.acquireRelease(
+    Effect.sync(() => {
+      killLeadersAtExit = true;
+    }),
+    () =>
+      Effect.sync(() => {
+        killLeadersAtExit = false;
+      }),
+  ),
   /** Ends the worker the way a crash does; the next spawn starts a new one. */
   stopWorker: Effect.promise(async () => {
     await current?.worker.terminate();
