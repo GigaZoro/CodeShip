@@ -15,7 +15,8 @@ function isolateGit() {
   for (const name of Object.keys(process.env)) {
     if (name.startsWith("GIT_")) vi.stubEnv(name, undefined);
   }
-  vi.stubEnv("GIT_CONFIG_GLOBAL", NodeOS.devNull);
+  // git reads /dev/null on Windows too; Git for Windows 2.43 cannot open os.devNull (\\.\nul).
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
   vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   vi.stubEnv("GIT_AUTHOR_NAME", "Fixture");
   vi.stubEnv("GIT_AUTHOR_EMAIL", "fixture@example.invalid");

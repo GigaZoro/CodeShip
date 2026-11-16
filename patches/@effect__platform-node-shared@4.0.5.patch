@@ -1,0 +1,85 @@
+diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
+index 16dedd52262a0343df11fb14496f5f9f2a0f1e92..43cac9d56312146d6861370781a6e2351b983007 100644
+--- a/dist/NodeChildProcessSpawner.js
++++ b/dist/NodeChildProcessSpawner.js
+@@ -11,6 +11,7 @@ import { ChildProcessSpawner, ExitCode, make as makeSpawner, makeHandle, Process
+ import * as Sink from "effect/Sink";
+ import * as Stream from "effect/Stream";
+ import * as NodeChildProcess from "node:child_process";
++import { Socket } from "node:net";
+ import { PassThrough } from "node:stream";
+ import { buildSpawnOptions } from "./internal/nodeChildProcessSpawner.js";
+ import { handleErrnoException } from "./internal/utils.js";
+@@ -311,6 +312,14 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+       catch: error => toPlatformError("kill", toError(error), command)
+     });
+   };
++  // A process that outlives the one spawned holds the pipes it inherited until it ends, so they reach
++  // EOF only then. Unreferenced, they no longer keep this process's event loop running, and a reader
++  // that outlives the scope still gets what that process writes.
++  const unrefStdio = childProcess => {
++    for (const stream of childProcess.stdio) {
++      if (stream instanceof Socket) stream.unref();
++    }
++  };
+   const killProcessGroupOnExit = (childProcess, signal) => {
+     if (globalThis.process.platform === "win32") {
+       // ignore errors during best-effort cleanup
+@@ -417,12 +426,14 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+               } else if (isReferenced && process.platform !== "win32" && cmd.options.detached !== false) {
+                 yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options));
+               }
++              unrefStdio(childProcess);
+               return;
+             }
+             if (!isReferenced) {
+               return;
+             }
+             yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options));
++            unrefStdio(childProcess);
+           }));
+           const pid = ProcessId(childProcess.pid);
+           childProcess.on("exit", code => {
+diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
+index 77a1384e8033988c54df4c6bf48654039dd3b16f..f7f573a9327894c28be36f8e0f9dbacf6c8d10ad 100644
+--- a/src/NodeChildProcessSpawner.ts
++++ b/src/NodeChildProcessSpawner.ts
+@@ -52,6 +52,7 @@ import type * as Scope from "effect/Scope"
+ import * as Sink from "effect/Sink"
+ import * as Stream from "effect/Stream"
+ import * as NodeChildProcess from "node:child_process"
++import { Socket } from "node:net"
+ import { PassThrough, type Writable } from "node:stream"
+ import { buildSpawnOptions } from "./internal/nodeChildProcessSpawner.ts"
+ import { handleErrnoException } from "./internal/utils.ts"
+@@ -432,6 +433,15 @@ const make = Effect.gen(function*() {
+     })
+   }
+ 
++  // A process that outlives the one spawned holds the pipes it inherited until it ends, so they reach
++  // EOF only then. Unreferenced, they no longer keep this process's event loop running, and a reader
++  // that outlives the scope still gets what that process writes.
++  const unrefStdio = (childProcess: NodeChildProcess.ChildProcess): void => {
++    for (const stream of childProcess.stdio) {
++      if (stream instanceof Socket) stream.unref()
++    }
++  }
++
+   const killProcessGroupOnExit = (
+     childProcess: NodeChildProcess.ChildProcess,
+     signal: NodeJS.Signals
+@@ -571,12 +581,14 @@ const make = Effect.gen(function*() {
+               } else if (isReferenced && process.platform !== "win32" && cmd.options.detached !== false) {
+                 yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options))
+               }
++              unrefStdio(childProcess)
+               return
+             }
+             if (!isReferenced) {
+               return
+             }
+             yield* Effect.ignore(terminateProcessGroup(cmd, childProcess, exitSignal, cmd.options))
++            unrefStdio(childProcess)
+           })
+         )
+ 

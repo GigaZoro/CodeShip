@@ -403,6 +403,11 @@ patchedDependencies:
   # 127.0.0.1 listener on the same port answers in its place (PeerLinks.test.ts). Drop it once
   # Effect's layerTest names its host.
   "@effect/platform-node@4.0.5": patches/@effect__platform-node@4.0.5.patch
+  # Once the scope that owns a spawned process closes and the process has ended or been ended, its
+  # stdio pipes stop holding the event loop, so a descendant that inherited them cannot keep this
+  # process alive, while their readers still get what it writes (check-changed.test.ts). Drop it
+  # once Effect does this itself.
+  "@effect/platform-node-shared@4.0.5": patches/@effect__platform-node-shared@4.0.5.patch
 
 peerDependencyRules:
   allowAny:

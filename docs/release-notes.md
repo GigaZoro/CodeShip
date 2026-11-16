@@ -29,6 +29,10 @@
 
 - Moving a checkout while a turn names a worktree folder that has since been deleted failed with a git error. A folder that is gone now counts as no repository, so the move proceeds.
 
+## 2026-11-18 — `check:changed` stops a git call that runs away
+
+- **Maintenance:** every git call `vp run check:changed` makes now fails after 5 minutes and its process is killed, so a listing that runs away can no longer hold a core for the rest of the run. Each call normally takes seconds. A git that ignores the stop signal is force-killed 5 seconds later, and a comparison with a remote's `main` that runs out of time fails the run instead of passing for a missing ref. A process that git started and that still holds git's output no longer keeps the run from exiting.
+
 ## 2026-11-18 — `check:changed` starts its checks in seconds on Windows
 
 - Maintainers: before its first check, `vp run check:changed` lists the ignored generated sources, declarations and env files its cache depends on. On Windows, Git followed pnpm's `node_modules` links into every package's dependencies, so that listing could take over an hour. It now skips `node_modules` and never follows links, and the run prints how long the listing took.
