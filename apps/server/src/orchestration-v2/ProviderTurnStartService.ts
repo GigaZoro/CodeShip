@@ -2328,7 +2328,8 @@ export const layer: Layer.Layer<
           if (rootNode === undefined || attempt === undefined) {
             return yield* new ProviderTurnStartRunStateMissingError({ runId });
           }
-          // Our own start bookkeeping errors mean nothing to a user; the server logs carry them.
+          // A provider's error names the reason; our own start bookkeeping errors mean nothing to
+          // a user, so they get the generic message below and stay in the server logs.
           if (cause instanceof Error && !isProviderTurnStartError(cause)) {
             return yield* settleUnstartedRunFailure(
               { projection, run, attempt, rootNode },
