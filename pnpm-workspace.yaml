@@ -407,7 +407,11 @@ patchedDependencies:
   "@effect/platform-node@4.0.5": patches/@effect__platform-node@4.0.5.patch
   # Effect ends a Windows tree with taskkill /T, which ends descendants by pid from a snapshot and
   # can end a program that took a pid meanwhile. The patch ends only the leader; endingWindowsTrees
-  # ends the descendants through its checked walk. Drop it once Effect stops using taskkill.
+  # ends the descendants through its checked walk. Drop this part once Effect stops using taskkill.
+  # Once the scope that owns a spawned process closes and the process has ended or been ended, its
+  # stdio pipes stop holding the event loop, so a descendant that inherited them cannot keep this
+  # process alive, while their readers still get what it writes (check-changed.test.ts). Drop this
+  # part once Effect does this itself.
   "@effect/platform-node-shared@4.0.5": patches/@effect__platform-node-shared@4.0.5.patch
 
 peerDependencyRules:

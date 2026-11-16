@@ -365,36 +365,66 @@ const decodeRootPackageJson = Schema.decodeEffect(
 const collectBytes = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
   Stream.runCollect(stream).pipe(Effect.map((chunks) => Buffer.concat(chunks)));
 
-// Fails on a nonzero exit: an empty file list from a broken index would
-// otherwise pass as "no changes". quotePath=false keeps non-ASCII paths as real
-// paths instead of quoted escapes.
-export const git = Effect.fn("checkChanged.git")(function* (
+// A git call that runs away fails the run and is killed, instead of holding a core until someone
+// notices. Each call here takes seconds even on a large worktree.
+export const GIT_TIMEOUT = "5 minutes";
+
+// Reports git's exit code; a call past GIT_TIMEOUT fails. Without forceKillAfter the spawner sends
+// only SIGTERM and then waits for the exit, so a git that ignores it would hold the run forever.
+// quotePath=false keeps non-ASCII paths as real paths instead of quoted escapes.
+const gitRun = Effect.fn("checkChanged.gitRun")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
   env: Record<string, string> = {},
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  return yield* Effect.scoped(
+  const run = Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
         ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], {
           cwd,
           env: { ...REAL_HISTORY_ENV, ...env },
           extendEnv: true,
+          forceKillAfter: "5 seconds",
         }),
       );
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [collectBytes(handle.stdout), collectBytes(handle.stderr), handle.exitCode],
         { concurrency: "unbounded" },
       );
-      if (exitCode !== 0) {
-        return yield* Effect.fail(
-          `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
-        );
-      }
-      return stdout;
+      return { stdout, stderr, exitCode };
     }),
   );
+  return yield* Effect.timeoutOrElse(run, {
+    duration: GIT_TIMEOUT,
+    orElse: () =>
+      Effect.fail(`check:changed: git ${args.join(" ")} did not finish within ${GIT_TIMEOUT}`),
+  });
+});
+
+// Fails on an exit `allowed` does not name, with git's message: an empty file list from a broken
+// index would otherwise pass as "no changes".
+const gitAllowing = Effect.fn("checkChanged.gitAllowing")(function* (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  allowed: ReadonlyArray<number>,
+  env: Record<string, string> = {},
+) {
+  const { stdout, stderr, exitCode } = yield* gitRun(cwd, args, env);
+  if (!allowed.includes(exitCode)) {
+    return yield* Effect.fail(
+      `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
+    );
+  }
+  return { stdout, exitCode };
+});
+
+export const git = Effect.fn("checkChanged.git")(function* (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  env: Record<string, string> = {},
+) {
+  return (yield* gitAllowing(cwd, args, [0], env)).stdout;
 });
 export const gitLines = (cwd: string, args: ReadonlyArray<string>) =>
   git(cwd, args).pipe(Effect.map((stdout) => stdout.toString().split("\n").filter(Boolean)));
@@ -417,11 +447,19 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
       }));
   let closest: { ref: string; base: string; ahead: number } | undefined;
   for (const { ref, rev } of candidates) {
-    const base = yield* git(root, ["merge-base", head, rev]).pipe(
-      Effect.map((stdout) => stdout.toString().trim()),
-      Effect.orElseSucceed(() => undefined),
+    // A ref that does not exist (rev-parse exits 1) or shares no history with HEAD (merge-base exits
+    // 1) rules the candidate out. Any other failure fails the run with git's message: merge-base
+    // exits 128 for a missing ref too, but also for a ref to a commit this clone lacks, which
+    // `git fetch` repairs and skipping would hide.
+    const named = yield* gitAllowing(
+      root,
+      ["rev-parse", "--verify", "--quiet", "--end-of-options", rev],
+      [0, 1],
     );
-    if (!base) continue;
+    if (named.exitCode !== 0) continue;
+    const found = yield* gitAllowing(root, ["merge-base", head, rev], [0, 1]);
+    if (found.exitCode !== 0) continue;
+    const base = found.stdout.toString().trim();
     const ahead = Number(
       (yield* git(root, ["rev-list", "--count", base + ".." + head])).toString(),
     );
@@ -442,7 +480,7 @@ const CODE = /\.[cm]?[jt]sx?$/;
 // through is a file, it is a folder where a file was read, or it is a link that leads back to
 // itself, which Git cannot read either.
 const ABSENT = new Set(["ENOENT", "ENOTDIR", "EISDIR", "ELOOP"]);
-const unlessAbsent = <A>(read: Promise<A>) =>
+const unlessAbsentAsync = <A>(read: Promise<A>) =>
   read.catch((error: NodeJS.ErrnoException) => {
     if (error.code !== undefined && ABSENT.has(error.code)) return undefined;
     throw error;
@@ -457,7 +495,7 @@ const OPEN_WITHOUT_WAITING = NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NON
 // there would hold a read until something writes to it, which may be never, so the open does not
 // wait and only a regular file is read.
 const readGitFile = async (path: string) => {
-  const file = await unlessAbsent(NodeFSP.open(path, OPEN_WITHOUT_WAITING));
+  const file = await unlessAbsentAsync(NodeFSP.open(path, OPEN_WITHOUT_WAITING));
   if (file === undefined) return undefined;
   try {
     if (!(await file.stat()).isFile()) return undefined;
@@ -477,9 +515,9 @@ const GIT_HEAD = /^(?:ref:\s*refs\/|[0-9a-fA-F]{40})/;
 // Git takes a HEAD that links to a path under refs/ without following it, as an older Git wrote
 // one, so it holds even for a branch with no commit yet; it takes a link anywhere else for no HEAD.
 const isGitHead = async (path: string) => {
-  const info = await unlessAbsent(NodeFSP.lstat(path));
+  const info = await unlessAbsentAsync(NodeFSP.lstat(path));
   if (info?.isSymbolicLink()) {
-    return (await unlessAbsent(NodeFSP.readlink(path)))?.startsWith("refs/") === true;
+    return (await unlessAbsentAsync(NodeFSP.readlink(path)))?.startsWith("refs/") === true;
   }
   const head = await readGitFile(path);
   return head !== undefined && GIT_HEAD.test(head);
@@ -493,7 +531,7 @@ const isGitDirectory = async (directory: string) => {
   const shared =
     common === undefined ? directory : NodePath.resolve(directory, common.replace(/[\r\n]+$/, ""));
   const folders = await Promise.all(
-    ["objects", "refs"].map((name) => unlessAbsent(NodeFSP.stat(NodePath.join(shared, name)))),
+    ["objects", "refs"].map((name) => unlessAbsentAsync(NodeFSP.stat(NodePath.join(shared, name)))),
   );
   return folders.every((info) => info?.isDirectory() === true);
 };
@@ -503,7 +541,7 @@ const isGitDirectory = async (directory: string) => {
 // as a marker file a tool leaves, is no repository, and Git lists what is beside it.
 const isNestedRepository = async (folder: string) => {
   const dotGit = NodePath.join(folder, ".git");
-  const info = await unlessAbsent(NodeFSP.stat(dotGit));
+  const info = await unlessAbsentAsync(NodeFSP.stat(dotGit));
   if (info?.isDirectory()) return isGitDirectory(dotGit);
   if (!info?.isFile()) return false;
   const text = await readGitFile(dotGit);
@@ -547,8 +585,10 @@ export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (
     if (name === "node_modules") return true;
     if (name.toLowerCase() !== "node_modules") return false;
     const [named, lowercase] = await Promise.all([
-      unlessAbsent(NodeFSP.lstat(NodePath.join(root, parent, name), { bigint: true })),
-      unlessAbsent(NodeFSP.stat(NodePath.join(root, parent, "node_modules"), { bigint: true })),
+      unlessAbsentAsync(NodeFSP.lstat(NodePath.join(root, parent, name), { bigint: true })),
+      unlessAbsentAsync(
+        NodeFSP.stat(NodePath.join(root, parent, "node_modules"), { bigint: true }),
+      ),
     ]);
     return named !== undefined && named.ino === lowercase?.ino && named.dev === lowercase.dev;
   };
@@ -573,11 +613,11 @@ export const ignoredInputs = Effect.fn("checkChanged.ignoredInputs")(function* (
       if (seen.has(file) || (await inNodeModules(file))) return;
       seen.add(file);
       const absolute = NodePath.join(root, file);
-      const info = await unlessAbsent(NodeFSP.lstat(absolute));
+      const info = await unlessAbsentAsync(NodeFSP.lstat(absolute));
       if (info === undefined) return;
       if (info.isDirectory() && !info.isSymbolicLink()) {
         const entries =
-          (await unlessAbsent(NodeFSP.readdir(absolute, { withFileTypes: true }))) ?? [];
+          (await unlessAbsentAsync(NodeFSP.readdir(absolute, { withFileTypes: true }))) ?? [];
         const hasDotGit = entries.some((entry) => entry.name.toLowerCase() === ".git");
         if (hasDotGit && (await isNestedRepository(absolute))) {
           if (matches(`${file}/`)) files.add(`${file}/`);
