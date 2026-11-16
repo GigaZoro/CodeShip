@@ -451,7 +451,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 created_at,
                 updated_at
               )
-              VALUES (
+              SELECT
                 ${effect.id},
                 ${effect.commandId},
                 ${effect.threadId},
@@ -462,6 +462,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 ${DateTime.formatIso(effect.availableAt ?? now)},
                 ${nowIso},
                 ${nowIso}
+              -- A producer can read before Stop and enqueue after it; test the marker in this write.
+              WHERE NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_turn_items
+                WHERE thread_id = ${effect.threadId}
+                  AND run_id = ${effect.request.type === "provider-runtime.continue" ? effect.request.sourceRunId : null}
+                  AND type = 'run_interrupt_request'
               )
               ON CONFLICT(effect_id) DO UPDATE SET
                 command_id = excluded.command_id,
