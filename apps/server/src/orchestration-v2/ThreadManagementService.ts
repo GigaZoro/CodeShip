@@ -1259,16 +1259,6 @@ const make = Effect.gen(function* () {
     const activeRun = latestActiveRun(target);
     const interruptibleRun =
       explicitRun === undefined ? activeRun : latestRestartContinuation(target.runs, explicitRun);
-    if (
-      explicitRun !== undefined &&
-      activeRun !== undefined &&
-      activeRun.id !== interruptibleRun?.id
-    ) {
-      return yield* new ThreadManagementThreadNotInterruptibleError({
-        threadId: input.threadId,
-        runId: explicitRun.id,
-      });
-    }
     if (interruptibleRun === undefined) {
       if (input.runId === undefined) {
         return { type: "no_active_run" } as const;
@@ -1311,11 +1301,7 @@ const make = Effect.gen(function* () {
     const run =
       current.runs.find((candidate) => candidate.id === interruptedRunId) ??
       latestRestartContinuation(current.runs, selectedRun);
-    if (
-      interruptedRunId === undefined &&
-      isOrchestrationV2TerminalRunStatus(run.status) &&
-      !(yield* orchestrator.restartContinuationPending(run))
-    ) {
+    if (interruptedRunId === undefined && isOrchestrationV2TerminalRunStatus(run.status)) {
       return {
         type: "already_terminal",
         run: run as OrchestrationV2Run & {

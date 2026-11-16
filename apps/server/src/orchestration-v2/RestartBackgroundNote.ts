@@ -23,6 +23,12 @@ import * as DateTime from "effect/DateTime";
 type Work = OrchestrationV2RestartCancelledBackgroundWork;
 type Attempt = Pick<OrchestrationV2RunAttempt, "id" | "runId" | "backgroundWorkNote">;
 
+export const runStopRequested = (
+  runId: RunId,
+  turnItems: ReadonlyArray<Pick<OrchestrationV2TurnItem, "runId" | "type">>,
+): boolean =>
+  turnItems.some((item) => item.runId === runId && item.type === "run_interrupt_request");
+
 export function latestRestartContinuation(
   runs: ReadonlyArray<OrchestrationV2Run>,
   run: OrchestrationV2Run,

@@ -50,6 +50,7 @@ import {
   isStarting,
   lostBackgroundWorkRecord,
   lostWorkRecordRun,
+  runStopRequested,
 } from "./RestartBackgroundNote.ts";
 
 export class ProviderEventNormalizeError extends Schema.TaggedError<ProviderEventNormalizeError>()(
@@ -583,10 +584,17 @@ export const layer: Layer.Layer<
       const { threadId } = recorded.event;
       const commandId = CommandId.make(`command:background-work-lost:${runId}`);
       yield* Effect.gen(function* () {
-        const { runs } = yield* projections.getThreadRecords(threadId, ["runs"], {
-          runIds: [runId],
-        });
-        if (runs[0] === undefined || !isSettledRun(runs[0])) return;
+        const { runs, turnItems } = yield* projections.getThreadRecords(
+          threadId,
+          ["runs", "turnItems"],
+          {
+            runIds: [runId],
+            turnItemRunIds: [runId],
+            turnItemTypes: ["run_interrupt_request"],
+          },
+        );
+        if (runs[0] === undefined || !isSettledRun(runs[0]) || runStopRequested(runId, turnItems))
+          return;
         yield* eventSink
           .writeWithEffects({
             commandId,
@@ -597,6 +605,7 @@ export const layer: Layer.Layer<
           })
           .pipe(retryLockTimeout);
       }).pipe(
+        (effect) => threadCommands.withLock(threadId, effect),
         Effect.catchCause((cause) =>
           Effect.logWarning("Failed to queue the wake for lost background work", {
             threadId,

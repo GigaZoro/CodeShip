@@ -87,7 +87,16 @@ const layerReceiptsTest = CommandReceiptStore.layer.pipe(
   Layer.provide(SqlitePersistence.layerMemory),
 );
 
-it.effect.each(["active", "pending", "manual", "unrelated", "ended", "racing"] as const)(
+it.effect.each([
+  "active",
+  "pending",
+  "manual",
+  "unrelated",
+  "ended",
+  "racing",
+  "failed-unprepared",
+  "lost-work",
+] as const)(
   "interruptThread follows only the restart chain when its continuation is %s",
   (scenario) =>
     Effect.gen(function* () {
@@ -178,6 +187,15 @@ it.effect.each(["active", "pending", "manual", "unrelated", "ended", "racing"] a
                 ? {}
                 : { restartContinuationOfRunId: middle.id }),
             ...(scenario === "ended" ? { status: "completed", completedAt: now } : {}),
+            ...(scenario === "failed-unprepared"
+              ? { status: "failed", completedAt: now, rootNodeId: null, providerThreadId: null }
+              : scenario === "lost-work"
+                ? {
+                    status: "completed",
+                    completedAt: now,
+                    restartCancelledBackgroundWork: [{ kind: "task", label: "lost task" }],
+                  }
+                : {}),
           });
         }
         const before = yield* projections.getThreadProjection(threadId);
@@ -230,10 +248,19 @@ it.effect.each(["active", "pending", "manual", "unrelated", "ended", "racing"] a
           })
           .pipe(Effect.result);
         if (scenario === "manual" || scenario === "unrelated") {
-          expect(Result.isFailure(result) && result.failure).toMatchObject({
-            _tag: "ThreadManagementThreadNotInterruptibleError",
-            runId: source.id,
+          expect(Result.isSuccess(result) && result.success).toMatchObject({
+            type: "already_terminal",
+            run: { id: middle.id },
           });
+          expect(
+            yield* orchestrator.dispatch({
+              type: "run.interrupt",
+              commandId: CommandId.make("interrupt-ended-under-lock"),
+              threadId,
+              runId: source.id,
+              onlyIfActive: true,
+            }),
+          ).toMatchObject({ storedEvents: [] });
           expect((yield* projections.getThreadProjection(threadId)).runs).toEqual(before.runs);
           return;
         }
@@ -242,7 +269,11 @@ it.effect.each(["active", "pending", "manual", "unrelated", "ended", "racing"] a
           type: scenario === "ended" ? "already_terminal" : "interrupt_requested",
           run: { id: latest.id },
         });
-        if (scenario === "pending") {
+        if (
+          scenario === "pending" ||
+          scenario === "failed-unprepared" ||
+          scenario === "lost-work"
+        ) {
           expect(
             yield* service.interruptThread({
               projectId,
@@ -250,7 +281,7 @@ it.effect.each(["active", "pending", "manual", "unrelated", "ended", "racing"] a
               runId: source.id,
               commandId: CommandId.make("interrupt-pending-again"),
             }),
-          ).toMatchObject({ type: "interrupt_requested", run: { id: latest.id } });
+          ).toMatchObject({ type: "already_terminal", run: { id: latest.id } });
           yield* send("late-restart", latest.id);
           const after = yield* projections.getThreadProjection(threadId);
           expect(after.runs).toEqual(before.runs);
@@ -266,6 +297,17 @@ it.effect.each(["active", "pending", "manual", "unrelated", "ended", "racing"] a
             status: "interrupted",
           });
         }
+        yield* send("later-work");
+        const later = yield* projections.getThreadProjection(threadId);
+        expect(
+          yield* service.interruptThread({
+            projectId,
+            threadId,
+            runId: source.id,
+            commandId: CommandId.make("interrupt-after-later-work"),
+          }),
+        ).toMatchObject({ type: "already_terminal", run: { id: latest.id } });
+        expect((yield* projections.getThreadProjection(threadId)).runs).toEqual(later.runs);
       }).pipe(Effect.provide(layer));
     }),
 );

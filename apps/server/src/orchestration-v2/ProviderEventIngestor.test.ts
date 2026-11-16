@@ -2369,9 +2369,10 @@ it.effect.each([
   { ending: "ended on its own after its turn", status: "completed", cause: undefined, wakes: true },
   { ending: "was closed by a Stop", status: "completed", cause: "stopped", wakes: false },
   { ending: "ended on its own during its turn", status: "running", cause: undefined, wakes: false },
+  { ending: "ended after a durable Stop", status: "completed", cause: undefined, wakes: false },
 ] as const)(
   "records the background task lost with a process that $ending, and wakes only a settled run nobody stopped",
-  ({ status, cause, wakes }) =>
+  ({ ending, status, cause, wakes }) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const eventSink = yield* EventSink.EventSinkV2;
@@ -2419,6 +2420,33 @@ it.effect.each([
         ],
       });
 
+      if (ending === "ended after a durable Stop") {
+        yield* projectionStore.apply({
+          id: yield* idAllocator.allocate.event(),
+          type: "turn-item.updated",
+          threadId,
+          runId: lostRunId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make("stop:lost-work"),
+            threadId,
+            runId: lostRunId,
+            nodeId: NodeId.make("node:lost-work"),
+            providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            status: "completed",
+            title: "Stop",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "run_interrupt_request",
+            message: "Stopped by user",
+          },
+        });
+      }
       yield* ingestor.ingestNormalized({
         providerSessionId,
         providerInstanceId: modelSelection.instanceId,

@@ -126,7 +126,7 @@ import {
   visibleConversationItems,
   visibleDeltaRunOrdinals,
 } from "./ContextHandoffService.ts";
-import { continuesAfterRestart } from "./RestartContinuation.ts";
+import { continuesAfterRestart, restartResumeRun } from "./RestartContinuation.ts";
 import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
 import {
   backgroundWorkStoppedNoticeId,
@@ -135,6 +135,7 @@ import {
   continuationStartRetryDelayMs,
   isRestartContinuationSource,
   latestRestartContinuation,
+  runStopRequested,
   isSettledRun,
   promptNeverDelivered,
   restartHeldBySnooze,
@@ -2643,10 +2644,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const projection = yield* projectionStore.getThreadRecords(
       threadId,
       ["runs", "providerTurns", "turnItems"],
-      { turnItemTypes: ["error"], turnItemRunIds: [runId] },
+      { turnItemTypes: ["error", "run_interrupt_request"], turnItemRunIds: [runId] },
     );
     const run = projection.runs.find((candidate) => candidate.id === runId);
-    if (run === undefined) return;
+    if (run === undefined || runStopRequested(runId, projection.turnItems)) return;
     const delayMs = continuationStartRetryDelayMs(run, projection);
     if (delayMs === undefined) return;
     const commandId = CommandId.make(`command:restart-continuation-retry:${run.id}`);
@@ -11984,7 +11985,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         turnItemRunIds: [runId],
       })
       .pipe(
-        Effect.map(({ turnItems }) => turnItems.length > 0),
+        Effect.map(({ turnItems }) => runStopRequested(runId, turnItems)),
         mapDispatchError(command),
       );
 
@@ -11999,7 +12000,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly now: DateTime.Utc;
   }) {
     const { command, events, thread, run, now } = input;
-    if (run.rootNodeId === null || run.providerThreadId === null) return;
     const pendingItems = (yield* Ref.get(events)).flatMap((event) =>
       event.type === "turn-item.updated" ? [event.payload] : [],
     );
@@ -12016,7 +12016,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       type: "turn-item.updated",
       threadId: thread.id,
       runId: run.id,
-      nodeId: run.rootNodeId,
+      ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
       providerInstanceId: run.providerInstanceId,
       occurredAt: now,
       payload: {
@@ -12122,7 +12122,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         (run.status === "cancelled" ||
           (run.status === "failed" && run.restartContinuationOfRunId !== undefined)) &&
-        (yield* awaitsRestartContinuation(run).pipe(mapDispatchError(input.command)))
+        (yield* canAutomaticallyContinueRun(run, runs).pipe(mapDispatchError(input.command)))
       ) {
         yield* markStoppedRun({ ...input, thread, run });
       }
@@ -12537,6 +12537,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       selectedRun === undefined
         ? undefined
         : latestRestartContinuation(projection.runs, selectedRun);
+    if (command.onlyIfActive === true && run !== undefined && !isActiveRun(run)) {
+      if (
+        yield* canAutomaticallyContinueRun(run, projection.runs).pipe(mapDispatchError(command))
+      ) {
+        // Intake checks this durable marker under the same lock before starting a continuation.
+        const now = yield* DateTime.now;
+        yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
+        if (command.holdQueue === true) {
+          yield* holdStoppedThread({ command, events, projection, cohortRunIds: [run.id], now });
+        }
+      }
+      return;
+    }
     if (
       run !== undefined &&
       projection.runs.some((candidate) => isActiveRun(candidate) && candidate.id !== run.id)
@@ -12546,18 +12559,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Run ${command.runId} is not interruptible.`,
       });
-    }
-    if (run !== undefined && run.status !== "queued" && !isActiveRun(run)) {
-      if (yield* awaitsRestartContinuation(run).pipe(mapDispatchError(command))) {
-        // Intake checks this durable marker under the same lock before starting a continuation.
-        const now = yield* DateTime.now;
-        yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
-        if (command.holdQueue === true) {
-          yield* holdStoppedThread({ command, events, projection, cohortRunIds: [run.id], now });
-        }
-        return;
-      }
-      if (command.onlyIfActive === true) return;
     }
     const rootNode =
       run?.rootNodeId === null
@@ -13468,6 +13469,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Option.exists((effect) => effect.status === "pending" || effect.status === "running"),
         ),
       );
+
+  const canAutomaticallyContinueRun = Effect.fn("Orchestrator.canAutomaticallyContinueRun")(
+    function* (run: OrchestrationV2Run, runs: ReadonlyArray<OrchestrationV2Run>) {
+      if (supersededRun(run, runs)) return false;
+      const records = yield* projectionStore.getThreadRecords(
+        run.threadId,
+        ["providerTurns", "turnItems"],
+        { turnItemTypes: ["error", "run_interrupt_request"], turnItemRunIds: [run.id] },
+      );
+      if (runStopRequested(run.id, records.turnItems)) return false;
+      if (yield* awaitsRestartContinuation(run)) return true;
+      if (continuationStartRetryDelayMs(run, { ...records, runs }) !== undefined) return true;
+      if (!isSettledRun(run)) return false;
+      if (isRestartContinuationSource(run, records.providerTurns)) return true;
+      const recovery = yield* projectionStore.getRuntimeRecoveryProjection(run.threadId);
+      return restartResumeRun(recovery, yield* DateTime.now)?.id === run.id;
+    },
+  );
 
   const childAwaitsRestartContinuation = (
     runs: ReadonlyArray<OrchestrationV2Run>,
@@ -14838,7 +14857,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.type === "runtime-request.decline-unattended" ||
           command.type === "thread.stop" ||
           // A run may finish before its interrupt acquires the lock.
-          command.type === "run.interrupt" ||
+          (command.type === "run.interrupt" && command.onlyIfActive === true) ||
           command.type === "subagent.stop" ||
           // Closing a share again, or after it ended, is not an error.
           command.type === "thread.guest-share.close" ||

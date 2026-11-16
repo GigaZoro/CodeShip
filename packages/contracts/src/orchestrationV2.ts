@@ -3511,7 +3511,7 @@ export const OrchestrationV2Command = Schema.Union([
     runId: RunId,
     reason: Schema.optional(Schema.String),
     holdQueue: Schema.optional(Schema.Boolean),
-    /** Terminal runs only decline pending restarts; background work is left alone. */
+    /** Terminal runs only decline automatic restarts; background work is left alone. */
     onlyIfActive: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
