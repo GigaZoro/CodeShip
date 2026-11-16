@@ -69,6 +69,7 @@ import {
   descriptorOf,
   layerLinkingEnvironment,
   linkTo,
+  retryProbesAtOnce,
   servePeer,
   type ServedPeer,
 } from "./PeerLinks.testkit.ts";
@@ -892,7 +893,7 @@ it.effect("a slow machine holds up only its own card's answer", () =>
             },
             OWNER,
           )
-          .pipe(Effect.forkChild);
+          .pipe(retryProbesAtOnce, Effect.forkChild);
         yield* Deferred.await(reached);
 
         // While the slow machine holds its card, the user answers the other one.
@@ -1051,21 +1052,23 @@ it.effect(
 
         // The user picks the box; their client knows a stale address for it first.
         const pairing = yield* b.auth.issuePairingCredential();
-        yield* a.requests.answer(
-          {
-            threadId,
-            turnItemId: card.id,
-            answer: {
-              type: "link",
-              environmentId: box.environmentId,
-              label: "Box",
-              urls: ["http://127.0.0.1:9", b.url],
-              access: "auto",
-              pairingCode: pairing.credential,
+        yield* a.requests
+          .answer(
+            {
+              threadId,
+              turnItemId: card.id,
+              answer: {
+                type: "link",
+                environmentId: box.environmentId,
+                label: "Box",
+                urls: ["http://127.0.0.1:9", b.url],
+                access: "auto",
+                pairingCode: pairing.credential,
+              },
             },
-          },
-          OWNER,
-        );
+            OWNER,
+          )
+          .pipe(retryProbesAtOnce);
         expect(Option.getOrUndefined(yield* a.links.get(box.environmentId))).toMatchObject({
           urls: [b.url],
           access: "auto",
