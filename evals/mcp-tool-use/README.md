@@ -36,16 +36,16 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 
 ## Windows command cases
 
-`t3_command_run` runs its command in Windows PowerShell 5.1 on Windows, which drops every `"` inside an argument it passes to a program. In `cases/background-work.ndjson`, `windows-posix-command-keeps-its-quotes` (bad) asks for a test run and a quoted `grep` on a Windows machine. It fails a quoted command passed through `bash -c` and POSIX syntax sent without `shell: "bash"`. `windows-powershell-script-stays-in-powershell` (control) keeps a PowerShell script in PowerShell.
+`t3_command_run` runs its command in Windows PowerShell 5.1 on Windows, which drops every `"` inside an argument it passes to a program. In `cases/background-work.ndjson`, `windows-posix-command-keeps-its-quotes` (bad) asks for a test run and a quoted `grep` on a Windows machine. It fails unless a `t3_command_run` runs the suite, and fails a call without `shell: "bash"` that passes a quoted command through `bash -c` or uses POSIX syntax PowerShell 5.1 rejects. `windows-powershell-script-stays-in-powershell` (control) keeps a PowerShell script in PowerShell.
 
-Passes per case, main's text → `shell: "bash"`, 3 samples each:
+Passes per case, the description without `shell` → with it, 3 samples each:
 
 | Case                                          | GPT-6 Luna | GPT-6 Astra |
 | --------------------------------------------- | ---------- | ----------- |
-| windows-posix-command-keeps-its-quotes        | 1/3 → 2/3  | 2/3 → 2/3   |
+| windows-posix-command-keeps-its-quotes        | 1/3 → 1/3  | 2/3 → 2/3   |
 | windows-powershell-script-stays-in-powershell | 3/3 (new)  | 3/3 (new)   |
 
-On main's text, two failures quoted a `grep` inside `bash -c` and one sent `status=$?` to PowerShell. On the new text, no sample did either; the two failures never called `t3_command_run`, because the simulated shell reported a missing checkout. Claude models are not measured yet.
+Without `shell`, every failure was a broken command: two quoted a `grep` inside `bash -c` and one sent `status=$?` to PowerShell. With it, no sample sent a broken command and every sample that ran the suite passed `shell: "bash"`; the three failures never ran the suite, because the simulated shell reported an empty checkout. Claude models are not measured yet.
 
 ## Device manager cases
 

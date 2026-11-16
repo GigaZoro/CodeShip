@@ -3497,3 +3497,49 @@ it.each([
   const run: SampleRun = { calls: [{ step: 0, tool, input }], text: "", stopReason: "end_turn" };
   assert.equal(failed(testCase.expect, run).length === 0, passes);
 });
+
+it.each([
+  {
+    command: 'npm test > results.txt; grep -E "^# (pass|fail)" results.txt',
+    shell: "bash",
+    passes: true,
+  },
+  {
+    command: "npm test > results.txt; bash -c 'grep -E \"^# (pass|fail)\" results.txt'",
+    shell: "bash",
+    passes: true,
+  },
+  {
+    command: "& 'C:\\Program Files\\Git\\bin\\bash.exe' -l 'C:\\Users\\user\\app\\suite.sh'",
+    passes: true,
+  },
+  { command: "bash -lc 'npm test > results.txt && grep -c ^# results.txt'", passes: true },
+  {
+    command: "npm test *> results.txt; Select-String -Path results.txt -Pattern '^# (pass|fail)'",
+    passes: true,
+  },
+  {
+    command:
+      "& 'C:\\Program Files\\Git\\bin\\bash.exe' -lc 'npm test > results.txt; grep -E \"^# (pass|fail)\" results.txt'",
+    passes: false,
+  },
+  { command: 'npm test > results.txt && grep -E "^# (pass|fail)" results.txt', passes: false },
+  { command: "npm test > results.txt; status=$?; exit $status", passes: false },
+  { command: "grep -E '^# (pass|fail)' results.txt", shell: "bash", passes: false },
+])("grades a Windows POSIX command by the shell it runs in: %j", ({ command, shell, passes }) => {
+  const testCase = NodeFS.readFileSync(
+    new URL("./cases/background-work.ndjson", import.meta.url),
+    "utf8",
+  )
+    .trim()
+    .split("\n")
+    .map((line) => decodeDeviceCase(line))
+    .find((candidate) => candidate.id === "windows-posix-command-keeps-its-quotes")!;
+  const input = shell === undefined ? { command } : { command, shell };
+  const run: SampleRun = {
+    calls: [{ step: 0, tool: "t3_command_run", input }],
+    text: "",
+    stopReason: "end_turn",
+  };
+  assert.equal(failed(testCase.expect, run).length === 0, passes);
+});
