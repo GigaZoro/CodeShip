@@ -137,6 +137,7 @@ export const clearPersistedServerRuntimeState = Effect.fn(
  */
 export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessStartedAt")(function* (
   pid: number,
+  timeout: Duration.Input = Duration.seconds(2),
 ) {
   const windows = (yield* HostProcess.Platform) === "win32";
   const runner = yield* ProcessRunner.ProcessRunner;
@@ -152,7 +153,7 @@ export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessSta
           ]
         : ["-p", String(pid), "-o", "lstart="],
       env: { LC_ALL: "C", TZ: "UTC" },
-      timeout: Duration.seconds(2),
+      timeout,
       maxOutputBytes: 16_384,
     })
     .pipe(Effect.option);

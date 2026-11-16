@@ -146,6 +146,10 @@
 - `t3_command_run` takes `shell: "bash"`, which runs the command as written in bash on every OS. On Windows that is Git Bash, started with the command in a file, so PowerShell 5.1 no longer strips the double quotes from a command such as `grep -E "^# (pass|fail)" results.txt`, which then lost its file argument and waited on its input until the time limit. Without the option a Windows command still runs in PowerShell.
 - A Windows command now reads its input from `NUL`, as a command elsewhere reads `/dev/null`, so one that reads input ends at once instead of waiting until its time limit.
 
+## 2026-11-16 — Windows commands recover from launcher timeouts
+
+- Commands have more time to start on a busy Windows machine. If the launcher fails after starting a command, CodeShip recovers and watches that command, and retrying the same request returns it. A late launcher cannot execute a command CodeShip reported as never started.
+
 ## 2026-11-16 — Server logs and traces no longer carry e-mail addresses or credentials
 
 - Server logs (on screen, in the relay log and exported over OTLP), provider event logs, the trace file and exported traces and metrics now replace e-mail addresses with `[email]` and credentials with `[redacted]`: auth headers, API tokens, private keys, sign-in details in URLs and connection tickets. A provider error that named the signed-in account could reach them before. Provider errors shown in a thread now leave out e-mail addresses too.

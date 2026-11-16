@@ -218,6 +218,7 @@ const commandRow = (taskId: string) =>
       readonly status: string;
       readonly exit_code: number | null;
       readonly pid: number | null;
+      readonly process_started_at: number | null;
       readonly started_at: string;
       readonly delivered_at: string | null;
       readonly last_alive_at: string | null;
@@ -1469,10 +1470,14 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           yield* Effect.addFinalizer(() =>
             Effect.try(() => {
               if (launchedPid !== undefined) {
-                NodeChildProcess.execFileSync("taskkill", ["/PID", String(launchedPid), "/T", "/F"], {
-                  windowsHide: true,
-                  stdio: "ignore",
-                });
+                NodeChildProcess.execFileSync(
+                  "taskkill",
+                  ["/PID", String(launchedPid), "/T", "/F"],
+                  {
+                    windowsHide: true,
+                    stdio: "ignore",
+                  },
+                );
               }
             }).pipe(Effect.ignore),
           );
