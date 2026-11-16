@@ -1383,6 +1383,12 @@ describe("DesktopWindow", () => {
       expected: { x: 40, y: 26, width: 280, height: 240, minWidth: 280, minHeight: 240 },
     },
     {
+      scenario: "saved bounds below the preferred minimum on a large display",
+      workArea: { x: 0, y: 0, width: 1920, height: 1080 },
+      savedBounds: { x: 12, y: 563, width: 280, height: 240 },
+      expected: { x: 12, y: 563, width: 280, height: 240, minWidth: 280, minHeight: 240 },
+    },
+    {
       scenario: "saved bounds overlapping the taskbar within the full display",
       workArea: { x: 0, y: 0, width: 1920, height: 1040 },
       savedBounds: { x: 100, y: 286, width: 1100, height: 780 },

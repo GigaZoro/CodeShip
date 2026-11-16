@@ -56,11 +56,13 @@ export const MIN_MAIN_WINDOW_SIZE = {
   width: 400,
   height: 360,
 } as const;
+// Saved bounds can be smaller than MIN_MAIN_WINDOW_SIZE: windows fit work areas below it, and
+// compositors can assign bounds smaller than the requested native minimum.
 export const DesktopWindowBoundsSchema = Schema.Struct({
   x: Schema.Int,
   y: Schema.Int,
-  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_MAIN_WINDOW_SIZE.width)),
-  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_MAIN_WINDOW_SIZE.height)),
+  width: Schema.Int.check(Schema.isGreaterThan(0)),
+  height: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type DesktopWindowBounds = typeof DesktopWindowBoundsSchema.Type;
 export const DEFAULT_MAIN_WINDOW_SIZE = {
