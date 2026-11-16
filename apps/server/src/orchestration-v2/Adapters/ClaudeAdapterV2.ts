@@ -437,17 +437,12 @@ function spawnClaudeProcessTree(
 
 type ClaudeWindowsCli = ReturnType<typeof spawnClaudeProcessTree>;
 
-/** Gives each CLI still running the SDK's close grace, kills it, and waits for its tree's stop. */
-const endWindowsClis = (clis: ReadonlySet<ClaudeWindowsCli>) =>
-  Effect.forEach(
-    [...clis],
-    (cli) =>
-      Effect.promise(() => cli.exited).pipe(
-        Effect.timeoutOption(CLAUDE_CLOSE_GRACE),
-        Effect.andThen(Effect.sync(() => cli.child.kill())),
-        Effect.andThen(Effect.promise(() => cli.ended)),
-      ),
-    { concurrency: "unbounded", discard: true },
+/** Gives a CLI still running the SDK's close grace, kills it, and waits for its tree's stop. */
+const endWindowsCli = (cli: ClaudeWindowsCli) =>
+  Effect.promise(() => cli.exited).pipe(
+    Effect.timeoutOption(CLAUDE_CLOSE_GRACE),
+    Effect.andThen(Effect.sync(() => cli.child.kill())),
+    Effect.andThen(Effect.promise(() => cli.ended)),
   );
 
 export const ClaudeProviderCapabilitiesV2 = {
@@ -1012,7 +1007,9 @@ export const layerQueryRunner: Layer.Layer<
     const stopWindowsTree = yield* windowsTreeStopper;
     // The server exits once its layers have closed, which would cut short a tree's stop.
     const windowsClis = new Set<ClaudeWindowsCli>();
-    yield* Effect.addFinalizer(() => endWindowsClis(windowsClis));
+    yield* Effect.addFinalizer(() =>
+      Effect.forEach([...windowsClis], endWindowsCli, { concurrency: "unbounded", discard: true }),
+    );
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
     // A failed open leaves no transcript until a prompt was sent, but the CLI refuses a fresh ID
@@ -1095,6 +1092,7 @@ export const layerQueryRunner: Layer.Layer<
           const appendStderr = (text: string) => {
             if (!answered) stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
           };
+          let windowsCli: ClaudeWindowsCli | undefined;
           const spawnProcess =
             options.spawnClaudeCodeProcess ??
             ((spawnOptions: ClaudeSpawnOptions) => {
@@ -1112,6 +1110,7 @@ export const layerQueryRunner: Layer.Layer<
                 appendStderr(chunk);
                 options.stderr?.(chunk);
               });
+              windowsCli = cli;
               windowsClis.add(cli);
               void cli.ended.then(() => windowsClis.delete(cli));
               return cli.child;
@@ -1377,6 +1376,12 @@ export const layerQueryRunner: Layer.Layer<
                     type: "query.close",
                   },
                 }),
+              ),
+              // A closed session's CLI has ended, and so has what it left running.
+              Effect.andThen(
+                Effect.suspend(() =>
+                  windowsCli === undefined ? Effect.void : endWindowsCli(windowsCli),
+                ),
               ),
             ),
           } satisfies ClaudeAgentSdkQuerySession;

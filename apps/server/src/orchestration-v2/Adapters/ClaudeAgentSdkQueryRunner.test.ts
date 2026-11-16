@@ -780,7 +780,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
 
 // Node ends only the CLI on Windows, so what it started, such as its MCP servers, outlives it there.
 describe.runIf(isWindowsHost)("the Claude CLI on Windows", () => {
-  it.live("has ended what the CLI left running once the runner has closed", () =>
+  it.live("has ended what the CLI left running once its session has closed", () =>
     Effect.gen(function* () {
       const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-cli-"));
@@ -790,14 +790,13 @@ describe.runIf(isWindowsHost)("the Claude CLI on Windows", () => {
       const cli = NodePath.join(dir, "cli.js");
       NodeFS.writeFileSync(cli, leftover.source);
 
-      const pid = yield* Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const session = yield* openFakeCli(cli);
         const pid = yield* leftover.started;
         yield* session.close;
-        return pid;
+        assert.strictEqual(probeProcess(pid).state, "gone");
       }).pipe(Effect.provide(realQueryRunner));
 
-      assert.strictEqual(probeProcess(pid).state, "gone");
       yield* leftover.ended;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
