@@ -35,6 +35,8 @@ const { performance } = require("node:perf_hooks");
 const GRACE_MS = 1000;
 const POLL_MS = 10;
 const HIGH_WATER_BYTES = 1 << 20;
+const STAT_STATE = 0;
+const STAT_START_TIME = 19;
 const STOP_TREE_ARGS = ${JSON.stringify(WINDOWS_STOP_TREE_ARGS)};
 const STOP_TREE_TIMEOUT_MS = ${STOP_TREE_TIMEOUT_MS};
 const children = new Map();
@@ -66,20 +68,21 @@ const holdsPid = (pid) => {
     return error.code !== "ESRCH";
   }
 };
-// Linux hands waitpid the ptrace stop of a child that made this process its tracer, and Node reports
-// it as an exit. That leader is still this process's child, stopped; any other holder of its pid
-// took it after a real reap.
-const isTraceStoppedChild = (pid) => {
-  if (process.platform !== "linux") return false;
-  let stat;
+// The fields of /proc/<pid>/stat after the command name, which may itself hold spaces or parentheses.
+const procStat = (pid) => {
   try {
-    stat = readFileSync("/proc/" + pid + "/stat", "utf8");
+    const stat = readFileSync("/proc/" + pid + "/stat", "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
   } catch {
-    return false;
+    return [];
   }
-  // The command name before these fields is in parentheses and may itself hold spaces or parentheses.
-  const [state, ppid] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  return state === "t" && Number(ppid) === process.pid;
+};
+const nap = new Int32Array(new SharedArrayBuffer(4));
+// Test hook: another process kills a leader at a ptrace stop as its exit arrives.
+const killAsExitArrives = (pid) => {
+  process.kill(pid, "SIGKILL");
+  const until = performance.now() + GRACE_MS;
+  while (procStat(pid)[STAT_STATE] !== "Z" && performance.now() < until) Atomics.wait(nap, 0, 0, 1);
 };
 // POSIX gives no process the pid of a group that still exists, so once the leader was reaped, a
 // process holding its pid means the group ended and its id may name another's.
@@ -192,8 +195,8 @@ const relayOutput = (entry, fd) => {
   stream.on("error", (error) => close({ type: "streamError", id: entry.id, fd, error: describe(error) }));
 };
 
-const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, heldAtExit }) => {
-  if (stallMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stallMs);
+const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs, leaderAtExit }) => {
+  if (stallMs > 0) Atomics.wait(nap, 0, 0, stallMs);
   let child;
   // The system's clock, which a Windows tree walk compares with process creation times.
   const since = Date.now();
@@ -207,6 +210,8 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     id,
     child,
     root: { pid: child.pid, since, spawnedAt: Date.now() },
+    // Until its exit event the child is unreaped, so the pid is still its own.
+    startTime: process.platform === "linux" ? procStat(child.pid)[STAT_START_TIME] : undefined,
     exit: null,
     started: false,
     released: false,
@@ -231,8 +236,14 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     post({ type: "spawned", id, root: entry.root });
   });
   child.on("exit", (code, signal) => {
-    const held = heldAtExit || holdsPid(child.pid);
-    entry.exit = { code, signal, reaped: !(held && isTraceStoppedChild(child.pid)) };
+    if (leaderAtExit === "killed") killAsExitArrives(child.pid);
+    // Linux hands waitpid the ptrace stop of a child that made this process its tracer, and Node
+    // reports it as an exit. That leader still holds its pid, stopped or, once killed, as a zombie;
+    // a holder with another start time took the pid after a real reap.
+    const held = leaderAtExit === "held" || holdsPid(child.pid);
+    const leaderHolds =
+      held && entry.startTime !== undefined && procStat(child.pid)[STAT_START_TIME] === entry.startTime;
+    entry.exit = { code, signal, reaped: !leaderHolds };
     post({ type: "exit", id, code, signal, reaped: entry.exit.reaped });
     // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
     if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
@@ -574,7 +585,7 @@ let nextId = 0;
 let nextSeq = 0;
 let startStallMs = 0;
 let workerStartsFail = false;
-let leadersHeldAtExit = false;
+let leaderAtExit: "held" | "killed" | undefined;
 
 // An idle worker must not keep the process alive; a referenced child or a pending request does.
 const hold = (connection: Connection) => {
@@ -890,7 +901,7 @@ const launch = (
       type: "spawn",
       id,
       stallMs: startStallMs,
-      heldAtExit: leadersHeldAtExit,
+      leaderAtExit,
     });
     return Effect.sync(() => {
       if (child.starting === undefined) return;
@@ -1158,6 +1169,17 @@ const make = Effect.gen(function* () {
   return ChildProcessSpawner.make(spawnCommand);
 });
 
+const atLeaderExit = (mode: "held" | "killed") =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      leaderAtExit = mode;
+    }),
+    () =>
+      Effect.sync(() => {
+        leaderAtExit = undefined;
+      }),
+  );
+
 /** @internal Exported for tests. */
 export const __testing = {
   /** Within the scope, the worker blocks this long before each start, as a slow CreateProcessW does. */
@@ -1183,15 +1205,10 @@ export const __testing = {
   ),
   /** Within the scope, another process holds each leader's pid when its exit arrives, as when the
    * system reused it at once. */
-  leadersHeldAtExit: Effect.acquireRelease(
-    Effect.sync(() => {
-      leadersHeldAtExit = true;
-    }),
-    () =>
-      Effect.sync(() => {
-        leadersHeldAtExit = false;
-      }),
-  ),
+  leadersHeldAtExit: atLeaderExit("held"),
+  /** Within the scope, each Linux leader at a ptrace stop is killed as its exit arrives, before the
+   * worker looks at its pid. */
+  leadersKilledAtExit: atLeaderExit("killed"),
   /** Ends the worker the way a crash does; the next spawn starts a new one. */
   stopWorker: Effect.promise(async () => {
     await current?.worker.terminate();

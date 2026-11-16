@@ -286,34 +286,53 @@ describe("WorkerProcessSpawner", () => {
   });
 
   // Linux hands a ptrace stop to the tracer's waitpid, and Node reports it as an exit of the leader,
-  // which still holds its pid. It runs on once a stopped worker's thread, its tracer, has ended.
-  // libuv stops waiting for it at that stop, so once ended it stays a zombie until this process exits.
+  // which still holds its pid: stopped, or as a zombie if another process kills it there. It runs on
+  // once a stopped worker's thread, its tracer, has ended. libuv stops waiting for it at that stop,
+  // so once ended it stays a zombie until this process exits.
   describe.runIf(isLinuxHost)("a leader Node reported as exited at a ptrace stop", () => {
     const tracedStop = [
       "import ctypes, os, signal, socket, sys, time",
-      "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.send(str(os.getpid()).encode())",
+      "def hold(path):",
+      "    s = socket.socket(socket.AF_UNIX); s.connect(path); s.send(str(os.getpid()).encode()); return s",
+      "if os.fork() == 0:",
+      "    left = hold(sys.argv[2]); time.sleep(300); sys.exit()",
+      "led = hold(sys.argv[1])",
       "if ctypes.CDLL(None).ptrace(0, 0, None, None) != 0: sys.exit(2)",
       "os.kill(os.getpid(), signal.SIGSTOP)",
       "time.sleep(300)",
     ].join("\n");
+    const kill = (leader: ChildProcessSpawner.ChildProcessHandle) =>
+      leader.kill({ killSignal: "SIGKILL" });
+    const stopWorker = () => WorkerProcessSpawner.__testing.stopWorker;
+    const killedAtExit = WorkerProcessSpawner.__testing.leadersKilledAtExit;
 
     it.live.each([
+      { state: "still stopped", atExit: Effect.void, through: "kill", end: kill },
+      { state: "still stopped", atExit: Effect.void, through: "a stopped worker", end: stopWorker },
+      { state: "killed as its exit arrived", atExit: killedAtExit, through: "kill", end: kill },
       {
-        through: "kill",
-        end: (leader: ChildProcessSpawner.ChildProcessHandle) =>
-          leader.kill({ killSignal: "SIGKILL" }),
+        state: "killed as its exit arrived",
+        atExit: killedAtExit,
+        through: "a stopped worker",
+        end: stopWorker,
       },
-      { through: "a stopped worker", end: () => WorkerProcessSpawner.__testing.stopWorker },
-    ])("is ended through $through", ({ end }) =>
+    ])("$state, has its group ended through $through", ({ atExit, end }) =>
       Effect.gen(function* () {
-        const pipe = yield* processPipe;
-        const leader = yield* ChildProcess.make("python3", ["-c", tracedStop, pipe.path], quiet);
+        yield* atExit;
+        const led = yield* processPipe;
+        const left = yield* processPipe;
+        const leader = yield* ChildProcess.make(
+          "python3",
+          ["-c", tracedStop, led.path, left.path],
+          quiet,
+        );
         assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
-        yield* pipe.started;
+        yield* left.started;
 
         yield* end(leader);
 
-        yield* pipe.ended;
+        yield* led.ended;
+        yield* left.ended;
       }).pipe(Effect.scoped, Effect.provide(layer)),
     );
   });
