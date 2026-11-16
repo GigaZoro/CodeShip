@@ -24,6 +24,7 @@ import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
+import { isDarwinHost } from "@t3tools/shared/testing/hostPlatform";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -768,7 +769,9 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       const priority = Number(yield* Effect.promise(() => priorityRead));
       yield* session.close;
 
-      assert.equal(priority, Math.min(19, NodeOS.getPriority() + AGENT_NICE_INCREMENT));
+      // `nice` takes a macOS process to 20 but a Linux one only to 19.
+      const maxNice = isDarwinHost ? 20 : 19;
+      assert.equal(priority, Math.min(maxNice, NodeOS.getPriority() + AGENT_NICE_INCREMENT));
     }),
   );
 });
