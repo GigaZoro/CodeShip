@@ -309,7 +309,7 @@
 
 ## 2026-11-16 — Run cancellation survives server restarts
 
-- Cancelling agent work by its run ID also stops the runs that continue it after a server restart, including a continuation waiting to start or a failed start awaiting retry. Cancelling an ended chain leaves manual continuations and unrelated later turns untouched. Stop still ends background work while a restart is pending. MCP results identify the run cancellation reached and preserve the requested run ID when it differs.
+- Cancelling agent work by its run ID also stops its restart continuations, including pending delivery, queued runs waiting on a usage limit, and failed starts awaiting retry. A late session close cannot enqueue another continuation after Stop commits. Cancelling an ended chain leaves manual continuations and unrelated later turns untouched. Stop still ends background work while a restart is pending; thread-wide Stop holds queued messages for explicit resume. MCP results identify the run cancellation reached and preserve the requested run ID when it differs.
 
 ## 2026-11-16 — On Windows, an agent session also stops what its CLI left running
 

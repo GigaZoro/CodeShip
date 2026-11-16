@@ -1305,7 +1305,11 @@ const make = Effect.gen(function* () {
     }
     if (
       !isActiveRun(interruptibleRun) &&
-      !isOrchestrationV2TerminalRunStatus(interruptibleRun.status)
+      !isOrchestrationV2TerminalRunStatus(interruptibleRun.status) &&
+      !(
+        interruptibleRun.status === "queued" &&
+        interruptibleRun.restartContinuationOfRunId !== undefined
+      )
     ) {
       return yield* new ThreadManagementThreadNotInterruptibleError({
         threadId: input.threadId,

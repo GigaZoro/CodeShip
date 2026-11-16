@@ -12588,6 +12588,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    target: "restart-chain" | "exact-run" = "restart-chain",
   ) {
     const projection = yield* loadProjectionForCommand(
       command,
@@ -12617,14 +12618,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     const selectedRun = projection.runs.find((candidate) => candidate.id === command.runId);
     const run =
-      selectedRun === undefined
-        ? undefined
+      selectedRun === undefined || target === "exact-run"
+        ? selectedRun
         : latestRestartContinuation(projection.runs, selectedRun);
+    if (run?.status === "queued" && run.restartContinuationOfRunId !== undefined) {
+      const now = yield* DateTime.now;
+      yield* dispatchQueuedRunCancel(
+        { ...command, type: "queued-run.cancel", runId: run.id },
+        events,
+      );
+      yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
+      const source = projection.runs.find(
+        (candidate) => candidate.id === run.restartContinuationOfRunId,
+      );
+      if (source !== undefined) {
+        yield* markStoppedRun({ command, events, thread: projection.thread, run: source, now });
+      }
+      if (command.holdQueue === true) {
+        yield* holdStoppedThread({
+          command,
+          events,
+          projection: yield* getProjectionWithPendingEvents(command.threadId, events),
+          cohortRunIds: [run.id],
+          now,
+        });
+      }
+      return;
+    }
+    const pendingContinuation =
+      run !== undefined &&
+      !isActiveRun(run) &&
+      (yield* canAutomaticallyContinueRun(run, projection.runs).pipe(mapDispatchError(command)));
     if (command.onlyIfActive === true && run !== undefined && !isActiveRun(run)) {
-      if (
-        yield* canAutomaticallyContinueRun(run, projection.runs).pipe(mapDispatchError(command))
-      ) {
-        // Intake checks this durable marker under the same lock before starting a continuation.
+      if (pendingContinuation) {
         const now = yield* DateTime.now;
         yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
         if (command.holdQueue === true) {
@@ -12673,7 +12699,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (candidate) => candidate.providerThreadId === run?.providerThreadId,
           )
         : undefined);
-    if (run === undefined || rootNode === undefined || providerThread === undefined) {
+    if (run === undefined) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
@@ -12715,8 +12741,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
       threadId: command.threadId,
       runId: run.id,
-      nodeId: rootNode.id,
-      providerThreadId: providerThread.id,
+      nodeId: rootNode?.id ?? null,
+      providerThreadId: providerThread?.id ?? null,
       providerTurnId: providerTurn?.id ?? null,
       nativeItemRef: null,
       parentItemId: null,
@@ -12751,7 +12777,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const turn = projection.providerTurns.find(
           (candidate) => candidate.id === item.providerTurnId,
         );
-        if (turn === undefined || turn.providerThreadId === providerThread.id) continue;
+        if (turn === undefined || turn.providerThreadId === providerThread?.id) continue;
         const runOrdinal = runOrdinalOf(item);
         const latest = latestTurnByProviderThread.get(turn.providerThreadId);
         if (latest === undefined || runOrdinal > latest.runOrdinal) {
@@ -12781,6 +12807,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
+    if (pendingContinuation && providerTurn === undefined) {
+      yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
+      yield* stopRemainingWork();
+      if (providerThread !== undefined) {
+        yield* settleBackgroundWork({
+          command,
+          events,
+          projection,
+          stoppedProviderThreadId: providerThread.id,
+          throughRunOrdinal: run.ordinal,
+          now,
+        });
+      }
+      yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
+      return;
+    }
+    if (rootNode === undefined || providerThread === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Run ${command.runId} is not interruptible.`,
+      });
+    }
     if (
       providerTurn === undefined &&
       (run.status === "preparing" || run.status === "starting" || run.status === "running")
@@ -13280,6 +13329,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
           interruptEvents,
           interruptEffects,
+          "exact-run",
         ),
       );
       // A failed interrupt may have written part of its events, so they are kept apart.
