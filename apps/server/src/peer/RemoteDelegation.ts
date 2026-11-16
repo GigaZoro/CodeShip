@@ -12,6 +12,8 @@ import {
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
+  repositoryKeysOf,
+  repositoryMatchRank,
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -147,7 +149,7 @@ const make = Effect.gen(function* () {
   /**
    * Where the task runs there: the project the caller named, the peer's own No project for a
    * thread in No project (it has no repository to match), else the peer's project with this
-   * thread's repository.
+   * thread's repository, by its origin before its upstream.
    */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
     scope: ThreadScope,
@@ -163,17 +165,17 @@ const make = Effect.gen(function* () {
     );
     // The project's own identity is a one-minute cache that reads blank when
     // cold, so resolve it here, as the other side's t3_project_list does.
-    const key =
-      here === undefined
-        ? undefined
-        : (yield* repositoryIdentities.resolve(here.workspaceRoot))?.canonicalKey;
-    if (key === undefined) {
+    const identity =
+      here === undefined ? null : yield* repositoryIdentities.resolve(here.workspaceRoot);
+    if (identity === null) {
       return yield* new OrchestratorMcpFailure({
         code: "target_required",
         message: "Pass target.projectId: this thread's project has no repository to match there.",
       });
     }
-    const matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+    const keys = repositoryKeysOf(identity);
+    let matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
+    let bestRank = keys.length;
     let cursor: number | null = 0;
     while (cursor !== null) {
       const listed: Tool.Success<typeof ProjectToolkit.tools.t3_project_list> =
@@ -181,9 +183,13 @@ const make = Effect.gen(function* () {
           cursor,
           limit: 100,
         });
-      matches.push(
-        ...listed.projects.filter((project) => project.repositoryIdentity?.canonicalKey === key),
-      );
+      for (const project of listed.projects) {
+        const rank = repositoryMatchRank(keys, project.repositoryIdentity);
+        if (rank === -1 || rank > bestRank) continue;
+        if (rank < bestRank) matches = [];
+        bestRank = rank;
+        matches.push(project);
+      }
       cursor = listed.nextCursor;
     }
     if (matches.length === 1) return { projectId: matches[0]!.id } as const;
@@ -191,7 +197,7 @@ const make = Effect.gen(function* () {
       code: "invalid_request",
       message:
         matches.length === 0
-          ? `No project there has this repository (${key}). Pass target.projectId; t3_project_list with this environmentId lists them. To bring the repository there, use t3_project_clone and then t3_project_create with this environmentId.`
+          ? `No project there has this repository (${keys.join(" or ")}). Pass target.projectId; t3_project_list with this environmentId lists them. To bring the repository there, use t3_project_clone and then t3_project_create with this environmentId.`
           : `Several projects there have this repository: ${matches.map((project) => `${project.title} (${project.id})`).join(", ")}. Pass target.projectId.`,
     });
   });

@@ -299,8 +299,36 @@ export const RepositoryIdentity = Schema.Struct({
 });
 export type RepositoryIdentity = typeof RepositoryIdentity.Type;
 
-export function repositoryGroupingKeyOf(identity: RepositoryIdentity): string {
+/** The part of an identity that says which repository a checkout is, on any machine. */
+export type RepositoryKeyed = {
+  readonly canonicalKey: string;
+  readonly origin?: { readonly canonicalKey: string } | undefined;
+};
+
+export function repositoryGroupingKeyOf(identity: RepositoryKeyed): string {
   return identity.origin?.canonicalKey ?? identity.canonicalKey;
+}
+
+/**
+ * Every key a checkout answers to, origin first. A fork with an upstream remote is keyed by the
+ * upstream, and its copy on a machine without that remote by origin, so matching across machines
+ * compares both.
+ */
+export function repositoryKeysOf(identity: RepositoryKeyed): ReadonlyArray<string> {
+  return [...new Set([repositoryGroupingKeyOf(identity), identity.canonicalKey])];
+}
+
+/**
+ * Which of `keys` (another machine's, best first) `identity` answers to first, or -1. The lowest
+ * rank among candidates wins, so a fork's checkout beats a clone of its upstream.
+ */
+export function repositoryMatchRank(
+  keys: ReadonlyArray<string>,
+  identity: RepositoryKeyed | null | undefined,
+): number {
+  if (identity == null) return -1;
+  const own = repositoryKeysOf(identity);
+  return keys.findIndex((key) => own.includes(key));
 }
 
 export function repositoryGroupingDisplayNameOf(identity: RepositoryIdentity): string | undefined {

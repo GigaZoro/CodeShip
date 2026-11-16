@@ -19,6 +19,8 @@ export interface TestSharedProject {
   readonly workspaceRoot: string;
   /** The repository the workspace resolves to; null for a folder without a git remote. */
   readonly canonicalKey: string | null;
+  /** A fork's own remote, when `canonicalKey` is its upstream's. */
+  readonly originKey?: string;
 }
 
 /** Peers that have not run anything, so a one-machine task runs here. */
@@ -67,9 +69,16 @@ export const layerSharedTaskIdentities = (
     }),
     Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
       resolve: (cwd) => {
-        const key = projects.find((project) => project.workspaceRoot === cwd)?.canonicalKey;
+        const project = projects.find((candidate) => candidate.workspaceRoot === cwd);
         return Effect.succeed(
-          key === undefined || key === null ? null : ({ canonicalKey: key } as never),
+          project?.canonicalKey == null
+            ? null
+            : ({
+                canonicalKey: project.canonicalKey,
+                ...(project.originKey === undefined
+                  ? {}
+                  : { origin: { canonicalKey: project.originKey } }),
+              } as never),
         );
       },
     }),

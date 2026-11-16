@@ -11,6 +11,8 @@ import {
   ScheduledTaskProjectMachineOrder,
   compareScheduledTaskSharedRevisions,
   defaultScheduledTaskMachineOrder,
+  repositoryGroupingKeyOf,
+  repositoryKeysOf,
   scheduledTaskSharedProjectKey,
   type OrchestratorMcpSharedScheduledTasksResult,
   type ScheduledTaskApplySharedInput,
@@ -1843,6 +1845,30 @@ export const layer = Layer.effect(
           revision_at = excluded.revision_at,
           revision_environment_id = excluded.revision_environment_id
       `;
+
+    // A share keyed before shares were keyed by origin moves to its origin key when it is saved,
+    // and takes its project's machine order along unless that key already has one.
+    const carryMachineOrder = Effect.fn("ScheduledTaskService.carryMachineOrder")(function* (
+      from: ScheduledTaskSharing["project"],
+      to: ScheduledTaskSharing["project"],
+    ) {
+      const fromKey = scheduledTaskSharedProjectKey(from);
+      const toKey = scheduledTaskSharedProjectKey(to);
+      if (fromKey === toKey) return;
+      const [held] = yield* sql<{ readonly project_key: string }>`
+        SELECT project_key FROM scheduled_task_project_machine_orders WHERE project_key = ${toKey}`;
+      if (held !== undefined) return;
+      const [row] = yield* sql<MachineOrderRow>`
+        SELECT project_json, order_json, revision_at, revision_environment_id
+        FROM scheduled_task_project_machine_orders WHERE project_key = ${fromKey}`;
+      if (row === undefined) return;
+      const { order } = yield* decodeMachineOrderRow({
+        project: row.project_json,
+        order: row.order_json,
+        revision: { at: row.revision_at, environmentId: row.revision_environment_id },
+      });
+      yield* writeMachineOrder({ project: to, order, revision: yield* stampOrderRevision(toKey) });
+    });
 
     const deleteLocalRows = (id: ScheduledTaskId) =>
       sql`DELETE FROM scheduled_task_webhook_deliveries WHERE task_id = ${id}`.pipe(
@@ -4337,9 +4363,10 @@ export const layer = Layer.effect(
           { taskId },
         );
       }
+      // Origin first, so a fork's copy on a machine without its upstream remote finds it too.
       return {
         type: "repository",
-        canonicalKey: identity.canonicalKey,
+        canonicalKey: repositoryGroupingKeyOf(identity),
         title: project.title,
       } as const satisfies ScheduledTaskSharing["project"];
     });
@@ -4368,7 +4395,9 @@ export const layer = Layer.effect(
           );
         for (const candidate of page.projects) {
           const identity = yield* repositoryIdentities.resolve(candidate.workspaceRoot);
-          if (identity?.canonicalKey === project.canonicalKey) matches.push(candidate);
+          if (identity !== null && repositoryKeysOf(identity).includes(project.canonicalKey)) {
+            matches.push(candidate);
+          }
         }
         cursor = page.nextCursor;
       }
@@ -4699,6 +4728,11 @@ export const layer = Layer.effect(
                   order: machineOrder,
                   revision: yield* stampOrderRevision(key),
                 });
+              } else if (
+                existingTask?.shared != null &&
+                existingTask.projectId === input.projectId
+              ) {
+                yield* carryMachineOrder(existingTask.shared.project, sharedProject);
               }
             } else if ((yield* storedRevisions(id)).shared !== null) {
               yield* writeDeletion(id, yield* stampRevision(id));

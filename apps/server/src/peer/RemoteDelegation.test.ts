@@ -261,14 +261,14 @@ const boxProviders = [
   },
 ] as unknown as ReadonlyArray<ServerProvider>;
 
-const serveBox = (thread: BoxThread) => {
-  return servePeer(box, boxToolkitLayer(thread));
+const serveBox = (thread: BoxThread, projects = boxProjects) => {
+  return servePeer(box, boxToolkitLayer(thread, projects));
 };
 
 const boxRunId = RunId.make("run:box");
 const boxLaterRunId = RunId.make("run:box-later");
 
-const boxToolkitLayer = (thread: BoxThread) => {
+const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) => {
   const runId = boxRunId;
   const interrupts = new Set<string>();
   const shellOf = (threadId: ThreadId) =>
@@ -625,8 +625,8 @@ const boxToolkitLayer = (thread: BoxThread) => {
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
           Effect.succeed({
-            projects: boxProjects.slice(cursor, cursor + limit),
-            nextCursor: cursor + limit < boxProjects.length ? cursor + limit : null,
+            projects: projects.slice(cursor, cursor + limit),
+            nextCursor: cursor + limit < projects.length ? cursor + limit : null,
           }),
       }),
     ),
@@ -671,6 +671,7 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
+  identity = { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -721,12 +722,7 @@ const makeLaptop = (
           ),
           Layer.provide(
             Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-              resolve: (cwd) =>
-                Effect.succeed(
-                  cwd === "/home/me/app"
-                    ? ({ canonicalKey: "github.com/acme/app" } as RepositoryIdentity)
-                    : null,
-                ),
+              resolve: (cwd) => Effect.succeed(cwd === "/home/me/app" ? identity : null),
             }),
           ),
         ),
@@ -1250,6 +1246,71 @@ it.effect("a task from a No-project chat runs in the box's No project", () =>
       expect(yield* Ref.get(thread.launchedProject)).toBe(boxScratchProject);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+/** A fork checkout: its primary key is the upstream remote's, its grouping key origin's. */
+const forkIdentity = {
+  canonicalKey: "github.com/upstream/app",
+  locator: {
+    source: "git-remote",
+    remoteName: "upstream",
+    remoteUrl: "git@github.com:upstream/app.git",
+  },
+  origin: { canonicalKey: "github.com/acme/app" },
+} satisfies RepositoryIdentity;
+
+const upstreamClone: Project = {
+  ...boxProjects.at(-1)!,
+  id: ProjectId.make("project:box-upstream"),
+  title: "upstream app",
+  workspaceRoot: "/srv/upstream-app",
+  repositoryIdentity: {
+    canonicalKey: "github.com/upstream/app",
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "git@github.com:upstream/app.git",
+    },
+  },
+};
+
+it.effect.each([
+  {
+    side: "here",
+    laptopIdentity: forkIdentity,
+    // A clone of the upstream there must not win over the fork's own copy.
+    projects: [...boxProjects, upstreamClone],
+  },
+  {
+    side: "there",
+    laptopIdentity: { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
+    projects: boxProjects.map((project) =>
+      project.id === boxProject ? { ...project, repositoryIdentity: forkIdentity } : project,
+    ),
+  },
+])(
+  "a fork with an upstream remote $side finds its copy by origin on the other machine",
+  ({ laptopIdentity, projects }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread, projects);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, undefined, laptopIdentity);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId },
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        expect(yield* Ref.get(thread.launchedProject)).toBe(boxProject);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a task named only by driver runs on the box's own instance of it", () =>

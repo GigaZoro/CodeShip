@@ -52,6 +52,14 @@ const repoProject: TestSharedProject = {
   workspaceRoot: "/work/repo",
   canonicalKey: "github.com/acme/repo",
 };
+/** A fork of acme/repo checked out with its upstream remote, so it is keyed by the upstream. */
+const forkProject: TestSharedProject = {
+  id: "project-fork",
+  title: "Fork",
+  workspaceRoot: "/work/fork",
+  canonicalKey: "github.com/upstream/repo",
+  originKey: "github.com/acme/repo",
+};
 const plainProject: TestSharedProject = {
   id: "project-plain",
   title: "Plain",
@@ -495,15 +503,63 @@ it.effect("a copy for a repository finds the project here, or fails naming the r
   ),
 );
 
-it.effect("a copy for a repository lands in the matching project", () =>
-  withService((service) =>
-    Effect.gen(function* () {
-      const at = "2026-09-10T00:00:00.000Z";
-      const project = { type: "repository", canonicalKey: "github.com/acme/repo", title: "Repo" };
-      yield* service.applyShared(copy(at, { shared: sharedWith(at, project) }));
-      expect((yield* taskOf(service))?.projectId).toBe(repoProject.id);
-    }),
+it.effect.each([
+  { name: "its repository", key: "github.com/acme/repo", here: repoProject },
+  // Shared from a machine whose copy has no upstream remote.
+  { name: "a fork's origin", key: "github.com/acme/repo", here: forkProject },
+  // Shared before shares were keyed by origin.
+  { name: "a fork's upstream", key: "github.com/upstream/repo", here: forkProject },
+])("a copy keyed by $name lands in the matching project", ({ key, here }) =>
+  withService(
+    (service) =>
+      Effect.gen(function* () {
+        const at = "2026-09-10T00:00:00.000Z";
+        const project = { type: "repository", canonicalKey: key, title: "Repo" };
+        yield* service.applyShared(copy(at, { shared: sharedWith(at, project) }));
+        expect((yield* taskOf(service))?.projectId).toBe(here.id);
+      }),
+    [here, plainProject],
   ),
+);
+
+it.effect(
+  "a fork's share is keyed by its origin, and one keyed by its upstream moves there with its machine order",
+  () =>
+    withService(
+      (service) =>
+        Effect.gen(function* () {
+          const at = "2026-09-10T00:00:00.000Z";
+          const upstream = {
+            type: "repository",
+            canonicalKey: "github.com/upstream/repo",
+            title: "Fork",
+          };
+          yield* service.applyShared(
+            copy(at, { shared: { ...sharedWith(at, upstream), runOn: "one" } }),
+          );
+          yield* service.applyShared(order(at, [OTHER, HERE_ENVIRONMENT_ID], upstream));
+
+          const saved = (yield* service.upsert(
+            upsertInput({ projectId: forkProject.id }),
+            ScheduledTaskService.CHANGED_IN_APP,
+          )).task;
+          const origin = {
+            type: "repository",
+            canonicalKey: "github.com/acme/repo",
+            title: "Fork",
+          };
+          expect(saved.shared?.project).toEqual(origin);
+          const orders = (yield* service.list()).projectMachineOrders ?? [];
+          expect(
+            orders.find(
+              (entry) =>
+                entry.project.type === "repository" &&
+                entry.project.canonicalKey === origin.canonicalKey,
+            )?.order,
+          ).toEqual([OTHER, HERE_ENVIRONMENT_ID]);
+        }),
+      [forkProject],
+    ),
 );
 
 const sharedWith = (at: string, project: Record<string, unknown>) => ({
@@ -512,11 +568,11 @@ const sharedWith = (at: string, project: Record<string, unknown>) => ({
   excludedEnvironmentIds: [],
 });
 
-const order = (at: string, ids: string[]) =>
+const order = (at: string, ids: string[], project: Record<string, unknown> = { type: "none" }) =>
   decodeApply({
     type: "projectMachineOrder",
     order: {
-      project: { type: "none" },
+      project,
       order: ids,
       revision: { at, environmentId: OTHER },
     },

@@ -126,11 +126,23 @@ describe("scheduled task settings scope", () => {
     expect(defaultScheduledTaskProjectId([project("x", null, at)], scoped)).toBe("x");
   });
 
-  it("matches a project on another machine by repository, then by name", () => {
-    const project = (id: string, title: string, canonicalKey?: string, archivedAt?: string) => ({
+  it("matches a project on another machine by repository, origin first, then by name", () => {
+    const project = (
+      id: string,
+      title: string,
+      canonicalKey?: string,
+      archivedAt?: string,
+      originKey?: string,
+    ) => ({
       id: ProjectId.make(id),
       title,
-      repositoryIdentity: canonicalKey === undefined ? null : { canonicalKey },
+      repositoryIdentity:
+        canonicalKey === undefined
+          ? null
+          : {
+              canonicalKey,
+              ...(originKey === undefined ? {} : { origin: { canonicalKey: originKey } }),
+            },
       archivedAt: archivedAt ?? null,
     });
     const candidates = [
@@ -143,6 +155,19 @@ describe("scheduled task settings scope", () => {
     );
     expect(matchingProjectId(project("x", "app"), candidates)).toBe("same-name");
     expect(matchingProjectId(project("x", "notes"), candidates)).toBe("");
+    // A fork checked out with its upstream remote finds its copy here before an upstream clone.
+    const fork = project("x", "app", "github.com/upstream/app", undefined, "github.com/acme/app");
+    expect(
+      matchingProjectId(fork, [
+        project("upstream", "up", "github.com/upstream/app"),
+        ...candidates,
+      ]),
+    ).toBe("renamed");
+    expect(
+      matchingProjectId(project("x", "app", "github.com/acme/app"), [
+        project("fork", "t3-fork", "github.com/upstream/app", undefined, "github.com/acme/app"),
+      ]),
+    ).toBe("fork");
   });
 
   it("keeps tasks with removed projects manageable at environment scope", () => {
