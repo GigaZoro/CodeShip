@@ -59,8 +59,8 @@ export const MIN_MAIN_WINDOW_SIZE = {
 export const DesktopWindowBoundsSchema = Schema.Struct({
   x: Schema.Int,
   y: Schema.Int,
-  width: Schema.Int.check(Schema.isGreaterThan(0)),
-  height: Schema.Int.check(Schema.isGreaterThan(0)),
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_MAIN_WINDOW_SIZE.width)),
+  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_MAIN_WINDOW_SIZE.height)),
 });
 export type DesktopWindowBounds = typeof DesktopWindowBoundsSchema.Type;
 export const DEFAULT_MAIN_WINDOW_SIZE = {

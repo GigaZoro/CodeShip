@@ -1368,13 +1368,13 @@ describe("DesktopWindow", () => {
       scenario: "missing saved bounds and a taskbar on a small display",
       workArea: { x: -1280, y: 26, width: 1280, height: 694 },
       savedBounds: null,
-      expected: { x: -1190, y: 26, width: 1100, height: 694, minWidth: 360, minHeight: 320 },
+      expected: { x: -1190, y: 26, width: 1100, height: 694, minWidth: 400, minHeight: 360 },
     },
     {
       scenario: "missing saved bounds and default size that just fits above the Dock",
       workArea: { x: 0, y: 25, width: 1440, height: 800 },
       savedBounds: null,
-      expected: { x: 170, y: 35, width: 1100, height: 780, minWidth: 360, minHeight: 320 },
+      expected: { x: 170, y: 35, width: 1100, height: 780, minWidth: 400, minHeight: 360 },
     },
     {
       scenario: "offscreen saved bounds and a work area below the preferred minimum",
@@ -1383,23 +1383,17 @@ describe("DesktopWindow", () => {
       expected: { x: 40, y: 26, width: 280, height: 240, minWidth: 280, minHeight: 240 },
     },
     {
-      scenario: "saved bounds below the preferred minimum on a large display",
-      workArea: { x: 0, y: 0, width: 1920, height: 1080 },
-      savedBounds: { x: 12, y: 563, width: 280, height: 240 },
-      expected: { x: 12, y: 563, width: 280, height: 240, minWidth: 280, minHeight: 240 },
-    },
-    {
       scenario: "saved bounds overlapping the taskbar within the full display",
       workArea: { x: 0, y: 0, width: 1920, height: 1040 },
       savedBounds: { x: 100, y: 286, width: 1100, height: 780 },
-      expected: { x: 100, y: 286, width: 1100, height: 780, minWidth: 360, minHeight: 320 },
+      expected: { x: 100, y: 286, width: 1100, height: 780, minWidth: 400, minHeight: 360 },
     },
     {
       scenario: "a small primary display listed after a large secondary display",
       workArea: { x: -800, y: 26, width: 800, height: 574 },
       secondaryWorkArea: { x: 0, y: 0, width: 1920, height: 1080 },
       savedBounds: null,
-      expected: { x: -800, y: 26, width: 800, height: 574, minWidth: 360, minHeight: 320 },
+      expected: { x: -800, y: 26, width: 800, height: 574, minWidth: 400, minHeight: 360 },
     },
   ])(
     "opens a window that fits with $scenario",

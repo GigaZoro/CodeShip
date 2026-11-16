@@ -240,18 +240,6 @@ describe("DesktopSettings", () => {
     ),
   );
 
-  it.effect("persists and reloads compositor bounds below the preferred minimum", () =>
-    withSettings(
-      Effect.gen(function* () {
-        const settings = yield* DesktopAppSettings.DesktopAppSettings;
-        const mainWindowBounds = { x: 12, y: 563, width: 280, height: 240 };
-        yield* settings.setMainWindowBounds(mainWindowBounds, false);
-        const loaded = yield* settings.load;
-        assert.deepEqual(loaded.mainWindowBounds, mainWindowBounds);
-      }),
-    ),
-  );
-
   it.effect("keeps Local environment off when another value in the file is unreadable", () =>
     withSettings(
       Effect.gen(function* () {
