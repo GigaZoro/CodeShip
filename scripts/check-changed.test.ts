@@ -1,14 +1,19 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
+import * as NodeDiagnosticsChannel from "node:diagnostics_channel";
+import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
 import { assert, describe, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -21,6 +26,7 @@ import {
   comparisonBase,
   defaultConcurrency,
   docReaderTests,
+  GIT_TIMEOUT,
   gitLines,
   ignoredInputs,
   runSteps,
@@ -212,42 +218,316 @@ describe("check:changed", () => {
     );
   });
 
-  it.effect("fails instead of returning an empty file list when git exits nonzero", () => {
-    const spawner = (exitCode: number) =>
-      ChildProcessSpawner.make(() =>
-        Effect.succeed(
-          ChildProcessSpawner.makeHandle({
-            pid: ChildProcessSpawner.ProcessId(1),
-            exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
-            isRunning: Effect.succeed(false),
-            kill: () => Effect.void,
-            unref: Effect.succeed(Effect.void),
-            stdin: Sink.drain,
-            stdout: Stream.encodeText(Stream.make(exitCode === 0 ? "a.ts\nb.ts\n" : "")),
-            stderr: Stream.encodeText(
-              Stream.make(exitCode === 0 ? "" : "fatal: index file corrupt"),
-            ),
-            all: Stream.empty,
-            getInputFd: () => Sink.drain,
-            getOutputFd: () => Stream.empty,
-          }),
-        ),
-      );
-    return Effect.gen(function* () {
+  type GitReply = {
+    readonly exitCode: Effect.Effect<ChildProcessSpawner.ExitCode>;
+    readonly stdout?: string;
+    readonly stderr?: string;
+  };
+  const fakeGit = (reply: (args: ReadonlyArray<string>) => GitReply) =>
+    ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const {
+          exitCode,
+          stdout = "",
+          stderr = "",
+        } = reply(ChildProcess.isStandardCommand(command) ? command.args : []);
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode,
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.encodeText(Stream.make(stdout)),
+          stderr: Stream.encodeText(Stream.make(stderr)),
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }),
+    );
+  const exited = (code: number) => Effect.succeed(ChildProcessSpawner.ExitCode(code));
+
+  it.effect("fails instead of returning an empty file list when git exits nonzero", () =>
+    Effect.gen(function* () {
       const listed = yield* gitLines("/repo", ["ls-files"]).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner(0)),
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          fakeGit(() => ({ exitCode: exited(0), stdout: "a.ts\nb.ts\n" })),
+        ),
       );
       assert.deepStrictEqual(listed, ["a.ts", "b.ts"]);
       const error = yield* gitLines("/repo", ["ls-files"]).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner(128)),
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          fakeGit(() => ({ exitCode: exited(128), stderr: "fatal: index file corrupt" })),
+        ),
         Effect.flip,
       );
       assert.strictEqual(
         error,
         "check:changed: git ls-files exited with 128: fatal: index file corrupt",
       );
-    });
+    }),
+  );
+
+  it.effect("fails a git call that runs past its time limit", () =>
+    Effect.gen(function* () {
+      const listing = yield* gitLines("/repo", ["ls-files", "--others"]).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          fakeGit(() => ({ exitCode: Effect.never })),
+        ),
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(GIT_TIMEOUT);
+      assert.strictEqual(
+        yield* Fiber.join(listing),
+        `check:changed: git ls-files --others did not finish within ${GIT_TIMEOUT}`,
+      );
+    }),
+  );
+
+  // A git that exits while a process it started holds its output never reaches the end of that
+  // output, so the call fails at its time limit. Its pipes close then, or they would keep
+  // check:changed from ever exiting (the patch of @effect/platform-node-shared).
+  it.effect("closes the pipes of a git whose output a process it started still holds", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-held-git-"));
+    const fakeGitScript = NodePath.join(dir, "git.mjs");
+    const holderPid = NodePath.join(dir, "holder");
+    NodeFS.writeFileSync(
+      fakeGitScript,
+      [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        'import { tmpdir } from "node:os";',
+        // Outside dir, which Windows cannot delete while a running process works in it.
+        'const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { cwd: tmpdir(), stdio: "inherit", detached: true, windowsHide: true });',
+        "writeFileSync(process.argv[2], String(holder.pid));",
+        "holder.unref();",
+      ].join("\n"),
+    );
+    const openPipes = () =>
+      process.getActiveResourcesInfo().filter((kind) => kind === "PipeWrap").length;
+    // Node announces each process it starts, which gives the test the fake git's own pipes. It
+    // announces it before the spawn sets its arguments, so the fake git is picked out later.
+    const started: Array<NodeChildProcess.ChildProcess> = [];
+    const onSpawn = (message: unknown) => {
+      started.push((message as { process: NodeChildProcess.ChildProcess }).process);
+    };
+    return Effect.gen(function* () {
+      NodeDiagnosticsChannel.subscribe("child_process", onSpawn);
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const gitExited = yield* Deferred.make<void>();
+      const pipesBefore = openPipes();
+      const listing = yield* gitLines(dir, ["ls-files"]).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) =>
+            spawner
+              .spawn(
+                ChildProcess.make(
+                  process.execPath,
+                  [fakeGitScript, holderPid],
+                  ChildProcess.isStandardCommand(command) ? command.options : {},
+                ),
+              )
+              .pipe(
+                Effect.tap((handle) =>
+                  Effect.forkScoped(
+                    handle.exitCode.pipe(Effect.andThen(Deferred.succeed(gitExited, undefined))),
+                  ),
+                ),
+              ),
+          ),
+        ),
+        Effect.flip,
+        Effect.forkChild,
+      );
+      // The fake git has started the holder and recorded its id once it has exited.
+      yield* Deferred.await(gitExited);
+      const git = started.find((child) => child.spawnargs.includes(fakeGitScript));
+      const pipes = [git?.stdout, git?.stderr].filter(
+        (pipe) => pipe !== null && pipe !== undefined,
+      );
+      assert.strictEqual(pipes.length, 2);
+      // Listened for before the call can end, so neither pipe's close passes unseen.
+      const closed = Promise.all(pipes.map((pipe) => NodeEvents.EventEmitter.once(pipe, "close")));
+      yield* TestClock.adjust(GIT_TIMEOUT);
+      assert.strictEqual(
+        yield* Fiber.join(listing),
+        `check:changed: git ls-files did not finish within ${GIT_TIMEOUT}`,
+      );
+      // Destroyed by the time the call fails, and then closed although the holder keeps their
+      // other ends open, so they no longer hold the event loop.
+      assert.deepStrictEqual(
+        pipes.map((pipe) => pipe.destroyed),
+        [true, true],
+      );
+      yield* Effect.promise(() => closed);
+      assert.strictEqual(openPipes(), pipesBefore);
+    }).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(
+        Effect.sync(() => {
+          NodeDiagnosticsChannel.unsubscribe("child_process", onSpawn);
+          if (NodeFS.existsSync(holderPid)) {
+            killLeftover(Number(NodeFS.readFileSync(holderPid, "utf8")));
+          }
+          NodeFS.rmSync(dir, { recursive: true, force: true });
+        }),
+      ),
+    );
   });
+
+  // Exit 1 (no shared history) and 128 (no such ref) rule a candidate out; rev-list never runs for it.
+  it.effect.each([
+    { code: 1, upstream: 0, outcome: "compares against upstream/main" },
+    { code: 128, upstream: 0, outcome: "compares against upstream/main" },
+    { code: 1, upstream: 128, outcome: "fails once no candidate is left" },
+  ])("merge-base exit $code rules origin/main out and $outcome", ({ code, upstream }) =>
+    Effect.gen(function* () {
+      const counted: Array<string> = [];
+      const comparing = comparisonBase("/repo", Option.none()).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          fakeGit((args) => {
+            if (args.includes("remote")) {
+              return { exitCode: exited(0), stdout: "origin\nupstream\n" };
+            }
+            if (args.includes("merge-base")) {
+              return args.at(-1) === "refs/remotes/origin/main"
+                ? { exitCode: exited(code) }
+                : { exitCode: exited(upstream), stdout: upstream === 0 ? "c0ffee\n" : "" };
+            }
+            counted.push(args.at(-1) ?? "");
+            return { exitCode: exited(0), stdout: "2\n" };
+          }),
+        ),
+      );
+      if (upstream === 0) {
+        assert.deepStrictEqual(yield* comparing, {
+          ref: "upstream/main",
+          base: "c0ffee",
+          ahead: 2,
+        });
+        assert.deepStrictEqual(counted, ["c0ffee..HEAD"]);
+      } else {
+        assert.strictEqual(
+          yield* Effect.flip(comparing),
+          "check:changed: no merge base with origin/main, upstream/main. Run git fetch or pass a ref.",
+        );
+        assert.deepStrictEqual(counted, []);
+      }
+    }),
+  );
+
+  // With no ref, upstream/main merges fine, so a comparison that read the stuck call as a
+  // missing ref would pass instead of failing.
+  it.effect.each([
+    { against: "an explicit ref", ref: Option.some("origin/main"), rev: "origin/main" },
+    { against: "the closest remote main", ref: Option.none(), rev: "refs/remotes/origin/main" },
+  ])("fails when merge-base against $against runs past its time limit", ({ ref, rev }) =>
+    Effect.gen(function* () {
+      const stuck = yield* Deferred.make<void>();
+      const comparing = yield* comparisonBase("/repo", ref).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          fakeGit((args) => {
+            if (args.includes("remote")) {
+              return { exitCode: exited(0), stdout: "origin\nupstream\n" };
+            }
+            if (args.at(-1) === rev) {
+              return {
+                exitCode: Deferred.succeed(stuck, undefined).pipe(Effect.andThen(Effect.never)),
+              };
+            }
+            return { exitCode: exited(0), stdout: args.includes("rev-list") ? "1\n" : "c0ffee\n" };
+          }),
+        ),
+        Effect.flip,
+        Effect.forkChild,
+      );
+      // The clock moves only once the stuck call runs, so its time limit has started.
+      yield* Deferred.await(stuck);
+      yield* TestClock.adjust(GIT_TIMEOUT);
+      assert.strictEqual(
+        yield* Fiber.join(comparing),
+        `check:changed: git merge-base HEAD ${rev} did not finish within ${GIT_TIMEOUT}`,
+      );
+    }),
+  );
+
+  // On Windows the spawner ends the tree with taskkill, which a process cannot ignore.
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "kills a git that ignores SIGTERM once its time limit has passed",
+    () => {
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-stuck-git-"));
+      // The fake git writes to the FIFO once it ignores SIGTERM, so the clock moves only after that.
+      const fifo = NodePath.join(dir, "started");
+      NodeChildProcess.execFileSync("mkfifo", [fifo]);
+      NodeFS.writeFileSync(
+        NodePath.join(dir, "git"),
+        `#!/bin/sh\ntrap '' TERM\nexec 3>'${fifo}'\necho >&3\nwhile :; do sleep 1; done\n`,
+        { mode: 0o755 },
+      );
+      // Read and write, so the open needs no writer and does not block, and the socket's destroy ends
+      // the read whether or not the fake git ever opens the FIFO.
+      const started = new NodeNet.Socket({
+        fd: NodeFS.openSync(fifo, NodeFS.constants.O_RDWR | NodeFS.constants.O_NONBLOCK),
+        readable: true,
+        writable: false,
+      });
+      const ignoresTerm = new Promise<void>((resolve) => started.once("data", () => resolve()));
+      let leader = 0;
+      return Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const listing = yield* gitLines(dir, ["ls-files"]).pipe(
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) =>
+              spawner
+                .spawn(
+                  ChildProcess.setEnv(command, {
+                    ...env,
+                    PATH: `${dir}${NodePath.delimiter}${process.env.PATH}`,
+                  }),
+                )
+                .pipe(Effect.tap((handle) => Effect.sync(() => (leader = handle.pid)))),
+            ),
+          ),
+          Effect.flip,
+          Effect.forkChild,
+        );
+        // A fake git that fails before it opens the FIFO, such as one a noexec temp folder keeps from
+        // running, ends the listing instead.
+        yield* Effect.raceFirst(
+          Effect.promise(() => ignoresTerm),
+          Fiber.join(listing).pipe(
+            Effect.flatMap((error) =>
+              Effect.die(`the fake git ended before it ignored SIGTERM: ${String(error)}`),
+            ),
+          ),
+        );
+        yield* TestClock.adjust(GIT_TIMEOUT);
+        assert.strictEqual(
+          yield* Fiber.join(listing),
+          `check:changed: git ls-files did not finish within ${GIT_TIMEOUT}`,
+        );
+        assert.throws(() => process.kill(leader, 0), /ESRCH/);
+      }).pipe(
+        Effect.provide(NodeServices.layer),
+        Effect.ensuring(
+          Effect.sync(() => {
+            started.destroy();
+            if (leader) killLeftover(-leader);
+            NodeFS.rmSync(dir, { recursive: true, force: true });
+          }),
+        ),
+      );
+    },
+  );
 
   // A provider's replay suite reaches its adapter through the adapter's testkit
   // and the fixture index, which is how 40b1b72673 broke one unseen. A service's
@@ -305,17 +585,17 @@ describe("check:changed", () => {
 });
 
 // Hooks export GIT_DIR and GIT_INDEX_FILE, and user config or the default
-// ~/.config/git/ignore can ignore or sign fixture files.
-// Git for Windows rejects the device namespace prefix in Node's null path.
-const gitDevNull = NodeOS.devNull.replace("\\\\.\\", "");
+// ~/.config/git/ignore can ignore or sign fixture files. git documents /dev/null
+// as an empty config and reads it on Windows too; Git for Windows 2.43 cannot
+// open os.devNull (\\.\nul).
 const fixtureConfig = {
-  "core.excludesFile": gitDevNull,
+  "core.excludesFile": "/dev/null",
   "user.name": "Fixture",
   "user.email": "fixture@example.invalid",
 };
 const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))),
-  GIT_CONFIG_GLOBAL: gitDevNull,
+  GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_COUNT: String(Object.keys(fixtureConfig).length),
   ...Object.fromEntries(
@@ -324,6 +604,16 @@ const env = {
       [`GIT_CONFIG_VALUE_${index}`, value],
     ]),
   ),
+};
+
+// Kills a process, or with a negative id a process group, that a test may have left running.
+const killLeftover = (pid: number) => {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    // ESRCH: it is already gone.
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
 };
 
 const writeUnder = (root: string, file: string, content = "input") => {
