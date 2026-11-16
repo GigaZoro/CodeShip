@@ -17,6 +17,12 @@ export default Effect.gen(function* () {
     CREATE INDEX command_runs_loss_wave ON command_runs (loss_wave_id)
     WHERE loss_wave_id IS NOT NULL
   `;
+  // Set in the write that records a loss, until a wave takes it or it is too old to start one, so
+  // a server that stops in between leaves it for the next one.
+  yield* sql`ALTER TABLE command_runs ADD COLUMN loss_unplaced INTEGER NOT NULL DEFAULT 0`;
+  yield* sql`
+    CREATE INDEX command_runs_loss_unplaced ON command_runs (ended_at) WHERE loss_unplaced = 1
+  `;
   yield* sql`
     CREATE TABLE command_loss_waves (
       wave_id TEXT PRIMARY KEY,

@@ -966,7 +966,7 @@ const lossWaves = Effect.map(ServerConfig.ServerConfig, ({ logsDir }) => {
     .map((line) => JSON.parse(line) as LossWave);
 });
 
-/** A command an earlier server recorded lost, in the wave `waveId` names, if any. */
+/** A command an earlier server recorded lost, in the wave `waveId` names, or in none yet. */
 const seedLoss = (loss: {
   readonly taskId: string;
   readonly directory: string;
@@ -977,12 +977,38 @@ const seedLoss = (loss: {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status,
-        started_at, deadline_at, ended_at, delivered_at, probe_error, lost_reason, loss_wave_id)
+        started_at, deadline_at, ended_at, delivered_at, probe_error, lost_reason, loss_wave_id,
+        loss_unplaced)
       VALUES (${loss.taskId}, 'thread-earlier', ${`run-${loss.taskId}`}, 'true', ${loss.directory},
         ${loss.directory}, 'lost', ${loss.endedAt}, ${loss.endedAt}, ${loss.endedAt},
-        ${loss.endedAt}, 'ESRCH', 'gone', ${loss.waveId})
+        ${loss.endedAt}, 'ESRCH', 'gone', ${loss.waveId}, ${loss.waveId === null ? 1 : 0})
     `;
   });
+
+/** A command an earlier server saw exit, and delivered. */
+const seedExited = (run: {
+  readonly taskId: string;
+  readonly directory: string;
+  readonly startedAt: string;
+  readonly endedAt: string;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status,
+        exit_code, started_at, deadline_at, ended_at, delivered_at)
+      VALUES (${run.taskId}, 'thread-earlier', ${`run-${run.taskId}`}, 'true', ${run.directory},
+        ${run.directory}, 'exited', 0, ${run.startedAt}, ${run.endedAt}, ${run.endedAt},
+        ${run.endedAt})
+    `;
+  });
+
+const waveIds = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return (yield* sql<{ readonly wave_id: string }>`SELECT wave_id FROM command_loss_waves`).map(
+    (row) => row.wave_id,
+  );
+});
 
 const seedWave = (waveId: string, startedAt: string) =>
   Effect.gen(function* () {
@@ -1005,33 +1031,47 @@ const nextPass = (runner: CommandRunner.CommandRunner["Service"], threadId: Thre
   runner.run(callerOf(threadId), { command: "true" }).pipe(Effect.andThen(nextWake(threadId)));
 
 describe("placing lost commands in waves", () => {
-  it("joins the last wave while each loss comes within a minute of the one before, and starts one from more than half the minute's commands", () => {
+  it("joins the last wave while each loss comes within a minute after the one before, and starts one from more than half the commands of the minute up to a loss", () => {
     const lostAt = (...seconds: ReadonlyArray<number>) =>
       seconds.map((at) => ({ taskId: `task-${at}`, at: at * 1000 }));
+    const commands = (count: number) => () => count;
     const place = (
       lastLossAt: number | undefined,
       losses: ReadonlyArray<{ readonly taskId: string; readonly at: number }>,
-      now: number,
-      commands: number,
+      commandsAt: (second: number) => number,
     ) => {
-      const { joining, starting } = CommandRunner.placeLosses(
+      const { joining, waves, waiting } = CommandRunner.placeLosses(
         lastLossAt === undefined ? undefined : lastLossAt * 1000,
         losses,
-        (now - 60) * 1000,
-        commands,
+        (at) => commandsAt(at / 1000),
       );
+      const seconds = (placed: ReadonlyArray<{ readonly at: number }>) =>
+        placed.map((loss) => loss.at / 1000);
       return {
-        joining: joining.map((loss) => loss.at / 1000),
-        starting: starting.map((loss) => loss.at / 1000),
+        joining: seconds(joining),
+        waves: waves.map((wave) => seconds(wave.losses)),
+        waiting: seconds(waiting),
       };
     };
-    assert.deepEqual(place(0, lostAt(100, 50), 100, 3), { joining: [50, 100], starting: [] });
+    const none = { joining: [], waves: [], waiting: [] };
+    assert.deepEqual(place(0, lostAt(100, 50), commands(3)), { ...none, joining: [50, 100] });
     // 65 s after the loss before it, so it starts a wave of its own.
-    assert.deepEqual(place(0, lostAt(50, 115), 115, 1), { joining: [50], starting: [115] });
-    assert.deepEqual(place(undefined, lostAt(10, 20), 30, 4), { joining: [], starting: [] });
-    assert.deepEqual(place(undefined, lostAt(10, 20), 30, 3), { joining: [], starting: [10, 20] });
-    // A loss from before the minute that joins no wave stays out of every wave.
-    assert.deepEqual(place(undefined, lostAt(0, 70), 70, 1), { joining: [], starting: [70] });
+    assert.deepEqual(place(0, lostAt(50, 115), commands(1)), {
+      ...none,
+      joining: [50],
+      waves: [[115]],
+    });
+    // Lost before the last wave's latest loss, so it is not part of that wave.
+    assert.deepEqual(place(100, lostAt(90), commands(3)), { ...none, waiting: [90] });
+    assert.deepEqual(place(undefined, lostAt(10, 20), commands(4)), { ...none, waiting: [10, 20] });
+    assert.deepEqual(place(undefined, lostAt(10, 20), commands(3)), { ...none, waves: [[10, 20]] });
+    // More than a minute apart, so neither counts with the other.
+    assert.deepEqual(place(undefined, lostAt(0, 70), commands(3)), { ...none, waiting: [0, 70] });
+    // Against the commands that ran up to each loss, not fewer that run later.
+    assert.deepEqual(
+      place(undefined, lostAt(10, 20), (second) => (second < 30 ? 5 : 1)),
+      { ...none, waiting: [10, 20] },
+    );
   });
 });
 
@@ -1055,6 +1095,7 @@ describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
         );
         // It counts the same losses, and finds them logged.
         yield* withServer((runner) => nextPass(runner, chats[0]!.threadId));
+        assert.lengthOf(yield* waveIds, 1);
         const waves = yield* lossWaves;
         assert.lengthOf(waves, 1);
         // It holds all three, also when two were lost a pass before the third, which already is a wave.
@@ -1117,14 +1158,12 @@ describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
           const endedAt = DateTime.formatIso(
             DateTime.subtractDuration(yield* DateTime.now, Duration.seconds(10)),
           );
-          const sql = yield* SqlClient.SqlClient;
-          yield* sql`
-            INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status,
-              exit_code, started_at, deadline_at, ended_at, delivered_at)
-            VALUES ('task-ended', 'thread-earlier', 'run-ended', 'true', ${chat.workspace},
-              ${NodePath.join(chat.workspace, "task-ended")}, 'exited', 0, ${endedAt}, ${endedAt},
-              ${endedAt}, ${endedAt})
-          `;
+          yield* seedExited({
+            taskId: "task-ended",
+            directory: NodePath.join(chat.workspace, "task-ended"),
+            startedAt: endedAt,
+            endedAt,
+          });
           yield* withServer((runner) =>
             Effect.gen(function* () {
               go(chat);
@@ -1188,6 +1227,52 @@ describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
           ],
         );
       }),
+    );
+  });
+
+  it.layer(layerTest, { excludeTestServices: true })("lost before a restart", (it) => {
+    it.effect(
+      "is placed by the next server however much later it starts, against the commands that ran then",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-wave-unplaced");
+          const now = yield* DateTime.now;
+          const secondsAgo = (seconds: number) =>
+            DateTime.formatIso(DateTime.subtractDuration(now, Duration.seconds(seconds)));
+          // The earlier server recorded these and stopped before it placed them.
+          for (const [taskId, seconds] of [
+            ["task-a", 120],
+            ["task-b", 120],
+            ["task-c", 120],
+            ["task-lone", 600],
+          ] as const) {
+            yield* seedLoss({
+              taskId,
+              directory: NodePath.join(chat.workspace, taskId),
+              endedAt: secondsAgo(seconds),
+              waveId: null,
+            });
+          }
+          // With this one running too, the lone loss was only half of its minute's commands.
+          yield* seedExited({
+            taskId: "task-ran",
+            directory: NodePath.join(chat.workspace, "task-ran"),
+            startedAt: secondsAgo(660),
+            endedAt: secondsAgo(590),
+          });
+          yield* withServer((runner) => nextPass(runner, chat.threadId));
+          assert.deepEqual(
+            (yield* lossWaves).map(({ time, lost, runs }) => ({
+              time,
+              lost,
+              runs: runs.map((run) => run.taskId),
+            })),
+            [{ time: secondsAgo(120), lost: 3, runs: ["task-a", "task-b", "task-c"] }],
+          );
+          // None is read again at the next pass.
+          const sql = yield* SqlClient.SqlClient;
+          assert.lengthOf(yield* sql`SELECT task_id FROM command_runs WHERE loss_unplaced = 1`, 0);
+        }),
     );
   });
 
@@ -1269,13 +1354,7 @@ describe.skipIf(isWindowsHost)("a wave of lost commands", () => {
           (yield* lossWaves).map((wave) => wave.id),
           ["wave-recent"],
         );
-        const sql = yield* SqlClient.SqlClient;
-        assert.deepEqual(
-          (yield* sql<{ readonly wave_id: string }>`SELECT wave_id FROM command_loss_waves`).map(
-            (row) => row.wave_id,
-          ),
-          ["wave-recent"],
-        );
+        assert.deepEqual(yield* waveIds, ["wave-recent"]);
       }),
     );
   });

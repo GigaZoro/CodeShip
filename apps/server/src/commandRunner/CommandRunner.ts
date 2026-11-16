@@ -214,26 +214,35 @@ const lossEvidence = (row: LossEvidenceRow) => ({
 });
 
 /**
- * Places the losses no wave holds yet. Each that comes within WAVE_WINDOW of the loss before it
- * joins the last wave; the rest that ended after `since` start a wave when they are more than half
- * of the minute's `commands`. Those from before `since` that join nothing stay out of every wave.
+ * Places the losses no wave holds yet, oldest first. One that comes within WAVE_WINDOW after the
+ * latest loss of the last wave joins it. The others wait, and those of the WAVE_WINDOW up to one
+ * start a wave when they are more than half of `commandsAt` it, the commands that ran in that time.
  */
-export const placeLosses = (
+export const placeLosses = <L extends { readonly at: number }>(
   lastLossAt: number | undefined,
-  losses: ReadonlyArray<{ readonly taskId: string; readonly at: number }>,
-  since: number,
-  commands: number,
+  losses: ReadonlyArray<L>,
+  commandsAt: (at: number) => number,
 ) => {
-  const ordered = [...losses].sort((a, b) => a.at - b.at);
+  const window = Duration.toMillis(WAVE_WINDOW);
+  const joining: Array<L> = [];
+  const waves: Array<{ readonly at: number; readonly losses: Array<L> }> = [];
+  let waiting: Array<L> = [];
   let latest = lastLossAt;
-  let joined = 0;
-  for (const loss of ordered) {
-    if (latest === undefined || loss.at - latest > Duration.toMillis(WAVE_WINDOW)) break;
-    latest = Math.max(latest, loss.at);
-    joined += 1;
+  for (const loss of [...losses].sort((a, b) => a.at - b.at)) {
+    if (latest !== undefined && loss.at >= latest && loss.at - latest <= window) {
+      (waves.at(-1)?.losses ?? joining).push(loss);
+      latest = loss.at;
+      continue;
+    }
+    waiting.push(loss);
+    const recent = waiting.filter((other) => other.at > loss.at - window);
+    if (2 * recent.length > commandsAt(loss.at)) {
+      waves.push({ at: loss.at, losses: recent });
+      waiting = waiting.filter((other) => other.at <= loss.at - window);
+      latest = loss.at;
+    }
   }
-  const rest = ordered.slice(joined).filter((loss) => loss.at > since);
-  return { joining: ordered.slice(0, joined), starting: 2 * rest.length > commands ? rest : [] };
+  return { joining, waves, waiting };
 };
 
 interface Loss {
@@ -468,8 +477,6 @@ const make = Effect.gen(function* () {
   );
   /** Commands whose end has not reached their task yet, by task id. */
   const watched = new Map<string, CommandRunRow>();
-  /** When each command that ended within the last WAVE_WINDOW ended, however it ended, by task id. */
-  const recentEnds = new Map<string, number>();
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
   /** Open once start() has adopted the commands an earlier server left, so run() never races it. */
@@ -595,12 +602,16 @@ const make = Effect.gen(function* () {
       WHERE task_id = ${row.task_id}
     `;
 
-  /** Records a watched command's new state; one that is delivered is no longer watched. */
-  const settle = Effect.fn("CommandRunner.settle")(function* (row: CommandRunRow) {
-    yield* writeRow(row);
+  /** A command is watched until its end is delivered. */
+  const remember = (row: CommandRunRow) => {
     if (row.delivered_at === null) watched.set(row.task_id, row);
     else watched.delete(row.task_id);
-    if (row.ended_at !== null) recentEnds.set(row.task_id, Date.parse(row.ended_at));
+  };
+
+  /** Records a watched command's new state. */
+  const settle = Effect.fn("CommandRunner.settle")(function* (row: CommandRunRow) {
+    yield* writeRow(row);
+    remember(row);
   });
 
   const readTail = (row: CommandRunRow) =>
@@ -717,39 +728,11 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.ignore({ log: true }));
   });
 
-  /** The last wave, which a loss within WAVE_WINDOW of its latest one joins. */
-  let lastWave: { readonly id: string; readonly latestAt: number } | undefined;
-  /** When each loss that no wave holds yet ended, by task id, until one takes it or it is old. */
-  const waveless = new Map<string, number>();
   /** Set while the losses log may not show the waves the database holds. */
   let logStale = true;
   /** Set once a write of the log fails and until one succeeds, so the failure is logged once. */
   let saveFailing = false;
   const lossLogPath = path.join(logsDir, LOSS_LOG_FILE);
-
-  /**
-   * Takes the waves up where an earlier server left them: the ends of the last minute still count,
-   * the last wave can still go on, and the losses it recorded but placed in no wave are placed now.
-   */
-  const restoreWaves = Effect.gen(function* () {
-    const since = DateTime.formatIso(DateTime.subtractDuration(yield* DateTime.now, WAVE_WINDOW));
-    const ended = yield* sql<{ readonly task_id: string; readonly ended_at: string }>`
-      SELECT task_id, ended_at FROM command_runs WHERE ended_at > ${since}
-    `;
-    for (const row of ended) recentEnds.set(row.task_id, Date.parse(row.ended_at));
-    const [last] = yield* sql<{ readonly wave_id: string; readonly latest: string }>`
-      SELECT loss_wave_id AS wave_id, MAX(ended_at) AS latest FROM command_runs
-      WHERE loss_wave_id IS NOT NULL
-      GROUP BY loss_wave_id ORDER BY latest DESC LIMIT 1
-    `;
-    if (last !== undefined) lastWave = { id: last.wave_id, latestAt: Date.parse(last.latest) };
-    const from = last !== undefined && last.latest < since ? last.latest : since;
-    const unplaced = yield* sql<{ readonly task_id: string; readonly ended_at: string }>`
-      SELECT task_id, ended_at FROM command_runs
-      WHERE status = 'lost' AND loss_wave_id IS NULL AND ended_at >= ${from}
-    `;
-    for (const row of unplaced) waveless.set(row.task_id, Date.parse(row.ended_at));
-  });
 
   /** Writes the losses log from the waves in the database, whole, so no line is torn. */
   const writeLossLog = Effect.gen(function* () {
@@ -811,66 +794,109 @@ const make = Effect.gen(function* () {
       ended_at: endedAt,
       lost_output: output === "" ? null : output,
     };
-    yield* settle(lost);
-    waveless.set(row.task_id, Date.parse(endedAt));
+    // With the loss, so a server that stops before it is placed leaves it for the next one.
+    yield* sql.withTransaction(
+      writeRow(lost).pipe(
+        Effect.andThen(
+          sql`UPDATE command_runs SET loss_unplaced = 1 WHERE task_id = ${row.task_id}`,
+        ),
+      ),
+    );
+    remember(lost);
     return lost;
   });
 
+  const isoAt = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+
   /**
-   * Places the losses no wave holds yet (placeLosses), warns once for each wave that starts, and
-   * brings the losses log up to date; a write that fails is tried again at the next pass.
+   * Places the losses no wave holds yet (placeLosses) from the database alone, each against the
+   * commands that ran when it was lost, so a restart neither misses a wave nor starts one twice.
+   * Warns once for each wave that starts.
+   */
+  const placeWaves = Effect.fn("CommandRunner.placeWaves")(function* (
+    unplaced: ReadonlyArray<{ readonly task_id: string; readonly ended_at: string }>,
+  ) {
+    const window = Duration.toMillis(WAVE_WINDOW);
+    const losses = unplaced.map((row) => ({ taskId: row.task_id, at: Date.parse(row.ended_at) }));
+    const times = losses.map((loss) => loss.at);
+    const [lastWave] = yield* sql<{ readonly wave_id: string; readonly latest: string }>`
+      SELECT loss_wave_id AS wave_id, MAX(ended_at) AS latest FROM command_runs
+      WHERE loss_wave_id IS NOT NULL
+      GROUP BY loss_wave_id ORDER BY latest DESC LIMIT 1
+    `;
+    const spans = (yield* sql<{ readonly started_at: string; readonly ended_at: string | null }>`
+      SELECT started_at, ended_at FROM command_runs
+      WHERE started_at <= ${isoAt(Math.max(...times))}
+        AND (ended_at IS NULL OR ended_at > ${isoAt(Math.min(...times) - window)})
+    `).map((row) => ({
+      start: Date.parse(row.started_at),
+      end: row.ended_at === null ? Number.POSITIVE_INFINITY : Date.parse(row.ended_at),
+    }));
+    const runningBetween = (from: number, to: number) =>
+      spans.filter((span) => span.start <= to && span.end > from).length;
+    const commandsAt = (at: number) => runningBetween(at - window, at);
+    const { joining, waves, waiting } = placeLosses(
+      lastWave === undefined ? undefined : Date.parse(lastWave.latest),
+      losses,
+      commandsAt,
+    );
+    const started = yield* Effect.forEach(waves, (wave) =>
+      crypto.randomUUIDv4().pipe(
+        Effect.orDie,
+        Effect.map((id) => ({ ...wave, id, running: runningBetween(wave.at, wave.at) })),
+      ),
+    );
+    const tooOld = DateTime.toEpochMillis(yield* DateTime.now) - window;
+    const placed = [
+      ...joining,
+      ...waves.flatMap((wave) => wave.losses),
+      ...waiting.filter((loss) => loss.at <= tooOld),
+    ];
+    if (placed.length === 0) return;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if (lastWave !== undefined && joining.length > 0) {
+          yield* sql`
+            UPDATE command_runs SET loss_wave_id = ${lastWave.wave_id}
+            WHERE task_id IN ${sql.in(joining.map((loss) => loss.taskId))}
+          `;
+        }
+        for (const wave of started) {
+          yield* sql`
+            INSERT INTO command_loss_waves (wave_id, started_at, running)
+            VALUES (${wave.id}, ${isoAt(wave.at)}, ${wave.running})
+          `;
+          yield* sql`
+            UPDATE command_runs SET loss_wave_id = ${wave.id}
+            WHERE task_id IN ${sql.in(wave.losses.map((loss) => loss.taskId))}
+          `;
+        }
+        yield* sql`
+          UPDATE command_runs SET loss_unplaced = 0
+          WHERE task_id IN ${sql.in(placed.map((loss) => loss.taskId))}
+        `;
+      }),
+    );
+    yield* Effect.forEach(started, (wave) =>
+      Effect.logWarning("command-runner.loss-wave", {
+        lost: wave.losses.length,
+        commands: commandsAt(wave.at),
+        running: wave.running,
+        filePath: lossLogPath,
+      }),
+    );
+    if (joining.length > 0 || started.length > 0) logStale = true;
+  });
+
+  /**
+   * Places the losses no wave holds yet and brings the losses log up to date; a write that fails
+   * is tried again at the next pass.
    */
   const noteWave = Effect.fn("CommandRunner.noteWave")(function* () {
-    const now = yield* DateTime.now;
-    const since = DateTime.toEpochMillis(DateTime.subtractDuration(now, WAVE_WINDOW));
-    for (const [taskId, at] of recentEnds) if (at <= since) recentEnds.delete(taskId);
-    if (waveless.size > 0) {
-      const running = [...watched.values()].filter((row) => row.status === "running").length;
-      const { joining, starting } = placeLosses(
-        lastWave?.latestAt,
-        Array.from(waveless, ([taskId, at]) => ({ taskId, at })),
-        since,
-        running + recentEnds.size,
-      );
-      const last = lastWave;
-      if (last !== undefined && joining.length > 0) {
-        yield* sql`
-          UPDATE command_runs SET loss_wave_id = ${last.id}
-          WHERE task_id IN ${sql.in(joining.map((loss) => loss.taskId))}
-        `;
-        lastWave = {
-          id: last.id,
-          latestAt: Math.max(last.latestAt, ...joining.map((loss) => loss.at)),
-        };
-        for (const loss of joining) waveless.delete(loss.taskId);
-        logStale = true;
-      }
-      if (starting.length > 0) {
-        const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-        yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
-              INSERT INTO command_loss_waves (wave_id, started_at, running)
-              VALUES (${id}, ${DateTime.formatIso(now)}, ${running})
-            `;
-            yield* sql`
-              UPDATE command_runs SET loss_wave_id = ${id}
-              WHERE task_id IN ${sql.in(starting.map((loss) => loss.taskId))}
-            `;
-          }),
-        );
-        yield* Effect.logWarning("command-runner.loss-wave", {
-          lost: starting.length,
-          running,
-          ended: recentEnds.size - starting.length,
-          filePath: lossLogPath,
-        });
-        lastWave = { id, latestAt: Math.max(...starting.map((loss) => loss.at)) };
-        for (const loss of starting) waveless.delete(loss.taskId);
-        logStale = true;
-      }
-      for (const [taskId, at] of waveless) if (at <= since) waveless.delete(taskId);
-    }
+    const unplaced = yield* sql<{ readonly task_id: string; readonly ended_at: string }>`
+      SELECT task_id, ended_at FROM command_runs WHERE loss_unplaced = 1
+    `;
+    if (unplaced.length > 0) yield* placeWaves(unplaced);
     if (!logStale) return;
     yield* writeLossLog.pipe(
       Effect.andThen(
@@ -1494,12 +1520,6 @@ const make = Effect.gen(function* () {
    * which are lost.
    */
   const adopt = Effect.gen(function* () {
-    // Before adoptRow, whose losses are this server's own.
-    yield* restoreWaves.pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("command-runner.restore-waves-failed", { cause }),
-      ),
-    );
     const open = yield* projections.getOpenCommandTasks;
     const openById = new Map<string, ProjectionStore.ProjectionOpenCommandTask>(
       open.map((task) => [task.taskId, task]),
