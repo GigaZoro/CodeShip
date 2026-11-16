@@ -94,9 +94,8 @@ const startSync = Effect.fn(function* (
               )).has(projectId);
               const created = first ? importer.created?.[projectId] : undefined;
               return {
-                importedCount: 1,
+                importedCount: created?.count ?? 0,
                 skippedCount: 0,
-                createdCount: created?.count ?? 0,
                 latestCreated: created?.latest ?? null,
               };
             }),

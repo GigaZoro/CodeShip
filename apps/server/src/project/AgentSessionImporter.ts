@@ -91,8 +91,6 @@ const importThreadId = (providerInstanceId: string, providerSessionId: string) =
   ThreadId.make(`import:${providerInstanceId}:${providerSessionId}`);
 
 export interface AgentSessionImportOutcome extends AgentSessionImportResult {
-  /** Threads this import created, unlike `importedCount`, which also counts earlier imports. */
-  readonly createdCount: number;
   readonly latestCreated: AgentConversationSyncResult["latestThread"];
 }
 
@@ -301,7 +299,6 @@ const make = Effect.gen(function* () {
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
-    let createdCount = 0;
     let latestCreated: AgentConversationSyncResult["latestThread"] = null;
 
     yield* Stream.runForEach(outcomes, (outcome) =>
@@ -384,7 +381,8 @@ const make = Effect.gen(function* () {
             }
             yield* persistRuntime;
             yield* runtimes.recordImportedTranscript({ threadId, source });
-            return "updated" as const;
+            importedThreadIds.add(threadId);
+            return null;
           }
 
           // Like any No project thread, follow-ups run in a folder of their own.
@@ -520,7 +518,7 @@ const make = Effect.gen(function* () {
           if (committed.length === 0) return null;
           yield* persistRuntime;
           yield* runtimes.recordImportedTranscript({ threadId, source });
-          return "created" as const;
+          return true;
         }).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Could not import an agent session", {
@@ -530,12 +528,9 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.as(false)),
           ),
         );
-        if (imported === "created" || imported === "updated") {
+        if (imported === true) {
           importedThreadIds.add(threadId);
           importedCount += 1;
-        }
-        if (imported === "created") {
-          createdCount += 1;
           const { updatedAt } = outcome.thread;
           if (latestCreated === null || updatedAt > latestCreated.updatedAt) {
             latestCreated = { threadId, updatedAt };
@@ -546,12 +541,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-    const result: AgentSessionImportOutcome = {
-      importedCount,
-      skippedCount,
-      createdCount,
-      latestCreated,
-    };
+    const result: AgentSessionImportOutcome = { importedCount, skippedCount, latestCreated };
     return result;
   });
 

@@ -67,10 +67,10 @@ const make = Effect.gen(function* () {
     );
     for (const project of enabled) {
       yield* importer.importAllAgentThreads(project.id).pipe(
-        Effect.flatMap(({ createdCount, latestCreated }) =>
+        Effect.flatMap(({ importedCount, latestCreated }) =>
           record((current) => ({
             ...current,
-            importedCount: current.importedCount + createdCount,
+            importedCount: current.importedCount + importedCount,
             latestThread:
               latestCreated !== null &&
               (current.latestThread === null ||

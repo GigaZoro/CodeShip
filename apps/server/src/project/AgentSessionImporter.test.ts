@@ -349,7 +349,6 @@ it.effect(
       expect(yield* importer.run).toEqual({
         importedCount: 3,
         skippedCount: 0,
-        createdCount: 3,
         latestCreated: { threadId: importId(unowned), updatedAt: unowned.thread.updatedAt },
       });
       expect(importer.ownedSessions[0]).toEqual(
@@ -533,17 +532,15 @@ it.effect(
       yield* sql`DROP TRIGGER fail_runtime`;
 
       expect(yield* importer.run).toEqual({
-        importedCount: 1,
+        importedCount: 0,
         skippedCount: 0,
-        createdCount: 0,
         latestCreated: null,
       });
       // The committed import owns its session, but must stay readable to finish its runtime.
       expect(importer.ownedSessions.at(-1)).toEqual(new Set());
       expect(yield* importer.run).toEqual({
-        importedCount: 1,
+        importedCount: 0,
         skippedCount: 0,
-        createdCount: 0,
         latestCreated: null,
       });
       expect(yield* events.read({ threadId }).pipe(Stream.runCollect)).toEqual(committed);
