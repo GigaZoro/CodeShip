@@ -793,9 +793,11 @@ it.effect("does not move a live legacy assignment to another runtime for resize"
     ).pipe(Effect.forkScoped);
     yield* Effect.yieldNow;
 
-    const error = yield* broker
-      .invoke<void>({ scope, operation: "resize", input: { mode: "fill" } })
-      .pipe(Effect.flip);
+    const error = yield* failsWithoutHost(broker, {
+      scope,
+      operation: "resize",
+      input: { mode: "fill" },
+    });
     expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
     expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe("legacy");
   }),
