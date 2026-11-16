@@ -710,8 +710,6 @@ export const OrchestrationV2RestartCancelledBackgroundWork = Schema.Struct({
   id: Schema.optional(TrimmedNonEmptyString),
   /** Native id of the turn item that started this work, when it is not `id`. */
   nativeItemId: Schema.optional(TrimmedNonEmptyString),
-  /** The provider wakes the agent when it ends, so a restart note wakes it even for a shell. */
-  awaited: Schema.optional(Schema.Literal(true)),
 });
 export type OrchestrationV2RestartCancelledBackgroundWork =
   typeof OrchestrationV2RestartCancelledBackgroundWork.Type;
@@ -1939,8 +1937,6 @@ export const OrchestrationV2TurnItem = Schema.Union([
     exitCode: Schema.optional(Schema.Int),
     /** Set when the command is a monitor, so background work lists it as a monitor. */
     monitor: Schema.optional(Schema.Boolean),
-    /** The provider wakes the agent when this command finishes after its turn. */
-    completionWake: Schema.optional(Schema.Literal("always")),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2872,8 +2868,6 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     exitCode: Schema.optional(Schema.Int),
     /** Set when the command is a monitor, so background work lists it as a monitor. */
     monitor: Schema.optional(Schema.Boolean),
-    /** The provider wakes the agent when this command finishes after its turn. */
-    completionWake: Schema.optional(Schema.Literal("always")),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,

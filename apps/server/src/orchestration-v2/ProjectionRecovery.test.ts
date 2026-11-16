@@ -1546,7 +1546,7 @@ it.effect("leaves a finished delegated child's background roster to the child", 
         createdAt: now,
         updatedAt: now,
         pendingBackgroundTasks: [
-          { taskId: "wait", description: "sleep 600", kind: "command", awaited: true },
+          { taskId: "wait", description: "sleep 600", kind: "background_task" },
         ],
       },
     });
@@ -1588,7 +1588,7 @@ it.effect("leaves a finished delegated child's background roster to the child", 
     assert.deepEqual(effects, [{ effect_id: `effect:restart-continuation:${childRun}` }]);
     const projection = yield* projections.getThreadProjection(child);
     assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
-      { kind: "shell", label: "sleep 600 (id wait)", id: "wait", awaited: true },
+      { kind: "task", label: "sleep 600 (id wait)", id: "wait" },
     ]);
   }).pipe(Effect.provide(layerRecoveryTest)),
 );

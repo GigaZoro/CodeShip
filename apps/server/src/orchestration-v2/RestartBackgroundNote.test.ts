@@ -264,14 +264,14 @@ it("names a lost subagent by the id the agent resumes it with", () => {
   );
   assert.isFalse(isAwaitedWork(cancelledRosterTaskWork({ kind: "command", taskId: "shell-2" })));
   assert.isFalse(isAwaitedWork(cancelledRosterTaskWork({ kind: "monitor", taskId: "watchdog" })));
+  assert.isFalse(
+    isAwaitedWork(cancelledRosterTaskWork({ kind: "command", taskId: "dev", awaited: true })),
+  );
   assert.isTrue(
     isAwaitedWork(cancelledRosterTaskWork({ kind: "background_task", taskId: "tests" })),
   );
   const codexCommand = { id: "item-2", type: "command_execution", input: "sleep 180" };
   assert.isFalse(isAwaitedWork(cancelledTurnItemWork(codexCommand as never)!));
-  assert.isTrue(
-    isAwaitedWork(cancelledTurnItemWork({ ...codexCommand, completionWake: "always" } as never)!),
-  );
   assert.equal(
     cancelledTurnItemWork({
       id: "item-1",

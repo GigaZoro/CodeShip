@@ -75,7 +75,6 @@ export function cancelledTurnItemWork(
         kind: item.monitor === true ? "monitor" : "shell",
         label: compactLabel(item.input) ?? compactLabel(item.title) ?? "background command",
         id: item.id,
-        ...(item.completionWake === "always" ? { awaited: true as const } : {}),
       };
     case "dynamic_tool": {
       const monitor =
@@ -163,7 +162,6 @@ export function cancelledRosterTaskWork(task: OrchestrationV2PendingBackgroundTa
         description === undefined ? task.taskId : `${description} (id ${task.taskId})`,
       ) ?? "background task",
     id: task.taskId,
-    ...(task.awaited === true ? { awaited: true as const } : {}),
     ...(task.nativeItemId === undefined ? {} : { nativeItemId: task.nativeItemId }),
   };
 }
@@ -438,12 +436,12 @@ export function isRestartNoteSource(
 }
 
 /**
- * Matches the Working-section hold: a shell or monitor wakes it only when its provider would
- * have woken the agent when it finished. Most are dev servers and their watchdogs, so their note
- * waits for the next user message.
+ * Matches the Working-section hold: a shell or monitor never wakes it. Most are dev servers and
+ * their watchdogs, so their note waits for the next user message; commands a chat waits on run
+ * through `t3_command_run`, which outlives the restart.
  */
-export function isAwaitedWork(work: Pick<Work, "kind" | "awaited">): boolean {
-  return work.awaited === true || (work.kind !== "shell" && work.kind !== "monitor");
+export function isAwaitedWork(work: Pick<Work, "kind">): boolean {
+  return work.kind !== "shell" && work.kind !== "monitor";
 }
 
 export function runOutcome(
