@@ -6,13 +6,24 @@ import {
   OrchestratorMcpScheduledTask,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpThreadInterruptResult,
 } from "./orchestratorMcp.ts";
 
 const decodeScheduledTask = Schema.decodeUnknownSync(OrchestratorMcpScheduledTask);
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+const decodeInterruptResult = Schema.decodeUnknownSync(OrchestratorMcpThreadInterruptResult);
 
 describe("orchestrator MCP contracts", () => {
+  it("preserves the resolved and requested run ids in restart interruption results", () => {
+    const result = {
+      threadId: "thread-restart",
+      runId: "run-continuation",
+      requestedRunId: "run-source",
+      status: "interrupt_requested",
+    };
+    expect(decodeInterruptResult(result)).toEqual(result);
+  });
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
       task: "Inspect the workspace and report the result.",
