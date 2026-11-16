@@ -1,6 +1,6 @@
 ## 2026-11-16 — A finished run no longer goes back to waiting and blocks its queue
 
-- When a delegated task or command finished just after its parent's run completed, the parent could go back to waiting and lose its checkpoint, and the next queued message did not start until CodeShip restarted. A task result now changes only the parent's task bookkeeping, and the server refuses any write that would put a finished run back to an earlier state or drop its checkpoint.
+- When a delegated task or command finished just after its parent's run completed, the parent could go back to waiting and lose its checkpoint, and the next queued message did not start until CodeShip restarted. A task result now changes only the parent's task bookkeeping, and the server refuses any write that would put a finished run back to an earlier state or drop its checkpoint. Checkpoint capture, a provider's final events and shutdown recovery now each read a run and write it while holding the thread, so none of them can write a state another change has already replaced.
 
 ## 2026-11-16 — The manual Windows server test run fits its time limit
 

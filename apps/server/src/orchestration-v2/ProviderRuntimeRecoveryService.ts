@@ -26,6 +26,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   answerableAfterRestart,
@@ -396,6 +397,7 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -983,27 +985,34 @@ export const make = Effect.gen(function* () {
     let retiredEffects = 0;
     const stoppedThisPass = new Map<string, RecoverySession>();
     for (const threadId of threadIds) {
-      const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderRuntimeRecoveryError({
-              operation: "read-projections",
-              threadId,
-              cause,
-            }),
-        ),
-      );
-      const enabled = continuesAfterRestart(
-        resumeRequested,
-        continueAfterRestart,
-        projection.thread.projectId,
-      );
-      const result = yield* reconcileProjection(
-        projection,
-        trigger,
-        enabled,
-        lastCommittedAt,
-        stoppedThisPass,
+      // Shutdown does not drain admitted commands, so read and commit under the lock they plan under.
+      const { projection, result } = yield* threadDispatch.withLock(
+        threadId,
+        Effect.gen(function* () {
+          const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeRecoveryError({
+                  operation: "read-projections",
+                  threadId,
+                  cause,
+                }),
+            ),
+          );
+          const enabled = continuesAfterRestart(
+            resumeRequested,
+            continueAfterRestart,
+            projection.thread.projectId,
+          );
+          const result = yield* reconcileProjection(
+            projection,
+            trigger,
+            enabled,
+            lastCommittedAt,
+            stoppedThisPass,
+          );
+          return { projection, result };
+        }),
       );
       for (const session of projection.providerSessions) {
         if (session.status !== "stopped" && session.status !== "error") {
@@ -1194,4 +1203,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(ProviderRuntimeRecoveryService, make);
+export const layer = Layer.effect(ProviderRuntimeRecoveryService, make).pipe(
+  Layer.provide(ThreadCommandExecutor.layer),
+);

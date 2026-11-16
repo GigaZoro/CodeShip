@@ -65,6 +65,7 @@ import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
 const isLiveStreamBufferError = Schema.is(LiveStreamBufferError);
@@ -3221,6 +3222,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         const recovery = yield* ProviderRuntimeRecovery.make.pipe(
           Effect.provide(
             Layer.mergeAll(
+              ThreadCommandExecutor.layer,
               ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getRecoveryThreadIds: () => Effect.succeed([threadId]),
@@ -3405,7 +3407,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "crashed-worker" })));
 
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-        Effect.provide(ServerSettings.layerTest()),
+        Effect.provide(Layer.merge(ServerSettings.layerTest(), ThreadCommandExecutor.layer)),
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,
           EffectWorker.OrchestrationEffectWorkerV2.of({
@@ -3622,7 +3624,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       });
 
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-        Effect.provide(ServerSettings.layerTest()),
+        Effect.provide(Layer.merge(ServerSettings.layerTest(), ThreadCommandExecutor.layer)),
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,
           EffectWorker.OrchestrationEffectWorkerV2.of({
