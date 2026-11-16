@@ -154,6 +154,7 @@ export const layerExecutor: Layer.Layer<
                     runId,
                     attemptId: failure.attemptId,
                     rootNodeId: failure.rootNodeId,
+                    cause: failure.cause,
                   });
                 }),
               ),
