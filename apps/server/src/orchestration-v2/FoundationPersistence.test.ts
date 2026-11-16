@@ -3227,6 +3227,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
               Layer.mock(ProjectionStore.ProjectionStoreV2)({
                 getRecoveryThreadIds: () => Effect.succeed([threadId]),
                 getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+                getThreadRecords: () => Effect.succeed(projection),
               }),
               Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
             ),
