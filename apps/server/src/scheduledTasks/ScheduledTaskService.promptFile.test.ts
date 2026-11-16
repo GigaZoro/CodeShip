@@ -205,6 +205,7 @@ const withService = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Scope
               Ref.update(launched, (texts) => [...texts, input.initialMessage?.text ?? ""]).pipe(
                 Effect.as({ threadId: ThreadId.make(`thread:run-${input.commandId}`) } as never),
               ),
+            isNonGitProject: () => Effect.succeed(false),
           }),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
@@ -524,7 +525,7 @@ it.effect(
         // Fires while the run waits start nothing more.
         yield* poll;
         const manual = yield* service.runNow({ id: task.id }).pipe(Effect.flip);
-        expect(manual).toMatchObject({ cause: { message: "Schedule task is already running." } });
+        expect(manual).toMatchObject({ message: "Schedule task is already running." });
 
         yield* Ref.set(remote, { text: "Pushed before the wake.", commit: "c2" });
         yield* Ref.set(network.online, true);
