@@ -1,7 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
-import * as NodeDiagnosticsChannel from "node:diagnostics_channel";
-import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
@@ -12,11 +10,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { probeProcess } from "@t3tools/shared/processProbe";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -290,34 +291,13 @@ describe("check:changed", () => {
   );
 
   // A git that exits while a process it started holds its output never reaches the end of that
-  // output, so the call fails at its time limit. Its pipes close then, or they would keep
-  // check:changed from ever exiting (the patch of @effect/platform-node-shared).
-  it.effect("closes the pipes of a git whose output a process it started still holds", () => {
+  // output, so the call fails at its time limit. Its pipes then stop holding the event loop, or they
+  // would keep check:changed from exiting until that process ends (the patch of
+  // @effect/platform-node-shared).
+  it.effect("lets the run exit while a process git started still holds its output", () => {
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-held-git-"));
-    const fakeGitScript = NodePath.join(dir, "git.mjs");
-    const holderPid = NodePath.join(dir, "holder");
-    NodeFS.writeFileSync(
-      fakeGitScript,
-      [
-        'import { spawn } from "node:child_process";',
-        'import { writeFileSync } from "node:fs";',
-        'import { tmpdir } from "node:os";',
-        // Outside dir, which Windows cannot delete while a running process works in it.
-        'const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { cwd: tmpdir(), stdio: "inherit", detached: true, windowsHide: true });',
-        "writeFileSync(process.argv[2], String(holder.pid));",
-        "holder.unref();",
-      ].join("\n"),
-    );
-    const openPipes = () =>
-      process.getActiveResourcesInfo().filter((kind) => kind === "PipeWrap").length;
-    // Node announces each process it starts, which gives the test the fake git's own pipes. It
-    // announces it before the spawn sets its arguments, so the fake git is picked out later.
-    const started: Array<NodeChildProcess.ChildProcess> = [];
-    const onSpawn = (message: unknown) => {
-      started.push((message as { process: NodeChildProcess.ChildProcess }).process);
-    };
+    const fakeGitScript = writeHolderStarter(dir, "setInterval(() => {}, 1 << 30)");
     return Effect.gen(function* () {
-      NodeDiagnosticsChannel.subscribe("child_process", onSpawn);
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const gitExited = yield* Deferred.make<void>();
       const pipesBefore = openPipes();
@@ -327,11 +307,10 @@ describe("check:changed", () => {
           ChildProcessSpawner.make((command) =>
             spawner
               .spawn(
-                ChildProcess.make(
-                  process.execPath,
-                  [fakeGitScript, holderPid],
-                  ChildProcess.isStandardCommand(command) ? command.options : {},
-                ),
+                ChildProcess.make(process.execPath, [fakeGitScript], {
+                  ...(ChildProcess.isStandardCommand(command) ? command.options : {}),
+                  stdin: "ignore",
+                }),
               )
               .pipe(
                 Effect.tap((handle) =>
@@ -347,37 +326,48 @@ describe("check:changed", () => {
       );
       // The fake git has started the holder and recorded its id once it has exited.
       yield* Deferred.await(gitExited);
-      const git = started.find((child) => child.spawnargs.includes(fakeGitScript));
-      const pipes = [git?.stdout, git?.stderr].filter(
-        (pipe) => pipe !== null && pipe !== undefined,
-      );
-      assert.strictEqual(pipes.length, 2);
-      // Listened for before the call can end, so neither pipe's close passes unseen.
-      const closed = Promise.all(pipes.map((pipe) => NodeEvents.EventEmitter.once(pipe, "close")));
       yield* TestClock.adjust(GIT_TIMEOUT);
       assert.strictEqual(
         yield* Fiber.join(listing),
         `check:changed: git ls-files did not finish within ${GIT_TIMEOUT}`,
       );
-      // Destroyed by the time the call fails, and then closed although the holder keeps their
-      // other ends open, so they no longer hold the event loop.
-      assert.deepStrictEqual(
-        pipes.map((pipe) => pipe.destroyed),
-        [true, true],
-      );
-      yield* Effect.promise(() => closed);
+      // Still open, since the holder keeps their other ends, but no longer holding the event loop.
       assert.strictEqual(openPipes(), pipesBefore);
     }).pipe(
       Effect.provide(NodeServices.layer),
-      Effect.ensuring(
-        Effect.sync(() => {
-          NodeDiagnosticsChannel.unsubscribe("child_process", onSpawn);
-          if (NodeFS.existsSync(holderPid)) {
-            killLeftover(Number(NodeFS.readFileSync(holderPid, "utf8")));
-          }
-          NodeFS.rmSync(dir, { recursive: true, force: true });
-        }),
-      ),
+      Effect.ensuring(Effect.sync(() => removeHolderFixture(dir))),
+    );
+  });
+
+  // An ACP terminal reads its process's output after the scope that owns the process has closed,
+  // until the output ends, so the patch must not cut off what a process it started writes later.
+  it.effect("keeps a process's output for its reader after the process's scope closes", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-late-output-"));
+    const go = NodePath.join(dir, "go");
+    // The holder writes once the test creates go, and then ends, which ends the output.
+    const starter = writeHolderStarter(
+      dir,
+      `const fs = require("node:fs"); const poll = setInterval(() => { if (fs.existsSync(${JSON.stringify(go)})) { clearInterval(poll); process.stdout.write("late"); } }, 20);`,
+      "early ",
+    );
+    return Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const scope = yield* Scope.make();
+      const handle = yield* spawner
+        .spawn(ChildProcess.make(process.execPath, [starter]))
+        .pipe(Effect.provideService(Scope.Scope, scope));
+      const output = yield* handle.stdout.pipe(
+        Stream.decodeText(),
+        Stream.mkString,
+        Effect.forkDetach,
+      );
+      yield* handle.exitCode;
+      yield* Scope.close(scope, Exit.void);
+      NodeFS.writeFileSync(go, "");
+      assert.strictEqual(yield* Fiber.join(output), "early late");
+    }).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => removeHolderFixture(dir))),
     );
   });
 
@@ -515,7 +505,7 @@ describe("check:changed", () => {
           yield* Fiber.join(listing),
           `check:changed: git ls-files did not finish within ${GIT_TIMEOUT}`,
         );
-        assert.throws(() => process.kill(leader, 0), /ESRCH/);
+        assert.deepStrictEqual(probeProcess(leader), { state: "gone", code: "ESRCH" });
       }).pipe(
         Effect.provide(NodeServices.layer),
         Effect.ensuring(
@@ -614,6 +604,39 @@ const killLeftover = (pid: number) => {
     // ESRCH: it is already gone.
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
+};
+
+// The stdio pipes that keep this process's event loop running. A stdin pipe, which Node destroys
+// once its process exits, counts until it has closed on a later turn of the loop, so a test that
+// counts them starts its processes without one.
+const openPipes = () =>
+  process.getActiveResourcesInfo().filter((kind) => kind === "PipeWrap").length;
+
+// Writes dir/starter.mjs: it starts `holder`, code for node -e, as a process that inherits its
+// stdio and outlives it, records the holder's id in dir/holder, writes `output` and exits.
+const writeHolderStarter = (dir: string, holder: string, output = "") => {
+  const starter = NodePath.join(dir, "starter.mjs");
+  NodeFS.writeFileSync(
+    starter,
+    [
+      'import { spawn } from "node:child_process";',
+      'import { writeFileSync } from "node:fs";',
+      'import { tmpdir } from "node:os";',
+      // Outside dir, which Windows cannot delete while a running process works in it.
+      `const holder = spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { cwd: tmpdir(), stdio: "inherit", detached: true, windowsHide: true });`,
+      `writeFileSync(${JSON.stringify(NodePath.join(dir, "holder"))}, String(holder.pid));`,
+      "holder.unref();",
+      `process.stdout.write(${JSON.stringify(output)});`,
+    ].join("\n"),
+  );
+  return starter;
+};
+
+// Kills the holder a writeHolderStarter script started, if it got that far, and removes dir.
+const removeHolderFixture = (dir: string) => {
+  const holderPid = NodePath.join(dir, "holder");
+  if (NodeFS.existsSync(holderPid)) killLeftover(Number(NodeFS.readFileSync(holderPid, "utf8")));
+  NodeFS.rmSync(dir, { recursive: true, force: true });
 };
 
 const writeUnder = (root: string, file: string, content = "input") => {
