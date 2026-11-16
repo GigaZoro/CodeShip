@@ -1514,8 +1514,11 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         return cause?.code === "ESRCH" ? Effect.succeed(false) : Effect.fail(error);
       }),
     );
-  const stopChildTree = stopAcpWindowsProcessTree(childTreeRoot).pipe(
-    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+  // Each walk starts PowerShell, so terminating the group and the scope's finalizer share one.
+  const stopChildTree = yield* Effect.cached(
+    stopAcpWindowsProcessTree(childTreeRoot).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    ),
   );
   const terminateWindowsProcessTree =
     options.windowsProcessTreeTerminator?.(Number(child.pid)) ?? stopChildTree;
