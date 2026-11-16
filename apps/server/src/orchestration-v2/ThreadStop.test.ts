@@ -1673,7 +1673,7 @@ it.effect("an unanswered Stop is flagged until Force stop ends the run with its 
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect.each(["Stop", "Force stop"] as const)(
+it.effect.each(["Stop", "Force stop", "Stop awaiting continuation"] as const)(
   "%s ends a running run whose provider turn already completed",
   (action) =>
     Effect.gen(function* () {
@@ -1688,6 +1688,7 @@ it.effect.each(["Stop", "Force stop"] as const)(
       const attempt = started.attempts[0]!;
       const providerThreadId = run.providerThreadId!;
       const providerTurnId = ProviderTurnId.make("provider-turn:stop-completed-turn");
+      yield* send(threadId, "follow", "queue_after_active");
       const apply = (event: Omit<OrchestrationV2DomainEvent, "id" | "threadId">) =>
         projections.apply({
           ...event,
@@ -1698,7 +1699,13 @@ it.effect.each(["Stop", "Force stop"] as const)(
         type: "run.updated",
         runId: run.id,
         occurredAt: now,
-        payload: { ...run, status: "running", startedAt: now, activeAttemptId: attempt.id },
+        payload: {
+          ...run,
+          status: action === "Stop awaiting continuation" ? "completed" : "running",
+          startedAt: now,
+          completedAt: action === "Stop awaiting continuation" ? now : null,
+          activeAttemptId: attempt.id,
+        },
       });
       yield* apply({
         type: "run-attempt.updated",
@@ -1727,11 +1734,26 @@ it.effect.each(["Stop", "Force stop"] as const)(
         payload: {
           ...started.providerThreads.find((thread) => thread.id === providerThreadId)!,
           providerSessionId: ProviderSessionId.make("session:gone"),
+          ...(action === "Stop awaiting continuation"
+            ? {
+                pendingBackgroundTasks: [
+                  { taskId: "awaited-task", kind: "background_task" as const },
+                ],
+              }
+            : {}),
         },
       });
-      yield* send(threadId, "follow", "queue_after_active");
-
-      if (action === "Stop") {
+      if (action === "Stop awaiting continuation") {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        yield* outbox.enqueue([
+          EffectOutbox.restartContinuationEffect({
+            commandId: CommandId.make("pending-background-continuation"),
+            threadId,
+            sourceRunId: run.id,
+          }),
+        ]);
+      }
+      if (action !== "Force stop") {
         yield* orchestrator.dispatch({
           type: "thread.stop",
           commandId: CommandId.make("stop-completed-turn"),
@@ -1742,10 +1764,23 @@ it.effect.each(["Stop", "Force stop"] as const)(
         yield* threads.forceStopThread({ threadId });
       }
       const stopped = yield* orchestrator.getThreadProjection(threadId);
+      if (action === "Stop awaiting continuation") {
+        assert.isEmpty(
+          stopped.providerThreads.find((thread) => thread.id === providerThreadId)
+            ?.pendingBackgroundTasks ?? [],
+        );
+        assert.isTrue(stopped.runs.at(-1)?.queueHeld);
+      }
       assert.notEqual(stopped.runs[0]?.status, "running", "the stopped run is still running");
       assert.deepInclude(stopped.attempts[0], { status: "completed", completedAt: now });
       assert.isTrue(
-        stopped.turnItems.some((item) => item.type === "run_interrupt_result"),
+        stopped.turnItems.some(
+          (item) =>
+            item.type ===
+            (action === "Stop awaiting continuation"
+              ? "run_interrupt_request"
+              : "run_interrupt_result"),
+        ),
         "the stopped run has no interrupt result",
       );
     }).pipe(Effect.provide(layerTest)),
