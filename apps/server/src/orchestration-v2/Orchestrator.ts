@@ -3010,8 +3010,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
         ...(freshContext ? sessionsReleasedByFreshContext(projection, activeProviderThread) : []),
       ]);
+      const canResumeAcrossInstances =
+        !freshContext &&
+        switchPlan?.instanceChanged === true &&
+        switchPlan.transition.type === "restart_and_resume" &&
+        activeProviderThread !== undefined &&
+        activeProviderThread.nativeThreadRef !== null;
       const busySessionIds = new Set<ProviderSessionId>();
-      for (const session of releasableSessions) {
+      // An account move ends the replaced process; its turn is told what background work ended.
+      for (const session of canResumeAcrossInstances ? [] : releasableSessions) {
         if (yield* sessionHasBackgroundWork(session, projection.providerThreads)) {
           busySessionIds.add(session.id);
         }
@@ -3045,12 +3052,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const sessionsToDetach = releasableSessions.filter(
         (session) => !busySessionIds.has(session.id),
       );
-      const canResumeAcrossInstances =
-        !freshContext &&
-        switchPlan?.instanceChanged === true &&
-        switchPlan.transition.type === "restart_and_resume" &&
-        activeProviderThread !== undefined &&
-        activeProviderThread.nativeThreadRef !== null;
       const deliveryProviderThread = canResumeAcrossInstances
         ? {
             ...queuedProviderThread,
@@ -8640,7 +8641,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
     const sessionsToDetach: Array<OrchestrationV2ProviderSession> = [];
     for (const detaching of releasableSessions) {
-      if (yield* sessionHasBackgroundWork(detaching, projection.providerThreads)) {
+      // An account move ends the replaced process; its turn is told what background work ended.
+      if (
+        !canResumeAcrossInstances &&
+        (yield* sessionHasBackgroundWork(detaching, projection.providerThreads))
+      ) {
         // A schedule has nobody to wait or press Stop; like a queued fresh start, leave it running.
         if (freshContext && command.scheduledTaskId !== undefined) continue;
         return yield* new OrchestratorDispatchError({
