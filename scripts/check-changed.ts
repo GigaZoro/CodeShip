@@ -315,31 +315,61 @@ const decodeRootPackageJson = Schema.decodeEffect(
 const collectBytes = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
   Stream.runCollect(stream).pipe(Effect.map((chunks) => Buffer.concat(chunks)));
 
-// Fails on a nonzero exit: an empty file list from a broken index would
-// otherwise pass as "no changes". quotePath=false keeps non-ASCII paths as real
-// paths instead of quoted escapes.
-export const git = Effect.fn("checkChanged.git")(function* (
+// A git call that runs away fails the run and is killed, instead of holding a core until someone
+// notices. Each call here takes seconds even on a large worktree.
+export const GIT_TIMEOUT = "5 minutes";
+
+// Reports git's exit code; a call past GIT_TIMEOUT fails. Without forceKillAfter the spawner sends
+// only SIGTERM and then waits for the exit, so a git that ignores it would hold the run forever.
+// quotePath=false keeps non-ASCII paths as real paths instead of quoted escapes.
+const gitRun = Effect.fn("checkChanged.gitRun")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  return yield* Effect.scoped(
+  const run = Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
-        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], { cwd }),
+        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], {
+          cwd,
+          forceKillAfter: "5 seconds",
+        }),
       );
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [collectBytes(handle.stdout), collectBytes(handle.stderr), handle.exitCode],
         { concurrency: "unbounded" },
       );
-      if (exitCode !== 0) {
-        return yield* Effect.fail(
-          `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
-        );
-      }
-      return stdout;
+      return { stdout, stderr, exitCode };
     }),
   );
+  return yield* Effect.timeoutOrElse(run, {
+    duration: GIT_TIMEOUT,
+    orElse: () =>
+      Effect.fail(`check:changed: git ${args.join(" ")} did not finish within ${GIT_TIMEOUT}`),
+  });
+});
+
+// Fails on an exit `allowed` does not name, with git's message: an empty file list from a broken
+// index would otherwise pass as "no changes".
+const gitAllowing = Effect.fn("checkChanged.gitAllowing")(function* (
+  cwd: string,
+  args: ReadonlyArray<string>,
+  allowed: ReadonlyArray<number>,
+) {
+  const { stdout, stderr, exitCode } = yield* gitRun(cwd, args);
+  if (!allowed.includes(exitCode)) {
+    return yield* Effect.fail(
+      `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
+    );
+  }
+  return { stdout, exitCode };
+});
+
+export const git = Effect.fn("checkChanged.git")(function* (
+  cwd: string,
+  args: ReadonlyArray<string>,
+) {
+  return (yield* gitAllowing(cwd, args, [0])).stdout;
 });
 export const gitLines = (cwd: string, args: ReadonlyArray<string>) =>
   git(cwd, args).pipe(Effect.map((stdout) => stdout.toString().split("\n").filter(Boolean)));
@@ -356,11 +386,19 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
       }));
   let closest: { ref: string; base: string; ahead: number } | undefined;
   for (const { ref, rev } of candidates) {
-    const base = yield* git(root, ["merge-base", "HEAD", rev]).pipe(
-      Effect.map((stdout) => stdout.toString().trim()),
-      Effect.orElseSucceed(() => undefined),
+    // A ref that does not exist (rev-parse exits 1) or shares no history with HEAD (merge-base exits
+    // 1) rules the candidate out. Any other failure fails the run with git's message: merge-base
+    // exits 128 for a missing ref too, but also for a ref to a commit this clone lacks, which
+    // `git fetch` repairs and skipping would hide.
+    const named = yield* gitAllowing(
+      root,
+      ["rev-parse", "--verify", "--quiet", "--end-of-options", rev],
+      [0, 1],
     );
-    if (!base) continue;
+    if (named.exitCode !== 0) continue;
+    const found = yield* gitAllowing(root, ["merge-base", "HEAD", rev], [0, 1]);
+    if (found.exitCode !== 0) continue;
+    const base = found.stdout.toString().trim();
     const ahead = Number((yield* git(root, ["rev-list", "--count", base + "..HEAD"])).toString());
     if (!closest || ahead < closest.ahead) closest = { ref, base, ahead };
   }
