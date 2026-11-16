@@ -919,7 +919,8 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   enabled: Schema.Boolean,
   projectId: ProjectId,
   boundThreadId: Schema.NullOr(ThreadId),
-  freshSession: Schema.Boolean,
+  // Absent from linked machines that predate fresh-session tasks.
+  freshSession: Schema.optional(Schema.Boolean),
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,
