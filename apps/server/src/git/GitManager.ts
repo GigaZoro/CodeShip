@@ -1356,6 +1356,20 @@ export const make = Effect.gen(function* () {
         ...(remoteName.length > 0 ? { remoteName } : {}),
       };
       return Effect.gen(function* () {
+        if (details.localBranchExists) {
+          const localRef = yield* readRepositorySnapshot(cwd).pipe(
+            Effect.map((snapshot) => snapshot.refs.get(`refs/heads/${branch}`)),
+            Effect.orElseSucceed(() => undefined),
+          );
+          // The key's upstream comes from a status read. A snapshot from before the branch was
+          // made, pushed or unset contradicts it and must not decide whether it is published.
+          if (
+            localRef === undefined ||
+            localRef.upstreamRemoteRef.length > 0 !== (details.upstreamRef !== null)
+          ) {
+            yield* forgetRepositorySnapshot(cwd);
+          }
+        }
         const { headContext, lookup } = yield* resolveLookupHeadContext(cwd, details);
         if (!lookup) {
           return { latest: null, headContext };
