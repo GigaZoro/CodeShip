@@ -18,10 +18,12 @@ it("calls a process gone only when signal 0 reports ESRCH", () => {
     probeProcess(4321, () => true),
     { state: "alive" },
   );
-  assert.deepStrictEqual(
-    probeProcess(0, () => true),
-    { state: "gone", code: "invalid pid" },
-  );
+  for (const pid of [0, 2 ** 31, 1.5]) {
+    assert.deepStrictEqual(
+      probeProcess(pid, () => true),
+      { state: "gone", code: "invalid pid" },
+    );
+  }
   for (const cause of [undefined, null, "unknown failure"]) {
     assert.strictEqual(probeProcess(4321, throwing(cause)).state, "unknown");
     assert.isTrue(isProcessAlive(4321, throwing(cause)));

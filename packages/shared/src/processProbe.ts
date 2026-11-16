@@ -12,7 +12,8 @@ type SignalZero = (pid: number, signal: 0) => unknown;
 const signalZero: SignalZero = (pid, signal) => process.kill(pid, signal);
 
 export const probeProcess = (pid: number, signal: SignalZero = signalZero): ProcessProbe => {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return { state: "gone", code: "invalid pid" };
+  // process.kill throws for a pid outside int32, which would read as unknown and never as gone.
+  if ((pid | 0) !== pid || pid <= 0) return { state: "gone", code: "invalid pid" };
   try {
     signal(pid, 0);
     return { state: "alive" };

@@ -66,7 +66,10 @@ const RESULT_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
-/** More than half the running commands lost within this window is a wave, logged once. */
+/**
+ * More than half the commands that ran within this window lost is a wave. It goes on while each
+ * loss comes within this window of the one before, and is logged as one warning.
+ */
 const WAVE_WINDOW = Duration.minutes(1);
 /** Holds each wave for RETENTION, like the records it names; at most one wave starts a minute. */
 export const LOSS_LOG_FILE = "command-losses.ndjson";
@@ -181,6 +184,18 @@ const LossWave = Schema.fromJsonString(
   }),
 );
 const encodeLossWave = Schema.encodeEffect(LossWave);
+
+/** What the losses log keeps of each lost command. */
+const lossEvidence = (row: CommandRunRow) => ({
+  taskId: row.task_id,
+  threadId: row.thread_id,
+  pid: row.pid,
+  lostReason: row.lost_reason,
+  probeError: row.probe_error,
+  startedAt: row.started_at,
+  lastAliveAt: row.last_alive_at,
+  endedAt: row.ended_at,
+});
 const decodeLossWave = Schema.decodeUnknownOption(LossWave);
 
 interface Loss {
@@ -356,6 +371,8 @@ const make = Effect.gen(function* () {
   );
   /** Commands whose end has not reached their task yet, by task id. */
   const watched = new Map<string, CommandRunRow>();
+  /** Commands that ended within the last WAVE_WINDOW, however they ended, by task id. */
+  const recentEnds = new Map<string, { readonly at: number; readonly row: CommandRunRow }>();
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
   /** Open once start() has adopted the commands an earlier server left, so run() never races it. */
@@ -486,6 +503,7 @@ const make = Effect.gen(function* () {
     yield* writeRow(row);
     if (row.delivered_at === null) watched.set(row.task_id, row);
     else watched.delete(row.task_id);
+    if (row.ended_at !== null) recentEnds.set(row.task_id, { at: Date.parse(row.ended_at), row });
   });
 
   const readTail = (row: CommandRunRow) =>
@@ -602,9 +620,11 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.ignore({ log: true }));
   });
 
-  /** Losses within the last WAVE_WINDOW, and whether they were logged as a wave. */
-  const recentLosses: Array<{ readonly at: number; readonly row: CommandRunRow }> = [];
-  let waveLogged = false;
+  /** The wave still going on, if any, and the waves the losses log does not hold as they are now. */
+  let openWave: typeof LossWave.Type | undefined;
+  const unsaved = new Map<string, typeof LossWave.Type>();
+  /** Set once a write of the log fails and until one succeeds, so the failure is logged once. */
+  let saveFailing = false;
   const lossLogPath = path.join(logsDir, LOSS_LOG_FILE);
 
   /** Each line of the losses log, with its wave when the line reads as one. */
@@ -619,40 +639,45 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Losses an earlier server recorded within the window still count toward a wave, and a wave it
-   * logged is not logged again: one that holds any of them is the log's last, since the next
-   * starts only once the window is empty.
+   * Ends an earlier server recorded within the window still count, and the log's last wave goes
+   * on when its latest loss came within WAVE_WINDOW of the first loss since, as it would have
+   * without the restart.
    */
   const resumeWave = Effect.gen(function* () {
     const since = DateTime.formatIso(DateTime.subtractDuration(yield* DateTime.now, WAVE_WINDOW));
-    const earlier = yield* sql<CommandRunRow>`
-      SELECT * FROM command_runs WHERE status = 'lost' AND ended_at > ${since}
+    const ended = yield* sql<CommandRunRow>`
+      SELECT * FROM command_runs WHERE ended_at > ${since}
     `;
-    for (const row of earlier) {
-      if (row.ended_at !== null) recentLosses.push({ at: Date.parse(row.ended_at), row });
+    for (const row of ended) {
+      if (row.ended_at !== null) recentEnds.set(row.task_id, { at: Date.parse(row.ended_at), row });
     }
-    if (earlier.length === 0) return;
-    const ids = new Set(earlier.map((row) => row.task_id));
+    const lossTimes = ended.flatMap((row) =>
+      row.status === "lost" && row.ended_at !== null ? [Date.parse(row.ended_at)] : [],
+    );
+    if (lossTimes.length === 0) return;
     const last = (yield* readLossLog).at(-1)?.wave;
-    waveLogged = last?.runs.some((run) => ids.has(run.taskId)) ?? false;
+    if (last === undefined) return;
+    const latest = Math.max(
+      ...last.runs.map((run) => (run.endedAt === null ? -Infinity : Date.parse(run.endedAt))),
+    );
+    if (latest > Math.min(...lossTimes) - Duration.toMillis(WAVE_WINDOW)) openWave = last;
   });
 
   /**
-   * Adds a wave to the losses log and drops those from before `keepSince`. A line that does not
-   * read as a wave cannot be dated, so it stays. The log is replaced whole, so no line is torn.
+   * Writes the unsaved waves to the losses log in place of their earlier lines, and drops waves
+   * from before `keepSince`. A line that does not read as a wave cannot be dated, so it stays. The
+   * log is replaced whole, so no line is torn.
    */
-  const appendLossWave = Effect.fn("CommandRunner.appendLossWave")(function* (
-    wave: typeof LossWave.Type,
-    keepSince: string,
-  ) {
-    const line = yield* encodeLossWave(wave);
+  const saveWaves = Effect.fn("CommandRunner.saveWaves")(function* (keepSince: string) {
+    const lines = yield* Effect.forEach(unsaved.values(), (wave) => encodeLossWave(wave));
     const kept = (yield* readLossLog).filter(
-      (entry) => entry.wave === undefined || entry.wave.time >= keepSince,
+      ({ wave }) => wave === undefined || (wave.time >= keepSince && !unsaved.has(wave.time)),
     );
     const temp = `${lossLogPath}.tmp`;
     yield* fs.makeDirectory(logsDir, { recursive: true });
-    yield* fs.writeFileString(temp, [...kept.map((entry) => entry.line), line].join("\n") + "\n");
+    yield* fs.writeFileString(temp, [...kept.map(({ line }) => line), ...lines].join("\n") + "\n");
     yield* fs.rename(temp, lossLogPath);
+    unsaved.clear();
   });
 
   /**
@@ -665,56 +690,72 @@ const make = Effect.gen(function* () {
   ) {
     const output = yield* readTail(row);
     yield* killTree(row);
-    const now = yield* DateTime.now;
     const lost: CommandRunRow = {
       ...row,
       ...loss,
       status: "lost",
-      ended_at: DateTime.formatIso(now),
+      ended_at: yield* nowIso,
       lost_output: output === "" ? null : output,
     };
     yield* settle(lost);
-    recentLosses.push({ at: DateTime.toEpochMillis(now), row: lost });
     return lost;
   });
 
-  /** More than half the running commands lost within a minute share a cause; logged once. */
+  /**
+   * Starts a wave once more than half the commands of the last minute were lost, adds each later
+   * loss to it, and saves it; a save that fails is tried again at the next pass.
+   */
   const noteWave = Effect.fn("CommandRunner.noteWave")(function* () {
     const now = yield* DateTime.now;
     const cutoff = DateTime.toEpochMillis(DateTime.subtractDuration(now, WAVE_WINDOW));
-    recentLosses.splice(0, recentLosses.length, ...recentLosses.filter(({ at }) => at > cutoff));
-    if (recentLosses.length === 0) waveLogged = false;
-    const running = [...watched.values()].filter((row) => row.status === "running").length;
-    if (waveLogged || recentLosses.length <= running) return;
-    waveLogged = true;
-    yield* Effect.logWarning("command-runner.loss-wave", {
-      lost: recentLosses.length,
-      running,
-      filePath: lossLogPath,
-    });
-    yield* appendLossWave(
-      {
-        time: DateTime.formatIso(now),
-        lost: recentLosses.length,
-        running,
-        runs: recentLosses.map(({ row }) => ({
-          taskId: row.task_id,
-          threadId: row.thread_id,
-          pid: row.pid,
-          lostReason: row.lost_reason,
-          probeError: row.probe_error,
-          startedAt: row.started_at,
-          lastAliveAt: row.last_alive_at,
-          endedAt: row.ended_at,
-        })),
-      },
-      DateTime.formatIso(DateTime.subtractDuration(now, RETENTION)),
-    ).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("command-runner.loss-log-write-failed", {
+    for (const [taskId, { at }] of recentEnds) if (at <= cutoff) recentEnds.delete(taskId);
+    const losses = [...recentEnds.values()].flatMap(({ row }) =>
+      row.status === "lost" ? [row] : [],
+    );
+    if (losses.length === 0) openWave = undefined;
+    else {
+      const running = [...watched.values()].filter((row) => row.status === "running").length;
+      if (openWave === undefined && 2 * losses.length > running + recentEnds.size) {
+        yield* Effect.logWarning("command-runner.loss-wave", {
+          lost: losses.length,
+          running,
+          ended: recentEnds.size - losses.length,
           filePath: lossLogPath,
-          cause,
+        });
+        openWave = { time: DateTime.formatIso(now), lost: 0, running, runs: [] };
+      }
+      const known = new Set(openWave?.runs.map((run) => run.taskId));
+      const added = losses.filter((row) => !known.has(row.task_id));
+      if (openWave !== undefined && added.length > 0) {
+        openWave = {
+          ...openWave,
+          lost: openWave.lost + added.length,
+          running,
+          runs: [...openWave.runs, ...added.map(lossEvidence)],
+        };
+        unsaved.set(openWave.time, openWave);
+      }
+    }
+    if (unsaved.size === 0) return;
+    yield* saveWaves(DateTime.formatIso(DateTime.subtractDuration(now, RETENTION))).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          saveFailing = false;
         }),
+      ),
+      Effect.catchCause((cause) =>
+        saveFailing
+          ? Effect.void
+          : Effect.logWarning("command-runner.loss-log-write-failed", {
+              filePath: lossLogPath,
+              cause,
+            }).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  saveFailing = true;
+                }),
+              ),
+            ),
       ),
     );
   });
