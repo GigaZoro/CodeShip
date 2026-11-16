@@ -1,12 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off -- the leftover child and its FIFO are real processes and files.
-import * as NodeChildProcess from "node:child_process";
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -118,36 +113,53 @@ describe("WorkerProcessSpawner", () => {
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
-  // The leftover child holds a FIFO open; its death produces EOF without polling.
-  it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-    "a stopped worker kills what a child left running after it exited",
-    () =>
-      Effect.gen(function* () {
-        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-worker-orphan-"));
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
-        );
-        const fifo = NodePath.join(dir, "alive");
-        NodeChildProcess.execFileSync("mkfifo", [fifo]);
-        const alive = NodeFS.createReadStream(fifo);
-        yield* Effect.addFinalizer(() => Effect.sync(() => alive.destroy()));
-        const leftoverStarted = new Promise<void>((resolve) => alive.once("open", () => resolve()));
-        const leftoverStopped = new Promise<void>((resolve) =>
-          alive.once("close", () => resolve()),
-        );
-        alive.resume();
-        const leftover =
-          "require('node:fs').openSync(process.argv[1], 'w'); setTimeout(() => {}, 60_000);";
-        const leader = yield* node(
-          `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(leftover)}, ${JSON.stringify(fifo)}], { stdio: "ignore" }).unref();`,
-          quiet,
-        );
-        yield* Effect.promise(() => leftoverStarted);
-        assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
+  // The leader exits at once and leaves a child running, which each way of ending the leader reaches.
+  const leaderThatLeftAChild = (leftover: Effect.Success<typeof leaderLeavingChild>) =>
+    Effect.gen(function* () {
+      const leader = yield* leftover.command;
+      yield* leftover.started;
+      assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
+      return leader;
+    });
 
-        yield* WorkerProcessSpawner.__testing.stopWorker;
+  it.live("kill ends what a child left running after it exited", () =>
+    Effect.gen(function* () {
+      const leftover = yield* leaderLeavingChild;
+      const leader = yield* leaderThatLeftAChild(leftover);
 
-        yield* Effect.promise(() => leftoverStopped);
-      }).pipe(Effect.scoped, Effect.provide(layer)),
+      yield* leader.kill();
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live("an interrupted command ends what its child left running after it exited", () =>
+    Effect.gen(function* () {
+      const leftover = yield* leaderLeavingChild;
+      const exited = yield* Deferred.make<void>();
+      const command = yield* Effect.forkScoped(
+        Effect.gen(function* () {
+          yield* leaderThatLeftAChild(leftover);
+          yield* Deferred.succeed(exited, undefined);
+          return yield* Effect.never;
+        }).pipe(Effect.scoped),
+      );
+      yield* Deferred.await(exited);
+
+      yield* Fiber.interrupt(command);
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live("a stopped worker kills what a child left running after it exited", () =>
+    Effect.gen(function* () {
+      const leftover = yield* leaderLeavingChild;
+      yield* leaderThatLeftAChild(leftover);
+
+      yield* WorkerProcessSpawner.__testing.stopWorker;
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });

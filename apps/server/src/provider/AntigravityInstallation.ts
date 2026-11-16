@@ -3,6 +3,7 @@ import * as EffectNodeStream from "@effect/platform-node/NodeStream";
 import { ProviderDriverKind, type ProviderInstallState } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveNodeExecutable, nodeRuntimeUnavailableMessage } from "@t3tools/shared/nodeRuntime";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -352,12 +353,11 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
     options.validate ??
     Effect.fn("AntigravityInstallation.validate")(
       function* (executable: AntigravityExecutable, expectedVersion: string) {
-        const validationScope = yield* Effect.scope;
         const profileDirectory = yield* Effect.acquireRelease(
           fs.makeTempDirectory({ prefix: "t3-antigravity-validate-" }),
           (directory) =>
             fs.remove(directory, { recursive: true, force: true }).pipe(
-              // Windows may retain DLL handles briefly after taskkill returns.
+              // Windows may retain DLL handles briefly after their processes were stopped.
               Effect.retry({
                 times: platform === "win32" ? 10 : 0,
                 schedule: Schedule.spaced("100 millis"),
@@ -384,20 +384,8 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
             baseEnv: environment,
           }),
           cwd: profileDirectory,
-          childProcessSpawner:
-            platform === "win32"
-              ? ChildProcessSpawner.make(
-                  Effect.fnUntraced(function* (command) {
-                    const child = yield* spawner.spawn(command);
-                    // Stop PyInstaller's tree before ACP closes pipes; after launcher exit, taskkill cannot reach children holding DLLs open.
-                    yield* Scope.addFinalizer(
-                      validationScope,
-                      child.kill({ forceKillAfter: "1 second" }).pipe(Effect.orDie),
-                    );
-                    return child;
-                  }),
-                )
-              : spawner,
+          // PyInstaller's launcher can exit before the children holding its DLLs open.
+          childProcessSpawner: endingWindowsTrees(spawner, platform),
         });
         const initialized = yield* runtime.initialize();
         if (

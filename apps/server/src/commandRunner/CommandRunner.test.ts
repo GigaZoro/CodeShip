@@ -1444,25 +1444,6 @@ describe("the shell a command runs in", () => {
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {
-  it("stops, at every level, only processes created after the parent they name", () => {
-    const script = [
-      CommandRunner.WINDOWS_COMMAND_TREE_FUNCTION,
-      "$t = [DateTime]::UtcNow",
-      "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
-      // The command started 2 s before its wrapper 10, which started 20, which started 30. 40 and
-      // 50 name 20 and 10 as their parent but are older, so an earlier holder of that pid started
-      // them; 60 is older than the command.
-      "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1), (P 60 10 -3))",
-      "(Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t)).Keys | Sort-Object",
-    ].join("\n");
-    const tree = NodeChildProcess.execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8" },
-    );
-    assert.deepEqual(tree.trim().split(/\r?\n/), ["10", "20", "30"]);
-  });
-
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
     // Send returns once the command's own handler has the event, and takes it so the command goes on.
     // No API sends a close event, which ends every process in its console with STATUS_CONTROL_C_EXIT;

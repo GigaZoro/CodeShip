@@ -1,3 +1,8 @@
+## 2026-11-16 — On Windows, stopping a process also stops what it left running
+
+- On Windows, a process that had started another and then exited left that child running when CodeShip stopped it, because `taskkill` finds a process's children only while the process runs. CodeShip now finds them from the parent process id and start time Windows records for each process, also after the parent exited. This covers the commands the server runs (git included), Pi and ACP agent sessions such as Grok, and the Antigravity installation check. The server does this for a command it kills or cancels, or one whose output is still held open when it ends; a command that exits on its own and closes its output skips it, since each stop starts PowerShell.
+- Maintainers: `check:changed` on Windows also stops what its git and `vp` runs leave behind.
+
 ## 2026-11-16 — Desktop app logs no longer carry e-mail addresses or credentials
 
 - The desktop app's own log lines on screen now replace e-mail addresses with `[email]` and credentials with `[redacted]`, as the server's do. A value logged after its name, such as `"token:"` followed by the token, is now hidden on screen and in OTLP log exports too.

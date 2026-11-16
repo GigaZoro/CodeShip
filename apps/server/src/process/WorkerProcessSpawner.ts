@@ -2,6 +2,7 @@ import * as NodeWorkerThreads from "node:worker_threads";
 
 import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { WINDOWS_STOP_TREE_ARGS } from "@t3tools/shared/windowsProcessTree";
 import type * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -28,6 +29,8 @@ const { performance } = require("node:perf_hooks");
 const GRACE_MS = 1000;
 const POLL_MS = 10;
 const HIGH_WATER_BYTES = 1 << 20;
+const STOP_TREE_ARGS = ${JSON.stringify(WINDOWS_STOP_TREE_ARGS)};
+const STOP_TREE_TIMEOUT_MS = 30000;
 const children = new Map();
 const post = (message, transfer) => parentPort.postMessage(message, transfer);
 const describe = (error) => ({
@@ -58,16 +61,22 @@ const isAlive = (entry) => {
     return false;
   }
 };
+// Windows has no process groups, and taskkill finds descendants only through a running leader, so
+// this walks the tree in PowerShell (windowsProcessTree.ts), also after the leader exited.
+const stopTree = ({ pid, since, spawnedAt }, done) => {
+  const call = " " + [pid, since, since, spawnedAt].join(" ");
+  const args = STOP_TREE_ARGS.map((arg, index) => (index === STOP_TREE_ARGS.length - 1 ? arg + call : arg));
+  execFile("powershell.exe", args, { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS }, (error, _stdout, stderr) => {
+    if (!error) return done(undefined);
+    const why = error.killed ? "PowerShell did not finish in time" : String(stderr).trim() || "PowerShell exited " + error.code;
+    done(new Error("Could not stop the process tree of " + pid + ": " + why));
+  });
+};
 const signalGroup = (entry, signal, done) => {
   const fallback = () =>
     done(entry.child.kill(signal) ? undefined : new Error("Failed to kill child process"));
   if (process.platform === "win32") {
-    // After the leader exits, its PID may belong to an unrelated process.
-    if (entry.exit !== null) return done(undefined);
-    execFile("taskkill", ["/pid", String(entry.child.pid), "/T", "/F"], { windowsHide: true }, (error) =>
-      error ? fallback() : done(undefined),
-    );
-    return;
+    return stopTree(entry.root, (error) => (error !== undefined && entry.exit === null ? fallback() : done(error)));
   }
   try {
     process.kill(-entry.child.pid, signal);
@@ -139,6 +148,8 @@ const relayOutput = (entry, fd) => {
 const start = ({ id, command, args, options, outputs, inputs, encoding, killSignal, forceKillAfterMs, stallMs }) => {
   if (stallMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stallMs);
   let child;
+  // The system's clock, which a Windows tree walk compares with process creation times.
+  const since = Date.now();
   try {
     child = spawn(command, args, options);
   } catch (error) {
@@ -148,6 +159,7 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
   const entry = {
     id,
     child,
+    root: { pid: child.pid, since, spawnedAt: Date.now() },
     exit: null,
     started: false,
     released: false,
@@ -169,12 +181,12 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
   });
   child.on("spawn", () => {
     entry.started = true;
-    post({ type: "spawned", id, pid: child.pid });
+    post({ type: "spawned", id, root: entry.root });
   });
   child.on("exit", (code, signal) => {
     entry.exit = { code, signal };
     post({ type: "exit", id, code, signal });
-    // taskkill cannot reach a tree whose leader has exited, so only POSIX cleans up here.
+    // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
     if (code !== 0 && code !== null && process.platform !== "win32") {
       try {
         process.kill(-child.pid, killSignal);
@@ -200,7 +212,15 @@ const discard = (entry) => {
     output.stream.resume();
   }
 };
-const release = (entry, { id, seq, referenced, signal, forceKillAfterMs }) => {
+// Whether to end what a leader that exited may have left running. A Windows tree walk starts
+// PowerShell, too slow for every command, so it runs only for a cancelled command or one whose
+// output pipe is still open, as when what the leader left running holds it.
+const leftBehind = (entry, referenced, interrupted) => {
+  if (process.platform === "win32") return referenced && (interrupted || entry.open.size > 0);
+  const failed = entry.exit.code !== 0 && entry.exit.code !== null;
+  return failed || (referenced && entry.detached);
+};
+const release = (entry, { id, seq, referenced, interrupted, signal, forceKillAfterMs }) => {
   entry.released = true;
   if (referenced) discard(entry);
   const finish = (error) => {
@@ -208,9 +228,9 @@ const release = (entry, { id, seq, referenced, signal, forceKillAfterMs }) => {
     reply(id, seq, error);
   };
   if (entry.exit !== null) {
-    const failed = entry.exit.code !== 0 && entry.exit.code !== null;
-    const lingering = referenced && process.platform !== "win32" && entry.detached;
-    return failed || lingering ? terminate(entry, signal, forceKillAfterMs, finish) : finish(undefined);
+    return leftBehind(entry, referenced, interrupted)
+      ? terminate(entry, signal, forceKillAfterMs, finish)
+      : finish(undefined);
   }
   if (!referenced) return finish(undefined);
   terminate(entry, signal, forceKillAfterMs, finish);
@@ -249,13 +269,8 @@ parentPort.on("message", (message) => {
     syncs.push(message);
     return scheduleTurn();
   }
-  // The worker that ran these children stopped; taskkill reaches the descendants of a leader.
-  if (message.type === "killTree") {
-    execFile("taskkill", ["/pid", String(message.pid), "/T", "/F"], { windowsHide: true }, (error) =>
-      reply(undefined, message.seq, error),
-    );
-    return;
-  }
+  // The worker that ran these children stopped.
+  if (message.type === "killTree") return stopTree(message.root, (error) => reply(undefined, message.seq, error));
   if (message.type === "abandon" && queued.delete(message.id)) return;
   const { id, seq } = message;
   const entry = children.get(id);
@@ -299,6 +314,7 @@ parentPort.on("message", (message) => {
         id,
         seq: undefined,
         referenced: true,
+        interrupted: true,
         signal: entry.killSignal,
         forceKillAfterMs: entry.forceKillAfterMs,
       });
@@ -315,7 +331,7 @@ interface WorkerError {
 }
 
 type WorkerEvent =
-  | { readonly type: "spawned"; readonly id: number; readonly pid: number }
+  | { readonly type: "spawned"; readonly id: number; readonly root: StartedChild }
   | { readonly type: "spawnFailed"; readonly id: number; readonly error: WorkerError }
   | { readonly type: "data"; readonly id: number; readonly fd: number; readonly chunk: Uint8Array }
   | { readonly type: "end"; readonly id: number; readonly fd: number }
@@ -359,8 +375,15 @@ interface PendingReply {
 }
 
 // How to end a child with its descendants: its process group on POSIX when detached, its process
-// tree through taskkill on Windows, otherwise only the child.
+// tree through a walk of Win32_Process on Windows, otherwise only the child.
 type Kills = "group" | "tree" | "leader";
+
+/** Times are the system clock's, read in the worker just before and after the start. */
+interface StartedChild {
+  readonly pid: number;
+  readonly since: number;
+  readonly spawnedAt: number;
+}
 
 interface RemoteChild {
   readonly id: number;
@@ -370,8 +393,8 @@ interface RemoteChild {
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
   readonly open: Set<number>;
-  starting: ((outcome: { readonly pid: number } | PlatformError.PlatformError) => void) | undefined;
-  pid: number | undefined;
+  starting: ((outcome: StartedChild | PlatformError.PlatformError) => void) | undefined;
+  root: StartedChild | undefined;
   referenced: boolean;
   holdsWorker: boolean;
   released: boolean;
@@ -526,24 +549,24 @@ const sigkill = (pid: number) => {
 };
 
 interface Orphan {
-  readonly pid: number;
+  readonly root: StartedChild;
   readonly command: ChildProcess.StandardCommand;
 }
 
-// Starting taskkill here would block this thread, so a new worker runs it.
+// Starting PowerShell here would block this thread, so a new worker runs it.
 const killTrees = (trees: ReadonlyArray<Orphan>) => {
   let connection: Connection;
   try {
     connection = connect();
   } catch {
-    for (const { pid } of trees) sigkill(pid);
+    for (const { root } of trees) sigkill(root.pid);
     return;
   }
-  for (const { pid, command } of trees) {
+  for (const { root, command } of trees) {
     const seq = nextSeq++;
     connection.replies.set(seq, { method: "kill", command, resume: () => {} });
     hold(connection);
-    post(connection, { type: "killTree", pid, seq });
+    post(connection, { type: "killTree", root, seq });
   }
 };
 
@@ -552,16 +575,14 @@ const killTrees = (trees: ReadonlyArray<Orphan>) => {
 const killOrphans = (children: Iterable<RemoteChild>) => {
   const trees: Array<Orphan> = [];
   for (const child of children) {
-    const pid = child.pid;
-    if (!child.referenced || pid === undefined) continue;
-    const leaderRuns = !Deferred.isDoneUnsafe(child.exit);
-    // After a Windows leader exits, its PID may belong to an unrelated process.
+    const root = child.root;
+    if (!child.referenced || root === undefined) continue;
     if (child.kills === "tree") {
-      if (leaderRuns) trees.push({ pid, command: child.command });
+      trees.push({ root, command: child.command });
     } else if (child.kills === "group") {
-      sigkill(-pid);
-    } else if (leaderRuns) {
-      sigkill(pid);
+      sigkill(-root.pid);
+    } else if (!Deferred.isDoneUnsafe(child.exit)) {
+      sigkill(root.pid);
     }
   }
   if (trees.length > 0) killTrees(trees);
@@ -613,7 +634,7 @@ const receive = (connection: Connection, event: WorkerEvent) => {
   if (child === undefined) return;
   switch (event.type) {
     case "spawned":
-      child.starting?.({ pid: event.pid });
+      child.starting?.(event.root);
       return;
     case "spawnFailed":
       child.starting?.(toPlatformError("spawn", fromWorkerError(event.error), child.command));
@@ -739,7 +760,7 @@ const launch = (
       outputs,
       open: new Set(outputs.keys()),
       starting: undefined,
-      pid: undefined,
+      root: undefined,
       referenced: true,
       holdsWorker: false,
       released: false,
@@ -752,7 +773,7 @@ const launch = (
         resume(Effect.fail(outcome));
         return;
       }
-      child.pid = outcome.pid;
+      child.root = outcome;
       if (!Deferred.isDoneUnsafe(child.exit)) {
         child.holdsWorker = true;
         hold(connection);
@@ -842,10 +863,11 @@ const make = Effect.gen(function* () {
         outputs,
         platform === "win32" ? "tree" : detached ? "group" : "leader",
       ),
-      (child) =>
+      (child, exit) =>
         request(child, "release", {
           type: "release",
           referenced: child.referenced,
+          interrupted: Exit.hasInterrupts(exit),
           signal: killSignal,
           forceKillAfterMs,
         }).pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => forget(child)))),
@@ -920,7 +942,7 @@ const make = Effect.gen(function* () {
     });
 
     return ChildProcessSpawner.makeHandle({
-      pid: ChildProcessSpawner.ProcessId(child.pid ?? 0),
+      pid: ChildProcessSpawner.ProcessId(child.root?.pid ?? 0),
       exitCode: Effect.flatMap(Deferred.await(child.exit), ([code, signal]) =>
         code !== null
           ? Effect.succeed(ChildProcessSpawner.ExitCode(code))

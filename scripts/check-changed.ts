@@ -20,8 +20,8 @@
 // and available memory, which every run in this repository's worktrees shares,
 // and each prints its output when it finishes. A step's timeout counts from
 // when it gets its slot; a step running past it is killed with its process
-// group and reported as TIMEOUT. A rerun on exactly the files of the last
-// passing run prints that run's summary.
+// group, or its process tree on Windows, and reported as TIMEOUT. A rerun on
+// exactly the files of the last passing run prints that run's summary.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -30,12 +30,14 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
@@ -160,7 +162,8 @@ export interface Step<R> {
 }
 
 // Interrupting a step at its timeout closes the scopes of the processes it
-// spawned, which kills each one's process group.
+// spawned, which kills each one's process group, or its tree on Windows
+// (endingWindowsTrees).
 export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
   steps: ReadonlyArray<Step<R>>,
   options: {
@@ -914,9 +917,18 @@ export const checkChangedCommand = Command.make(
     ),
 ).pipe(Command.withDescription("Run CI's fast checks for this branch's changes."));
 
+// Every process ends with what it started, also after it exited, as its process group does on POSIX.
+const spawnerLayer = Layer.effect(
+  ChildProcessSpawner.ChildProcessSpawner,
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return endingWindowsTrees(spawner, yield* HostProcess.Platform);
+  }),
+).pipe(Layer.provideMerge(NodeServices.layer));
+
 if (import.meta.main) {
   Command.run(checkChangedCommand, { version: "0.0.0" }).pipe(
-    Effect.provide(NodeServices.layer),
+    Effect.provide(spawnerLayer),
     NodeRuntime.runMain,
   );
 }
