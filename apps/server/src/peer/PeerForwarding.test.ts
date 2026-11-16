@@ -102,6 +102,12 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
+    interruptThread: () =>
+      Effect.succeed({
+        type: "interrupt_requested" as const,
+        run: run("running"),
+        dispatch: { sequence: 0, storedEvents: [] },
+      }),
     sendToThread: (input) =>
       Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
         Effect.as({ run: run("running"), delivery: "started" } as never),
@@ -451,6 +457,20 @@ it.effect("an agent here works on a linked environment's threads within its own 
         `thread.stop ${boxThread}`,
         `delegated-tasks.stop ${boxThread}`,
       ]);
+      const cutRun = RunId.make("run:box-auto:cut");
+      const interrupted = yield* a.call("thread:laptop-full", "t3_thread_interrupt", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        runId: cutRun,
+        clientRequestId: "interrupt-restart",
+      });
+      expect(interrupted.isError).toBe(false);
+      expect(interrupted.structuredContent).toMatchObject({
+        threadId: boxThread,
+        runId: boxRun,
+        requestedRunId: cutRun,
+        status: "interrupt_requested",
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

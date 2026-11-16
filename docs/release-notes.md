@@ -307,6 +307,10 @@
 
 - When a new worktree's fetch of its base branch got no answer in time (a sleeping or overloaded machine), the run failed in workspace preparation. If an earlier fetch left that branch's remote-tracking ref, the worktree now starts from it, possibly a little behind, and the server log records that. Without such a ref the timeout still fails and preparation retries it as before.
 
+## 2026-11-16 — Run cancellation survives server restarts
+
+- Cancelling agent work by its run ID also stops the runs that continue it after a server restart, including a continuation waiting to start. Manual continuations and unrelated later turns stay untouched. MCP results identify the run cancellation reached and preserve the requested run ID when it differs.
+
 ## 2026-11-16 — On Windows, an agent session also stops what its CLI left running
 
 - On Windows, a Codex, Claude, OpenCode, Muse or ACP agent session (such as Antigravity) that ended left running what its CLI had started, such as MCP servers and the commands of a turn, once the CLI itself had exited, because Windows ends only the process it is told to. A session now also stops those processes when it ends, as Pi and Grok sessions already did, and closing a Claude or Muse session or quitting CodeShip waits for that stop to finish. Muse model and usage checks, which run no tools, stop what they left running only when they fail or keep their output open, so they stay as fast as before. A Muse host started through `muse.cmd` also no longer leaves Muse running after CodeShip closes it.
