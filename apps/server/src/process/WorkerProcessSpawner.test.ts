@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -178,18 +179,22 @@ describe("WorkerProcessSpawner", () => {
     }).pipe(Effect.provide(Layer.merge(layer, errors.layer)));
   });
 
-  it.live(
-    "a stopped worker that cannot start another spares a reused pid and logs the tree",
+  // PowerShell is missing here, so the walk fails as a denied WMI query does on Windows.
+  it.live.skipIf(isWindowsHost)(
+    "a stopped worker that cannot start another walks the tree and logs to the spawning fiber",
     () => {
       const errors = errorLogs();
       const windowsLayer = WorkerProcessSpawner.layer.pipe(
         Layer.provide(NodeServices.layer),
         Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
-        Layer.provide(errors.layer),
       );
       return Effect.gen(function* () {
-        const leader = yield* node("", quiet);
-        yield* leader.exitCode;
+        // It exits when the stopped worker closes its stdin, and no one hears of that exit. As in
+        // the server, the spawning fiber has the logger and the spawner's layer does not.
+        const leader = yield* node("process.stdin.resume();", {
+          stdout: "ignore",
+          stderr: "ignore",
+        }).pipe(Effect.provide(errors.layer));
         const kill = yield* Effect.acquireRelease(
           Effect.sync(() => vi.spyOn(process, "kill")),
           (spy) => Effect.sync(() => spy.mockRestore()),
@@ -198,23 +203,29 @@ describe("WorkerProcessSpawner", () => {
 
         yield* WorkerProcessSpawner.__testing.stopWorker;
 
+        yield* errors.logged;
         assert.notInclude(
           kill.mock.calls.map(([pid]) => pid),
           leader.pid,
         );
-        yield* errors.logged;
       }).pipe(Effect.scoped, Effect.provide(windowsLayer));
     },
   );
 
-  it.live("a stopped worker kills what a child left running after it exited", () =>
-    Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild;
-      yield* leaderThatLeftAChild(leftover);
+  it.live.each([
+    { through: "a new worker", replacement: Effect.void },
+    { through: "no worker", replacement: WorkerProcessSpawner.__testing.failWorkerStarts },
+  ])(
+    "a stopped worker kills what a child left running after it exited, through $through",
+    ({ replacement }) =>
+      Effect.gen(function* () {
+        const leftover = yield* leaderLeavingChild;
+        yield* leaderThatLeftAChild(leftover);
+        yield* replacement;
 
-      yield* WorkerProcessSpawner.__testing.stopWorker;
+        yield* WorkerProcessSpawner.__testing.stopWorker;
 
-      yield* leftover.ended;
-    }).pipe(Effect.scoped, Effect.provide(layer)),
+        yield* leftover.ended;
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });

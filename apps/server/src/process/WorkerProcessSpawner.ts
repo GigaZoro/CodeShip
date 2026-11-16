@@ -1,8 +1,10 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- A stopped worker's trees end from its exit listener, outside every fiber.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeWorkerThreads from "node:worker_threads";
 
 import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { WINDOWS_STOP_TREE_ARGS } from "@t3tools/shared/windowsProcessTree";
+import { WINDOWS_STOP_TREE_ARGS, windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
 import type * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -19,6 +21,8 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+const STOP_TREE_TIMEOUT_MS = 30_000;
+
 // Spawning blocks the calling thread until the child exists, for seconds when CreateProcessW is slow
 // on a loaded Windows machine. Children start on this worker and their stdio is relayed, so a slow
 // start stalls only the worker. Inline source also runs in bundles and single-executable builds.
@@ -30,7 +34,7 @@ const GRACE_MS = 1000;
 const POLL_MS = 10;
 const HIGH_WATER_BYTES = 1 << 20;
 const STOP_TREE_ARGS = ${JSON.stringify(WINDOWS_STOP_TREE_ARGS)};
-const STOP_TREE_TIMEOUT_MS = 30000;
+const STOP_TREE_TIMEOUT_MS = ${STOP_TREE_TIMEOUT_MS};
 const children = new Map();
 const post = (message, transfer) => parentPort.postMessage(message, transfer);
 const describe = (error) => ({
@@ -392,7 +396,7 @@ interface RemoteChild {
   readonly connection: Connection;
   readonly command: ChildProcess.StandardCommand;
   readonly kills: Kills;
-  // Logs a failure to end this child's tree that no caller's fiber sees, as after its worker stopped.
+  // Logs through the spawning fiber's logger a failure no fiber awaits, as after its worker stopped.
   readonly report: (error: PlatformError.PlatformError) => void;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
@@ -556,20 +560,39 @@ const sigkill = (pid: number) => {
 interface Orphan {
   readonly child: RemoteChild;
   readonly root: StartedChild;
-  readonly leaderRuns: boolean;
 }
 
-// Starting PowerShell here would block this thread, so a new worker runs it.
+// Only for when no worker can start, as starting PowerShell blocks this thread. A stopped worker
+// relays no exits, so a leader's pid alone may name an unrelated process by now.
+const stopTreeHere = ({ child, root }: Orphan) => {
+  const args = windowsStopTreeArgs({
+    pid: root.pid,
+    since: root.since,
+    created: { from: root.since, to: root.spawnedAt },
+  });
+  NodeChildProcess.execFile(
+    "powershell.exe",
+    args,
+    { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS },
+    (error, _stdout, stderr) => {
+      if (error === null) return;
+      const why = error.killed
+        ? "PowerShell did not finish in time"
+        : typeof error.code === "number"
+          ? `PowerShell exited ${error.code}: ${String(stderr).trim()}`
+          : error.message;
+      const cause = new Error(`Could not stop the process tree of ${root.pid}: ${why}`);
+      child.report(toPlatformError("kill", cause, child.command));
+    },
+  );
+};
+
 const killTrees = (trees: ReadonlyArray<Orphan>) => {
   let connection: Connection;
   try {
     connection = connect();
-  } catch (cause) {
-    for (const { child, root, leaderRuns } of trees) {
-      // After a Windows leader exits, its PID may belong to an unrelated process.
-      if (leaderRuns) sigkill(root.pid);
-      child.report(toPlatformError("kill", toError(cause), child.command));
-    }
+  } catch {
+    for (const orphan of trees) stopTreeHere(orphan);
     return;
   }
   for (const { child, root } of trees) {
@@ -593,12 +616,12 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
   for (const child of children) {
     const root = child.root;
     if (!child.referenced || root === undefined) continue;
-    const leaderRuns = !Deferred.isDoneUnsafe(child.exit);
     if (child.kills === "tree") {
-      trees.push({ child, root, leaderRuns });
+      trees.push({ child, root });
     } else if (child.kills === "group") {
       sigkill(-root.pid);
-    } else if (leaderRuns) {
+    } else if (!Deferred.isDoneUnsafe(child.exit)) {
+      // On POSIX an exited leader nobody reaped keeps its pid, so this reaches no other process.
       sigkill(root.pid);
     }
   }
@@ -827,10 +850,6 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
-  const runFork = Effect.runForkWith(yield* Effect.context<never>());
-  const report = (error: PlatformError.PlatformError) => {
-    runFork(Effect.logError("Could not end a child process tree", error));
-  };
 
   // Each spawn already sits inside the caller's git or process span.
   const spawnStandard = Effect.fnUntraced(function* (command: ChildProcess.StandardCommand) {
@@ -856,6 +875,10 @@ const make = Effect.gen(function* () {
     const detached = options.detached ?? platform !== "win32";
     const killSignal = options.killSignal ?? "SIGTERM";
     const forceKillAfterMs = forceKillMillis(options.forceKillAfter);
+    const runFork = Effect.runForkWith(yield* Effect.context<never>());
+    const report = (error: PlatformError.PlatformError) => {
+      runFork(Effect.logError("Could not end a child process tree", error));
+    };
     const outputs = new Map<number, OutputQueue>();
     for (const fd of outputFds) {
       outputs.set(
