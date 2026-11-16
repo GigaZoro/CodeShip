@@ -332,8 +332,9 @@ const posixLaunchEnvironment = (
 
 /**
  * Ids under the wrapper by `ParentProcessId`, which outlives it (a named Job object does not). A
- * child older than its parent belongs to an earlier holder of that pid; the wrapper's children
- * also start after the command, and before the pid's holder when that is no longer the wrapper.
+ * child older than its parent, the wrapper included, belongs to an earlier holder of that pid; the
+ * wrapper's children also start after the command, and before the pid's holder when that is no
+ * longer the wrapper.
  */
 export const WINDOWS_COMMAND_TREE_FUNCTION = [
   "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
@@ -343,7 +344,7 @@ export const WINDOWS_COMMAND_TREE_FUNCTION = [
   "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
   "  if ($holder) {",
   "    $made = Ms $holder.CreationDate",
-  "    if ($identity -ge 0 -and [math]::Abs($made - $identity) -gt 1000) { $before = $made } else { $targets[$root] = $true }",
+  "    if ($identity -ge 0 -and [math]::Abs($made - $identity) -gt 1000) { $before = $made } else { $targets[$root] = $true; $since = [math]::Max($since, $made) }",
   "  }",
   "  $queue = New-Object System.Collections.Queue",
   "  $queue.Enqueue(@($root, $since, $before))",

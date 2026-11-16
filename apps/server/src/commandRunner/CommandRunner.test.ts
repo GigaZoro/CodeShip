@@ -1314,10 +1314,11 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       CommandRunner.WINDOWS_COMMAND_TREE_FUNCTION,
       "$t = [DateTime]::UtcNow",
       "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
-      // 10 is the wrapper, 20 its command, 30 what that started. 40 names 20 as its parent but is
-      // older, so an earlier holder of that pid started it; 50 is older than the command.
-      "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1))",
-      "(Get-T3CommandTree $all 10 (Ms $t) (Ms $t)).Keys | Sort-Object",
+      // The command started 2 s before its wrapper 10, which started 20, which started 30. 40 and
+      // 50 name 20 and 10 as their parent but are older, so an earlier holder of that pid started
+      // them; 60 is older than the command.
+      "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1), (P 60 10 -3))",
+      "(Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t)).Keys | Sort-Object",
     ].join("\n");
     const tree = NodeChildProcess.execFileSync(
       "powershell.exe",
