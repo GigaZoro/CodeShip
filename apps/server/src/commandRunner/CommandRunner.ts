@@ -73,6 +73,11 @@ export const WatchInterval = Context.Reference<Duration.Duration>(
 const LOG_FILE = "output.log";
 const STATUS_FILE = "exit-status";
 const PID_FILE = "pid";
+const LAUNCH_PENDING = "launch-pending";
+const LAUNCH_STARTED = "launch-started";
+const LAUNCH_CANCELLED = "launch-cancelled";
+// PowerShell startup and WMI can each be slow on a loaded Windows host.
+const WINDOWS_LAUNCH_TIMEOUT = Duration.minutes(2);
 const LOG_TRIM_AT_BYTES = 8 * 1024 * 1024;
 const LOG_KEEP_BYTES = 4 * 1024 * 1024;
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
@@ -116,6 +121,7 @@ const WINDOWS_WRAPPER = [
   "}",
   "try {",
   `  Write-T3File '${PID_FILE}' $PID`,
+  `  try { [IO.Directory]::Move((Join-Path $PSScriptRoot '${LAUNCH_PENDING}'), (Join-Path $PSScriptRoot '${LAUNCH_STARTED}')) } catch { [Console]::Error.WriteLine('Command launch was cancelled before it started.'); exit 1 }`,
   "  $system = [Environment]::SystemDirectory",
   "  $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $system 'cmd.exe'))",
   // cmd only appends the output of PowerShell and everything it starts to the log. Input is NUL,
@@ -490,7 +496,7 @@ const make = Effect.gen(function* () {
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const startedAtOf = (pid: number) =>
-    readProcessStartedAt(pid).pipe(
+    readProcessStartedAt(pid, windows ? WINDOWS_LAUNCH_TIMEOUT : undefined).pipe(
       Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
     );
   /** Linux reads the start in ticks since boot, which a step of the wall clock cannot move. */
@@ -1185,6 +1191,7 @@ const make = Effect.gen(function* () {
     );
     yield* fs.writeFileString(wrapperPath, WINDOWS_WRAPPER);
     yield* fs.writeFileString(logPath, "");
+    yield* fs.makeDirectory(path.join(directory, LAUNCH_PENDING));
     const created = yield* processRunner
       .run({
         command: "powershell.exe",
@@ -1204,7 +1211,7 @@ const make = Effect.gen(function* () {
             .join("\0"),
           "utf8",
         ).toString("base64"),
-        timeout: Duration.seconds(30),
+        timeout: WINDOWS_LAUNCH_TIMEOUT,
         maxOutputBytes: 16_384,
       })
       .pipe(Effect.result);
@@ -1513,6 +1520,32 @@ const make = Effect.gen(function* () {
                   Effect.result,
                 );
                 if (started._tag === "Failure") {
+                  const recovered = yield* recoverPid(row).pipe(
+                    Effect.tapError((cause) =>
+                      Effect.logError("command-runner.launch-recovery-failed", { taskId, cause }),
+                    ),
+                    Effect.mapError(() =>
+                      failure(
+                        "orchestration_error",
+                        "Could not verify the command's startup. Its task is still recorded; retry with the same clientRequestId.",
+                      ),
+                    ),
+                  );
+                  if (
+                    recovered !== undefined &&
+                    ((yield* readExitStatus(recovered)) !== undefined ||
+                      (yield* isSameProcess(recovered)))
+                  ) {
+                    watched.set(taskId, recovered);
+                    yield* writeRow(recovered);
+                    yield* Effect.logWarning("command-runner.launch-adopted", {
+                      taskId,
+                      pid: recovered.pid,
+                      cause: started.failure,
+                    });
+                    return result(taskId);
+                  }
+                  if (recovered !== undefined) yield* killTree(recovered);
                   yield* sql`DELETE FROM command_runs WHERE task_id = ${taskId}`.pipe(
                     Effect.ignore({ log: true }),
                   );
@@ -1571,6 +1604,20 @@ const make = Effect.gen(function* () {
    * Without that file it never started, so its record goes and its task fails with the others.
    */
   const recoverPid = Effect.fn("CommandRunner.recoverPid")(function* (row: CommandRunRow) {
+    // A queued WMI Create may outlive its launcher. Closing the gate also protects restart recovery.
+    if (windows) {
+      yield* fs
+        .rename(
+          path.join(row.directory, LAUNCH_PENDING),
+          path.join(row.directory, LAUNCH_CANCELLED),
+        )
+        .pipe(
+          Effect.catchIf(
+            (cause) => cause.reason._tag === "NotFound",
+            () => Effect.void,
+          ),
+        );
+    }
     const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
     if (named === undefined || !Number.isSafeInteger(named.value) || named.value <= 0) {
       if ((yield* readExitStatus(row)) !== undefined) return row;
@@ -1587,7 +1634,11 @@ const make = Effect.gen(function* () {
     const writtenAt = named.writtenAt?.getTime();
     // It started before it wrote the file; a later process reusing the pid did not. ps reports
     // whole seconds.
-    if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
+    if (
+      startedAt !== undefined &&
+      (startedAt < Date.parse(row.started_at) - 1_000 ||
+        (writtenAt !== undefined && startedAt > writtenAt + 1_000))
+    ) {
       return { ...row, lost_reason: "pid-reused" as const };
     }
     const recovered: CommandRunRow = {

@@ -2097,10 +2097,14 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           yield* Effect.addFinalizer(() =>
             Effect.try(() => {
               if (launchedPid !== undefined) {
-                NodeChildProcess.execFileSync("taskkill", ["/PID", String(launchedPid), "/T", "/F"], {
-                  windowsHide: true,
-                  stdio: "ignore",
-                });
+                NodeChildProcess.execFileSync(
+                  "taskkill",
+                  ["/PID", String(launchedPid), "/T", "/F"],
+                  {
+                    windowsHide: true,
+                    stdio: "ignore",
+                  },
+                );
               }
             }).pipe(Effect.ignore),
           );
