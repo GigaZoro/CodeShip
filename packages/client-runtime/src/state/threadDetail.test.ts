@@ -466,7 +466,7 @@ describe("queue detail atoms", () => {
         expect(next.workflow?.queuedRuns).toEqual([]);
         expect(next.workflow?.isHeld).toBe(false);
         expect(next.workflow?.activeRun?.id).toBe(RunId.make("run-500"));
-        expect(next.workflow).not.toBe(previous);
+        expect(next.workflow).toBe(previous);
         expect(detail.read().workflow).toBe(next.workflow);
         previous = next.workflow;
       }
@@ -546,6 +546,53 @@ describe("queue detail atoms", () => {
       count: 1,
       workflow: { queuedRuns: [{ run, text: "Follow-up" }], isHeld: true },
     });
+  });
+
+  it("follows a provider session gaining the ability to stop and send", () => {
+    const run = {
+      id: RunId.make("active"),
+      threadId: v2ThreadId,
+      ordinal: 1,
+      providerInstanceId: v2Projection.thread.providerInstanceId,
+      modelSelection: v2Projection.thread.modelSelection,
+      providerThreadId: null,
+      userMessageId: MessageId.make("active"),
+      rootNodeId: null,
+      activeAttemptId: "attempt",
+      status: "running" as const,
+      requestedAt: v2Now,
+      startedAt: v2Now,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    const withSession = (supportsInterrupt: boolean) =>
+      ({
+        ...v2Projection,
+        thread: { ...v2Projection.thread, activeProviderThreadId: "provider-thread" },
+        runs: [run],
+        providerTurns: [{ id: "turn", runAttemptId: "attempt", status: "running" }],
+        providerThreads: [
+          {
+            id: "provider-thread",
+            appThreadId: v2ThreadId,
+            providerSessionId: "session",
+          },
+        ],
+        providerSessions: [
+          {
+            id: "session",
+            status: "running",
+            capabilities: {
+              turns: { supportsInterrupt, supportsSteeringByInterruptRestart: true },
+            },
+          },
+        ],
+      }) as never;
+    using detail = setup(withSession(false));
+    expect(detail.read().workflow?.canStopAndSend).toBe(false);
+    detail.push(withSession(true));
+    expect(detail.read().workflow?.canStopAndSend).toBe(true);
   });
 });
 

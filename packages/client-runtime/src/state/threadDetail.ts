@@ -101,6 +101,7 @@ function queueWorkflowStatesEqual(
     left.isHeld === right.isHeld &&
     left.canSendNow === right.canSendNow &&
     left.canPromoteToSteer === right.canPromoteToSteer &&
+    left.canStopAndSend === right.canStopAndSend &&
     left.promoteSkipsCompaction === right.promoteSkipsCompaction &&
     left.queuedRuns.length === right.queuedRuns.length &&
     left.queuedRuns.every(
