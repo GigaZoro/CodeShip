@@ -29,7 +29,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 it("redacts credentials and URL secrets from provider failures", () => {
   const failure = makeProviderFailure({
     message:
-      'request failed: Authorization: Bearer bearer-secret https://user:pass@example.test/path?access_token=url-secret#fragment {"token":"json-secret"} api_key=key-secret sk-abcdefghijklmnop',
+      'request failed: Authorization: Bearer bearer-secret https://user:pass@example.test/path?access_token=url-secret#fragment {"token":"json-secret"} api_key=key-secret sk-abcdefghijklmnop to\u001b[0mken: color-secret https://fake-user:4321\'@example.test/pkg https://fake-user:8765"@example.test/pkg for user@example.com',
     code: "provider_rejected",
     class: "provider_error",
   });
@@ -44,6 +44,10 @@ it("redacts credentials and URL secrets from provider failures", () => {
   assert.notInclude(failure.message, "json-secret");
   assert.notInclude(failure.message, "key-secret");
   assert.notInclude(failure.message, "sk-abcdefghijklmnop");
+  assert.notInclude(failure.message, "color-secret");
+  assert.notInclude(failure.message, "4321");
+  assert.notInclude(failure.message, "8765");
+  assert.include(failure.message, "for [email]");
 });
 
 it("redacts credentials whose key names end in a credential word", () => {

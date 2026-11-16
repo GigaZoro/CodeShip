@@ -258,7 +258,7 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
     }),
   );
 
-  it.effect("bounds oversized records while retaining failure details", () =>
+  it.effect("bounds and redacts records while retaining failure details", () =>
     Effect.gen(function* () {
       const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
       const basePath = NodePath.join(tempDir, "events.log");
@@ -272,12 +272,19 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
           params: {
             threadId: "native-thread",
             turnId: "native-turn",
-            error: { message: "The provider is unavailable.", code: "overloaded" },
+            error: {
+              message: "The provider is unavailable for user@example.com.",
+              code: "overloaded",
+            },
             output: "x".repeat(128 * 1_024),
           },
         };
         yield* logger.write(failure, threadId);
         yield* logger.write({ id: "escaped", output: "\u0000".repeat(20_000) }, threadId);
+        yield* logger.write(
+          { type: "result", error: "rejected user@example.com", access_token: "fake-opaque" },
+          threadId,
+        );
         yield* store.close();
 
         const contents = NodeFS.readFileSync(ownedLogPath(basePath, "large-error"), "utf8");
@@ -286,16 +293,23 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
           .split("\n")
           .map((line) => decodeUnknownJson(parseLogLine(line).payload));
         assert.isBelow(Buffer.byteLength(contents), 64 * 1_024);
-        assert.equal(records.length, 2);
+        assert.equal(records.length, 3);
         assert.nestedPropertyVal(records[0], "params.threadId", "native-thread");
         assert.nestedPropertyVal(records[0], "params.turnId", "native-turn");
         assert.nestedPropertyVal(
           records[0],
           "params.error.message",
-          "The provider is unavailable.",
+          "The provider is unavailable for [email].",
         );
         assert.nestedPropertyVal(records[0], "params.error.code", "overloaded");
         assert.propertyVal(records[1], "id", "escaped");
+        assert.deepStrictEqual(records[2], {
+          type: "result",
+          error: "rejected [email]",
+          access_token: "[redacted]",
+        });
+        assert.notInclude(contents, "user@example.com");
+        assert.notInclude(contents, "fake-opaque");
       } finally {
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }

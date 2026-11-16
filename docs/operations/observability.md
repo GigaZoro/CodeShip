@@ -12,6 +12,14 @@ The local trace file is the persisted source of truth for normal local launches.
 write a separate server log file, but SSH-managed launches also persist the remote process's
 stdout/stderr at `~/.t3/ssh-launch/<state>/server.log`.
 
+Console log lines, every OTLP export (logs, traces and metrics, with the browser traces the server
+forwards and the relay's traces) and trace, relay and provider event log file records pass through
+one redactor, `packages/shared/src/redaction.ts`, as they are written: credentials and the values of
+fields named for one show as `[redacted]`, and e-mail addresses as `[email]`. Logs and spans hold the
+raw values in memory, so a new log or trace sink must redact what it writes. Loggers print and
+export a log's message parts apart, so a new server logger also masks them with `redactMessageParts`,
+which hides the part after one such as `"Cookie"` or `"token:"`.
+
 ## Where To Find Things
 
 ### Logs

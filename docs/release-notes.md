@@ -1,3 +1,7 @@
+## 2026-11-16 — Server logs and traces no longer carry e-mail addresses or credentials
+
+- Server logs (on screen, in the relay log and exported over OTLP), provider event logs, the trace file and exported traces and metrics now replace e-mail addresses with `[email]` and credentials with `[redacted]`: auth headers, API tokens, private keys, sign-in details in URLs and connection tickets. A provider error that named the signed-in account could reach them before. Provider errors shown in a thread now leave out e-mail addresses too.
+
 ## 2026-11-16 — Automatic settlement opens pull requests only for threads you wrote in
 
 - Automatic settlement used to open a pull request for any thread with unmerged worktree work, including a subagent's or a scheduled run's, so work that agents had not finished or that had failed review went up for merge. Now only a thread you wrote in from the app gets one; messages T3.CodeShip sends for you, such as the automatic "continue" after a stop, do not count. A thread you never wrote in, such as a scheduled run or a subagent, stays active with its work in view instead; once you write in it from the app, it can get one too.

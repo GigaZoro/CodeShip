@@ -14,13 +14,16 @@ import * as Ref from "effect/Ref";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import type { OtlpTracer } from "effect/observability";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import { OtlpExporter, OtlpTracer } from "effect/observability";
 
 import {
   causeErrorTag,
   compactTraceAttributes,
   decodeOtlpTraceRecords,
   errorTag,
+  layerOtlpSerialization,
   makeLocalFileTracer,
   makeTraceSink,
   type EffectTraceRecord,
@@ -29,6 +32,20 @@ import {
   truncateTraceAttributes,
   processServiceInstanceId,
 } from "./observability.ts";
+
+// Collects each OTLP request body as text; protobuf keeps its strings as UTF-8.
+const layerCollector = (bodies: Array<string>) =>
+  Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) =>
+      Effect.sync(() => {
+        if (request.body._tag === "Uint8Array") {
+          bodies.push(new TextDecoder().decode(request.body.body));
+        }
+        return HttpClientResponse.fromWeb(request, new Response(null, { status: 200 }));
+      }),
+    ),
+  );
 
 describe("processServiceInstanceId", () => {
   it("stays the same for the process unless the operator set one", () => {
@@ -126,12 +143,14 @@ describe("truncateTraceAttributes", () => {
     const attributes = {
       "db.query.text": "q".repeat(2_000),
       short: "ok",
+      note: `${"x".repeat(468)} https://fake-user:fake-password@example.test/`,
       error: { name: "Error", stack, nested: ["a".repeat(2_000)] },
     };
     const truncated = truncateTraceAttributes(attributes);
 
     assert.equal((truncated["db.query.text"] as string).length, 200 + "…[truncated]".length);
     assert.equal(truncated["short"], "ok");
+    assert.notInclude(truncated["note"] as string, "fake-password");
     const error = truncated["error"] as { stack: string; nested: Array<string> };
     assert.equal(error.stack.length, 500 + "…[truncated]".length);
     assert.equal(error.nested[0]?.length, 500 + "…[truncated]".length);
@@ -370,71 +389,84 @@ describe("observability", () => {
       ),
     );
 
-    it.effect("keeps WebSocket credentials out of trace files and exported spans", () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
-          const tracePath = path.join(tempDir, "shared.trace.ndjson");
-          const sink = yield* makeTraceSink({
-            filePath: tracePath,
-            maxBytes: 1024 * 1024,
-            maxFiles: 2,
-            batchWindowMs: 10_000,
-          });
-          const delegates: Array<Tracer.NativeSpan> = [];
-          const tracer = yield* makeLocalFileTracer({
-            filePath: tracePath,
-            maxBytes: 1024 * 1024,
-            maxFiles: 2,
-            batchWindowMs: 10_000,
-            sink,
-            delegate: Tracer.make({
-              span: (options) => {
-                const span = new Tracer.NativeSpan(options);
-                delegates.push(span);
-                return span;
-              },
-            }),
-          });
-          const url = "/ws?wsTicket=ticket-secret&dpop=proof-secret&clientSurface=web";
+    it.effect("keeps credentials and e-mail addresses out of trace files and OTLP exports", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const url = "/ws?wsTicket=ticket-secret&dpop=proof-secret&clientSurface=web";
+        for (const protocol of ["http/json", "http/protobuf"] as const) {
+          const exported: Array<string> = [];
+          const written = yield* Effect.gen(function* () {
+            const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+            const tracePath = path.join(tempDir, "shared.trace.ndjson");
+            const sink = yield* makeTraceSink({
+              filePath: tracePath,
+              maxBytes: 1024 * 1024,
+              maxFiles: 2,
+              batchWindowMs: 10_000,
+            });
+            const tracer = yield* makeLocalFileTracer({
+              filePath: tracePath,
+              maxBytes: 1024 * 1024,
+              maxFiles: 2,
+              batchWindowMs: 10_000,
+              sink,
+              delegate: yield* OtlpTracer.make({
+                url: "https://collector.example.com/v1/traces",
+                resource: { serviceName: "t3-trace-test" },
+                exportInterval: "1 hour",
+              }),
+            });
 
-          yield* Effect.annotateCurrentSpan({
-            "url.full": `http://127.0.0.1:3773${url}`,
-            "url.query": url.slice(4),
+            yield* Effect.annotateCurrentSpan({
+              "url.full": `http://127.0.0.1:3773${url}`,
+              "url.query": url.slice(4),
+              "provider.account": { label: "signed in as user@example.com" },
+              "http.request.header.authorization": "Basic dXNlcjpwYXNz",
+              // A backspace before `earer` is JSON text `\bearer`, which is no bearer token.
+              "provider.note": "\bearer fake-token",
+            }).pipe(
+              Effect.withSpan("GET", { kind: "server" }),
+              Effect.provideService(Tracer.Tracer, tracer),
+            );
+            yield* Effect.die(new Error(`RequestParseError (GET ${url})`)).pipe(
+              Effect.tapCause((cause) =>
+                Effect.logError("Usage read failed for user@example.com", cause),
+              ),
+              Effect.withSpan("DeviceHubProxy.proxyWebSocket"),
+              Effect.provideService(Tracer.Tracer, tracer),
+              Effect.provide(Logger.layer([Logger.tracerLogger], { mergeWithExisting: false })),
+              Effect.exit,
+            );
+            yield* sink.close();
+            return yield* fileSystem.readFileString(tracePath);
           }).pipe(
-            Effect.withSpan("GET", { kind: "server" }),
-            Effect.provideService(Tracer.Tracer, tracer),
+            Effect.scoped,
+            Effect.provide(
+              Layer.mergeAll(
+                layerOtlpSerialization(protocol),
+                OtlpExporter.layerFlusher,
+                layerCollector(exported),
+              ),
+            ),
           );
-          yield* Effect.die(new Error(`RequestParseError (GET ${url})`)).pipe(
-            Effect.tapCause((cause) => Effect.logError(cause)),
-            Effect.withSpan("DeviceHubProxy.proxyWebSocket"),
-            Effect.provideService(Tracer.Tracer, tracer),
-            Effect.provide(Logger.layer([Logger.tracerLogger], { mergeWithExisting: false })),
-            Effect.exit,
-          );
-          yield* sink.close();
 
-          const written = yield* fileSystem.readFileString(tracePath);
-          const exported = delegates.map((span) =>
-            JSON.stringify({
-              attributes: Object.fromEntries(span.attributes),
-              events: span.events.map(([, , attributes]) => attributes),
-              exit:
-                span.status._tag === "Ended" && Exit.isFailure(span.status.exit)
-                  ? Cause.pretty(span.status.exit.cause)
-                  : "",
-            }),
-          );
           for (const text of [written, ...exported]) {
             assert.notInclude(text, "ticket-secret");
             assert.notInclude(text, "proof-secret");
+            assert.notInclude(text, "user@example.com");
+            assert.notInclude(text, "dXNlcjpwYXNz");
           }
-          assert.include(written, "wsTicket=<redacted>&dpop=<redacted>&clientSurface=web");
-          assert.include(exported.join("\n"), "effect.cause");
-        }),
-      ),
+          const records = written
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as unknown);
+          assert.include(JSON.stringify(records), '"provider.note":"\\bearer fake-token"');
+          assert.include(written, "wsTicket=[redacted]&dpop=[redacted]&clientSurface=web");
+          assert.include(written, "Usage read failed for [email]");
+          assert.include(exported.join("\n"), "Usage read failed for [email]");
+        }
+      }),
     );
 
     it.effect("drops only the invalid trace record when serialization fails", () =>

@@ -590,7 +590,7 @@ describe("CloudManagedEndpointRuntime", () => {
           yield* fixture.observe(
             runtime,
             0,
-            '2026-10-16T20:29:40Z ERR Failed to serve tunnel connection error="rejected connector-secret" connIndex=0\n',
+            '2026-10-16T20:29:40Z ERR Failed to serve tunnel connection error="rejected connector-secret for user@example.com" connIndex=0\n',
           );
         }).pipe(Effect.scoped, Effect.withLogger(logger));
 
@@ -612,6 +612,7 @@ describe("CloudManagedEndpointRuntime", () => {
         ]);
         expect(log).toContain("rejected <redacted>");
         expect(log).not.toContain("connector-secret");
+        expect(log).not.toContain("user@example.com");
         const oversizedFixture = yield* makeTransportSpawner();
         yield* Effect.gen(function* () {
           const context = yield* Layer.build(

@@ -1,39 +1,20 @@
 import * as NodeUtil from "node:util";
 
+import { redactSensitiveText } from "@t3tools/shared/redaction";
 import { escapeRegExp } from "@t3tools/shared/String";
 
 /** Redaction and the reason line read at most this much of a CLI's output. */
 export const PROVIDER_OUTPUT_MAX_CHARS = 4_096;
 const PROVIDER_FAILURE_REASON_MAX_LENGTH = 240;
 
-const URL_CREDENTIALS_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi;
 const HTTP_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 const PAIRING_URL_PATTERN = /\/pair#/i;
 const SIGN_IN_URL_PATTERN =
   /^https?:\/\/(?:accounts\.google\.com|[^/?#]+\/(?:[^?#]*\/)?(?:oauth2?|authorize|device|login|signin|sign-in|sso)(?:[/?#]|$))/i;
 const SLACK_WEBHOOK_PATTERN = /^https?:\/\/hooks\.slack\.com\//i;
-const BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._\-+=/]+/gi;
-const BASIC_AUTH_PATTERN = /\bAuthorization:\s*Basic\s+\S+/gi;
-const API_KEY_HEADER_PATTERN = /\bx-api-key:\s*\S+/gi;
-const AWS_ACCESS_KEY_PATTERN = /(^|[^A-Za-z0-9+])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9+=])/g;
-const SECRET_TOKEN_PATTERNS = [
-  /\bsk-[A-Za-z0-9][A-Za-z0-9_-]{7,}/g,
-  // A JWT header always encodes `{"`; the payload can be as short as `{}`.
-  /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g,
-  /\bgh[opusr]_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bgl(?:pat|dt|rt|ft|soat|oas|agent|ptt|cbt|imt|ffct)-[A-Za-z0-9_=-]{20,}/g,
-  /\b(?:xox[a-z]|xapp|xwfp)-[A-Za-z0-9+/=%_-]{10,}/gi,
-  /\bsq0(?:atp|csp)-[A-Za-z0-9_-]{22,}/g,
-  /\bxai-[A-Za-z0-9]{20,}/g,
-  /\bAIza[0-9A-Za-z_-]{35}/g,
-  /\b(?:gsk|hf)_[A-Za-z0-9]{20,}/g,
-];
 const ASSIGNMENT_PATTERN =
   /\b([A-Za-z0-9_.-]+)(["']?\s*[=:]\s*)("(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|["']?[^\s"',;}]+["']?)/g;
 const SECRET_KEY_PATTERN = /api[_-]?key|token|secret|password|passwd|private[_-]?key/i;
-const EMAIL_PATTERN =
-  /(?:"[^"\r\n]{1,64}"|[A-Za-z0-9._%+-]{1,64})@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}/g;
 
 const CRASH_LOCATION_PATTERN = /:\d+(?::\d+)?$|^\d+\s*\|/u;
 const CARET_LINE_PATTERN = /^\^+$/u;
@@ -77,22 +58,12 @@ export function redactProviderOutput(
   for (const home of homes.values()) {
     result = result.replace(homeFolderPattern(home), "~");
   }
-  result = result
-    .replace(URL_CREDENTIALS_PATTERN, "$1[redacted]@")
+  return redactSensitiveText(result)
     .replace(HTTP_URL_PATTERN, redactUrl)
-    .replace(BEARER_TOKEN_PATTERN, "Bearer [redacted]")
-    .replace(BASIC_AUTH_PATTERN, "Authorization: Basic [redacted]")
-    .replace(API_KEY_HEADER_PATTERN, "x-api-key: [redacted]")
-    .replace(AWS_ACCESS_KEY_PATTERN, "$1[redacted]");
-  for (const pattern of SECRET_TOKEN_PATTERNS) {
-    result = result.replace(pattern, "[redacted]");
-  }
-  result = result
     .replace(ASSIGNMENT_PATTERN, (assignment, key: string, separator: string) =>
       SECRET_KEY_PATTERN.test(key) ? `${key}${separator}[redacted]` : assignment,
     )
-    .replace(EMAIL_PATTERN, "[email]");
-  return result.trim();
+    .trim();
 }
 
 /**

@@ -14,11 +14,18 @@ import * as Tracer from "effect/Tracer";
 import { OtlpResource, OtlpTracer, OtlpSerialization } from "effect/observability";
 
 import { makeAsyncRotatingFileSink } from "./logging.ts";
+import {
+  layerRedactedOtlpSerialization,
+  redactSensitiveText,
+  stringifyRedacted,
+} from "./redaction.ts";
 
 export const OtlpProtocol = Schema.Literals(["http/json", "http/protobuf"]);
 export type OtlpProtocol = typeof OtlpProtocol.Type;
 export const layerOtlpSerialization = (protocol: OtlpProtocol) =>
-  protocol === "http/protobuf" ? OtlpSerialization.layerProtobuf : OtlpSerialization.layerJson;
+  layerRedactedOtlpSerialization(
+    protocol === "http/protobuf" ? OtlpSerialization.layerProtobuf : OtlpSerialization.layerJson,
+  );
 
 export interface SignalExport {
   readonly protocol: OtlpProtocol;
@@ -330,12 +337,17 @@ const TRACE_ATTRIBUTE_TRUNCATED_LENGTH = 200;
 const TRACE_ATTRIBUTE_TRUNCATION_SUFFIX = "…[truncated]";
 const ALWAYS_TRUNCATED_TRACE_ATTRIBUTES: ReadonlySet<string> = new Set(["db.query.text"]);
 
+// Redacted before cutting, since a cut can split a credential from what marks it, such as a URL's `@`.
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const redacted = redactSensitiveText(value);
+  return redacted.length <= maxLength
+    ? redacted
+    : `${redacted.slice(0, maxLength)}${TRACE_ATTRIBUTE_TRUNCATION_SUFFIX}`;
+}
+
 function truncateNestedValue(value: unknown): unknown {
-  if (typeof value === "string") {
-    return value.length <= TRACE_ATTRIBUTE_MAX_LENGTH
-      ? value
-      : `${value.slice(0, TRACE_ATTRIBUTE_MAX_LENGTH)}${TRACE_ATTRIBUTE_TRUNCATION_SUFFIX}`;
-  }
+  if (typeof value === "string") return truncateText(value, TRACE_ATTRIBUTE_MAX_LENGTH);
   if (Array.isArray(value)) {
     const truncated = value.map(truncateNestedValue);
     return truncated.some((entry, index) => entry !== value[index]) ? truncated : value;
@@ -360,8 +372,7 @@ export function truncateTraceAttributes(attributes: TraceAttributes): TraceAttri
     if (typeof value === "string" && ALWAYS_TRUNCATED_TRACE_ATTRIBUTES.has(key)) {
       if (value.length <= TRACE_ATTRIBUTE_TRUNCATED_LENGTH) continue;
       truncated ??= { ...attributes };
-      truncated[key] =
-        `${value.slice(0, TRACE_ATTRIBUTE_TRUNCATED_LENGTH)}${TRACE_ATTRIBUTE_TRUNCATION_SUFFIX}`;
+      truncated[key] = truncateText(value, TRACE_ATTRIBUTE_TRUNCATED_LENGTH);
       continue;
     }
     const next = truncateNestedValue(value);
@@ -403,12 +414,6 @@ function spanToTraceRecord(span: SerializableSpan): EffectTraceRecord {
     exit: formatTraceExit(status.exit),
   };
 }
-
-// WebSocket tickets and their DPoP proofs ride in URL queries and stay valid after the request.
-const URL_CREDENTIAL_PARAMS = /(^|[?&"\s])(wsTicket|dpop)=[^&#"\\\s]*/g;
-
-const redactUrlCredentials = (text: string) =>
-  text.replace(URL_CREDENTIAL_PARAMS, "$1$2=<redacted>");
 
 export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: TraceSinkOptions) {
   const sink = yield* makeAsyncRotatingFileSink({
@@ -527,7 +532,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     filePath: options.filePath,
     push(record) {
       try {
-        const text = `${redactUrlCredentials(JSON.stringify(record))}\n`;
+        const text = `${stringifyRedacted(record)}\n`;
         const bytes = Buffer.byteLength(text);
         if (bytes > options.maxBytes) return;
         if (bufferBytes + bytes > maxBufferBytes) {
@@ -547,24 +552,6 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
     close: () => flush,
   } satisfies TraceSink;
 });
-
-// Effect's HTTP errors, including failed upgrades, put the request URL in their message.
-export function redactCauseCredentials(cause: Cause.Cause<unknown>): Cause.Cause<unknown> {
-  if (cause.reasons.length === 0 || Cause.hasInterruptsOnly(cause)) {
-    return cause;
-  }
-  const pretty = Cause.pretty(cause);
-  const redacted = redactUrlCredentials(pretty);
-  return redacted === pretty ? cause : Cause.die(new Error(redacted));
-}
-
-function redactExitCredentials(exit: Exit.Exit<unknown, unknown>): Exit.Exit<unknown, unknown> {
-  if (ExitRuntime.isSuccess(exit)) {
-    return exit;
-  }
-  const cause = redactCauseCredentials(exit.cause);
-  return cause === exit.cause ? exit : ExitRuntime.failCause(cause);
-}
 
 class LocalFileSpan implements Tracer.Span {
   readonly _tag = "Span";
@@ -615,7 +602,7 @@ class LocalFileSpan implements Tracer.Span {
       endTime,
       exit: traceExit,
     };
-    this.delegate.end(endTime, redactExitCredentials(traceExit));
+    this.delegate.end(endTime, traceExit);
 
     if (this.sampled) {
       this.push(spanToTraceRecord(this));
@@ -623,22 +610,13 @@ class LocalFileSpan implements Tracer.Span {
   }
 
   attribute(key: string, value: unknown): void {
-    const recorded =
-      (key === "url.full" || key === "url.query") && typeof value === "string"
-        ? redactUrlCredentials(value)
-        : value;
-    this.attributes.set(key, recorded);
-    this.delegate.attribute(key, recorded);
+    this.attributes.set(key, value);
+    this.delegate.attribute(key, value);
   }
 
   event(name: string, startTime: bigint, attributes?: Record<string, unknown>): void {
-    const cause = attributes?.["effect.cause"];
-    const nextAttributes =
-      typeof cause === "string"
-        ? { ...attributes, "effect.cause": redactUrlCredentials(cause) }
-        : (attributes ?? {});
-    this.events.push([name, startTime, nextAttributes]);
-    this.delegate.event(name, startTime, nextAttributes);
+    this.events.push([name, startTime, attributes ?? {}]);
+    this.delegate.event(name, startTime, attributes);
   }
 
   addLinks(links: ReadonlyArray<Tracer.SpanLink>): void {

@@ -1,6 +1,7 @@
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import { redactJsonText, redactMessageParts } from "@t3tools/shared/redaction";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -250,7 +251,8 @@ export const make = Effect.gen(function* () {
     Effect.map((sink) =>
       Logger.make((options) => {
         try {
-          const entry = Logger.formatJson.log(options);
+          const message = redactMessageParts(options.message);
+          const entry = redactJsonText(Logger.formatJson.log({ ...options, message }));
           const bytes = Buffer.byteLength(entry) + 1;
           sink.write(
             bytes <= 1024 * 1024

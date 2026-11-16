@@ -132,8 +132,30 @@ const logInSpanThrough = (
     return { requests, spans };
   });
 
-const printThroughConsole = (fields: object) =>
+// The pretty logger colors its output when stdout is a terminal, as it is for `npx t3`.
+const stdoutAsTerminal = (isTTY: boolean) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const previous = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+      Object.defineProperty(process.stdout, "isTTY", { value: isTTY, configurable: true });
+      return previous;
+    }),
+    (previous) =>
+      Effect.sync(() =>
+        previous === undefined
+          ? Reflect.deleteProperty(process.stdout, "isTTY")
+          : Object.defineProperty(process.stdout, "isTTY", previous),
+      ),
+  );
+
+const printThroughConsole = (
+  fields: object,
+  annotations: Record<string, unknown> = {},
+  isTTY = false,
+  parts: ReadonlyArray<unknown> = [],
+) =>
   Effect.gen(function* () {
+    yield* stdoutAsTerminal(isTTY);
     const printed: Array<string> = [];
     const testConsole = {
       ...globalThis.console,
@@ -141,14 +163,15 @@ const printThroughConsole = (fields: object) =>
         printed.push(NodeUtil.format(...args));
       },
     } satisfies Console.Console;
-    yield* Effect.logWarning("pull request watch check failed", fields).pipe(
+    yield* Effect.logWarning("pull request watch check failed", fields, ...parts).pipe(
+      Effect.annotateLogs(annotations),
       Effect.provide(
         ServerLogger.layer.pipe(Layer.provide(layerConfig({})), Layer.provide(layerCollector([]))),
       ),
       Effect.provideService(Console.Console, testConsole),
     );
     return printed.join("\n");
-  });
+  }).pipe(Effect.scoped);
 
 describe("ServerLoggerLive", () => {
   it.effect("exports the operator's service instance id instead of a generated one", () =>
@@ -179,34 +202,74 @@ describe("ServerLoggerLive", () => {
     }),
   );
 
-  it.effect("exports logged request failures without their connection tickets", () =>
+  it.effect("exports logged failures without connection tickets or e-mail addresses", () =>
     Effect.gen(function* () {
       const { requests } = yield* logInSpanThrough(
         { otlpLogsUrl: "https://collector.example.com/v1/logs" },
         Effect.logError(
+          "Usage read failed for user@example.com",
+          { account: "user@example.com" },
+          "token:",
+          "fake-opaque",
           Cause.die(
             new Error("RequestParseError (GET /ws?wsTicket=ticket-secret&dpop=proof-secret)"),
           ),
-        ),
+        ).pipe(Effect.annotateLogs({ detail: "remote: denied to user@example.com" })),
       );
 
       const body = requests.map((request) => request.body).join("\n");
-      assert.include(body, "wsTicket=<redacted>&dpop=<redacted>");
+      assert.include(body, "wsTicket=[redacted]&dpop=[redacted]");
+      assert.include(body, "Usage read failed for [email]");
       assert.notInclude(body, "ticket-secret");
       assert.notInclude(body, "proof-secret");
+      assert.notInclude(body, "user@example.com");
+      assert.notInclude(body, "fake-opaque");
     }),
   );
 
-  it.effect("prints a cause passed as a log field instead of collapsing it", () =>
+  it.effect("prints a cause passed as a log field, redacted, instead of collapsing it", () =>
     Effect.gen(function* () {
-      const output = yield* printThroughConsole({
-        threadId: "thread-1",
-        cause: Cause.fail(new Error("gh: HTTP 502 from api.github.com")),
-      });
+      class Session {
+        readonly owner = "user@example.com";
+        readonly token = "fake-session-token";
+        toString(): string {
+          return "Session";
+        }
+      }
+      for (const isTTY of [false, true]) {
+        const output = yield* printThroughConsole(
+          {
+            threadId: "thread-1",
+            // Node cuts a string at 10,000 characters: here just past the password, before its `@`.
+            note: `${"x".repeat(9_968)} https://fake-user:fake-password@example.test/path`,
+            account: "user@example.com",
+            session: new Session(),
+            [Symbol("owner")]: "user@example.com",
+            cause: Cause.fail(new Error("gh: HTTP 502 from api.github.com for user@example.com")),
+          },
+          { detail: "remote: denied to user@example.com", authorization: "Basic dXNlcjpwYXNz" },
+          isTTY,
+          ["Cookie", "fake-cookie-value"],
+        );
 
-      assert.include(output, "threadId: 'thread-1'");
-      assert.include(output, "gh: HTTP 502 from api.github.com");
-      assert.notInclude(output, "[Object]");
+        assert.include(output, "threadId: 'thread-1'");
+        assert.include(output, "remote: denied to [email]");
+        assert.include(output, "gh: HTTP 502 from api.github.com for [email]");
+        assert.include(output, "authorization: Basic [redacted]");
+        assert.notInclude(output, "user@example.com");
+        assert.notInclude(output, "fake-session-token");
+        assert.notInclude(output, "dXNlcjpwYXNz");
+        assert.notInclude(output, "fake-password");
+        assert.notInclude(output, "fake-cookie-value");
+        assert.notInclude(output, "[Object]");
+      }
+
+      let inspections = 0;
+      const shifty = {
+        [NodeUtil.inspect.custom]: () => (inspections++ === 0 ? "Session" : "user@example.com"),
+      };
+      const printed = yield* printThroughConsole({ session: shifty });
+      assert.notInclude(printed, "user@example.com");
     }),
   );
 
@@ -235,7 +298,7 @@ describe("ServerLoggerLive", () => {
         },
       });
 
-      assert.include(output, "token: '<redacted>'");
+      assert.include(output, "token: '[redacted]'");
       assert.include(output, "cause: 'cause'");
       assert.notInclude(output, "secret-token-value");
     }),
