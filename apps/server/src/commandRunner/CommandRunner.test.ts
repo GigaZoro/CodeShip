@@ -1068,11 +1068,16 @@ const go = (chat: { readonly workspace: string }) =>
   NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
 
 /**
- * Runs a command to its end. It starts once the pass under way, and the wave it noted, are done,
- * so its end is seen in a later pass.
+ * Resolves once a pass that began after the call has ended, its wave noted. A pass wakes a command's
+ * chat before it notes its wave, and run() waits for the pass under way, so the second command
+ * starts only after the pass that saw the first one end; at a server's start none is under way.
  */
-const nextPass = (runner: CommandRunner.CommandRunner["Service"], threadId: ThreadId) =>
-  runner.run(callerOf(threadId), { command: "true" }).pipe(Effect.andThen(nextWake(threadId)));
+const nextPass = (runner: CommandRunner.CommandRunner["Service"], threadId: ThreadId) => {
+  const runToEnd = runner
+    .run(callerOf(threadId), { command: "true" })
+    .pipe(Effect.andThen(nextWake(threadId)));
+  return runToEnd.pipe(Effect.andThen(runToEnd));
+};
 
 describe("placing lost commands in waves", () => {
   it("joins the last wave while each loss comes within a minute after the one before, and starts one from more than half the commands of the minute up to a loss", () => {
