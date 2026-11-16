@@ -734,14 +734,19 @@ it.effect.each([
     let sequence = 0;
     let sequenceReads = 0;
     let rejectedCommandId: CommandId | undefined;
-    const runs = [{ id: runId, ordinal: 1, status, userMessageId: MessageId.make("original") }];
+    const completedAt = DateTime.makeUnsafe("2026-09-13T07:00:01.000Z");
+    const followUpCompletedAt = DateTime.makeUnsafe("2026-09-13T07:00:05.000Z");
+    const runs = [
+      { id: runId, ordinal: 1, status, userMessageId: MessageId.make("original"), completedAt },
+    ];
     const nextRun = {
       id: followUpId,
       ordinal: 2,
       status: "running" as OrchestrationV2Run["status"],
       userMessageId: MessageId.make("follow-up"),
+      completedAt: null as DateTime.Utc | null,
     };
-    const dispatched: Array<string> = [];
+    const dispatched: Array<{ readonly type: string; readonly settledAt?: DateTime.Utc }> = [];
     // The notification starts after the completed run was observed, before settlement commits.
     let raced = false;
     const layerTest = ThreadManagementService.layer.pipe(
@@ -814,7 +819,11 @@ it.effect.each([
                   detail: "Thread is still running",
                 });
               }
-              dispatched.push(command.type);
+              dispatched.push(
+                command.type === "thread.settle" && command.settledAt !== undefined
+                  ? { type: command.type, settledAt: command.settledAt }
+                  : { type: command.type },
+              );
               return { sequence: 1, storedEvents: [] } as never;
             }),
         }),
@@ -839,6 +848,7 @@ it.effect.each([
             : followUp === "promoted-to-steer"
               ? "cancelled"
               : "completed";
+      nextRun.completedAt = nextRun.status === "queued" ? null : followUpCompletedAt;
       yield* Queue.offer(events, {
         sequence: 1,
         event: { type: "run.updated", threadId, payload: nextRun },
@@ -854,88 +864,18 @@ it.effect.each([
       } as unknown as OrchestrationV2StoredEvent);
     }
     yield* Fiber.join(fiber);
-    expect(dispatched).toEqual(settles ? ["thread.settle"] : []);
+    // The settle stamps the last run's own completion, so clients still announce it.
+    expect(dispatched).toEqual(
+      settles
+        ? [
+            {
+              type: "thread.settle",
+              settledAt: followUp === "none" ? completedAt : (nextRun.completedAt ?? undefined),
+            },
+          ]
+        : [],
+    );
   }),
-);
-
-it.effect.each([
-  { name: "a delegated result", wake: { delegatedCompletion: {} }, settlesAfterWake: true },
-  { name: "a background notification", wake: { notification: {} }, settlesAfterWake: true },
-  { name: "a message someone sent", wake: {}, settlesAfterWake: false },
-])(
-  "organizeAfterRun waits for the run $name starts as the turn ends",
-  ({ wake, settlesAfterWake }) =>
-    Effect.gen(function* () {
-      const projectId = ProjectId.make("project:thread-management:settle-after-wake");
-      const threadId = ThreadId.make("thread:thread-management:settle-after-wake");
-      const runId = RunId.make("run:thread-management:settle-after-wake");
-      const wakeRunId = RunId.make("run:thread-management:settle-after-wake:next");
-      const wakeMessageId = MessageId.make("message:thread-management:settle-after-wake");
-      const completedAt = DateTime.makeUnsafe("2026-09-13T07:00:01.000Z");
-      const wakeCompletedAt = DateTime.makeUnsafe("2026-09-13T07:00:05.000Z");
-      const dispatched: Array<OrchestrationV2ServerCommand> = [];
-      let wakeStatus: "queued" | "running" | "completed" = "queued";
-      const layerTest = ThreadManagementService.layer.pipe(
-        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
-        Layer.provide(
-          Layer.mock(Orchestrator.OrchestratorV2)({
-            getThreadEventSequence: () => Effect.succeed(0),
-            restartContinuationPending: () => Effect.succeed(false),
-            getThreadShell: () => Effect.succeed({ pendingBackgroundTasks: [] } as never),
-            getThreadRecords: (_threadId, fields) =>
-              Effect.sync(() => {
-                const records = {
-                  thread: { id: threadId, projectId, deletedAt: null },
-                  runs: [
-                    { id: runId, ordinal: 1, status: "completed", completedAt },
-                    {
-                      id: wakeRunId,
-                      ordinal: 2,
-                      status: wakeStatus,
-                      userMessageId: wakeMessageId,
-                      completedAt: wakeStatus === "completed" ? wakeCompletedAt : null,
-                    },
-                  ],
-                  messages: [{ id: wakeMessageId, role: "user", ...wake }],
-                } as unknown as OrchestrationV2ThreadProjection;
-                // The wake finishes while the settle waits on it.
-                if ((fields as ReadonlyArray<string>).includes("messages"))
-                  wakeStatus = "completed";
-                return records;
-              }),
-            dispatch: (command) =>
-              Effect.suspend(() => {
-                dispatched.push(command);
-                if (wakeStatus !== "queued") return Effect.succeed({ sequence: 1 } as never);
-                // The queue started the wake before the settle reached the thread.
-                wakeStatus = "running";
-                return Effect.fail(
-                  new Orchestrator.OrchestratorDispatchError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    cause: `Thread ${threadId} is still running. Stop it before settling.`,
-                  }),
-                );
-              }),
-          }),
-        ),
-        Layer.provide(ServerSettings.layerTest()),
-        Layer.provide(layerReceiptsTest),
-      );
-      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
-        Effect.provide(layerTest),
-      );
-
-      yield* service
-        .organizeAfterRun({ projectId, threadId, runId, action: "settle" })
-        .pipe(Effect.ignore);
-
-      expect(dispatched).toMatchObject(
-        settlesAfterWake
-          ? [{ settledAt: completedAt }, { type: "thread.settle", settledAt: wakeCompletedAt }]
-          : [{ settledAt: completedAt }],
-      );
-    }),
 );
 
 it.effect.each([
