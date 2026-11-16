@@ -218,31 +218,53 @@ const decodeRootPackageJson = Schema.decodeEffect(
 const collectBytes = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
   Stream.runCollect(stream).pipe(Effect.map((chunks) => Buffer.concat(chunks)));
 
-// Fails on a nonzero exit: an empty file list from a broken index would
-// otherwise pass as "no changes". quotePath=false keeps non-ASCII paths as real
-// paths instead of quoted escapes.
-export const git = Effect.fn("checkChanged.git")(function* (
+// A git call that runs away fails the run and is killed, instead of holding a core until someone
+// notices. Each call here takes seconds even on a large worktree.
+export const GIT_TIMEOUT = "5 minutes";
+
+// Reports git's exit code; a call past GIT_TIMEOUT fails. Without forceKillAfter the spawner sends
+// only SIGTERM and then waits for the exit, so a git that ignores it would hold the run forever.
+// quotePath=false keeps non-ASCII paths as real paths instead of quoted escapes.
+const gitRun = Effect.fn("checkChanged.gitRun")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  return yield* Effect.scoped(
+  const run = Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
-        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], { cwd }),
+        ChildProcess.make("git", ["-c", "core.quotePath=false", ...args], {
+          cwd,
+          forceKillAfter: "5 seconds",
+        }),
       );
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [collectBytes(handle.stdout), collectBytes(handle.stderr), handle.exitCode],
         { concurrency: "unbounded" },
       );
-      if (exitCode !== 0) {
-        return yield* Effect.fail(
-          `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
-        );
-      }
-      return stdout;
+      return { stdout, stderr, exitCode };
     }),
   );
+  return yield* Effect.timeoutOrElse(run, {
+    duration: GIT_TIMEOUT,
+    orElse: () =>
+      Effect.fail(`check:changed: git ${args.join(" ")} did not finish within ${GIT_TIMEOUT}`),
+  });
+});
+
+// Fails on a nonzero exit: an empty file list from a broken index would
+// otherwise pass as "no changes".
+export const git = Effect.fn("checkChanged.git")(function* (
+  cwd: string,
+  args: ReadonlyArray<string>,
+) {
+  const { stdout, stderr, exitCode } = yield* gitRun(cwd, args);
+  if (exitCode !== 0) {
+    return yield* Effect.fail(
+      `check:changed: git ${args.join(" ")} exited with ${exitCode}: ${stderr.toString().trim()}`,
+    );
+  }
+  return stdout;
 });
 export const gitLines = (cwd: string, args: ReadonlyArray<string>) =>
   git(cwd, args).pipe(Effect.map((stdout) => stdout.toString().split("\n").filter(Boolean)));
@@ -259,11 +281,11 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
       }));
   let closest: { ref: string; base: string; ahead: number } | undefined;
   for (const { ref, rev } of candidates) {
-    const base = yield* git(root, ["merge-base", "HEAD", rev]).pipe(
-      Effect.map((stdout) => stdout.toString().trim()),
-      Effect.orElseSucceed(() => undefined),
-    );
-    if (!base) continue;
+    // merge-base exits nonzero for a ref that is missing or shares no history with HEAD, which
+    // rules the candidate out; a call that fails otherwise, such as one past GIT_TIMEOUT, fails the run.
+    const found = yield* gitRun(root, ["merge-base", "HEAD", rev]);
+    if (found.exitCode !== 0) continue;
+    const base = found.stdout.toString().trim();
     const ahead = Number((yield* git(root, ["rev-list", "--count", base + "..HEAD"])).toString());
     if (!closest || ahead < closest.ahead) closest = { ref, base, ahead };
   }
