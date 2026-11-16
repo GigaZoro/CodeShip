@@ -225,7 +225,7 @@ const commandRow = (taskId: string) =>
       readonly lost_reason: string | null;
       readonly lost_output: string | null;
     }>`
-      SELECT status, exit_code, pid, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
+      SELECT status, exit_code, pid, process_started_at, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
         lost_output
       FROM command_runs WHERE task_id = ${taskId}
     `;
@@ -1444,6 +1444,163 @@ describe("the shell a command runs in", () => {
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {
+  it.layer(layerTest, { excludeTestServices: true })("Windows launch timeouts", (it) => {
+    it.effect.each([false, true])(
+      "adopts a command when its launcher times out after starting it, retry %s",
+      (retry) =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat(`command-win-launch-adopt-${retry}`);
+          NodeFS.writeFileSync(
+            NodePath.join(chat.workspace, "command.cjs"),
+            [
+              'const fs = require("node:fs");',
+              'const watcher = fs.watch(".", () => { if (fs.existsSync("go")) { watcher.close(); console.log("adopted"); } });',
+              'fs.appendFileSync("starts", "1");',
+              'fs.writeFileSync("ready", "");',
+            ].join("\n"),
+          );
+          const processRunner = yield* ProcessRunner.ProcessRunner;
+          const request = {
+            command: `& '${process.execPath}' command.cjs`,
+            clientRequestId: `launch-adopt-${retry}`,
+          };
+          let launches = 0;
+          let launchedPid: number | undefined;
+          yield* Effect.addFinalizer(() =>
+            Effect.try(() => {
+              if (launchedPid !== undefined) {
+                NodeChildProcess.execFileSync("taskkill", ["/PID", String(launchedPid), "/T", "/F"], {
+                  windowsHide: true,
+                  stdio: "ignore",
+                });
+              }
+            }).pipe(Effect.ignore),
+          );
+          const started = yield* withServer((runner) =>
+            Effect.gen(function* () {
+              const first = yield* runner.run(callerOf(chat.threadId), request).pipe(Effect.result);
+              assert.equal(first._tag, "Success");
+              if (first._tag === "Failure") return yield* first.failure;
+              const row = yield* commandRow(first.success.taskId);
+              assert.equal(row?.status, "running");
+              assert.isAbove(row?.pid ?? 0, 0);
+              assert.isNumber(row?.process_started_at);
+              if (retry) {
+                const second = yield* runner.run(callerOf(chat.threadId), request);
+                assert.equal(second.taskId, first.success.taskId);
+                assert.equal(second.logPath, first.success.logPath);
+              }
+              assert.equal(launches, 1);
+              assert.equal(
+                NodeFS.readFileSync(NodePath.join(chat.workspace, "starts"), "utf8"),
+                "1",
+              );
+              NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
+              yield* nextWake(chat.threadId);
+              return first.success;
+            }),
+          ).pipe(
+            Effect.provideService(ProcessRunner.ProcessRunner, {
+              run: (input) => {
+                if (!input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))) {
+                  return processRunner.run(input);
+                }
+                launches++;
+                return processRunner.run(input).pipe(
+                  Effect.tap((created) =>
+                    Effect.sync(() => {
+                      launchedPid = Number.parseInt(created.stdout.trim(), 10);
+                    }),
+                  ),
+                  Effect.andThen(awaitFile(NodePath.join(chat.workspace, "ready"))),
+                  Effect.andThen(
+                    Effect.fail(
+                      new ProcessRunner.ProcessTimeoutError({
+                        command: input.command,
+                        argumentCount: input.args.length,
+                        timeoutMs: 120_000,
+                      }),
+                    ),
+                  ),
+                );
+              },
+            }),
+          );
+          const task = yield* taskOf(chat.threadId, started.taskId);
+          assert.equal(task?.status, "completed");
+          assert.include(task?.result ?? "", "adopted");
+        }),
+    );
+
+    it.effect(
+      "a launcher timeout before Create prevents even a late WMI request from running the command",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-win-launch-before-create");
+          const processRunner = yield* ProcessRunner.ProcessRunner;
+          const launcher = yield* Deferred.make<ProcessRunner.ProcessRunInput>();
+          const refused = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), {
+              command: "Set-Content -LiteralPath ran -Value 1",
+              clientRequestId: "launch-before-create",
+            }),
+          ).pipe(
+            Effect.flip,
+            Effect.provideService(ProcessRunner.ProcessRunner, {
+              run: (input) =>
+                !input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))
+                  ? processRunner.run(input)
+                  : Deferred.succeed(launcher, input).pipe(
+                      Effect.andThen(
+                        Effect.fail(
+                          new ProcessRunner.ProcessTimeoutError({
+                            command: input.command,
+                            argumentCount: input.args.length,
+                            timeoutMs: 120_000,
+                          }),
+                        ),
+                      ),
+                    ),
+            }),
+          );
+          assert.match(refused.message, /^Could not start the command: .*timed out/);
+          const launch = yield* Deferred.await(launcher);
+          const runPath = /""(.+run\.cmd)" "/.exec(launch.args.join(" "))?.[1];
+          assert.isDefined(runPath);
+          // WMI can finish Create after its caller has been killed.
+          const late = yield* processRunner.run(launch);
+          assert.equal(late.code, 0);
+          yield* awaitFile(NodePath.join(NodePath.dirname(runPath!), "exit-status"));
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "ran")));
+          const sql = yield* SqlClient.SqlClient;
+          assert.lengthOf(
+            yield* sql`SELECT task_id FROM command_runs WHERE thread_id = ${chat.threadId}`,
+            0,
+          );
+        }),
+    );
+  });
+
+
+  it("stops, at every level, only processes created after the parent they name", () => {
+    const script = [
+      CommandRunner.WINDOWS_COMMAND_TREE_FUNCTION,
+      "$t = [DateTime]::UtcNow",
+      "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
+      // The command started 2 s before its wrapper 10, which started 20, which started 30. 40 and
+      // 50 name 20 and 10 as their parent but are older, so an earlier holder of that pid started
+      // them; 60 is older than the command.
+      "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1), (P 60 10 -3))",
+      "(Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t)).Keys | Sort-Object",
+    ].join("\n");
+    const tree = NodeChildProcess.execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8" },
+    );
+    assert.deepEqual(tree.trim().split(/\r?\n/), ["10", "20", "30"]);
+  });
+
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
     // Send returns once the command's own handler has the event, and takes it so the command goes on.
     // No API sends a close event, which ends every process in its console with STATUS_CONTROL_C_EXIT;
