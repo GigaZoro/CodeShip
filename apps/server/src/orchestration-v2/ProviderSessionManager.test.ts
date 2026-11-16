@@ -2547,7 +2547,7 @@ type ReleasedWorkCase = {
   readonly name: string;
   readonly reason: "idle_timeout" | "runtime_error" | "manual_shutdown";
   readonly wakes: boolean;
-  readonly stopped?: true;
+  readonly stopped?: true | "racing";
   /** A shell never wakes a chat; the default is a background task, which does. */
   readonly shell?: true;
   /** The waiting run continues a run that lost background work, or one a restart cut. */
@@ -2557,6 +2557,12 @@ type ReleasedWorkCase = {
 it.effect.each<ReleasedWorkCase>([
   { name: "an idle close wakes a waiting chat", reason: "idle_timeout", wakes: true },
   { name: "a failed session wakes a waiting chat", reason: "runtime_error", wakes: true },
+  {
+    name: "a Stop committed after the wake read prevents its enqueue",
+    reason: "runtime_error",
+    stopped: "racing",
+    wakes: false,
+  },
   {
     name: "a failed session leaves a stopped chat alone",
     reason: "runtime_error",
@@ -2595,6 +2601,7 @@ it.effect.each<ReleasedWorkCase>([
   ({ name, reason, shell, continues, wakes, stopped }) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
+      const beforeUnchangedWrite = yield* Ref.make<Effect.Effect<void>>(Effect.void);
       const effect = Effect.gen(function* () {
         const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
@@ -2628,36 +2635,62 @@ it.effect.each<ReleasedWorkCase>([
         // A run started again for the turn that replaces the session: its prompt is not built yet.
         const replacing = yield* writeRun(3, "starting");
 
-        if (stopped) {
+        const writeStop = Effect.gen(function* () {
           const ids = yield* IdAllocator.IdAllocatorV2;
+          const sink = yield* EventSink.EventSinkV2;
           const now = yield* DateTime.now;
-          yield* projectionStore.apply({
-            id: yield* ids.allocate.event(),
-            type: "turn-item.updated",
-            threadId,
-            runId: waiting.id,
-            occurredAt: now,
-            payload: {
-              id: TurnItemId.make("stop:released-work"),
-              threadId,
-              runId: waiting.id,
-              nodeId: waiting.rootNodeId,
-              providerThreadId: waiting.providerThreadId,
-              providerTurnId: null,
-              nativeItemRef: null,
-              parentItemId: null,
-              ordinal: 1,
-              status: "completed",
-              title: "Stop",
-              startedAt: now,
-              completedAt: now,
-              updatedAt: now,
-              type: "run_interrupt_request",
-              message: "Stopped by user",
-            },
+          yield* sink.write({
+            events: [
+              {
+                id: yield* ids.allocate.event(),
+                type: "turn-item.updated",
+                threadId,
+                runId: waiting.id,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make("stop:released-work"),
+                  threadId,
+                  runId: waiting.id,
+                  nodeId: waiting.rootNodeId,
+                  providerThreadId: waiting.providerThreadId,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 1,
+                  status: "completed",
+                  title: "Stop",
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  type: "run_interrupt_request",
+                  message: "Stopped by user",
+                },
+              },
+            ],
           });
+        });
+        if (stopped === true) yield* writeStop;
+        if (stopped === "racing") {
+          const read = yield* Deferred.make<void>();
+          const commit = yield* Deferred.make<void>();
+          // The first write records lost work before close; the second commits its wake.
+          yield* Ref.set(
+            beforeUnchangedWrite,
+            Ref.set(
+              beforeUnchangedWrite,
+              Deferred.succeed(read, undefined).pipe(Effect.andThen(Deferred.await(commit))),
+            ),
+          );
+          const release = yield* manager
+            .release({ providerSessionId, reason })
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(read);
+          yield* writeStop;
+          yield* Deferred.succeed(commit, undefined);
+          yield* Fiber.join(release);
+        } else {
+          yield* manager.release({ providerSessionId, reason });
         }
-        yield* manager.release({ providerSessionId, reason });
 
         assert.deepStrictEqual(yield* rosters, [[], ["build"]]);
         const projection = yield* projectionStore.getThreadProjection(threadId);
@@ -2685,7 +2718,9 @@ it.effect.each<ReleasedWorkCase>([
         );
       });
 
-      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+      yield* effect.pipe(
+        Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, beforeUnchangedWrite })),
+      );
     }),
 );
 

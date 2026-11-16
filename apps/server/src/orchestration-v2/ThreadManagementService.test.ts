@@ -17,6 +17,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
@@ -90,6 +91,11 @@ const layerReceiptsTest = CommandReceiptStore.layer.pipe(
 it.effect.each([
   "active",
   "pending",
+  "pending-ui",
+  "queued-source",
+  "queued-direct",
+  "queued-ui",
+  "queued-window",
   "manual",
   "unrelated",
   "ended",
@@ -170,13 +176,15 @@ it.effect.each([
         yield* update({ ...source, status: "cancelled", completedAt: now });
         yield* send("middle");
         const middle = (yield* projections.getThreadProjection(threadId)).runs.at(-1)!;
+        const queued = scenario.startsWith("queued-");
+        const pending = scenario === "pending" || scenario === "pending-ui";
         yield* update({
           ...middle,
-          status: "cancelled",
-          completedAt: now,
+          status: queued ? "preparing" : "cancelled",
+          completedAt: queued ? null : now,
           restartContinuationOfRunId: source.id,
         });
-        if (scenario !== "pending") {
+        if (!pending) {
           yield* send("latest");
           const latest = (yield* projections.getThreadProjection(threadId)).runs.at(-1)!;
           yield* update({
@@ -198,9 +206,70 @@ it.effect.each([
                 : {}),
           });
         }
+        if (queued) {
+          yield* update({
+            ...middle,
+            status: "failed",
+            completedAt: now,
+            restartContinuationOfRunId: source.id,
+          });
+          if (scenario !== "queued-window") {
+            yield* projections.apply({
+              id: EventId.make("usage-limit"),
+              type: "turn-item.updated",
+              threadId,
+              runId: middle.id,
+              occurredAt: now,
+              payload: {
+                id: TurnItemId.make("usage-limit"),
+                threadId,
+                runId: middle.id,
+                nodeId: middle.rootNodeId,
+                providerThreadId: middle.providerThreadId,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 1,
+                status: "failed",
+                title: "Usage limit",
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+                type: "error",
+                failure: {
+                  class: "usage_limit",
+                  message: "Usage limit",
+                  retryable: true,
+                  code: null,
+                },
+              },
+            });
+            const held = yield* orchestrator
+              .dispatch({
+                type: "queue.resume",
+                commandId: CommandId.make("resume-while-limited"),
+                threadId,
+              })
+              .pipe(Effect.result);
+            expect(Result.isFailure(held)).toBe(true);
+          }
+        }
         const before = yield* projections.getThreadProjection(threadId);
         const latest = before.runs.at(-1)!;
-        if (scenario === "pending") {
+        if (queued) expect(latest.status).toBe("queued");
+        if (scenario === "queued-direct") {
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("hold-continuation"),
+            threadId,
+          });
+          expect((yield* projections.getThreadProjection(threadId)).runs.at(-1)).toMatchObject({
+            id: latest.id,
+            status: "queued",
+            queueHeld: true,
+          });
+        }
+        if (pending) {
           yield* outbox.enqueue([
             EffectOutbox.restartContinuationEffect({
               commandId: CommandId.make("pending-restart"),
@@ -239,14 +308,50 @@ it.effect.each([
                 ),
               )
             : service;
-        const result = yield* racedService
-          .interruptThread({
-            projectId,
-            threadId,
-            runId: source.id,
-            commandId: CommandId.make("interrupt-source"),
-          })
-          .pipe(Effect.result);
+        const mayPromote = yield* Deferred.make<void>();
+        const promotionReady = yield* Deferred.make<void>();
+        const promotion =
+          scenario === "queued-window"
+            ? yield* Deferred.succeed(promotionReady, undefined).pipe(
+                Effect.andThen(Deferred.await(mayPromote)),
+                Effect.andThen(
+                  orchestrator.dispatch({
+                    type: "queue.resume",
+                    commandId: CommandId.make("promote-after-commit"),
+                    threadId,
+                  }),
+                ),
+                Effect.forkScoped,
+              )
+            : undefined;
+        if (promotion !== undefined) yield* Deferred.await(promotionReady);
+        const requestedRunId = scenario === "queued-direct" ? latest.id : source.id;
+        const ui = scenario === "pending-ui" || scenario === "queued-ui";
+        const result = yield* ui
+          ? orchestrator
+              .dispatch({
+                type: "run.interrupt",
+                commandId: CommandId.make("interrupt-source"),
+                threadId,
+                runId: requestedRunId,
+                holdQueue: true,
+              })
+              .pipe(
+                Effect.map((dispatch) => ({
+                  type: "interrupt_requested" as const,
+                  run: latest,
+                  dispatch,
+                })),
+                Effect.result,
+              )
+          : racedService
+              .interruptThread({
+                projectId,
+                threadId,
+                runId: requestedRunId,
+                commandId: CommandId.make("interrupt-source"),
+              })
+              .pipe(Effect.result);
         if (scenario === "manual" || scenario === "unrelated") {
           expect(Result.isSuccess(result) && result.success).toMatchObject({
             type: "already_terminal",
@@ -269,11 +374,7 @@ it.effect.each([
           type: scenario === "ended" ? "already_terminal" : "interrupt_requested",
           run: { id: latest.id },
         });
-        if (
-          scenario === "pending" ||
-          scenario === "failed-unprepared" ||
-          scenario === "lost-work"
-        ) {
+        if (pending || queued || scenario === "failed-unprepared" || scenario === "lost-work") {
           expect(
             yield* service.interruptThread({
               projectId,
@@ -282,9 +383,42 @@ it.effect.each([
               commandId: CommandId.make("interrupt-pending-again"),
             }),
           ).toMatchObject({ type: "already_terminal", run: { id: latest.id } });
+          const stopped = yield* projections.getThreadProjection(threadId);
+          if (queued) {
+            expect(stopped.runs.at(-1)).toMatchObject({ id: latest.id, status: "cancelled" });
+            expect(stopped.turnItems).toContainEqual(
+              expect.objectContaining({
+                runId: middle.id,
+                type: "run_interrupt_request",
+              }),
+            );
+            yield* send("late-source-restart", middle.id);
+            expect((yield* projections.getThreadProjection(threadId)).runs).toEqual(stopped.runs);
+            yield* update({
+              ...middle,
+              status: "completed",
+              completedAt: now,
+              restartContinuationOfRunId: source.id,
+            });
+            if (promotion !== undefined) {
+              yield* Deferred.succeed(mayPromote, undefined);
+              yield* Fiber.join(promotion);
+            } else {
+              yield* orchestrator.dispatch({
+                type: "queue.resume",
+                commandId: CommandId.make("resume-after-limit"),
+                threadId,
+              });
+            }
+            expect((yield* projections.getThreadProjection(threadId)).runs.at(-1)).toMatchObject({
+              id: latest.id,
+              status: "cancelled",
+            });
+          }
+          const stoppedRuns = (yield* projections.getThreadProjection(threadId)).runs;
           yield* send("late-restart", latest.id);
           const after = yield* projections.getThreadProjection(threadId);
-          expect(after.runs).toEqual(before.runs);
+          expect(after.runs).toEqual(queued ? stoppedRuns : before.runs);
           expect(after.turnItems).toContainEqual(
             expect.objectContaining({
               runId: latest.id,
