@@ -110,9 +110,11 @@ export function begin(worktree: string, now: Date): SyncResult {
   if (git(worktree, "merge-base", "--is-ancestor", upstream, base).ok) {
     return { status: "up-to-date", upstream };
   }
-  if (git(worktree, "merge-base", "--is-ancestor", upstream, "HEAD").ok) {
-    writeState(worktree, { startedAt: now.toISOString(), base, upstream, attempts: [] });
-    return { status: "resumed", base, upstream, conflicts: [] };
+  // A held branch carries upstream that main lacks; it lands what it merged, even if upstream moved on.
+  const synced = gitOrThrow(worktree, "merge-base", "HEAD", upstream);
+  if (!git(worktree, "merge-base", "--is-ancestor", synced, base).ok) {
+    writeState(worktree, { startedAt: now.toISOString(), base, upstream: synced, attempts: [] });
+    return { status: "resumed", base, upstream: synced, conflicts: [] };
   }
   const short = gitOrThrow(worktree, "rev-parse", "--short", upstream);
   const merged = git(

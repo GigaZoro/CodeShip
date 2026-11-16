@@ -79,6 +79,11 @@ function fixture(options: { readonly upToDate?: boolean } = {}) {
       commitFiles(path("dev"), files, "elsewhere");
       git(path("dev"), "push", "-q", "origin", "main");
     },
+    /** Upstream moves on after the sync merged it. */
+    advanceUpstream: (files: Record<string, string>) => {
+      commitFiles(path("seed"), files, "upstream later");
+      git(path("seed"), "push", "-q", path("upstream.git"), "main");
+    },
   };
 }
 
@@ -152,18 +157,21 @@ describe("upstream sync", () => {
     expect(repo.originMain()).toBe(main);
   });
 
-  it("starts new bounds on a held branch that already has upstream merged", () => {
+  it("starts new bounds on a held branch, keeping the upstream it merged when upstream moved on", () => {
     const repo = fixture();
     const frozen = repo.originMain();
     begin(repo.sync, START);
+    const merged = git(repo.sync, "rev-parse", "upstream/main");
+    repo.advanceUpstream({ "upstream-later.txt": "later\n" });
     const followUp = NodePath.join(NodePath.dirname(repo.sync), "follow-up");
     git(repo.sync, "worktree", "add", "-q", followUp, "-b", "follow-up", "sync/upstream-x");
     expect(begin(followUp, later(600))).toEqual({
       status: "resumed",
       base: frozen,
-      upstream: git(repo.sync, "rev-parse", "upstream/main"),
+      upstream: merged,
       conflicts: [],
     });
+    expect(git(followUp, "rev-parse", "HEAD")).toBe(repo.head());
     expect(status(followUp, later(600))).toMatchObject({ mergesLeft: 3, minutesLeft: 180 });
     expect(land(followUp, later(610))).toEqual({ status: "landed", commit: repo.head() });
   });

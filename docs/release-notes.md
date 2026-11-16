@@ -8,6 +8,10 @@
 - T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
 
+## 2026-11-16 — A held upstream sync resumes after upstream moves on
+
+- Maintainers: `node scripts/upstream-sync.ts begin` on a sync branch a held run pushed now reports `resumed` and keeps the upstream that branch merged, also when upstream has new commits since. It used to start a second upstream merge on top of the resolved one.
+
 ## 2026-11-16 — On Windows, stopping a process also stops what it left running
 
 - On Windows, a process that had started another and then exited left that child running when CodeShip stopped it, because `taskkill` finds a process's children only while the process runs. CodeShip now finds them from the parent process id and start time Windows records for each process, also after the parent exited. This covers the commands the server runs (git included), Pi and ACP agent sessions such as Grok, and the Antigravity installation check. The server does this for a command it kills or cancels, or one whose output is still held open when it ends; a command that exits on its own and closes its output skips it, since each stop starts PowerShell. A tree CodeShip cannot end is logged as an error in the server log.
