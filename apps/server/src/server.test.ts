@@ -5,14 +5,16 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import { HttpServer, HttpServerError } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
+import { withoutWindowsTreeEnding } from "@t3tools/shared/windowsProcessTree";
 
 import * as ServerConfig from "./config.ts";
 import * as MigrationProgress from "./persistence/MigrationProgress.ts";
-import { layerHttpServer } from "./server.ts";
+import { layerHttpServer, layerPlatformServices } from "./server.ts";
 
 // Holds a port on a specific non-loopback address, so a wildcard bind on that
 // port fails with EADDRINUSE while a loopback bind is still free.
@@ -91,4 +93,15 @@ it.live.skipIf(!wildcardBindConflicts)(
         assert.propertyVal(error.cause, "code", "EADDRINUSE");
       }),
     ),
+);
+
+// A spawner a later layer provides wins, so one over this would leave trees running on Windows.
+it.effect("the server's spawner ends on Windows what a command left running", () =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    assert.notStrictEqual(withoutWindowsTreeEnding(spawner), spawner);
+  }).pipe(
+    Effect.provide(layerPlatformServices),
+    Effect.provideService(HostProcess.Platform, "win32"),
+  ),
 );

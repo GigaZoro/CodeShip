@@ -467,7 +467,7 @@ const layerChildProcessSpawner = Layer.effect(
   }),
 );
 
-const layerPlatformServices = DocumentText.layer.pipe(
+export const layerPlatformServices = DocumentText.layer.pipe(
   Layer.provideMerge(layerChildProcessSpawner),
   Layer.provideMerge(NodeServices.layer),
 );
