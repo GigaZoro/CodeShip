@@ -3475,7 +3475,7 @@ const make = Effect.gen(function* () {
     }),
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
-      const { parent, limits } = yield* loadCaller(scope, ["runs"]);
+      const { parent, limits } = yield* loadCaller(scope, []);
       const providers = yield* loadProvidersRechecked();
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
