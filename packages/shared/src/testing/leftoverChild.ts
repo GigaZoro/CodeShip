@@ -11,24 +11,25 @@ import { ChildProcess } from "effect/process";
 import * as HostProcess from "../HostProcess.ts";
 
 /**
- * A leader that starts a child and exits at once; the child would run for 5 minutes, past every
- * test's timeout. It holds a pipe to this process, so `ended` completes when it ends, without
- * polling. On Windows the child is detached; on POSIX it stays in the leader's process group.
- * Cleanup kills a child still connected, so still the owner of its pid, and closes the pipe.
+ * A pipe a process connects to at `path` and writes its pid on, so `ended` completes when that
+ * process ends, without polling. Cleanup kills a process still connected, so still the owner of its
+ * pid, and closes the pipe. SIGKILL also ends one that is stopped.
  */
-export const leaderLeavingChild = Effect.gen(function* () {
-  const windows = (yield* HostProcess.Platform) === "win32";
+export const processPipe = Effect.gen(function* () {
   const name = `t3-leftover-${NodeCrypto.randomUUID().slice(0, 8)}`;
-  const pipe = windows ? `\\\\.\\pipe\\${name}` : NodePath.join(NodeOS.tmpdir(), `${name}.sock`);
+  const path =
+    (yield* HostProcess.Platform) === "win32"
+      ? `\\\\.\\pipe\\${name}`
+      : NodePath.join(NodeOS.tmpdir(), `${name}.sock`);
   const started = yield* Deferred.make<void>();
   const ended = yield* Deferred.make<void>();
   const sockets = new Set<NodeNet.Socket>();
-  let childPid: number | undefined;
+  let pid: number | undefined;
   const server = NodeNet.createServer((socket) => {
     sockets.add(socket);
     socket.setEncoding("utf8");
-    socket.once("data", (pid: string) => {
-      childPid = Number(pid);
+    socket.once("data", (written: string) => {
+      pid = Number(written);
       Deferred.doneUnsafe(started, Effect.void);
     });
     socket.once("close", () => {
@@ -39,7 +40,7 @@ export const leaderLeavingChild = Effect.gen(function* () {
   yield* Effect.acquireRelease(
     Effect.callback<void>((resume) => {
       server.once("error", (error) => resume(Effect.die(error)));
-      server.listen(pipe, () => resume(Effect.void));
+      server.listen(path, () => resume(Effect.void));
     }),
     () =>
       Effect.callback<void>((resume) => {
@@ -49,9 +50,26 @@ export const leaderLeavingChild = Effect.gen(function* () {
   );
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      if (childPid !== undefined && !Deferred.isDoneUnsafe(ended)) process.kill(childPid);
+      if (pid !== undefined && !Deferred.isDoneUnsafe(ended)) process.kill(pid, "SIGKILL");
     }),
   );
+  return {
+    path,
+    /** The process connected. */
+    started: Deferred.await(started),
+    /** The process ended, or this process closed the pipe. */
+    ended: Deferred.await(ended),
+  };
+});
+
+/**
+ * A leader that starts a child and exits at once; the child would run for 5 minutes, past every
+ * test's timeout. It holds a `processPipe`. On Windows the child is detached; on POSIX it stays in
+ * the leader's process group.
+ */
+export const leaderLeavingChild = Effect.gen(function* () {
+  const windows = (yield* HostProcess.Platform) === "win32";
+  const pipe = yield* processPipe;
   const child =
     "const s = require('node:net').connect(process.argv[1], () => s.write(String(process.pid)));" +
     " s.on('error', () => {}); s.on('close', () => process.exit()); setTimeout(() => {}, 300_000);";
@@ -60,14 +78,14 @@ export const leaderLeavingChild = Effect.gen(function* () {
     " require('node:child_process').spawn(process.execPath, ['-e', child, pipe]," +
     ` { detached: ${windows}, stdio: 'ignore', windowsHide: true }).unref();`;
   return {
-    command: ChildProcess.make(process.execPath, ["-e", leader, child, pipe], {
+    command: ChildProcess.make(process.execPath, ["-e", leader, child, pipe.path], {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
     }),
     /** The child connected. */
-    started: Deferred.await(started),
+    started: pipe.started,
     /** The child ended, or this process closed the pipe. */
-    ended: Deferred.await(ended),
+    ended: pipe.ended,
   };
 });

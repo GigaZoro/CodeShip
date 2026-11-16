@@ -5,8 +5,8 @@ import * as NodeModule from "node:module";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
-import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -280,6 +280,38 @@ describe("WorkerProcessSpawner", () => {
         assert.notDeepInclude(kill.mock.calls, [-leader.pid, "SIGKILL"]);
       }).pipe(Effect.scoped, Effect.provide(layer)),
   );
+
+  // Linux hands a ptrace stop to the tracer's waitpid, and Node reports it as an exit of the leader,
+  // which still holds its pid. It runs on once a stopped worker's thread, its tracer, has ended.
+  describe.runIf(isLinuxHost)("a leader Node reported as exited at a ptrace stop", () => {
+    const tracedStop = [
+      "import ctypes, os, signal, socket, sys, time",
+      "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.send(str(os.getpid()).encode())",
+      "if ctypes.CDLL(None).ptrace(0, 0, None, None) != 0: sys.exit(2)",
+      "os.kill(os.getpid(), signal.SIGSTOP)",
+      "time.sleep(300)",
+    ].join("\n");
+
+    it.live.each([
+      {
+        through: "kill",
+        end: (leader: ChildProcessSpawner.ChildProcessHandle) =>
+          leader.kill({ killSignal: "SIGKILL" }),
+      },
+      { through: "a stopped worker", end: () => WorkerProcessSpawner.__testing.stopWorker },
+    ])("is ended through $through", ({ end }) =>
+      Effect.gen(function* () {
+        const pipe = yield* processPipe;
+        const leader = yield* ChildProcess.make("python3", ["-c", tracedStop, pipe.path], quiet);
+        assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
+        yield* pipe.started;
+
+        yield* end(leader);
+
+        yield* pipe.ended;
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+  });
 
   it.live.each([
     { through: "a new worker", replacement: Effect.void },

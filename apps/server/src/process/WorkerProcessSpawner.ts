@@ -56,17 +56,19 @@ const retire = (entry) => {
   if (entry.released && entry.exit !== null && entry.open.size === 0) children.delete(entry.id);
 };
 
-// POSIX gives no process the pid of a group that still exists, so once the leader was reaped, a
-// process holding its pid means the group ended and its id may name another's.
-const groupEnded = (entry) => {
-  if (entry.exit === null) return false;
+// EPERM means a process holds the pid that this one may not signal.
+const holdsPid = (pid) => {
   try {
-    process.kill(entry.child.pid, 0);
+    process.kill(pid, 0);
     return true;
   } catch (error) {
     return error.code !== "ESRCH";
   }
 };
+// POSIX gives no process the pid of a group that still exists, so once the leader was reaped, a
+// process holding its pid means the group ended and its id may name another's. Node also reports a
+// ptrace stop as an exit; that leader still holds its pid when the exit arrives, so was not reaped.
+const groupEnded = (entry) => entry.exit !== null && entry.exit.reaped && holdsPid(entry.child.pid);
 const isAlive = (entry) => {
   if (entry.exit === null) return true;
   if (process.platform === "win32" || groupEnded(entry)) return false;
@@ -214,10 +216,10 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     post({ type: "spawned", id, root: entry.root });
   });
   child.on("exit", (code, signal) => {
-    entry.exit = { code, signal };
-    post({ type: "exit", id, code, signal });
+    entry.exit = { code, signal, reaped: !holdsPid(child.pid) };
+    post({ type: "exit", id, code, signal, reaped: entry.exit.reaped });
     // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
-    if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
+    if (code !== 0 && code !== null && process.platform !== "win32" && entry.exit.reaped) {
       try {
         process.kill(-child.pid, killSignal);
       } catch {
@@ -376,6 +378,7 @@ type WorkerEvent =
       readonly id: number;
       readonly code: number | null;
       readonly signal: string | null;
+      readonly reaped: boolean;
     }
   | {
       readonly type: "done";
@@ -423,6 +426,8 @@ interface RemoteChild {
   // Logs through the spawning fiber's logger a failure no fiber awaits, as after its worker stopped.
   readonly report: (error: PlatformError.PlatformError) => void;
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
+  // The worker relayed an exit after which no process held the leader's pid.
+  reaped: boolean;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
   readonly open: Set<number>;
   starting: ((outcome: StartedChild | PlatformError.PlatformError) => void) | undefined;
@@ -654,13 +659,12 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
       trees.push({ child, root });
       continue;
     }
-    // A relayed exit means the worker reaped the leader; then, as in the worker's groupEnded, a process
-    // holding its pid means the group ended. A leader the stopping worker reaped without relaying the
-    // exit goes unchecked, so its ids could name a process started in the moments since.
-    const reaped = Deferred.isDoneUnsafe(child.exit);
+    // As in the worker's groupEnded, a process holding a reaped leader's pid means the group ended. A
+    // leader the stopping worker reaped without relaying the exit goes unchecked, so its ids could
+    // name a process started in the moments since.
     if (child.kills === "group") {
-      if (!(reaped && isProcessAlive(root.pid))) sigkill(-root.pid);
-    } else if (!reaped) sigkill(root.pid);
+      if (!(child.reaped && isProcessAlive(root.pid))) sigkill(-root.pid);
+    } else if (!child.reaped) sigkill(root.pid);
   }
   if (trees.length > 0) killTrees(trees);
 };
@@ -738,6 +742,7 @@ const receive = (connection: Connection, event: WorkerEvent) => {
       return;
     }
     case "exit":
+      child.reaped = event.reaped;
       Deferred.doneUnsafe(child.exit, Exit.succeed([event.code, event.signal] as const));
       if (child.holdsWorker) {
         child.holdsWorker = false;
@@ -837,6 +842,7 @@ const launch = (
       kills,
       report,
       exit: Deferred.makeUnsafe(),
+      reaped: false,
       outputs,
       open: new Set(outputs.keys()),
       starting: undefined,
