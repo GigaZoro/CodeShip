@@ -148,6 +148,8 @@ const withService = <A, E>(
     readonly idleScheduler?: boolean;
     /** Holds the scheduler's due work until it completes, as server startup does. */
     readonly activation?: Effect.Effect<void>;
+    /** While true the scheduler does no due work, as on a machine that sleeps. */
+    readonly asleep?: Ref.Ref<boolean>;
     readonly threadManagement?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   } = {},
 ) =>
@@ -163,7 +165,9 @@ const withService = <A, E>(
           NodeCrypto.layer,
           extras.idleScheduler === true
             ? Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })
-            : Scheduler.layer,
+            : extras.asleep === undefined
+              ? Scheduler.layer
+              : layerSleepingScheduler(extras.asleep),
           ServerSettings.layerTest(extras.settings),
           MemoryAdmission.layerTest(),
           ManagedPolicy.layerTest(),
@@ -201,6 +205,21 @@ const withService = <A, E>(
       return yield* body(yield* ScheduledTaskService.ScheduledTaskService, sql, restart);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory));
+
+const layerSleepingScheduler = (asleep: Ref.Ref<boolean>) =>
+  Layer.effect(
+    Scheduler.Scheduler,
+    Effect.gen(function* () {
+      const scheduler = yield* Scheduler.Scheduler;
+      return Scheduler.Scheduler.of({
+        register: <E, R>(name: string, work: Effect.Effect<void, E, R>) =>
+          scheduler.register(
+            name,
+            Effect.flatMap(Ref.get(asleep), (sleeping) => (sleeping ? Effect.void : work)),
+          ),
+      });
+    }),
+  ).pipe(Layer.provide(Scheduler.layer));
 
 const taskOf = (
   service: ScheduledTaskService.ScheduledTaskService["Service"],
@@ -864,6 +883,8 @@ const runScenario = <A, E>(
     readonly peerClaims: Ref.Ref<ReadonlyArray<string>>;
     readonly linked: Ref.Ref<ReadonlyArray<string>>;
     readonly tick: (atMs: number) => Effect.Effect<void>;
+    /** Moves the clock to `atMs` with the machine asleep, so no due work runs on the way, then ticks. */
+    readonly sleepUntil: (atMs: number) => Effect.Effect<void>;
     readonly settled: Effect.Effect<void>;
   }) => Effect.Effect<A, E>,
   schedule: Record<string, unknown> = { type: "interval", everyMs: HOUR_MS },
@@ -883,6 +904,7 @@ const runScenario = <A, E>(
     const linked = yield* Ref.make<ReadonlyArray<string>>([]);
     // Due work starts at the first tick, so what a test writes before it is what the scheduler reads.
     const activated = yield* Deferred.make<void>();
+    const asleep = yield* Ref.make(false);
     const peerCheck = Layer.mock(SharedTaskPeerCheck.SharedTaskPeerCheck)({
       linkedEnvironmentIds: Ref.get(linked) as Effect.Effect<ReadonlyArray<never>>,
       linkStatus: Effect.succeed({ enabled: false, links: [] }),
@@ -959,6 +981,12 @@ const runScenario = <A, E>(
                 Effect.andThen(Deferred.succeed(activated, undefined)),
                 Effect.andThen(TestClock.adjust("6 seconds")),
               ),
+            sleepUntil: (atMs) =>
+              Ref.set(asleep, true).pipe(
+                Effect.andThen(TestClock.setTime(atMs)),
+                Effect.andThen(Ref.set(asleep, false)),
+                Effect.andThen(TestClock.adjust("6 seconds")),
+              ),
             settled: Queue.take(changes),
           });
         }).pipe(Effect.scoped),
@@ -966,6 +994,7 @@ const runScenario = <A, E>(
       {
         peerCheck,
         activation: Deferred.await(activated),
+        asleep,
         launch: (input) =>
           Queue.offer(launches, input).pipe(Effect.as({ threadId: "thread-1" } as never)),
         ...(checks === undefined
@@ -1203,6 +1232,57 @@ it.effect(
       },
     ),
 );
+
+it.effect("a later machine's turn keeps the update hold on a run it reaches late", () => {
+  const schedule = {
+    type: "fixed_time",
+    timeOfDay: `${two(dueLocal.hour)}:${two(dueLocal.minute)}`,
+  };
+  return runScenario(
+    [OTHER, HERE_ENVIRONMENT_ID],
+    NO_RUN_THERE,
+    (scenario) =>
+      Effect.gen(function* () {
+        yield* scenario.service.upsert(
+          upsertInput({
+            shared: oneMachineShared([OTHER, HERE_ENVIRONMENT_ID]),
+            schedule,
+            catchUpMissedRun: false,
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        // An update drained past the time; the restart after it comes late.
+        yield* scenario.sql`
+          INSERT INTO scheduled_task_drain_holds (task_id, next_run_at)
+          VALUES ('scheduled-task:shared', ${iso(DUE)})
+        `;
+        yield* scenario.tick(DUE + 11 * MINUTE_MS);
+        yield* scenario.settled;
+        const deferredTo = Date.parse((yield* nextRunAtOf(scenario.sql))!);
+        expect(deferredTo).toBeGreaterThan(DUE + 11 * MINUTE_MS);
+
+        // The machine sleeps through its turn, so that time passes the missed-run grace too.
+        const ran = yield* scenario.service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some(
+              (task) =>
+                task.nextRunAt === iso(DUE + 24 * HOUR_MS) && task.lastRunStatus !== "running",
+            ),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* scenario.sleepUntil(deferredTo + 11 * MINUTE_MS);
+        yield* Fiber.join(ran);
+        expect(yield* Queue.size(scenario.launches)).toBe(1);
+        expect(
+          (yield* scenario.service.listRuns({ id: "scheduled-task:shared" as ScheduledTaskId }))
+            .runs,
+        ).toMatchObject([{ trigger: "catch_up", outcome: "succeeded", scheduledFor: iso(DUE) }]);
+      }),
+    schedule,
+  );
+});
 
 // Fires the task when it is next due and waits for what that tick published.
 const fireWhenDue = (scenario: {

@@ -1,8 +1,8 @@
 ## 2026-11-16 — A fork finds its project on another machine, and agents and mobile set the update interval
 
-- A delegated task sent to another machine without a project, and a scheduled task shared with other machines, now find the project there by any remote either side knows, the fork's own `origin` first. A fork whose copy on the other machine has no `upstream` remote failed to find it before. A shared task saved before keeps its machine order when it next saves.
+- A delegated task sent to another machine without a project, and a scheduled task shared with other machines, now find the project there by any remote either side knows, the fork's own `origin` first. A fork whose copy on the other machine has no `upstream` remote failed to find it before. Shared tasks a fork stored under its upstream move to the fork's own key once, at the next start, and keep their machine order.
 - Agents can read and set **Time between automatic updates** with `t3_environment_read` and `t3_environment_preferences_update` (`minHoursBetweenAutomaticUpdates`), and the mobile app shows it under Settings → Maintenance & about → Updates.
-- A fixed-time scheduled task whose time passes while an automatic update waits for running chats to finish runs once right after the update, even when the wait outlasts the missed-run grace and **Catch up a missed run** is off, unless its next run is nearer. It was recorded as missed before.
+- A fixed-time scheduled task whose time passes while an automatic update waits for running chats to finish runs once right after the update, even when the wait outlasts the missed-run grace and **Catch up a missed run** is off, unless its next run is nearer. That still holds when a restart cuts its run condition, or when it waits for another machine's turn and is reached late. It was recorded as missed before.
 
 ## 2026-11-16 — On Windows, stopping a process also stops what it left running
 

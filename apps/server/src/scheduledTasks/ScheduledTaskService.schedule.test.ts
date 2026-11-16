@@ -30,6 +30,7 @@ import { layerSharedTaskDependencies } from "./sharedTaskTestLayers.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
+import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { UpdateDrain } from "../cloud/updateDrain.ts";
 
@@ -340,10 +341,93 @@ it.effect.each([
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("runs a fixed-time run an update held once a restart cut its run condition", () =>
+  Effect.gen(function* () {
+    const at = (day: number, hour: number) =>
+      DateTime.makeZonedUnsafe(
+        { year: 2026, month: 7, day, hour, minute: 0, second: 0, millisecond: 0 },
+        { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+      );
+    const isoAt = (day: number, hour: number) => DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+    yield* TestClock.setTime(DateTime.toEpochMillis(at(1, 6)));
+    const launched = yield* Ref.make(0);
+    const firstCheck = yield* Deferred.make<void>();
+    const layer = runHistoryLayer(
+      () =>
+        Ref.update(launched, (count) => count + 1).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-held"), resumed: false } as never),
+        ),
+      Layer.empty,
+      MemoryAdmission.layerTest(),
+      layerSharedTaskDependencies(
+        [
+          {
+            id: "project-run-history",
+            title: "Run history",
+            workspaceRoot: "/work/run-history",
+            canonicalKey: null,
+          },
+        ],
+        undefined,
+        // The first check never answers: a restart cuts it.
+        Layer.mock(RunConditionCheck.RunConditionCheck)({
+          run: () =>
+            Deferred.succeed(firstCheck, undefined).pipe(
+              Effect.flatMap((first) =>
+                first
+                  ? Effect.never
+                  : Effect.succeed({ outcome: "run", failure: null, exitCode: 0, detail: null }),
+              ),
+            ),
+        }),
+      ),
+    );
+    const task = yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const { task } = yield* service.upsert(
+        yield* historyTask("Held, then cut", {
+          catchUpMissedRun: false,
+          runCondition: { command: "node ~/check.mjs" },
+        }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      yield* TestClock.adjust("90 minutes");
+      return task;
+    }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(true)));
+
+    yield* Effect.gen(function* () {
+      yield* TestClock.adjust("6 seconds");
+      yield* Deferred.await(firstCheck);
+    }).pipe(Effect.provide(layer));
+
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const settled = yield* service.subscribeList().pipe(
+        Stream.filter(({ tasks }) =>
+          tasks.some(
+            (entry) => entry.nextRunAt === isoAt(2, 7) && entry.lastRunStatus !== "running",
+          ),
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("6 seconds");
+      yield* Fiber.join(settled);
+      expect(yield* Ref.get(launched)).toBe(1);
+      expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
+        { outcome: "succeeded", scheduledFor: isoAt(1, 7) },
+      ]);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 const runHistoryLayer = (
   launch: ThreadLaunchService.ThreadLaunchService["Service"]["launch"],
   accountRouting: Layer.Layer<never> = Layer.empty,
   memory: Layer.Layer<MemoryAdmission.MemoryAdmission> = MemoryAdmission.layerTest(),
+  sharedDependencies: ReturnType<
+    typeof layerSharedTaskDependencies
+  > = layerSharedTaskDependencies(),
 ) =>
   ScheduledTaskService.layer.pipe(
     Layer.provide(
@@ -359,7 +443,7 @@ const runHistoryLayer = (
           isScratchProject: () => Effect.succeed(false),
         }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({}),
-        layerSharedTaskDependencies(),
+        sharedDependencies,
         Layer.mock(SecretRequests.SecretRequests)({}),
         accountRouting,
       ),

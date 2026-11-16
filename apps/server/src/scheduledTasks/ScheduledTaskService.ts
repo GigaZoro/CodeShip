@@ -1136,11 +1136,21 @@ export const layer = Layer.effect(
       )
     `;
     // A fixed-time occurrence that came due while an automatic update drained. The install restarts
-    // the server, so the hold outlives the drain and the run starts after it however late.
+    // the server, so the hold outlives the drain and the run starts after it however late. It holds
+    // while the task's next_run_at is this value: a check a restart cut asks again, a one-machine
+    // turn moves it along, and a run, skip or edit ends it.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_drain_holds (
         task_id TEXT PRIMARY KEY,
-        occurrence_at TEXT NOT NULL
+        next_run_at TEXT NOT NULL
+      )
+    `;
+    yield* sql`
+      DELETE FROM scheduled_task_drain_holds
+      WHERE NOT EXISTS (
+        SELECT 1 FROM scheduled_tasks t
+        WHERE t.task_id = scheduled_task_drain_holds.task_id
+          AND t.next_run_at = scheduled_task_drain_holds.next_run_at
       )
     `;
     // A row means the task's own catch-up choice; without one it follows its schedule's default.
@@ -3705,17 +3715,29 @@ export const layer = Layer.effect(
           decision: ScheduledTaskOneMachineDecision | null,
         ) {
           const deferredTo = iso(DateTime.makeUnsafe(atMs));
-          yield* sql`
-            UPDATE scheduled_tasks SET next_run_at = ${deferredTo}, updated_at = ${iso(now)}
-            WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
-          `.pipe(
-            Effect.andThen(
-              decision === null ? Effect.void : recordOneMachineDecision(task.id, decision),
-            ),
-            Effect.mapError((cause) =>
-              taskError("Could not defer the schedule task run.", { taskId: task.id, cause }),
-            ),
-          );
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const moved = yield* sql`
+                  UPDATE scheduled_tasks SET next_run_at = ${deferredTo}, updated_at = ${iso(now)}
+                  WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+                  RETURNING task_id
+                `;
+                // An update's hold on this occurrence waits its turn with it.
+                if (moved.length > 0) {
+                  yield* sql`
+                    UPDATE scheduled_task_drain_holds SET next_run_at = ${deferredTo}
+                    WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
+                  `;
+                }
+                if (decision !== null) yield* recordOneMachineDecision(task.id, decision);
+              }),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not defer the schedule task run.", { taskId: task.id, cause }),
+              ),
+            );
           yield* Ref.update(oneMachineDeferrals, (current) =>
             new Map(current).set(task.id, {
               occurrenceDueMs,
@@ -3964,9 +3986,11 @@ export const layer = Layer.effect(
       );
       const catchUp =
         stored === undefined ? defaultCatchUpMissedRun(task.schedule) : stored.enabled === 1;
-      const [held] = yield* sql<{ readonly occurrence_at: string }>`
-        DELETE FROM scheduled_task_drain_holds WHERE task_id = ${task.id} RETURNING occurrence_at
+      const [held] = yield* sql`
+        SELECT 1 FROM scheduled_task_drain_holds
+        WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
       `.pipe(
+        NodeSqliteClient.readOnly,
         Effect.mapError((cause) =>
           taskError("Could not read the task's update hold.", { taskId: task.id, cause }),
         ),
@@ -3976,7 +4000,8 @@ export const layer = Layer.effect(
       // still gives way to a nearer next time, and to a later time that passed too. A one-machine
       // turn holds its deferred time, which is after the occurrence.
       if (
-        held?.occurrence_at === task.nextRunAt &&
+        held !== undefined &&
+        task.nextRunAt !== null &&
         missed !== null &&
         DateTime.toEpochMillis(missed.at) <= Date.parse(task.nextRunAt)
       ) {
@@ -4031,10 +4056,10 @@ export const layer = Layer.effect(
           isMissedFixedTimeRun(task.schedule, DateTime.makeUnsafe(task.nextRunAt), now)
             ? Effect.void
             : sql`
-                INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at)
+                INSERT INTO scheduled_task_drain_holds (task_id, next_run_at)
                 VALUES (${task.id}, ${task.nextRunAt})
-                ON CONFLICT (task_id) DO UPDATE SET occurrence_at = excluded.occurrence_at
-                WHERE occurrence_at <> excluded.occurrence_at
+                ON CONFLICT (task_id) DO UPDATE SET next_run_at = excluded.next_run_at
+                WHERE next_run_at <> excluded.next_run_at
               `.pipe(
                 Effect.mapError((cause) =>
                   taskError("Could not hold the schedule task run for an update.", {
