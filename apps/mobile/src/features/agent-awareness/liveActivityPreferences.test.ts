@@ -13,10 +13,7 @@ import {
   linkEnvironmentToCloudWithPreference,
 } from "../cloud/linkEnvironment";
 import { setLiveActivityUpdatesEnabled } from "./liveActivityPreferences";
-import {
-  AgentAwarenessOperationError,
-  updateAgentAwarenessRegistrationPreferences,
-} from "./remoteRegistration";
+import { updateAgentAwarenessRegistrationPreferences } from "./remoteRegistration";
 
 vi.mock("expo-secure-store", () => ({
   deleteItemAsync: vi.fn(),
@@ -112,8 +109,9 @@ describe("liveActivityPreferences", () => {
   it.effect("keeps updates off when the relay and environments cannot be reached", () => {
     vi.mocked(updateAgentAwarenessRegistrationPreferences).mockImplementationOnce(() =>
       Effect.fail(
-        new AgentAwarenessOperationError({
-          operation: "load-device-registration-preferences",
+        new ManagedRelay.ManagedRelayRequestFailedError({
+          action: "link relay environment",
+          transportFailed: true,
           cause: new Error("relay unreachable"),
         }),
       ),

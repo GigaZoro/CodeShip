@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Network from "expo-network";
 import { AppState, type AppStateStatus } from "react-native";
 import { vi } from "vite-plus/test";
@@ -252,14 +253,14 @@ describe("mobile connection signals", () => {
       const first = yield* consume(wakeups.changes);
       const second = yield* consume(wakeups.changes);
       yield* seed(native);
-      using now = vi.spyOn(Date, "now").mockReturnValue(100_000);
+      yield* TestClock.setTime(100_000);
       native.app("background");
-      now.mockReturnValue(105_000);
+      yield* TestClock.setTime(105_000);
       native.app("active");
       expect(yield* first.next).toBe("application-active-probe");
       expect(yield* second.next).toBe("application-active-probe");
       native.app("background");
-      now.mockReturnValue(115_000);
+      yield* TestClock.setTime(115_000);
       native.app("active");
       expect(yield* first.next).toBe("application-active-long");
       expect(yield* second.next).toBe("application-active-long");
@@ -280,11 +281,11 @@ describe("mobile connection signals", () => {
         Effect.gen(function* () {
           const native = yield* setup;
           const { wakeups } = yield* services;
-          using now = vi.spyOn(Date, "now").mockReturnValue(100_000);
+          yield* TestClock.setTime(100_000);
           const early = yield* consume(wakeups.changes);
           yield* seed(native);
           native.app("background");
-          now.mockReturnValue(112_000);
+          yield* TestClock.setTime(112_000);
           if (joiningState === "inactive") native.app("inactive");
           const late = yield* consume(wakeups.changes);
           setManagedRelaySession(appAtomRegistry, {
@@ -294,7 +295,7 @@ describe("mobile connection signals", () => {
           // Confirm the late reader is subscribed before the native resume arrives.
           expect(yield* early.next).toBe("credentials-changed");
           expect(yield* late.next).toBe("credentials-changed");
-          now.mockReturnValue(113_000);
+          yield* TestClock.setTime(113_000);
           native.app("active");
           expect(yield* early.next).toBe("application-active-long");
           expect(yield* late.next).toBe("application-active-probe");
