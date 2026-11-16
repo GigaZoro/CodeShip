@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import { expect } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
+import { ClaudeSettingsLaunchArgError } from "../provider/Drivers/ClaudeSettingsCascade.ts";
 import { processProbeSource } from "../testUtils/processProbe.ts";
 import {
   SYNTHETIC_CLAUDE_CAPABLE_MODEL,
@@ -246,13 +247,9 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
   );
 
   it.effect.each([
-    [
-      "malformed JSON",
-      `--settings '{"env":'`,
-      "The --settings launch argument is not a JSON object.",
-    ],
-    ["no value", "--settings", "The --settings launch argument needs a JSON object or file path."],
-  ] as const)("rejects a --settings launch arg with %s", ([, launchArgs, detail]) =>
+    ["malformed JSON", `--settings '{"env":'`],
+    ["no value", "--settings"],
+  ] as const)("rejects a --settings launch arg with %s", ([, launchArgs]) =>
     withFakeClaudeEnv(
       {
         output: JSON.stringify({ structured_output: { title: "Unused" } }),
@@ -271,7 +268,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             }),
           );
 
-          expect(error.detail).toBe(detail);
+          expect(error.detail).toBe(new ClaudeSettingsLaunchArgError({}).message);
         }),
     ),
   );
