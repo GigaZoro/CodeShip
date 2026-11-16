@@ -19,7 +19,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -625,27 +624,16 @@ const layerTelemetry = Layer.unwrap(
       },
     };
 
-    // Logger.layer replaces the logger set. tracerLogger would duplicate OTLP in-span messages.
-    const layerLogger = Logger.layer(
+    const layerLogger = SharedObservability.layerRedactedLoggers(
       endpoints.logs === undefined
-        ? [Logger.consolePretty(), Logger.tracerLogger]
-        : [
-            Logger.consolePretty(),
-            OtlpLogger.make({
-              url: endpoints.logs.url,
-              exportInterval: `${endpoints.logs.export.exportIntervalMs} millis`,
-              headers: endpoints.logs.export.headers,
-              resource,
-            }),
-          ],
-      { mergeWithExisting: false },
-    ).pipe(
-      Layer.provide(OtlpExporter.layerFlusher),
-      Layer.provide(
-        SharedObservability.layerOtlpSerialization(
-          endpoints.logs?.export.protocol ?? environment.otlpProtocol,
-        ),
-      ),
+        ? undefined
+        : OtlpLogger.make({
+            url: endpoints.logs.url,
+            exportInterval: `${endpoints.logs.export.exportIntervalMs} millis`,
+            headers: endpoints.logs.export.headers,
+            resource,
+          }),
+      endpoints.logs?.export.protocol ?? environment.otlpProtocol,
     );
 
     const layerTracer = Layer.unwrap(

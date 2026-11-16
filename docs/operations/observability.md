@@ -16,9 +16,10 @@ Console log lines, every OTLP export (logs, traces and metrics, with the browser
 forwards and the relay's traces) and trace, relay and provider event log file records pass through
 one redactor, `packages/shared/src/redaction.ts`, as they are written: credentials and the values of
 fields named for one show as `[redacted]`, and e-mail addresses as `[email]`. Logs and spans hold the
-raw values in memory, so a new log or trace sink must redact what it writes. Loggers print and
-export a log's message parts apart, so a new server logger also masks them with `redactMessageParts`,
-which hides the part after one such as `"Cookie"` or `"token:"`.
+raw values in memory, so a new log or trace sink must redact what it writes. The server and the
+desktop app install their loggers with `layerRedactedLoggers` from
+`packages/shared/src/observability.ts`: loggers print and export a log's message parts apart, so each
+one masks the part after one such as `"Cookie"` or `"token:"`, and the console prints redacted text.
 
 ## Where To Find Things
 

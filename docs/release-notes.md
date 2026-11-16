@@ -1,3 +1,7 @@
+## 2026-11-16 — Desktop app logs no longer carry e-mail addresses or credentials
+
+- The desktop app's own log lines on screen now replace e-mail addresses with `[email]` and credentials with `[redacted]`, as the server's do. A value logged after its name, such as `"token:"` followed by the token, is now hidden on screen and in OTLP log exports too.
+
 ## 2026-11-16 — An agent's POSIX command runs unchanged on Windows
 
 - `t3_command_run` takes `shell: "bash"`, which runs the command as written in bash on every OS. On Windows that is Git Bash, started with the command in a file, so PowerShell 5.1 no longer strips the double quotes from a command such as `grep -E "^# (pass|fail)" results.txt`, which then lost its file argument and waited on its input until the time limit. Without the option a Windows command still runs in PowerShell.
