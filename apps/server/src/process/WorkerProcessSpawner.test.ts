@@ -256,6 +256,31 @@ describe("WorkerProcessSpawner", () => {
     },
   );
 
+  // POSIX gives no process the pid of a group that still exists, so one holding it ended the group.
+  it.live.skipIf(isWindowsHost)(
+    "a stopped worker spares the group of a reaped leader whose pid another process now holds",
+    () =>
+      Effect.gen(function* () {
+        const leader = yield* node("", quiet);
+        yield* leader.exitCode;
+        const kill = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const signal = process.kill.bind(process);
+            return vi
+              .spyOn(process, "kill")
+              .mockImplementation((pid, code) =>
+                pid === leader.pid && code === 0 ? true : signal(pid, code),
+              );
+          }),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        assert.notDeepInclude(kill.mock.calls, [-leader.pid, "SIGKILL"]);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.live.each([
     { through: "a new worker", replacement: Effect.void },
     { through: "no worker", replacement: WorkerProcessSpawner.__testing.failWorkerStarts },

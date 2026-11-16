@@ -4,6 +4,7 @@ import * as NodeWorkerThreads from "node:worker_threads";
 
 import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { WINDOWS_STOP_TREE_ARGS, windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
 import type * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -55,9 +56,20 @@ const retire = (entry) => {
   if (entry.released && entry.exit !== null && entry.open.size === 0) children.delete(entry.id);
 };
 
+// POSIX gives no process the pid of a group that still exists, so once the leader was reaped, a
+// process holding its pid means the group ended and its id may name another's.
+const groupEnded = (entry) => {
+  if (entry.exit === null) return false;
+  try {
+    process.kill(entry.child.pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+};
 const isAlive = (entry) => {
   if (entry.exit === null) return true;
-  if (process.platform === "win32") return false;
+  if (process.platform === "win32" || groupEnded(entry)) return false;
   try {
     process.kill(-entry.child.pid, 0);
     return true;
@@ -93,6 +105,7 @@ const signalGroup = (entry, signal, done) => {
   if (process.platform === "win32") {
     return stopTree(entry.root, (error) => (error !== undefined && entry.exit === null ? fallback() : done(error)));
   }
+  if (groupEnded(entry)) return done(undefined);
   try {
     process.kill(-entry.child.pid, signal);
   } catch (error) {
@@ -204,7 +217,7 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     entry.exit = { code, signal };
     post({ type: "exit", id, code, signal });
     // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
-    if (code !== 0 && code !== null && process.platform !== "win32") {
+    if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
       try {
         process.kill(-child.pid, killSignal);
       } catch {
@@ -641,10 +654,13 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
       trees.push({ child, root });
       continue;
     }
-    // The stopped worker may have reaped the leader just before it stopped, without relaying the exit.
-    // POSIX hands out pids in turn, so its pid and group id cannot name another process this soon.
-    if (child.kills === "group") sigkill(-root.pid);
-    else if (!Deferred.isDoneUnsafe(child.exit)) sigkill(root.pid);
+    // A relayed exit means the worker reaped the leader; then, as in the worker's groupEnded, a process
+    // holding its pid means the group ended. A leader the stopping worker reaped without relaying the
+    // exit goes unchecked, so its ids could name a process started in the moments since.
+    const reaped = Deferred.isDoneUnsafe(child.exit);
+    if (child.kills === "group") {
+      if (!(reaped && isProcessAlive(root.pid))) sigkill(-root.pid);
+    } else if (!reaped) sigkill(root.pid);
   }
   if (trees.length > 0) killTrees(trees);
 };
