@@ -91,18 +91,24 @@ type AppThread = OrchestrationV2ThreadProjection["thread"];
 const structureTurnItems = new WeakMap<TurnItem, ThreadStructureTurnItem>();
 const structureVisibleTurnItems = new WeakMap<VisibleTurnItem, ThreadStructureVisibleTurnItem>();
 
+type QueueWorkflowScalarField = Exclude<keyof ThreadQueueWorkflowState, "queuedRuns">;
+// `satisfies` fails the build when the state gains a field this list does not compare.
+const QUEUE_WORKFLOW_SCALAR_FIELDS = Object.keys({
+  activeRun: true,
+  isHeld: true,
+  canSendNow: true,
+  canPromoteToSteer: true,
+  canStopAndSend: true,
+  promoteSkipsCompaction: true,
+} satisfies Record<QueueWorkflowScalarField, true>) as ReadonlyArray<QueueWorkflowScalarField>;
+
 // Queued text, attachments and attribution all come from the message, so its identity covers them.
 function queueWorkflowStatesEqual(
   left: ThreadQueueWorkflowState,
   right: ThreadQueueWorkflowState,
 ): boolean {
   return (
-    left.activeRun === right.activeRun &&
-    left.isHeld === right.isHeld &&
-    left.canSendNow === right.canSendNow &&
-    left.canPromoteToSteer === right.canPromoteToSteer &&
-    left.canStopAndSend === right.canStopAndSend &&
-    left.promoteSkipsCompaction === right.promoteSkipsCompaction &&
+    QUEUE_WORKFLOW_SCALAR_FIELDS.every((field) => left[field] === right[field]) &&
     left.queuedRuns.length === right.queuedRuns.length &&
     left.queuedRuns.every(
       (queued, index) =>
