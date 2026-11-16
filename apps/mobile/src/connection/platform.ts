@@ -6,7 +6,6 @@ import {
   Wakeups,
 } from "@t3tools/client-runtime/connection";
 import { managedRelayAccountChanges, managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
-import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -123,9 +122,8 @@ const applicationActiveWakeups = Stream.callback<
   "application-active-probe" | "application-active-long"
 >((queue) =>
   Effect.acquireRelease(
-    Effect.gen(function* () {
-      const nowMs = yield* Clock.currentTimeMillis;
-      let backgroundedAtMs = AppState.currentState === "background" ? nowMs : null;
+    Effect.sync(() => {
+      let backgroundedAtMs = AppState.currentState === "background" ? Date.now() : null;
       return AppState.addEventListener("change", (state) => {
         if (state === "background") {
           backgroundedAtMs = Date.now();
