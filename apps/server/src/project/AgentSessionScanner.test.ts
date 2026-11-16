@@ -18,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -337,39 +338,79 @@ const makeOpenGate = Effect.fn("AgentSessionScanner.test.makeOpenGate")(function
 });
 
 /**
- * Resolves once a reader has opened the FIFO, so its read deadline is already
- * scheduled on the TestClock. The writer stays open until the scope closes, so
- * the reader sees no EOF and has to wait out that deadline.
+ * A runner that reports each read once its deadline is on the TestClock. The runner starts that
+ * deadline when the spawn returns, which can be after the child opened the file, so a test waits
+ * for it before it moves the clock. It also reports each of `finishedPaths` once its child exited,
+ * since a deadline fires for every read still in flight.
  */
-const awaitGateReader = (gatePath: string) =>
-  Effect.acquireRelease(
-    Effect.promise(() => NodeFS.promises.open(gatePath, NodeFS.constants.O_WRONLY)),
-    (handle) => Effect.promise(() => handle.close()),
-  );
-
-/**
- * Offers each of `filePaths` to `finished` once its `cat` child has exited. A
- * deadline fires for every read still in flight, so a test must wait for the
- * unblocked reads before it moves the clock.
- */
-const layerReportingProcessRunner = (
-  filePaths: ReadonlySet<string>,
-  finished: Queue.Queue<string>,
-) =>
-  Layer.effect(
+const makeReportingReads = Effect.fn("AgentSessionScanner.test.makeReportingReads")(function* (
+  finishedPaths: ReadonlyArray<string> = [],
+) {
+  const deadlines = yield* Queue.unbounded<string>();
+  const finished = yield* Queue.unbounded<string>();
+  const processRunner = Layer.effect(
     ProcessRunner.ProcessRunner,
     Effect.gen(function* () {
       const runner = yield* ProcessRunner.ProcessRunner;
       return ProcessRunner.ProcessRunner.of({
-        run: (input) => {
-          const filePath = input.args.at(-1) ?? "";
-          return filePaths.has(filePath)
-            ? runner.run(input).pipe(Effect.ensuring(Queue.offer(finished, filePath)))
-            : runner.run(input);
-        },
+        run: (input) =>
+          Effect.gen(function* () {
+            const filePath = input.args.at(-1) ?? "";
+            const clock = yield* Clock.Clock;
+            let spawned = false;
+            let reported = false;
+            const run = runner
+              .run({
+                ...input,
+                onSpawn: () => {
+                  spawned = true;
+                  input.onSpawn?.();
+                },
+              })
+              .pipe(
+                // The first sleep after the spawn is the read deadline.
+                Effect.provideService(Clock.Clock, {
+                  ...clock,
+                  sleep: (duration) =>
+                    Effect.suspend(() => {
+                      if (!spawned || reported) return clock.sleep(duration);
+                      reported = true;
+                      return Queue.offer(deadlines, filePath).pipe(
+                        Effect.andThen(clock.sleep(duration)),
+                      );
+                    }),
+                }),
+              );
+            return yield* finishedPaths.includes(filePath)
+              ? run.pipe(Effect.ensuring(Queue.offer(finished, filePath)))
+              : run;
+          }),
       });
     }),
   ).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(NodeServices.layer));
+
+  /**
+   * Resolves once each `gatePaths` read has its deadline on the TestClock and its FIFO open; the
+   * writers stay open until the scope closes. Close it only after the scan ends: the runner confirms
+   * a passed deadline with the spawner worker, so an earlier EOF can let the read exit unmarked.
+   */
+  const awaitBlockedReads = Effect.fn("AgentSessionScanner.test.awaitBlockedReads")(function* (
+    gatePaths: ReadonlyArray<string>,
+  ) {
+    const waiting = new Set(gatePaths);
+    while (waiting.size > 0) waiting.delete(yield* Queue.take(deadlines));
+    yield* Effect.forEach(
+      gatePaths,
+      (gatePath) =>
+        Effect.acquireRelease(
+          Effect.promise(() => NodeFS.promises.open(gatePath, NodeFS.constants.O_WRONLY)),
+          (handle) => Effect.promise(() => handle.close()),
+        ),
+      { concurrency: "unbounded", discard: true },
+    );
+  });
+  return { processRunner, finished, awaitBlockedReads };
+});
 
 it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
   describe("scan", () => {
@@ -3009,7 +3050,8 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           const codexHomePath = yield* makeTempDir("t3code-codex-home-");
           const repo = yield* makeTempDir("t3code-workspace-fifo-config-");
           yield* fileSystem.makeDirectory(path.join(repo, ".git"));
-          yield* makeOpenGate(path.join(repo, ".git", "config"));
+          const configPath = path.join(repo, ".git", "config");
+          yield* makeOpenGate(configPath);
           const transcriptPath = path.join(claudeHomePath, "projects", "-fifo", "a.jsonl");
           yield* writeTranscript({
             filePath: transcriptPath,
@@ -3017,15 +3059,16 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
             mtimeMs: Date.parse("2026-05-03T00:00:00.000Z"),
           });
 
+          const reads = yield* makeReportingReads();
           for (let attempt = 1; attempt <= LIBUV_POOL_SIZE + 1; attempt++) {
             const scan = yield* Effect.forkChild(
-              runScan({ claudeHomePath, codexHomePath }).pipe(
+              runScan({ claudeHomePath, codexHomePath, processRunner: reads.processRunner }).pipe(
                 Effect.map(({ candidates }) => candidates.map(({ path }) => path)),
               ),
             );
             yield* Effect.scoped(
               Effect.gen(function* () {
-                yield* awaitGateReader(path.join(repo, ".git", "config"));
+                yield* reads.awaitBlockedReads([configPath]);
                 yield* TestClock.adjust("2 seconds");
                 expect(yield* Fiber.join(scan), `scan ${attempt}`).toEqual([repo]);
               }),
@@ -3063,21 +3106,19 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           });
         }
 
-        const finishedNeighbourReads = yield* Queue.unbounded<string>();
-        const processRunner = layerReportingProcessRunner(
-          new Set([repos[0], repos[2]].map((repo) => path.join(repo, ".git", "config"))),
-          finishedNeighbourReads,
+        const reads = yield* makeReportingReads(
+          [repos[0], repos[2]].map((repo) => path.join(repo, ".git", "config")),
         );
 
         for (let attempt = 1; attempt <= 2; attempt++) {
           const scan = yield* Effect.forkChild(
-            runScan({ claudeHomePath, codexHomePath, processRunner }),
+            runScan({ claudeHomePath, codexHomePath, processRunner: reads.processRunner }),
           );
           const result = yield* Effect.scoped(
             Effect.gen(function* () {
-              yield* awaitGateReader(path.join(repos[1], ".git", "config"));
-              yield* Queue.take(finishedNeighbourReads);
-              yield* Queue.take(finishedNeighbourReads);
+              yield* reads.awaitBlockedReads([path.join(repos[1], ".git", "config")]);
+              yield* Queue.take(reads.finished);
+              yield* Queue.take(reads.finished);
               yield* TestClock.adjust("2 seconds");
               return yield* Fiber.join(scan);
             }),
@@ -3132,17 +3173,17 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           });
         }
 
+        const reads = yield* makeReportingReads();
         const scan = yield* Effect.forkChild(
-          runScan({ claudeHomePath, codexHomePath }).pipe(
+          runScan({ claudeHomePath, codexHomePath, processRunner: reads.processRunner }).pipe(
             Effect.map(({ candidates }) => candidates.map(({ path }) => path).toSorted()),
           ),
         );
-        // Every blocked config is open before any deadline passes; reading them
-        // one after another would leave the later ones unopened.
-        yield* Effect.forEach(
-          [...repos.map((repo) => path.join(repo, ".git")), bareGitDir],
-          (gitDir) => awaitGateReader(path.join(gitDir, "config")),
-          { concurrency: "unbounded" },
+        // Every blocked config is open before any deadline passes.
+        yield* reads.awaitBlockedReads(
+          [...repos.map((repo) => path.join(repo, ".git")), bareGitDir].map((gitDir) =>
+            path.join(gitDir, "config"),
+          ),
         );
         yield* TestClock.adjust("2 seconds");
         expect(yield* Fiber.join(scan)).toEqual(repos);
@@ -3176,11 +3217,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           });
         }
 
-        const finishedPointerReads = yield* Queue.unbounded<string>();
-        const processRunner = layerReportingProcessRunner(
-          new Set([path.join(worktree, ".git")]),
-          finishedPointerReads,
-        );
+        const reads = yield* makeReportingReads([path.join(worktree, ".git")]);
 
         // One scanner across scans: later scans skip the files that blocked.
         yield* Effect.gen(function* () {
@@ -3192,22 +3229,22 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           // Pointer files are read first, then the commondir files they lead to.
           yield* Effect.scoped(
             Effect.gen(function* () {
-              yield* awaitGateReader(path.join(pointerCheckout, ".git"));
-              yield* Queue.take(finishedPointerReads);
+              yield* reads.awaitBlockedReads([path.join(pointerCheckout, ".git")]);
+              yield* Queue.take(reads.finished);
               yield* TestClock.adjust("2 seconds");
+              yield* reads.awaitBlockedReads([path.join(worktreeGitDir, "commondir")]);
+              yield* TestClock.adjust("2 seconds");
+              expect(yield* Fiber.join(first)).toEqual([pointerCheckout]);
             }),
           );
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              yield* awaitGateReader(path.join(worktreeGitDir, "commondir"));
-              yield* TestClock.adjust("2 seconds");
-            }),
-          );
-          expect(yield* Fiber.join(first)).toEqual([pointerCheckout]);
           for (let attempt = 2; attempt <= LIBUV_POOL_SIZE + 1; attempt++) {
             expect(yield* scanPaths, `scan ${attempt}`).toEqual([pointerCheckout]);
           }
-        }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, processRunner })));
+        }).pipe(
+          Effect.provide(
+            layerScannerTest({ claudeHomePath, codexHomePath, processRunner: reads.processRunner }),
+          ),
+        );
         // Hangs if the scans left libuv pool threads stuck in open().
         yield* fileSystem.readFileString(path.join(worktree, ".git"));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -3230,13 +3267,14 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         });
         const gitOfScan = (scan: AgentSessionScanner.AgentSessionScanner["Service"]["scan"]) =>
           scan.pipe(Effect.map(({ candidates }) => candidates.map(({ git }) => git)));
+        const reads = yield* makeReportingReads();
 
         yield* Effect.gen(function* () {
           const scanner = yield* AgentSessionScanner.AgentSessionScanner;
           const blockedScan = yield* Effect.forkChild(gitOfScan(scanner.scan));
           yield* Effect.scoped(
             Effect.gen(function* () {
-              yield* awaitGateReader(configPath);
+              yield* reads.awaitBlockedReads([configPath]);
               yield* TestClock.adjust("2 seconds");
               expect(yield* Fiber.join(blockedScan)).toEqual([
                 { remoteKey: null, repository: null },
@@ -3257,7 +3295,11 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           expect(yield* gitOfScan(scanner.scan)).toEqual([
             { remoteKey: "github.com/pingdotgg/unblocked", repository: "pingdotgg/unblocked" },
           ]);
-        }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath })));
+        }).pipe(
+          Effect.provide(
+            layerScannerTest({ claudeHomePath, codexHomePath, processRunner: reads.processRunner }),
+          ),
+        );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     );
   },
