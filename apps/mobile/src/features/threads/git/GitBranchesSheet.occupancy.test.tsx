@@ -9,6 +9,9 @@ const checkout = vi.hoisted(() => ({
 }));
 
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({}) }));
+vi.mock("../../../components/ui/AppText", () => ({
+  AppText: ({ children }: { children: ReactNode }) => <span>{children}</span>,
+}));
 vi.mock("../../../components/ui/SheetHeader", () => ({ SheetHeader: () => null }));
 vi.mock("../../../components/ui/FitSheet", () => ({
   FitSheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
