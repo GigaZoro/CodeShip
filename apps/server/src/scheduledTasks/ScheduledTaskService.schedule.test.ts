@@ -341,6 +341,61 @@ it.effect.each([
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect(
+  "holds today's time when an update drains across it after a turn carried yesterday's hold there",
+  () =>
+    Effect.gen(function* () {
+      const at = (day: number, hour: number) =>
+        DateTime.makeZonedUnsafe(
+          { year: 2026, month: 7, day, hour, minute: 0, second: 0, millisecond: 0 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        );
+      const isoAt = (day: number, hour: number) =>
+        DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+      yield* TestClock.setTime(DateTime.toEpochMillis(at(2, 6)));
+      const sql = yield* SqlClient.SqlClient;
+      const launched = yield* Ref.make(0);
+      const layer = runHistoryLayer(() =>
+        Ref.update(launched, (count) => count + 1).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-held"), resumed: false } as never),
+        ),
+      );
+      const task = yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          yield* historyTask("Held twice", { catchUpMissedRun: false }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        // A one-machine turn watched yesterday's held run up to today's time and carried its hold.
+        yield* sql`
+          INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
+          VALUES (${task.id}, ${isoAt(1, 7)}, ${isoAt(2, 7)})
+        `;
+        yield* TestClock.adjust("90 minutes");
+        return task;
+      }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(true)));
+
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const settled = yield* service.subscribeList().pipe(
+          Stream.filter(({ tasks }) =>
+            tasks.some(
+              (entry) => entry.nextRunAt === isoAt(3, 7) && entry.lastRunStatus !== "running",
+            ),
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(settled);
+        expect(yield* Ref.get(launched)).toBe(1);
+        expect((yield* service.listRuns({ id: task.id })).runs).toMatchObject([
+          { outcome: "succeeded", scheduledFor: isoAt(2, 7) },
+        ]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("runs a fixed-time run an update held once a restart cut its run condition", () =>
   Effect.gen(function* () {
     const at = (day: number, hour: number) =>

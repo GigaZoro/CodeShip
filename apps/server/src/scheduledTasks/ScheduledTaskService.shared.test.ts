@@ -1295,7 +1295,7 @@ it.effect("a later machine's turn keeps the update hold on a run it reaches late
         );
         // An update drained past the time; the restart after it comes late.
         yield* scenario.sql`
-          INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at, next_run_at)
+          INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
           VALUES ('scheduled-task:shared', ${iso(DUE)}, ${iso(DUE)})
         `;
         yield* scenario.tick(DUE + 11 * MINUTE_MS);
@@ -1348,7 +1348,7 @@ it.effect("an update's hold carried to the next day's time does not hold that da
         const nextDay = iso(DUE + 24 * HOUR_MS);
         yield* scenario.sql`UPDATE scheduled_tasks SET next_run_at = ${nextDay}`;
         yield* scenario.sql`
-          INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at, next_run_at)
+          INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
           VALUES ('scheduled-task:shared', ${iso(DUE)}, ${nextDay})
         `;
 

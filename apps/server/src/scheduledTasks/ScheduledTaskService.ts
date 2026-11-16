@@ -1135,14 +1135,14 @@ export const layer = Layer.effect(
         PRIMARY KEY (task_id, occurrence_at)
       )
     `;
-    // A fixed-time occurrence that came due while an automatic update drained. The install restarts
-    // the server, so the hold outlives the drain and the run starts after it however late. It holds
-    // that occurrence while the task's next_run_at is next_run_at: a check a restart cut asks again,
-    // a one-machine turn moves it along, and a run, skip or edit ends it.
+    // When a fixed-time run came due while an automatic update drained; it holds the occurrence at
+    // or before then. The install restarts the server, so the hold outlives the drain and the run
+    // starts after it however late. It lasts while the task's next_run_at is next_run_at: a check a
+    // restart cut asks again, a one-machine turn moves it along, and a run, skip or edit ends it.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_drain_holds (
         task_id TEXT PRIMARY KEY,
-        occurrence_at TEXT NOT NULL,
+        held_at TEXT NOT NULL,
         next_run_at TEXT NOT NULL
       )
     `;
@@ -3994,8 +3994,8 @@ export const layer = Layer.effect(
       );
       const catchUp =
         stored === undefined ? defaultCatchUpMissedRun(task.schedule) : stored.enabled === 1;
-      const [held] = yield* sql<{ readonly occurrence_at: string }>`
-        SELECT occurrence_at FROM scheduled_task_drain_holds
+      const [held] = yield* sql<{ readonly held_at: string }>`
+        SELECT held_at FROM scheduled_task_drain_holds
         WHERE task_id = ${task.id} AND next_run_at = ${task.nextRunAt}
       `.pipe(
         NodeSqliteClient.readOnly,
@@ -4010,7 +4010,7 @@ export const layer = Layer.effect(
       if (
         held !== undefined &&
         missed !== null &&
-        DateTime.toEpochMillis(missed.at) <= Date.parse(held.occurrence_at)
+        DateTime.toEpochMillis(missed.at) <= Date.parse(held.held_at)
       ) {
         return missed.catchUp
           ? yield* runDueOccurrence(task, now, true)
@@ -4057,26 +4057,30 @@ export const layer = Layer.effect(
     ) {
       yield* Effect.forEach(
         tasks,
-        (task) =>
-          task.schedule.type !== "fixed_time" ||
-          task.nextRunAt === null ||
-          isMissedFixedTimeRun(task.schedule, DateTime.makeUnsafe(task.nextRunAt), now)
-            ? Effect.void
-            : sql`
-                INSERT INTO scheduled_task_drain_holds (task_id, occurrence_at, next_run_at)
-                VALUES (${task.id}, ${task.nextRunAt}, ${task.nextRunAt})
-                ON CONFLICT (task_id) DO UPDATE SET
-                  occurrence_at = excluded.occurrence_at,
-                  next_run_at = excluded.next_run_at
-                WHERE next_run_at <> excluded.next_run_at
-              `.pipe(
-                Effect.mapError((cause) =>
-                  taskError("Could not hold the schedule task run for an update.", {
-                    taskId: task.id,
-                    cause,
-                  }),
-                ),
-              ),
+        (task) => {
+          if (
+            task.schedule.type !== "fixed_time" ||
+            task.nextRunAt === null ||
+            isMissedFixedTimeRun(task.schedule, DateTime.makeUnsafe(task.nextRunAt), now)
+          ) {
+            return Effect.void;
+          }
+          return sql`
+            INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
+            VALUES (${task.id}, ${task.nextRunAt}, ${task.nextRunAt})
+            ON CONFLICT (task_id) DO UPDATE SET
+              held_at = excluded.held_at,
+              next_run_at = excluded.next_run_at
+            WHERE held_at <> excluded.held_at OR next_run_at <> excluded.next_run_at
+          `.pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not hold the schedule task run for an update.", {
+                taskId: task.id,
+                cause,
+              }),
+            ),
+          );
+        },
         { discard: true },
       );
     });
