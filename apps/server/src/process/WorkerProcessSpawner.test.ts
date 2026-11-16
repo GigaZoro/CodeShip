@@ -1,15 +1,19 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
 import { timeoutProcessOption } from "./processDeadline.ts";
 import * as WorkerProcessSpawner from "./WorkerProcessSpawner.ts";
@@ -20,6 +24,17 @@ const node = (script: string, options?: ChildProcess.CommandOptions) =>
   ChildProcess.make(process.execPath, ["-e", script], options);
 
 const quiet = { stdin: "ignore", stdout: "ignore", stderr: "ignore" } as const;
+
+const errorLogs = () => {
+  const messages: Array<unknown> = [];
+  const logged = Deferred.makeUnsafe<void>();
+  const logger = Logger.make(({ logLevel, message, cause }) => {
+    if (logLevel !== "Error") return;
+    messages.push([message, Cause.pretty(cause)]);
+    Deferred.doneUnsafe(logged, Effect.void);
+  });
+  return { messages, logged: Deferred.await(logged), layer: Logger.layer([logger]) };
+};
 
 describe("WorkerProcessSpawner", () => {
   it.live("relays stdin, output and the exit code", () =>
@@ -150,6 +165,46 @@ describe("WorkerProcessSpawner", () => {
 
       yield* leftover.ended;
     }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live("releasing a failed command logs no error once nothing of it runs", () => {
+    const errors = errorLogs();
+    return Effect.gen(function* () {
+      yield* Effect.scoped(
+        Effect.flatMap(node("process.exit(1)", quiet), (handle) => handle.exitCode),
+      );
+
+      assert.deepEqual(errors.messages, []);
+    }).pipe(Effect.provide(Layer.merge(layer, errors.layer)));
+  });
+
+  it.live(
+    "a stopped worker that cannot start another spares a reused pid and logs the tree",
+    () => {
+      const errors = errorLogs();
+      const windowsLayer = WorkerProcessSpawner.layer.pipe(
+        Layer.provide(NodeServices.layer),
+        Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
+        Layer.provide(errors.layer),
+      );
+      return Effect.gen(function* () {
+        const leader = yield* node("", quiet);
+        yield* leader.exitCode;
+        const kill = yield* Effect.acquireRelease(
+          Effect.sync(() => vi.spyOn(process, "kill")),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
+
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+
+        assert.notInclude(
+          kill.mock.calls.map(([pid]) => pid),
+          leader.pid,
+        );
+        yield* errors.logged;
+      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
+    },
   );
 
   it.live("a stopped worker kills what a child left running after it exited", () =>

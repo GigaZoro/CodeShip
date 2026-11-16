@@ -10,6 +10,19 @@ import { leaderLeavingChild } from "./testing/leftoverChild.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import { WINDOWS_PROCESS_TREE_FUNCTIONS, endingWindowsTrees } from "./windowsProcessTree.ts";
 
+it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it cannot reach", () =>
+  Effect.gen(function* () {
+    const spawner = ChildProcessSpawner.make(() => Effect.die("a refused pipeline never spawns"));
+    const pipeline = ChildProcess.make("a").pipe(ChildProcess.pipeTo(ChildProcess.make("b")));
+
+    const error = yield* Effect.flip(
+      Effect.scoped(endingWindowsTrees(spawner, "win32").spawn(pipeline)),
+    );
+
+    assert.equal(error.reason._tag, "BadArgument");
+  }),
+);
+
 // A process that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("a Windows process tree", () => {
   // Times are seconds from $t. The tree's root is 10, and nothing in it started before -2.
