@@ -159,7 +159,7 @@ describe("WorkerProcessSpawner", () => {
   );
 
   // The leader exits at once and leaves a child running, which each way of ending the leader reaches.
-  const leaderThatLeftAChild = (leftover: Effect.Success<typeof leaderLeavingChild>) =>
+  const leaderThatLeftAChild = (leftover: Effect.Success<ReturnType<typeof leaderLeavingChild>>) =>
     Effect.gen(function* () {
       const leader = yield* leftover.command;
       yield* leftover.started;
@@ -169,7 +169,7 @@ describe("WorkerProcessSpawner", () => {
 
   it.live("kill ends what a child left running after it exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild;
+      const leftover = yield* leaderLeavingChild();
       const leader = yield* leaderThatLeftAChild(leftover);
 
       yield* leader.kill();
@@ -180,7 +180,7 @@ describe("WorkerProcessSpawner", () => {
 
   it.live("an interrupted command ends what its child left running after it exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild;
+      const leftover = yield* leaderLeavingChild();
       const exited = yield* Deferred.make<void>();
       const command = yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -340,7 +340,7 @@ describe("WorkerProcessSpawner", () => {
     "a stopped worker kills what a child left running after it exited, through $through",
     ({ replacement }) =>
       Effect.gen(function* () {
-        const leftover = yield* leaderLeavingChild;
+        const leftover = yield* leaderLeavingChild();
         yield* leaderThatLeftAChild(leftover);
         yield* replacement;
 

@@ -14,6 +14,8 @@ import * as NodeHttp from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -23,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -455,7 +458,19 @@ const layerMigrationProgress = Layer.effect(
   }),
 );
 
-const layerPlatformServices = DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer));
+// On Windows, what a command left running ends with it once something shows it did.
+const layerChildProcessSpawner = Layer.effect(
+  ChildProcessSpawner.ChildProcessSpawner,
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return endingWindowsTrees(spawner, yield* HostProcess.Platform, "leftBehind");
+  }),
+);
+
+const layerPlatformServices = DocumentText.layer.pipe(
+  Layer.provideMerge(layerChildProcessSpawner),
+  Layer.provideMerge(NodeServices.layer),
+);
 
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 

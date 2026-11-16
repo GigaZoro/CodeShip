@@ -12,6 +12,11 @@ import {
 import type { RuntimeMode } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import {
+  type WindowsProcessTreeRoot,
+  windowsTreeRootFromNow,
+  windowsTreeStopper,
+} from "@t3tools/shared/windowsProcessTree";
 import * as Effect from "effect/Effect";
 
 export interface MuseSdkHost {
@@ -50,6 +55,8 @@ export interface MuseSdkHostOptions {
   readonly signal?: AbortSignal;
   readonly startupTimeoutMs?: number;
   readonly onProcessExit?: (exit: ProcessExit) => void;
+  /** Stops what the host left running once it exits, on Windows, where the SDK ends only the host. */
+  readonly stopTree?: (root: WindowsProcessTreeRoot) => void;
 }
 
 export function makeMuseEnvironment(
@@ -155,14 +162,25 @@ export async function createMuseSdkHost(
 ): Promise<MuseSdkHost> {
   options.signal?.throwIfAborted();
   const launch = options.launch ?? { command: options.binaryPath, args: [] };
+  const { onProcessExit, stopTree } = options;
+  const rootOf = windowsTreeRootFromNow();
+  let root: WindowsProcessTreeRoot | undefined;
   const handshake = spawn({
     command: launch.command,
     args: [...launch.args, ...(options.launchArgs ?? []), ...museServeArgs(options)],
     ...(options.cwd ? { cwd: options.cwd } : {}),
     env: options.environment ?? makeMuseEnvironment(),
     shutdownTimeoutMs: 10_000,
-    ...(options.onProcessExit ? { onProcessExit: options.onProcessExit } : {}),
+    ...(onProcessExit || stopTree
+      ? {
+          onProcessExit: (exit: ProcessExit) => {
+            if (root !== undefined) stopTree?.(root);
+            onProcessExit?.(exit);
+          },
+        }
+      : {}),
   });
+  if (stopTree && handshake.child.pid !== undefined) root = rootOf(handshake.child.pid);
   let closePromise: Promise<void> | undefined;
   const close = () => {
     options.signal?.removeEventListener("abort", onAbort);
@@ -213,9 +231,11 @@ export const createMuseSdkHostEffect = Effect.fn("createMuseSdkHostEffect")(func
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
 ) {
   const launch = options.launch ?? (yield* museLaunch(options.binaryPath, options.environment));
+  const stopTree =
+    (yield* HostProcess.Platform) === "win32" ? yield* windowsTreeStopper : undefined;
   let startup: Promise<MuseSdkHost> | undefined;
   return yield* Effect.tryPromise((signal) => {
-    startup = createHost({ ...options, launch, signal });
+    startup = createHost({ ...options, launch, signal, ...(stopTree ? { stopTree } : {}) });
     return startup;
   }).pipe(
     Effect.onInterrupt(() =>

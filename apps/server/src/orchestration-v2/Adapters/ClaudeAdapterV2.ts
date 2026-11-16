@@ -70,6 +70,11 @@ import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope, agentScopeCommand } from "@t3tools/shared/AgentScope";
 import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  type WindowsProcessTreeRoot,
+  windowsTreeRootFromNow,
+  windowsTreeStopper,
+} from "@t3tools/shared/windowsProcessTree";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { CLAUDE_MODEL_FAMILIES, claudeUsageWindowScope } from "@t3tools/shared/usageLimits";
 import {
@@ -398,6 +403,31 @@ export function spawnClaudeProcessGroup(
   });
   // Node's typings make stdin and stdout nullable once stdio has a fourth entry; both are pipes.
   return child as ClaudeSpawnedProcess;
+}
+
+/**
+ * Windows has no process groups and Node ends only the CLI, so what the CLI left running, such as
+ * its MCP servers, is stopped through `stopTree` once it exits, however it exited.
+ */
+export function spawnClaudeProcessTree(
+  options: ClaudeSpawnOptions,
+  stopTree: (root: WindowsProcessTreeRoot) => void,
+  onStderr?: (text: string) => void,
+) {
+  const rootOf = windowsTreeRootFromNow();
+  const child = NodeChildProcess.spawn(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    signal: options.signal,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const root = child.pid === undefined ? undefined : rootOf(child.pid);
+  child.stderr.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
+  child.once("exit", () => {
+    if (root !== undefined) stopTree(root);
+  });
+  return child;
 }
 
 export const ClaudeProviderCapabilitiesV2 = {
@@ -959,6 +989,7 @@ export const layerQueryRunner: Layer.Layer<
     const agentScope = yield* AgentScope;
     const platform = yield* HostProcess.Platform;
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
+    const stopWindowsTree = yield* windowsTreeStopper;
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
     // A failed open leaves no transcript until a prompt was sent, but the CLI refuses a fresh ID
@@ -1054,18 +1085,10 @@ export const layerQueryRunner: Layer.Layer<
                   appendStderr,
                 );
               }
-              const child = NodeChildProcess.spawn(spawnOptions.command, spawnOptions.args, {
-                cwd: spawnOptions.cwd,
-                env: spawnOptions.env,
-                signal: spawnOptions.signal,
-                windowsHide: true,
-                stdio: ["pipe", "pipe", "pipe"],
-              });
-              child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+              return spawnClaudeProcessTree(spawnOptions, stopWindowsTree, (chunk) => {
                 appendStderr(chunk);
                 options.stderr?.(chunk);
               });
-              return child;
             });
           let spawnedProcess: ClaudeSpawnedProcess | undefined;
           let processExited = false;

@@ -3,6 +3,7 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import { totalTokens } from "@t3tools/provider-core/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
@@ -225,7 +226,7 @@ describe("Muse history discovery", () => {
         });
         expect(close).toHaveBeenCalledOnce();
       }).pipe(
-        Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
+        Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         Effect.provideService(HostProcess.HomeDirectory, "/test-home"),
         Effect.provideService(HostProcess.Environment, {
           PATH: "/host/bin",
@@ -249,7 +250,7 @@ describe("Muse history discovery", () => {
         environment: {},
       });
       expect(directories).toEqual([]);
-    }).pipe(Effect.provide([NodeServices.layer, MuseUsageHome.layer])),
+    }).pipe(Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
   );
 
   it.effect(
@@ -293,7 +294,7 @@ describe("Muse history discovery", () => {
         expect(create).toHaveBeenCalledOnce();
         expect(close).toHaveBeenCalledOnce();
       }).pipe(
-        Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
+        Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         Effect.provideService(HostProcess.HomeDirectory, "/test-home"),
         Effect.provideService(HostProcess.Environment, {}),
       ),
@@ -337,7 +338,7 @@ describe("Muse history discovery", () => {
         expect(inherited).not.toEqual(changed);
         expect(create).toHaveBeenCalledTimes(4);
       }).pipe(
-        Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
+        Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         Effect.provideService(HostProcess.Environment, { XDG_DATA_HOME: "/host-data" }),
       ),
   );
@@ -373,7 +374,7 @@ describe("Muse history discovery", () => {
       expect(first).toHaveLength(1);
       expect(create).toHaveBeenCalledOnce();
       expect(close).toHaveBeenCalledOnce();
-    }).pipe(Effect.provide([NodeServices.layer, MuseUsageHome.layer])),
+    }).pipe(Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
   );
 
   it.effect("briefly caches failed discovery and retries after installation recovers", () =>
@@ -404,6 +405,6 @@ describe("Muse history discovery", () => {
       yield* TestClock.adjust("30 seconds");
       expect(yield* museUsageReader.directories(instance)).toHaveLength(1);
       expect(create).toHaveBeenCalledTimes(2);
-    }).pipe(Effect.provide([NodeServices.layer, MuseUsageHome.layer])),
+    }).pipe(Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
   );
 });

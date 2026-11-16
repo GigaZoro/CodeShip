@@ -7,7 +7,13 @@ import { spawnMspConnection, type MspHandshake, type SpawnedMspConnection } from
 import { it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import {
+  stopWindowsProcessTree,
+  type WindowsProcessTreeRoot,
+} from "@t3tools/shared/windowsProcessTree";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -252,7 +258,39 @@ describe("Muse SDK host", () => {
       yield* Fiber.join(interrupted);
       expect(released).toBe(true);
       expect(host.close).toHaveBeenCalledOnce();
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+// The SDK ends only the host on Windows, so what it started outlives it there.
+describe.runIf(isWindowsHost)("a Muse host on Windows", () => {
+  it.live("ends what the host left running once it exits", () =>
+    Effect.gen(function* () {
+      const sdk = yield* Effect.promise(() =>
+        vi.importActual<typeof import("@muse-code/sdk")>("@muse-code/sdk"),
+      );
+      const leftover = yield* leaderLeavingChild();
+      const exited = yield* Deferred.make<WindowsProcessTreeRoot>();
+
+      // The leader exits without answering initialize, so startup fails after its exit.
+      yield* Effect.exit(
+        Effect.tryPromise(() =>
+          createMuseSdkHost(
+            {
+              binaryPath: process.execPath,
+              launch: { command: leftover.command.command, args: [...leftover.command.args] },
+              stopTree: (root) => Deferred.doneUnsafe(exited, Effect.succeed(root)),
+            },
+            sdk.spawnMspConnection,
+          ),
+        ),
+      );
+      const root = yield* Deferred.await(exited);
+      yield* leftover.started;
+      yield* stopWindowsProcessTree(root);
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
 

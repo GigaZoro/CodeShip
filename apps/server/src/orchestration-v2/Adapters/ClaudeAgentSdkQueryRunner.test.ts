@@ -24,7 +24,12 @@ import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
-import { isDarwinHost } from "@t3tools/shared/testing/hostPlatform";
+import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import {
+  stopWindowsProcessTree,
+  type WindowsProcessTreeRoot,
+} from "@t3tools/shared/windowsProcessTree";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -36,6 +41,7 @@ import {
   ClaudePromptQueueClosedError,
   layerQueryRunner,
   spawnClaudeProcessGroup,
+  spawnClaudeProcessTree,
 } from "./ClaudeAdapterV2.ts";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
@@ -773,5 +779,32 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       const maxNice = isDarwinHost ? 20 : 19;
       assert.equal(priority, Math.min(maxNice, NodeOS.getPriority() + AGENT_NICE_INCREMENT));
     }),
+  );
+});
+
+// Node ends only the CLI on Windows, so what it started, such as its MCP servers, outlives it there.
+describe.runIf(isWindowsHost)("the Claude CLI on Windows", () => {
+  it.live("ends what the CLI left running once it exits", () =>
+    Effect.gen(function* () {
+      const leftover = yield* leaderLeavingChild();
+      const exited = yield* Deferred.make<WindowsProcessTreeRoot>();
+
+      spawnClaudeProcessTree(
+        {
+          command: leftover.command.command,
+          args: [...leftover.command.args],
+          cwd: process.cwd(),
+          env: process.env,
+          // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI exits by itself; nothing aborts it.
+          signal: new AbortController().signal,
+        },
+        (root) => Deferred.doneUnsafe(exited, Effect.succeed(root)),
+      );
+      const root = yield* Deferred.await(exited);
+      yield* leftover.started;
+      yield* stopWindowsProcessTree(root);
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

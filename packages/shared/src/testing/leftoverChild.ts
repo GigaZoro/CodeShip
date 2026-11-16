@@ -64,10 +64,12 @@ export const processPipe = Effect.gen(function* () {
 
 /**
  * A leader that starts a child and exits at once; the child would run for 5 minutes, past every
- * test's timeout. It holds a `processPipe`. On Windows the child is detached; on POSIX it stays in
- * the leader's process group.
+ * test's timeout. It holds a `processPipe`, and with `holdsOutput` also the leader's stdout, which
+ * then never ends. On Windows the child is detached; on POSIX it stays in the leader's process group.
  */
-export const leaderLeavingChild = Effect.gen(function* () {
+export const leaderLeavingChild = Effect.fn("leaderLeavingChild")(function* (
+  options: { readonly holdsOutput?: boolean } = {},
+) {
   const windows = (yield* HostProcess.Platform) === "win32";
   const pipe = yield* processPipe;
   const child =
@@ -76,11 +78,11 @@ export const leaderLeavingChild = Effect.gen(function* () {
   const leader =
     "const [child, pipe] = process.argv.slice(1);" +
     " require('node:child_process').spawn(process.execPath, ['-e', child, pipe]," +
-    ` { detached: ${windows}, stdio: 'ignore', windowsHide: true }).unref();`;
+    ` { detached: ${windows}, stdio: ${options.holdsOutput ? "['ignore', 'inherit', 'ignore']" : "'ignore'"}, windowsHide: true }).unref();`;
   return {
     command: ChildProcess.make(process.execPath, ["-e", leader, child, pipe.path], {
       stdin: "ignore",
-      stdout: "ignore",
+      stdout: options.holdsOutput ? "pipe" : "ignore",
       stderr: "ignore",
     }),
     /** The child connected. */

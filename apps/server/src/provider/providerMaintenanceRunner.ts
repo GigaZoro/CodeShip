@@ -121,7 +121,6 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
                 }),
             ),
           );
-        yield* Effect.addFinalizer(() => child.kill().pipe(Effect.ignore));
 
         const pendingProgress = yield* Ref.make<string | null>(null);
         const onProgress = input.onProgress;

@@ -15,7 +15,11 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import { stopWindowsProcessTree, withWindowsTreeRoot } from "@t3tools/shared/windowsProcessTree";
+import {
+  stopWindowsProcessTree,
+  withWindowsTreeRoot,
+  withoutWindowsTreeEnding,
+} from "@t3tools/shared/windowsProcessTree";
 import {
   MAX_TOOL_OUTPUT_IMAGES,
   MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH,
@@ -187,7 +191,8 @@ const terminatePiProcess = Effect.fn("PiRpc.terminatePiProcess")(function* (
 });
 
 export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSpawnOptions) {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  // Pi stops its own tree below.
+  const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
   const platform = yield* HostProcess.Platform;
   const scope = yield* Effect.scope;
 
