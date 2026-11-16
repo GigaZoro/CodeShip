@@ -1,3 +1,7 @@
+## 2026-11-16 — Scheduled tasks count every run and skip for 90 days
+
+- `list_scheduled_tasks` now returns each task's runs on that machine over the last 7 and 30 days, by outcome and by skip reason, so the share of runs a run condition skipped can be measured. Run history keeps only the newest 10 skips of each kind, so on a task that runs every 30 minutes it covered a few hours. The counts are kept per task and day for 90 days, start from the runs history still holds, and are removed with the task.
+
 ## 2026-11-16 — A scheduled task shows a run condition that keeps failing
 
 - A run condition that prints indented JSON, such as PowerShell's `ConvertTo-Json` output, now has its `reason` (or `error`) field recorded as the check's reason. Only the last line, often a lone `}`, was recorded before.

@@ -431,6 +431,24 @@ export const ScheduledTaskRunRecord = Schema.Struct({
 });
 export type ScheduledTaskRunRecord = typeof ScheduledTaskRunRecord.Type;
 
+/**
+ * How a task's occurrences on one machine ended over some UTC days. Run history keeps only the
+ * newest skips, so these counts are what the share of idle runs is measured from.
+ */
+export const ScheduledTaskRunCounts = Schema.Struct({
+  /** Occurrences by outcome; a running one counts once it ends. Outcomes with none are left out. */
+  outcomes: Schema.Record(Schema.String, NonNegativeInt),
+  /** The skipped occurrences by skip reason. */
+  skipReasons: Schema.Record(Schema.String, NonNegativeInt),
+});
+export type ScheduledTaskRunCounts = typeof ScheduledTaskRunCounts.Type;
+
+export const ScheduledTaskRecentRunCounts = Schema.Struct({
+  last7Days: ScheduledTaskRunCounts,
+  last30Days: ScheduledTaskRunCounts,
+});
+export type ScheduledTaskRecentRunCounts = typeof ScheduledTaskRecentRunCounts.Type;
+
 /** The latest occurrence a task's run condition skipped. */
 export const ScheduledTaskNoWorkSkip = Schema.Struct({
   at: IsoDateTime,

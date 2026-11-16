@@ -234,7 +234,9 @@ Things to know:
   so a task that skips often does not push its real runs out.
 - Agents set it with `schedule_task` (`runCondition`) and read it, with the last
   skipped time and its reason and a check that keeps failing
-  (`failingCheck`), from `list_scheduled_tasks`.
+  (`failingCheck`), from `list_scheduled_tasks`. Its `runCounts` counts every
+  run and skip on that machine over the last 7 and 30 days, by outcome and
+  skip reason, so the share of skipped times can be measured.
 
 ### Read and write ThreadPage from a check
 

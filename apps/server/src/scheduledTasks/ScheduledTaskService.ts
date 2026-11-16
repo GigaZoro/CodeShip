@@ -34,6 +34,7 @@ import {
   ScheduledTaskRunCheck,
   ScheduledTaskRunCondition,
   ScheduledTaskRunRecord,
+  type ScheduledTaskRecentRunCounts,
   type ScheduledTaskRunSkipReason,
   ScheduledTaskRunFailover,
   ScheduledTaskRunUsageLimit,
@@ -188,10 +189,13 @@ const LIVE_RUN_CHECK_LIMIT = 2 * MAX_SCHEDULED_TASK_MAX_LIVE_RUNS;
 type StalledWork = NonNullable<
   Effect.Success<ReturnType<typeof ThreadManagementService.stalledWork>>
 >;
-// Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over 90 days.
+// Runs (not skips) this recent stay beyond the newest 50, so usage can count a group's runs over
+// 90 days. Daily counts are kept as long.
 const RUN_HISTORY_WINDOW_MS = 90 * 24 * 60 * MINUTE_MS;
 const runHistoryCutoff = (startedAt: string) =>
   DateTime.formatIso(DateTime.makeUnsafe(Date.parse(startedAt) - RUN_HISTORY_WINDOW_MS));
+/** The UTC day `scheduled_task_daily_counts` files an ISO time under. */
+const utcDay = (isoTime: string) => isoTime.slice(0, 10);
 const WEBHOOK_DEDUPE_DELIVERY_RETENTION = 20;
 const WEBHOOK_FILTERED_DELIVERY_RETENTION = 20;
 const WEBHOOK_DEDUPE_LOG_PER_MINUTE = 10;
@@ -612,6 +616,11 @@ export class ScheduledTaskService extends Context.Service<
     readonly listRuns: (
       input: ScheduledTaskListRunsInput,
     ) => Effect.Effect<ScheduledTaskListRunsResult, ScheduledTaskError>;
+    /** Each task's occurrences here by outcome and skip reason; a task with none in 30 days is left out. */
+    readonly recentRunCounts: () => Effect.Effect<
+      ReadonlyMap<ScheduledTaskId, ScheduledTaskRecentRunCounts>,
+      ScheduledTaskError
+    >;
     readonly rotateWebhookToken: (
       input: ScheduledTaskRotateWebhookTokenInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -1224,6 +1233,86 @@ export const layer = Layer.effect(
       UPDATE scheduled_task_runs SET skip_reason = 'live_run_limit'
       WHERE skip_reason = 'last_run_working'
     `;
+    // Each task's occurrences by the UTC day they started, outcome and skip reason ('' for none).
+    // Run history drops all but the newest skips, so idle runs are counted here, by triggers that
+    // see every run row written or settled, an older build's too; history's pruning is not counted.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const existed = yield* sql`
+          SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_task_daily_counts'
+        `;
+        if (existed.length === 0) {
+          // Day first: the prune and the recent counts each read a range of days.
+          yield* sql`
+            CREATE TABLE scheduled_task_daily_counts (
+              task_id TEXT NOT NULL,
+              day TEXT NOT NULL,
+              outcome TEXT NOT NULL,
+              skip_reason TEXT NOT NULL,
+              count INTEGER NOT NULL,
+              PRIMARY KEY (day, task_id, outcome, skip_reason)
+            ) WITHOUT ROWID
+          `;
+          // The runs history still holds are all there is to count from before the table.
+          yield* sql`
+            INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+            SELECT task_id, substr(started_at, 1, 10), outcome, coalesce(skip_reason, ''), count(*)
+            FROM scheduled_task_runs WHERE outcome <> 'running'
+            GROUP BY 1, 2, 3, 4
+          `;
+        }
+        // Recreated each start, so a changed definition replaces the stored one.
+        yield* sql`DROP TRIGGER IF EXISTS scheduled_task_runs_count_insert`;
+        yield* sql`DROP TRIGGER IF EXISTS scheduled_task_runs_count_update`;
+        yield* sql`DROP TRIGGER IF EXISTS scheduled_tasks_count_delete`;
+        yield* sql`
+          CREATE TRIGGER scheduled_task_runs_count_insert
+          AFTER INSERT ON scheduled_task_runs
+          WHEN NEW.outcome <> 'running'
+          BEGIN
+            INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+            VALUES (NEW.task_id, substr(NEW.started_at, 1, 10), NEW.outcome,
+              coalesce(NEW.skip_reason, ''), 1)
+            ON CONFLICT (day, task_id, outcome, skip_reason) DO UPDATE SET count = count + 1;
+          END
+        `;
+        yield* sql`
+          CREATE TRIGGER scheduled_task_runs_count_update
+          AFTER UPDATE OF task_id, started_at, outcome, skip_reason ON scheduled_task_runs
+          WHEN OLD.task_id IS NOT NEW.task_id OR OLD.started_at IS NOT NEW.started_at
+            OR OLD.outcome IS NOT NEW.outcome OR OLD.skip_reason IS NOT NEW.skip_reason
+          BEGIN
+            UPDATE scheduled_task_daily_counts SET count = count - 1
+            WHERE OLD.outcome <> 'running' AND task_id = OLD.task_id
+              AND day = substr(OLD.started_at, 1, 10) AND outcome = OLD.outcome
+              AND skip_reason = coalesce(OLD.skip_reason, '');
+            INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+            SELECT NEW.task_id, substr(NEW.started_at, 1, 10), NEW.outcome,
+              coalesce(NEW.skip_reason, ''), 1
+            WHERE NEW.outcome <> 'running'
+            ON CONFLICT (day, task_id, outcome, skip_reason) DO UPDATE SET count = count + 1;
+          END
+        `;
+        // A trigger, so a task an older build deletes leaves no counts for a new task of its id.
+        yield* sql`
+          CREATE TRIGGER scheduled_tasks_count_delete
+          AFTER DELETE ON scheduled_tasks
+          BEGIN
+            DELETE FROM scheduled_task_daily_counts WHERE task_id = OLD.task_id;
+          END
+        `;
+        // The rename above moved the counts of the skips history still holds; this moves the rest,
+        // such as those an older build recorded and then pruned.
+        yield* sql`
+          INSERT INTO scheduled_task_daily_counts (task_id, day, outcome, skip_reason, count)
+          SELECT task_id, day, outcome, 'live_run_limit', count FROM scheduled_task_daily_counts
+          WHERE skip_reason = 'last_run_working'
+          ON CONFLICT (day, task_id, outcome, skip_reason) DO UPDATE
+            SET count = count + excluded.count
+        `;
+        yield* sql`DELETE FROM scheduled_task_daily_counts WHERE skip_reason = 'last_run_working'`;
+      }),
+    );
     // Outlives the task so a stale copy on another machine is removed, not restored.
     yield* sql`
       CREATE TABLE IF NOT EXISTS scheduled_task_shared_deletions (
@@ -1937,6 +2026,11 @@ export const layer = Layer.effect(
           )
           -- The failing-check mark reads these; pruning one would bring back older answers.
           AND run_id NOT IN (SELECT run_id FROM (${latestLocalChecks(record.taskId)}))
+        `),
+        // Every task's, so a task that stopped running does not keep its counts.
+        Effect.andThen(sql`
+          DELETE FROM scheduled_task_daily_counts
+          WHERE day < ${utcDay(runHistoryCutoff(record.startedAt))}
         `),
       );
     const insertRunRecord = (record: Parameters<typeof writeRunRecord>[0]) =>
@@ -5287,6 +5381,53 @@ export const layer = Layer.effect(
       error: row.error,
     });
 
+    const recentRunCounts: ScheduledTaskService["Service"]["recentRunCounts"] = Effect.fn(
+      "ScheduledTaskService.recentRunCounts",
+    )(function* () {
+      const now = yield* DateTime.now;
+      const daysAgo = (days: number) =>
+        utcDay(DateTime.formatIso(DateTime.subtract(now, { days })));
+      const rows = yield* sql<{
+        readonly task_id: ScheduledTaskId;
+        readonly outcome: string;
+        readonly skip_reason: string;
+        readonly last_7_days: number;
+        readonly last_30_days: number;
+      }>`
+        SELECT task_id, outcome, skip_reason,
+          sum(CASE WHEN day >= ${daysAgo(6)} THEN count ELSE 0 END) AS last_7_days,
+          sum(count) AS last_30_days
+        FROM scheduled_task_daily_counts WHERE day >= ${daysAgo(29)}
+        GROUP BY task_id, outcome, skip_reason
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.mapError((cause) => taskError("Could not count scheduled task runs.", { cause })),
+      );
+      type Counts = { outcomes: Record<string, number>; skipReasons: Record<string, number> };
+      const counts = new Map<ScheduledTaskId, { last7Days: Counts; last30Days: Counts }>();
+      const add = (into: Counts, row: (typeof rows)[number], count: number) => {
+        // Zero when a bucket's runs are all older than the window or settled to another outcome.
+        if (count <= 0) return;
+        into.outcomes[row.outcome] = (into.outcomes[row.outcome] ?? 0) + count;
+        if (row.outcome === "skipped") {
+          into.skipReasons[row.skip_reason] = (into.skipReasons[row.skip_reason] ?? 0) + count;
+        }
+      };
+      for (const row of rows) {
+        let task = counts.get(row.task_id);
+        if (task === undefined) {
+          task = {
+            last7Days: { outcomes: {}, skipReasons: {} },
+            last30Days: { outcomes: {}, skipReasons: {} },
+          };
+          counts.set(row.task_id, task);
+        }
+        add(task.last7Days, row, row.last_7_days);
+        add(task.last30Days, row, row.last_30_days);
+      }
+      return counts;
+    });
+
     const listRuns: ScheduledTaskService["Service"]["listRuns"] = (input) =>
       sql<RunRecordRow>`
         SELECT run_id, trigger, scheduled_for, started_at, completed_at, outcome, thread_id,
@@ -6232,6 +6373,7 @@ export const layer = Layer.effect(
       runNow,
       liveRuns,
       listRuns,
+      recentRunCounts,
       rotateWebhookToken,
       listWebhookDeliveries,
       getWebhookDelivery,

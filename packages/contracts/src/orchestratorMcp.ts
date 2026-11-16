@@ -30,6 +30,7 @@ import {
   ScheduledTaskPlacement,
   ScheduledTaskPromptFile,
   ScheduledTaskPromptFilePath,
+  ScheduledTaskRecentRunCounts,
   ScheduledTaskDelegateProviders,
   ScheduledTaskMaxLiveRuns,
   ScheduledTaskRunCondition,
@@ -1047,6 +1048,10 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   ).annotate({
     description:
       "The last run here. working: its thread is still going. stopped: a user or agent stopped it on purpose. occurrence: null when run now or by a webhook.",
+  }),
+  runCounts: Schema.optional(ScheduledTaskRecentRunCounts).annotate({
+    description:
+      "list_scheduled_tasks only: occurrences here over the last 7 and 30 UTC days, today included.",
   }),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;

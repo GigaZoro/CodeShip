@@ -463,6 +463,22 @@ it.effect(
         SELECT skip_reason FROM scheduled_task_runs WHERE run_id = 'run:old-skip'
       `;
       assert.deepEqual(oldSkips, [{ skip_reason: "live_run_limit" }]);
+      // Runs recorded before the counts existed, runs settled at startup and runs started since are
+      // each counted once, under the outcome and skip reason they end with.
+      const counted = yield* sql`
+        SELECT task_id, day, outcome, skip_reason, count FROM scheduled_task_daily_counts
+        WHERE count > 0 ORDER BY task_id, outcome
+      `;
+      assert.deepEqual(
+        counted,
+        yield* sql`
+          SELECT task_id, substr(started_at, 1, 10) AS day, outcome,
+            coalesce(skip_reason, '') AS skip_reason, count(*) AS count
+          FROM scheduled_task_runs WHERE outcome <> 'running'
+          GROUP BY 1, 2, 3, 4 ORDER BY task_id, outcome
+        `,
+      );
+      assert.lengthOf(counted, 11);
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -1824,6 +1840,11 @@ it.effect.each([
                 (run) => run.scheduledFor === task.nextRunAt,
               );
               assert.deepInclude(first, { outcome: "failed", error: reason });
+              // Its count moves with it; the run launched after the stop succeeded.
+              assert.deepEqual(
+                (yield* service.recentRunCounts()).get(task.id)?.last7Days.outcomes,
+                { failed: 1, succeeded: 1 },
+              );
             }
             return;
           }
@@ -2196,7 +2217,7 @@ it.effect("a check that skips a caught-up missed run records it as a catch-up", 
 );
 
 it.effect(
-  "no-work and usage-limited skips each keep their own history, so they never push real runs out",
+  "no-work and usage-limited skips each keep their own history, so they never push real runs out, and daily counts keep every occurrence for 90 days, any task's, until the task is deleted, and count each window from its oldest day",
   () =>
     withRunConditions(
       () => Effect.succeed(NO_WORK),
@@ -2208,6 +2229,21 @@ it.effect(
           );
           yield* service.runNow({ id: task.id });
           const ranAt = Date.parse((yield* runsOf(service))[0]!.startedAt);
+          const daysBefore = (time: number, days: number) =>
+            DateTime.formatIso(DateTime.makeUnsafe(time - days * 24 * 60 * 60 * 1_000));
+          const skipAt = (
+            id: string,
+            taskId: string,
+            at: string,
+            reason: "no_work" | "usage_limited",
+          ) => sql`
+            INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at,
+              completed_at, outcome, skip_reason)
+            VALUES (${id}, ${taskId}, 'scheduled', ${at}, ${at}, ${at}, 'skipped', ${reason})
+          `;
+          yield* skipAt("skip-20-days-ago", task.id, daysBefore(ranAt, 20), "no_work");
+          // A task that no longer runs, so only another task's run can prune its counts.
+          yield* skipAt("idle-91-days-ago", "task:idle", daysBefore(ranAt, 91), "no_work");
           // More skips of each kind than the whole history keeps, all after the run.
           for (let index = 1; index <= 60; index += 1) {
             const at = DateTime.formatIso(DateTime.makeUnsafe(ranAt + index * 1_000));
@@ -2247,6 +2283,29 @@ it.effect(
             runs.filter((run) => run.skipReason == null).map((run) => run.trigger),
             ["manual"],
           );
+
+          const days = sql<{ readonly day: string }>`
+            SELECT DISTINCT day FROM scheduled_task_daily_counts ORDER BY day
+          `;
+          assert.equal((yield* days)[0]?.day, daysBefore(ranAt, 20).slice(0, 10));
+          // Each window's oldest day and the day before it, as of when the counts are read.
+          const now = DateTime.toEpochMillis(yield* DateTime.now);
+          yield* skipAt("limited-6-days-ago", task.id, daysBefore(now, 6), "usage_limited");
+          yield* skipAt("limited-7-days-ago", task.id, daysBefore(now, 7), "usage_limited");
+          yield* skipAt("skip-29-days-ago", task.id, daysBefore(now, 29), "no_work");
+          yield* skipAt("skip-30-days-ago", task.id, daysBefore(now, 30), "no_work");
+          assert.deepEqual((yield* service.recentRunCounts()).get(task.id), {
+            last7Days: {
+              outcomes: { succeeded: 1, skipped: 122 },
+              skipReasons: { no_work: 61, usage_limited: 61 },
+            },
+            last30Days: {
+              outcomes: { succeeded: 1, skipped: 125 },
+              skipReasons: { no_work: 63, usage_limited: 62 },
+            },
+          });
+          yield* service.delete({ id: task.id });
+          assert.lengthOf(yield* days, 0);
         }),
     ),
 );
@@ -2586,10 +2645,11 @@ it.effect("a group change during a launch moves the chat it starts", () =>
 );
 
 it.effect(
-  "a run a restart cut links its chat only once settled, files it as its launch did, and its task keeps that outcome when the next startup is cut too or gets it from a later startup that can read the chat",
+  "a run a restart cut links its chat only once settled, files it as its launch did, and its task keeps that outcome when the next startup is cut too or gets it from a later startup that can read the chat, and each run is counted once across both startups, an older build's pruned skip under its reason's new name",
   () =>
     Effect.gen(function* () {
       const cutAt = "2026-11-10T12:00:00.000Z";
+      const skippedAt = "2026-11-10T11:00:00.000Z";
       const moves: Array<string> = [];
       const workers = new Map<string, Effect.Effect<void>>();
       const makeLayer = () =>
@@ -2670,6 +2730,15 @@ it.effect(
             ('run:misread', 'task:misread', 'scheduled', ${cutAt}, 'running', 'thread:misread',
               'Autopilot')
         `;
+        // An older build recorded two skips under the reason's old name and pruned one.
+        yield* sql`
+          INSERT INTO scheduled_task_runs (run_id, task_id, trigger, started_at, outcome, skip_reason)
+          VALUES
+            ('run:old-skip', 'task:settled', 'scheduled', ${skippedAt}, 'skipped', 'last_run_working'),
+            ('run:pruned-skip', 'task:settled', 'scheduled', ${skippedAt}, 'skipped',
+              'last_run_working')
+        `;
+        yield* sql`DELETE FROM scheduled_task_runs WHERE run_id = 'run:pruned-skip'`;
         return yield* cutChat;
       }).pipe(Effect.provide(makeLayer()));
       const afterRestart = yield* Effect.gen(function* () {
@@ -2687,9 +2756,14 @@ it.effect(
             SELECT task_id, thread_id, filed_folder, detached FROM scheduled_task_threads
             ORDER BY task_id
           `,
+          counts: yield* sql`
+            SELECT task_id, day, outcome, skip_reason, count FROM scheduled_task_daily_counts
+            ORDER BY task_id, outcome
+          `,
         };
       }).pipe(Effect.provide(makeLayer()));
       const settled = { last_run_status: "succeeded", last_run_error: null, run_count: 1 };
+      const counted = { day: "2026-11-10", outcome: "succeeded", skip_reason: "", count: 1 };
       assert.deepEqual(
         { whileRunning, ...afterRestart, moves },
         {
@@ -2718,6 +2792,18 @@ it.effect(
               filed_folder: "Autopilot",
               detached: 0,
             },
+          ],
+          counts: [
+            { task_id: "task:cut", ...counted },
+            { task_id: "task:misread", ...counted },
+            {
+              ...counted,
+              task_id: "task:settled",
+              outcome: "skipped",
+              skip_reason: "live_run_limit",
+              count: 2,
+            },
+            { task_id: "task:settled", ...counted },
           ],
           moves: [],
         },

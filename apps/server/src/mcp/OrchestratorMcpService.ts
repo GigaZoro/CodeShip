@@ -77,6 +77,7 @@ import {
   type ScheduledTask,
   ScheduledTaskId,
   type ScheduledTaskProjectMachineOrder,
+  type ScheduledTaskRecentRunCounts,
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   type ServerProviderModel,
@@ -451,6 +452,11 @@ function scheduledTaskSummary(
     lastRun,
   };
 }
+
+const NO_RECENT_RUN_COUNTS: ScheduledTaskRecentRunCounts = {
+  last7Days: { outcomes: {}, skipReasons: {} },
+  last30Days: { outcomes: {}, skipReasons: {} },
+};
 
 const RUN_CONDITION_NEEDS_FULL_ACCESS =
   "A run condition runs a command without approval, so only a caller with full access can set one.";
@@ -2788,6 +2794,16 @@ const make = Effect.gen(function* () {
               failure("orchestration_error", `Could not list scheduled tasks: ${error.message}`),
             ),
           );
+        const runCounts = yield* scheduledTasks
+          .recentRunCounts()
+          .pipe(
+            Effect.mapError((error) =>
+              failure(
+                "orchestration_error",
+                `Could not count scheduled task runs: ${error.message}`,
+              ),
+            ),
+          );
         return {
           tasks: yield* Effect.forEach(
             tasks
@@ -2800,6 +2816,11 @@ const make = Effect.gen(function* () {
                 scope,
                 { parent, limits, machineOrders: projectMachineOrders ?? [], includePrompt },
                 task,
+              ).pipe(
+                Effect.map((summary) => ({
+                  ...summary,
+                  runCounts: runCounts.get(task.id) ?? NO_RECENT_RUN_COUNTS,
+                })),
               ),
           ),
           claimProtocol: SCHEDULED_TASK_CLAIM_PROTOCOL,

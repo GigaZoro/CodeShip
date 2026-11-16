@@ -34,6 +34,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
+import { ServerActivation } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RunConditionCheck from "./RunConditionCheck.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -131,6 +132,9 @@ const withService = <A, E>(
     yield* TestClock.setTime(NOW);
     const sql = yield* SqlClient.SqlClient;
     const layer = ScheduledTaskService.layer.pipe(
+      // Registering also runs due work once, whenever this fiber next yields; parked, due work
+      // runs only on the ticks a test drives, at the time it sets.
+      Layer.provide(Layer.succeed(ServerActivation, Effect.never)),
       Layer.provide(
         Layer.mergeAll(
           NodeCrypto.layer,
@@ -790,11 +794,10 @@ const runScenario = <A, E>(
             ScheduledTaskService.CHANGED_IN_APP,
           );
           const changes = yield* Queue.unbounded<void>();
-          yield* Effect.forkScoped(
-            service.subscribeList().pipe(
-              Stream.drop(1),
-              Stream.runForEach(() => Queue.offer(changes, undefined)),
-            ),
+          yield* service.subscribeList().pipe(
+            Stream.drop(1),
+            Stream.runForEach(() => Queue.offer(changes, undefined)),
+            Effect.forkScoped({ startImmediately: true }),
           );
           return yield* body({
             service,
@@ -1205,11 +1208,10 @@ it.effect("a late takeover of the occurrence before does not count as this occur
             ScheduledTaskService.CHANGED_IN_APP,
           );
           const changes = yield* Queue.unbounded<void>();
-          yield* Effect.forkScoped(
-            service.subscribeList().pipe(
-              Stream.drop(1),
-              Stream.runForEach(() => Queue.offer(changes, undefined)),
-            ),
+          yield* service.subscribeList().pipe(
+            Stream.drop(1),
+            Stream.runForEach(() => Queue.offer(changes, undefined)),
+            Effect.forkScoped({ startImmediately: true }),
           );
           const scenario = {
             sql,
