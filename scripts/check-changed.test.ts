@@ -157,6 +157,35 @@ describe("check:changed", () => {
     }),
   );
 
+  it.effect(
+    "gives the next free slot to the run holding the landing turn ahead of an earlier waiter",
+    () =>
+      Effect.gen(function* () {
+        const started: Array<string> = [];
+        const step = (name: string, seconds: number): Step<never> => ({
+          name,
+          run: () =>
+            Effect.gen(function* () {
+              started.push(name);
+              yield* Effect.sleep(`${seconds} seconds`);
+              return { ok: true, output: "" };
+            }),
+        });
+        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+        const holder = yield* runSteps([step("holder", 3)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("100 millis");
+        const earlier = yield* runSteps([step("earlier", 1)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("100 millis");
+        const landing = yield* runSteps([step("landing", 1)], { ...options, landing: true }).pipe(
+          Effect.forkChild,
+        );
+        for (let second = 0; second < 10; second++) yield* TestClock.adjust("1 second");
+        yield* Effect.all([Fiber.join(holder), Fiber.join(earlier), Fiber.join(landing)]);
+
+        assert.deepStrictEqual(started, ["holder", "landing", "earlier"]);
+      }),
+  );
+
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
     Effect.gen(function* () {
       let interrupted = false;

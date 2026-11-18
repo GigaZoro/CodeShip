@@ -23,6 +23,7 @@
 // group, or its process tree on Windows, and reported as TIMEOUT. A rerun on
 // exactly the files of the last passing run prints that run's summary.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
@@ -77,7 +78,7 @@ const isSqliteBusy = (cause: unknown) =>
 // Every run sharing `directory` draws from this budget. A slot is an open exclusive
 // transaction on its file, which the OS releases when the process exits, killed or not.
 // Open the files only through SQLite: closing any other handle drops this process's lock.
-const sharedBudget = (directory: string, size: number) => {
+const sharedBudget = (directory: string, size: number, landing: boolean) => {
   const files = Array.from({ length: size }, (_, index) =>
     NodePath.join(directory, `slot-${index}.sqlite`),
   );
@@ -97,10 +98,49 @@ const sharedBudget = (directory: string, size: number) => {
     yield* Deferred.succeed(waiting, undefined);
   });
 
+  // A landing run (the one holding main's landing turn, scripts/landing-turn.cjs) holds a marker file's
+  // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
+  // its process, so a crashed landing blocks nobody.
+  const markerPrefix = "landing-wait-";
+  let marker: NodeSqlite.DatabaseSync | undefined;
+  const markLanding = () => {
+    if (!landing || marker) return;
+    marker = new NodeSqlite.DatabaseSync(
+      NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`),
+    );
+    marker.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+  };
+  const unmarkLanding = () => {
+    marker?.close();
+    marker = undefined;
+    NodeFS.rmSync(NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`), {
+      force: true,
+    });
+  };
+  const landingWaits = () =>
+    NodeFS.readdirSync(directory)
+      .filter((name) => name.startsWith(markerPrefix))
+      .some((name) => {
+        const file = NodePath.join(directory, name);
+        const db = new NodeSqlite.DatabaseSync(file);
+        try {
+          db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+        } catch (cause) {
+          if (isSqliteBusy(cause)) return true;
+          throw cause;
+        } finally {
+          db.close();
+        }
+        // Nobody held it: a marker its landing left behind.
+        NodeFS.rmSync(file, { force: true });
+        return false;
+      });
+
   const lockFree = (max: number) =>
     Effect.try({
       try: () => {
         const held: Array<NodeSqlite.DatabaseSync> = [];
+        if (!landing && landingWaits()) return held;
         try {
           for (const file of files) {
             if (held.length === max) break;
@@ -135,7 +175,11 @@ const sharedBudget = (directory: string, size: number) => {
           ),
         ),
       );
-      if (held.length > 0) return held.length;
+      if (held.length > 0) {
+        unmarkLanding();
+        return held.length;
+      }
+      yield* Effect.try({ try: markLanding, catch: String });
       if (holding === 0 && !announced) {
         announced = true;
         yield* Console.log(
@@ -180,9 +224,11 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
     readonly timeoutSeconds: number;
     // An existing directory holding the machine's budget slots; every run given the same one shares them.
     readonly slotDirectory: string;
+    // Set for the run that holds main's landing turn: it gets the next free slots ahead of other runs.
+    readonly landing?: boolean;
   },
 ) {
-  const budget = sharedBudget(options.slotDirectory, options.concurrency);
+  const budget = sharedBudget(options.slotDirectory, options.concurrency, options.landing ?? false);
   // Steps claim budget one at a time, in order, so a step later in the list
   // never starts ahead of one still waiting for a slot.
   const admission = yield* Semaphore.make(1);
@@ -877,7 +923,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     .trim();
   const slotDirectory = path.join(gitDirectory, "t3-check-changed");
   yield* fs.makeDirectory(slotDirectory, { recursive: true });
-  const results = yield* runSteps(steps, { concurrency, timeoutSeconds, slotDirectory });
+  const results = yield* runSteps(steps, {
+    concurrency,
+    timeoutSeconds,
+    slotDirectory,
+    // The landing command (.github/scripts/landing-turn.cjs) gives its checks the turn it holds.
+    landing: Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN"))),
+  });
 
   const summary = ["check:changed summary"];
   for (const result of results) {
