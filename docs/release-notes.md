@@ -1,3 +1,7 @@
+## 2026-11-18 — The SQLite reader-fallback test passes on Windows
+
+- The test that checks the server falls back to the writer when its database reader cannot open the file deleted the live database to force that, which Windows refuses while the file is open. It now makes the reader worker report the failure instead, so it runs the same on every host. No change to the app.
+
 ## 2026-11-18 — The eval for setting a Claude account's Auto-compact after has run
 
 - The `account-auto-compact-window` eval case failed on the tool text from before agents could set a provider account's shared settings and passes on the current text, on GPT-6 Luna and GPT-6 Astra. The results are in the MCP tool use eval's README.

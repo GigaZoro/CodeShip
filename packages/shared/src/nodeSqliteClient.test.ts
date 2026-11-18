@@ -18,7 +18,7 @@ import * as SqliteClient from "./nodeSqliteClient.ts";
 
 const startedWorkers = vi.hoisted((): Array<NodeWorkerThreads.Worker> => []);
 const silentWorkers = vi.hoisted(() => ({ on: false, readyOnTerminate: false }));
-const failingWorkers = vi.hoisted(() => ({ message: undefined as string | undefined }));
+const unopenableWorkers = vi.hoisted(() => ({ on: false }));
 
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof NodeWorkerThreads>();
@@ -27,8 +27,11 @@ vi.mock("node:worker_threads", async (importOriginal) => {
       super(
         ...((silentWorkers.on
           ? ["setInterval(() => {}, 1 << 30);", { eval: true }]
-          : failingWorkers.message !== undefined
-            ? [`throw new Error(${JSON.stringify(failingWorkers.message)});`, { eval: true }]
+          : unopenableWorkers.on
+            ? [
+                `require("node:worker_threads").parentPort.postMessage({ type: "unavailable", message: "cannot open database" });`,
+                { eval: true },
+              ]
             : args) as ConstructorParameters<typeof actual.Worker>),
       );
       startedWorkers.push(this);
@@ -407,12 +410,13 @@ const withFileClient = <A, E>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 it.effect("uses the writer when the reader cannot open the database", () =>
-  withFileClient((sql, filename) =>
+  withFileClient((sql) =>
     Effect.gen(function* () {
       yield* sql`PRAGMA journal_mode = WAL`;
       yield* sql`CREATE TABLE entries(name TEXT NOT NULL)`;
       yield* sql`INSERT INTO entries VALUES ('kept')`;
-      yield* (yield* FileSystem.FileSystem).remove(filename);
+      // Removing the file instead fails with EBUSY on Windows, which locks an open database.
+      unopenableWorkers.on = true;
       const startedBefore = startedWorkers.length;
 
       assert.equal(yield* sql.withTransaction(countEntries(sql)).pipe(SqliteClient.readOnly), 1);
@@ -437,7 +441,13 @@ it.effect("uses the writer when the reader cannot open the database", () =>
       yield* Fiber.join(holder);
       assert.equal(yield* Fiber.join(other), 1);
       assert.equal(startedWorkers.length, startedBefore + 1);
-    }),
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          unopenableWorkers.on = false;
+        }),
+      ),
+    ),
   ),
 );
 
