@@ -12,6 +12,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
+  RunAttemptId,
   RuntimeRequestId,
   ScheduledTaskId,
   ThreadId,
@@ -24,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import { vi } from "vite-plus/test";
 import * as EventStore from "./EventStore.ts";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -38,6 +40,7 @@ import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1014,6 +1017,248 @@ it.effect.each(["thread.stop", "thread.snooze", "thread.settle"] as const)(
         restartContinuationOfRunId: run.id,
       });
       assert.deepEqual((yield* threadState(threadId)).runs, ["cancelled"]);
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each([
+  "missing session",
+  "live session",
+  "only if active",
+  "without queue hold",
+] as const)(
+  "per-run Stop with a queued restart continuation and background work (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const threadId = ThreadId.make("thread:queued-restart-background");
+      yield* createWatchingThread(threadId, 7);
+      yield* send(threadId, "source", "start_immediately");
+      yield* delegate(threadId, "awaited task");
+      yield* send(threadId, "continuation", "queue_after_active");
+      yield* send(threadId, "later", "queue_after_active");
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const [source, queued, later] = before.runs;
+      assert.isDefined(source);
+      assert.isDefined(queued);
+      assert.isDefined(later);
+      const attempt = before.attempts.find((candidate) => candidate.id === source.activeAttemptId)!;
+      const owner = before.providerThreads.find(
+        (candidate) => candidate.id === source.providerThreadId,
+      )!;
+      const now = yield* DateTime.now;
+      const event = { threadId, occurredAt: now };
+      const sessionId = ProviderSessionId.make("session:source");
+      const turn = {
+        id: ProviderTurnId.make("turn:source"),
+        providerThreadId: owner.id,
+        nodeId: source.rootNodeId!,
+        runAttemptId: attempt.id,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "completed" as const,
+        startedAt: now,
+        completedAt: now,
+      };
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("source"),
+        type: "run.updated",
+        payload: { ...source, status: "completed", startedAt: now, completedAt: now },
+      });
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("attempt"),
+        type: "run-attempt.updated",
+        payload: {
+          ...attempt,
+          attemptOrdinal: 2,
+          status: "completed",
+          startedAt: now,
+          completedAt: now,
+        },
+      });
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("queued"),
+        type: "run.updated",
+        payload: { ...queued, restartContinuationOfRunId: source.id },
+      });
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("turn"),
+        type: "provider-turn.updated",
+        payload: turn,
+      });
+      const roster = [{ taskId: "awaited-task", kind: "background_task" as const }];
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("owner"),
+        type: "provider-thread.updated",
+        payload: { ...owner, providerSessionId: sessionId, pendingBackgroundTasks: roster },
+      });
+      const otherThreadId = ProviderThreadId.make("provider-thread:background");
+      const otherTurnId = ProviderTurnId.make("turn:background");
+      const earlierAttemptId = RunAttemptId.make("attempt:background");
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("earlier-attempt"),
+        type: "run-attempt.updated",
+        payload: {
+          ...attempt,
+          id: earlierAttemptId,
+          attemptOrdinal: 1,
+          providerThreadId: otherThreadId,
+          providerTurnId: otherTurnId,
+          status: "completed",
+          startedAt: now,
+          completedAt: now,
+        },
+      });
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("other-thread"),
+        type: "provider-thread.updated",
+        payload: { ...owner, id: otherThreadId, providerSessionId: sessionId },
+      });
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("other-turn"),
+        type: "provider-turn.updated",
+        payload: {
+          ...turn,
+          id: otherTurnId,
+          providerThreadId: otherThreadId,
+          runAttemptId: earlierAttemptId,
+        },
+      });
+      const itemId = TurnItemId.make("item:background-command");
+      yield* projections.apply({
+        ...event,
+        id: EventId.make("background-command"),
+        type: "turn-item.updated",
+        payload: {
+          id: itemId,
+          threadId,
+          runId: source.id,
+          nodeId: source.rootNodeId,
+          parentItemId: null,
+          nativeItemRef: null,
+          ordinal: before.turnItems.length + 1,
+          title: "Background command",
+          startedAt: now,
+          updatedAt: now,
+          type: "command_execution",
+          status: "running",
+          completedAt: null,
+          providerThreadId: otherThreadId,
+          providerTurnId: otherTurnId,
+          input: "background command",
+        },
+      });
+      const interruptedTurns: ProviderTurnId[] = [];
+      if (scenario === "live session") {
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const unexpected = () => Effect.die("Only interruptTurn is expected during Stop");
+        const session = vi.spyOn(sessions, "get").mockReturnValue(
+          Effect.succeedSome({
+            instanceId,
+            driver: adapter.driver,
+            providerSessionId: sessionId,
+            providerSession: {
+              id: sessionId,
+              driver: adapter.driver,
+              providerInstanceId: instanceId,
+              status: "ready",
+              cwd: process.cwd(),
+              model: modelSelection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+            events: Stream.empty,
+            ensureThread: unexpected,
+            resumeThread: unexpected,
+            startTurn: unexpected,
+            steerTurn: unexpected,
+            respondToRuntimeRequest: unexpected,
+            readThreadSnapshot: unexpected,
+            rollbackThread: unexpected,
+            forkThread: unexpected,
+            interruptTurn: ({ providerTurnId }) =>
+              Effect.sync(() => {
+                interruptedTurns.push(providerTurnId);
+              }),
+          } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => session.mockRestore()));
+      }
+      const commandId = CommandId.make("stop-queued-restart");
+      const holdQueue = scenario !== "without queue hold";
+      const onlyIfActive = scenario === "only if active";
+      const { storedEvents } = yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        threadId,
+        commandId,
+        runId: source.id,
+        holdQueue,
+        ...(onlyIfActive ? { onlyIfActive } : {}),
+      });
+      const interrupts = (yield* outbox.listByCommandId(commandId)).flatMap(({ request }) =>
+        request.type === "provider-turn.interrupt" ? [request] : [],
+      );
+      assert.sameDeepMembers(
+        interrupts,
+        scenario === "live session"
+          ? [
+              [owner.id, turn.id],
+              [otherThreadId, otherTurnId],
+            ].map(([providerThreadId, providerTurnId]) => ({
+              type: "provider-turn.interrupt",
+              providerSessionId: sessionId,
+              providerThreadId,
+              providerTurnId,
+            }))
+          : [],
+      );
+      if (scenario === "live session") {
+        // The fixture seeded completed turns directly. Only the Stop effects need execution.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${commandId}`;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* worker.drain();
+        assert.sameMembers(interruptedTurns, [turn.id, otherTurnId]);
+      }
+      const stopped = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        stopped.providerThreads.find((p) => p.id === owner.id)!.pendingBackgroundTasks,
+        onlyIfActive ? roster : [],
+      );
+      assert.equal(
+        stopped.turnItems.find((item) => item.id === itemId)?.status,
+        onlyIfActive ? "running" : "interrupted",
+      );
+      assert.equal(stopped.runs.find((run) => run.id === queued.id)?.status, "cancelled");
+      assert.sameMembers(
+        storedEvents.flatMap(({ event }) =>
+          event.type === "turn-item.updated" && event.payload.type === "run_interrupt_request"
+            ? [event.runId]
+            : [],
+        ),
+        [queued.id, source.id],
+      );
+      assert.lengthOf(
+        storedEvents.filter(
+          ({ event }) =>
+            event.type === "run.updated" &&
+            event.payload.id === later.id &&
+            event.payload.queueHeld,
+        ),
+        holdQueue ? 1 : 0,
+      );
+      if (!onlyIfActive) assert.equal(stopped.subagents[0]?.completionDelivery?.state, "disposed");
     }).pipe(Effect.provide(layerTest)),
 );
 
