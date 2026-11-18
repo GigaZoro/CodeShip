@@ -2,6 +2,10 @@
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
 
+## 2026-11-19 — A helper in a linked environment can get its own worktree
+
+- `delegate_task` with `isolation: "worktree"` and a linked environment as target now starts the helper in a new worktree there, branched from the commit your thread's checkout is on, instead of refusing. The commit has to be pushed so the other machine can fetch it; an unpushed one is refused with a message naming it. The helper's worktree is cleaned up with its thread there, as for a helper on this machine.
+
 ## 2026-11-19 — A daily scheduled task refused for a usage limit runs when the allowance returns
 
 - A fixed-time scheduled task that catches up missed runs used to lose its whole day when its account was out of usage at its time. It now waits and runs once when the allowance returns, unless its next time comes first. Interval tasks are unchanged.

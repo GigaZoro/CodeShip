@@ -111,6 +111,8 @@ interface BoxThread {
   readonly delegatedFrom: Ref.Ref<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>;
   /** The model and modes it was launched with. */
   readonly launchedWith: Ref.Ref<LaunchedWith | null>;
+  /** The workspace the thread there was launched with. */
+  readonly workspaceStrategy: Ref.Ref<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>;
   /** The project the thread there was launched in. */
   readonly launchedProject: Ref.Ref<ProjectId | null>;
   /** The first message the thread there was launched with. */
@@ -174,6 +176,9 @@ const makeBoxThread = Effect.gen(function* () {
     ),
     delegatedFrom: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>(null),
     launchedWith: yield* Ref.make<LaunchedWith | null>(null),
+    workspaceStrategy: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>(
+      null,
+    ),
     launchedProject: yield* Ref.make<ProjectId | null>(null),
     message: yield* Ref.make<string | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
@@ -530,6 +535,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
       ),
   });
   const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
+    checkWorktreeBase: () => Effect.void,
     launch: (input) =>
       Ref.get(thread.runless).pipe(
         Effect.flatMap((runless) =>
@@ -537,6 +543,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
             Effect.andThen(Ref.set(thread.linkOrigin, input.linkOrigin ?? null)),
             Effect.andThen(Ref.set(thread.delegatedFrom, input.delegatedFrom ?? null)),
             Effect.andThen(Ref.set(thread.launchedProject, input.projectId)),
+            Effect.andThen(Ref.set(thread.workspaceStrategy, input.workspaceStrategy)),
             Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
             Effect.andThen(
               Ref.set(thread.launchedWith, {
@@ -672,6 +679,8 @@ const makeLaptop = (
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
   identity = { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
+  /** Whether the parent checkout's commit is on a remote. */
+  pushed = true,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -744,7 +753,15 @@ const makeLaptop = (
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
-      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(
+        Layer.mock(GitVcsDriver.GitVcsDriver)({
+          resolveCommit: () => Effect.succeed({ commitSha: parentCommit } as never),
+          execute: () =>
+            Effect.succeed({
+              stdout: pushed ? "refs/remotes/origin/main\n" : "",
+            } as never),
+        }),
+      ),
       Layer.fresh,
     );
     const here = yield* Layer.build(layerHere);
@@ -1376,7 +1393,9 @@ it.effect("a driver the box has no instance of is refused with the box's instanc
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("refuses worktree isolation for a task there before launching anything", () =>
+const parentCommit = "0123456789abcdef0123456789abcdef01234567";
+
+it.effect("starts a task there in a new worktree from the parent's pushed commit", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -1394,8 +1413,36 @@ it.effect("refuses worktree isolation for a task there before launching anything
         target: { environmentId: box.environmentId },
         isolation: "worktree",
       });
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      expect(yield* Ref.get(thread.workspaceStrategy)).toEqual({
+        type: "worktree",
+        baseRef: parentCommit,
+        startFromOrigin: true,
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("refuses worktree isolation for a commit that is not pushed, naming it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers, undefined, undefined, false);
+      yield* linkTo(a.links, b, "auto");
+      yield* seedParent(a);
+
+      const result = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId },
+        isolation: "worktree",
+      });
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.content)).toContain("isolation");
+      expect(JSON.stringify(result.content)).toContain(parentCommit);
       expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),

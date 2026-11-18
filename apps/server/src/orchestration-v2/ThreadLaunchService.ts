@@ -174,6 +174,8 @@ export class ThreadLaunchBaseRefError extends Schema.TaggedError<ThreadLaunchBas
   }
 }
 
+const isCommitSha = (ref: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(ref);
+
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
@@ -274,6 +276,16 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /** Fetches the primary remote when it holds `sha` and the checkout does not yet. */
+  const fetchCommitFromOrigin = Effect.fn("ThreadLaunchService.fetchCommitFromOrigin")(function* (
+    cwd: string,
+    sha: string,
+  ) {
+    if (yield* git.hasCommit({ cwd, refName: sha })) return;
+    const remote = yield* git.resolveWorktreeBaseRemote({ cwd, refName: sha });
+    if (remote !== null) yield* git.fetchRemote({ cwd, remoteName: remote.remoteName });
+  });
+
   const checkWorktreeBase: ThreadLaunchService["Service"]["checkWorktreeBase"] = Effect.fn(
     "ThreadLaunchService.checkWorktreeBase",
   )(function* (input) {
@@ -288,6 +300,10 @@ const make = Effect.gen(function* () {
       // `git worktree add` reads `-` as the previous checkout.
       if (yield* git.hasCommit({ cwd, refName: baseRef === "-" ? "@{-1}" : baseRef }))
         return undefined;
+      if (strategy.startFromOrigin === true && isCommitSha(baseRef)) {
+        yield* fetchCommitFromOrigin(cwd, baseRef);
+        if (yield* git.hasCommit({ cwd, refName: baseRef })) return undefined;
+      }
       if (
         strategy.startFromOrigin === true &&
         (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
@@ -411,8 +427,18 @@ const make = Effect.gen(function* () {
         }
         let startRef = input.workspaceStrategy.baseRef;
         let baseRefName = input.workspaceStrategy.baseRef;
+        // A commit SHA names no branch to fetch; a pushed one is brought in whole.
+        if (
+          input.workspaceStrategy.startFromOrigin === true &&
+          isCommitSha(input.workspaceStrategy.baseRef)
+        ) {
+          yield* fetchCommitFromOrigin(project.workspaceRoot, input.workspaceStrategy.baseRef).pipe(
+            Effect.mapError(mapError(input, "provision-worktree", threadId)),
+          );
+        }
         const remote =
-          input.workspaceStrategy.startFromOrigin === true
+          input.workspaceStrategy.startFromOrigin === true &&
+          !isCommitSha(input.workspaceStrategy.baseRef)
             ? yield* git
                 .resolveWorktreeBaseRemote({
                   cwd: project.workspaceRoot,

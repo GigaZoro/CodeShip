@@ -2521,6 +2521,30 @@ it.effect.each([
   }),
 );
 
+it.effect("fetches a pushed commit SHA that the checkout does not have yet", () =>
+  Effect.gen(function* () {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const fetched = yield* Ref.make<ReadonlyArray<string>>([]);
+    const harness = makeHarness({
+      hasCommit: ({ refName }) =>
+        Ref.get(fetched).pipe(Effect.map((names) => refName === "HEAD" || names.length > 0)),
+      git: {
+        resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: sha }),
+        hasRefNamed: () => Effect.succeed(false),
+        fetchRemote: ({ remoteName }) => Ref.update(fetched, (names) => [...names, remoteName]),
+      },
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      yield* launches.checkWorktreeBase({
+        projectId,
+        workspaceStrategy: { type: "worktree", baseRef: sha, startFromOrigin: true },
+      });
+      assert.deepEqual(yield* Ref.get(fetched), ["origin"]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect("replays an accepted send after the project disables the instance", () => {
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-send-retry-" }).pipe(
