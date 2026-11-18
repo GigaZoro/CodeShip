@@ -2,6 +2,10 @@
 
 - A merge that kept both sides of a test file could leave two tests with one name, and Vitest reports them together so a stale copy hid. The new `t3code/no-duplicate-test-title` lint rule fails a file with two same-named tests in one describe block, including `it.effect` and `it.live`, which the built-in rule skips. No change to the app.
 
+## 2026-11-18 — Upstream syncs check conflict resolutions against both parents
+
+- The upstream-sync skill now has every conflict resolution diffed against both parents, tests run through each package's own script with failures compared on the base, and protocol literals kept as upstream wrote them. No change to the app.
+
 ## 2026-11-18 — Server file locks always release
 
 - The Claude and Codex config locks and the ChatGPT session lock now go through one helper that releases with no arguments, so a lock taken for a copy or an update is freed when it finishes and the next edit no longer waits for it to time out.

@@ -30,8 +30,20 @@ new text is translatable and translated, as well as merged.
   translator the way T3.CodeShip's side wrote it (`t("...")`, `tn(...)`, `msg("...")` in
   module-level tables, `tx(...)` for sentences with elements). Never resolve by dropping a `t()`
   wrapper to take upstream's raw string.
+- Protocol identifiers, wire names and recorded replay fixtures keep upstream's literals (for
+  example "T3 Code" in a Codex replay fixture's `clientInfo` is the server's protocol originator);
+  only product text says T3.CodeShip.
 - Model-facing text (agent instructions, MCP tool descriptions, prompts) stays English; check
   `evals/README.md` when it changes.
+
+## 2b. Check each resolution against both parents
+
+For every conflicted file, run `git diff <base> HEAD -- <file>` and
+`git diff upstream/main HEAD -- <file>`. Every line that appears in neither diff's expected
+direction, that is, matches neither parent, must be intended. Mixed resolutions are where
+real regressions hid: a lock release passed straight to `Effect.tryPromise`, a spawn's dropped
+stderr, a field one side's comparison never learned about. Typecheck every package after each
+repair that touches it.
 
 ## 3. Make new upstream text translatable
 
@@ -51,8 +63,14 @@ new text is translatable and translated, as well as merged.
 1. Follow the [translate-ui](../translate-ui/SKILL.md) skill until
    `node scripts/i18n-catalog.ts check` passes.
 2. `vp run check:changed <base>`, with the `base` that `node scripts/upstream-sync.ts status`
-   prints, then run the tests of the packages the sync touched. Fix tests one side broke against
-   the other side's code, as the earlier syncs did.
+   prints, then run each touched package's full suite through its own script
+   (`vp run --filter ./<package dir> test`; packages/* use the root config, and a bare
+   `vp test run` there uses a 5 s timeout and reports false timeouts). Rerun each failing file
+   alone and compare it in a base worktree, as
+   [automations/upstream-sync.md](../../../automations/upstream-sync.md) step 7 requires. Fix
+   tests one side broke against the other side's code. For a large sync, split repairs by area
+   across worktrees and merge them back. Lint packages/client-runtime too once its
+   untranslated-text coverage lands.
 3. Spot-check the app in Ukrainian and in the development pseudo-language
    (Settings → General → Language → Pseudo, dev builds only): untranslated text shows up
    without the `⟦…⟧` brackets.
