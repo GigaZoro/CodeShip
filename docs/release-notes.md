@@ -1,8 +1,13 @@
+## 2026-11-19 — The machine check compares each machine's Node with the project's pin
+
+- `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. Before, only `check:changed` found it, by refusing to run. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
+
 ## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
 
 - A subagent, or a chat an agent handed a task to with `delegate_task` on this machine, now settles as soon as its parent has its result, as a task delegated to another machine already did. Before, it settled only after three days of inactivity, so finished children stayed active in the Agents list. One whose task failed or was interrupted, or that is waiting, queued, working again or still running background work, stays active, and a settled subagent its parent picks up again returns to the active list. This applies even with automatic settlement turned off. Children that had already finished settle at the first check after the update, at the time they finished.
 - A subagent or side chat working in its parent's worktree now leaves that worktree to the parent: settling it no longer runs the project's settle action there, and the parent's unmerged work no longer keeps it active or opens a pull request from it.
 - Maintainers: these settles carry the command id prefix `server:settle-delivered-child:`, and their `settledAt` is the time the child finished, so measure how long settling took from the `thread.settled` event's time.
+
 ## 2026-11-18 — Cleanup removes a worktree whose work reached the default branch under other commits
 
 - Storage cleanup now removes a settled thread's unchanged worktree when its changes are already on the default branch, even if they got there by cherry-pick or a rebase shipped from another worktree. Before, only a worktree whose commits were themselves on the default branch was removed, so such worktrees piled up. The unmerged-work warning when settling a thread uses the same check, so it no longer counts those commits either.
