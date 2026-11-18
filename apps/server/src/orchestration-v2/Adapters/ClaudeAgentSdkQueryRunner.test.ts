@@ -24,12 +24,13 @@ import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
+import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
 import { probeProcess } from "@t3tools/shared/processProbe";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { ownProcessGroup } from "@t3tools/shared/processGroup";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { sleepingTestClock } from "../testkit/DeterministicRuntime.ts";
 import {
@@ -675,21 +676,52 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       }) as NodeChildProcess.ChildProcess;
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          try {
-            signalProcessGroup(child.pid ?? 0, "SIGKILL");
-          } catch {}
+          ownProcessGroup(child, undefined).signal("SIGKILL");
           NodeFS.rmSync(dir, { recursive: true, force: true });
         }),
       );
       const alive = NodeFS.createReadStream(NodePath.join(dir, "alive"));
       const turnStarted = new Promise<void>((resolve) => alive.once("open", () => resolve()));
       const turnStopped = new Promise<void>((resolve) => alive.once("close", () => resolve()));
+      const cliExited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
       alive.resume();
       yield* Effect.promise(() => turnStarted);
 
       // A dying server's descriptors close; the kernel would do this for it.
       for (const pipe of child.stdio) pipe?.destroy();
       yield* Effect.promise(() => turnStopped);
+      yield* Effect.promise(() => cliExited);
+    }),
+  );
+
+  it.effect("sends no SIGKILL at the CLI's exit to a group number it no longer holds", () =>
+    Effect.gen(function* () {
+      const freed = yield* watchFreedGroupSignals;
+      const cli = fakeClaudeCli("echo started\nexec sleep 600");
+      const dir = NodePath.dirname(cli);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+      );
+      const exitHandled = Promise.withResolvers<void>();
+      const child = spawnClaudeProcessGroup(
+        {
+          command: cli,
+          args: [],
+          cwd: dir,
+          env: process.env,
+          // @effect-diagnostics-next-line abortControllerInEffect:off - The CLI ends by its group's SIGKILL, not by an abort.
+          signal: new AbortController().signal,
+        },
+        () => exitHandled.resolve(),
+      ) as NodeChildProcess.ChildProcess;
+      const started = new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
+      yield* Effect.promise(() => started);
+
+      // Something else ended the CLI's group, as `kill 0` from one of its tools would.
+      ownProcessGroup(child, undefined).signal("SIGKILL");
+      yield* Effect.promise(() => exitHandled.promise);
+
+      assert.deepEqual(freed.signals(), []);
     }),
   );
 

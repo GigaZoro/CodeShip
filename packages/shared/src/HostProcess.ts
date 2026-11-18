@@ -103,4 +103,26 @@ export const EffectiveUserId = Context.Reference<number | undefined>(
   { defaultValue: () => process.geteuid?.() ?? process.getuid?.() },
 );
 
+export type LinuxLibc = "gnu" | "musl";
+
+/**
+ * The C library of this Node on Linux. Its report leaves out the network section, which looks up
+ * each open socket's host by a blocking reverse DNS query, a minute and more where DNS is down.
+ */
+export const LinuxLibc = Context.Reference<LinuxLibc>("@t3tools/shared/HostProcess/LinuxLibc", {
+  defaultValue: () => {
+    const report = process.report as NodeJS.ProcessReport & { excludeNetwork: boolean };
+    const excludeNetwork = report.excludeNetwork;
+    report.excludeNetwork = true;
+    try {
+      const { header } = report.getReport() as {
+        readonly header?: { readonly glibcVersionRuntime?: unknown };
+      };
+      return typeof header?.glibcVersionRuntime === "string" ? "gnu" : "musl";
+    } finally {
+      report.excludeNetwork = excludeNetwork;
+    }
+  },
+});
+
 export const isWindows = Effect.map(Platform, (platform) => platform === "win32");

@@ -19,6 +19,7 @@ import * as Electron from "electron";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { layerHeldProcessGroups } from "@t3tools/shared/processGroup";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
 import serverPackageJson from "../../server/package.json" with { type: "json" };
 
@@ -229,17 +230,19 @@ const layerDesktopApplication = Layer.mergeAll(
   Layer.provideMerge(layerDesktopLocalEnvironmentAuth),
 );
 
+const layerNodeServices = layerHeldProcessGroups.pipe(Layer.provideMerge(NodeServices.layer));
+
 // Clerk resolves userData before Electron is ready, so it gets the synchronous FileSystem.
 const layerDesktopClerk = DesktopClerk.layer.pipe(
   Layer.provide(DesktopPreReadyFileSystem.layer),
   Layer.provideMerge(ElectronShell.layer),
   Layer.provideMerge(layerDesktopEnvironment),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(layerNodeServices),
   Layer.provideMerge(ElectronApp.layer),
 );
 
 const layerDesktopApplicationRuntime = layerDesktopApplication.pipe(
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(layerNodeServices),
   Layer.provideMerge(NodeHttpClient.layerUndici),
   Layer.provideMerge(NetService.layer),
   Layer.provideMerge(layerElectron),

@@ -1,16 +1,22 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import {
+  isFifoHolderHeld,
+  releaseFifoHolder,
+  signalProcessGroup,
+} from "@t3tools/shared/processGroup";
 
 const ProcessIdentity = Schema.Struct({ pid: Schema.Int, startTime: Schema.String });
 type ProcessIdentity = typeof ProcessIdentity.Type;
@@ -24,6 +30,8 @@ const OpenCodeServerEntry = Schema.Struct({
   port: Schema.Int,
   stateDir: Schema.String,
   owner: ProcessIdentity,
+  /** The FIFO of the holder that keeps `pgid` the server's, from `holderFifo`. */
+  holder: Schema.optionalKey(Schema.String),
 });
 type OpenCodeServerEntry = typeof OpenCodeServerEntry.Type;
 const OpenCodeServerEntryJson = Schema.fromJsonString(OpenCodeServerEntry);
@@ -33,16 +41,23 @@ const encodeEntry = Schema.encodeEffect(OpenCodeServerEntryJson);
 export class OpenCodeServerLedger extends Context.Service<
   OpenCodeServerLedger,
   {
+    /**
+     * A FIFO path for `HoldThroughFifo`, removed when the scope closes, so that a later server can
+     * stop the group if this one crashes.
+     */
+    readonly holderFifo: Effect.Effect<string | undefined, never, Scope.Scope>;
     readonly track: (server: {
       readonly pid: number;
       readonly port: number;
       readonly args: ReadonlyArray<string>;
+      readonly holder: string | undefined;
     }) => Effect.Effect<Effect.Effect<void>>;
   }
 >()("@t3tools/provider-opencode/server/OpenCodeServerLedger") {}
 
 const ENTRY_DIRECTORY = "opencode-servers";
 const ENTRY_FILE = /^\d+\.json$/;
+const HOLDER_SUFFIX = ".hold";
 const STOP_POLL_INTERVAL = "50 millis";
 const STOP_POLL_ATTEMPTS = 40;
 
@@ -75,12 +90,14 @@ const parseDarwinPs = (output: string): ReadonlyArray<ObservedProcess> =>
 
 const signalGroup = (pgid: number, signal: NodeJS.Signals) => {
   try {
+    // oxlint-disable-next-line t3code/no-raw-process-group-signal -- callers first prove the number is the server's: its holder or recorded members
     signalProcessGroup(pgid, signal);
   } catch {}
 };
 
 const groupExists = (pgid: number) => {
   try {
+    // oxlint-disable-next-line t3code/no-raw-process-group-signal -- a probe, which delivers nothing
     signalProcessGroup(pgid, 0);
     return true;
   } catch (cause) {
@@ -92,6 +109,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   readonly stateDir: string;
   readonly ownerPid?: number;
 }) {
+  const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -148,6 +166,18 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
     return Effect.succeed(undefined);
   };
 
+  const observeAll = (
+    pids: ReadonlyArray<number>,
+  ): Effect.Effect<ReadonlyArray<ObservedProcess | undefined>> =>
+    platform === "darwin"
+      ? psDarwin(["-p", pids.join(",")]).pipe(
+          Effect.map((found) =>
+            pids.map((pid) => found.find((candidate) => candidate.pid === pid)),
+          ),
+          Effect.orElseSucceed(() => []),
+        )
+      : Effect.forEach(pids, observe);
+
   const observeGroup = (pgid: number): Effect.Effect<ReadonlyArray<ObservedProcess>> => {
     if (platform === "linux") {
       return fs.readDirectory("/proc").pipe(
@@ -184,6 +214,30 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
   const owner =
     ownerProcess === undefined ? undefined : { pid: ownerPid, startTime: ownerProcess.startTime };
 
+  const removeHolder = (holder: string | undefined) =>
+    holder === undefined ? Effect.void : fs.remove(holder, { force: true });
+
+  const holderFifo: OpenCodeServerLedger["Service"]["holderFifo"] = recordable
+    ? Effect.acquireRelease(
+        fs.makeDirectory(directory, { recursive: true }).pipe(
+          Effect.andThen(crypto.randomUUIDv4()),
+          Effect.map((id) => path.join(directory, `${id}${HOLDER_SUFFIX}`)),
+        ),
+        (holder) =>
+          removeHolder(holder).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not remove an OpenCode server's holder FIFO", { cause }),
+            ),
+          ),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not prepare to hold an OpenCode server's process group", {
+            cause,
+          }).pipe(Effect.as(undefined)),
+        ),
+      )
+    : Effect.undefined;
+
   const track: OpenCodeServerLedger["Service"]["track"] = Effect.fn("OpenCodeServerLedger.track")(
     function* (server) {
       if (!recordable) return Effect.void;
@@ -216,6 +270,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
         port: server.port,
         stateDir: input.stateDir,
         owner,
+        ...(server.holder === undefined ? {} : { holder: server.holder }),
       };
       yield* writeFileStringAtomically({
         filePath: entryPath,
@@ -239,11 +294,33 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
     ),
   );
 
-  // Signals only a group whose recorded member still has the same pid, start
-  // time, group, and full command line, so a recycled pid is never touched.
+  const stopHeldOrphan = Effect.fn("OpenCodeServerLedger.stopHeldOrphan")(function* (
+    entry: OpenCodeServerEntry,
+    holder: string,
+  ) {
+    if (groupExists(entry.pgid)) {
+      yield* Effect.logInfo("Stopping an OpenCode server left by a previous T3.CodeShip server", {
+        pid: entry.pgid,
+        port: entry.port,
+      });
+      signalGroup(entry.pgid, "SIGTERM");
+      for (let attempt = 0; groupExists(entry.pgid) && attempt < STOP_POLL_ATTEMPTS; attempt++) {
+        yield* Effect.sleep(STOP_POLL_INTERVAL);
+      }
+      if (groupExists(entry.pgid)) signalGroup(entry.pgid, "SIGKILL");
+    }
+    releaseFifoHolder(holder);
+  });
+
+  // While its holder keeps the number, every member of the group is the server's, also one it
+  // started after the signal. Otherwise only a recorded member with the same pid, start time,
+  // group, and full command line proves the group is still the one recorded.
   const stopOrphan = Effect.fn("OpenCodeServerLedger.stopOrphan")(function* (
     entry: OpenCodeServerEntry,
   ) {
+    if (entry.holder !== undefined && isFifoHolderHeld(entry.holder)) {
+      return yield* stopHeldOrphan(entry, entry.holder);
+    }
     const observed = yield* observe(entry.pid);
     if (
       observed === undefined ||
@@ -258,12 +335,30 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       pid: entry.pgid,
       port: entry.port,
     });
+    let members: ReadonlyArray<ObservedProcess> = [
+      observed,
+      ...(yield* observeGroup(entry.pgid)).filter(
+        (member) => !member.zombie && member.pid !== observed.pid,
+      ),
+    ];
     signalGroup(entry.pgid, "SIGTERM");
-    for (let attempt = 0; attempt < STOP_POLL_ATTEMPTS && groupExists(entry.pgid); attempt++) {
+    // Only these members prove the group is still the one recorded: once it empties, an
+    // unrelated group can take its number, which `kill(-pgid, 0)` would count as alive. A number
+    // freed between a look and the signal goes to another only if the pid allocator reaches it then.
+    for (let attempt = 0; members.length > 0 && attempt < STOP_POLL_ATTEMPTS; attempt++) {
       yield* Effect.sleep(STOP_POLL_INTERVAL);
+      const now = yield* observeAll(members.map((member) => member.pid));
+      members = members.filter((member, index) => {
+        const current = now[index];
+        return (
+          current !== undefined &&
+          !current.zombie &&
+          current.startTime === member.startTime &&
+          current.pgid === entry.pgid
+        );
+      });
     }
-    // The group never emptied, so its pgid cannot have been reused.
-    if (groupExists(entry.pgid)) signalGroup(entry.pgid, "SIGKILL");
+    if (members.length > 0) signalGroup(entry.pgid, "SIGKILL");
   });
 
   const reapEntry = Effect.fn("OpenCodeServerLedger.reapEntry")(
@@ -272,6 +367,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
       if (Option.isSome(entry) && entry.value.stateDir === input.stateDir) {
         if (yield* isRunning(entry.value.owner)) return;
         yield* stopOrphan(entry.value);
+        yield* removeHolder(entry.value.holder);
       }
       yield* fs.remove(entryPath, { force: true });
     },
@@ -292,7 +388,7 @@ export const make = Effect.fn("OpenCodeServerLedger.make")(function* (input: {
     );
   });
 
-  return { track, reapOrphans };
+  return { holderFifo, track, reapOrphans };
 });
 
 export const layer = (input: { readonly stateDir: string }) =>
@@ -301,13 +397,14 @@ export const layer = (input: { readonly stateDir: string }) =>
     Effect.gen(function* () {
       const ledger = yield* make(input);
       yield* ledger.reapOrphans.pipe(Effect.forkScoped);
-      return OpenCodeServerLedger.of({ track: ledger.track });
+      return OpenCodeServerLedger.of({ holderFifo: ledger.holderFifo, track: ledger.track });
     }),
   );
 
 export const layerTest = Layer.succeed(
   OpenCodeServerLedger,
   OpenCodeServerLedger.of({
+    holderFifo: Effect.undefined,
     track: Effect.fn("OpenCodeServerLedger.track")(function () {
       return Effect.succeed(Effect.void);
     }),

@@ -134,6 +134,38 @@ const startBesideBootService = Effect.fn("test.startBesideBootService")(function
   return { result, t3Home };
 });
 
+describe("process start times", () => {
+  it.effect.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "reads a process's start on Linux as ps does, where ps cannot run",
+    () =>
+      Effect.gen(function* () {
+        const ps = yield* (yield* ProcessRunner.ProcessRunner).run({
+          command: "ps",
+          args: ["-p", String(process.pid), "-o", "lstart="],
+          env: { LC_ALL: "C", TZ: "UTC" },
+        });
+        const fromPs = Date.parse(`${ps.stdout.trim()} UTC`);
+        const startedAt = yield* ServerRuntimeState.readProcessStartedAt(process.pid).pipe(
+          Effect.provideService(
+            ProcessRunner.ProcessRunner,
+            ProcessRunner.ProcessRunner.of({
+              run: (run) =>
+                Effect.fail(
+                  new ProcessRunner.ProcessSpawnError({
+                    command: run.command,
+                    argumentCount: run.args.length,
+                    cause: new Error("not found"),
+                  }),
+                ),
+            }),
+          ),
+        );
+        assert.isDefined(startedAt);
+        assert.isAtMost(Math.abs(startedAt - fromPs), 1_000);
+      }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
+  );
+});
+
 describe("server ownership", () => {
   // An empty home, so no boot service unit installed on this machine is read.
   const layerOwnership = Layer.mergeAll(

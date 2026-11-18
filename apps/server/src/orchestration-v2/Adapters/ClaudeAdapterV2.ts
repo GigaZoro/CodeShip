@@ -178,7 +178,7 @@ import * as ServerConfig from "../../config.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { holdProcessGroup, ownProcessGroup } from "@t3tools/shared/processGroup";
 import {
   claudeSignedOutMessage,
   ClaudeTermsReviewRequiredError,
@@ -372,38 +372,45 @@ const CLAUDE_STOP_CONFIRM_TIMEOUT_MS = 10_000;
 // The SDK's close gives the CLI this long to exit once its input ends before it escalates.
 const CLAUDE_CLOSE_GRACE = "2 seconds";
 
-const CLAUDE_GROUP_WATCH_SCRIPT = [
-  "{ trap '' TERM; read -r _ <&3; kill -TERM 0; sleep 5; kill -KILL 0; } </dev/null >/dev/null 2>&1 &",
-  'exec "$@" 3<&-',
-].join("\n");
+const CLAUDE_HOLDER_FD = 3;
+// How long the CLI's group has after SIGTERM to end before SIGKILL, once its server went away.
+const CLAUDE_GROUP_STOP_SECONDS = 5;
 
 /**
  * Kill the CLI's group on exit to stop MCP grandchildren; `onExit` stops its agent scope for
- * setsid daemons. The CLI keeps working after its pipes close, so a watcher stops the group on
- * EOF from a pipe only this server holds, including when the server crashes.
+ * setsid daemons. The CLI keeps working after its pipes close, so its group's holder stops the
+ * group on EOF from a pipe only this server holds, including when the server crashes.
  */
 export function spawnClaudeProcessGroup(
   options: ClaudeSpawnOptions,
   onExit?: () => void,
   onStderr?: (text: string) => void,
 ): ClaudeSpawnedProcess {
+  const held = holdProcessGroup(options, {
+    fd: CLAUDE_HOLDER_FD,
+    endGroupAfterSeconds: CLAUDE_GROUP_STOP_SECONDS,
+  });
   const child = NodeChildProcess.spawn(
-    "/bin/sh",
-    ["-c", CLAUDE_GROUP_WATCH_SCRIPT, "t3-claude", options.command, ...options.args],
+    held?.command ?? options.command,
+    held?.args ?? options.args,
     {
       cwd: options.cwd,
       env: options.env,
       signal: options.signal,
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      stdio: held === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"],
       detached: true,
     },
   );
+  const group = ownProcessGroup(child, held === undefined ? undefined : CLAUDE_HOLDER_FD);
   // Always drained, so a chatty CLI never blocks on a full stderr pipe.
   child.stderr?.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
   child.once("exit", () => {
     try {
-      signalProcessGroup(child.pid ?? 0, "SIGKILL");
-    } catch {}
+      group.signal("SIGKILL");
+    } catch {
+      // ESRCH: the group emptied with its leader, so nothing is left to stop.
+    }
+    group.release();
     onExit?.();
   });
   // Node's typings make stdin and stdout nullable once stdio has a fourth entry; both are pipes.

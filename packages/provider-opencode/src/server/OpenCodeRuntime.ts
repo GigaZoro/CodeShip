@@ -30,7 +30,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { HoldThroughFifo, signalSpawnedGroup } from "@t3tools/shared/processGroup";
 import {
   commandFailureReason,
   withProviderFailureReason,
@@ -444,11 +444,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       // On Windows the spawner's release ends a command still running, and what it left running.
       if (hostPlatform !== "win32") {
         yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            try {
-              signalProcessGroup(Number(child.pid), "SIGKILL");
-            } catch {}
-          }),
+          signalSpawnedGroup(child, "SIGKILL").pipe(Effect.ignore({ log: true })),
         );
       }
       const [stdout, stderr, code] = yield* Effect.all(
@@ -532,6 +528,10 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     // Scopes close in reverse order. Forking this before the group kill is
     // registered forgets the ledger entry only once the group is stopped.
     const ledgerScope = yield* Scope.fork(runtimeScope);
+    // Removed after the ledger entry, and after the spawner's release lets its holder quit.
+    const holder = yield* serverLedger.holderFifo.pipe(
+      Effect.provideService(Scope.Scope, ledgerScope),
+    );
     // On Windows what the server left running ends with it, also after it exited.
     const child = yield* endingWindowsTrees(spawner, hostPlatform)
       .spawn(
@@ -550,6 +550,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       )
       .pipe(
         Effect.provideService(Scope.Scope, runtimeScope),
+        Effect.provideService(HoldThroughFifo, holder),
         Effect.mapError(
           (cause) =>
             new OpenCodeRuntimeError({
@@ -563,20 +564,21 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     const killOpenCodeProcessGroup = (signal: NodeJS.Signals) =>
       hostPlatform === "win32"
         ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
-        : Effect.sync(() => {
-            try {
-              signalProcessGroup(Number(child.pid), signal);
-            } catch {}
-          });
+        : signalSpawnedGroup(child, signal).pipe(Effect.asVoid);
     const terminateChild = killOpenCodeProcessGroup("SIGTERM").pipe(
       Effect.andThen(Effect.sleep("1 second")),
       Effect.andThen(killOpenCodeProcessGroup("SIGKILL")),
-      Effect.ignore,
+      Effect.ignore({ log: true }),
     );
     // Registered before recording, so an interrupt while the ledger writes
     // still stops the group.
     yield* Scope.addFinalizer(runtimeScope, terminateChild);
-    const forgetServer = yield* serverLedger.track({ pid: Number(child.pid), port, args });
+    const forgetServer = yield* serverLedger.track({
+      pid: Number(child.pid),
+      port,
+      args,
+      holder,
+    });
     yield* Scope.addFinalizer(ledgerScope, forgetServer);
 
     const stdoutRef = yield* Ref.make<string | null>("");

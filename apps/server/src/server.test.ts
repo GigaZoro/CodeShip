@@ -5,11 +5,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import { HttpServer, HttpServerError } from "effect/http";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
+import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import { withoutWindowsTreeEnding } from "@t3tools/shared/windowsProcessTree";
 
 import * as ServerConfig from "./config.ts";
@@ -104,4 +105,17 @@ it.effect("the server's spawner ends on Windows what a command left running", ()
     Effect.provide(layerPlatformServices),
     Effect.provideService(HostProcess.Platform, "win32"),
   ),
+);
+
+// Likewise, one over this would signal emptied groups whose numbers may be another's since.
+it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "the server's spawner keeps a failed command's group number on macOS and Linux",
+  () =>
+    Effect.gen(function* () {
+      const freed = yield* watchFreedGroupSignals;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+      assert.strictEqual(yield* spawner.exitCode(ChildProcess.make("sh", ["-c", "exit 3"])), 3);
+      assert.deepStrictEqual(freed.signals(), []);
+    }).pipe(Effect.provide(layerPlatformServices), Effect.scoped),
 );
