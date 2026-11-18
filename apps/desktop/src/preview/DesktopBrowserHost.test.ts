@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Stands in for an Electron debugger.
+// @effect-diagnostics nodeBuiltinImport:off - Stands in for an Electron debugger and joins download paths as the host does.
 import { describe, expect, it, vi } from "@effect/vitest";
 import { DesktopBrowserEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeEvents from "node:events";
+import * as NodePath from "node:path";
 
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
@@ -990,7 +991,7 @@ describe("DesktopBrowserHost", () => {
       debuggee.emit("Page.downloadWillBegin", { guid: "guid-1", suggestedFilename: "r.csv" });
       expect(host.placeDownload(makeDebuggee().tab.webContents, item)).toBe(false);
       expect(host.placeDownload(debuggee.tab.webContents, item)).toBe(true);
-      expect(paths).toEqual(["/srv/downloads/guid-1"]);
+      expect(paths).toEqual([NodePath.join("/srv/downloads", "guid-1")]);
       expect(host.placeDownload(debuggee.tab.webContents, item)).toBe(false);
     }).pipe(Effect.scoped),
   );
