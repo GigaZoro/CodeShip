@@ -581,9 +581,10 @@ const make = Effect.gen(function* () {
           args: windowsStopTreeArgs({
             pid,
             since: Date.parse(row.started_at),
-            created: row.process_started_at === null
-              ? null
-              : { from: row.process_started_at, to: row.process_started_at },
+            created:
+              row.process_started_at === null
+                ? null
+                : { from: row.process_started_at, to: row.process_started_at },
           }),
           timeout: Duration.seconds(30),
           maxOutputBytes: 16_384,
@@ -1538,9 +1539,7 @@ const make = Effect.gen(function* () {
               }),
             );
           if (prepared === undefined) return result(taskId);
-          const started = yield* launch(directory, input, cwd, commandEnv).pipe(
-            Effect.result,
-          );
+          const started = yield* launch(directory, input, cwd, commandEnv).pipe(Effect.result);
           yield* lock
             .withPermits(1)(
               Effect.gen(function* () {

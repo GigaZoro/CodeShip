@@ -25,6 +25,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -260,23 +261,46 @@ const liveChat = (name: string) =>
     );
     const parent = yield* seedLiveParent({ name, driver, modelSelection, worktreePath: workspace });
     const sql = yield* SqlClient.SqlClient;
+    const processRunner = yield* ProcessRunner.ProcessRunner;
     yield* Effect.addFinalizer(() =>
-      sql<{ readonly pid: number | null; readonly directory: string }>`
-        SELECT pid, directory FROM command_runs WHERE thread_id = ${parent.threadId}
+      sql<{
+        readonly pid: number | null;
+        readonly directory: string;
+        readonly started_at: string;
+        readonly process_started_at: number | null;
+      }>`
+        SELECT pid, directory, started_at, process_started_at FROM command_runs WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
-            Effect.try(() =>
-              signalProcessGroup(
-                // A failed test can leave a row without its pid; the wrapper's pid file still names it.
-                row.pid ??
-                  Number.parseInt(
-                    NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
-                    10,
-                  ),
-                "SIGKILL",
-              ),
-            ).pipe(Effect.ignore),
+            Effect.gen(function* () {
+              // A failed launch may leave only its wrapper's pid file.
+              const evidence = yield* Effect.try(() =>
+                NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8")
+                  .trim()
+                  .split(/\s+/),
+              ).pipe(Effect.orElseSucceed(() => []));
+              const pid = row.pid ?? Number(evidence[0]);
+              if (!Number.isSafeInteger(pid) || pid <= 1) return;
+              if (!isWindowsHost)
+                return yield* Effect.try(() => signalProcessGroup(pid, "SIGKILL"));
+              if (!isProcessAlive(pid)) return;
+              const identity = row.process_started_at ?? Number(evidence[1]);
+              const args = windowsStopTreeArgs({
+                pid,
+                since: Date.parse(row.started_at),
+                created: Number.isSafeInteger(identity) ? { from: identity, to: identity } : null,
+              });
+              // An exit-status file precedes supervisor exit; NTFS holds its cwd until that exit.
+              if (Number.isSafeInteger(identity))
+                args[args.length - 1] +=
+                  `; $wrapper = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($wrapper -and [math]::Abs(([DateTimeOffset]$wrapper.StartTime).ToUnixTimeMilliseconds() - ${identity}) -le 1000) { $wrapper.WaitForExit() }`;
+              yield* processRunner.run({
+                command: "powershell.exe",
+                args,
+                timeout: Duration.minutes(2),
+              });
+            }).pipe(Effect.ignore),
           ),
         ),
         Effect.ignore,
@@ -567,7 +591,6 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), { command, shell: "bash" }),
         ).pipe(
-          Effect.flip,
           Effect.provideService(
             ProcessRunner.ProcessRunner,
             refuseWindowsLaunch(processRunner, launcher),
@@ -1553,7 +1576,7 @@ const windowsFixture = Effect.gen(function* () {
             assert.isDefined(wrapper);
             return yield* fixture.launch(input, NodePath.dirname(wrapper!));
           }
-          const stop = /Stop-T3CommandTree (\d+) /.exec(script);
+          const stop = /Stop-T3ProcessTree (\d+) /.exec(script);
           if (stop !== null) {
             fixture.kills++;
             const pid = Number(stop[1]);
@@ -1970,12 +1993,17 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           };
           let launches = 0;
           let launchedPid: number | undefined;
+          let launchedAt = 0;
           yield* Effect.addFinalizer(() =>
             Effect.try(() => {
               if (launchedPid !== undefined) {
                 NodeChildProcess.execFileSync(
-                  "taskkill",
-                  ["/PID", String(launchedPid), "/T", "/F"],
+                  "powershell.exe",
+                  windowsStopTreeArgs({
+                    pid: launchedPid,
+                    since: launchedAt,
+                    created: { from: launchedAt, to: launchedAt },
+                  }),
                   {
                     windowsHide: true,
                     stdio: "ignore",
@@ -2018,6 +2046,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
                   Effect.tap((created) =>
                     Effect.sync(() => {
                       launchedPid = Number.parseInt(created.stdout.trim(), 10);
+                      launchedAt = Number(created.stdout.trim().split(/\s+/)[1]);
                     }),
                   ),
                   Effect.andThen(awaitFile(NodePath.join(chat.workspace, "ready"))),
@@ -2105,31 +2134,6 @@ describe.runIf(isWindowsHost)("Windows only", () => {
           );
         }),
     );
-  });
-
-  it("stops, at every level, only processes created after the parent they name", () => {
-    const script = [
-      CommandRunner.WINDOWS_COMMAND_TREE_FUNCTION,
-      "$t = [DateTime]::UtcNow",
-      "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
-      // The command started 2 s before its wrapper 10, which started 20, which started 30. 40 and
-      // 50 name 20 and 10 as their parent but are older, so an earlier holder of that pid started
-      // them; 60 is older than the command.
-      "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1), (P 60 10 -3))",
-      "(Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t)).Keys | Sort-Object",
-      "try { Get-T3CommandTree -all $all -root 10 -since (Ms $t.AddSeconds(-2)) -identity (-1); throw 'unsafe identity' } catch { $_.Exception.Message }",
-    ].join("\n");
-    const tree = NodeChildProcess.execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8" },
-    );
-    assert.deepEqual(tree.trim().split(/\r?\n/), [
-      "10",
-      "20",
-      "30",
-      "Cannot stop a live process without its creation time.",
-    ]);
   });
 
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {

@@ -15,6 +15,7 @@ import { leaderLeavingChild } from "./testing/leftoverChild.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
+  windowsStopTreeArgs,
   endingWindowsTrees,
   type WindowsTreeEnding,
   withoutWindowsTreeEnding,
@@ -235,6 +236,20 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       { encoding: "utf8" },
     );
     assert.deepEqual(tree.trim().split(/\r?\n/), expected);
+  });
+
+  it("refuses an unknown identity before selecting a live root or its descendants", () => {
+    const args = windowsStopTreeArgs({ pid: 10, since: 0, created: null });
+    const mock = [
+      "function Get-CimInstance { @([pscustomobject]@{ ProcessId = 10; ParentProcessId = 1; CreationDate = [DateTime]::UtcNow }, [pscustomobject]@{ ProcessId = 20; ParentProcessId = 10; CreationDate = [DateTime]::UtcNow.AddSeconds(-10) }) }",
+      "function Stop-Process { Write-Output 'unsafe stop' }",
+    ].join("\n");
+    const tree = NodeChildProcess.execFileSync(
+      "powershell.exe",
+      [...args.slice(0, -1), `${mock}\ntry { ${args.at(-1)} } catch { $_.Exception.Message }`],
+      { encoding: "utf8" },
+    );
+    assert.equal(tree.trim(), "Cannot stop a live process without its creation time.");
   });
 
   const spawnEndingTree = (command: ChildProcess.Command, ending?: WindowsTreeEnding) =>
