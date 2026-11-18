@@ -306,6 +306,7 @@ export function createPullRequestEnvironmentAtoms<R, E>(
     const prepared = yield* SubscriptionRef.get(supervisor.prepared);
     if (Option.isNone(prepared)) {
       return yield* new EnvironmentHttpConnectionNotReadyError({
+        // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
         message: "The environment HTTP connection is not ready.",
       });
     }

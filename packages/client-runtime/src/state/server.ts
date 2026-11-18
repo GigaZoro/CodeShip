@@ -1007,6 +1007,7 @@ export function createServerEnvironmentAtoms<R, E>(
         .pipe(Stream.runHead);
       if (Option.isNone(first)) {
         return yield* new OrchestrationV2RestartHoldError({
+          // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
           message: "The server stopped reporting background work before it answered.",
         });
       }

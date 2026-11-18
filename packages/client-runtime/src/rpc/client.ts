@@ -140,6 +140,7 @@ const currentSession = Effect.fn("EnvironmentRpc.currentSession")(function* () {
           Effect.fail(
             new EnvironmentRpcUnavailableError({
               environmentId: supervisor.target.environmentId,
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: `${supervisor.target.label} is not connected.`,
             }),
           ),
@@ -172,6 +173,7 @@ export class RpcPermissionGuard extends Context.Reference<{
         : Effect.fail(
             new EnvironmentAuthorizationError({
               ...authScopeRequiredResponse(scope),
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: `This connection requires ${scope}.`,
             }),
           );

@@ -72,6 +72,7 @@ const readTimeout = (environmentId: EnvironmentId) =>
       Effect.fail(
         new EnvironmentRpcUnavailableError({
           environmentId,
+          // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
           message: "The environment did not respond to the PR request.",
         }),
       ),
@@ -403,6 +404,7 @@ export function createPullRequestRouter() {
           isUnregistered(error)
             ? new EnvironmentRpcUnavailableError({
                 environmentId: id,
+                // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
                 message: "The environment was removed.",
               })
             : error,

@@ -4,6 +4,7 @@ import { copySorted } from "@t3tools/shared/Array";
 
 import { isActiveSubagentStatus, isTerminalSubagentStatus } from "./subagentRuntime.ts";
 import { resolveActiveThreadRun } from "./threadWorkflows.ts";
+import { t } from "@t3tools/shared/i18n";
 
 type Projection = OrchestrationV2ThreadProjection;
 type Subagent = OrchestrationV2Subagent;
@@ -107,7 +108,7 @@ export function resolveSubagentPillSegment(
   if (turn.liveCount > 0) {
     return {
       label: `${turn.liveCount}/${total}`,
-      accessibilityLabel: `${turn.liveCount} of ${total} agents working`,
+      accessibilityLabel: t("{live} of {total} agents working", { live: turn.liveCount, total }),
     };
   }
   return {

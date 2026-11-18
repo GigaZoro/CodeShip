@@ -1358,6 +1358,7 @@ const catalog: MessageCatalog = {
   "{label}. Use arrow keys to resize.": "{label}. Змінюйте розмір клавішами зі стрілками.",
   "{lastRun}, failed": "{lastRun}, не вдалося",
   "{left}% left": "Залишилось {left}%",
+  "{live} of {total} agents working": "Працюють агенти: {live} із {total}",
   "{login} · Team": "{login} · Команда",
   "{machine} · {status}": "{machine} · {status}",
   "{machine} cannot read prompts from files. Use the text instead or pick another machine.":
@@ -14169,6 +14170,7 @@ const catalog: MessageCatalog = {
   "Work on {label}": "Працювати над: {label}",
   Worked: "Робота виконана",
   "Worked for {duration}": "Робота тривала {duration}",
+  Workflow: "Робочий процес",
   "Workflow started": "Робочий процес запущено",
   "Workflow started: {title}": "Робочий процес запущено: {title}",
   "Workflows approved": "Workflow схвалено",

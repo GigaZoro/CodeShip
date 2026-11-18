@@ -63,6 +63,7 @@ const buildEnvironmentAuthHeaders = Effect.fn("environmentHttpAuth.buildEnvironm
     }
     if (Option.isNone(signer)) {
       return yield* new RemoteEnvironmentAuthFetchError({
+        // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
         message: "No DPoP signer is available to authorize the environment request.",
         cause: authorization._tag,
       });
@@ -73,6 +74,7 @@ const buildEnvironmentAuthHeaders = Effect.fn("environmentHttpAuth.buildEnvironm
         Effect.mapError(
           (cause) =>
             new RemoteEnvironmentAuthFetchError({
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: "Could not create the environment request authorization proof.",
               cause,
             }),
@@ -144,6 +146,7 @@ const executeEnvironmentRequest = Effect.fnUntraced(function* <
         const remote = input.remoteAuthorization;
         if (remote === undefined || Option.isNone(remote)) {
           return yield* new RemoteEnvironmentAuthFetchError({
+            // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
             message: "No relay authorization service is available for the environment request.",
             cause: input.prepared.target._tag,
           });
@@ -157,6 +160,7 @@ const executeEnvironmentRequest = Effect.fnUntraced(function* <
             Effect.mapError(
               (cause) =>
                 new RemoteEnvironmentAuthFetchError({
+                  // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
                   message: "Could not authorize the environment request.",
                   cause,
                 }),
@@ -205,6 +209,7 @@ const executeEnvironmentRequest = Effect.fnUntraced(function* <
           continue;
         }
         return yield* new RemoteEnvironmentAuthFetchError({
+          // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
           message: "The environment rejected the renewed session authorization.",
           cause: result.success,
         });

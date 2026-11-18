@@ -100,6 +100,7 @@ export function createThreadFamilyAtoms<R, ER, E>(
       if (Option.isNone(session)) {
         return yield* new EnvironmentRpcUnavailableError({
           environmentId: supervisor.target.environmentId,
+          // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
           message: "The environment has no session.",
         });
       }

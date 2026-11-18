@@ -47,7 +47,7 @@ repair that touches it.
 
 ## 3. Make new upstream text translatable
 
-1. `vp lint apps/web/src apps/mobile/src apps/desktop/src` and fix every
+1. `vp lint apps/web/src apps/mobile/src apps/desktop/src packages/client-runtime/src` and fix every
    `t3code/no-untranslated-text` finding the way `docs/internals/i18n.md` describes. Text that
    isn't copy (stored data, text sent away, names) gets a suppression with its reason.
 2. Typecheck the clients and shared packages. `not assignable to parameter of type 'Message'`

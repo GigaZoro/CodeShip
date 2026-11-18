@@ -43,6 +43,7 @@ export class RemoteEnvironmentAuthUndeclaredStatusError extends Data.TaggedError
 }> {
   constructor(requestUrl: string, status: number) {
     super({
+      // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
       message: `Remote environment endpoint ${requestUrl} returned undeclared status ${status}.`,
       requestUrl,
       status,
@@ -59,6 +60,7 @@ export class RemoteEnvironmentAuthTimeoutError extends Data.TaggedError(
 }> {
   constructor(requestUrl: string, timeoutMs: number) {
     super({
+      // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
       message: `Remote environment endpoint ${requestUrl} timed out after ${timeoutMs}ms.`,
       requestUrl,
       timeoutMs,
@@ -131,6 +133,7 @@ const failRemoteRequest = (
   if (Schema.isSchemaError(cause)) {
     return Effect.fail(
       new RemoteEnvironmentAuthInvalidJsonError({
+        // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
         message: `Remote environment endpoint returned an invalid response from ${requestUrl}.`,
         cause,
       }),
@@ -145,6 +148,7 @@ const failRemoteRequest = (
     }
     return Effect.fail(
       new RemoteEnvironmentAuthInvalidJsonError({
+        // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
         message: `Remote environment endpoint returned an invalid response from ${requestUrl}.`,
         cause,
       }),
@@ -152,6 +156,7 @@ const failRemoteRequest = (
   }
   return Effect.fail(
     new RemoteEnvironmentAuthFetchError({
+      // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
       message: `Failed to fetch remote environment endpoint ${requestUrl} (${String(cause)}).`,
       cause,
     }),

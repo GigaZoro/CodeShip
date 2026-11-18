@@ -56,6 +56,7 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
         if (Option.isNone(prepared)) {
           return yield* new EnvironmentRpcUnavailableError({
             environmentId: supervisor.target.environmentId,
+            // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
             message: "The source environment is not connected.",
           });
         }
