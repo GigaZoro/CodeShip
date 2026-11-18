@@ -1220,6 +1220,97 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
     }),
   );
 
+  // Shutdown recovery takes a group's locks oldest first; a parent delete took its side chats'
+  // newest first, so each could hold the lock the other waited for.
+  it.effect("a parent delete takes its side chats' locks in the order shutdown recovery does", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const projectId = ProjectId.make("runtime-side-chat-sibling-locks");
+      const parentId = ThreadId.make("runtime-side-chat-sibling-locks-parent");
+      // Ids sort against creation, so only the creation order can put the older side chat first.
+      const olderId = ThreadId.make("runtime-side-chat-sibling-locks-z-older");
+      const newerId = ThreadId.make("runtime-side-chat-sibling-locks-a-newer");
+      yield* projects.create({
+        commandId: CommandId.make("runtime-side-chat-sibling-locks-project"),
+        projectId,
+        title: "Side chat sibling locks",
+        workspaceRoot: "/work/side-chat-sibling-locks",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("runtime-side-chat-sibling-locks-create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId: parentId,
+        projectId,
+        title: "Parent",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      for (const targetThreadId of [olderId, newerId]) {
+        yield* TestClock.adjust("1 second");
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make(`runtime-side-chat-sibling-locks-fork-${targetThreadId}`),
+          sourceThreadId: parentId,
+          targetThreadId,
+          sourcePoint: { type: "latest_stable" },
+          sideChat: true,
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+
+      const withLock = executor.withLock;
+      const recoveryHoldsOlder = yield* Deferred.make<void>();
+      const releaseOlder = yield* Deferred.make<void>();
+      const deleteWaitsForOlder = yield* Deferred.make<void>();
+      const recovery = yield* withLock(
+        olderId,
+        Deferred.succeed(recoveryHoldsOlder, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseOlder)),
+        ),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(recoveryHoldsOlder);
+      const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+        key,
+        effect,
+      ) =>
+        key === olderId
+          ? Deferred.succeed(deleteWaitsForOlder, undefined).pipe(
+              Effect.andThen(withLock(key, effect)),
+            )
+          : withLock(key, effect);
+      const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+      yield* Effect.gen(function* () {
+        const deleteFiber = yield* orchestrator
+          .dispatch({
+            type: "thread.delete",
+            commandId: CommandId.make("runtime-side-chat-sibling-locks-delete"),
+            threadId: parentId,
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.raceFirst(
+          Deferred.await(deleteWaitsForOlder),
+          Fiber.join(deleteFiber).pipe(
+            Effect.andThen(Effect.die("Parent deletion bypassed the older side chat's lock.")),
+          ),
+        );
+        // Recovery, holding the older side chat, takes the newer one next.
+        assert.isFalse((yield* executor.activeKeys).includes(newerId));
+        yield* Deferred.succeed(releaseOlder, undefined);
+        yield* Fiber.join(recovery);
+        yield* Fiber.join(deleteFiber);
+        assert.isNotNull((yield* orchestrator.getThreadProjection(newerId)).thread.deletedAt);
+      }).pipe(Effect.ensuring(Effect.sync(() => lockSpy.mockRestore())));
+    }),
+  );
+
   it.effect("deleted sources keep the html_render pages any live fork shows", () =>
     Effect.gen(function* () {
       const projects = yield* ProjectService.ProjectService;

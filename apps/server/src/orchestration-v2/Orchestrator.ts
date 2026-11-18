@@ -2077,7 +2077,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ProjectionStoreThreadNotFoundError: () => Effect.succeed({ contextTransfers: [] }),
           }),
         );
-      const sideChatIds: Array<ThreadId> = [];
+      const sideChats: Array<OrchestrationV2AppThread> = [];
       for (const transfer of contextTransfers) {
         if (transfer.type !== "fork" || transfer.sourceThreadId !== threadId) continue;
         const child = yield* projectionStore
@@ -2086,10 +2086,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
           );
         if (child?.lineage.sideChat === true && child.deletedAt === null) {
-          sideChatIds.push(child.id);
+          sideChats.push(child);
         }
       }
-      return sideChatIds;
+      return sideChats
+        .toSorted(ThreadCommandExecutor.compareLockOrder)
+        .map((sideChat) => sideChat.id);
     },
     (effect, threadId) =>
       effect.pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
@@ -17145,8 +17147,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchWithReceiptEffect(command),
     );
     // A fork holds its source's lock, so a source deletion and its fork never interleave. A
-    // parent's lock comes before its side chats' locks. A side chat fork from a side chat or a
-    // fork onto an existing thread would invert that order; dispatch rejects both, so they skip it.
+    // parent's lock comes before its side chats' locks, which follow the lock order. A side chat
+    // fork from a side chat or a fork onto an existing thread would invert that order; dispatch
+    // rejects both, so they skip it.
     if (command.type === "thread.fork" && command.sourceThreadId !== command.targetThreadId) {
       const source = yield* findThread(command.sourceThreadId);
       const target = yield* findThread(command.targetThreadId);
@@ -17164,7 +17167,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.threadId,
           liveSideChatIds(command.threadId).pipe(
             Effect.flatMap((sideChatIds) =>
-              sideChatIds.reduce(
+              sideChatIds.reduceRight(
                 (locked, sideChatId) => threadDispatch.withLock(sideChatId, locked),
                 dispatchWithReceiptEffect(command, sideChatIds),
               ),

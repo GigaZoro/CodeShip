@@ -1318,9 +1318,7 @@ export const make = Effect.gen(function* () {
   );
 
   // Shutdown does not drain admitted commands, so a group reads and commits under the locks they
-  // plan under, taken before its writer transaction. Commands nest a parent's lock around a child's,
-  // a fork source's around its target's and a chat's around its side chats', so taking the oldest
-  // thread's lock first cannot deadlock with them.
+  // plan under, taken before its writer transaction, in the lock order commands nest them in.
   const withThreadLocks = Effect.fn("ProviderRuntimeRecoveryService.withThreadLocks")(function* <
     A,
     E,
@@ -1341,11 +1339,7 @@ export const make = Effect.gen(function* () {
               ),
             ),
           ))
-            .toSorted(
-              (left, right) =>
-                DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt) ||
-                (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
-            )
+            .toSorted(ThreadCommandExecutor.compareLockOrder)
             .map((thread) => thread.id);
     return yield* ordered.reduceRight<Effect.Effect<A, E, R>>(
       (locked, threadId) => threadDispatch.withLock(threadId, locked),
