@@ -105,7 +105,7 @@
 
 ## 2026-11-16 — Windows commands recover from launcher timeouts
 
-- Commands have more time to start on a busy Windows machine. If the launcher fails after starting a command, CodeShip recovers and watches that command, and retrying the same request returns it. A late launcher cannot execute a command CodeShip reported as never started.
+- Commands have more time to start on busy Windows machines, while cancellation, other commands' deadlines and completion delivery stay responsive. A cancelled start gate prevents a late launcher from executing the command. When startup evidence is temporarily unreadable, CodeShip keeps the task and retries recovery, including after a restart; retrying the request returns the same task. Commands are adopted or stopped only when their process identity can be verified.
 
 ## 2026-11-16 — Server logs and traces no longer carry e-mail addresses or credentials
 

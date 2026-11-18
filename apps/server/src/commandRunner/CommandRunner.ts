@@ -1751,6 +1751,11 @@ const make = Effect.gen(function* () {
         yield* lock
           .withPermits(1)(adopt)
           .pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                Effect.forEach([...watched.keys()], checkTask, { concurrency: "unbounded" }),
+              ),
+            ),
             Effect.ensuring(Deferred.succeed(adopted, undefined)),
             Effect.ignoreCause({ log: true }),
           );

@@ -25,6 +25,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1472,7 +1473,9 @@ const windowsFixture = Effect.gen(function* () {
   const stopped = yield* Queue.unbounded<number>();
   const processes = new Map<number, { identity: number; alive: boolean; directory: string }>();
   let nextPid = 2_147_483_000;
+  const clock = yield* Clock.Clock;
   const fixture = {
+    now: yield* Clock.currentTimeMillis,
     probes,
     reads,
     renamed,
@@ -1484,9 +1487,9 @@ const windowsFixture = Effect.gen(function* () {
     launches: 0,
     kills: 0,
     launch: (_input: ProcessRunner.ProcessRunInput, directory: string) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         const pid = nextPid++;
-        const identity = Date.now();
+        const identity = DateTime.toEpochMillis(yield* DateTime.now);
         processes.set(pid, { identity, alive: true, directory });
         NodeFS.writeFileSync(NodePath.join(directory, "pid"), `${pid} ${identity}`);
         NodeFS.renameSync(
@@ -1514,6 +1517,15 @@ const windowsFixture = Effect.gen(function* () {
       }),
     );
   const layer = Layer.mergeAll(
+    Layer.succeed(Clock.Clock, {
+      currentTimeMillis: Effect.sync(() => fixture.now),
+      currentTimeMillisUnsafe: () => fixture.now,
+      currentTimeNanos: Effect.sync(() => BigInt(fixture.now) * 1_000_000n),
+      currentTimeNanosUnsafe: () => BigInt(fixture.now) * 1_000_000n,
+      monotonicTimeNanos: clock.monotonicTimeNanos,
+      monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+      sleep: (duration) => clock.sleep(duration),
+    }),
     Layer.succeed(HostProcess.Platform, "win32"),
     Layer.succeed(FileSystem.FileSystem, {
       ...fs,
@@ -1559,7 +1571,9 @@ const windowsFixture = Effect.gen(function* () {
               argumentCount: input.args.length,
               timeoutMs: 120_000,
             });
-          return processOutput(new Date(processes.get(Number(probe![1]))!.identity).toISOString());
+          return processOutput(
+            DateTime.formatIso(DateTime.makeUnsafe(processes.get(Number(probe![1]))!.identity)),
+          );
         }),
     }),
   );
@@ -1580,7 +1594,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         const create = fixture.state.launch;
         let ran = false;
         fixture.state.launch = (input, directory) =>
-          input.cwd !== held.workspace
+          !input.args.some((arg) => arg.includes(held.workspace))
             ? create(input, directory)
             : Effect.gen(function* () {
                 yield* Deferred.succeed(entered, directory);
@@ -1589,7 +1603,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
                   ran = true;
                   return yield* create(input, directory);
                 }
-                return processOutput(`2147483001 ${Date.now()}`);
+                return processOutput(`2147483001 ${DateTime.toEpochMillis(yield* DateTime.now)}`);
               });
         yield* withServer((runner) =>
           Effect.gen(function* () {
@@ -1599,11 +1613,12 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
               .pipe(Effect.forkChild);
             const directory = yield* Deferred.await(entered);
             yield* Effect.gen(function* () {
-              // A zero-duration budget makes the first watch deterministically overdue.
+              // The clock advances while the unrelated launcher stays behind its barrier.
               const due = yield* runner.run(callerOf(deadline.threadId), {
                 command: "echo deadline",
-                timeoutMinutes: 0,
+                timeoutMinutes: 1,
               });
+              fixture.state.now += 60_000;
               yield* nextWake(deadline.threadId);
               assert.equal((yield* commandRow(due.taskId))?.status, "timed_out");
               const done = yield* runner.run(callerOf(completed.threadId), {
@@ -1675,6 +1690,46 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           }),
         ).pipe(Effect.provide(fixture.layer));
       }),
+  );
+
+  it.effect("keeps recovery watched when its database write fails", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-recovery-write-error");
+      const fixture = yield* windowsFixture;
+      const create = fixture.state.launch;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TEMP TRIGGER reject_recovery BEFORE UPDATE ON command_runs
+      WHEN NEW.pid IS NOT NULL BEGIN SELECT RAISE(FAIL, 'injected recovery write failure'); END`;
+      fixture.state.launch = (input, directory) =>
+        create(input, directory).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProcessRunner.ProcessTimeoutError({
+                command: input.command,
+                argumentCount: input.args.length,
+                timeoutMs: 120_000,
+              }),
+            ),
+          ),
+        );
+      yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const request = { command: "echo recovered", clientRequestId: "write-error" };
+          const first = yield* runner.run(callerOf(chat.threadId), request);
+          assert.isNull((yield* commandRow(first.taskId))?.pid);
+          assert.equal((yield* runner.run(callerOf(chat.threadId), request)).taskId, first.taskId);
+          yield* sql`DROP TRIGGER reject_recovery`;
+          NodeFS.writeFileSync(NodePath.join(NodePath.dirname(first.logPath), "exit-status"), "0");
+          yield* nextWake(chat.threadId);
+          assert.equal((yield* taskOf(chat.threadId, first.taskId))?.status, "completed");
+          assert.equal((yield* commandRow(first.taskId))?.pid, 2147483000);
+          assert.equal(fixture.state.launches, 1);
+        }),
+      ).pipe(
+        Effect.provide(fixture.layer),
+        Effect.ensuring(sql`DROP TRIGGER IF EXISTS reject_recovery`.pipe(Effect.orDie)),
+      );
+    }),
   );
 
   it.effect.each([true, false])(
@@ -1799,8 +1854,9 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         Effect.gen(function* () {
           const result = yield* runner.run(callerOf(chat.threadId), {
             command: "echo completed",
-            timeoutMinutes: 0,
+            timeoutMinutes: 1,
           });
+          fixture.state.now += 60_000;
           yield* Queue.take(fixture.reads);
           yield* Queue.take(fixture.reads);
           assert.equal((yield* commandRow(result.taskId))?.status, "running");
@@ -2061,7 +2117,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
       // them; 60 is older than the command.
       "$all = @((P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1), (P 60 10 -3))",
       "(Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t)).Keys | Sort-Object",
-      "try { Get-T3CommandTree $all 10 (Ms $t.AddSeconds(-2)) -1; throw 'unsafe identity' } catch { $_.Exception.Message }",
+      "try { Get-T3CommandTree -all $all -root 10 -since (Ms $t.AddSeconds(-2)) -identity (-1); throw 'unsafe identity' } catch { $_.Exception.Message }",
     ].join("\n");
     const tree = NodeChildProcess.execFileSync(
       "powershell.exe",
