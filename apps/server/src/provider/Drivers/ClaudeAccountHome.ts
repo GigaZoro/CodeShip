@@ -9,7 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { lock } from "proper-lockfile";
+import { acquireFileLock } from "../FileLock.ts";
 
 /** An added Claude account keeps its own login here; T3.CodeShip creates the folder and links the rest. */
 export const claudeAccountHomePath = (
@@ -233,24 +233,13 @@ const writeClaudeConfig = Effect.fn("ClaudeAccountHome.writeClaudeConfig")(funct
 const withClaudeConfigLock = <A, E, R>(configPath: string, task: Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const services = yield* Effect.context<never>();
-      yield* Effect.acquireRelease(
-        Effect.tryPromise(() =>
-          lock(configPath, {
-            lockfilePath: `${configPath}.lock`,
-            realpath: false,
-            retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
-            onCompromised: (error) =>
-              Effect.runSyncWith(services)(
-                Effect.logWarning("Claude's config lock was taken during a copy.", {
-                  configPath,
-                  error,
-                }),
-              ),
-          }),
-        ),
-        (release) => Effect.tryPromise(() => release()).pipe(Effect.ignoreCause({ log: true })),
-      );
+      yield* acquireFileLock(configPath, {
+        lockfilePath: `${configPath}.lock`,
+        realpath: false,
+        retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
+        onCompromised: (error) =>
+          Effect.logWarning("Claude's config lock was taken during a copy.", { configPath, error }),
+      });
       return yield* task;
     }),
   );

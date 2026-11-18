@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Credential leases coordinate Node server processes.
 import * as NodePath from "node:path";
-import { lock } from "proper-lockfile";
+import { acquireFileLock } from "./FileLock.ts";
 import { ProviderSetupError, type ProviderInstanceId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -22,22 +22,13 @@ export const withChatGptSessionLock = <A, E, R>(
   return Effect.scoped(
     Effect.gen(function* () {
       const compromised = yield* Deferred.make<never, ProviderSetupError>();
-      const services = yield* Effect.context<never>();
-      yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () =>
-            lock(NodePath.join(directory, `${key}.bin`), {
-              realpath: false,
-              stale: 120_000,
-              update: 10_000,
-              retries: { retries: 80, factor: 1, minTimeout: 500, maxTimeout: 500 },
-              onCompromised: () =>
-                Effect.runSyncWith(services)(Deferred.fail(compromised, failure())),
-            }),
-          catch: failure,
-        }),
-        (release) => Effect.promise(() => release()).pipe(Effect.ignore),
-      );
+      yield* acquireFileLock(NodePath.join(directory, `${key}.bin`), {
+        realpath: false,
+        stale: 120_000,
+        update: 10_000,
+        retries: { retries: 80, factor: 1, minTimeout: 500, maxTimeout: 500 },
+        onCompromised: () => Deferred.fail(compromised, failure()),
+      }).pipe(Effect.mapError(failure));
       return yield* Effect.raceFirst(task, Deferred.await(compromised));
     }),
   );

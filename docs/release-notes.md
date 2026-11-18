@@ -1,3 +1,7 @@
+## 2026-11-18 — Server file locks always release
+
+- The Claude and Codex config locks and the ChatGPT session lock now go through one helper that releases with no arguments, so a lock taken for a copy or an update is freed when it finishes and the next edit no longer waits for it to time out.
+
 ## 2026-11-18 — Background git work is counted and a run past its budget is logged
 
 - The pull request refresh and the thread settlement sweep now count the git processes they start, and the server log records a warning with the count when a run passes 150. On Windows each git process blocks the server for about 130 ms, so a sweep that starts to fan out again shows in the log instead of freezing the app. No change to what either sweep does.
