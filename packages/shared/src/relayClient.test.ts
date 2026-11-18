@@ -10,6 +10,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -80,7 +81,8 @@ const layerSpawner = (commands: Array<string>, versions: Record<string, string> 
 const writeExecutable = (filePath: string, contents = "cloudflared") =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    yield* fileSystem.makeDirectory(filePath.slice(0, filePath.lastIndexOf("/")), {
+    const paths = yield* Path.Path;
+    yield* fileSystem.makeDirectory(paths.dirname(filePath), {
       recursive: true,
     });
     yield* fileSystem.writeFileString(filePath, contents);
@@ -92,8 +94,40 @@ type RelayClientTestServices =
   | HttpClient.HttpClient
   | ChildProcessSpawner.ChildProcessSpawner;
 
-const managedPathFor = (baseDir: string, version: string) =>
-  `${baseDir}/tools/cloudflared/${version}/linux-x64/cloudflared`;
+const managedPathFor = (paths: Path.Path, baseDir: string, version: string) =>
+  paths.join(baseDir, "tools", "cloudflared", version, "linux-x64", "cloudflared");
+
+const lockPathFor = (paths: Path.Path, baseDir: string) =>
+  `${managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION)}.lock`;
+
+// The simulated platform's exec bits live here because NTFS cannot hold them.
+const withModeModel = (fileSystem: FileSystem.FileSystem) => {
+  const modes = new Map<string, number>();
+  return FileSystem.make({
+    ...fileSystem,
+    chmod: (target, mode) =>
+      fileSystem
+        .chmod(target, mode)
+        .pipe(Effect.tap(() => Effect.sync(() => modes.set(target, mode)))),
+    rename: (from, to) =>
+      fileSystem.rename(from, to).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            const mode = modes.get(from);
+            if (mode !== undefined) modes.set(to, mode);
+            modes.delete(from);
+          }),
+        ),
+      ),
+    stat: (target) =>
+      fileSystem.stat(target).pipe(
+        Effect.map((info) => {
+          const mode = modes.get(target);
+          return mode === undefined ? info : { ...info, mode: (info.mode & ~0o777) | mode };
+        }),
+      ),
+  });
+};
 
 const renameError = (code: string, path: string) =>
   PlatformError.systemError({
@@ -150,9 +184,10 @@ describe("RelayClient", () => {
   it.effect("cancels a contended install without removing the other installer's lock", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const directory = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64`;
-      const lockPath = `${directory}/cloudflared.lock`;
+      const lockPath = lockPathFor(paths, baseDir);
+      const directory = paths.dirname(lockPath);
       yield* fileSystem.makeDirectory(directory, { recursive: true });
       yield* fileSystem.writeFileString(lockPath, "other-installer");
       const contended = yield* Deferred.make<void>();
@@ -189,15 +224,16 @@ describe("RelayClient", () => {
   it.effect.each(["live owner", "recent legacy"] as const)("keeps a lock with a %s", (kind) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
+      const lockPath = lockPathFor(paths, baseDir);
       const owner = `${process.pid}-still-running`;
-      yield* fileSystem.makeDirectory(lockPath.slice(0, lockPath.lastIndexOf("/")), {
+      yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
         recursive: true,
       });
       if (kind === "live owner") {
         yield* fileSystem.makeDirectory(lockPath);
-        yield* fileSystem.writeFileString(`${lockPath}/${owner}`, "");
+        yield* fileSystem.writeFileString(paths.join(lockPath, owner), "");
       } else {
         yield* fileSystem.writeFileString(lockPath, "");
       }
@@ -231,15 +267,16 @@ describe("RelayClient", () => {
   it.effect.skipIf(windowsHost)("replaces an install lock left by an exited installer", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
-      yield* fileSystem.makeDirectory(lockPath.slice(0, lockPath.lastIndexOf("/")), {
+      const lockPath = lockPathFor(paths, baseDir);
+      yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
         recursive: true,
       });
       yield* fileSystem.makeDirectory(lockPath);
-      yield* fileSystem.writeFileString(`${lockPath}/2147483647-exited-installer`, "");
+      yield* fileSystem.writeFileString(paths.join(lockPath, "2147483647-exited-installer"), "");
       const manager = yield* RelayClient.makeCloudflaredRelayClient({
         baseDir,
         releaseAsset: testReleaseAsset,
@@ -253,11 +290,12 @@ describe("RelayClient", () => {
   it.effect.skipIf(windowsHost)("replaces an empty install lock left by an exited installer", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
-      yield* fileSystem.makeDirectory(lockPath.slice(0, lockPath.lastIndexOf("/")), {
+      const lockPath = lockPathFor(paths, baseDir);
+      yield* fileSystem.makeDirectory(paths.dirname(lockPath), {
         recursive: true,
       });
       yield* fileSystem.writeFileString(lockPath, "");
@@ -278,12 +316,13 @@ describe("RelayClient", () => {
   it.effect("keeps a replacement lock when a stale contender resumes cleanup", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
+      const lockPath = lockPathFor(paths, baseDir);
       const abandoned = "2147483647-exited-installer";
       const replacement = `${process.pid}-replacement`;
       yield* fileSystem.makeDirectory(lockPath, { recursive: true });
-      yield* fileSystem.writeFileString(`${lockPath}/${abandoned}`, "");
+      yield* fileSystem.writeFileString(paths.join(lockPath, abandoned), "");
       const checked = yield* Deferred.make<void>();
       let replaced = false;
       const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir }).pipe(
@@ -302,7 +341,7 @@ describe("RelayClient", () => {
                   replaced = true;
                   yield* fileSystem.rename(lockPath, `${lockPath}.old`);
                   yield* fileSystem.makeDirectory(lockPath);
-                  yield* fileSystem.writeFileString(`${lockPath}/${replacement}`, "");
+                  yield* fileSystem.writeFileString(paths.join(lockPath, replacement), "");
                 }),
               ),
             ),
@@ -318,8 +357,9 @@ describe("RelayClient", () => {
   it.effect("releases the install lock when a download is cancelled", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
+      const lockPath = lockPathFor(paths, baseDir);
       const downloading = yield* Deferred.make<void>();
       const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
       const installing = yield* manager
@@ -349,8 +389,9 @@ describe("RelayClient", () => {
   it.effect.skipIf(windowsHost)("releases a lock acquired while installation is cancelled", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-cloudflared-test-" });
-      const lockPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`;
+      const lockPath = lockPathFor(paths, baseDir);
       const acquired = yield* Deferred.make<void>();
       const completeWrite = yield* Deferred.make<void>();
       let pauseWrite = true;
@@ -409,6 +450,7 @@ describe("RelayClient", () => {
     () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
+        const paths = yield* Path.Path;
         const baseDir = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-cloudflared-test-",
         });
@@ -430,7 +472,7 @@ describe("RelayClient", () => {
             }
           }),
         );
-        const managedPath = `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared`;
+        const managedPath = managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION);
         expect(installed).toEqual({
           status: "available",
           executablePath: managedPath,
@@ -466,6 +508,7 @@ describe("RelayClient", () => {
   it.effect("rejects downloads whose checksum does not match the pinned manifest", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
@@ -481,11 +524,7 @@ describe("RelayClient", () => {
       const error = yield* manager.install.pipe(Effect.flip);
       expect(error).toBeInstanceOf(RelayClient.RelayClientInstallError);
       expect(error.reason).toBe("invalid_checksum");
-      expect(
-        yield* fileSystem.exists(
-          `${baseDir}/tools/cloudflared/${RelayClient.CLOUDFLARED_VERSION}/linux-x64/cloudflared.lock`,
-        ),
-      ).toBe(false);
+      expect(yield* fileSystem.exists(lockPathFor(paths, baseDir))).toBe(false);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -694,11 +733,12 @@ describe("RelayClient", () => {
           (baseDir) =>
             Effect.gen(function* () {
               const fileSystem = yield* FileSystem.FileSystem;
+              const paths = yield* Path.Path;
               const pathBinary = `${baseDir}/bin/cloudflared`;
-              const older = managedPathFor(baseDir, "2025.9.0");
-              const newer = managedPathFor(baseDir, "2026.1.0");
-              const pinned = managedPathFor(baseDir, RelayClient.CLOUDFLARED_VERSION);
-              const newerServer = managedPathFor(baseDir, "2099.1.0");
+              const older = managedPathFor(paths, baseDir, "2025.9.0");
+              const newer = managedPathFor(paths, baseDir, "2026.1.0");
+              const pinned = managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION);
+              const newerServer = managedPathFor(paths, baseDir, "2099.1.0");
               versions[newerServer] = "2099.1.0";
               yield* writeExecutable(newerServer);
               versions[pathBinary] = "2026.9.3";
@@ -749,7 +789,8 @@ describe("RelayClient", () => {
         return run(
           (baseDir) =>
             Effect.gen(function* () {
-              const pinned = managedPathFor(baseDir, RelayClient.CLOUDFLARED_VERSION);
+              const paths = yield* Path.Path;
+              const pinned = managedPathFor(paths, baseDir, RelayClient.CLOUDFLARED_VERSION);
               versions[pinned] = "2026.9.3";
               yield* writeExecutable(pinned);
               const manager = yield* RelayClient.makeCloudflaredRelayClient({ baseDir });
@@ -790,7 +831,7 @@ describe("RelayClient", () => {
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const { locked, renames } = yield* makeLockedRenames(fileSystem, {
+      const { locked, renames } = yield* makeLockedRenames(withModeModel(fileSystem), {
         rename: "staging",
         failures: Infinity,
         code,

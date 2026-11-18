@@ -1,3 +1,7 @@
+## 2026-11-18 — The relay install tests pass on Windows
+
+- The relay client install tests built lock paths with slashes that the Windows filesystem hooks never matched, and checked the simulated Linux executable bit on NTFS, which cannot hold one. They now build paths with the host's path rules and model the simulated platform's executable bits themselves, so the contended-lock, legacy-lock and staging cases run the same on every host. No change to the app.
+
 ## 2026-11-18 — The Codex installation tests run on Windows
 
 - The tests that check how the server finds and verifies an installed Codex used a shell script as the fake `codex` program, which Windows cannot run. They now use a fake process starter instead, so they run the same on every host. The launcher-symlink case no longer compiles a C program. No change to the app.
