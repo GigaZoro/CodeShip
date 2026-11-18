@@ -419,7 +419,9 @@ stays active instead, because the task or agent that started it decides how that
 work lands. Once you write in it from the app, it is treated like any thread you
 wrote in. Messages T3.CodeShip sends for you, such as the automatic "continue"
 after a network or usage-limit stop, do not count. A subagent never gets one
-either: it settles once its parent thread settles, is archived or is deleted.
+either: it settles once its parent thread settles, is archived or is deleted, even
+while the rules in **Settings → Threads** are off. A subagent that is pinned,
+snoozed, set to **Never**, or still working or waiting on you stays active.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a
@@ -446,7 +448,8 @@ finished background work or a pull request watch starts on its own does not.
 To keep one thread out of the settled shelf no matter how long it sits idle, open its menu,
 choose **Auto-settle behavior**, and pick **Never**. The current option is checked. Pick
 **Follow settings** to return to the rules in **Settings → Threads**. While those rules are off,
-a thread on **Follow settings** does not settle automatically either. Manual settle, snooze, and
+a thread on **Follow settings** does not settle automatically either, except a subagent whose
+parent is done. Manual settle, snooze, and
 archive still work while it is set to **Never**.
 
 Change these rules in **Settings → Threads**.
