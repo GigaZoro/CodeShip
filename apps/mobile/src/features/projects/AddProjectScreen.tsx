@@ -58,6 +58,7 @@ import {
   type EnvironmentId,
   type EnvironmentMachineKind,
   ProjectId,
+  repositoryKeysOf,
   resolveEnvironmentMachineKind,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
@@ -785,8 +786,12 @@ function useOpenExistingProject(environment: EnvironmentOption | null) {
     // A folder holding another repository is not this clone; let the clone report it occupied.
     if (
       clone &&
-      existing.repositoryIdentity?.canonicalKey !==
-        sourceControlClients.repositoryKeyFromRemote(clone.remoteUrl)
+      !(
+        existing.repositoryIdentity &&
+        repositoryKeysOf(existing.repositoryIdentity).includes(
+          sourceControlClients.repositoryKeyFromRemote(clone.remoteUrl),
+        )
+      )
     ) {
       return false;
     }

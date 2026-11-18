@@ -2,6 +2,7 @@
 import * as NodeSqlite from "node:sqlite";
 
 import { t } from "@t3tools/shared/i18n";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,17 +23,6 @@ const HomeOwnerRuntimeState = Schema.Struct({
 export type HomeOwner = typeof HomeOwnerRuntimeState.Type;
 
 const decodeHomeOwner = Schema.decodeUnknownOption(Schema.fromJsonString(HomeOwnerRuntimeState));
-
-/** Signal 0 only probes existence; EPERM still means alive. */
-const isProcessAlive = (pid: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
-  }
-};
 
 /**
  * Whether a server holds the T3 home's ownership lock (an exclusive transaction on
