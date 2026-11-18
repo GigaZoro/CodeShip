@@ -54,7 +54,7 @@ const account = (
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: iso(NOW),
-    models: [],
+    models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
     slashCommands: [],
     skills: [],
     usageLimits: {
@@ -88,6 +88,8 @@ interface Claimed {
  */
 const harness = Effect.fn("harness")(function* (input: {
   readonly provider: ServerProvider;
+  readonly peers?: ReadonlyArray<ServerProvider>;
+  readonly freshPeers?: ReadonlyArray<ServerProvider>;
   readonly redeem?: boolean;
   readonly refreshed?: ServerProvider;
   readonly freshSettings?: Partial<ServerSettingsValue>;
@@ -123,7 +125,12 @@ const harness = Effect.fn("harness")(function* (input: {
           }),
         }),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([input.provider]),
+          getProviders: Effect.gen(function* () {
+            const peers = (yield* Ref.get(deciding))
+              ? (input.freshPeers ?? input.peers)
+              : input.peers;
+            return [input.provider, ...(peers ?? [])];
+          }),
         }),
         Layer.mock(ResetCreditRedemption.ResetCreditRedemption)({
           redeemOnFreshRead: (instanceId, decide) =>
@@ -183,6 +190,128 @@ describe("UsageResetRedeemer", () => {
     }),
   );
 
+  it.effect.each([
+    { billingKind: "plan", balanceState: "available", usedPercent: 20, expected: 0 },
+    { billingKind: "plan", balanceState: "available", usedPercent: 100, expected: 1 },
+    { billingKind: "payPerUse", balanceState: "available", usedPercent: 100, expected: 0 },
+    { billingKind: "payPerUse", balanceState: "exhausted", usedPercent: 20, expected: 1 },
+  ] as const)(
+    "preserves resets ahead of $billingKind with $balanceState balance and $usedPercent% plan use",
+    ({ billingKind, balanceState, usedPercent, expected }) =>
+      Effect.gen(function* () {
+        const provider = account("claudeAgent", 100);
+        const peer = account("claudeAgent", 100, {
+          instanceId: ProviderInstanceId.make("peer"),
+          billingKind,
+          payPerUse: {
+            linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+            grantUsd: 50,
+            meteringStartedAt: "2026-09-01T00:00:00.000Z",
+            unpricedUsage: false,
+            cycleStart: "2026-09-01T00:00:00.000Z",
+            cycleEnd: "2026-12-01T00:00:00.000Z",
+            estimatedRemainingUsd: 48,
+            balanceState,
+            checkedAt: iso(NOW),
+            spendUsd: null,
+            spendSource: "metered",
+          },
+          usageLimits: {
+            checkedAt: iso(NOW),
+            windows: [
+              { id: "weekly", kind: "weekly", label: "Weekly", usedPercent, resetsAt: at(100) },
+            ],
+          },
+        });
+        const { claims, sweeps, layer } = yield* harness({ provider, peers: [peer] });
+        yield* Effect.gen(function* () {
+          yield* Queue.take(sweeps);
+          yield* afterNextSweep(sweeps, "5 seconds");
+          assert.equal(yield* Queue.size(claims), expected);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect.each([
+    { model: "claude-opus-5-5", enabled: true, expected: 0 },
+    { model: "claude-sonnet-4-5", enabled: true, expected: 1 },
+    { model: "claude-opus-5-5", enabled: false, expected: 1 },
+  ])(
+    "checks model scope and readiness before preserving a reset ($model, $enabled)",
+    ({ model, enabled, expected }) =>
+      Effect.gen(function* () {
+        const provider = account("claudeAgent", 100, {}, { kind: "full" });
+        const scoped = {
+          ...provider,
+          usageLimits: {
+            ...provider.usageLimits!,
+            windows: provider.usageLimits!.windows.map((window) => ({
+              ...window,
+              id: "seven_day_opus",
+              model: "opus",
+            })),
+          },
+        };
+        const peer = account("claudeAgent", 100, {
+          instanceId: ProviderInstanceId.make("api"),
+          enabled,
+          billingKind: "payPerUse",
+          payPerUse: {
+            linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+            grantUsd: 50,
+            meteringStartedAt: "2026-09-01T00:00:00.000Z",
+            unpricedUsage: false,
+            cycleStart: "2026-09-01T00:00:00.000Z",
+            cycleEnd: "2026-12-01T00:00:00.000Z",
+            estimatedRemainingUsd: 48,
+            balanceState: "available",
+            checkedAt: iso(NOW),
+            spendUsd: null,
+            spendSource: "metered",
+          },
+          models: [{ slug: model, name: model, isCustom: false, capabilities: null }],
+          usageLimits: undefined,
+        });
+        const { claims, sweeps, layer } = yield* harness({ provider: scoped, peers: [peer] });
+        yield* Effect.gen(function* () {
+          yield* Queue.take(sweeps);
+          yield* afterNextSweep(sweeps, "5 seconds");
+          assert.equal(yield* Queue.size(claims), expected);
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect("rechecks other accounts before spending a reset", () =>
+    Effect.gen(function* () {
+      const peer = account("claudeAgent", 100, {
+        instanceId: ProviderInstanceId.make("api"),
+        billingKind: "payPerUse",
+        payPerUse: {
+          linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+          grantUsd: 50,
+          meteringStartedAt: "2026-09-01T00:00:00.000Z",
+          unpricedUsage: false,
+          cycleStart: "2026-09-01T00:00:00.000Z",
+          cycleEnd: "2026-12-01T00:00:00.000Z",
+          estimatedRemainingUsd: 48,
+          balanceState: "available",
+          checkedAt: iso(NOW),
+          spendUsd: null,
+          spendSource: "metered",
+        },
+      });
+      const { claims, sweeps, layer } = yield* harness({
+        provider: account("claudeAgent", 100),
+        freshPeers: [peer],
+      });
+      yield* Effect.gen(function* () {
+        yield* Queue.take(sweeps);
+        yield* afterNextSweep(sweeps, "5 seconds");
+        assert.equal(yield* Queue.size(claims), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect("claims through Codex with the key the provider repeats safely", () =>
     Effect.gen(function* () {
       const { claims, layer } = yield* harness({
@@ -237,10 +366,12 @@ describe("UsageResetRedeemer", () => {
     }),
   );
 
-  it.effect("skips an account that another instance already uses", () =>
+  it.effect.each([{ availability: "unavailable" }, { billingKind: "payPerUse" }] satisfies Array<
+    Partial<ServerProvider>
+  >)("skips accounts unavailable for plan reset redemption", (overrides) =>
     Effect.gen(function* () {
       const { claims, sweeps, layer } = yield* harness({
-        provider: account("claudeAgent", 100, { availability: "unavailable" }),
+        provider: account("claudeAgent", 100, overrides),
       });
       yield* Effect.gen(function* () {
         yield* Queue.take(sweeps);

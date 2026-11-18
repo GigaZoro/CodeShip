@@ -81,7 +81,9 @@ export function SettingsProviderAccountsRouteScreen({ route }: Props) {
   const accounts = (environment: SettingsTarget) =>
     managedProviders(environment, providersByEnvironment).filter(
       (provider) =>
-        (canManageProvider(provider) || provider.driver === "codex") &&
+        (canManageProvider(provider) ||
+          provider.driver === "codex" ||
+          provider.billingKind === "payPerUse") &&
         matchesCapabilitiesFocus(focus, {
           environmentId: environment.environmentId,
           instanceId: provider.instanceId,
@@ -123,6 +125,19 @@ export function SettingsProviderAccountsRouteScreen({ route }: Props) {
                             sharedFrom={sharedFrom(environment, provider)}
                             divider={index > 0}
                           />
+                        ) : null}
+                        {provider.driver === "claudeAgent" &&
+                        provider.billingKind === "payPerUse" ? (
+                          <View className="gap-1 p-4">
+                            <Text className="text-foreground">
+                              {provider.displayName ?? t("Claude API account")}
+                            </Text>
+                            <Text className="text-foreground-muted">
+                              {t(
+                                "Configure this account's API key, linked plan, and monthly credit grant in Providers & models on web or desktop.",
+                              )}
+                            </Text>
+                          </View>
                         ) : null}
                         {provider.driver === "codex" ? (
                           <CodexSignInRows

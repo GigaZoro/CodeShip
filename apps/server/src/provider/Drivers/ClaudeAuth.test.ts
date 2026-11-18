@@ -35,7 +35,11 @@ it("redacts every token split, including ANSI styling, repeated tokens and trail
 });
 
 /** `termsReviews` answers each terms check in turn; checks past the list answer false. */
-const makeHarness = (termsReviews: ReadonlyArray<boolean> = [], token?: string) =>
+const makeHarness = (
+  termsReviews: ReadonlyArray<boolean> = [],
+  token?: string,
+  billingKind: "plan" | "payPerUse" = "plan",
+) =>
   Effect.gen(function* () {
     const events: Array<string> = [];
     const tokens: Array<string | undefined> = [];
@@ -47,6 +51,7 @@ const makeHarness = (termsReviews: ReadonlyArray<boolean> = [], token?: string) 
     let termsChecks = 0;
     const auth = yield* makeClaudeAuth({
       instanceId,
+      billingKind,
       binaryPath: "claude",
       cwd: "/state",
       environment: token ? { ...environment, CLAUDE_CODE_OAUTH_TOKEN: token } : environment,
@@ -311,5 +316,12 @@ it.effect("leaves credentials unchanged when token setup is cancelled", () =>
     harness.print("sk-ant-oat01-synthetic-cancelled-token\r\n");
     yield* harness.auth.controller.cancel("owner", started.flowId!);
     assert.deepEqual(harness.tokens, []);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("offers no CLI sign-in for API-key pay per use", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness([], undefined, "payPerUse");
+    assert.isFalse(h.auth.canAuthenticate);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

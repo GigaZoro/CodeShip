@@ -92,6 +92,178 @@ const settings = (order: ReadonlyArray<ProviderInstanceId>) => ({
 
 const auto: ModelSelection = { instanceId: third, model: "claude-opus-5-5", autoAccount: true };
 
+describe("pay-per-use account priority", () => {
+  const full = {
+    checkedAt: "2026-11-03T11:59:00.000Z",
+    windows: [
+      {
+        id: "seven_day",
+        label: "Weekly",
+        kind: "weekly" as const,
+        usedPercent: 100,
+        resetsAt: "2026-11-04T12:00:00.000Z",
+      },
+    ],
+  };
+  const api = (balanceState: "available" | "exhausted", cycleEnd = "2026-11-05T12:00:00.000Z") =>
+    provider(primary, {
+      billingKind: "payPerUse",
+      auth: { status: "authenticated", type: "apiKey" },
+      payPerUse: {
+        balanceState,
+        linkedPlanInstanceId: second,
+        grantUsd: 50,
+        meteringStartedAt: "2026-09-01T00:00:00.000Z",
+        unpricedUsage: false,
+        cycleStart: "2026-11-01T00:00:00.000Z",
+        cycleEnd,
+        estimatedRemainingUsd: 46.5,
+        checkedAt: "2026-11-03T11:59:00.000Z",
+        spendUsd: 3.5,
+        spendSource: "metered",
+      },
+    });
+  const input = (providers: ReadonlyArray<ServerProvider>) => ({
+    settings: settings([primary, second, third]),
+    providers,
+    recordedLimits: new Map(),
+    nowMs,
+    projectId,
+    model: auto.model,
+    driver: claude,
+    mcpSignInsNeeded: new Map(),
+  });
+
+  it.each([
+    [
+      "plan room with no known reset precedes API balance",
+      provider(second),
+      "available",
+      [second, primary],
+    ],
+    [
+      "API balance follows exhausted plan windows",
+      provider(second, { usageLimits: full }),
+      "available",
+      [primary],
+    ],
+    [
+      "API balance precedes extra plan credits",
+      provider(second, { usageLimits: { ...full, credits: { unlimited: false, balance: "50" } } }),
+      "available",
+      [primary, second],
+    ],
+    [
+      "spent API credits stay unavailable with no reset clock",
+      provider(second, { usageLimits: full }),
+      "exhausted",
+      [],
+    ],
+  ] as const)("%s", (_, plan, balance, expected) => {
+    assert.deepEqual(
+      accountsWithRoom(input([api(balance), plan])).map((account) => account.instanceId),
+      [...expected],
+    );
+  });
+
+  it("leaves API billing when plan capacity returns, even on an existing turn or with switching off", () => {
+    const search = input([api("available"), provider(second)]);
+    for (const autoAccount of [false, true]) {
+      for (const failoverLimitedThreads of [false, true]) {
+        assert.strictEqual(
+          routeAutoAccount({
+            ...search,
+            settings: { ...search.settings, failoverLimitedThreads },
+            selection: { instanceId: primary, model: auto.model, autoAccount },
+            currentInstanceId: primary,
+            started: true,
+          }).instanceId,
+          second,
+        );
+      }
+    }
+  });
+
+  it("keeps provider admission open until API credits are spent, then waits for a real plan reset", () => {
+    for (const balance of ["available", "exhausted"] as const) {
+      const search = input([api(balance), provider(second, { usageLimits: full })]);
+      const block = usageBlock({
+        ...search,
+        selection: { ...auto, instanceId: second },
+        delegates: [],
+      });
+      assert.deepEqual(
+        block,
+        balance === "available"
+          ? null
+          : { driver: claude, until: "2026-11-04T12:00:00.000Z", accounts: [primary, second] },
+      );
+    }
+  });
+
+  it("waits until the exhausted credit snapshot becomes available", () => {
+    const search = input([api("exhausted")]);
+    assert.deepEqual(accountsWithRoom(search), []);
+    assert.deepEqual(
+      accountsWithRoom({ ...search, providers: [api("available")] }).map(
+        (account) => account.instanceId,
+      ),
+      [primary],
+    );
+  });
+
+  it.each([
+    ["plan expires first", "2026-11-04T12:00:00.000Z", "2026-11-05T12:00:00.000Z", second],
+    ["API cycle expires first", "2026-11-05T12:00:00.000Z", "2026-11-04T12:00:00.000Z", primary],
+    ["equal expiry prefers plan", "2026-11-04T12:00:00.000Z", "2026-11-04T12:00:00.000Z", second],
+  ] as const)("%s for named and Auto accounts", (_, planReset, cycleEnd, expected) => {
+    const search = input([
+      api("available", cycleEnd),
+      provider(second, {
+        usageLimits: {
+          ...full,
+          windows: [{ ...full.windows[0]!, usedPercent: 20, resetsAt: planReset }],
+        },
+      }),
+    ]);
+    assert.equal(accountsWithRoom(search)[0]?.instanceId, expected);
+    for (const autoAccount of [false, true]) {
+      for (const failoverLimitedThreads of [false, true]) {
+        const selected = routeAutoAccount({
+          ...search,
+          settings: { ...search.settings, failoverLimitedThreads },
+          selection: {
+            instanceId: expected === primary ? second : primary,
+            model: auto.model,
+            autoAccount,
+          },
+          currentInstanceId: expected === primary ? second : primary,
+          started: true,
+        });
+        assert.equal(selected.instanceId, expected);
+        assert.equal(selected.model, auto.model);
+      }
+    }
+  });
+
+  it("uses the earliest of multiple API cycles ahead of extra plan credit", () => {
+    const early = { ...api("available", "2026-11-04T12:00:00.000Z"), instanceId: third };
+    const plan = provider(second, {
+      usageLimits: { ...full, credits: { unlimited: false, balance: "50" } },
+    });
+    assert.deepEqual(
+      accountsWithRoom(input([api("available"), plan, early])).map((account) => account.instanceId),
+      [third, primary, second],
+    );
+    assert.deepEqual(
+      accountsWithRoom(input([api("exhausted"), plan, provider(third)])).map(
+        (account) => account.instanceId,
+      ),
+      [third, second],
+    );
+  });
+});
+
 const THREADPAGE = "threadpage";
 const signIns = (needing: ReadonlyArray<ProviderInstanceId> = []) =>
   new Map(needing.map((instanceId) => [instanceId, [THREADPAGE]]));
@@ -2632,6 +2804,7 @@ describe("MCP sign-ins in the layer", () => {
       readonly order?: ReadonlyArray<ProviderInstanceId>;
       /** Nothing is loaded until a discovery lists it, as on a machine no client polls. */
       readonly cold?: boolean;
+      readonly billingPriority?: boolean;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -2660,12 +2833,39 @@ describe("MCP sign-ins in the layer", () => {
                   ),
                 ),
             }),
-            ServerSettings.layerTest(settings(options.order ?? [primary, second, third])),
+            ServerSettings.layerTest({
+              ...settings(options.order ?? [primary, second, third]),
+              failoverLimitedThreads: !options.billingPriority,
+            }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getUsageLimitedProviderInstances: () => Effect.succeed(new Map()),
             }),
             Layer.mock(ProviderRegistry.ProviderRegistry)({
-              getProviders: Effect.succeed([provider(primary), provider(second), provider(third)]),
+              getProviders: Effect.succeed([
+                provider(
+                  primary,
+                  options.billingPriority
+                    ? {
+                        billingKind: "payPerUse",
+                        payPerUse: {
+                          linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+                          grantUsd: 50,
+                          meteringStartedAt: "2026-09-01T00:00:00.000Z",
+                          unpricedUsage: false,
+                          cycleStart: "2026-09-01T00:00:00.000Z",
+                          cycleEnd: "2026-12-01T00:00:00.000Z",
+                          estimatedRemainingUsd: 48,
+                          balanceState: "available",
+                          checkedAt: "2026-11-03T11:59:00.000Z",
+                          spendUsd: 0,
+                          spendSource: "metered",
+                        },
+                      }
+                    : {},
+                ),
+                provider(second),
+                provider(third),
+              ]),
             }),
           ),
         ),
@@ -2674,24 +2874,26 @@ describe("MCP sign-ins in the layer", () => {
     });
   const harness = makeHarness();
 
-  it.effect("routes a turn from the loaded lists and never starts a provider to read them", () =>
-    Effect.gen(function* () {
-      const { reads, layer } = yield* harness;
-      const routed = yield* Effect.gen(function* () {
-        const routing = yield* AccountRouting.AccountRouting;
-        return yield* routing.route({
-          selection: auto,
-          projectId,
-          currentInstanceId: third,
-          started: true,
-        });
-      }).pipe(Effect.provide(layer));
-      assert.equal(routed.instanceId, primary);
-      assert.deepEqual(
-        (yield* Ref.get(reads)).filter((read) => !read.startsWith("loaded:")),
-        [],
-      );
-    }),
+  it.effect.each([false, true])(
+    "routes from loaded MCP lists with billing priority %s",
+    (billingPriority) =>
+      Effect.gen(function* () {
+        const { reads, layer } = yield* makeHarness({ billingPriority });
+        const routed = yield* Effect.gen(function* () {
+          const routing = yield* AccountRouting.AccountRouting;
+          return yield* routing.route({
+            selection: auto,
+            projectId,
+            currentInstanceId: third,
+            started: true,
+          });
+        }).pipe(Effect.provide(layer));
+        assert.equal(routed.instanceId, billingPriority ? second : primary);
+        assert.deepEqual(
+          (yield* Ref.get(reads)).filter((read) => !read.startsWith("loaded:")),
+          [],
+        );
+      }),
   );
 
   it.effect("lists the servers of a launch's accounts, and says it moved for a sign-in", () =>

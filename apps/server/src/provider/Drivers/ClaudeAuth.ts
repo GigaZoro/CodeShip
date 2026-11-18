@@ -40,6 +40,7 @@ const TOKEN_METHOD: ProviderAuthMethod = {
 /** Signs a Claude config folder in and out with the CLI's own login, which also reports the account's email and plan. */
 export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
   readonly instanceId: ProviderInstanceId;
+  readonly billingKind?: "plan" | "payPerUse";
   readonly binaryPath: string;
   readonly cwd: string;
   /** Carries `CLAUDE_CONFIG_DIR` for an added account's own folder. */
@@ -87,7 +88,12 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
       ? { shell: "node", args: [executable, ...args] }
       : { shell: executable, args: [...args] };
     const exited = yield* Deferred.make<number>();
-    const { CLAUDE_CODE_OAUTH_TOKEN: _token, ...environment } = options.environment;
+    const {
+      CLAUDE_CODE_OAUTH_TOKEN: _token,
+      ANTHROPIC_API_KEY: _key,
+      ANTHROPIC_AUTH_TOKEN: _authToken,
+      ...environment
+    } = options.environment;
     const process = yield* PtyAdapter.spawnScoped(
       pty.value,
       {
@@ -202,7 +208,7 @@ export const makeClaudeAuth = Effect.fn("makeClaudeAuth")(function* (options: {
     }),
   );
 
-  const canAuthenticate = Option.isSome(pty);
+  const canAuthenticate = Option.isSome(pty) && options.billingKind !== "payPerUse";
   const controller = yield* ProviderAuthFlow.make({
     instanceId: options.instanceId,
     // The Claude CLI owns the login, and every instance on this folder shares it.

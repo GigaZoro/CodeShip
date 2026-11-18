@@ -26,7 +26,15 @@ type ProviderInstances = ServerSettings["providerInstances"];
  * its requests go to.
  */
 const SHARED_CONFIG_FIELDS: Readonly<Record<string, ReadonlyArray<string>>> = {
-  claudeAgent: ["customModels", "autoCompactWindow", "idleCompaction"],
+  claudeAgent: [
+    "billingKind",
+    "linkedPlanInstanceId",
+    "apiCreditGrantUsd",
+    "apiCreditCycleEnd",
+    "customModels",
+    "autoCompactWindow",
+    "idleCompaction",
+  ],
   codex: ["customModels"],
   antigravity: ["customModels"],
   cursor: ["customModels"],

@@ -1,4 +1,5 @@
 import { useUsageDocumentVisible, useUsageNow } from "../../hooks/useUsageNow";
+import { ApiCredits } from "./ApiCredits";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
@@ -644,6 +645,19 @@ export function UsagePage() {
                 />
               </>
             ) : null}
+            {!hiddenProviders.has("claude")
+              ? selectedEnvironments
+                  .filter(
+                    (environment) => environment.canReadDiagnostics && environment.isConnected,
+                  )
+                  .map((environment) => (
+                    <ApiCredits
+                      key={environment.environmentId}
+                      environmentId={environment.environmentId}
+                      label={environment.label}
+                    />
+                  ))
+              : null}
             {selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {environments.length === 0

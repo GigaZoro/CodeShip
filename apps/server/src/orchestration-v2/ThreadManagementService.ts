@@ -925,7 +925,6 @@ const make = Effect.gen(function* () {
       readonly preservePreviousSelection?: boolean | undefined;
       readonly steersActiveRun?: boolean | undefined;
     }) {
-      if (input.newThread && input.selection?.autoAccount !== true) return command;
       const thread = yield* orchestrator.getThreadShell(input.threadId);
       if (thread === null) return command;
       const selection = input.selection ?? thread.modelSelection;
@@ -940,7 +939,6 @@ const make = Effect.gen(function* () {
         thread.delegatedFrom === undefined &&
         thread.latestRunId === null &&
         thread.activeProviderThreadId === null;
-      if (!fresh && selection.autoAccount !== true) return command;
       const projectId = input.projectId ?? thread.projectId;
       // A retried command keeps the account its first attempt chose.
       const receipt = yield* receipts
@@ -982,7 +980,6 @@ const make = Effect.gen(function* () {
           };
         }
       }
-      if (selection.autoAccount !== true) return command;
       const started = !input.newThread && thread.latestRunId !== null;
       let previousSelection = started ? thread.modelSelection : undefined;
       if (

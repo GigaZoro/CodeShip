@@ -37,6 +37,9 @@ import {
 import {
   codexCreditStanding,
   compareAccountsByHeadroom,
+  accountUsageTier,
+  compareAccountUsagePriority,
+  isPayPerUseAccount,
   exhaustedUsageWindow,
   hasLiveUsageWindows,
   isCodexCloudAccount,
@@ -60,6 +63,7 @@ import * as Stream from "effect/Stream";
 
 import * as ProviderMcp from "../provider/ProviderMcp.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ApiCreditRecovery from "../provider/ApiCreditRecovery.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PrepaidCreditSpend from "./PrepaidCreditSpend.ts";
@@ -146,6 +150,9 @@ export function runLiftsScope(
  */
 const APP_CAP_RETRY_MS = 60 * 60_000;
 
+const limitEndIso = (end: number) =>
+  Number.isFinite(end) ? DateTime.formatIso(DateTime.makeUnsafe(end)) : null;
+
 /** When a limit stops holding, and whether that time is a guess rather than one the provider read. */
 interface LimitEnd {
   readonly end: number;
@@ -231,7 +238,11 @@ function runsOnCredits(provider: ServerProvider, input: LimitInput, model: strin
 function windowLimitEnd(provider: ServerProvider, input: LimitInput, model: string | null) {
   const window = exhaustedUsageWindow(provider, input.nowMs, model);
   if (window === undefined || provider.usageLimits === undefined) return null;
-  if (runsOnCredits(provider, input, model)) return null;
+  if (
+    runsOnCredits(provider, input, model) ||
+    (provider.driver === "claudeAgent" && accountUsageTier(provider, input.nowMs, model) === 2)
+  )
+    return null;
   return {
     end: usageWindowLimitEnd(provider.usageLimits, window),
     estimated: window.resetsAt === undefined,
@@ -244,6 +255,11 @@ function accountLimitDetail(
   input: LimitInput,
   model?: string,
 ): LimitEnd | null {
+  if (isPayPerUseAccount(provider)) {
+    if (accountUsageTier(provider, input.nowMs, model) !== null) return null;
+    const cycleEnd = Date.parse(provider.payPerUse?.cycleEnd ?? "");
+    return { end: cycleEnd > input.nowMs ? cycleEnd : Infinity, estimated: false };
+  }
   if (!isSubscriptionAccount(provider)) return null;
   return usageLimitDetail(provider, input, model);
 }
@@ -262,6 +278,12 @@ function usageLimitDetail(
   );
   const windowEnd = windowLimitEnd(provider, input, canonical);
   if (windowEnd !== null) ends.push(windowEnd);
+  if (
+    ends.length === 0 &&
+    provider.driver === "claudeAgent" &&
+    accountUsageTier(provider, input.nowMs, canonical) === null
+  )
+    return { end: Infinity, estimated: false };
   return ends.length === 0 ? null : ends.reduce((last, end) => (end.end > last.end ? end : last));
 }
 
@@ -284,7 +306,7 @@ function accountLimit(
   const credits = creditUse(provider, input);
   return {
     instanceId: provider.instanceId,
-    limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(end)),
+    limitedUntil: limitEndIso(end),
     ...(credits === null ? {} : { credits }),
   };
 }
@@ -300,7 +322,7 @@ function accountAdmission(
     ...(limit === null
       ? {}
       : {
-          limitedUntil: DateTime.formatIso(DateTime.makeUnsafe(limit.end)),
+          limitedUntil: limitEndIso(limit.end),
           ...(limit.estimated ? { estimated: true as const } : {}),
         }),
     ...(credits === null ? {} : { credits }),
@@ -315,7 +337,9 @@ function usageHolds(
   providers: ReadonlyArray<ServerProvider>,
   input: LimitInput,
 ): Array<ProviderUsageHold> {
-  return providers.flatMap((provider) => {
+  return providers.flatMap<ProviderUsageHold>((provider) => {
+    if (isPayPerUseAccount(provider) && provider.payPerUse?.balanceState === "exhausted")
+      return [{ instanceId: provider.instanceId, apiCredit: true }];
     if (!isSubscriptionAccount(provider) || windowLimitEnd(provider, input, null) !== null)
       return [];
     const refusals = (input.recordedLimits.get(provider.instanceId) ?? []).filter(
@@ -378,7 +402,9 @@ function runnableModel(provider: ServerProvider, input: ModelAdmissionInput): st
 
 /** The model this subscription account would run for `model`, usage limits aside, or null when it cannot. */
 function usableModel(provider: ServerProvider, input: ModelAdmissionInput): string | null {
-  return isSubscriptionAccount(provider) ? runnableModel(provider, input) : null;
+  return isSubscriptionAccount(provider) || isPayPerUseAccount(provider)
+    ? runnableModel(provider, input)
+    : null;
 }
 
 /** Checks a proposed automatic pick before ranking it or waiting for its usage to reset. */
@@ -400,6 +426,15 @@ export function automaticAccountEligibility(
         ? modelFunding
         : input.workspaceFunding?.get(provider.instanceId)
       : (modelFunding ?? provider.auth.funding);
+  if (isPayPerUseAccount(provider)) {
+    const limit = accountLimitDetail(provider, input, model);
+    return {
+      kind: limit === null ? "eligible" : "usage_limited",
+      model,
+      onCredits: false,
+      limitedUntilMs: limit?.end ?? null,
+    } as const;
+  }
   if (funding !== "included")
     return { kind: funding === "metered" ? "metered" : "funding_unverified" } as const;
   const limit = usageLimitDetail(provider, input, model);
@@ -522,23 +557,26 @@ export function accountsWithRoom(
       },
     ];
   });
-  const ordered = orderProviderInstancesForFailover(
-    input.settings.providerInstanceFailoverOrder,
-    eligible,
-  ).toSorted((a, b) => {
-    // Keep known-healthy > unread > soft-draining ahead of preferEarliestReset so scheduled runs avoid soft-draining accounts.
-    if (a.healthTier !== b.healthTier) return a.healthTier - b.healthTier;
-    if (input.preferEarliestReset && a.resetAt !== b.resetAt) return a.resetAt - b.resetAt;
-    return compareAccountsByHeadroom(a, b, input.nowMs);
-  });
-  const signedIn = (account: { readonly instanceId: ProviderInstanceId }) =>
-    pendingSignIns(input, account.instanceId).length === 0;
-  return [false, true].flatMap((onCredits) => {
-    const tier = ordered.filter((account) => account.onCredits === onCredits);
-    return [...tier.filter(signedIn), ...tier.filter((account) => !signedIn(account))].map(
-      ({ instanceId, model }) => ({ instanceId, model, onCredits }),
-    );
-  });
+  const billingPriority = input.providers.some(
+    (provider) => provider.driver === input.driver && isPayPerUseAccount(provider),
+  );
+  const needsSignIn = (account: { readonly instanceId: ProviderInstanceId }) =>
+    pendingSignIns(input, account.instanceId).length > 0;
+  return orderProviderInstancesForFailover(input.settings.providerInstanceFailoverOrder, eligible)
+    .toSorted((a, b) => {
+      if (a.onCredits !== b.onCredits) return Number(a.onCredits) - Number(b.onCredits);
+      // Expiring plan windows and API grants are spent before capacity that keeps.
+      const billing = billingPriority
+        ? compareAccountUsagePriority(a.provider, b.provider, input.nowMs, a.model)
+        : 0;
+      if (billing !== 0) return billing;
+      if (needsSignIn(a) !== needsSignIn(b)) return Number(needsSignIn(a)) - Number(needsSignIn(b));
+      // Keep known-healthy > unread > soft-draining ahead of preferEarliestReset so scheduled runs avoid soft-draining accounts.
+      if (a.healthTier !== b.healthTier) return a.healthTier - b.healthTier;
+      if (input.preferEarliestReset && a.resetAt !== b.resetAt) return a.resetAt - b.resetAt;
+      return compareAccountsByHeadroom(a, b, input.nowMs);
+    })
+    .map(({ instanceId, model, onCredits }) => ({ instanceId, model, onCredits }));
 }
 
 function accountSearchEligibility(provider: ServerProvider, input: AccountSearch) {
@@ -645,7 +683,7 @@ function applyRequestComplexity(input: {
   );
   if (chosenAccount === undefined) return input.selection;
   const modelHasRoom = (slug: string) =>
-    isSubscriptionAccount(chosenAccount)
+    isSubscriptionAccount(chosenAccount) || isPayPerUseAccount(chosenAccount)
       ? modelWithRoom(chosenAccount, { ...input.context, model: slug }) !== null
       : runnableModel(chosenAccount, { ...input.context, model: slug }) !== null;
   if (
@@ -750,15 +788,28 @@ function resolveCandidateModelForProvider(
  * `excludeVendorFamily` cannot be satisfied with available quota.
  */
 export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteResult {
-  if (input.selection.autoAccount !== true) return { selection: input.selection };
+  const namedSelection = input.providers.find(
+    (provider) => provider.instanceId === input.selection.instanceId,
+  );
+  const billingPriority =
+    namedSelection !== undefined &&
+    input.providers.some(
+      (provider) => provider.driver === namedSelection.driver && isPayPerUseAccount(provider),
+    );
+  if (
+    input.selection.quotaAwareAuto === true ||
+    (input.selection.autoAccount !== true && !billingPriority)
+  ) {
+    return { selection: input.selection };
+  }
   const background = isBackgroundContext(input);
   const excludedFamilies = excludedVendorFamilies(input.routingConstraints);
   const { selection, driver, searchModel } = resolveAutoRoute(input);
-  if (selection === input.selection || driver === undefined) {
+  if ((selection === input.selection && !billingPriority) || driver === undefined) {
     return { selection };
   }
 
-  if (excludedFamilies.size === 0 || input.started) {
+  if (excludedFamilies.size === 0 || input.started || input.selection.autoAccount !== true) {
     const current = input.providers.find(
       (provider) =>
         provider.instanceId === input.currentInstanceId &&
@@ -784,10 +835,18 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
           const keep = { instanceId: current.instanceId, model };
           const onCredits = runsOnCredits(current, input, canonicalModel(current, model));
           const signedIn = pendingSignIns(input, current.instanceId).length === 0;
-          if (!onCredits && signedIn) return keep;
+          if (!onCredits && signedIn && !billingPriority) return keep;
           // Plan usage comes first, then no sign-in, so the top one is the move or there is none.
           const top = (observed ?? accountsWithRoom(backgroundSearch))[0];
           if (top === undefined || top.instanceId === current.instanceId) return keep;
+          const better = input.providers.find((provider) => provider.instanceId === top.instanceId);
+          if (
+            billingPriority &&
+            better &&
+            compareAccountUsagePriority(better, current, input.nowMs, model) < 0
+          ) {
+            return top;
+          }
           if (onCredits && !top.onCredits) return top;
           return !signedIn &&
             pendingSignIns(input, top.instanceId).length === 0 &&
@@ -804,12 +863,14 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
         (provider) => provider.instanceId === selection.instanceId,
       );
       const keep =
-        current ??
-        (named !== undefined &&
-        !isSubscriptionAccount(named) &&
-        isProviderInstanceBackgroundAllowed(input.settings, named.instanceId)
-          ? named
-          : undefined);
+        current !== undefined && !isPayPerUseAccount(current)
+          ? current
+          : named !== undefined &&
+              !isSubscriptionAccount(named) &&
+              !isPayPerUseAccount(named) &&
+              isProviderInstanceBackgroundAllowed(input.settings, named.instanceId)
+            ? named
+            : undefined;
       const kept =
         keep === undefined
           ? null
@@ -820,7 +881,8 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
         ? waitOn
         : { instanceId: current.instanceId, model: selection.model };
     };
-    const target = input.settings.failoverLimitedThreads ? pickTarget() : undefined;
+    const target =
+      input.settings.failoverLimitedThreads || billingPriority ? pickTarget() : undefined;
     const routed =
       target === undefined ||
       (target.instanceId === selection.instanceId && target.model === selection.model)
@@ -919,7 +981,8 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
       const descriptors = provider.models.find((model) => model.slug === chosenModel)?.capabilities
         ?.optionDescriptors;
       const hasRoomNow =
-        (!isSubscriptionAccount(provider) || (limitEnd === null && usageAllowed)) &&
+        ((!isSubscriptionAccount(provider) && !isPayPerUseAccount(provider)) ||
+          (limitEnd === null && usageAllowed)) &&
         (!supportsAccountFailover(candidateDriver) ||
           !input.settings.failoverLimitedThreads ||
           limitEnd === null) &&
@@ -955,7 +1018,6 @@ export function routeAutoAccountWithDetails(input: AutoRouteInput): AutoRouteRes
   const chosen = filtered.providers.some((candidate) => candidate.hasQuota)
     ? filtered.providers.find((candidate) => candidate.hasQuota)
     : filtered.providers.toSorted((left, right) => left.limitEndMs - right.limitEndMs)[0];
-
   const routed =
     chosen === undefined ||
     (chosen.instanceId === selection.instanceId && chosen.model === selection.model)
@@ -1030,6 +1092,16 @@ function routeNamedLaunch(input: AccountRoutingContext & McpSignIns & LaunchInpu
   const disallowedForBackground =
     isBackgroundContext(input) &&
     !isProviderInstanceBackgroundAllowed(input.settings, current.instanceId);
+  if (!disallowedForBackground) {
+    const selection = routeAutoAccount({
+      ...input,
+      currentInstanceId: input.selection.instanceId,
+      started: false,
+    });
+    if (selection !== input.selection) {
+      return { selection, failover: null };
+    }
+  }
   if (!input.settings.failoverLimitedThreads && !disallowedForBackground) {
     return stay;
   }
@@ -1254,7 +1326,7 @@ function fallbackLaunch(
 export interface LaunchLimit {
   readonly instanceId: ProviderInstanceId;
   /** The provider's reset or T3's bounded hold end, as an ISO time. */
-  readonly limitedUntil: string;
+  readonly limitedUntil: string | null;
   /** How the account's prepaid credits stand; omitted when it has none T3 could spend. */
   readonly credits?: ProviderCreditUse;
 }
@@ -1363,7 +1435,7 @@ export interface UsageBlock {
   /** The provider whose accounts are all out of usage; of several, the one that gets room last. */
   readonly driver: ProviderDriverKind;
   /** When the first of that provider's accounts gets room, as an ISO time. */
-  readonly until: string;
+  readonly until: string | null;
   /** Every out-of-usage account that keeps the run from starting. */
   readonly accounts: ReadonlyArray<ProviderInstanceId>;
 }
@@ -1392,7 +1464,7 @@ export function usageBlock(
   const last = waits.reduce((latest, wait) => (wait.end > latest.end ? wait : latest));
   return {
     driver: last.driver,
-    until: DateTime.formatIso(DateTime.makeUnsafe(last.end)),
+    until: limitEndIso(last.end),
     accounts: [...new Set(waits.flatMap((wait) => wait.accounts))],
   };
 }
@@ -1412,6 +1484,7 @@ type ReadingFrees = (provider: ServerProvider, nowMs: number) => boolean;
 /** The ten-minute Codex path frees only on Codex's explicit yes; silence leaves the hourly path. */
 const providerAllows: ReadingFrees = (provider) => provider.usageLimits?.usageAllowed === true;
 const usageHasRoom: ReadingFrees = (provider, nowMs) => {
+  if (isPayPerUseAccount(provider)) return false;
   const limits = provider.usageLimits;
   const readAt = fullReadAt(limits);
   if (!limits || !readAt) return false;
@@ -1519,7 +1592,7 @@ export class AccountRouting extends Context.Service<
     >;
     /** Account-wide usage limits for the requester's new work, ending at the provider reset or T3 hold end. */
     readonly limits: (input?: CreditRequest) => Effect.Effect<{
-      readonly accounts: ReadonlyMap<ProviderInstanceId, string>;
+      readonly accounts: ReadonlyMap<ProviderInstanceId, string | null>;
       /** Accounts in `accounts` whose end is T3's guess, not a reset the provider read. */
       readonly estimated: ReadonlySet<ProviderInstanceId>;
       readonly models: ReadonlyMap<ProviderInstanceId, ReadonlySet<string>>;
@@ -1536,7 +1609,10 @@ export class AccountRouting extends Context.Service<
     readonly retryAccount: (
       instanceId: ProviderInstanceId,
       request?: CreditRequest,
-    ) => Effect.Effect<ProviderRetryUsageLimitResult, UnknownAccountError>;
+    ) => Effect.Effect<
+      ProviderRetryUsageLimitResult,
+      UnknownAccountError | ApiCreditRecovery.ApiCreditRecoveryError
+    >;
     /**
      * Why a turn of this thread may not start on the account: its plan usage for `model` is used
      * up, so it would spend prepaid credits the user did not allow it; null when it may start.
@@ -1679,7 +1755,15 @@ export const readMcpSignIns = Effect.fn("AccountRouting.readMcpSignIns")(functio
     readonly driver?: ProviderDriverKind;
   },
 ) {
-  if (!input.settings.failoverLimitedThreads) return new Map<ProviderInstanceId, Array<string>>();
+  if (
+    !input.settings.failoverLimitedThreads &&
+    !input.providers.some(
+      (provider) =>
+        isPayPerUseAccount(provider) &&
+        (input.driver === undefined || provider.driver === input.driver),
+    )
+  )
+    return new Map<ProviderInstanceId, Array<string>>();
   const servers = (instanceId: ProviderInstanceId) =>
     input.mode === "loaded"
       ? mcp.listLoaded(instanceId, ProviderMcp.MCP_LIST_MAX_AGE)
@@ -1722,6 +1806,7 @@ export const layer = Layer.effect(
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const settingsChanges = yield* serverSettings.subscribeChanges;
     const platform = yield* HostProcess.Platform;
+    const apiRecovery = yield* Effect.serviceOption(ApiCreditRecovery.ApiCreditRecovery);
     // Without a database nothing is counted against a cap, so no account spends prepaid credits.
     const ledger = Option.getOrUndefined(yield* Effect.serviceOption(SqlClient.SqlClient));
     const logCreditSpendFailure = Effect.catchCause((cause) =>
@@ -2127,7 +2212,7 @@ export const layer = Layer.effect(
           nowMs: DateTime.toEpochMillis(now),
           creditAccess,
         };
-        const limited = new Map<ProviderInstanceId, string>();
+        const limited = new Map<ProviderInstanceId, string | null>();
         const estimated = new Set<ProviderInstanceId>();
         const models = new Map<ProviderInstanceId, ReadonlySet<string>>();
         const credits = new Map<ProviderInstanceId, ProviderCreditUse>();
@@ -2142,7 +2227,7 @@ export const layer = Layer.effect(
           if (use !== null) credits.set(provider.instanceId, use);
           const detail = accountLimitDetail(provider, input);
           if (detail !== null) {
-            limited.set(provider.instanceId, DateTime.formatIso(DateTime.makeUnsafe(detail.end)));
+            limited.set(provider.instanceId, limitEndIso(detail.end));
             if (detail.estimated) estimated.add(provider.instanceId);
           } else
             models.set(
@@ -2157,9 +2242,20 @@ export const layer = Layer.effect(
         return { accounts: limited, estimated, models, credits, grants };
       }),
       retryAccount: Effect.fn("AccountRouting.retryAccount")(function* (instanceId, request) {
-        const providers = yield* providerRegistry.getProviders;
-        const provider = providers.find((entry) => entry.instanceId === instanceId);
+        let providers = yield* providerRegistry.getProviders;
+        let provider = providers.find((entry) => entry.instanceId === instanceId);
         if (provider === undefined) return yield* new UnknownAccountError({ instanceId });
+        if (isPayPerUseAccount(provider)) {
+          if (Option.isNone(apiRecovery))
+            return yield* new ApiCreditRecovery.ApiCreditRecoveryError({
+              instanceId,
+              detail: "API credit checks are unavailable on this server.",
+            });
+          yield* apiRecovery.value.check(instanceId);
+          providers = yield* providerRegistry.getProviders;
+          provider = providers.find((entry) => entry.instanceId === instanceId);
+          if (provider === undefined) return yield* new UnknownAccountError({ instanceId });
+        }
         yield* projections.liftUsageLimitHolds(instanceId, yield* DateTime.now).pipe(Effect.orDie);
         // Judged from the same reads as every launch, so the report cannot promise what they refuse.
         const now = yield* DateTime.now;
@@ -2260,10 +2356,7 @@ export const layer = Layer.effect(
             input.allowFailover === true
               ? failoverLimitedLaunch(context).selection
               : input.selection;
-          const selection =
-            routed === input.selection && input.selection.autoAccount === true
-              ? primaryLaunch(context).selection
-              : routed;
+          const selection = routed === input.selection ? primaryLaunch(context).selection : routed;
           const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
           return provider === undefined ? null : accountLimit(provider, context, selection.model);
         },
@@ -2294,14 +2387,19 @@ export const layer = Layer.effect(
                 background: isBackgroundContext(input),
               })
             : input.selection;
-          const backgroundDisallowed =
-            isBackgroundContext(input) &&
-            !isProviderInstanceBackgroundAllowed(settings, named.instanceId);
-          if (!settings.failoverLimitedThreads && !backgroundDisallowed) return stay;
           const driver = providers.find(
             (provider) => provider.instanceId === named.instanceId,
           )?.driver;
           if (driver === undefined) return stay;
+          const billingPriority = providers.some(
+            (provider) => provider.driver === driver && isPayPerUseAccount(provider),
+          );
+          const backgroundDisallowed =
+            isBackgroundContext(input) &&
+            !isProviderInstanceBackgroundAllowed(settings, named.instanceId);
+          if (!settings.failoverLimitedThreads && !backgroundDisallowed && !billingPriority) {
+            return stay;
+          }
           const context = {
             ...input,
             settings,
@@ -2346,7 +2444,7 @@ export const layer = Layer.effect(
       ),
       routeWithDetails: Effect.fn("AccountRouting.routeWithDetails")(
         function* (input) {
-          if (input.selection.autoAccount !== true) return { selection: input.selection };
+          if (input.selection.quotaAwareAuto === true) return { selection: input.selection };
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const settings = yield* serverSettings.getSettings;
@@ -2378,7 +2476,7 @@ export const layer = Layer.effect(
       ),
       route: Effect.fn("AccountRouting.route")(
         function* (input) {
-          if (input.selection.autoAccount !== true) return input.selection;
+          if (input.selection.quotaAwareAuto === true) return input.selection;
           const now = yield* DateTime.now;
           const providers = yield* providerRegistry.getProviders;
           const settings = yield* serverSettings.getSettings;

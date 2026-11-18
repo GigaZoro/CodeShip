@@ -205,6 +205,8 @@ export interface UsagePublication {
   readonly nowMs: number;
   /** The server's `maxPlanResetWaitHours`, which the reset rule's decisions apply. */
   readonly maxWaitHours: number;
+  /** Latest computed pay-per-use balance and metered spend for API grant accounts. */
+  readonly credit?: ServerProvider["payPerUse"];
 }
 
 /**
@@ -214,11 +216,32 @@ export interface UsagePublication {
  */
 export function providerUsageFields(
   provider: ServerProvider,
-  { limited, redemptions, credits, nowMs, maxWaitHours }: UsagePublication,
+  { limited, redemptions, credits, nowMs, maxWaitHours, credit }: UsagePublication,
 ): {
   readonly usage: OrchestratorMcpProviderUsage | null;
   readonly usageError?: OrchestratorMcpUsageError;
 } {
+  if (provider.driver === "claudeAgent" && provider.billingKind === "payPerUse") {
+    const balance = credit ?? provider.payPerUse;
+    return {
+      usage: {
+        billingKind: "payPerUse",
+        accountKey: null,
+        plan: null,
+        measuredAt: balance?.checkedAt ?? provider.checkedAt,
+        meters: [],
+        credits: null,
+        bankedResets: null,
+        resetDecisions: [],
+        lastRedemption: null,
+        usageAllowed:
+          !limited &&
+          provider.auth.status === "authenticated" &&
+          balance?.balanceState === "available",
+        ...(balance ? { payPerUse: balance } : {}),
+      },
+    };
+  }
   const error = usageError(provider);
   const limits = provider.usageLimits;
   if (error !== undefined || limits === undefined) {

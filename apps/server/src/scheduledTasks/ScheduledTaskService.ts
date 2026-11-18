@@ -124,6 +124,7 @@ import { isDraining as isUpdateDraining, tryAdmitStart } from "../cloud/updateDr
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as LaunchJournal from "./LaunchJournal.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import {
   isMissedFixedTimeRun,
@@ -3287,6 +3288,7 @@ export const layer = Layer.effect(
         const waitsForRoom =
           current.schedule.type === "once" ||
           (current.schedule.type === "fixed_time" &&
+            block.until !== null &&
             (current.catchUpMissedRun ?? defaultCatchUpMissedRun(current.schedule)) &&
             (following === null || Date.parse(block.until) < Date.parse(following)));
         const unmoved = fire.localFixedTime
@@ -3296,7 +3298,9 @@ export const layer = Layer.effect(
           : occurrenceUnmoved(task);
         const skipped = yield* recordQuietSkip(task, fire, unmoved, {
           reason: "usage_limited",
-          ...(fire.localFixedTime && (waitsForRoom || following === block.until)
+          ...(fire.localFixedTime &&
+          block.until !== null &&
+          (waitsForRoom || following === block.until)
             ? {
                 usageHold: encodeUsageHold({
                   until: block.until,
@@ -7160,6 +7164,90 @@ export const layer = Layer.effect(
       );
     });
     yield* scheduler.register("webhook-coalescing", dispatchPending());
+
+    const readmitUsageWaits = Effect.fn("ScheduledTaskService.readmitUsageWaits")(function* () {
+      if (Option.isNone(accountRouting)) return;
+      let cursor = "";
+      while (true) {
+        const rows = yield* sql<{
+          task_id: ScheduledTaskId;
+          updated_at: string;
+          next_run_at: string | null;
+        }>`
+          SELECT t.task_id, t.updated_at, t.next_run_at FROM scheduled_tasks t
+          WHERE t.task_id > ${cursor} AND t.enabled = 1
+            AND t.last_run_at IS NULL AND t.last_run_status <> 'running'
+            AND json_extract(t.schedule_json, '$.type') = 'once'
+            AND EXISTS (
+              SELECT 1 FROM scheduled_task_runs r WHERE r.task_id = t.task_id
+                AND r.skip_reason = 'usage_limited' AND r.completed_at = t.updated_at
+                AND json_extract(r.usage_limit_json, '$.until') IS t.next_run_at
+            )
+          ORDER BY t.task_id LIMIT 100
+        `;
+        for (const row of rows) {
+          const task = yield* findTask(row.task_id);
+          if (task === null || task.updatedAt !== row.updated_at) continue;
+          const block = yield* accountRouting.value.scheduledRunBlock({
+            selection:
+              task.threadId === null ? launchModelSelection(yield* readSettings, task) : null,
+            projectId: task.projectId,
+            delegates: task.delegateProviders ?? [],
+          });
+          if (block !== null) continue;
+          const now = iso(yield* localNow);
+          const moved = yield* sql`
+            UPDATE scheduled_tasks SET next_run_at = ${now}, updated_at = ${now}
+            WHERE task_id = ${task.id} AND updated_at = ${row.updated_at}
+              AND enabled = 1 AND next_run_at IS ${row.next_run_at} AND last_run_at IS NULL
+              AND last_run_status <> 'running'
+            RETURNING task_id
+          `;
+          if (moved.length > 0) yield* notifyChanged;
+        }
+        if (rows.length < 100) return;
+        cursor = rows[rows.length - 1]!.task_id;
+      }
+    });
+    const registry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+    if (Option.isSome(registry)) {
+      yield* Stream.merge(
+        Stream.fromEffect(registry.value.getProviders),
+        registry.value.streamChanges,
+      ).pipe(
+        Stream.map((providers) =>
+          JSON.stringify(
+            providers.map((provider) => [
+              provider.instanceId,
+              provider.enabled,
+              provider.installed,
+              provider.auth.status,
+              provider.status,
+              provider.availability,
+              provider.billingKind,
+              provider.models,
+              provider.usageLimits?.credits,
+              provider.payPerUse?.balanceState,
+              provider.usageLimits?.usageAllowed,
+              provider.usageLimits?.windows.map((window) => [
+                window.id,
+                window.usedPercent,
+                window.resetsAt,
+              ]),
+            ]),
+          ),
+        ),
+        Stream.changes,
+        Stream.runForEach(() =>
+          readmitUsageWaits().pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not readmit schedule tasks waiting for usage", { cause }),
+            ),
+          ),
+        ),
+        Effect.forkIn(serviceScope),
+      );
+    }
 
     // Following tasks list the model settings resolve for them, so default changes re-send it.
     yield* serverSettings.streamChanges.pipe(

@@ -1,3 +1,4 @@
+import { ServerProviderApiCredit } from "./server.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -938,6 +939,8 @@ export const OrchestratorMcpLastRedemption = Schema.Struct({
 export type OrchestratorMcpLastRedemption = typeof OrchestratorMcpLastRedemption.Type;
 
 export const OrchestratorMcpProviderUsage = Schema.Struct({
+  billingKind: Schema.optional(Schema.Literals(["plan", "payPerUse"])),
+  payPerUse: Schema.optional(ServerProviderApiCredit),
   /** The same on every machine for one provider account; never the account id itself. */
   accountKey: Schema.NullOr(Schema.String),
   plan: Schema.NullOr(Schema.String),

@@ -10,7 +10,11 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { openSettings } from "../settings/settings-navigation";
 import { formatHoldEnd, RetryAccountButton } from "./RetryAccountButton";
-import { describeUsageHold, heldAccountsForDriver } from "@t3tools/client-runtime/usage-holds";
+import {
+  apiCreditCheckDescription,
+  describeUsageHold,
+  heldAccountsForDriver,
+} from "@t3tools/client-runtime/usage-holds";
 
 /** The accounts of one driver that CodeShip skips after a usage refusal, on one machine. */
 function EnvironmentHolds({
@@ -52,8 +56,15 @@ function EnvironmentHolds({
                 {describeUsageHold(hold, formatHoldEnd)}
               </Text>
             </View>
+            {hold.apiCredit ? (
+              <Text className="text-xs text-foreground-muted">{apiCreditCheckDescription()}</Text>
+            ) : null}
             <View className="flex-row flex-wrap gap-2">
-              <RetryAccountButton environmentId={environmentId} instanceId={hold.instanceId} />
+              <RetryAccountButton
+                environmentId={environmentId}
+                instanceId={hold.instanceId}
+                apiCredit={hold.apiCredit === true}
+              />
               {hold.appCap ? (
                 <Button
                   label={t("Switch sign-in")}

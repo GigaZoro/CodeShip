@@ -128,6 +128,53 @@ show every model again.
 If the setting is invalid, Usage ignores it and shows every model, and the next save of any other
 setting removes it from `settings.json`.
 
+## Use your Claude API credits
+
+Claude Max, Ultra and Team plans include API credits that expire each billing cycle without
+rolling over. Max grants $100 and Ultra $200 monthly. Team grants $20 per Standard seat and
+$100 per Premium seat, pooled up to $500. Use the amount and expiry shown in your Console org,
+including any partial first-cycle grant.
+
+On claude.ai, open **Settings → Billing → API credits** (Team owners use **Organization settings
+→ Billing**) and link a Console organization. Keep auto-reload off and use an organization with
+only granted credit if you want the provider's balance to be the hard spending limit. Each plan
+links to one organization, and each organization receives credits from one plan.
+
+In **Settings → Providers & models** on web or desktop, add a separate Claude account with
+**Billing → Pay per use**. Enter that organization's **API key**, the **Linked plan account**,
+its **Monthly API credit grant (USD)** and **API credit cycle end**. Keep the original account
+on **Subscription plan**. Keys stay in the server's secret store. Repeat this for each plan and
+its linked organization; CodeShip never claims credits, creates keys or enables auto-reload.
+
+CodeShip's Claude Agent SDK runs can spend these credits with an API key. The credits also cover
+`claude -p` with that key, but do not cover interactive Claude Code or extra usage. Codex stays
+plan-only because ChatGPT subscriber API credits do not cover Codex, including API-key runs.
+See [Claude's credit coverage](https://support.claude.com/en/articles/17154008) and
+[OpenAI's credit coverage](https://help.openai.com/en/articles/20001626-api-credits-benefit-for-eligible-chatgpt-subscriptions).
+
+CodeShip spends usable capacity in expiry order: a plan window comes before API credit when
+it resets first; API credit comes first when its billing cycle ends sooner. Ties and unknown
+plan reset times favor the plan. Banked resets and extra usage come after both. The account must
+support the requested model and be enabled for the project. This also applies to scheduled work.
+
+There is no CodeShip spending cap. When Anthropic reports that the credit balance is too low,
+the account stays unavailable until its next monthly cycle or a successful call. After credits
+arrive early, **Check API credit** runs a tiny billable request when that credit is next in
+expiry order. Restarting CodeShip or signing in again does not clear a spent balance.
+
+## API credits on Usage
+
+**Usage → API credits** shows one row per Claude plan, with its linked grant, spend this cycle,
+estimated remaining credit, expiry and state: **Not linked**, **Has balance** or **Spent**.
+An unlinked row includes the claim and setup steps. Each connected environment reports its own
+configured accounts.
+
+The page and agent capabilities use the same figures. Spend is estimated from available local
+token history in the current cycle, plus auxiliary generation and explicit credit checks, using
+model prices. Older plan history is excluded. Missing prices or incomplete history are marked;
+accounts sharing a history home are not counted twice. These estimates cannot see other apps
+spending the org's credit, so the provider's refusal determines when an account is spent.
+
 ## Track subscription limits
 
 **Usage → Limits** pools every subscription account it can see per provider, so with several Codex
@@ -153,8 +200,10 @@ When an account's limit is out, CodeShip waits if the limit's plan reset is at m
 N hours for a plan reset** away (48 by default), and otherwise redeems a banked reset that clears
 that limit. It takes the one that expires first, never a paused one, and redeems one that would
 expire unused when a limit it clears runs out for the last time before it expires, whatever the wait.
-Nothing is redeemed while the account can still be used, such as when ChatGPT's app limit
-stopped it, and Claude's weekly 5-hour reset is left for **Use reset**. After a redemption the account's usage is read again and threads waiting on it
+Automatic redemption also waits while another available account of the same provider can run
+an affected model using ordinary plan capacity or API credit. This priority takes precedence even
+when a banked reset is about to expire. Nothing is redeemed while the account can still be used,
+such as when ChatGPT's app limit stopped it, and Claude's weekly 5-hour reset is left for **Use reset**. After a redemption the account's usage is read again and threads waiting on it
 continue; a redemption that used nothing is tried again after 15 minutes. Agents see the last one in `usage`.
 Codex redeems a limit once even when the account is on several machines. Claude cannot tell two
 machines apart, so turn it on on one machine per Claude account.

@@ -1,3 +1,9 @@
+## 2026-11-28 — Use expiring Claude API credits
+
+- Claude accounts can spend subscriber API grants through the Agent SDK with a key kept in the secret store, linked to the plan that grants them.
+- Account routing spends plan windows and API credits in expiry order, before banked resets or extra usage. Spent credit waits for the next billing cycle or a successful credit check.
+- Usage shows each Claude plan's API grant, cycle spend, estimated remaining credit, expiry and claim steps for unlinked plans.
+
 ## 2026-11-28 — One notice per cause when a machine, provider or usage limit stops several threads
 
 - When a machine goes offline, a provider is down, or a usage limit stops several threads, the web and desktop sidebar, the thread's notice and the pop-up name the cause once with the number of threads it holds, for example **VPS offline · 7 threads waiting**, with a link to Machines, Usage or Providers.

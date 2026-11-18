@@ -526,6 +526,10 @@ export function resolveNewThreadModelSelection(input: {
     input.background === true &&
     input.settings !== undefined &&
     !isProviderInstanceBackgroundAllowed(input.settings, selection.instanceId);
+  const apiSpent =
+    provider !== undefined &&
+    isPayPerUseAccount(provider) &&
+    accountUsageTier(provider, input.now, selection.model) === null;
   const usable = (entry: ServerProvider | undefined, model: string): entry is ServerProvider =>
     entry !== undefined &&
     (input.settings
@@ -533,7 +537,9 @@ export function resolveNewThreadModelSelection(input: {
           background: input.background,
         })
       : isAccountReady(entry)) &&
-    !exhaustedUsageWindow(entry, input.now, model);
+    (entry.driver === "claudeAgent"
+      ? accountUsageTier(entry, input.now, model) !== null
+      : !exhaustedUsageWindow(entry, input.now, model));
   // As account switching does, an account takes an Auto thread only when it lists the model.
   const anyAccountUsable = (driver: ServerProvider["driver"], model: string) =>
     input.providers.some((entry) => {
@@ -543,9 +549,13 @@ export function resolveNewThreadModelSelection(input: {
     });
   if (
     !provider ||
-    (!window && !disallowedForBackground) ||
+    (!window && !apiSpent && !disallowedForBackground) ||
     (!disallowedForBackground &&
-      selection.autoAccount === true &&
+      (selection.autoAccount === true ||
+        input.settings?.failoverLimitedThreads === true ||
+        input.providers.some(
+          (entry) => entry.driver === provider.driver && isPayPerUseAccount(entry),
+        )) &&
       anyAccountUsable(provider.driver, selection.model))
   )
     return unchanged;
@@ -1694,17 +1704,75 @@ export function collectProviderUsageLimits(
   return { createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)), accounts, notices };
 }
 
-// Pay-per-token accounts bill every turn instead of drawing on a subscription, so failover skips them.
 const METERED_AUTH_TYPES: ReadonlySet<string> = new Set(["apiKey", "api-key", "bedrock"]);
 
 export const isCodexCloudAccount = (provider: Pick<ServerProvider, "driver" | "auth">): boolean =>
   provider.driver === "codex" &&
   (provider.auth.type === "amazonBedrock" || provider.auth.type === "gcp");
 
+export const isPayPerUseAccount = (provider: ServerProvider): boolean =>
+  provider.driver === "claudeAgent" && provider.billingKind === "payPerUse";
+
 export const isSubscriptionAccount = (provider: ServerProvider): boolean =>
+  !isPayPerUseAccount(provider) &&
   provider.auth.funding !== "metered" &&
   !isCodexCloudAccount(provider) &&
   (provider.auth.type === undefined || !METERED_AUTH_TYPES.has(provider.auth.type));
+
+/** Expiring plan windows and API grants precede extra usage; null means no usable allowance. */
+export function accountUsageTier(
+  provider: ServerProvider,
+  now: number,
+  model?: string | null,
+): 0 | 2 | null {
+  if (isPayPerUseAccount(provider)) {
+    return provider.payPerUse?.balanceState === "available" &&
+      Date.parse(provider.payPerUse.cycleEnd) > now
+      ? 0
+      : null;
+  }
+  if (!isSubscriptionAccount(provider)) return null;
+  if (
+    provider.usageLimits?.usageAllowed !== false &&
+    exhaustedUsageWindow(provider, now, model) === undefined
+  )
+    return 0;
+  if (provider.driver !== "claudeAgent") return null;
+  const credits = provider.usageLimits?.credits;
+  return credits?.unlimited === true || Number(credits?.balance) > 0 ? 2 : null;
+}
+
+/** Unknown plan reset times stay ahead of API credit rather than guessing its expiry priority. */
+export function accountCapacityExpiresAt(
+  provider: ServerProvider,
+  now: number,
+  model?: string | null,
+): number {
+  if (isPayPerUseAccount(provider))
+    return Date.parse(provider.payPerUse?.cycleEnd ?? "") || Infinity;
+  const ends = (provider.usageLimits?.windows ?? []).flatMap((window) => {
+    if (!usageWindowAppliesToModel(provider, window, model ?? null)) return [];
+    const end = window.resetsAt === undefined ? NaN : Date.parse(window.resetsAt);
+    return end > now ? [end] : [];
+  });
+  return ends.length === 0 ? -Infinity : Math.min(...ends);
+}
+
+export function compareAccountUsagePriority(
+  a: ServerProvider,
+  b: ServerProvider,
+  now: number,
+  model?: string | null,
+): number {
+  const tier = (accountUsageTier(a, now, model) ?? 3) - (accountUsageTier(b, now, model) ?? 3);
+  if (tier !== 0) return tier;
+  const aEnd = accountCapacityExpiresAt(a, now, model);
+  const bEnd = accountCapacityExpiresAt(b, now, model);
+  return (
+    (aEnd === bEnd ? 0 : aEnd < bEnd ? -1 : 1) ||
+    Number(isPayPerUseAccount(a)) - Number(isPayPerUseAccount(b))
+  );
+}
 
 export type AccountFailoverStatus =
   | { readonly kind: "off" }
@@ -1721,7 +1789,13 @@ export type AccountFailoverStatus =
   | { readonly kind: "exhausted"; readonly until: string | null };
 
 /** When a limited account has room again: its last exhausted window's end, as routing counts it. */
-function limitedUntil(provider: ServerProvider, now: number): string | undefined {
+function limitedUntil(provider: ServerProvider, now: number): string | null | undefined {
+  if (isPayPerUseAccount(provider))
+    return accountUsageTier(provider, now) !== null
+      ? undefined
+      : (provider.payPerUse?.cycleEnd ?? null);
+  if (provider.driver === "claudeAgent" && accountUsageTier(provider, now, null) === 2)
+    return undefined;
   const limits = provider.usageLimits;
   let latest: number | undefined;
   for (const window of limits?.windows ?? []) {
@@ -1754,15 +1828,22 @@ export function accountFailoverStatus(input: {
   readonly now: number;
 }): AccountFailoverStatus | null {
   if (!supportsAccountFailover(input.driver)) return null;
-  const accounts = orderProviderInstancesForFailover(
-    input.settings.providerInstanceFailoverOrder,
-    input.providers.filter(
-      (provider) =>
-        provider.driver === input.driver && provider.enabled && isSubscriptionAccount(provider),
+  const accounts = [
+    ...orderProviderInstancesForFailover(
+      input.settings.providerInstanceFailoverOrder,
+      input.providers.filter(
+        (provider) =>
+          provider.driver === input.driver &&
+          provider.enabled &&
+          (isSubscriptionAccount(provider) || isPayPerUseAccount(provider)),
+      ),
     ),
-  );
+  ];
+  if (accounts.some(isPayPerUseAccount))
+    accounts.sort((a, b) => compareAccountUsagePriority(a, b, input.now));
   if (accounts.length < 2) return null;
-  if (!input.settings.failoverLimitedThreads) return { kind: "off" };
+  if (!input.settings.failoverLimitedThreads && !accounts.some(isPayPerUseAccount))
+    return { kind: "off" };
   const limited: ServerProvider[] = [];
   const returns: Array<string | null> = [];
   for (const account of accounts) {

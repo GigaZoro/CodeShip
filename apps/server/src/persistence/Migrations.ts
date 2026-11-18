@@ -132,6 +132,7 @@ import Migration0122 from "./Migrations/122_CommandStopLeftovers.ts";
 import Migration0123 from "./Migrations/123_TextGenerationUsage.ts";
 import Migration0124 from "./Migrations/124_ProviderThreadPinnedSystemInstructions.ts";
 import Migration0125 from "./Migrations/125_DetachedSessionHosts.ts";
+import Migration0126 from "./Migrations/126_ApiCreditBalances.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -260,6 +261,7 @@ const migrationEntries = [
   [123, "TextGenerationUsage", Migration0123],
   [124, "ProviderThreadPinnedSystemInstructions", Migration0124],
   [125, "DetachedSessionHosts", Migration0125],
+  [126, "ApiCreditBalances", Migration0126],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

@@ -113,7 +113,12 @@ import {
   canAccountRun,
   orderProviderInstancesForFailover,
 } from "@t3tools/shared/serverSettings";
-import { exhaustedUsageWindow, isSubscriptionAccount } from "@t3tools/shared/usageLimits";
+import {
+  accountUsageTier,
+  exhaustedUsageWindow,
+  isPayPerUseAccount,
+  isSubscriptionAccount,
+} from "@t3tools/shared/usageLimits";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
   normalizeThreadPullRequestKey,
@@ -141,6 +146,7 @@ import {
   filterEligibleAutoProviders,
   vendorFamilyOfDriver,
 } from "../orchestration-v2/AutoComplexityRouting.ts";
+import * as ApiCreditUsage from "../provider/ApiCreditUsage.ts";
 import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -712,9 +718,10 @@ function pickAutoSelectionWithConstraintsFallback(input: {
       const descriptors = provider.models.find((model) => model.slug === chosenModel)?.capabilities
         ?.optionDescriptors;
       const usageAllowed = provider.usageLimits?.usageAllowed !== false;
-      const windowExhausted =
-        isSubscriptionAccount(provider) &&
-        exhaustedUsageWindow(provider, input.nowMs, chosenModel) !== undefined;
+      const windowExhausted = isPayPerUseAccount(provider)
+        ? accountUsageTier(provider, input.nowMs, chosenModel) === null
+        : isSubscriptionAccount(provider) &&
+          exhaustedUsageWindow(provider, input.nowMs, chosenModel) !== undefined;
       candidates.push({
         instanceId: provider.instanceId,
         driver: provider.driver,
@@ -801,7 +808,10 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     if (Option.isNone(routing)) return;
     const limit = yield* routing.value.launchLimit(input);
     if (limit === null) return;
-    const until = ` until ${limit.limitedUntil}`;
+    const until =
+      limit.limitedUntil === null
+        ? " until an account reports available usage again"
+        : ` until ${limit.limitedUntil}`;
     const reason =
       limit.credits === undefined || limit.credits === "spending" || limit.credits === "standby"
         ? ""
@@ -1531,6 +1541,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   // Optional so test runtimes without provider state refuse no launch on a usage limit.
   const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+  const apiCreditUsage = yield* Effect.serviceOption(ApiCreditUsage.ApiCreditUsage);
   const usageResetRedeemer = yield* Effect.serviceOption(UsageResetRedeemer.UsageResetRedeemer);
   const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
@@ -3648,6 +3659,7 @@ const make = Effect.gen(function* () {
           checking,
           availability,
           redemptions,
+          accountSpend,
           publishedAtMs,
         },
         capacity,
@@ -3667,7 +3679,7 @@ const make = Effect.gen(function* () {
             );
             const availability = Option.isNone(accountRouting)
               ? {
-                  accounts: new Map<ProviderInstanceId, string>(),
+                  accounts: new Map<ProviderInstanceId, string | null>(),
                   estimated: new Set<ProviderInstanceId>(),
                   models: new Map<ProviderInstanceId, ReadonlySet<string>>(),
                   credits: new Map<ProviderInstanceId, ProviderCreditUse>(),
@@ -3678,6 +3690,10 @@ const make = Effect.gen(function* () {
               input.usage === true && Option.isSome(usageResetRedeemer)
                 ? yield* usageResetRedeemer.value.lastRedemptions
                 : new Map<string, OrchestratorMcpLastRedemption>();
+            const accountSpend =
+              input.usage === true && Option.isSome(apiCreditUsage)
+                ? yield* apiCreditUsage.value.read(providers.filter(publishesUsage))
+                : new Map<ProviderInstanceId, NonNullable<ServerProvider["payPerUse"]>>();
             // Read after the re-check, so no reading is newer than the time the reset rule decides at.
             const publishedAtMs = yield* Clock.currentTimeMillis;
             return {
@@ -3687,6 +3703,7 @@ const make = Effect.gen(function* () {
               checking,
               availability,
               redemptions,
+              accountSpend,
               publishedAtMs,
             };
           }),
@@ -3794,6 +3811,7 @@ const make = Effect.gen(function* () {
                   credits: prepaidCredits ?? null,
                   nowMs: publishedAtMs,
                   maxWaitHours: settings.maxPlanResetWaitHours,
+                  credit: accountSpend.get(provider.instanceId),
                 })
               : {}),
           };

@@ -286,6 +286,27 @@ describe("custom model settings", () => {
   });
 });
 
+describe("Claude API credit settings", () => {
+  it("defaults to a plan and accepts only nonnegative grants", () => {
+    expect(decodeClaudeSettings({})).toMatchObject({
+      billingKind: "plan",
+      apiKey: "",
+      linkedPlanInstanceId: "",
+      apiCreditGrantUsd: 0,
+      apiCreditCycleEnd: "",
+    });
+    expect(
+      decodeClaudeSettings({
+        billingKind: "payPerUse",
+        linkedPlanInstanceId: "claude_plan",
+        apiCreditGrantUsd: 25.5,
+        apiCreditCycleEnd: "2026-12-01T00:00:00Z",
+      }).apiCreditGrantUsd,
+    ).toBe(25.5);
+    expect(() => decodeClaudeSettings({ apiCreditGrantUsd: -1 })).toThrow();
+  });
+});
+
 describe("resolveIdleCompaction", () => {
   it("lets a Claude instance override the global default", () => {
     const settings = decodeServerSettings({

@@ -8,6 +8,7 @@ import {
   type UsagePricing,
   type UsageSummary,
   type UsageSummaryInput,
+  UsageDay,
   type UsageTokenTotals,
   UsageReadError,
 } from "@t3tools/contracts";
@@ -230,9 +231,21 @@ function sharedSessions(
   return shared;
 }
 
+export interface AccountSpend {
+  readonly spendUsd: number | null;
+  readonly unpricedUsage: boolean;
+  readonly sharedWith?: ProviderInstanceId;
+}
+
 export class UsageService extends Context.Service<
   UsageService,
   {
+    readonly readAccountSpend: (
+      accounts: ReadonlyArray<{
+        readonly instanceId: ProviderInstanceId;
+        readonly since: string | null;
+      }>,
+    ) => Effect.Effect<ReadonlyMap<ProviderInstanceId, AccountSpend>, UsageReadError>;
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
     /** Changes with every usage setting, secret environment values included, and reveals none. */
@@ -487,13 +500,16 @@ export const make = Effect.gen(function* () {
     settings: UsageScanSettings,
     retentionCutoffMs: number,
     onProgress: () => void,
+    instanceIds?: ReadonlySet<ProviderInstanceId>,
   ) {
     const dirs: Array<TranscriptSource> = [];
     const seen = new Set<string>();
     for (const { driver, reader } of transcriptReaders) {
       const { provider, format } = reader;
       const directories = yield* Effect.forEach(
-        yield* usageInstances(driver, settings),
+        (yield* usageInstances(driver, settings)).filter(
+          (instance) => instanceIds === undefined || instanceIds.has(instance.instanceId),
+        ),
         (instance) => reader.directories(instance).pipe(Effect.tap(() => Effect.sync(onProgress))),
       );
       for (const { dir: directory, fileName } of directories.flat()) {
@@ -1861,6 +1877,7 @@ export const make = Effect.gen(function* () {
     scannedDirs: readonly ScannedDir[],
     window: ScanWindow,
     flight?: ScanFlight,
+    sinceBySource?: ReadonlyMap<string, number>,
   ) {
     const { hourlyWindow, windowStartMs, retentionCutoffMs, startedAtMs } = window;
     // Deleted transcripts' and replaced versions' saved usage aggregates and deduplicates normally.
@@ -1939,6 +1956,11 @@ export const make = Effect.gen(function* () {
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
           const record = correctedRecord(rawRecord);
+          if (
+            sinceBySource !== undefined &&
+            record.timestampMs < (sinceBySource.get(dir) ?? Infinity)
+          )
+            continue;
           let usageRecord = record;
           if (
             sharedSessionProviders.has(record.provider) &&
@@ -2277,7 +2299,109 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return { readSummary, refreshRates, clientSettingsKey, awaitPersisted, priceTokens } as const;
+  const readAccountSpend = Effect.fn("UsageService.readAccountSpend")(function* (
+    accounts: ReadonlyArray<{
+      readonly instanceId: ProviderInstanceId;
+      readonly since: string | null;
+    }>,
+  ) {
+    const result = new Map<ProviderInstanceId, AccountSpend>();
+    const instanceIds = accounts
+      .filter((account) => account.since !== null && Number.isFinite(Date.parse(account.since)))
+      .map((account) => account.instanceId);
+    for (const account of accounts)
+      result.set(account.instanceId, { spendUsd: null, unpricedUsage: true });
+    if (instanceIds.length === 0) return result;
+    yield* ensureScanCacheLoaded;
+    const { settings } = yield* readSettings;
+    const now = yield* DateTime.now;
+    const retainedSince = DateTime.toEpochMillis(now) - CACHE_RETENTION_MS;
+    const owners = new Map<string, ProviderInstanceId>();
+    const sinceBySource = new Map<string, number>();
+    const paths = new Map<ProviderInstanceId, ReadonlySet<string>>();
+    const transcriptDirs = new Map<string, TranscriptSource>();
+    for (const instanceId of instanceIds) {
+      const dirs = yield* resolveTranscriptDirs(
+        settings,
+        retainedSince,
+        () => {},
+        new Set([instanceId]),
+      ).pipe(Effect.provideContext(readerContext));
+      const owned = new Set<string>();
+      const since = Date.parse(
+        accounts.find((account) => account.instanceId === instanceId)!.since!,
+      );
+      for (const source of dirs) {
+        transcriptDirs.set(source.dir, source);
+        sinceBySource.set(source.dir, Math.min(sinceBySource.get(source.dir) ?? Infinity, since));
+        const previous = owners.get(source.dir);
+        if (previous !== undefined) {
+          result.set(instanceId, { spendUsd: null, unpricedUsage: false, sharedWith: previous });
+        } else {
+          owners.set(source.dir, instanceId);
+          owned.add(source.dir);
+        }
+      }
+      paths.set(instanceId, owned);
+    }
+    if (sinceBySource.size === 0) return result;
+    yield* ensureRates(false);
+    const startedAtMs = DateTime.toEpochMillis(now);
+    const windowStartMs = Math.min(...sinceBySource.values()) - MTIME_SLACK_MS;
+    const listings = new Map<string, Listing>();
+    const scannedDirs = yield* Effect.forEach([...transcriptDirs.values()], (source) =>
+      scanTranscriptDir(source, windowStartMs, listings, () => {}),
+    );
+    const summary = yield* aggregateSummary(
+      {
+        timeZone: "UTC",
+        sinceDay: UsageDay.make(
+          DateTime.formatIso(DateTime.makeUnsafe(Math.min(...sinceBySource.values()))).slice(0, 10),
+        ),
+        untilDay: UsageDay.make(DateTime.formatIso(now).slice(0, 10)),
+      },
+      settings,
+      scannedDirs,
+      {
+        hourlyWindow: null,
+        windowStartMs,
+        retentionCutoffMs: retainedSince,
+        startedAtMs,
+        rates,
+        pricing: pricing(),
+      },
+      undefined,
+      sinceBySource,
+    );
+    for (const instanceId of instanceIds) {
+      const owned = paths.get(instanceId)!;
+      const buckets = summary.buckets.filter(
+        (bucket) => bucket.sourcePath !== undefined && owned.has(bucket.sourcePath),
+      );
+      const sources = summary.sources.filter((source) =>
+        owned.has(source.fingerprint.resolvedHomePath),
+      );
+      const incomplete = sources.some((source) => source.status !== "ok");
+      result.set(instanceId, {
+        ...result.get(instanceId),
+        spendUsd: sources.every((source) => source.status === "missing")
+          ? null
+          : buckets.reduce((total, bucket) => total + bucket.costUsd, 0),
+        unpricedUsage: incomplete || buckets.some((bucket) => bucket.unpricedRecords > 0),
+      });
+    }
+    yield* schedulePersist;
+    return result;
+  });
+
+  return {
+    readSummary,
+    refreshRates,
+    clientSettingsKey,
+    awaitPersisted,
+    priceTokens,
+    readAccountSpend,
+  } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);
