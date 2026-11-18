@@ -484,6 +484,7 @@ export function reportAtomCommandResult(
     return;
   }
 
+  // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error or log label, shown as received
   const label = options.label ?? "atom command";
   if (Cause.hasDies(result.cause)) {
     if (options.reportDefect ?? true) {
@@ -793,6 +794,7 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
               return Effect.fail(
                 new EnvironmentRpcUnavailableError({
                   environmentId: target.environmentId,
+                  // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error or log label, shown as received
                   message: `Environment ${target.environmentId} is ${
                     connectionState.phase === "available" ? "not connected" : connectionState.phase
                   }.`,

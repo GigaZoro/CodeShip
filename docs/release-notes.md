@@ -967,6 +967,10 @@
 
 - The upstream-sync skill now has every conflict resolution diffed against both parents, tests run through each package's own script with failures compared on the base, and protocol literals kept as upstream wrote them. No change to the app.
 
+## 2026-11-18 — Shared client code is checked for untranslated text
+
+- Text that web and mobile both show from the shared client package is now checked by the translation lint, so English that skips the translator is caught before it ships. Two labels it found, the working-agents count read by screen readers and the fallback workflow title, are now translated.
+
 ## 2026-11-18 — Server file locks always release
 
 - The Claude and Codex config locks and the ChatGPT session lock now go through one helper that releases with no arguments, so a lock taken for a copy or an update is freed when it finishes and the next edit no longer waits for it to time out.

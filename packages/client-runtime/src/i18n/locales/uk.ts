@@ -1448,6 +1448,7 @@ const catalog: MessageCatalog = {
   "{lastRun}, failed": "{lastRun}, не вдалося",
   "{left}% left": "Залишилось {left}%",
   "{line} (failed)": "{line} (невдало)",
+  "{live} of {total} agents working": "Працюють агенти: {live} із {total}",
   "{login} · Team": "{login} · Команда",
   "{machine} · {status}": "{machine} · {status}",
   "{machine} cannot read prompts from files. Use the text instead or pick another machine.":

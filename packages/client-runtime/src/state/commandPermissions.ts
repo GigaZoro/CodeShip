@@ -61,6 +61,7 @@ function makeCommandPermissions<R, E>(
           if (missing !== undefined)
             return yield* new EnvironmentAuthorizationError({
               ...authScopeRequiredResponse(missing),
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: `This connection requires ${missing}.`,
             });
         }),

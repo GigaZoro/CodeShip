@@ -366,6 +366,7 @@ export function createTerminalSession(
     apply({ type: "status", status, version: buffer.version }, registry, input);
   };
 
+  // oxlint-disable-next-line t3code/no-untranslated-text -- atom label for logs, not UI text
   const label = `terminal-session:${environmentId}:${threadId}:${terminalId}`;
   const idle = Atom.make<void>(undefined);
   // Viewing read-only counts as observed before the first snapshot lands, so a

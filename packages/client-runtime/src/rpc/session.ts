@@ -202,9 +202,11 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
               // opened, the path worked, and a host that goes quiet is more
               // often overloaded or asleep than blocked.
               detail: !wasConnected
-                ? `${connection.label} could not establish a WebSocket connection.${networkHint}`
+                ? // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
+                  `${connection.label} could not establish a WebSocket connection.${networkHint}`
                 : timedOut
-                  ? `${connection.label} stopped responding for ${PING_TIMEOUT_SECONDS}s. ${UNRESPONSIVE_HOST_HINT}`
+                  ? // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
+                    `${connection.label} stopped responding for ${PING_TIMEOUT_SECONDS}s. ${UNRESPONSIVE_HOST_HINT}`
                   : `${connection.label} disconnected.`,
               ...socketFailureLocation(via),
             }),
@@ -264,6 +266,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
     const serverConfigUpdates = yield* PubSub.sliding<BufferedServerConfigEvent>(64);
     const configSubscriptionEndedError = new ConnectionTransientErrorClass({
       reason: "remote-unavailable",
+      // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
       detail: `${connection.label} config subscription ended.`,
     });
     const serverConfigSource = protocolClient[WS_METHODS.subscribeServerConfig](
@@ -376,6 +379,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         return Stream.fail(
           new RpcClientError.RpcClientError({
             reason: new RpcClientError.RpcClientDefect({
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: `${connection.label} config subscription failed.`,
               cause,
             }),
@@ -388,6 +392,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         (cause) =>
           new RpcClientError.RpcClientError({
             reason: new RpcClientError.RpcClientDefect({
+              // oxlint-disable-next-line t3code/no-untranslated-text -- diagnostic text on a typed error, shown as received
               message: `${connection.label} config subscription failed.`,
               cause,
             }),
