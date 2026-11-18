@@ -77,6 +77,8 @@ Then work from evidence, not assumption. In rough order of value:
   service log or desktop backend logs from the context file if they exist. Recent
   failures usually leave a trail here.
 - The provider event log, for problems with claude/codex/cursor sessions.
+- For provider sign-in incidents, read `provider-auth.trace.ndjson` and its backups in the logs
+  directory. They retain sign-in outcomes and session retirement after the general trace rotates.
 - The SQLite database. Read it freely, but only write when a write is necessary
   to fix the problem the user described, and get their explicit permission
   before any write.

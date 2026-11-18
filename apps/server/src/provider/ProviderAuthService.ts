@@ -127,6 +127,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
     instanceId: ProviderInstanceId,
     binding: ProviderAuthController["credentialBinding"],
   ) {
+    yield* Effect.annotateCurrentSpan("instanceId", instanceId);
     const failure = (detail: string) =>
       new ProviderSetupError({ instanceId, operation: "stopSessions", detail });
     const affectedIds = new Set([
@@ -187,6 +188,10 @@ export const makeProviderAuthService = Effect.gen(function* () {
           ),
         ),
       { discard: true },
+    ).pipe(
+      Effect.ensuring(
+        Effect.suspend(() => Effect.annotateCurrentSpan("releasedSessions", released.size)),
+      ),
     );
     if (binding) {
       yield* Effect.forEach(
@@ -243,6 +248,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
     importProfile: Effect.fn("ProviderAuthService.importProfile")(function (input) {
       return credentialChanges.withPermit(
         Effect.gen(function* () {
+          yield* Effect.annotateCurrentSpan("instanceId", input.instanceId);
           const auth = yield* getController(input.instanceId, "import");
           yield* checkSharedBinding(input.instanceId, "start", auth);
           if (!auth.importProfile)
@@ -259,6 +265,10 @@ export const makeProviderAuthService = Effect.gen(function* () {
       );
     }, Effect.flatMap(whenSignedIn)),
     start: Effect.fn("ProviderAuthService.start")(function* (input, ownerSessionId) {
+      yield* Effect.annotateCurrentSpan({
+        instanceId: input.instanceId,
+        purpose: input.purpose ?? "account",
+      });
       return yield* credentialChanges.withPermit(
         Effect.gen(function* () {
           const auth = yield* getController(input.instanceId, "start", input.purpose);
@@ -291,10 +301,18 @@ export const makeProviderAuthService = Effect.gen(function* () {
       return yield* auth.complete(ownerSessionId, input);
     }, Effect.flatMap(whenSignedIn)),
     cancel: Effect.fn("ProviderAuthService.cancel")(function* (input, ownerSessionId) {
+      yield* Effect.annotateCurrentSpan({
+        instanceId: input.instanceId,
+        purpose: input.purpose ?? "account",
+      });
       const auth = yield* getController(input.instanceId, "cancel", input.purpose);
       return yield* auth.cancel(ownerSessionId, input.flowId);
     }),
     logout: Effect.fn("ProviderAuthService.logout")(function* (input) {
+      yield* Effect.annotateCurrentSpan({
+        instanceId: input.instanceId,
+        purpose: input.purpose ?? "account",
+      });
       return yield* credentialChanges.withPermit(
         Effect.gen(function* () {
           const auth = yield* getController(input.instanceId, "logout", input.purpose);
