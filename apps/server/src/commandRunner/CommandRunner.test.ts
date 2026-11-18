@@ -20,10 +20,16 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import {
+  isFifoHolderHeld,
+  layerHeldProcessGroups,
+  releaseFifoHolder,
+  signalProcessGroup,
+} from "@t3tools/shared/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
+import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -146,7 +152,11 @@ const layerTest = Layer.mergeAll(
   ProcessRunner.layer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-runner-" }),
   NodeCrypto.layer,
-).pipe(Layer.provideMerge(layerOrchestration), Layer.provideMerge(NodeServices.layer));
+).pipe(
+  Layer.provideMerge(layerOrchestration),
+  // As the server spawns: each detached group stays held until its spawn's scope closes.
+  Layer.provideMerge(layerHeldProcessGroups.pipe(Layer.provideMerge(NodeServices.layer))),
+);
 
 /** One server's life: a fresh runner that picks up what an earlier one left, until `use` ends. */
 const withServer = <A, E, R>(
@@ -261,8 +271,12 @@ const liveChat = (name: string) =>
         SELECT pid, directory FROM command_runs WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
-          Effect.forEach(rows, (row) =>
-            Effect.try(() =>
+          Effect.forEach(rows, (row) => {
+            const holder = NodePath.join(row.directory, "group-holder");
+            return Effect.try(() => {
+              // Once its holder is released, the group's number may be another group's.
+              if (!isFifoHolderHeld(holder)) return;
+              // oxlint-disable-next-line t3code/no-raw-process-group-signal -- its holder keeps the number
               signalProcessGroup(
                 // A failed test can leave a row without its pid; the wrapper's pid file still names it.
                 row.pid ??
@@ -271,9 +285,12 @@ const liveChat = (name: string) =>
                     10,
                   ),
                 "SIGKILL",
-              ),
-            ).pipe(Effect.ignore),
-          ),
+              );
+            }).pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.try(() => releaseFifoHolder(holder)).pipe(Effect.ignore)),
+            );
+          }),
         ),
         Effect.ignore,
         Effect.andThen(
@@ -676,6 +693,25 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         }),
     );
 
+    // As if an unrelated group took the number of the command's once that ended, and left members.
+    it.effect("signals no group after the command's own ended with its wrapper", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-group-freed");
+        const { started, signals } = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const freed = yield* watchFreedGroupSignals;
+            const started = yield* runner.run(callerOf(chat.threadId), { command: LOSING_COMMAND });
+            go(chat);
+            yield* nextWake(chat.threadId);
+            return { started, signals: freed.signals() };
+          }),
+        );
+
+        assert.equal((yield* commandRow(started.taskId))?.lost_reason, "gone");
+        assert.deepEqual(signals, []);
+      }),
+    );
+
     it.effect(
       "waits while a probe cannot tell whether its wrapper runs, stopping nothing and still trimming its log",
       () =>
@@ -817,11 +853,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     Effect.gen(function* () {
       const chat = yield* liveChat("command-chat-deleted-late");
       const agentScope = yield* AgentScope;
-      const processRunner = yield* ProcessRunner.ProcessRunner;
       const starting = yield* Deferred.make<void>();
       const proceed = yield* Deferred.make<void>();
-      // Its first process lookup is the one that names the command it just started.
-      let spawning = false;
       const started = yield* withServer((runner) =>
         Effect.gen(function* () {
           const request = yield* runner
@@ -837,23 +870,14 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           return result;
         }),
       ).pipe(
+        // run() wraps the command just before it spawns it, holding the lock until it watches it.
         Effect.provideService(AgentScope, {
           ...agentScope,
           wrap: (input) =>
-            Effect.sync(() => {
-              spawning = true;
-            }).pipe(Effect.andThen(agentScope.wrap(input))),
-        }),
-        Effect.provideService(ProcessRunner.ProcessRunner, {
-          run: (input) => {
-            if (!spawning || input.command !== "ps") return processRunner.run(input);
-            spawning = false;
-            return awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
-              Effect.andThen(Deferred.succeed(starting, undefined)),
+            Deferred.succeed(starting, undefined).pipe(
               Effect.andThen(Deferred.await(proceed)),
-              Effect.andThen(processRunner.run(input)),
-            );
-          },
+              Effect.andThen(agentScope.wrap(input)),
+            ),
         }),
       );
       assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
@@ -954,6 +978,36 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         assert.equal(row?.status, "stopped");
         assert.isNotNull(row?.delivered_at);
       }),
+    );
+
+    it.effect(
+      "signals no group under a running pid whose start it cannot tell, without a holder",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-identity-unknown");
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          const sql = yield* SqlClient.SqlClient;
+          const [run] = yield* sql<{ readonly directory: string; readonly pid: number }>`
+          SELECT directory, pid FROM command_runs WHERE task_id = ${started.taskId}
+        `;
+          // Out of the runner's sight, the holder still keeps the number, for the cleanup to use.
+          const holder = NodePath.join(run!.directory, "group-holder");
+          const hidden = `${holder}.hidden`;
+          NodeFS.renameSync(holder, hidden);
+          yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.renameSync(hidden, holder)));
+          yield* sql`
+          UPDATE command_runs SET process_started_at = NULL WHERE task_id = ${started.taskId}
+        `;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+          yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+
+          assert.isTrue(isProcessAlive(run!.pid));
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        }),
     );
   });
 
