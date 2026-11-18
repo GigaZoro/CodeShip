@@ -173,8 +173,8 @@ export default defineConfig({
   },
   staged: {
     // In order, so lint reads the formatted file. CI lint failures cost a full round trip.
-    // Every command gets the staged files. A whole-repo check such as knip runs in check:changed,
-    // which every landing runs within the memory budget it shares across worktrees
+    // Each command gets only the staged files. A whole-repo check such as knip belongs in
+    // check:changed, which the landing runs within the memory budget it shares across worktrees
     // (scripts/pre-commit.test.ts).
     "*": ["vp fmt --no-error-on-unmatched-pattern", "vp lint --no-error-on-unmatched-pattern"],
   },

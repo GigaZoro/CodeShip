@@ -1,3 +1,7 @@
+## 2026-11-21 — Commits no longer run knip beside check:changed
+
+- The pre-commit hook ran `knip:check` on every commit that touched code, outside the memory budget that `check:changed` shares across a repository's worktrees. Each knip pass takes about 7 GB, so agents committing in several worktrees at once could use up a machine's memory. The hook now formats and lints the staged files only. `check:changed` still runs knip within that budget, and the standard landing on main (`landing-turn.cjs land`) runs `check:changed`. No change to the app.
+
 ## 2026-11-21 — Every checkout runs the tracked push gate again
 
 - The machine configuration listed its Git settings twice, so only the second list applied and the machine check stopped pointing `core.hooksPath` at the tracked hooks in `.vite-hooks`. One list now holds both settings, so the check sets the hooks path and the one-day prune window on every machine.
@@ -236,9 +240,6 @@
 ## 2026-11-18 — `vp test run` inside a package uses the repo test settings
 
 - Running `vp test run <files>` from `scripts/` or a package folder now loads the repo's test settings (60 s timeouts, fake-timer list, no retries) instead of Vitest defaults, so a test no longer passes or fails by how it was started. A check fails when a package's test script has no config beside it. No change to the app.
-## 2026-11-19 — Commits no longer run knip beside check:changed
-
-- The pre-commit hook ran `knip:check` on every commit that touched code, outside the memory budget that `check:changed` shares across a repository's worktrees. Each knip pass takes about 7 GB, so agents committing in several worktrees at once could use up a machine's memory. The hook now formats and lints the staged files only. `check:changed`, which every landing on main runs, and CI still run knip. No change to the app.
 
 ## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
 
