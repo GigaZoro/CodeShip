@@ -2,6 +2,10 @@
 
 - The pull request refresh and the thread settlement sweep now count the git processes they start, and the server log records a warning with the count when a run passes 150. On Windows each git process blocks the server for about 130 ms, so a sweep that starts to fan out again shows in the log instead of freezing the app. No change to what either sweep does.
 
+## 2026-11-18 — check:changed shows what a timed-out step printed and bounds its test step
+
+- A `check:changed` step killed at its time limit now prints the output it had produced, so a hung run names where it stopped. The test step grows by 2 minutes per selected file up to one hour, or stops at `--timeout` / `CHECK_CHANGED_TIMEOUT` when you set one, so a sync-sized diff that selects every test file no longer runs for hours; it also says so and points to the packages' own test scripts. No change to the app.
+
 ## 2026-11-18 — Test runs from several worktrees no longer overload the machine
 
 - Vitest started about one worker per core in every test run, so a machine with several chats testing at once ran several times its core count in workers. Every Vite config now takes its worker cap from `scripts/lib/test-workers.ts`: 2 locally, every core in CI, and `T3CODE_TEST_MAX_WORKERS` overrides both. A test checks that each config sets it. pnpm also runs at most 2 install scripts at once. No change to the app.

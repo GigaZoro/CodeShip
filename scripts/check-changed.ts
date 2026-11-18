@@ -54,6 +54,13 @@ import { vitePlusCommand } from "./check-changed-command.ts";
 const GiB = 1024 ** 3;
 // The test step's limit grows by this much per selected file: server tests run one at a time.
 const TEST_FILE_SECONDS = 120;
+// Without an explicit timeout, a test step stops growing here, so a run selecting thousands of files ends.
+const TEST_STEP_MAX_SECONDS = 3600;
+
+export const testStepTimeoutSeconds = (files: number, timeoutSeconds: number, explicit: boolean) =>
+  explicit
+    ? timeoutSeconds
+    : Math.min(Math.max(timeoutSeconds, TEST_FILE_SECONDS * files), TEST_STEP_MAX_SECONDS);
 
 // A typecheck or test step can take several cores and gigabytes of memory, so
 // allow one step per two cores and per 6 GiB of available memory.
@@ -149,8 +156,10 @@ export type Outcome = "pass" | "FAIL" | "TIMEOUT";
 export interface Step<R> {
   readonly name: string;
   // Gets the number of budget slots the step holds, which is how many workers it may run.
+  // Reports each piece of output through `collect` as it arrives, so a step killed at its timeout still has it.
   readonly run: (
     slots: number,
+    collect: (chunk: string) => void,
   ) => Effect.Effect<{ readonly ok: boolean; readonly output: string }, never, R>;
   // The most workers the step can run in parallel. It starts once one slot is
   // free and takes as many free ones as it can use, so other runs never wait on it.
@@ -184,7 +193,13 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
       const timed = Effect.fnUntraced(function* (slots: number) {
         const timeoutSeconds = step.timeoutSeconds ?? options.timeoutSeconds;
         const started = yield* Clock.currentTimeMillis;
-        const result = yield* Effect.timeoutOption(step.run(slots), `${timeoutSeconds} seconds`);
+        let collected = "";
+        const result = yield* Effect.timeoutOption(
+          step.run(slots, (chunk) => {
+            collected += chunk;
+          }),
+          `${timeoutSeconds} seconds`,
+        );
         const seconds = ((yield* Clock.currentTimeMillis) - started) / 1000;
         const outcome: Outcome = Option.match(result, {
           onNone: () => "TIMEOUT",
@@ -193,7 +208,7 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         const time =
           outcome === "TIMEOUT" ? `killed after ${timeoutSeconds}s` : `${seconds.toFixed(1)}s`;
         yield* Console.log(`\n> vp ${step.name}  ${outcome}  ${time}`);
-        const output = Option.getOrUndefined(result)?.output.trimEnd();
+        const output = Option.isSome(result) ? result.value.output.trimEnd() : collected.trimEnd();
         if (output) yield* Console.log(output);
         return { name: step.name, outcome, time };
       });
@@ -459,10 +474,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         platform === "darwin" ? NodeOS.totalmem() : process.availableMemory(),
       ),
   );
-  const timeoutSeconds = Option.getOrElse(
-    yield* override("timeout", input.timeout, "CHECK_CHANGED_TIMEOUT"),
-    () => 900,
-  );
+  const timeoutOverride = yield* override("timeout", input.timeout, "CHECK_CHANGED_TIMEOUT");
+  const explicitTimeout = Option.isSome(timeoutOverride);
+  const timeoutSeconds = Option.getOrElse(timeoutOverride, () => 900);
 
   const lines = (...args: Array<string>) => gitLines(root, args);
 
@@ -480,7 +494,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
 
   // Output is piped, so keep the colors a terminal would get.
   const env = process.stdout.isTTY ? { FORCE_COLOR: "1" } : {};
-  const vp = (args: ReadonlyArray<string>, cwd = root) =>
+  const vp = (
+    args: ReadonlyArray<string>,
+    cwd = root,
+    collect: (chunk: string) => void = () => {},
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         const [command, commandArgs] = vitePlusCommand(args, platform);
@@ -492,8 +510,17 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             forceKillAfter: "5 seconds",
           }),
         );
-        const [output, exitCode] = yield* Effect.all(
-          [Stream.mkString(Stream.decodeText(handle.all)), handle.exitCode],
+        let output = "";
+        const [, exitCode] = yield* Effect.all(
+          [
+            Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+              Effect.sync(() => {
+                output += chunk;
+                collect(chunk);
+              }),
+            ),
+            handle.exitCode,
+          ],
           { concurrency: 2 },
         );
         return { ok: exitCode === 0, output };
@@ -617,6 +644,16 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
+  const allVitestTests = splitTests(
+    [...workspaceFiles].filter((file) => CODE.test(file) && TEST.test(file)),
+  ).vitestTests;
+  if (vitestTests.length > 0 && vitestTests.length === allVitestTests.length) {
+    yield* Console.log(
+      `check:changed: this change selects every test file (${vitestTests.length}). The test step ` +
+        `ends within ${explicitTimeout ? "--timeout" : `${TEST_STEP_MAX_SECONDS}s`}; ` +
+        "for a full run, use each package's own test script (vp run -r test).",
+    );
+  }
 
   // Web browser tests run in the Chromium build CI installs for this Playwright, which no
   // package install fetches. Already installed, this takes about two seconds.
@@ -743,7 +780,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =>
     files.some((file) => file.startsWith(`${dir}/`)),
   );
-  const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: () => vp(args) });
+  const command = (name: string, args: ReadonlyArray<string>) => ({
+    name,
+    run: (_slots: number, collect: (chunk: string) => void) => vp(args, root, collect),
+  });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
   // Server test files run one at a time (fileParallelism in apps/server/vite.config.ts),
   // so they keep one worker busy however many there are.
@@ -783,18 +823,19 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       ? [
           {
             name: `test (${vitestTests.length} files)`,
-            run: (slots: number) =>
-              vp([
-                "test",
-                "run",
-                "--passWithNoTests",
-                "--maxWorkers",
-                String(slots),
-                ...vitestTests,
-              ]),
+            run: (slots: number, collect: (chunk: string) => void) =>
+              vp(
+                ["test", "run", "--passWithNoTests", "--maxWorkers", String(slots), ...vitestTests],
+                root,
+                collect,
+              ),
             workers: testWorkers,
             serial: true,
-            timeoutSeconds: Math.max(timeoutSeconds, TEST_FILE_SECONDS * vitestTests.length),
+            timeoutSeconds: testStepTimeoutSeconds(
+              vitestTests.length,
+              timeoutSeconds,
+              explicitTimeout,
+            ),
           },
         ]
       : []),
