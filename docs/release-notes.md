@@ -1,3 +1,7 @@
+## 2026-11-18 — Script tests fit their time limit on a loaded machine
+
+- The `scripts` cache test and Knip schema test each ran several slow subprocess steps in one test, 50 to 70 s on a busy machine against a 60 s limit. Each behaviour is now its own test with its own budget. No change to the app.
+
 ## 2026-11-18 — Lint rejects two tests with the same name in one file
 
 - A merge that kept both sides of a test file could leave two tests with one name, and Vitest reports them together so a stale copy hid. The new `t3code/no-duplicate-test-title` lint rule fails a file with two same-named tests in one describe block, including `it.effect` and `it.live`, which the built-in rule skips. No change to the app.

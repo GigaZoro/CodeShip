@@ -10,7 +10,14 @@ const require = NodeModule.createRequire(import.meta.url);
 const cli = NodePath.join(NodePath.dirname(require.resolve("knip")), "cli.js");
 const preprocessor = NodePath.join(import.meta.dirname, "knip-schemas.ts");
 
-it("allows types and schemas through the real Knip CLI without hiding runtime or file findings", () => {
+// Each real Knip run costs seconds, so the cases are separate tests with separate time budgets.
+function withFixture(
+  body: (
+    run: (filtered: boolean) => NodeChildProcess.SpawnSyncReturns<string>,
+    write: (file: string, content: string) => void,
+    cwd: string,
+  ) => void,
+) {
   // Keeping the disposable project here gives it the same Effect installation as the scripts.
   const cwd = NodeFS.mkdtempSync(NodePath.join(import.meta.dirname, ".knip-test-"));
   const write = (file: string, content: string) =>
@@ -97,22 +104,39 @@ it("allows types and schemas through the real Knip CLI without hiding runtime or
       export type UnusedType = string;
     `,
     );
+    body(run, write, cwd);
+  } finally {
+    NodeFS.rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
+it("reports schema exports without the preprocessor", () => {
+  withFixture((run) => {
     const baseline = run(false);
     expect(baseline.status, baseline.stderr).toBe(1);
     expect(baseline.stdout).toContain('"Text"');
+  });
+});
+
+it("allows types and schemas through the real Knip CLI", () => {
+  withFixture((run) => {
     const allowed = run(true);
     expect(allowed.status, allowed.stderr + allowed.stdout).toBe(0);
     expect(JSON.parse(allowed.stdout).issues).toEqual([]);
+  });
+});
 
+it("still reports runtime, file and dependency findings through the real Knip CLI", () => {
+  withFixture((run, write, cwd) => {
     NodeFS.appendFileSync(
       NodePath.join(cwd, "entry.ts"),
       `
-      export const decode = S.decodeUnknownSync(Text);
-      export const makeSchema = () => S.String;
-      export const LooksLikeSchema = { ast: "not a schema" };
-      export const ordinary = 123;
-      export const duplicate = ordinary;
-    `,
+        export const decode = S.decodeUnknownSync(Text);
+        export const makeSchema = () => S.String;
+        export const LooksLikeSchema = { ast: "not a schema" };
+        export const ordinary = 123;
+        export const duplicate = ordinary;
+      `,
     );
     NodeFS.appendFileSync(NodePath.join(cwd, "namespace.ts"), `export const helper = () => 1;`);
     write("unused.ts", `export const orphan = 1;`);
@@ -145,7 +169,5 @@ it("allows types and schemas through the real Knip CLI without hiding runtime or
     expect(
       issues.find((issue: { file: string }) => issue.file === "package.json").dependencies,
     ).toEqual([expect.objectContaining({ name: "unused-knip-fixture-dependency" })]);
-  } finally {
-    NodeFS.rmSync(cwd, { recursive: true, force: true });
-  }
+  });
 });
