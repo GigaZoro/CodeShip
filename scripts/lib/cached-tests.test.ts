@@ -137,10 +137,11 @@ describe("cachedTestTasks", () => {
 
   it("never caches failures", () =>
     withFixture(async ({ write, run, hits }) => {
+      expect(await run()).toBe(0);
       await write("fixture.txt", "broken");
       expect(await run()).toBe(1);
       expect(await run()).toBe(1);
-      expect(await hits()).toBe(0);
+      expect(await hits()).toBe(1);
     }));
 
   it("runs uncached files every time", () =>
