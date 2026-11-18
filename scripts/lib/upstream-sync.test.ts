@@ -141,6 +141,24 @@ describe("upstream sync", () => {
     );
   });
 
+  it("holds when re-dating the sync's release notes would repeat a heading main has", () => {
+    const repo = fixture();
+    begin(repo.sync, START);
+    commitFiles(
+      repo.sync,
+      { "docs/release-notes.md": "## 2026-11-16 — Updates\n\n- a\n\n## old\n" },
+      "notes",
+    );
+    const synced = repo.head();
+    repo.advanceMain({ "docs/release-notes.md": "## 2026-11-18 — Updates\n\n- b\n\n## old\n" });
+    expect(land(repo.sync, later(60))).toEqual({
+      status: "hold",
+      reason: "conflicts",
+      conflicts: ["docs/release-notes.md"],
+    });
+    expect(repo.head()).toBe(synced);
+  });
+
   it("holds after three merges while main keeps moving", () => {
     const repo = fixture();
     begin(repo.sync, START);

@@ -12,7 +12,7 @@
 ## 2026-11-18 — A held upstream sync resumes after upstream moves on
 
 - Maintainers: `node scripts/upstream-sync.ts begin` on a sync branch a held run pushed now reports `resumed` and keeps the upstream that branch merged, also when upstream has new commits since. It used to start a second upstream merge on top of the resolved one.
-- Maintainers: when `node scripts/upstream-sync.ts land` merges a main whose newest release-notes entry is newer than the sync's entries, the sync's entries now take that date, so the notes it puts on top stay newest first. Before, the release-notes check rejected them.
+- Maintainers: when `node scripts/upstream-sync.ts land` merges a main whose newest release-notes entry is newer than the sync's entries, the sync's entries now take that date, so the notes it puts on top stay newest first. Before, the release-notes check rejected them. When the new date would repeat a heading, `land` holds on the release-notes conflict instead.
 
 ## 2026-11-18 — The eval for setting a Claude account's Auto-compact after has run
 

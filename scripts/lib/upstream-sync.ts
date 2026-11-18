@@ -166,7 +166,11 @@ function resolveReleaseNotes(worktree: string): boolean {
   const dated = added.replace(DATED_HEADING, (heading, date: string) =>
     date < newest ? `## ${newest} — ` : heading,
   );
-  NodeFS.writeFileSync(NodePath.join(worktree, RELEASE_NOTES), dated + theirsText);
+  const merged = dated + theirsText;
+  // Re-dating can repeat a heading, which the release-notes check rejects: leave it to the sync.
+  const headings = merged.match(/^## .*$/gm) ?? [];
+  if (new Set(headings).size !== headings.length) return false;
+  NodeFS.writeFileSync(NodePath.join(worktree, RELEASE_NOTES), merged);
   gitOrThrow(worktree, "add", RELEASE_NOTES);
   return true;
 }
