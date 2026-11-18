@@ -346,7 +346,9 @@ it("a rejected send leaves the timeline when a new draft was typed meanwhile", a
   await vi.waitFor(() =>
     expect(dispatchedCommands().map((command) => command.type)).toContain("message.dispatch"),
   );
-  await expect.element(page.getByText("Failed prompt")).toBeVisible();
+  await expect
+    .element(page.getByRole("region", { name: "Conversation" }).getByText("Failed prompt"))
+    .toBeVisible();
   await userEvent.keyboard("Next draft");
 
   await rejectPendingCommand("Attachment 'sample.png' cannot be sent.");
