@@ -2,6 +2,7 @@ import type {
   OrchestratorMcpBankedReset,
   OrchestratorMcpLastRedemption,
   OrchestratorMcpProviderUsage,
+  OrchestratorMcpResetDecision,
   OrchestratorMcpUsageError,
   OrchestratorMcpUsageMeter,
   ProviderCreditUse,
@@ -11,6 +12,12 @@ import type {
   ServerProviderResetKindUnknownReason,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+
+import {
+  isRateLimit,
+  providerResetDecisions,
+  type UsageResetDecision,
+} from "../usage/usageResetRule.ts";
 
 /** How old a usage reading may be before `orchestrator_capabilities` with `usage` reads it again. */
 const USAGE_READING_MAX_AGE_MS = 10 * 60_000;
@@ -44,6 +51,18 @@ function meter(window: ServerProviderUsageWindow): OrchestratorMcpUsageMeter {
     usedPercent: window.usedPercent,
     windowMinutes: window.windowDurationMins ?? null,
     resetsAt: window.resetsAt ?? null,
+    rateLimit: isRateLimit(window),
+  };
+}
+
+function resetDecision(decision: UsageResetDecision): OrchestratorMcpResetDecision {
+  const boundaryMs = decision.action === "run" ? null : decision.boundaryMs;
+  return {
+    model: decision.model,
+    action: decision.action,
+    reason: decision.reason,
+    until: boundaryMs === null ? null : new Date(boundaryMs).toISOString(),
+    ...(decision.action === "claim" ? { kind: decision.kind } : {}),
   };
 }
 
@@ -139,18 +158,26 @@ export function releaseReport(
   };
 }
 
+export interface UsagePublication {
+  /** The account's usage hold. */
+  readonly limited: boolean;
+  /** The redeemer's last claims by account key; only the account held now is published. */
+  readonly redemptions: ReadonlyMap<string, OrchestratorMcpLastRedemption>;
+  /** How the account's prepaid credits stand; spending them lets it run past its plan. */
+  readonly credits: ProviderCreditUse | null;
+  readonly nowMs: number;
+  /** The server's `maxPlanResetWaitHours`, which the reset rule's decisions apply. */
+  readonly maxWaitHours: number;
+}
+
 /**
  * The `usage` an enabled Claude or Codex account publishes in `orchestrator_capabilities`: its
- * meters, credits and banked resets, keyed by a hash of the account id. A provider's own error
- * text is never published, since it can name the account. `limited` is the account's usage hold.
+ * meters, credits, banked resets and the reset rule's decisions, keyed by a hash of the account
+ * id. A provider's own error text is never published, since it can name the account.
  */
 export function providerUsageFields(
   provider: ServerProvider,
-  limited: boolean,
-  /** The redeemer's last claims by account key; only the account held now is published. */
-  redemptions: ReadonlyMap<string, OrchestratorMcpLastRedemption> = new Map(),
-  /** How the account's prepaid credits stand; spending them lets it run past its plan. */
-  credits: ProviderCreditUse | null = null,
+  { limited, redemptions, credits, nowMs, maxWaitHours }: UsagePublication,
 ): {
   readonly usage: OrchestratorMcpProviderUsage | null;
   readonly usageError?: OrchestratorMcpUsageError;
@@ -187,6 +214,7 @@ export function providerUsageFields(
             },
           }),
       usageAllowed: !limited && (limits.usageAllowed !== false || credits === "spending"),
+      resetDecisions: providerResetDecisions(provider, { nowMs, maxWaitHours }).map(resetDecision),
       lastRedemption:
         (limits.accountKey === undefined ? undefined : redemptions.get(limits.accountKey)) ?? null,
     },

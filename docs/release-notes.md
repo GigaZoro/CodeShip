@@ -1,3 +1,8 @@
+## 2026-11-25 — Agents see the usage reset decision for each limit
+
+- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
+- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
+
 ## 2026-11-25 — Restore Codex metadata packaging for releases
 
 - Linux, Windows and macOS release builds now fetch the Codex metadata build files from the exact release commit. An unrelated vendored Git submodule had stopped packaging before the runtime could be built.
