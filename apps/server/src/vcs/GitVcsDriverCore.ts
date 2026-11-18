@@ -561,7 +561,12 @@ function isMissingGitCwdError(error: GitCommandError): boolean {
 }
 
 export function isNonRepositoryGitStderr(stderr: string): boolean {
-  return stderr.toLowerCase().includes("not a git repository");
+  const normalized = stderr.toLowerCase();
+  // Git for Windows words a .git file that names a missing directory this way.
+  return (
+    normalized.includes("not a git repository") ||
+    normalized.includes("does not point to a valid repository")
+  );
 }
 function isUnbornHeadStderr(stderr: string): boolean {
   const normalized = stderr.toLowerCase();
