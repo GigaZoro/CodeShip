@@ -1,3 +1,7 @@
+## 2026-11-20 — Client tests no longer depend on the machine's language
+
+- Maintainers: the snooze-menu and usage-limit banner tests failed on a computer set to a non-English region, because they expected English dates and times from the system's own format. Web, desktop, mobile and client-runtime tests now start with English and US formatting active and a Ukrainian system locale, so they pass on every machine, and a new test that relies on the system's format fails everywhere, CI included.
+
 ## 2026-11-20 — Delegated tasks on linked machines survive a restart mid-launch
 
 - A task delegated to a linked environment is recorded before its chat starts there, so a restart or lost reply no longer leaves a chat running on the other machine that nothing follows. A launch that never happened fails the task instead.

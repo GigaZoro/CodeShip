@@ -78,11 +78,7 @@ const commitResult: Pick<GitRunStackedActionResult, "commit" | "push" | "pr"> = 
 
 function inUkrainian(run: () => void) {
   activateLanguage({ language: "uk", catalog: uk, formattingLocale: "uk" });
-  try {
-    run();
-  } finally {
-    activateLanguage({ language: "en", catalog: {}, formattingLocale: undefined });
-  }
+  run();
 }
 
 describe("resolveQuickAction", () => {

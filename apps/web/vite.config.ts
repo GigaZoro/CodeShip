@@ -94,6 +94,7 @@ const unitTestProject = {
     setupFiles: [
       "../../packages/shared/src/testing/longTempDir.ts",
       "../../packages/shared/src/testing/providerEnv.ts",
+      "../../packages/shared/src/testing/locale.ts",
     ],
   },
 } satisfies TestProjectInlineConfiguration;
@@ -137,7 +138,7 @@ const browserTestProject = {
     hookTimeout: 30_000,
     testTimeout: 30_000,
     expect: { poll: { timeout: 10_000 } },
-    setupFiles: ["./test/browserSetup.ts"],
+    setupFiles: ["../../packages/shared/src/testing/locale.ts", "./test/browserSetup.ts"],
     api: { port: browserTestApiPort, strictPort: false },
     browser: {
       enabled: true,
