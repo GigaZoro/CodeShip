@@ -56,6 +56,14 @@ describe("t3code/no-untranslated-text", () => {
     },
   );
 
+  rule.invalid(
+    "reports the message of the mobile dialog alert",
+    'Dialog.alert(t("Project already exists"), `${title} is still archived. Try again later.`);',
+    (output) => {
+      assert.match(output, /no-untranslated-text/);
+    },
+  );
+
   rule.invalid("reports raw JSX text", `const el = <span>Archive thread</span>;`, (output) => {
     assert.match(output, /Translate UI text with t\(\)/);
   });

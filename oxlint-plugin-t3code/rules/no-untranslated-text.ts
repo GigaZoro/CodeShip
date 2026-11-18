@@ -47,6 +47,9 @@ const TEXT_CALLS = new Set([
   "window.confirm",
 ]);
 
+// Of those, the calls whose second argument is the message under the title.
+const MESSAGE_CALLS = new Set(["Alert.alert", "Dialog.alert"]);
+
 // Commands and queries whose `label` option only names them in console reports.
 const LOGGED_LABEL_CALLS = new Set([
   "executeAtomQuery",
@@ -213,7 +216,7 @@ export default defineRule({
         if (name === undefined || !TEXT_CALLS.has(name)) return;
         const [first, second] = node.arguments;
         if (first) checkBranch(first, true);
-        if (second && name === "Alert.alert") checkBranch(second, true);
+        if (second && MESSAGE_CALLS.has(name)) checkBranch(second, true);
       },
       NewExpression(node) {
         if (node.callee.type === "Identifier" && node.callee.name === "Notification") {

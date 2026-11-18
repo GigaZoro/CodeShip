@@ -34,13 +34,19 @@ export function useStartTriage() {
   const fail = (message: string) =>
     Dialog.alert(
       t("Could not start triage"),
-      `${message} Run ${CLI_COMMAND} in a terminal on that machine instead.`,
+      t("{error} Run {command} in a terminal on that machine instead.", {
+        error: message,
+        command: CLI_COMMAND,
+      }),
       [
         {
           text: t("Copy command"),
           onPress: () =>
             void Clipboard.setStringAsync(CLI_COMMAND).catch(() =>
-              Dialog.alert(t("Could not copy"), `Type ${CLI_COMMAND} instead.`),
+              Dialog.alert(
+                t("Could not copy"),
+                t("Type {command} instead.", { command: CLI_COMMAND }),
+              ),
             ),
         },
         { text: t("OK"), style: "cancel" },

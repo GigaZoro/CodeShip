@@ -7,6 +7,7 @@
 - The computer stays awake while agents work (**Keep awake while agents work**, on by default), and you can send a message while its attachments still upload.
 - T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
+- In Ukrainian, the mobile app also translates the message of its alerts for an archived project, a draft or pending task being discarded, triage that could not start, and a server that could not be deregistered.
 
 ## 2026-11-16 — A held upstream sync resumes after upstream moves on
 

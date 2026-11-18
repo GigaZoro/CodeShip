@@ -56,10 +56,13 @@ const catalog: MessageCatalog = {
     "«{name}» буде вилучено з цього облікового запису. Доступ через T3 Connect буде відкликано, керований тунель буде видалено, а місце для хоста звільниться. Локальні підключення на ваших пристроях не зміняться.",
   '"{role}" is not a supported theme color role.':
     "«{role}» не є підтримуваною роллю кольору теми.",
+  "“{title}” has not been sent yet and will be removed from the outbox.":
+    "«{title}» ще не надіслано, і його буде видалено з вихідних.",
   '"{title}" is on another machine. Switch back to {owner} or remove it from the draft.':
     "«{title}» на іншому комп’ютері. Поверніться до {owner} або приберіть його з чернетки.",
   "“{title}” leaves the Artifacts list. Its thread keeps showing the page in the conversation.":
     "«{title}» зникне зі списку артефактів. Чат і далі показуватиме сторінку в розмові.",
+  "“{title}” will be removed.": "«{title}» буде видалено.",
   "“{title}”: {summary}": "«{title}»: {summary}",
   "“{title}”: could not be checked": "«{title}»: не вдалося перевірити",
   "({count} attachments)": {
@@ -1796,6 +1799,7 @@ const catalog: MessageCatalog = {
   "{title} family": "Гарнітура: {title}",
   "{title} is not available for the selected target. Choose its owning scope to continue.":
     "{title} недоступне для вибраної цілі. Виберіть його власну область, щоб продовжити.",
+  "{title} is still archived. Try again later.": "Проєкт {title} досі в архіві. Спробуйте пізніше.",
   "{title} on {environment}": "{title} на {environment}",
   "{title} phase": "Етап: {title}",
   "{title} phase, {tone}": "Фаза {title}, {tone}",
@@ -14126,6 +14130,7 @@ const catalog: MessageCatalog = {
   "Two-line folder rows": "Дворядкові елементи папок",
   type: "ввести",
   Type: "Тип",
+  "Type {command} instead.": "Натомість введіть {command}.",
   "Type a URL above, or run a dev script. Local servers this thread starts will show up here automatically.":
     "Введіть URL вище або запустіть dev-скрипт. Локальні сервери, які запускає цей чат, з’являться тут автоматично.",
   "type and press return": "введіть і натисніть return",

@@ -102,7 +102,7 @@ export function T3ConnectProfilePage() {
     });
     Dialog.alert(
       t("Could not deregister server"),
-      traceId ? `${message}\n\nTrace ID: ${traceId}` : message,
+      traceId ? t("{message} Trace ID: {traceId}", { message, traceId }) : message,
       traceId
         ? [
             {

@@ -41,29 +41,35 @@ export function usePendingTaskListActions(
 
   const confirmDeletePendingTask = useCallback((pendingTask: PendingNewTask) => {
     if (pendingTask.kind === "draft") {
-      Dialog.alert(t("Discard draft?"), `“${pendingTask.title}” will be removed.`, [
-        { text: t("Cancel"), style: "cancel" },
-        {
-          text: t("Discard"),
-          style: "destructive",
-          onPress: () => {
-            void withThreadDismissal(
-              pendingTask.key,
-              async () =>
-                clearComposerDraftContent(pendingTask.draftKey, {
-                  clearModelSelection: true,
-                  clearWorkspaceSelection: true,
-                }),
-              () => true,
-            );
+      Dialog.alert(
+        t("Discard draft?"),
+        t("“{title}” will be removed.", { title: pendingTask.title }),
+        [
+          { text: t("Cancel"), style: "cancel" },
+          {
+            text: t("Discard"),
+            style: "destructive",
+            onPress: () => {
+              void withThreadDismissal(
+                pendingTask.key,
+                async () =>
+                  clearComposerDraftContent(pendingTask.draftKey, {
+                    clearModelSelection: true,
+                    clearWorkspaceSelection: true,
+                  }),
+                () => true,
+              );
+            },
           },
-        },
-      ]);
+        ],
+      );
       return;
     }
     Dialog.alert(
       t("Delete pending task?"),
-      `“${pendingTask.title}” has not been sent yet and will be removed from the outbox.`,
+      t("“{title}” has not been sent yet and will be removed from the outbox.", {
+        title: pendingTask.title,
+      }),
       [
         { text: t("Cancel"), style: "cancel" },
         {
