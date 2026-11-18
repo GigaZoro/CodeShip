@@ -81,7 +81,7 @@ function latestMillis(values: ReadonlyArray<number | null>): number | null {
   return latest;
 }
 
-function threadActivityAtMs(thread: ProjectionStore.ProjectionSettlementCandidate): number {
+function threadActivityAtMs(thread: SettlementRuleThread): number {
   return (
     latestMillis([
       toMillis(thread.latestUserMessageAt),
