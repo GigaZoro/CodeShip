@@ -1,9 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off - one synchronous probe at module load, outside any Effect runtime.
+import * as Effect from "effect/Effect";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-/** Skip symlink fixtures when unsupported; Windows requires Developer Mode or elevation. */
+/**
+ * Whether file symlinks can be created. Windows needs Developer Mode or elevation for them, so a
+ * test that needs a real file symlink skips on `!symlinksSupported`. A directory link needs no
+ * privilege: use `linkDirectory`.
+ */
 export const symlinksSupported: boolean = (() => {
   let directory: string | undefined;
   try {
@@ -19,3 +24,7 @@ export const symlinksSupported: boolean = (() => {
     } catch {}
   }
 })();
+
+/** Links a directory with a junction on Windows (no privilege needed) and a symlink elsewhere. */
+export const linkDirectory = (target: string, link: string) =>
+  Effect.sync(() => NodeFS.symlinkSync(target, link, "junction"));

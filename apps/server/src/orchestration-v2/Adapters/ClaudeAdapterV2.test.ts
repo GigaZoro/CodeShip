@@ -74,6 +74,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, Tool } from "effect/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
@@ -5077,7 +5078,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             );
           }
           yield* fileSystem.makeDirectory(path.join(root, "sub"));
-          yield* fileSystem.symlink(path.join(root, "sub"), path.join(cwd, "link"));
+          yield* linkDirectory(path.join(root, "sub"), path.join(cwd, "link"));
           const named = throughSymlink ? `${path.join(cwd, "link")}/..` : root;
           const { environment } = yield* ClaudeSettingsCascade.readClaudeSettingsEnvironment({
             homePath: home,

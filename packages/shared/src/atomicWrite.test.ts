@@ -12,115 +12,124 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import * as HostProcess from "./HostProcess.ts";
+import { linkDirectory, symlinksSupported } from "./testing/symlinks.ts";
 
 it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
-  it.effect.each(HostProcess.Platform.defaultValue() === "linux" ? [39, 40, 41] : [])(
-    "matches native file access for a chain of %i symlinks",
-    (hops) =>
+  it.effect.each(
+    symlinksSupported && HostProcess.Platform.defaultValue() === "linux" ? [39, 40, 41] : [],
+  )("matches native file access for a chain of %i symlinks", (hops) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
+      const destination = path.join(root, "settings.json");
+      const first = path.join(root, "link-0");
+      yield* fs.writeFileString(destination, "before");
+      for (let index = hops - 1; index >= 0; index--) {
+        const target = index === hops - 1 ? "settings.json" : `link-${index + 1}`;
+        yield* fs.symlink(target, path.join(root, `link-${index}`));
+      }
+
+      const read = yield* Effect.exit(fs.readFileString(first));
+      const write = yield* Effect.exit(
+        writeFileStringAtomically({ filePath: first, contents: "after" }),
+      );
+
+      assert.strictEqual(Exit.isSuccess(read), hops <= 40);
+      assert.strictEqual(Exit.isSuccess(write), Exit.isSuccess(read));
+      assert.strictEqual(
+        yield* fs.readFileString(destination),
+        Exit.isSuccess(read) ? "after" : "before",
+      );
+      assert.strictEqual(yield* fs.readLink(first), "link-1");
+    }),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "keeps a symlinked file linked and rewrites its destination",
+    () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
-        const destination = path.join(root, "settings.json");
-        const first = path.join(root, "link-0");
+        const destination = path.join(root, "dotfiles", "settings.json");
+        const link = path.join(root, "home", "settings.json");
+        yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+        yield* fs.makeDirectory(path.dirname(link), { recursive: true });
         yield* fs.writeFileString(destination, "before");
-        for (let index = hops - 1; index >= 0; index--) {
-          const target = index === hops - 1 ? "settings.json" : `link-${index + 1}`;
-          yield* fs.symlink(target, path.join(root, `link-${index}`));
-        }
+        yield* fs.symlink(destination, link);
 
-        const read = yield* Effect.exit(fs.readFileString(first));
-        const write = yield* Effect.exit(
-          writeFileStringAtomically({ filePath: first, contents: "after" }),
-        );
+        yield* writeFileStringAtomically({ filePath: link, contents: "after" });
 
-        assert.strictEqual(Exit.isSuccess(read), hops <= 40);
-        assert.strictEqual(Exit.isSuccess(write), Exit.isSuccess(read));
-        assert.strictEqual(
-          yield* fs.readFileString(destination),
-          Exit.isSuccess(read) ? "after" : "before",
-        );
-        assert.strictEqual(yield* fs.readLink(first), "link-1");
+        assert.strictEqual(yield* fs.readLink(link), destination);
+        assert.strictEqual(yield* fs.readFileString(destination), "after");
       }),
   );
 
-  it.effect("keeps a symlinked file linked and rewrites its destination", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
-      const destination = path.join(root, "dotfiles", "settings.json");
-      const link = path.join(root, "home", "settings.json");
-      yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
-      yield* fs.makeDirectory(path.dirname(link), { recursive: true });
-      yield* fs.writeFileString(destination, "before");
-      yield* fs.symlink(destination, link);
+  it.effect.skipIf(!symlinksSupported)(
+    "keeps a dangling symlink linked and creates its destination",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
+        const destination = path.join(root, "dotfiles", "settings.json");
+        const link = path.join(root, "home", "settings.json");
+        yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+        yield* fs.symlink(destination, link);
 
-      yield* writeFileStringAtomically({ filePath: link, contents: "after" });
+        yield* writeFileStringAtomically({ filePath: link, contents: "fresh" });
 
-      assert.strictEqual(yield* fs.readLink(link), destination);
-      assert.strictEqual(yield* fs.readFileString(destination), "after");
-    }),
+        assert.strictEqual(yield* fs.readLink(link), destination);
+        assert.strictEqual(yield* fs.readFileString(destination), "fresh");
+      }),
   );
 
-  it.effect("keeps a dangling symlink linked and creates its destination", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
-      const destination = path.join(root, "dotfiles", "settings.json");
-      const link = path.join(root, "home", "settings.json");
-      yield* fs.makeDirectory(path.dirname(link), { recursive: true });
-      yield* fs.symlink(destination, link);
+  it.effect.skipIf(!symlinksSupported)(
+    "fails on a symlink cycle without replacing either link",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
+        const first = path.join(root, "first.json");
+        const second = path.join(root, "second.json");
+        yield* fs.symlink(second, first);
+        yield* fs.symlink(first, second);
 
-      yield* writeFileStringAtomically({ filePath: link, contents: "fresh" });
+        const result = yield* Effect.exit(
+          writeFileStringAtomically({ filePath: first, contents: "after" }),
+        );
 
-      assert.strictEqual(yield* fs.readLink(link), destination);
-      assert.strictEqual(yield* fs.readFileString(destination), "fresh");
-    }),
+        assert.isTrue(Exit.isFailure(result));
+        assert.strictEqual(yield* fs.readLink(first), second);
+        assert.strictEqual(yield* fs.readLink(second), first);
+      }),
   );
 
-  it.effect("fails on a symlink cycle without replacing either link", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
-      const first = path.join(root, "first.json");
-      const second = path.join(root, "second.json");
-      yield* fs.symlink(second, first);
-      yield* fs.symlink(first, second);
+  it.effect.skipIf(!symlinksSupported)(
+    "resolves a relative link through a symlinked parent directory",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
+        const destination = path.join(root, "dotfiles", "config", "settings.json");
+        const linkedState = path.join(root, "dotfiles", "state");
+        const home = path.join(root, "home");
+        const link = path.join(home, "state", "settings.json");
+        yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+        yield* fs.makeDirectory(linkedState, { recursive: true });
+        yield* fs.makeDirectory(home, { recursive: true });
+        yield* linkDirectory(linkedState, path.join(home, "state"));
+        yield* fs.writeFileString(destination, "before");
+        yield* fs.symlink("../config/settings.json", link);
 
-      const result = yield* Effect.exit(
-        writeFileStringAtomically({ filePath: first, contents: "after" }),
-      );
+        yield* writeFileStringAtomically({ filePath: link, contents: "after" });
 
-      assert.isTrue(Exit.isFailure(result));
-      assert.strictEqual(yield* fs.readLink(first), second);
-      assert.strictEqual(yield* fs.readLink(second), first);
-    }),
-  );
-
-  it.effect("resolves a relative link through a symlinked parent directory", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-atomic-write-" });
-      const destination = path.join(root, "dotfiles", "config", "settings.json");
-      const linkedState = path.join(root, "dotfiles", "state");
-      const home = path.join(root, "home");
-      const link = path.join(home, "state", "settings.json");
-      yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
-      yield* fs.makeDirectory(linkedState, { recursive: true });
-      yield* fs.makeDirectory(home, { recursive: true });
-      yield* fs.symlink(linkedState, path.join(home, "state"));
-      yield* fs.writeFileString(destination, "before");
-      yield* fs.symlink("../config/settings.json", link);
-
-      yield* writeFileStringAtomically({ filePath: link, contents: "after" });
-
-      assert.strictEqual(yield* fs.readLink(link), "../config/settings.json");
-      assert.strictEqual(yield* fs.readFileString(destination), "after");
-    }),
+        assert.strictEqual(yield* fs.readLink(link), "../config/settings.json");
+        assert.strictEqual(yield* fs.readFileString(destination), "after");
+      }),
   );
 
   it.effect("does not replace a newer save that landed while the lock was held", () =>
