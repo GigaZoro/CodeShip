@@ -14,7 +14,12 @@ import {
   ProviderDriverKind,
   ThreadId,
 } from "@t3tools/contracts";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import {
+  holdProcessGroup,
+  isFifoHolderHeld,
+  releaseFifoHolder,
+  signalProcessGroup,
+} from "@t3tools/shared/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
@@ -63,6 +68,7 @@ export const WatchInterval = Context.Reference<Duration.Duration>(
 const LOG_FILE = "output.log";
 const STATUS_FILE = "exit-status";
 const PID_FILE = "pid";
+const HOLDER_FILE = "group-holder";
 const LOG_TRIM_AT_BYTES = 8 * 1024 * 1024;
 const LOG_KEEP_BYTES = 4 * 1024 * 1024;
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
@@ -474,6 +480,8 @@ const make = Effect.gen(function* () {
   const logPathOf = (row: Pick<CommandRunRow, "directory">) => path.join(row.directory, LOG_FILE);
   const statusPathOf = (row: Pick<CommandRunRow, "directory">) =>
     path.join(row.directory, STATUS_FILE);
+  const holderPathOf = (row: Pick<CommandRunRow, "directory">) =>
+    path.join(row.directory, HOLDER_FILE);
 
   /** A file the wrapper wrote, with when it wrote it. */
   const readWrapperFile = (file: string) =>
@@ -526,17 +534,49 @@ const make = Effect.gen(function* () {
   const isSameProcess = (row: CommandRunRow) =>
     lossOf(row).pipe(Effect.map((loss) => loss === undefined));
 
-  /** SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period. */
-  const killGroup = Effect.fn("CommandRunner.killGroup")(function* (pid: number) {
+  /**
+   * Whether the group's number is still the command's: while its holder or its wrapper runs. Once
+   * neither does, an unrelated group can take the number, which `kill(-pid, 0)` would count too.
+   */
+  const ownsGroup = (row: CommandRunRow) =>
+    Effect.try(() => isFifoHolderHeld(holderPathOf(row))).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("command-runner.holder-check-failed", {
+          taskId: row.task_id,
+          cause,
+        }).pipe(Effect.as(false)),
+      ),
+      Effect.flatMap((held) => (held ? Effect.succeed(true) : isSameProcess(row))),
+    );
+
+  /** Lets the group's number go once nothing will signal the group again. */
+  const releaseHolder = (directory: string) =>
+    windows
+      ? Effect.void
+      : Effect.try(() => releaseFifoHolder(path.join(directory, HOLDER_FILE))).pipe(
+          Effect.ignore({ log: true }),
+        );
+
+  /**
+   * SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period, each
+   * only while the group is still the command's.
+   */
+  const killGroup = Effect.fn("CommandRunner.killGroup")(function* (
+    row: CommandRunRow,
+    pid: number,
+  ) {
     const signal = (name: NodeJS.Signals | 0) =>
-      Effect.sync(() => {
-        try {
-          signalProcessGroup(pid, name);
-          return true;
-        } catch {
-          return false;
-        }
-      });
+      ownsGroup(row).pipe(
+        Effect.map((owned) => {
+          if (!owned) return false;
+          try {
+            signalProcessGroup(pid, name);
+            return true;
+          } catch {
+            return false;
+          }
+        }),
+      );
     if (!(yield* signal("SIGTERM"))) return;
     const gone = yield* signal(0).pipe(
       Effect.repeat({ while: (alive) => alive, schedule: Schedule.spaced(Duration.millis(200)) }),
@@ -547,15 +587,13 @@ const make = Effect.gen(function* () {
 
   /**
    * Stops the command and everything it started: its process group, or on Windows what descends
-   * from its wrapper's pid (`windowsStopTreeArgs`), also after the wrapper ended. A group outlives
-   * its wrapper and its id is not reused while any member lives, so short of a reboot, only a live
-   * process reusing the wrapper's pid means nothing of the group is left.
+   * from its wrapper's pid (`windowsStopTreeArgs`), also after the wrapper ended.
    */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     const pid = row.pid;
     if (pid !== null && !(yield* rebootedSince(row))) {
       if (!windows) {
-        if (!isProcessAlive(pid) || (yield* isSameProcess(row))) yield* killGroup(pid);
+        yield* killGroup(row, pid);
       } else {
         yield* processRunner
           .run({
@@ -593,10 +631,11 @@ const make = Effect.gen(function* () {
     else watched.delete(row.task_id);
   };
 
-  /** Records a watched command's new state. */
+  /** Records a watched command's new state. Its group is never signalled once its end is delivered. */
   const settle = Effect.fn("CommandRunner.settle")(function* (row: CommandRunRow) {
     yield* writeRow(row);
     remember(row);
+    if (row.delivered_at !== null) yield* releaseHolder(row.directory);
   });
 
   const readTail = (row: CommandRunRow) =>
@@ -1080,7 +1119,7 @@ const make = Effect.gen(function* () {
     }
     if (!windows) {
       const { env, prefix } = posixLaunchEnvironment(hostCommandEnv, commandEnv);
-      const scoped = yield* agentScope.wrap({
+      const wrapper = {
         command: "/bin/sh",
         args: [
           "-c",
@@ -1094,6 +1133,15 @@ const make = Effect.gen(function* () {
           "-c",
           command,
         ],
+      };
+      // Its holder keeps the group's number, across restarts too, until the end is delivered.
+      const held =
+        holdProcessGroup(
+          { ...wrapper, cwd, env },
+          { fd: 3, fifo: path.join(directory, HOLDER_FILE) },
+        ) ?? wrapper;
+      const scoped = yield* agentScope.wrap({
+        ...held,
         name: "command",
         env,
         survivesRestart: true,
@@ -1559,12 +1607,11 @@ const make = Effect.gen(function* () {
       WHERE delivered_at IS NOT NULL AND delivered_at < ${cutoff}
     `;
     yield* Effect.forEach(old, (row) =>
-      fs
-        .remove(row.directory, { recursive: true, force: true })
-        .pipe(
-          Effect.andThen(sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`),
-          Effect.ignore({ log: true }),
-        ),
+      releaseHolder(row.directory).pipe(
+        Effect.andThen(fs.remove(row.directory, { recursive: true, force: true })),
+        Effect.andThen(sql`DELETE FROM command_runs WHERE task_id = ${row.task_id}`),
+        Effect.ignore({ log: true }),
+      ),
     );
     if (old.length > 0) {
       // Under the lock, so a log write that read the removed records is followed by another.
@@ -1594,6 +1641,7 @@ const make = Effect.gen(function* () {
           const info = yield* fs.stat(folder);
           const modified = Option.getOrUndefined(info.mtime)?.getTime();
           if (modified !== undefined && modified < cutoffMs) {
+            yield* releaseHolder(folder);
             yield* fs.remove(folder, { recursive: true, force: true });
           }
         }).pipe(Effect.ignore({ log: true })),

@@ -5,6 +5,13 @@ import * as NodeReadline from "node:readline";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  holdProcessGroup,
+  isFifoHolderHeld,
+  layerHeldProcessGroups,
+  releaseFifoHolder,
+} from "@t3tools/shared/processGroup";
+import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -19,6 +26,9 @@ import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
 
 const SERVE_ARGS = ["serve", "--hostname=127.0.0.1", "--port=4096"];
+
+// As the server spawns: its spawner holds each detached group until the spawn's scope closes.
+const layerNodeServices = layerHeldProcessGroups.pipe(Layer.provideMerge(NodeServices.layer));
 
 const groupExists = (pgid: number) => {
   try {
@@ -45,10 +55,14 @@ const killGroup = (pgid: number) =>
 // with 97 before starting anything if it does not.
 const groupLeaderGuard = `pgid="$(ps -o pgid= -p $$ 2>&1 | tr -d ' ')"; [ "$pgid" = "$$" ] || { echo "ungrouped:$pgid"; exit 97; }; echo grouped; `;
 
-// Yields the group, or a description of why this shell cannot be used as one.
-const spawnGroupLeader = (args: ReadonlyArray<string>, script: string) =>
+// Yields the group, or a description of why this shell cannot be used as one. With `holder`, a
+// FIFO hold keeps its number, as a T3 server that crashed leaves it.
+const spawnGroupLeader = (args: ReadonlyArray<string>, script: string, holder?: string) =>
   Effect.gen(function* () {
-    const child = NodeChildProcess.spawn("/bin/sh", ["-c", groupLeaderGuard + script, ...args], {
+    const launch = { command: "/bin/sh", args: ["-c", groupLeaderGuard + script, ...args] };
+    const held = holder === undefined ? launch : holdProcessGroup(launch, { fd: 3, fifo: holder });
+    if (held === undefined) return yield* Effect.die("this host cannot hold a process group");
+    const child = NodeChildProcess.spawn(held.command, held.args, {
       detached: true,
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -57,7 +71,10 @@ const spawnGroupLeader = (args: ReadonlyArray<string>, script: string) =>
     const grouped = yield* Deferred.make<true | string>();
     const exited = yield* Deferred.make<NodeJS.Signals | null>();
     const printed = yield* Deferred.make<void>();
+    const lines: Array<string> = [];
+    const closed = yield* Deferred.make<ReadonlyArray<string>>();
     child.once("exit", (_code, signal) => Deferred.doneUnsafe(exited, Effect.succeed(signal)));
+    child.once("close", () => Deferred.doneUnsafe(closed, Effect.succeed(lines)));
     // "close" fires after stdout drains, so a guard line always lands first. It only fires before
     // "grouped" when the shell died without starting the script, such as from a signal.
     child.once("close", (code, signal) =>
@@ -69,6 +86,7 @@ const spawnGroupLeader = (args: ReadonlyArray<string>, script: string) =>
       ),
     );
     NodeReadline.createInterface({ input: child.stdout }).on("line", (line) => {
+      lines.push(line);
       if (line === "grouped") Deferred.doneUnsafe(grouped, Effect.succeed(true));
       if (line.startsWith("ungrouped:")) {
         const output = line.slice("ungrouped:".length);
@@ -81,7 +99,13 @@ const spawnGroupLeader = (args: ReadonlyArray<string>, script: string) =>
     });
     const result = yield* Deferred.await(grouped);
     return result === true
-      ? { pid, exited: Deferred.await(exited), printed: Deferred.await(printed) }
+      ? {
+          pid,
+          exited: Deferred.await(exited),
+          printed: Deferred.await(printed),
+          /** What it printed, once it and every process that kept its stdout ended. */
+          closed: Deferred.await(closed),
+        }
       : result;
   });
 
@@ -89,12 +113,12 @@ const spawnGroupLeader = (args: ReadonlyArray<string>, script: string) =>
 // mean the guard itself is broken (for example a missing or BusyBox `ps`).
 const GROUP_LEADER_ATTEMPTS = 5;
 
-const spawnGroup = (args: ReadonlyArray<string>, script = "sleep 600 & wait") =>
+const spawnGroup = (args: ReadonlyArray<string>, script = "sleep 600 & wait", holder?: string) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       let failure = "";
       for (let attempt = 0; attempt < GROUP_LEADER_ATTEMPTS; attempt++) {
-        const group = yield* spawnGroupLeader(args, script);
+        const group = yield* spawnGroupLeader(args, script, holder);
         if (typeof group !== "string") return group;
         failure = group;
       }
@@ -105,14 +129,20 @@ const spawnGroup = (args: ReadonlyArray<string>, script = "sleep 600 & wait") =>
     ({ pid }) => killGroup(pid),
   );
 
-const recordFromDeadServer = (stateDir: string, server: { readonly pid: number }) =>
+const recordFromDeadServer = (
+  stateDir: string,
+  server: { readonly pid: number },
+  holder?: string,
+) =>
   Effect.gen(function* () {
     const previousServer = yield* spawnGroup([]);
     const previousLedger = yield* OpenCodeServerLedger.make({
       stateDir,
       ownerPid: previousServer.pid,
     });
-    yield* Effect.asVoid(previousLedger.track({ pid: server.pid, port: 4096, args: SERVE_ARGS }));
+    yield* Effect.asVoid(
+      previousLedger.track({ pid: server.pid, port: 4096, args: SERVE_ARGS, holder }),
+    );
     yield* killGroup(previousServer.pid);
     yield* previousServer.exited;
   });
@@ -126,24 +156,68 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
   const provideHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.provideService(HostProcess.Platform, platform),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(layerNodeServices),
     );
 
-  it.live("stops an OpenCode server group left by a server that died", () =>
+  it.live.each([
+    ["SIGTERM", "sleep 600 & wait"],
+    ["SIGKILL", "trap '' TERM; sleep 600 & wait"],
+  ] as const)(
+    "stops with %s an OpenCode server group left by a server that died, and no group after it",
+    ([signal, script]) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
+        const orphan = yield* spawnGroup(SERVE_ARGS, script);
+        yield* recordFromDeadServer(stateDir, orphan);
+        expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toHaveLength(1);
+
+        const restarted = yield* OpenCodeServerLedger.make({ stateDir });
+        const freedGroupSignals = yield* Effect.scoped(
+          watchFreedGroupSignals.pipe(
+            Effect.tap(() => restarted.reapOrphans),
+            Effect.map((freed) => freed.signals()),
+          ),
+        );
+
+        expect(yield* orphan.exited).toBe(signal);
+        expect(groupExists(orphan.pid)).toBe(false);
+        expect(freedGroupSignals).toEqual([]);
+        expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+      }).pipe(provideHost),
+  );
+
+  it.live("stops a held OpenCode server group with what it started on SIGTERM", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
-      const orphan = yield* spawnGroup(SERVE_ARGS);
-      yield* recordFromDeadServer(stateDir, orphan);
-      expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toHaveLength(1);
+      const directory = path.join(stateDir, "opencode-servers");
+      yield* fs.makeDirectory(directory);
+      const holder = path.join(directory, "server.hold");
+      yield* Effect.addFinalizer(() => Effect.sync(() => releaseFifoHolder(holder)));
+      // On SIGTERM it starts a process that ignores it and exits, so no member seen before the
+      // signal is left. Only a SIGKILL to the group ends that process, which keeps the output open.
+      const orphan = yield* spawnGroup(
+        SERVE_ARGS,
+        `trap '(trap "" TERM; sleep 600) & exit 0' TERM; echo ready; sleep 600 & wait`,
+        holder,
+      );
+      yield* orphan.printed;
+      yield* recordFromDeadServer(stateDir, orphan, holder);
 
       const restarted = yield* OpenCodeServerLedger.make({ stateDir });
-      yield* restarted.reapOrphans;
+      const freedGroupSignals = yield* Effect.scoped(
+        watchFreedGroupSignals.pipe(
+          Effect.tap(() => restarted.reapOrphans),
+          Effect.map((freed) => freed.signals()),
+        ),
+      );
 
-      expect(yield* orphan.exited).toBe("SIGTERM");
-      expect(groupExists(orphan.pid)).toBe(false);
-      expect(yield* fs.readDirectory(path.join(stateDir, "opencode-servers"))).toEqual([]);
+      yield* orphan.closed;
+      expect(freedGroupSignals).toEqual([]);
+      expect(yield* fs.readDirectory(directory)).toEqual([]);
     }).pipe(provideHost),
   );
 
@@ -218,7 +292,12 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
       const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-ledger-" });
       const running = yield* OpenCodeServerLedger.make({ stateDir });
       const server = yield* spawnGroup(SERVE_ARGS);
-      const forget = yield* running.track({ pid: server.pid, port: 4096, args: SERVE_ARGS });
+      const forget = yield* running.track({
+        pid: server.pid,
+        port: 4096,
+        args: SERVE_ARGS,
+        holder: undefined,
+      });
 
       const other = yield* OpenCodeServerLedger.make({ stateDir });
       yield* other.reapOrphans;
@@ -231,7 +310,7 @@ describe.each(observedPlatforms)("OpenCodeServerLedger observing as %s", (platfo
 });
 
 describe.skipIf(observedPlatforms.length === 0)("OpenCode server startup", () => {
-  it.live("stops the group when interrupted while the server is being recorded", () =>
+  it.live("holds the group and stops it when interrupted while the server is being recorded", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -241,7 +320,11 @@ describe.skipIf(observedPlatforms.length === 0)("OpenCode server startup", () =>
       yield* fs.chmod(binaryPath, 0o755);
 
       const spawned = yield* Deferred.make<ChildProcessSpawner.ChildProcessHandle>();
-      const recording = yield* Deferred.make<number>();
+      const recording = yield* Deferred.make<{
+        readonly pid: number;
+        readonly holder: string | undefined;
+      }>();
+      const ledger = yield* OpenCodeServerLedger.make({ stateDir: tempDir });
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const layerRuntime = OpenCodeRuntime.layer.pipe(
         Layer.provide(
@@ -258,10 +341,11 @@ describe.skipIf(observedPlatforms.length === 0)("OpenCode server startup", () =>
           Layer.succeed(
             OpenCodeServerLedger.OpenCodeServerLedger,
             OpenCodeServerLedger.OpenCodeServerLedger.of({
+              holderFifo: ledger.holderFifo,
               track: (server) =>
                 Effect.gen(function* () {
                   yield* (yield* Deferred.await(spawned)).exitCode.pipe(Effect.ignore);
-                  yield* Deferred.succeed(recording, server.pid);
+                  yield* Deferred.succeed(recording, server);
                   return yield* Effect.never;
                 }),
             }),
@@ -278,14 +362,16 @@ describe.skipIf(observedPlatforms.length === 0)("OpenCode server startup", () =>
         Effect.provide(layerRuntime),
         Effect.forkChild,
       );
-      const pgid = yield* Deferred.await(recording);
+      const { pid: pgid, holder } = yield* Deferred.await(recording);
       yield* Effect.addFinalizer(() => killGroup(pgid));
       expect(groupExists(pgid)).toBe(true);
+      expect(holder !== undefined && isFifoHolderHeld(holder)).toBe(true);
 
       yield* Fiber.interrupt(starting);
       yield* Scope.close(serverScope, Exit.void);
 
       expect(groupExists(pgid)).toBe(false);
-    }).pipe(Effect.provide(NodeServices.layer)),
+      expect(yield* fs.exists(holder ?? "")).toBe(false);
+    }).pipe(Effect.provide(layerNodeServices)),
   );
 });

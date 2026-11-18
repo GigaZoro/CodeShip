@@ -30,7 +30,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { HoldThroughFifo, signalProcessGroup } from "@t3tools/shared/processGroup";
 import {
   commandFailureReason,
   withProviderFailureReason,
@@ -532,6 +532,10 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     // Scopes close in reverse order. Forking this before the group kill is
     // registered forgets the ledger entry only once the group is stopped.
     const ledgerScope = yield* Scope.fork(runtimeScope);
+    // Removed after the ledger entry, and after the spawner's release lets its holder quit.
+    const holder = yield* serverLedger.holderFifo.pipe(
+      Effect.provideService(Scope.Scope, ledgerScope),
+    );
     // On Windows what the server left running ends with it, also after it exited.
     const child = yield* endingWindowsTrees(spawner, hostPlatform)
       .spawn(
@@ -550,6 +554,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       )
       .pipe(
         Effect.provideService(Scope.Scope, runtimeScope),
+        Effect.provideService(HoldThroughFifo, holder),
         Effect.mapError(
           (cause) =>
             new OpenCodeRuntimeError({
@@ -576,7 +581,12 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     // Registered before recording, so an interrupt while the ledger writes
     // still stops the group.
     yield* Scope.addFinalizer(runtimeScope, terminateChild);
-    const forgetServer = yield* serverLedger.track({ pid: Number(child.pid), port, args });
+    const forgetServer = yield* serverLedger.track({
+      pid: Number(child.pid),
+      port,
+      args,
+      holder,
+    });
     yield* Scope.addFinalizer(ledgerScope, forgetServer);
 
     const stdoutRef = yield* Ref.make<string | null>("");
