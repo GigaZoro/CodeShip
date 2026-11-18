@@ -2338,9 +2338,43 @@ describe("storage cleanup reports and local file policies", () => {
           const report = yield* service.runNow;
           expect(report.entries[0]).toMatchObject({
             outcome: "removed",
-            reason: "No commits beyond the default branch",
+            reason: "Its changes are on the default branch",
           });
           expect(yield* fs.exists(worktree)).toBe(false);
+        }),
+      ),
+  );
+  it.live.each([
+    ["cherry-picked", "removed", "Its changes are on the default branch"],
+    ["cherry-picked with an extra commit", "kept", "Has commits beyond the default branch"],
+  ] as const)(
+    "a worktree whose commit reached the default branch by %s is %s",
+    ([state, outcome, reason]) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const { service, fs, repo, worktree, command } = yield* cleanupFixture({
+            ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+            worktreeUnchanged: true,
+          });
+          const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
+          yield* command(remote, ["init", "--bare", "-b", "main"]);
+          yield* command(repo, ["remote", "add", "origin", remote]);
+          yield* fs.writeFileString(`${worktree}/tracked.txt`, "shipped work\n");
+          yield* command(worktree, ["commit", "-am", "shipped work"]);
+          const shipped = (yield* command(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+          yield* command(repo, ["cherry-pick", shipped]);
+          yield* command(repo, ["push", "origin", "main:main"]);
+          yield* command(repo, ["fetch", "origin"]);
+          yield* command(repo, ["remote", "set-head", "origin", "main"]);
+          if (state !== "cherry-picked") {
+            yield* fs.writeFileString(`${worktree}/extra.txt`, "extra\n");
+            yield* command(worktree, ["add", "extra.txt"]);
+            yield* command(worktree, ["commit", "-m", "extra"]);
+          }
+
+          const report = yield* service.runNow;
+          expect(report.entries[0]).toMatchObject({ outcome, reason });
+          expect(yield* fs.exists(worktree)).toBe(outcome === "kept");
         }),
       ),
   );

@@ -403,6 +403,15 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveCommit: (
       input: GitResolveCommitInput,
     ) => Effect.Effect<GitResolveCommitResult, GitCommandError>;
+    /**
+     * Counts HEAD's commits whose changes the base does not have. A commit that reached the base
+     * under another SHA (cherry-pick, a rebase shipped from another worktree) is not counted.
+     * Without `baseRef` the branch's own base is used.
+     */
+    readonly countUnmergedCommits: (input: {
+      readonly cwd: string;
+      readonly baseRef?: string;
+    }) => Effect.Effect<number, GitCommandError>;
     readonly refreshCheckedOutBranch: (
       input: GitRefreshCheckedOutBranchInput,
     ) => Effect.Effect<GitRefreshCheckedOutBranchResult, GitCommandError>;

@@ -1025,13 +1025,19 @@ const make = Effect.gen(function* () {
             args: ["merge-base", "--is-ancestor", head.commitSha, base.commitSha],
             allowNonZeroExit: true,
           });
-          const integrated = ancestor.exitCode === 0;
+          // Work that reached the default branch under other SHAs (cherry-pick, a rebase shipped
+          // from another worktree) counts as integrated too.
+          const integrated =
+            ancestor.exitCode === 0 ||
+            (yield* git
+              .countUnmergedCommits({ cwd: worktreePath, baseRef: base.commitSha })
+              .pipe(Effect.orElseSucceed(() => 1))) === 0;
           eligible = integrated && settings.worktreeUnchanged;
           if (eligible)
             removalReason =
               remote === null
                 ? "no commits beyond the project branch"
-                : "no commits beyond the default branch";
+                : "its changes are on the default branch";
           if (!eligible && remote !== null && settings.worktreeOnMerge && thread.branch !== null) {
             const pullRequest = yield* gitManager.branchPullRequest(
               { cwd: worktreePath, branch: thread.branch },

@@ -461,13 +461,19 @@ export const make = Effect.gen(function* () {
       }
       const read = Effect.fnUntraced(function* () {
         const details = yield* git.statusDetailsLocal(input.cwd, { includeDivergence: true });
-        return details.isRepo
-          ? {
-              refName: details.branch,
-              changedFileCount: details.workingTree.files.length,
-              unmergedCommitCount: details.isDefaultBranch ? 0 : details.aheadOfDefaultCount,
-            }
-          : none;
+        if (!details.isRepo) return none;
+        // The status count is by SHA; only a branch that looks ahead pays for the patch-id count.
+        const unmergedCommitCount =
+          details.isDefaultBranch || details.aheadOfDefaultCount === 0
+            ? 0
+            : yield* git
+                .countUnmergedCommits({ cwd: input.cwd })
+                .pipe(Effect.orElseSucceed(() => details.aheadOfDefaultCount));
+        return {
+          refName: details.branch,
+          changedFileCount: details.workingTree.files.length,
+          unmergedCommitCount,
+        };
       });
       const work = yield* read();
       if (work.unmergedCommitCount === 0 || work.refName === null) return work;
