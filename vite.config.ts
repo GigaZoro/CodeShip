@@ -3,6 +3,7 @@ import { defineConfig } from "vite-plus";
 import * as NodeURL from "node:url";
 import { remoteCacheUrl } from "./infra/task-cache/src/remoteCache.ts";
 import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
+import { TEST_MAX_WORKERS } from "./scripts/lib/test-workers.ts";
 
 const TEST_EXCLUDE = [
   "**/.repos/**",
@@ -118,6 +119,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    maxWorkers: TEST_MAX_WORKERS,
     // Fixture subprocesses must not inherit the outer task runner’s cache policy.
     env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },
     exclude: TEST_EXCLUDE,

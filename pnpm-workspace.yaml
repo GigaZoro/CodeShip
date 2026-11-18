@@ -426,3 +426,7 @@ permissions:
 # pnpm keeps optional deps inside the virtual store, so hoist it to the root.
 publicHoistPattern:
   - "@cursor/sdk-*"
+
+# Each install script of a workspace package runs in its own process; pnpm defaults to 5 at once,
+# and several worktrees install side by side.
+childConcurrency: 2

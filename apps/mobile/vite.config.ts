@@ -2,6 +2,7 @@ import * as NodeModule from "node:module";
 import * as NodeURL from "node:url";
 import { defineConfig, normalizePath } from "vite-plus";
 import "vite-plus/test/config";
+import { TEST_MAX_WORKERS } from "../../scripts/lib/test-workers.ts";
 
 const reactTests = [
   "src/features/files/SourceFileSurface.test.tsx",
@@ -58,6 +59,7 @@ const babelConfig = require("./babel.config.js")({ cache: () => {} });
 
 export default defineConfig({
   test: {
+    maxWorkers: TEST_MAX_WORKERS,
     hookTimeout: 60_000,
     testTimeout: 60_000,
     projects: [

@@ -19,6 +19,7 @@ import {
 } from "@t3tools/shared/devProxy";
 
 import { loadRepoEnv } from "../../scripts/lib/public-config";
+import { TEST_MAX_WORKERS } from "../../scripts/lib/test-workers";
 import {
   shippedThirdPartyLicenses,
   thirdPartyLicensesPlugin,
@@ -390,6 +391,7 @@ export default defineConfig(() => {
     },
     worker: { format: "es" },
     test: {
+      maxWorkers: TEST_MAX_WORKERS,
       projects: [
         defineProject(unitTestProject),
         defineProject(browserTestProject),

@@ -1,3 +1,7 @@
+## 2026-11-18 — Test runs from several worktrees no longer overload the machine
+
+- Vitest started about one worker per core in every test run, so a machine with several chats testing at once ran several times its core count in workers. Every Vite config now takes its worker cap from `scripts/lib/test-workers.ts`: 2 locally, every core in CI, and `T3CODE_TEST_MAX_WORKERS` overrides both. A test checks that each config sets it. pnpm also runs at most 2 install scripts at once. No change to the app.
+
 ## 2026-11-18 — The relay install tests pass on Windows
 
 - The relay client install tests built lock paths with slashes that the Windows filesystem hooks never matched, and checked the simulated Linux executable bit on NTFS, which cannot hold one. They now build paths with the host's path rules and model the simulated platform's executable bits themselves, so the contended-lock, legacy-lock and staging cases run the same on every host. No change to the app.
