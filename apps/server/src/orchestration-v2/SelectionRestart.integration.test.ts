@@ -590,24 +590,30 @@ it.live.each(["pooled", "exclusive"] as const)(
         yield* Fiber.join(running);
         yield* worker.drain();
 
-        const settled = yield* eventSink
-          .stream({
-            threadId,
-            afterSequence: yield* eventSink.latestSequence({ threadId }),
-          })
-          .pipe(
-            Stream.map((stored) => stored.event),
-            Stream.filter(
-              (event) =>
-                event.type === "run.updated" &&
-                event.payload.status !== "running" &&
-                event.payload.status !== "queued" &&
-                event.payload.status !== "starting",
-            ),
-            Stream.take(1),
-            Stream.runDrain,
-            Effect.forkScoped,
-          );
+        const beforeHandoff = yield* eventSink.latestSequence({ threadId });
+        const settled = yield* eventSink.stream({ threadId, afterSequence: beforeHandoff }).pipe(
+          Stream.map((stored) => stored.event),
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.status !== "running" &&
+              event.payload.status !== "queued" &&
+              event.payload.status !== "starting",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        // The first turn is already running, so the next running turn is the continuation's.
+        const continued = yield* eventSink.stream({ threadId, afterSequence: beforeHandoff }).pipe(
+          Stream.map((stored) => stored.event),
+          Stream.filter(
+            (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
         // What t3_worktree_handoff dispatches while the calling turn is still running.
         const bound = yield* orchestrator.dispatch({
           type: "thread.metadata.update",
@@ -628,6 +634,8 @@ it.live.each(["pooled", "exclusive"] as const)(
           ["queued"],
         );
         yield* Fiber.join(settled);
+        // A run-update reaction starts the continuation, and drain() does not wait for it.
+        yield* Fiber.join(continued);
         yield* worker.drain();
         return yield* orchestrator.getThreadProjection(threadId);
       }).pipe(
