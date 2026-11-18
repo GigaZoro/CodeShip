@@ -2016,7 +2016,14 @@ function knownHeadingIdsTaken(
   const render = markdownRenderer(remarkPlugins, rehypePlugins);
   // The known text ends where a block starts, so it splits into the same blocks.
   const known = knownText === "" ? [] : splitMarkdownBlocks(knownText)!;
-  return headingIdsTakenBefore(known.map((block) => render(block).data.headingIds));
+  return headingIdsTakenBefore(
+    known.map((block) => {
+      const result = render(block);
+      // A finished block will not change again, so the block that shows it reuses this parse.
+      render.remember(block, result);
+      return result.data.headingIds;
+    }),
+  );
 }
 
 const MarkdownSource = memo(function MarkdownSource({

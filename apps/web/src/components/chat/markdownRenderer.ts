@@ -36,10 +36,11 @@ let nextRendererId = 0;
 // A short block still holds a whole element tree.
 const ENTRY_OVERHEAD_CHARS = 200;
 const entrySize = (key: string) => key.length + ENTRY_OVERHEAD_CHARS;
+// One huge message would otherwise evict everything else.
+const fitsCache = (key: string) => entrySize(key) <= MAX_CACHED_CHARS / 4;
 
 function remember(key: string, result: MarkdownRender) {
-  // One huge message would otherwise evict everything else.
-  if (entrySize(key) > MAX_CACHED_CHARS / 4) return;
+  if (!fitsCache(key)) return;
   rendered.set(key, result);
   cachedChars += entrySize(key);
   for (const oldest of rendered.keys()) {
@@ -88,6 +89,10 @@ export function createMarkdownRenderer({
     }
   };
 
+  // A streaming reply's last block is parsed on every update and never cached. Once it is finished,
+  // the reply reads it again for its heading ids before its own block can cache it.
+  let latest: { readonly key: string; readonly result: MarkdownRender } | null = null;
+
   const render = (text: string): MarkdownRender => {
     const key = keyPrefix + text;
     const cached = rendered.get(key);
@@ -97,6 +102,7 @@ export function createMarkdownRenderer({
       rendered.set(key, cached);
       return cached;
     }
+    if (latest?.key === key) return latest.result;
     const file = new VFile(text);
     const tree = processor.runSync(processor.parse(file), file) as Root;
     prepare(tree);
@@ -109,7 +115,9 @@ export function createMarkdownRenderer({
       passKeys: true,
       passNode: true,
     });
-    return { element, data: file.data };
+    const result = { element, data: file.data };
+    if (fitsCache(key)) latest = { key, result };
+    return result;
   };
 
   return Object.assign(render, {

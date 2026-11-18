@@ -338,6 +338,15 @@ it("reuses the parse of a streaming reply's finished blocks when it remounts", a
   expect(parsedSources.filter((source) => source.includes("Finished block"))).toHaveLength(1);
 });
 
+it("parses each block of a finished reply once", async () => {
+  setup();
+  await using screen = await render(
+    <ChatMarkdown cwd="/tmp/project" text={"First of two\n\nSecond of two"} />,
+  );
+  await expect.element(screen.getByText("Second of two")).toBeVisible();
+  expect(parsedSources.filter((source) => source.includes("First of two"))).toHaveLength(1);
+});
+
 it("scans each finished block of a streaming reply for file links once", async () => {
   setup();
   const message = (rest: string, isStreaming = true) => (
