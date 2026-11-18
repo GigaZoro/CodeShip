@@ -94,9 +94,14 @@ function availableResets(limits: ServerProviderUsageLimits, nowMs: number): Rese
   return resets;
 }
 
-/** Claude grants say `usableNow`; Codex credits say `status`. A paused grant is never claimed. */
+/**
+ * Claude grants say `usableNow`; Codex credits say `status`. A Claude grant held only until the
+ * account reaches a limit it refills counts too: it is claimed only at a limit its kind clears, and
+ * the grants' reading can predate the limit the meters show. A paused grant is never claimed.
+ */
 function isAvailable(credit: ServerProviderResetCredit): boolean {
   if (credit.paused === true) return false;
+  if (credit.usableNow === false) return credit.requiresLimit === true;
   return credit.usableNow ?? credit.status === "available";
 }
 

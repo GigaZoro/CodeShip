@@ -119,12 +119,33 @@ describe("readClaudeLimitResets", () => {
       answer: "Your reset can't be used right now · it is paused · 1 reset left · use by Dec 1",
       grants: [
         {
+          kindUnknownReason: "totalOnly",
           resetsLeft: 1,
           expiresAt: "2026-12-01T00:00:00.000Z",
           usableNow: false,
           paused: true,
         },
       ],
+    },
+    {
+      name: "saved for a limit",
+      answer:
+        "You have a reset saved for when you reach a usage limit · run /limit-reset when you do · 2 resets left · use by Dec 1",
+      grants: [
+        {
+          kindUnknownReason: "totalOnly",
+          resetsLeft: 2,
+          expiresAt: "2026-12-01T00:00:00.000Z",
+          usableNow: false,
+          requiresLimit: true,
+        },
+      ],
+    },
+    {
+      name: "lower priority",
+      answer:
+        "Resets can't be used while you continue at lower priority · run /limit-reset after that ends",
+      grants: [{ kindUnknownReason: "lowPriority", usableNow: false }],
     },
   ])("reads Claude's $name answer", ({ answer, grants: expected }) =>
     Effect.gen(function* () {

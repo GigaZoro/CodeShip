@@ -677,8 +677,13 @@ export const OrchestratorMcpBankedReset = Schema.Struct({
   grantedAt: Schema.NullOr(Schema.String),
   expiresAt: Schema.NullOr(Schema.String),
   program: Schema.String,
-  /** Null when the provider names only a total over its resets. */
+  /** What the reset clears; null when the provider's answer named no kind. */
   kind: Schema.NullOr(ServerProviderResetKind),
+  /**
+   * Why `kind` is null: `total_only` when Claude named only a total over its grants, `low_priority`
+   * when it answered that resets wait while the account runs at lower priority, before reading any.
+   */
+  kindUnknownReason: Schema.optional(Schema.Literals(["total_only", "low_priority"])),
   resetsLeft: Schema.optional(Schema.Number),
   usableNow: Schema.optional(Schema.Boolean),
   requiresLimit: Schema.optional(Schema.Boolean),

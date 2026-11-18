@@ -6,6 +6,7 @@
 import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetKind,
+  ServerProviderResetKindUnknownReason,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -167,7 +168,10 @@ function parseCount(text: string | undefined): number | undefined {
   return match[1] === "no" ? 0 : Number(match[1]);
 }
 
-/** One grant as `/limit-reset` describes it; Claude never shows a grant's id. */
+/**
+ * One grant as `/limit-reset` describes it; Claude never shows a grant's id. It names the kind of
+ * a grant it holds back only beside a usable one, and then without a count.
+ */
 export type ClaudeLimitResetGrant =
   | {
       readonly kind: ServerProviderResetKind;
@@ -177,13 +181,17 @@ export type ClaudeLimitResetGrant =
       readonly requiresLimit: boolean;
     }
   | {
-      /** Absent when Claude names only a total over all grants. */
-      readonly kind?: ServerProviderResetKind;
+      readonly kind: ServerProviderResetKind;
+      readonly usableNow: false;
+      readonly requiresLimit?: true;
+    }
+  | {
+      readonly kindUnknownReason: ServerProviderResetKindUnknownReason;
       readonly resetsLeft?: number;
       readonly expiresAt?: string;
       readonly usableNow: false;
-      readonly requiresLimit?: boolean;
-      readonly paused?: boolean;
+      readonly requiresLimit?: true;
+      readonly paused?: true;
     };
 export type ClaudeUsableGrant = Extract<ClaudeLimitResetGrant, { readonly usableNow: true }>;
 
@@ -210,7 +218,9 @@ export function parseNoOfferAnswer(
   if (TRANSIENT_ANSWERS.includes(text) || text === texts.unconfirmedAnytimeLine) {
     return { _tag: "transient" };
   }
-  if (text === LOW_PRIORITY) return { _tag: "grants", grants: [{ usableNow: false }] };
+  if (text === LOW_PRIORITY) {
+    return { _tag: "grants", grants: [{ kindUnknownReason: "lowPriority", usableNow: false }] };
+  }
   const spent = matchTemplate(texts.spentLine, text);
   if (spent !== undefined && parseCount(spent.resets) === 0) return { _tag: "grants", grants: [] };
   const held =
@@ -227,10 +237,13 @@ export function parseNoOfferAnswer(
   if (!known) return undefined;
   const expiresAt = held.date === undefined ? undefined : parseClaudeDate(held.date, now);
   if (held.date !== undefined && expiresAt === undefined) return undefined;
+  // With no grant usable now, Claude answers every `/limit-reset`, with or without a kind, with
+  // this total over all grants and the first one's expiry, so no command shows their kinds.
   return {
     _tag: "grants",
     grants: [
       {
+        kindUnknownReason: "totalOnly",
         resetsLeft: parseCount(held.resets)!,
         ...(expiresAt === undefined ? {} : { expiresAt }),
         usableNow: false,

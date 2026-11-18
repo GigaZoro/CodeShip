@@ -1,3 +1,8 @@
+## 2026-11-19 — Claude's held resets say what they clear, or why they cannot
+
+- In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude's answer named no kind, the reset has `kind: null` and a `kindUnknownReason`: `total_only` when Claude gave only a total because no reset can be used now, `low_priority` when it said resets wait while the account runs at lower priority.
+- Automatic redemption now counts a Claude reset that is kept for when the account reaches a limit as soon as the account is at a limit that reset clears, even if CodeShip read Claude's resets before that limit was reached. A reset whose kind Claude did not name is never redeemed automatically.
+
 ## 2026-11-19 — Main takes only changes whose checks passed, on Windows too
 
 - Maintenance only, with no change in the app. A push to the fork's `main` is refused unless the lander holds the landing turn and `vp run check:changed` passed for exactly the files pushed, compared with the commit `main` is at. Each passing run records what it checked, and the tracked pre-push hook, which a checkout runs once the machine check sets `core.hooksPath`, refuses a push without that record. `landing-turn.cjs land` refuses to start in a worktree with uncommitted or untracked files, whose pass could not cover the commit it pushes.
