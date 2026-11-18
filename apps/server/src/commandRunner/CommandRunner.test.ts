@@ -20,10 +20,16 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import {
+  isFifoHolderHeld,
+  layerHeldProcessGroups,
+  releaseFifoHolder,
+  signalProcessGroup,
+} from "@t3tools/shared/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
+import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -146,7 +152,11 @@ const layerTest = Layer.mergeAll(
   ProcessRunner.layer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-runner-" }),
   NodeCrypto.layer,
-).pipe(Layer.provideMerge(layerOrchestration), Layer.provideMerge(NodeServices.layer));
+).pipe(
+  Layer.provideMerge(layerOrchestration),
+  // As the server spawns: each detached group stays held until its spawn's scope closes.
+  Layer.provideMerge(layerHeldProcessGroups.pipe(Layer.provideMerge(NodeServices.layer))),
+);
 
 /** One server's life: a fresh runner that picks up what an earlier one left, until `use` ends. */
 const withServer = <A, E, R>(
@@ -261,8 +271,11 @@ const liveChat = (name: string) =>
         SELECT pid, directory FROM command_runs WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
-          Effect.forEach(rows, (row) =>
-            Effect.try(() =>
+          Effect.forEach(rows, (row) => {
+            const holder = NodePath.join(row.directory, "group-holder");
+            return Effect.try(() => {
+              // Once its holder is released, the group's number may be another group's.
+              if (!isFifoHolderHeld(holder)) return;
               signalProcessGroup(
                 // A failed test can leave a row without its pid; the wrapper's pid file still names it.
                 row.pid ??
@@ -271,9 +284,12 @@ const liveChat = (name: string) =>
                     10,
                   ),
                 "SIGKILL",
-              ),
-            ).pipe(Effect.ignore),
-          ),
+              );
+            }).pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.try(() => releaseFifoHolder(holder)).pipe(Effect.ignore)),
+            );
+          }),
         ),
         Effect.ignore,
         Effect.andThen(
@@ -674,6 +690,25 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           assert.include(row?.lost_output ?? "", "orphaning");
           assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         }),
+    );
+
+    // As if an unrelated group took the number of the command's once that ended, and left members.
+    it.effect("signals no group after the command's own ended with its wrapper", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-group-freed");
+        const { started, signals } = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const freed = yield* watchFreedGroupSignals;
+            const started = yield* runner.run(callerOf(chat.threadId), { command: LOSING_COMMAND });
+            go(chat);
+            yield* nextWake(chat.threadId);
+            return { started, signals: freed.signals() };
+          }),
+        );
+
+        assert.equal((yield* commandRow(started.taskId))?.lost_reason, "gone");
+        assert.deepEqual(signals, []);
+      }),
     );
 
     it.effect(

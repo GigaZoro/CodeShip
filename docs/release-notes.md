@@ -1,3 +1,9 @@
+## 2026-11-18 — On macOS and Linux, stopping a process never reaches another program's processes
+
+- On macOS and Linux, CodeShip stops what a command or agent session left running by signalling its process group, also after its own process exited. Once that group emptied, an unrelated program could start a group under the same number, and the stop then reached that program's processes. Each group CodeShip starts now keeps its number until CodeShip's last signal to it, through a small bash process outside the group. This covers the commands and git runs the server starts, Claude, OpenCode, Pi and ACP agent sessions such as Grok, and `t3_command_run` commands, across a server restart too. The earlier check looked for a process under the old process id, so it missed such a group once the process that started it had exited.
+- A command takes about 1 to 2 ms longer to start on macOS and under 1 ms on Linux. On a machine without bash, the server's git runs, Claude sessions and `t3_command_run` commands leave a group alone once its own process exited, and other commands are stopped as before.
+- Maintainers: start a process whose group you signal through the server's `ChildProcessSpawner`, or through `holdProcessGroup` and `ownProcessGroup` from `@t3tools/shared/processGroup`, never as a bare detached spawn. Tests check signals to a group that is no longer ours with `watchFreedGroupSignals` from `@t3tools/shared/testing/freedProcessGroups`.
+
 ## 2026-11-18 — Script tests fit their time limit on a loaded machine
 
 - The `scripts` cache test and Knip schema test each ran several slow subprocess steps in one test, 50 to 70 s on a busy machine against a 60 s limit. Each behaviour is now its own test with its own budget. No change to the app.
