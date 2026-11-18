@@ -131,14 +131,37 @@ export const clearPersistedServerRuntimeState = Effect.fn(
   );
 });
 
+/** Linux counts a process's start in USER_HZ ticks since boot, 100 a second wherever Node runs. */
+const LINUX_TICKS_PER_SECOND = 100;
+
+/** From /proc, as ps would read it, so a host without procps still tells processes apart. */
+const readLinuxProcessStartedAt = Effect.fn("serverRuntimeState.readLinuxProcessStartedAt")(
+  function* (pid: number) {
+    const fs = yield* FileSystem.FileSystem;
+    const files = yield* Effect.all([
+      fs.readFileString(`/proc/${pid}/stat`),
+      fs.readFileString("/proc/stat"),
+    ]).pipe(Effect.option);
+    if (Option.isNone(files)) return undefined;
+    const [stat, system] = files.value;
+    // The command name can hold spaces and parentheses; starttime is the 20th field after it.
+    const ticks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+    const bootedAt = /^btime (\d+)$/mu.exec(system)?.[1];
+    if (ticks === undefined || !/^\d+$/u.test(ticks) || bootedAt === undefined) return undefined;
+    return Number(bootedAt) * 1_000 + (Number(ticks) * 1_000) / LINUX_TICKS_PER_SECOND;
+  },
+);
+
 /**
  * When `pid` started, in epoch milliseconds, to tell a process from a later one that reuses
- * its pid; undefined when it cannot be read. POSIX `ps` reports whole seconds.
+ * its pid; undefined when it cannot be read. On macOS and Linux it is exact to the second.
  */
 export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessStartedAt")(function* (
   pid: number,
 ) {
-  const windows = (yield* HostProcess.Platform) === "win32";
+  const platform = yield* HostProcess.Platform;
+  if (platform === "linux") return yield* readLinuxProcessStartedAt(pid);
+  const windows = platform === "win32";
   const runner = yield* ProcessRunner.ProcessRunner;
   const result = yield* runner
     .run({
