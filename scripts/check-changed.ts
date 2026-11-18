@@ -13,6 +13,8 @@
 //   vp run check:changed                  compare against the closest merge base with any remote main
 //   vp run check:changed <ref>            compare against the merge base with <ref>
 //   vp run check:changed --concurrency 1  run the steps one at a time
+//   vp run check:changed --suites apps/web --suites apps/server
+//                                         run those packages' full suites on the same budget
 //
 // Uncommitted and untracked files count. Affected packages come from
 // .github/scripts/ci-changes.cjs, the same mapping CI uses to gate its jobs.
@@ -496,10 +498,83 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
 
+// Output is piped, so keep the colors a terminal would get.
+const spawnVp = (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  platform: NodeJS.Platform,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  extraEnv: Record<string, string>,
+  collect: (chunk: string) => void,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const [command, commandArgs] = vitePlusCommand(args, platform);
+      const handle = yield* spawner.spawn(
+        ChildProcess.make(command, commandArgs, {
+          cwd,
+          env: { ...(process.stdout.isTTY ? { FORCE_COLOR: "1" } : {}), ...extraEnv },
+          extendEnv: true,
+          forceKillAfter: "5 seconds",
+        }),
+      );
+      let output = "";
+      const [, exitCode] = yield* Effect.all(
+        [
+          Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+            Effect.sync(() => {
+              output += chunk;
+              collect(chunk);
+            }),
+          ),
+          handle.exitCode,
+        ],
+        { concurrency: 2 },
+      );
+      return { ok: exitCode === 0, output };
+    }),
+  ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
+
+// Every worktree of this repository shares its git directory, so their runs share one budget.
+const budgetDirectory = Effect.fn("checkChanged.budgetDirectory")(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const gitDirectory = (yield* git(root, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-common-dir",
+  ]))
+    .toString()
+    .trim();
+  const slotDirectory = path.join(gitDirectory, "t3-check-changed");
+  yield* fs.makeDirectory(slotDirectory, { recursive: true });
+  return slotDirectory;
+});
+
+// A package's full suite as budgeted steps. Its configs read the worker cap from T3CODE_TEST_MAX_WORKERS
+// (scripts/lib/test-workers.ts), so the suite runs on the slots it holds, not one worker per core.
+export const suiteSteps = (
+  directories: ReadonlyArray<string>,
+  concurrency: number,
+  run: (
+    directory: string,
+    slots: number,
+    collect: (chunk: string) => void,
+  ) => ReturnType<Step<never>["run"]>,
+): Array<Step<never>> =>
+  directories.map((directory) => ({
+    name: `suite ${directory}`,
+    run: (slots, collect) => run(directory, slots, collect),
+    // apps/server runs its test files one at a time, so more workers would sit idle.
+    workers: directory === "apps/server" ? 1 : concurrency,
+    serial: true,
+  }));
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
   readonly timeout: Option.Option<number>;
+  readonly suites: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -524,6 +599,46 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const explicitTimeout = Option.isSome(timeoutOverride);
   const timeoutSeconds = Option.getOrElse(timeoutOverride, () => 900);
 
+  if (input.suites.length > 0) {
+    for (const directory of input.suites) {
+      const manifest = path.join(root, directory, "package.json");
+      const hasTest = yield* fs.readFileString(manifest).pipe(
+        Effect.map((text) => text.includes('"test":')),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!hasTest) {
+        return yield* Effect.fail(
+          `check:changed: ${directory} has no package.json with a test script.`,
+        );
+      }
+    }
+    const results = yield* runSteps(
+      suiteSteps(input.suites, concurrency, (directory, slots, collect) =>
+        spawnVp(
+          spawner,
+          platform,
+          ["run", "--filter", `./${directory}`, "test"],
+          root,
+          { T3CODE_TEST_MAX_WORKERS: String(slots) },
+          collect,
+        ),
+      ),
+      {
+        concurrency,
+        timeoutSeconds: explicitTimeout ? timeoutSeconds : TEST_STEP_MAX_SECONDS,
+        slotDirectory: yield* budgetDirectory(root),
+        landing: Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN"))),
+      },
+    );
+    yield* Console.log(
+      [
+        "\ncheck:changed suites summary",
+        ...results.map((r) => `  ${r.outcome}  ${r.name}  ${r.time}`),
+      ].join("\n"),
+    );
+    return results.every((result) => result.outcome === "pass");
+  }
+
   const lines = (...args: Array<string>) => gitLines(root, args);
 
   const { ref, base } = yield* comparisonBase(root, input.ref);
@@ -538,40 +653,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   }
   yield* Console.log(`check:changed: ${files.length} files since ${base.slice(0, 12)} (${ref})`);
 
-  // Output is piped, so keep the colors a terminal would get.
-  const env = process.stdout.isTTY ? { FORCE_COLOR: "1" } : {};
   const vp = (
     args: ReadonlyArray<string>,
     cwd = root,
     collect: (chunk: string) => void = () => {},
-  ) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const [command, commandArgs] = vitePlusCommand(args, platform);
-        const handle = yield* spawner.spawn(
-          ChildProcess.make(command, commandArgs, {
-            cwd,
-            env,
-            extendEnv: true,
-            forceKillAfter: "5 seconds",
-          }),
-        );
-        let output = "";
-        const [, exitCode] = yield* Effect.all(
-          [
-            Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-              Effect.sync(() => {
-                output += chunk;
-                collect(chunk);
-              }),
-            ),
-            handle.exitCode,
-          ],
-          { concurrency: 2 },
-        );
-        return { ok: exitCode === 0, output };
-      }),
-    ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
+  ) => spawnVp(spawner, platform, args, cwd, {}, collect);
 
   // A rebase or pull can change pnpm-lock.yaml under an older install, so check against the
   // dependencies CI installs from it. Up to date, this takes about a second.
@@ -913,16 +999,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       : []),
   ];
 
-  // Every worktree of this repository shares its git directory, so their runs share one budget.
-  const gitDirectory = (yield* git(root, [
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-common-dir",
-  ]))
-    .toString()
-    .trim();
-  const slotDirectory = path.join(gitDirectory, "t3-check-changed");
-  yield* fs.makeDirectory(slotDirectory, { recursive: true });
+  const slotDirectory = yield* budgetDirectory(root);
   const results = yield* runSteps(steps, {
     concurrency,
     timeoutSeconds,
@@ -995,6 +1072,12 @@ export const checkChangedCommand = Command.make(
         "Seconds before a step is killed; also CHECK_CHANGED_TIMEOUT. Defaults to 900.",
       ),
       Flag.optional,
+    ),
+    suites: Flag.String("suites").pipe(
+      Flag.withDescription(
+        "Run the full test suite of this package directory (repeatable) through the shared budget instead of checking changed files, e.g. --suites apps/web --suites apps/server.",
+      ),
+      Flag.atLeast(0),
     ),
   },
   (input) =>

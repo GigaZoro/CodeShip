@@ -24,6 +24,7 @@ import {
   gitLines,
   runSteps,
   splitTests,
+  suiteSteps,
   testStepTimeoutSeconds,
   type Step,
   testsReaching,
@@ -39,6 +40,19 @@ describe("check:changed", () => {
     assert.strictEqual(defaultConcurrency(4, 15 * GiB), 2);
     assert.strictEqual(defaultConcurrency(4, 2 * GiB), 1);
     assert.strictEqual(defaultConcurrency(1, 64 * GiB), 1);
+  });
+
+  it("budgets each full suite as a serial step, one worker for the server", () => {
+    const steps = suiteSteps(["apps/web", "apps/server"], 6, () =>
+      Effect.succeed({ ok: true, output: "" }),
+    );
+    assert.deepStrictEqual(
+      steps.map(({ name, workers, serial }) => [name, workers, serial]),
+      [
+        ["suite apps/web", 6, true],
+        ["suite apps/server", 1, true],
+      ],
+    );
   });
 
   it("runs the server tests for the one guide they read and leaves other docs inert", () => {
