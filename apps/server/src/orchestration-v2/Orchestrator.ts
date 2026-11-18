@@ -2090,7 +2090,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
       return sideChats
-        .toSorted(ThreadCommandExecutor.compareLockOrder)
+        .toSorted(ThreadCommandExecutor.compareSiblingLockOrder)
         .map((sideChat) => sideChat.id);
     },
     (effect, threadId) =>

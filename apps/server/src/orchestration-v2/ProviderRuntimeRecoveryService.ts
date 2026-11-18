@@ -1,5 +1,6 @@
 import {
   CommandId,
+  type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type ProviderThreadId,
   type RunAttemptId,
@@ -1317,6 +1318,41 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const readThread = (threadId: ThreadId) =>
+    projections
+      .getThread(threadId)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderRuntimeRecoveryError({ operation: "read-projections", threadId, cause }),
+        ),
+      );
+
+  // A purged ancestor ends the count; every thread below it then counts from the same place.
+  const countAncestors = Effect.fn("ProviderRuntimeRecoveryService.countAncestors")(function* (
+    thread: OrchestrationV2AppThread,
+  ) {
+    const seen = new Set([thread.id]);
+    let parentThreadId = thread.lineage.parentThreadId;
+    while (parentThreadId !== null && !seen.has(parentThreadId)) {
+      const parent = yield* projections.getThread(parentThreadId).pipe(
+        Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError(
+          (cause) =>
+            new ProviderRuntimeRecoveryError({
+              operation: "read-projections",
+              threadId: thread.id,
+              cause,
+            }),
+        ),
+      );
+      if (parent === null) break;
+      seen.add(parent.id);
+      parentThreadId = parent.lineage.parentThreadId;
+    }
+    return seen.size - 1;
+  });
+
   // Shutdown does not drain admitted commands, so a group reads and commits under the locks they
   // plan under, taken before its writer transaction, in the lock order commands nest them in.
   const withThreadLocks = Effect.fn("ProviderRuntimeRecoveryService.withThreadLocks")(function* <
@@ -1328,14 +1364,9 @@ export const make = Effect.gen(function* () {
       threadIds.length < 2
         ? threadIds
         : (yield* Effect.forEach(threadIds, (threadId) =>
-            projections.getThread(threadId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderRuntimeRecoveryError({
-                    operation: "read-projections",
-                    threadId,
-                    cause,
-                  }),
+            readThread(threadId).pipe(
+              Effect.flatMap((thread) =>
+                countAncestors(thread).pipe(Effect.map((ancestors) => ({ ...thread, ancestors }))),
               ),
             ),
           ))

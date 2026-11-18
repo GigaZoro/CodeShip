@@ -532,6 +532,77 @@ it.effect("reads and commits each thread under its command lock at shutdown", ()
   }),
 );
 
+it.effect("locks a parent before its side chat at shutdown when both carry one creation time", () =>
+  Effect.gen(function* () {
+    // Deleting a parent locks it before its side chats, whatever their ids or creation times.
+    const parentId = ThreadId.make("thread_z_parent");
+    const sideChatId = ThreadId.make("thread_a_side_chat");
+    const createdAt = DateTime.makeUnsafe("2026-11-18T10:00:00.000Z");
+    const threads = {
+      [parentId]: { parentThreadId: null, relationshipToParent: null },
+      [sideChatId]: { parentThreadId: parentId, relationshipToParent: "fork", sideChat: true },
+    };
+    const threadCommands = yield* ThreadCommandExecutor.make;
+    const locked: Array<ThreadId> = [];
+    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, {
+            ...threadCommands,
+            withLock: (threadId, effect) =>
+              Effect.sync(() => locked.push(threadId)).pipe(
+                Effect.andThen(threadCommands.withLock(threadId, effect)),
+              ),
+          }),
+          ServerSettings.layerTest(),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([sideChatId, parentId]),
+            getThread: (threadId) =>
+              Effect.succeed({
+                id: threadId,
+                createdAt,
+                lineage: { ...threads[threadId as keyof typeof threads], rootThreadId: parentId },
+              } as never),
+            getRuntimeRecoveryProjection: (threadId) =>
+              Effect.succeed({
+                thread: { id: threadId },
+                runtimeRequests: [],
+                providerSessions: [],
+                providerThreads: [],
+                providerTurns: [],
+                runs: [],
+                attempts: [],
+                nodes: [],
+                subagents: [],
+                messages: [],
+                turnItems: [],
+              } as unknown as OrchestrationV2ThreadProjection),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
+            withProviderBatch: (effect) => effect,
+            commitCommand: () =>
+              Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never),
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+            runRecoveryOnce: Effect.succeed(false),
+          }),
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            listByCommandId: () => Effect.succeed([]),
+            cancelUnsettled: () => Effect.succeed([]),
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          }),
+        ),
+      ),
+    );
+
+    yield* recovery.reconcile("shutdown");
+
+    assert.deepEqual(locked, [parentId, sideChatId]);
+  }),
+);
+
 it.effect("tells the thread a running run stopped when the server went down", () => {
   const threadId = ThreadId.make("thread_restart_notice");
   const runId = RunId.make("run_restart_notice");
