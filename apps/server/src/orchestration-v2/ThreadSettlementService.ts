@@ -636,7 +636,8 @@ export const make = Effect.gen(function* () {
           threadId: thread.id,
           snapshotAt: thread.updatedAt,
           ...(settledAt === null ? {} : { settledAt }),
-          ...(deliveredAt === null || thread.parentResultAt === null
+          // Without it the recheck needs the parent still done, so a reopened parent keeps the child.
+          ...(deliveredAt === null || settlesWithParent || thread.parentResultAt === null
             ? {}
             : { parentResultAt: thread.parentResultAt }),
         });

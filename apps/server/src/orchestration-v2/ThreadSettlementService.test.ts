@@ -2603,7 +2603,8 @@ describe("ThreadSettlementServiceV2 worker", () => {
       latestRunCompletedAt: null,
       status: "idle",
     });
-    // Its parent is done too, so it settles with the parent, lookup-free, but on its result.
+    // Its parent is done too, so it settles with the parent, lookup-free, but on its result. The
+    // recheck then needs the parent still done, so a reopened parent keeps it.
     const parentDone = child("parent-done", { parentDone: true, worktreePath: "/worktrees/own" });
     // The parent's latest task on these has no result, or the child ran again after it.
     const keptActive = [
@@ -2648,7 +2649,12 @@ describe("ThreadSettlementServiceV2 worker", () => {
             ).toEqual([
               { threadId: delivered.id, settledAt: ranAt, ...onResult },
               { threadId: native.id, settledAt: resultAt, ...onResult },
-              { threadId: parentDone.id, settledAt: ranAt, ...onResult },
+              {
+                threadId: parentDone.id,
+                settledAt: ranAt,
+                parentResultAt: undefined,
+                rule: "server:settle-delivered-child",
+              },
             ]);
           }).pipe(Effect.provide(fixture.layer));
         }),
