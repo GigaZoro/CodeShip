@@ -302,14 +302,16 @@ describe("merged pull request cleanup", () => {
 });
 
 const allocatedBytes = (fs: FileSystem.FileSystem, file: string) =>
-  fs.stat(file).pipe(
-    Effect.map((stat) =>
-      Option.getOrElse(
-        Option.map(stat.blocks, (blocks) => Number(blocks) * 512),
-        () => Number(stat.size),
+  Effect.gen(function* () {
+    const isWindows = yield* HostProcess.isWindows;
+    const stat = yield* fs.stat(file);
+    return Option.getOrElse(
+      Option.map(stat.blocks, (blocks) =>
+        isWindows && blocks === 0n ? Number(stat.size) : Number(blocks) * 512,
       ),
-    ),
-  );
+      () => Number(stat.size),
+    );
+  });
 
 const underWorktrees = (
   fixture: { readonly config: { readonly worktreesDir: string } },
@@ -1828,7 +1830,7 @@ describe("orphan worktree reports", () => {
           );
           fixture.setThreads([]);
           const parent = underWorktrees(fixture, `repository`);
-          const referenced = `${parent}/Referenced`;
+          const referenced = NodePath.join(parent, "Referenced");
           const project = `${parent}/Project`;
           const nested = `${parent}/Nested`;
           for (const folder of [referenced, project, nested]) {
@@ -2025,7 +2027,7 @@ describe("storage cleanup reports and local file policies", () => {
             }),
           );
           setPolicy("tracked-changes");
-          const nodeModules = `${worktree}/node_modules`;
+          const nodeModules = NodePath.join(worktree, "node_modules");
           yield* fs.makeDirectory(`${nodeModules}/.pnpm/pkg@1.0.0`, { recursive: true });
           yield* fs.makeDirectory(`${nodeModules}/.vite`);
           yield* fs.writeFileString(
@@ -2052,9 +2054,9 @@ describe("storage cleanup reports and local file policies", () => {
           );
           const report = yield* service.runNow;
           expect(report.entries[0]).toMatchObject({ outcome: "removed", bytes });
-          expect(statted.includes(`${nodeModules}/.pnpm/pkg@1.0.0/index.js`)).toBe(
-            store !== "same-device",
-          );
+          expect(
+            statted.includes(NodePath.join(nodeModules, ".pnpm", "pkg@1.0.0", "index.js")),
+          ).toBe(store !== "same-device");
         }),
       ),
   );
