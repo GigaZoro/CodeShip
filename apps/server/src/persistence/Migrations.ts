@@ -120,6 +120,7 @@ import Migration0110 from "./Migrations/110_ScheduledTaskLastRunId.ts";
 import Migration0111 from "./Migrations/111_UsageStopDecisions.ts";
 import Migration0112 from "./Migrations/112_TurnItemMessageIndex.ts";
 import Migration0113 from "./Migrations/113_IncrementalEventStoreCompaction.ts";
+import Migration0114 from "./Migrations/114_ApiCreditBalances.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -236,6 +237,7 @@ const migrationEntries = [
   [111, "UsageStopDecisions", Migration0111],
   [112, "TurnItemMessageIndex", Migration0112],
   [113, "IncrementalEventStoreCompaction", Migration0113],
+  [114, "ApiCreditBalances", Migration0114],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

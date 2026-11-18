@@ -20,6 +20,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import { SettingsSecretValue } from "./settingsSecretValue.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
@@ -732,7 +733,13 @@ export const makeBinaryPathSetting = (fallback: string) =>
     Schema.withDecodingDefault(Effect.succeed(fallback)),
   );
 
-export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch" | "select";
+export type ProviderSettingsFormControl =
+  | "text"
+  | "password"
+  | "textarea"
+  | "switch"
+  | "select"
+  | "number";
 
 export interface ProviderSettingsFormOption {
   readonly value: string;
@@ -914,6 +921,60 @@ const InstanceIdleCompaction = Schema.Literals(
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
     loginGeneration: LoginGeneration,
+    billingKind: Schema.Literals(["plan", "payPerUse"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("plan" as const)),
+      Schema.annotateKey({
+        title: "Billing",
+        description:
+          "Use plan windows and monthly API credits in expiry order, then banked resets and extra usage. API credits cover Agent SDK usage and expire each cycle without rollover. Keep automatic reload off in Anthropic Console; CodeShip does not impose a spending cap.",
+        providerSettingsForm: {
+          control: "select",
+          options: [
+            { value: "plan", label: "Subscription plan" },
+            { value: "payPerUse", label: "Pay per use" },
+          ],
+        },
+      }),
+    ),
+    apiKey: SettingsSecretValue.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "API key",
+        description:
+          "Required Anthropic API key for Agent SDK pay-per-use usage. Stored in the secret store.",
+        providerSettingsForm: { control: "password", clearWhenEmpty: "omit" },
+      }),
+    ),
+
+    linkedPlanInstanceId: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Linked plan account",
+        description:
+          "Instance ID of this organization's Claude subscription account. Each organization links to one plan account.",
+        providerSettingsForm: { control: "text" },
+      }),
+    ),
+    apiCreditGrantUsd: Schema.Number.pipe(
+      Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+      Schema.withDecodingDefault(Effect.succeed(0)),
+      Schema.annotateKey({
+        title: "Monthly API credit grant (USD)",
+        description:
+          "Positive monthly credit grant for Agent SDK usage. Unused credit does not roll over; this is not a spending cap.",
+        providerSettingsForm: { control: "number" },
+      }),
+    ),
+    apiCreditCycleEnd: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "API credit cycle end",
+        description:
+          "Monthly grant expiry as an ISO timestamp, for example 2026-12-01T00:00:00Z. The grant renews monthly from this cycle boundary without rollover.",
+        providerSettingsForm: { control: "text" },
+      }),
+    ),
+
     oauthToken: Schema.optionalKey(
       Schema.Struct({
         issuedAt: Schema.String,
@@ -985,7 +1046,18 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
+    order: [
+      "billingKind",
+      "apiKey",
+      "linkedPlanInstanceId",
+      "apiCreditGrantUsd",
+      "apiCreditCycleEnd",
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "idleCompaction",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;

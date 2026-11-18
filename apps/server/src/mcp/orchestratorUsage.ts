@@ -172,10 +172,31 @@ export function providerUsageFields(
   redemptions: ReadonlyMap<string, OrchestratorMcpLastRedemption> = new Map(),
   /** How the account's prepaid credits stand; spending them lets it run past its plan. */
   credits: ProviderCreditUse | null = null,
+  credit?: ServerProvider["payPerUse"],
 ): {
   readonly usage: OrchestratorMcpProviderUsage | null;
   readonly usageError?: OrchestratorMcpUsageError;
 } {
+  if (provider.driver === "claudeAgent" && provider.billingKind === "payPerUse") {
+    const balance = credit ?? provider.payPerUse;
+    return {
+      usage: {
+        billingKind: "payPerUse",
+        accountKey: null,
+        plan: null,
+        measuredAt: balance?.checkedAt ?? provider.checkedAt,
+        meters: [],
+        credits: null,
+        bankedResets: null,
+        lastRedemption: null,
+        usageAllowed:
+          !limited &&
+          provider.auth.status === "authenticated" &&
+          balance?.balanceState === "available",
+        ...((credit ?? provider.payPerUse) ? { payPerUse: credit ?? provider.payPerUse } : {}),
+      },
+    };
+  }
   const error = usageError(provider);
   const limits = provider.usageLimits;
   if (error !== undefined || limits === undefined) {

@@ -126,6 +126,9 @@ import * as ProviderAutoUpdate from "./provider/ProviderAutoUpdate.ts";
 import * as ClaudeAccountFolders from "./provider/ClaudeAccountFolders.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
+import * as ApiCreditBalance from "./provider/ApiCreditBalance.ts";
+import * as ApiCreditRecovery from "./provider/ApiCreditRecovery.ts";
+import * as ApiCreditUsage from "./provider/ApiCreditUsage.ts";
 import * as ProviderPlugins from "./provider/ProviderPlugins.ts";
 import * as ProviderSkills from "./provider/ProviderSkills.ts";
 import * as DetectedManualSteps from "./provider/DetectedManualSteps.ts";
@@ -801,51 +804,64 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ReplayMarkers.layer,
   ManualStepChats.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
-).pipe(
-  Layer.provideMerge(layerOrchestrationApplication),
-  Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
-  Layer.provideMerge(
-    Layer.mergeAll(ProjectStore.layer, ThreadSearch.layer, HtmlRenderLibrary.layer),
-  ),
-  Layer.provideMerge(ManualStepReviews.layer.pipe(Layer.provide(ManualStepReviewRepository.layer))),
-  Layer.provideMerge(SecretResolver.layer),
-  Layer.provideMerge(layerServerSettings),
-  Layer.provideMerge(layerSourceControlProviderRegistry),
-  Layer.provideMerge(layerGit),
-  Layer.provideMerge(layerVcs),
-  Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerVisualStudio)),
-  Layer.provideMerge(layerPersistence),
-  Layer.provideMerge(
-    Layer.mergeAll(
-      Keybindings.layer,
-      EnvironmentTheme.layer,
-      UsageLimitSources.layer,
-      layerAccountRouting,
-      ResetCreditRedemption.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
-      ThreadPageManualSteps.layer,
-      ThreadPageCheckAccess.layer,
-      DetectedManualSteps.layer.pipe(Layer.provide(layerAccountRouting)),
+)
+  .pipe(
+    Layer.provideMerge(layerOrchestrationApplication),
+    Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
+    Layer.provideMerge(
+      Layer.mergeAll(ProjectStore.layer, ThreadSearch.layer, HtmlRenderLibrary.layer),
     ),
-  ),
-  Layer.provideMerge(ProviderPlugins.layer),
-  Layer.provideMerge(ProviderSkills.layer),
-  Layer.provideMerge(ProviderMcp.layer),
-  // One runner for the server, so every client and the launch job share its update locks.
-  Layer.provideMerge(ProviderMaintenanceRunner.layer),
-  Layer.provideMerge(ProviderRegistry.layer),
-  Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
-  // Provider hydration builds the Claude runner, which reports agents to the same scanner the
-  // terminal and preview layers share.
-  Layer.provideMerge(layerPortScanner),
-  Layer.provideMerge(
-    Layer.mergeAll(
-      AntigravityInstallation.AntigravityInstallation.layer,
-      CodexInstallation.CodexInstallation.layer,
+    Layer.provideMerge(
+      ManualStepReviews.layer.pipe(Layer.provide(ManualStepReviewRepository.layer)),
     ),
-  ),
-);
+    Layer.provideMerge(SecretResolver.layer),
+    Layer.provideMerge(layerServerSettings),
+    Layer.provideMerge(layerSourceControlProviderRegistry),
+    Layer.provideMerge(layerGit),
+    Layer.provideMerge(layerVcs),
+    Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice, layerVisualStudio)),
+    Layer.provideMerge(layerPersistence),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Keybindings.layer,
+        EnvironmentTheme.layer,
+        UsageLimitSources.layer,
+        layerAccountRouting,
+        ResetCreditRedemption.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+        ThreadPageManualSteps.layer,
+        ThreadPageCheckAccess.layer,
+        DetectedManualSteps.layer.pipe(Layer.provide(layerAccountRouting)),
+      ),
+    ),
+    Layer.provideMerge(ProviderPlugins.layer),
+    Layer.provideMerge(ProviderSkills.layer),
+    Layer.provideMerge(ProviderMcp.layer),
+    // One runner for the server, so every client and the launch job share its update locks.
+    Layer.provideMerge(ProviderMaintenanceRunner.layer),
+    Layer.provideMerge(
+      ApiCreditRecovery.layer.pipe(
+        Layer.provide(layerServerSettings),
+        Layer.provide(SecretResolver.layer),
+      ),
+    ),
+    Layer.provideMerge(ProviderRegistry.layer),
+    Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+  )
+  .pipe(
+    // Provider hydration builds the Claude runner, which reports agents to the same scanner the
+    // terminal and preview layers share.
+    Layer.provideMerge(layerPortScanner),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        AntigravityInstallation.AntigravityInstallation.layer,
+        CodexInstallation.CodexInstallation.layer,
+      ),
+    ),
+  );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+  Layer.provideMerge(ApiCreditUsage.layer),
+  Layer.provideMerge(ApiCreditBalance.layer.pipe(Layer.provide(layerPersistence))),
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(

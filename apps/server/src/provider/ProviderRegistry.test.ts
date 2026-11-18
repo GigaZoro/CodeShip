@@ -1,3 +1,4 @@
+import * as ApiCreditBalance from "./ApiCreditBalance.ts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { vi } from "vite-plus/test";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -889,6 +890,133 @@ it.layer(
   });
 
   describe("ProviderRegistry.layer", () => {
+    it.effect("rejects invalid API links and preserves exhaustion through healthy refreshes", () =>
+      Effect.gen(function* () {
+        const driver = ProviderDriverKind.make("claudeAgent");
+        const planId = ProviderInstanceId.make("plan");
+        const apiId = ProviderInstanceId.make("api");
+        const makeSnapshot = (instanceId: ProviderInstanceId): ServerProvider => ({
+          instanceId,
+          driver,
+          enabled: true,
+          installed: true,
+          version: "2.1.0",
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-11-19T00:00:00.000Z",
+          models: [],
+          slashCommands: [],
+          skills: [],
+          billingKind: instanceId === apiId ? "payPerUse" : "plan",
+        });
+        const instances = [planId, apiId].map((instanceId): ProviderInstance => ({
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: { driverKind: driver, continuationKey: instanceId },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            getSnapshot: Effect.succeed(makeSnapshot(instanceId)),
+            refresh: Effect.succeed(makeSnapshot(instanceId)),
+            streamChanges: Stream.empty,
+            bindUsageLimits: Effect.succeed(() => Effect.void),
+            refreshAfterRedemption: Effect.die("unused"),
+            resolveMaintenance: () =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({
+                  provider: driver,
+                  packageName: null,
+                }),
+              ),
+          },
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+        }));
+        const config = {
+          ...defaultClaudeSettings,
+          billingKind: "payPerUse" as const,
+          apiKey: "test-only-key",
+          linkedPlanInstanceId: "missing",
+          apiCreditGrantUsd: 100,
+          apiCreditCycleEnd: "2026-12-01T00:00:00.000Z",
+        };
+        const settings = yield* ServerSettingsModule.ServerSettingsService.pipe(
+          Effect.provide(
+            ServerSettingsModule.layerTest({
+              providerInstances: {
+                [planId]: { driver, enabled: true },
+                [apiId]: { driver, enabled: true, config },
+              },
+            }),
+          ),
+        );
+        const balance = yield* ApiCreditBalance.make;
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          assert.equal(
+            (yield* registry.getProviders).find((p) => p.instanceId === apiId)?.availability,
+            "unavailable",
+          );
+          yield* settings.updateSettings({
+            providerInstances: {
+              [apiId]: {
+                driver,
+                enabled: true,
+                config: { ...config, linkedPlanInstanceId: planId },
+              },
+            },
+          });
+          assert.equal(
+            (yield* registry.getProviders).find((p) => p.instanceId === apiId)?.payPerUse
+              ?.balanceState,
+            "available",
+          );
+          yield* balance.recordFailure(apiId, "claudeAgent", "Credit balance is too low");
+          yield* registry.refreshInstance(apiId);
+          assert.equal(
+            (yield* registry.getProviders).find((p) => p.instanceId === apiId)?.payPerUse
+              ?.balanceState,
+            "exhausted",
+          );
+          yield* settings.updateSettings({
+            providerInstances: {
+              [apiId]: {
+                driver,
+                enabled: true,
+                config: { ...config, linkedPlanInstanceId: apiId },
+              },
+            },
+          });
+          assert.equal(
+            (yield* registry.getProviders).find((p) => p.instanceId === apiId)?.payPerUse,
+            undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            ProviderRegistry.layer.pipe(
+              Layer.provide(layerUnusedMutator),
+              Layer.provide(Layer.succeed(ApiCreditBalance.ApiCreditBalance, balance)),
+              Layer.provide(Layer.succeed(ServerSettingsModule.ServerSettingsService, settings)),
+              Layer.provide(
+                Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+                  getInstance: (id) =>
+                    Effect.succeed(instances.find((instance) => instance.instanceId === id)),
+                  listInstances: Effect.succeed(instances),
+                  listUnavailable: Effect.succeed([]),
+                  streamChanges: Stream.empty,
+                  subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+                }),
+              ),
+              Layer.provide(ModelManifest.layerTest),
+              Layer.provide(
+                ServerConfig.layerTest(process.cwd(), { prefix: "api-registry-validation-" }),
+              ),
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+    );
+
     it("stores workspace skills, commands and options without changing machine metadata", () => {
       const provider = {
         instanceId: ProviderInstanceId.make("codex"),
@@ -3476,7 +3604,12 @@ it.layer(
             JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://state-dir.example" } }),
           );
           const status = yield* checkClaudeProviderStatus(
-            { ...defaultClaudeSettings, homePath: configDir },
+            {
+              ...defaultClaudeSettings,
+              homePath: configDir,
+              billingKind: "payPerUse",
+              apiKey: "test-api-key",
+            },
             claudeCapabilities({
               tokenSource: "ANTHROPIC_AUTH_TOKEN",
               apiKeySource: "none",
@@ -3578,28 +3711,44 @@ it.layer(
       ),
     );
 
-    it.effect("keeps an API key install authenticated when it reports no token source", () =>
-      Effect.gen(function* () {
-        const status = yield* checkClaudeProviderStatus(
-          defaultClaudeSettings,
-          claudeCapabilities({
-            tokenSource: "none",
-            apiKeySource: "ANTHROPIC_API_KEY",
-            apiProvider: "firstParty",
-          }),
-        );
-        assert.strictEqual(status.status, "ready");
-        assert.strictEqual(status.auth.status, "authenticated");
-        assert.strictEqual(status.auth.funding, "metered");
-      }).pipe(
-        Effect.provide(
-          layerMockSpawner((args) => {
-            const joined = args.join(" ");
-            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
-            throw new Error(`Unexpected args: ${joined}`);
-          }),
+    it.effect.each([
+      { billingKind: "plan", apiKey: "", apiAuth: true, expected: "unauthenticated" },
+      {
+        billingKind: "payPerUse",
+        apiKey: "test-api-key",
+        apiAuth: true,
+        expected: "authenticated",
+      },
+      { billingKind: "payPerUse", apiKey: "", apiAuth: true, expected: "unauthenticated" },
+      {
+        billingKind: "payPerUse",
+        apiKey: "test-api-key",
+        apiAuth: false,
+        expected: "unauthenticated",
+      },
+    ] as const)(
+      "requires matching Claude billing credentials: $billingKind / $apiAuth / $apiKey",
+      (row) =>
+        Effect.gen(function* () {
+          const status = yield* checkClaudeProviderStatus(
+            { ...defaultClaudeSettings, billingKind: row.billingKind, apiKey: row.apiKey },
+            claudeCapabilities({
+              tokenSource: row.apiAuth ? "none" : "oauth",
+              apiKeySource: row.apiAuth ? "ANTHROPIC_API_KEY" : "none",
+              apiProvider: "firstParty",
+            }),
+          );
+          assert.strictEqual(status.status, row.expected === "authenticated" ? "ready" : "error");
+          assert.strictEqual(status.auth.status, row.expected);
+        }).pipe(
+          Effect.provide(
+            layerMockSpawner((args) => {
+              const joined = args.join(" ");
+              if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              throw new Error(`Unexpected args: ${joined}`);
+            }),
+          ),
         ),
-      ),
     );
 
     it.effect("names the login behind each Claude account so one login counts once", () =>

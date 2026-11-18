@@ -3031,6 +3031,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
                 Layer.mock(AccountRouting.AccountRouting)({
                   launchLimit: () => Ref.get(limit),
+                  route: ({ selection }) => Effect.succeed(selection),
                   failoverLaunch: (input) =>
                     Ref.get(failover).pipe(
                       Effect.map((moved) =>

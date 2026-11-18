@@ -379,7 +379,7 @@ export type ScheduledTaskRunCheck = typeof ScheduledTaskRunCheck.Type;
 /** The provider whose accounts were all out of usage, and when the first of them got room. */
 export const ScheduledTaskRunUsageLimit = Schema.Struct({
   driver: ProviderDriverKind,
-  until: IsoDateTime,
+  until: Schema.NullOr(IsoDateTime),
 });
 export type ScheduledTaskRunUsageLimit = typeof ScheduledTaskRunUsageLimit.Type;
 

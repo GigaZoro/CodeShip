@@ -2110,6 +2110,8 @@ const catalog: MessageCatalog = {
   "Add a 1Password provider": "Додати провайдера 1Password",
   "Add a 1Password provider, then pick it as the source of a provider variable.":
     "Додайте провайдера 1Password, а потім виберіть його як джерело значення змінної провайдера.",
+  "Add a Claude subscription account in Settings → Providers & models to track its API credits.":
+    "Додайте обліковий запис із підпискою Claude в Налаштування → Провайдери й моделі, щоб відстежувати його кредити API.",
   "Add a CLIProxyAPI hub": "Додати хаб CLIProxyAPI",
   "Add a comment…": "Додати коментар…",
   "Add a computer": "Додати комп’ютер",
@@ -2519,6 +2521,10 @@ const catalog: MessageCatalog = {
   "Any thread may spend them": "Витрачати їх може будь-який чат",
   Anyone: "Будь-хто",
   "Anyone on the web": "Будь-хто в інтернеті",
+  "API credit available": "Кредити API доступні",
+  "API credit exhausted": "Кредити API вичерпано",
+  "API credit spent; waits for the next billing cycle or a successful credit check":
+    "Кредити API вичерпано; очікування наступного платіжного циклу або успішної перевірки кредитів",
   "API estimate": "Оцінка за API",
   "API estimate excludes {percent} unpriced records.":
     "Оцінка за API не враховує записи без ціни ({percent}).",
@@ -3197,6 +3203,7 @@ const catalog: MessageCatalog = {
   "Check access before saving": "Перевірте доступ перед збереженням",
   "Check account": "Перевірити обліковий запис",
   "Check again": "Перевірити знову",
+  "Check API credit": "Перевірити кредити API",
   "Check before running": "Перевірка перед запуском",
   "Check capture access": "Перевірити доступ до захоплення",
   "Check capture access in setup": "Перевірте доступ до захоплення в налаштуванні",
@@ -3474,10 +3481,14 @@ const catalog: MessageCatalog = {
   "Choose: {solution}": "Вибрати: {solution}",
   Cite: "Цитувати",
   "Cite selection in composer": "Цитувати виділене в полі повідомлення",
+  "Claim and link API credits": "Отримати й прив’язати кредити API",
   claude: "claude",
   "Claude account": "Обліковий запис Claude",
   "Claude and Codex keep their own MCP servers. Turn one on in Settings to add servers and sign in to them here.":
     "Claude і Codex мають власні сервери MCP. Увімкніть одного з них у Налаштуваннях, щоб додавати сервери та входити в них тут.",
+  "Claude API account": "Обліковий запис Claude API",
+  "Claude API credits": "Кредити Claude API",
+  "Claude API credits on {environment}": "Кредити Claude API у середовищі {environment}",
   "Claude Code": "Claude Code",
   "Claude Code and Codex": "Claude Code і Codex",
   "claude code history": "історія claude code",
@@ -3876,6 +3887,8 @@ const catalog: MessageCatalog = {
     "Налаштуйте перевірки провайдерів у розділі «Обслуговування та відомості → Фонова активність».",
   "Configure the capture shortcut in your Niri config, not in T3.CodeShip.":
     "Налаштуйте скорочення захоплення в конфігурації Niri, а не в T3.CodeShip.",
+  "Configure this account's API key, linked plan, and monthly credit grant in Providers & models on web or desktop.":
+    "Налаштуйте ключ API, прив’язаний план і щомісячні кредити цього облікового запису в розділі Провайдери й моделі у вебверсії або настільному застосунку.",
   "Configure, install, sign in to, and update providers and usage sources.":
     "Налаштування, встановлення, вхід і оновлення провайдерів та джерел використання.",
   Configured: "Налаштовано",
@@ -4250,6 +4263,7 @@ const catalog: MessageCatalog = {
   "Could not configure ACP provider": "Не вдалося налаштувати провайдера ACP",
   "Could not configure environment relay access.":
     "Не вдалося налаштувати доступ середовища до ретранслятора.",
+  "Could not confirm API credit": "Не вдалося підтвердити наявність кредитів API",
   "Could not confirm relay client installation.":
     "Не вдалося підтвердити встановлення клієнта ретранслятора.",
   "Could not confirm signal": "Не вдалося підтвердити сигнал",
@@ -4396,6 +4410,8 @@ const catalog: MessageCatalog = {
   "Could not list ACP sessions": "Не вдалося отримати список сеансів ACP",
   "Could not list pending snapshots.": "Не вдалося отримати список знімків, що очікують.",
   "Could not load {term} activity": "Не вдалося завантажити активність: {term}",
+  "Could not load API credits. Try refreshing.":
+    "Не вдалося завантажити кредити API. Спробуйте оновити.",
   "Could not load archived threads": "Не вдалося завантажити архівні чати",
   "Could not load automations: {error}": "Не вдалося завантажити автоматизації: {error}",
   "Could not load conversation": "Не вдалося завантажити розмову",
@@ -4856,6 +4872,8 @@ const catalog: MessageCatalog = {
   "Create a task to start a new coding session.":
     "Створіть завдання, щоб почати новий сеанс кодування.",
   "Create a token": "Створити токен",
+  "Create an API key in that organization. In Settings → Providers & models, add a Claude account with Billing set to Pay per use, save the API key, and link this plan.":
+    "Створіть ключ API в цій організації. У Налаштування → Провайдери й моделі додайте обліковий запис Claude з оплатою за використання, збережіть ключ API та прив’яжіть цей план.",
   "Create and checkout a ref before pushing or opening a {kind}.":
     "Створіть посилання та перейдіть на нього, перш ніж надсилати або відкривати {kind}.",
   "Create folder": "Створити папку",
@@ -5623,6 +5641,8 @@ const catalog: MessageCatalog = {
   "Enter the full owner/repository name.": "Введіть повну назву у форматі власник/репозиторій.",
   "Enter the gateway's origin, such as https://gateway.example.ts.net:4700.":
     "Введіть origin шлюзу, наприклад https://gateway.example.ts.net:4700.",
+  "Enter the grant amount and cycle end shown in Billing. Set Linked plan account to {instanceId}.":
+    "Введіть суму кредитів і кінець циклу з розділу оплати. У полі прив’язаного облікового запису плану вкажіть {instanceId}.",
   "Enter the password or verification code required by {target}. T3.CodeShip passes your response to the local SSH process and keeps it in memory to reuse for this host. T3.CodeShip does not write it to disk.":
     "Введіть пароль або код підтвердження, який вимагає {target}. T3.CodeShip передає вашу відповідь локальному процесу SSH і зберігає її в пам’яті для повторного використання з цим хостом. T3.CodeShip не записує її на диск.",
   "Enter the path of the checkout to run in.":
@@ -5678,6 +5698,7 @@ const catalog: MessageCatalog = {
   "error-message": "error-message",
   "Estimated API-equivalent cost of the turns scheduled task runs started.":
     "Орієнтовна вартість за цінами API для ходів, які почали запуски запланованих завдань.",
+  "Estimated remaining": "Орієнтовний залишок",
   "Even pace": "Рівномірний темп",
   "Even pace: {percent}% left by now": "Рівномірний темп: до цього часу залишилось би {percent}%",
   "Event log": "Журнал подій",
@@ -5686,6 +5707,8 @@ const catalog: MessageCatalog = {
   "Every {minutes} min": "Кожні {minutes} хв",
   "Every {provider} account this task can use was out of usage until {time}.":
     "В усіх облікових записах {provider}, які може використати це завдання, ліміт використання було вичерпано до {time}.",
+  "Every {provider} account this task can use was out of usage. It will wait until an account reports available usage again.":
+    "Усі доступні цьому завданню облікові записи {provider} вичерпали ліміти. Воно чекатиме, доки обліковий запис знову повідомить про доступне використання.",
   "Every {seconds} sec": "Кожні {seconds} с",
   "Every account is at its limit, and the first resets {time}.":
     "Усі облікові записи досягли ліміту, перший скинеться {time}.",
@@ -5782,6 +5805,7 @@ const catalog: MessageCatalog = {
   },
   "Expired. Link it again with a new pairing code.":
     "Термін дії минув. Пов’яжіть знову за допомогою нового коду сполучення.",
+  Expires: "Діє до",
   "Expires in {count} days": {
     one: "Спливає через {count} день",
     few: "Спливає через {count} дні",
@@ -6345,6 +6369,7 @@ const catalog: MessageCatalog = {
   "Hands work to": "Передає роботу",
   "Hard reload": "Жорстке перезавантаження",
   "hardware keyboard": "апаратна клавіатура",
+  "Has balance": "Є залишок",
   "Has conflicts": "Має конфлікти",
   "Having trouble signing in?": "Проблеми з входом?",
   Header: "Заголовок",
@@ -7117,6 +7142,8 @@ const catalog: MessageCatalog = {
     "Прив’яжіть платний обліковий запис T3 Chat, щоб отримати більше тунелів T3 Connect: до {pro} з Pro, {premier} з Premier.",
   "Link a server from its local Settings to reach it through T3 Connect.":
     "Прив’яжіть сервер у його локальних налаштуваннях, щоб підключатися до нього через T3 Connect.",
+  "Link an Anthropic Console organization and turn off automatic reload in Console billing.":
+    "Прив’яжіть організацію Anthropic Console і вимкніть автоматичне поповнення в розділі оплати Console.",
   "Link an environment": "Пов’язати середовище",
   "Link an environment from its local Settings to make it available through T3 Connect.":
     "Зв’яжіть середовище в його локальних налаштуваннях, щоб зробити його доступним через T3 Connect.",
@@ -7229,6 +7256,7 @@ const catalog: MessageCatalog = {
   "Loading {term}": "Завантаження: {term}",
   "Loading {term} conversation": "Завантаження обговорення: {term}",
   "Loading {term} diff...": "Завантаження змін: {term}...",
+  "Loading API credits": "Завантаження кредитів API",
   "Loading archive...": "Завантаження архіву...",
   "Loading archived threads": "Завантаження архівних чатів",
   "Loading artifacts...": "Завантаження артефактів...",
@@ -8526,6 +8554,8 @@ const catalog: MessageCatalog = {
   "Open ChatGPT usage": "Відкрити використання в ChatGPT",
   "Open checks on provider": "Відкрити перевірки у провайдера",
   "Open checks: {summary}": "Відкрити перевірки: {summary}",
+  "Open claude.ai → Settings → Billing → API credits and claim the grant for this plan.":
+    "Відкрийте claude.ai → Settings → Billing → API credits і отримайте кредити для цього плану.",
   "Open commit {sha}": "Відкрити коміт {sha}",
   "Open composer to compact and send": "Відкрийте поле повідомлення, щоб стиснути й надіслати",
   "Open context": "Відкрити контекст",
@@ -9678,6 +9708,7 @@ const catalog: MessageCatalog = {
   "Refresh archived threads": "Оновити архівні чати",
   "Refresh artifacts": "Оновити артефакти",
   "Refresh cloud environments": "Оновити хмарні середовища",
+  "Refresh credits": "Оновити кредити",
   "Refresh current diff": "Оновити поточні зміни",
   "Refresh devices": "Оновити пристрої",
   "Refresh diff": "Оновити зміни",
@@ -10472,6 +10503,8 @@ const catalog: MessageCatalog = {
   "Runs {model}. Set Auto mode in Settings › Providers on web or desktop.":
     "Запускає {model}. Налаштуйте автоматичний режим у Налаштування › Провайдери у вебверсії чи на десктопі.",
   "runs a preview build": "використовує попередню збірку",
+  "Runs a tiny billable check when API credits are next in expiry order. The account stays blocked until the next cycle or the API confirms available credit.":
+    "Виконує коротку платну перевірку, коли черга кредитів API настає за строком дії. Обліковий запис залишається заблокованим до наступного циклу або підтвердження доступних кредитів через API.",
   "Runs before each scheduled run, in the project folder, as one program with its arguments (no shell; ~/ is your home folder). Exit code 0 starts the chat, 10 skips the run, anything else starts the chat anyway. Run now skips the check.":
     "Виконується перед кожним запланованим запуском у теці проєкту як одна програма з аргументами (без оболонки; ~/ це ваша домашня тека). Код завершення 0 запускає чат, 10 пропускає запуск, будь-який інший усе одно запускає чат. «Запустити зараз» пропускає перевірку.",
   "Runs failed": "Запуски завершились збоєм",
@@ -11452,6 +11485,8 @@ const catalog: MessageCatalog = {
   "Some totals may be out of date": "Деякі підсумки можуть бути застарілими",
   "Some trace files could not be read, so diagnostics may be incomplete. {message}":
     "Деякі файли трасування не вдалося прочитати, тож діагностика може бути неповною. {message}",
+  "Some usage could not be priced; remaining credit is unknown.":
+    "Частину використання не вдалося оцінити; залишок кредитів невідомий.",
   "Some workspace entries are not shown.": "Деякі елементи робочого простору не показано.",
   "Something went wrong.": "Щось пішло не так.",
   "Something went wrong. Try again.": "Щось пішло не так. Спробуйте ще раз.",
@@ -11481,7 +11516,11 @@ const catalog: MessageCatalog = {
   "Speaker notes": "Нотатки доповідача",
   "Specific checkout": "Конкретна робоча копія",
   Speech: "Мовлення",
+  "Spend is estimated from this environment’s recorded usage. Check Anthropic Console for the authoritative balance. CodeShip does not impose a spending cap; keep automatic reload off.":
+    "Витрати оцінено за використанням, записаним у цьому середовищі. Точний залишок перевіряйте в Anthropic Console. CodeShip не обмежує витрати; залишайте автоматичне поповнення вимкненим.",
   "Spend prepaid credits": "Витрачати передплачені кредити",
+  "Spend this cycle": "Витрати за цей цикл",
+  Spent: "Вичерпано",
   Split: "Розділений",
   "Split diff view": "Розділений вигляд змін",
   "Split long work into new chats or hand it off.":
@@ -12143,6 +12182,8 @@ const catalog: MessageCatalog = {
   "The {term} is in the composer. Type your question, then send.":
     "{term} у полі повідомлення. Введіть запитання та надішліть.",
   "the access token saved here": "токен доступу, збережений тут",
+  "The account is waiting for available usage.":
+    "Обліковий запис очікує на доступний ліміт використання.",
   "The account shorthand, sign-in address without https://, or ID that op account list shows.":
     "Скорочена назва облікового запису, адреса входу без https:// або ID, який показує op account list.",
   "The ACP could not be prepared.": "Не вдалося підготувати ACP.",

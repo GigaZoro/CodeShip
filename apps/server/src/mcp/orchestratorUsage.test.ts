@@ -466,3 +466,43 @@ describe("staleUsageObservations", () => {
     ).toBe(stale);
   });
 });
+
+it("publishes metered API spend without inventing subscription limits", () => {
+  const api = provider("claudeAgent", {
+    billingKind: "payPerUse",
+    payPerUse: {
+      linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+      grantUsd: 50,
+      cycleStart: "2026-09-01T00:00:00.000Z",
+      cycleEnd: "2026-10-01T00:00:00.000Z",
+      estimatedRemainingUsd: null,
+      balanceState: "exhausted",
+      checkedAt: "2026-09-03T11:55:00.000Z",
+      reason: "API credit balance exhausted",
+      exhaustedAt: "2026-09-03T11:55:00.000Z",
+      meteringStartedAt: "2026-09-01T00:00:00.000Z",
+      spendUsd: 0.25,
+      unpricedUsage: true,
+      spendSource: "metered",
+    },
+  });
+  expect(
+    providerUsageFields(api, true, new Map(), null, { ...api.payPerUse!, spendUsd: 12.75 }),
+  ).toMatchObject({
+    usage: {
+      billingKind: "payPerUse",
+      usageAllowed: false,
+      meters: [],
+      bankedResets: null,
+      payPerUse: {
+        balanceState: "exhausted",
+        reason: "API credit balance exhausted",
+        exhaustedAt: "2026-09-03T11:55:00.000Z",
+        meteringStartedAt: "2026-09-01T00:00:00.000Z",
+        spendUsd: 12.75,
+        spendSource: "metered",
+        unpricedUsage: true,
+      },
+    },
+  });
+});

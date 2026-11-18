@@ -120,6 +120,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as ApiCreditUsage from "../provider/ApiCreditUsage.ts";
 import * as UsageResetRedeemer from "../usage/UsageResetRedeemer.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -608,7 +609,10 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     if (Option.isNone(routing)) return;
     const limit = yield* routing.value.launchLimit(input);
     if (limit === null) return;
-    const until = ` until ${limit.limitedUntil}`;
+    const until =
+      limit.limitedUntil === null
+        ? " until an account reports available usage again"
+        : ` until ${limit.limitedUntil}`;
     const reason =
       limit.credits === undefined || limit.credits === "spending" || limit.credits === "standby"
         ? ""
@@ -1338,6 +1342,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   // Optional so test runtimes without provider state refuse no launch on a usage limit.
   const accountRouting = yield* Effect.serviceOption(AccountRouting.AccountRouting);
+  const apiCreditUsage = yield* Effect.serviceOption(ApiCreditUsage.ApiCreditUsage);
   const usageResetRedeemer = yield* Effect.serviceOption(UsageResetRedeemer.UsageResetRedeemer);
   const memoryAdmission = yield* MemoryAdmission.MemoryAdmission;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
@@ -3394,6 +3399,10 @@ const make = Effect.gen(function* () {
         input.usage === true && Option.isSome(usageResetRedeemer)
           ? yield* usageResetRedeemer.value.lastRedemptions
           : new Map<string, OrchestratorMcpLastRedemption>();
+      const accountSpend =
+        input.usage === true && Option.isSome(apiCreditUsage)
+          ? yield* apiCreditUsage.value.read(providers.filter(publishesUsage))
+          : new Map<ProviderInstanceId, NonNullable<ServerProvider["payPerUse"]>>();
       const inherited = parent?.thread.modelSelection;
       const inheritedProvider = providers.find(
         (provider) => provider.instanceId === inherited?.instanceId,
@@ -3487,6 +3496,7 @@ const make = Effect.gen(function* () {
                   limitedUntil !== undefined,
                   redemptions,
                   prepaidCredits ?? null,
+                  accountSpend.get(provider.instanceId),
                 )
               : {}),
           };

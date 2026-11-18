@@ -256,6 +256,7 @@ import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { commandFeatureUsage, featureUsage } from "./telemetry/FeatureUsage.ts";
 import type { TelemetryOwner } from "./telemetry/Identify.ts";
+import * as ApiCreditUsage from "./provider/ApiCreditUsage.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
@@ -1383,6 +1384,7 @@ export const layerWsRpc = (
               Effect.orElseSucceed(() => null),
             );
       const usage = yield* UsageService.UsageService;
+      const apiCreditUsage = yield* ApiCreditUsage.ApiCreditUsage;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const accountRouting = yield* AccountRouting.AccountRouting;
       const resetCreditRedemption = yield* ResetCreditRedemption.ResetCreditRedemption;
@@ -2590,7 +2592,10 @@ export const layerWsRpc = (
                 new ProviderSetupError({
                   instanceId: error.instanceId,
                   operation: "retry-usage-limit",
-                  detail: "Provider instance not found.",
+                  detail:
+                    error._tag === "ApiCreditRecoveryError"
+                      ? error.detail
+                      : "Provider instance not found.",
                   cause: error,
                 }),
             ),
@@ -2735,6 +2740,8 @@ export const layerWsRpc = (
           processResourceMonitor.readHistory(input),
         [WS_METHODS.serverGetResourceTelemetryHistory]: (input) =>
           resourceTelemetry.readHistory(input),
+        [WS_METHODS.serverGetApiCreditUsage]: () =>
+          providerRegistry.getProviders.pipe(Effect.flatMap(apiCreditUsage.listRows)),
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,

@@ -222,6 +222,24 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+export const ServerProviderApiCredit = Schema.Struct({
+  linkedPlanInstanceId: ProviderInstanceId,
+  grantUsd: Schema.Number,
+  cycleStart: IsoDateTime,
+  cycleEnd: IsoDateTime,
+  balanceState: Schema.Literals(["available", "exhausted"]),
+  checkedAt: IsoDateTime,
+  exhaustedAt: Schema.optional(IsoDateTime),
+  reason: Schema.optional(TrimmedNonEmptyString),
+  spendUsd: Schema.NullOr(Schema.Number),
+  estimatedRemainingUsd: Schema.NullOr(Schema.Number),
+  spendSource: Schema.Literal("metered"),
+  meteringStartedAt: IsoDateTime,
+  unpricedUsage: Schema.Boolean,
+  sharedWith: Schema.optional(ProviderInstanceId),
+});
+export type ServerProviderApiCredit = typeof ServerProviderApiCredit.Type;
+
 export const ServerProvider = Schema.Struct({
   // Only instanceId is stable enough for provider routing.
   instanceId: ProviderInstanceId,
@@ -275,6 +293,8 @@ export const ServerProvider = Schema.Struct({
   installedVersion: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   status: ServerProviderState,
   auth: ServerProviderAuth,
+  billingKind: Schema.optional(Schema.Literals(["plan", "payPerUse"])),
+  payPerUse: Schema.optional(ServerProviderApiCredit),
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),
   availability: Schema.optional(ServerProviderAvailability),

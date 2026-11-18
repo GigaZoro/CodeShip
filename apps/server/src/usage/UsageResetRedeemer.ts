@@ -1,4 +1,5 @@
 import {
+  isProviderAvailable,
   type OrchestratorMcpLastRedemption,
   type OrchestratorMcpRedemptionOutcome,
   type ProviderConsumeResetCreditOutcome,
@@ -6,6 +7,8 @@ import {
   type ServerProvider,
   type ServerProviderResetKind,
 } from "@t3tools/contracts";
+import { resolveSelectableModel } from "@t3tools/shared/model";
+import { accountUsageTier, usageScopeCoversModel } from "@t3tools/shared/usageLimits";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -71,6 +74,7 @@ export class UsageResetRedeemer extends Context.Service<
 
 const isRedeemable = (provider: ServerProvider) =>
   provider.enabled &&
+  provider.billingKind !== "payPerUse" &&
   provider.auth.status === "authenticated" &&
   // An account another instance already uses is that instance's to redeem.
   provider.availability !== "unavailable" &&
@@ -84,6 +88,40 @@ function claimFor(provider: ServerProvider, nowMs: number, maxWaitHours: number)
   if (limits === undefined || accountLimitId === undefined) return null;
   const decision = decideUsageReset(limits, { nowMs, maxWaitHours, accountLimitId });
   return decision.action === "claim" ? decision : null;
+}
+
+function hasRoomBeforeReset(
+  provider: ServerProvider,
+  claim: Claim,
+  providers: ReadonlyArray<ServerProvider>,
+  nowMs: number,
+): boolean {
+  const scope = claim.limitId.split("_scoped:")[1];
+  const models = provider.models.filter(
+    (model) => scope === undefined || usageScopeCoversModel(scope, model.slug),
+  );
+  return providers.some((candidate) => {
+    if (
+      candidate.driver !== provider.driver ||
+      !candidate.enabled ||
+      !candidate.installed ||
+      candidate.status === "error" ||
+      candidate.auth.status !== "authenticated" ||
+      !isProviderAvailable(candidate)
+    )
+      return false;
+    const hasRoom = (model?: string) => {
+      const tier = accountUsageTier(candidate, nowMs, model);
+      return tier === 0;
+    };
+    return (
+      models.some((model) => {
+        const resolved = resolveSelectableModel(candidate.driver, model.slug, candidate.models);
+        return resolved !== null && hasRoom(resolved);
+      }) ||
+      (models.length === 0 && scope === undefined && hasRoom())
+    );
+  });
 }
 
 /** The same shape for both drivers, so one boundary of one limit is claimed once. */
@@ -115,11 +153,13 @@ export const layer = Layer.effect(
     const redeemOn = Effect.fn("UsageResetRedeemer.redeemOn")(function* (
       provider: ServerProvider,
       maxWaitHours: number,
+      providers: ReadonlyArray<ServerProvider>,
     ) {
       const { instanceId } = provider;
       const accountKey = provider.usageLimits?.accountKey;
       const first = claimFor(provider, yield* nowMs, maxWaitHours);
       if (first === null || accountKey === undefined) return;
+      if (hasRoomBeforeReset(provider, first, providers, yield* nowMs)) return;
       const key = attemptKey(accountKey, first);
       const previous = (yield* Ref.get(attempts)).get(instanceId);
       if (previous?.key === key && previous.kind === first.kind) {
@@ -137,7 +177,11 @@ export const layer = Layer.effect(
               current.redeemUsageResets && fresh.usageLimits?.accountKey === accountKey
                 ? claimFor(fresh, yield* nowMs, current.maxPlanResetWaitHours)
                 : null;
-            return sameClaim(first, claim) ? request : null;
+            if (!sameClaim(first, claim)) return null;
+            const peers = (yield* providerRegistry.getProviders).map((candidate) =>
+              candidate.instanceId === fresh.instanceId ? fresh : candidate,
+            );
+            return hasRoomBeforeReset(fresh, first, peers, yield* nowMs) ? null : request;
           }),
         )
         .pipe(
@@ -175,7 +219,7 @@ export const layer = Layer.effect(
       const providers = yield* providerRegistry.getProviders;
       // One claim per account per tick: the next reading shows what the claim cleared.
       for (const provider of providers.filter(isRedeemable)) {
-        yield* redeemOn(provider, current.maxPlanResetWaitHours).pipe(
+        yield* redeemOn(provider, current.maxPlanResetWaitHours, providers).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("usage-reset-redeemer.sweep-failed", {
               instanceId: provider.instanceId,

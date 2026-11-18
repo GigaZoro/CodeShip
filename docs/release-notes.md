@@ -1,3 +1,9 @@
+## 2026-11-26 — Use expiring Claude API credits
+
+- Claude accounts can spend subscriber API grants through the Agent SDK with a key kept in the secret store, linked to the plan that grants them.
+- Account routing spends plan windows and API credits in expiry order, before banked resets or extra usage. Spent credit waits for the next billing cycle or a successful credit check.
+- Usage shows each Claude plan's API grant, cycle spend, estimated remaining credit, expiry and claim steps for unlinked plans.
+
 ## 2026-11-26 — Delegated reviews stop after three rounds per change
 
 - A chat counts the review tasks it delegates. Each review result says its round, such as "Review round 2 of 3 in this chat", and reviewers started in parallel share a round. A fourth review round of the same change is refused with a reason that quotes the review rule: a third round that still finds blocking defects means the change needs re-planning or splitting. Once it is re-planned or split, the agent passes `newReviewPart` with one line saying how, and that review starts round 1 of a new part. The count lives with the chat, so it survives compaction and restarts.

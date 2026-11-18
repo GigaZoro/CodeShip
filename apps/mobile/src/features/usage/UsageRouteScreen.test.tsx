@@ -197,8 +197,10 @@ vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }
 vi.mock("../../state/server", async () => {
   const { Atom, AsyncResult } = await import("effect/reactivity");
   const { cursorUsageAccess } = await import("@t3tools/client-runtime/state/usage");
+  const apiCredits = Atom.make(AsyncResult.success([]));
   return {
     serverEnvironment: {
+      apiCreditUsage: () => apiCredits,
       usageModelFilterAtom: () => Atom.make(undefined),
       usageScanSettingsKeyAtom: () => Atom.make("settings"),
       cursorUsageAccessAtom: (id: EnvironmentId) => Atom.make(cursorUsageAccess(cursorConfig(id))),

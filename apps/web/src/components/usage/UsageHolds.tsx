@@ -12,7 +12,11 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { RetryAccountButton } from "../chat/RetryAccountButton";
 import { InlineButton } from "../ui/button";
-import { describeUsageHold, heldAccountsForDriver } from "@t3tools/client-runtime/usage-holds";
+import {
+  apiCreditCheckDescription,
+  describeUsageHold,
+  heldAccountsForDriver,
+} from "@t3tools/client-runtime/usage-holds";
 import { t } from "~/i18n";
 
 /** The accounts of one driver that CodeShip skips after a usage refusal, on one machine. */
@@ -65,6 +69,7 @@ function EnvironmentHolds({
           </span>
           {canRetry ? (
             <RetryAccountButton
+              apiCredit={hold.apiCredit === true}
               variant="outline"
               formatTime={(isoDate) => formatUpcomingTimestamp(isoDate, timestampFormat)}
               onRetry={async () => {
@@ -77,6 +82,7 @@ function EnvironmentHolds({
               }}
             />
           ) : null}
+          {hold.apiCredit ? <span>{apiCreditCheckDescription()}</span> : null}
           {hold.appCap ? (
             <InlineButton
               render={

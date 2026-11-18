@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeStream from "node:stream";
 
+import * as ApiCreditBalance from "../../provider/ApiCreditBalance.ts";
 import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
@@ -3352,6 +3353,133 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  it.effect("fails closed when pay-per-use credit tracking is missing", () =>
+    Effect.gen(function* () {
+      const result = yield* makeWakeHarnessWithOptions({
+        settings: { ...DEFAULT_CLAUDE_SETTINGS, billingKind: "payPerUse", apiKey: "synthetic-key" },
+      }).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(result));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
+  it.effect(
+    "records live API credit failure before terminalizing and blocks the next prompt",
+    () => {
+      let reason: string | null = null;
+      let successes = 0;
+      const service = ApiCreditBalance.ApiCreditBalance.of({
+        configure: () => Effect.void,
+        snapshot: () =>
+          Effect.succeed({
+            balanceState: reason === null ? "available" : "exhausted",
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            spendUsd: 0,
+            spendSource: "metered",
+            linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+            grantUsd: 100,
+            cycleStart: "2026-01-01T00:00:00.000Z",
+            cycleEnd: "2026-02-01T00:00:00.000Z",
+            estimatedRemainingUsd: 100,
+            meteringStartedAt: "2026-01-01T00:00:00.000Z",
+            unpricedUsage: false,
+            ...(reason === null ? {} : { reason }),
+          }),
+        assertAvailable: (instanceId) =>
+          Effect.suspend(() =>
+            reason === null
+              ? Effect.void
+              : Effect.fail(new ApiCreditBalance.ApiCreditExhausted({ instanceId, reason })),
+          ),
+        recordFailure: (_instanceId, driver, error) =>
+          Effect.sync(() => {
+            reason = ApiCreditBalance.apiCreditExhaustion(driver, error) ?? reason;
+          }),
+        recordSuccess: () =>
+          Effect.sync(() => {
+            successes++;
+            reason = null;
+          }),
+        recordCheckSpend: () => Effect.void,
+        changes: Stream.empty,
+      });
+      return Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          settings: {
+            ...DEFAULT_CLAUDE_SETTINGS,
+            billingKind: "payPerUse",
+            apiKey: "synthetic-key",
+          },
+        });
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("api-credit"),
+          text: "Continue",
+          attachments: [],
+          nativeThreadHasTurns: false,
+        });
+        yield* harness.runtime.startTurn(input);
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "api-credit-success", text: "Working" }),
+        );
+        assert.strictEqual(successes, 0);
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "api-credit-success-result",
+            result: "The error text is Credit balance is too low",
+          }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+        yield* harness.runtime.startTurn({
+          ...input,
+          attemptId: RunAttemptId.make("api-credit-failure"),
+        });
+        assert.strictEqual(successes, 1);
+        yield* harness.offerAndWait(
+          makeAssistantErrorFrame({
+            uuid: "api-credit-error",
+            error: "invalid_request",
+            text: "Credit balance is too low",
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "api-credit-result",
+            result: "Credit balance is too low",
+            isError: true,
+          }),
+        );
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.strictEqual(terminal.status, "failed");
+        if (terminal.status === "failed")
+          assert.strictEqual(terminal.failure.code, "api_credit_exhausted");
+        assert.include(reason ?? "", "credit is exhausted");
+        assert.strictEqual(successes, 1);
+        const sent = harness.offeredMessages.length;
+        assert.isTrue(
+          Exit.isFailure(
+            yield* harness.runtime
+              .startTurn({ ...input, attemptId: RunAttemptId.make("api-credit-blocked") })
+              .pipe(Effect.exit),
+          ),
+        );
+        assert.strictEqual(harness.offeredMessages.length, sent);
+      }).pipe(
+        Effect.provideService(ApiCreditBalance.ApiCreditBalance, service),
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      );
+    },
+  );
 
   it.effect("sends the tagged Auto brief on every turn, including after a rollback", () =>
     Effect.gen(function* () {

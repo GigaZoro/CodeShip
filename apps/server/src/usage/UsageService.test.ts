@@ -2892,6 +2892,56 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("meters each API history home once and exposes unpriced records", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          transcript,
+          claudeLine(0, 500, "example-model").replace(
+            "2026-08-01T10:00:00Z",
+            "2026-07-31T10:00:00Z",
+          ) +
+            claudeLine(1, 5, "example-model") +
+            claudeLine(2, 5, "unknown-model"),
+        ),
+      );
+      const primary = ProviderInstanceId.make("claudeAgent");
+      const alias = ProviderInstanceId.make("claude_api_alias");
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const spend = yield* service.readAccountSpend(
+          [primary, alias].map((instanceId) => ({ instanceId, since: "2026-08-01T00:00:00Z" })),
+        );
+        assert.closeTo(spend.get(primary)?.spendUsd ?? -1, 0.00006, 1e-12);
+        assert.strictEqual(spend.get(primary)?.unpricedUsage, true);
+        assert.deepStrictEqual(spend.get(alias), {
+          spendUsd: null,
+          unpricedUsage: false,
+          sharedWith: primary,
+        });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          layerService({
+            prefix: "usage-api-spend",
+            home,
+            settings: {
+              ...settings,
+              providerInstances: {
+                ...settings.providerInstances,
+                [alias]: settings.providerInstances[primary]!,
+              },
+              usagePriceOverrides: {
+                "example-model": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
+              },
+            },
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("reprices unchanged transcripts when custom prices are added, edited, or removed", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

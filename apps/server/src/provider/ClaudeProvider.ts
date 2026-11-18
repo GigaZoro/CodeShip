@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  settingsSecretLiteral,
   type ClaudeSettings,
   type ModelCapabilities,
   type ServerProvider,
@@ -801,6 +802,17 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     });
+  const usesApiKey =
+    Boolean(capabilities.apiKeySource && capabilities.apiKeySource !== "none") ||
+    normalizeClaudeAuthMethod(capabilities.tokenSource) === "apiKey";
+  const billingMismatch =
+    claudeSettings.billingKind === "payPerUse"
+      ? !settingsSecretLiteral(claudeSettings.apiKey) || !usesApiKey
+      : usesApiKey;
+  const billingMessage =
+    claudeSettings.billingKind === "payPerUse"
+      ? "Claude API credit requires a configured API key."
+      : "This Claude account uses an API key. Select pay-per-use billing or sign in with a subscription.";
   const usageCheckedAt = capabilities.usageCheckedAt ?? checkedAt;
   // A setup-token OAuth login can stream subscription windows without get_usage support.
   // Do not reclassify API-key, custom-endpoint, or third-party backend accounts.
@@ -870,9 +882,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     probe: {
       installed: true,
       version: parsedVersion,
-      status: "ready",
+      status: billingMismatch ? "error" : "ready",
       auth: {
-        status: "authenticated",
+        status: billingMismatch ? "unauthenticated" : "authenticated",
         funding,
         ...(funding === "unknown" && capabilities.apiProvider === "firstParty"
           ? { fundingScope: "workspace" as const }
@@ -883,7 +895,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(capabilities.workspaceId ? { workspaceId: capabilities.workspaceId } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
-      ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
+      ...(billingMismatch
+        ? { message: billingMessage }
+        : versionUpgradeMessage
+          ? { message: versionUpgradeMessage }
+          : {}),
       usageLimits: resetFields ? { ...usageLimits, ...resetFields } : usageLimits,
     },
   });

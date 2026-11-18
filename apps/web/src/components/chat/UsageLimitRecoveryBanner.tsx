@@ -1,3 +1,4 @@
+import { apiCreditCheckDescription } from "@t3tools/client-runtime/usage-holds";
 import {
   type EnvironmentId,
   type ProviderInstanceId,
@@ -54,6 +55,21 @@ export function usageLimitRecoveryBannerItem(props: RecoveryProps): ComposerBann
   const resetDescription = resetAt
     ? t("Resets {time}", { time: formatUpcomingTimestamp(resetAt, timestampFormat) })
     : t("Reset time unavailable; retry manually");
+  if (errorCode === "api_credit_exhausted")
+    return {
+      id: `usage-limit-recovery:${runId}`,
+      variant: "warning",
+      icon: <GaugeIcon />,
+      title: t("API credit exhausted"),
+      description: apiCreditCheckDescription(),
+      actions: props.onRetryAccount ? (
+        <RetryAccountButton
+          apiCredit
+          onRetry={props.onRetryAccount}
+          formatTime={(isoDate) => formatUpcomingTimestamp(isoDate, timestampFormat)}
+        />
+      ) : null,
+    };
   if (!chatGptLimit) {
     return {
       id: `usage-limit-recovery:${runId}`,
