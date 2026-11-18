@@ -1,7 +1,8 @@
 ## 2026-11-19 — Claude's held resets say what they clear, or why they cannot
 
-- In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude's answer named no kind, the reset has `kind: null` and a `kindUnknownReason`: `total_only` when Claude gave only a total because no reset can be used now, `low_priority` when it said resets wait while the account runs at lower priority.
-- Automatic redemption now counts a Claude reset that is kept for when the account reaches a limit as soon as the account is at a limit that reset clears, even if CodeShip read Claude's resets before that limit was reached. A reset whose kind Claude did not name is never redeemed automatically.
+- In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude gave only a total because no reset can be used now, the reset has `kind: null` and `kindUnknownReason: "total_only"`.
+- When Claude answers that resets wait while the account continues at lower priority, it reads none of them, so `bankedResets` is now `null` with `bankedResetsError: "low_priority"` instead of listing a reset that may not exist.
+- Automatic redemption now uses a Claude reset kept for when the account reaches a limit as soon as the account is at a limit that reset clears, even if CodeShip read Claude's resets before that limit was reached. A reset Claude offers now still goes first, and a reset whose kind Claude did not name is never redeemed automatically.
 
 ## 2026-11-19 — Main takes only changes whose checks passed, on Windows too
 

@@ -29,10 +29,10 @@ export const ServerProviderResetKind = Schema.Literals(["full", "weekly", "five_
 export type ServerProviderResetKind = typeof ServerProviderResetKind.Type;
 
 /**
- * Why a Claude grant has no `kind`: Claude named only a total over its grants (`totalOnly`), or
- * answered that resets wait while the account runs at lower priority, before reading any (`lowPriority`).
+ * Why a Claude grant has no `kind`: with no grant usable now, Claude names only a total over all
+ * its grants (`totalOnly`).
  */
-export const ServerProviderResetKindUnknownReason = Schema.Literals(["totalOnly", "lowPriority"]);
+export const ServerProviderResetKindUnknownReason = Schema.Literals(["totalOnly"]);
 export type ServerProviderResetKindUnknownReason = typeof ServerProviderResetKindUnknownReason.Type;
 
 /** One banked reset or grant, without the provider's id for it. */
@@ -81,11 +81,15 @@ export const ServerProviderResetPrograms = Schema.Struct({
 });
 export type ServerProviderResetPrograms = typeof ServerProviderResetPrograms.Type;
 
-/** Why `resetCredits` is absent although the account has banked resets to read. */
+/**
+ * Why `resetCredits` is absent although the account has banked resets to read. `lowPriority`:
+ * Claude answered that resets wait while the account runs at lower priority, before reading any.
+ */
 export const ServerProviderResetCreditsError = Schema.Literals([
   "signedOut",
   "unrecognizedScreen",
   "readFailed",
+  "lowPriority",
 ]);
 export type ServerProviderResetCreditsError = typeof ServerProviderResetCreditsError.Type;
 

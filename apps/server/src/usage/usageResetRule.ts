@@ -57,6 +57,8 @@ interface Meter {
 interface Reset {
   readonly kind: ServerProviderResetKind;
   readonly expiresAtMs: number | null;
+  /** Held until the account reaches a limit it refills, so Claude may still refuse it. */
+  readonly held: boolean;
 }
 
 /**
@@ -89,7 +91,7 @@ function availableResets(limits: ServerProviderUsageLimits, nowMs: number): Rese
     if (!isAvailable(credit) || credit.kind === undefined) continue;
     const expiresAtMs = credit.expiresAt === undefined ? null : Date.parse(credit.expiresAt);
     if (expiresAtMs !== null && !(expiresAtMs > nowMs)) continue;
-    resets.push({ kind: credit.kind, expiresAtMs });
+    resets.push({ kind: credit.kind, expiresAtMs, held: credit.usableNow === false });
   }
   return resets;
 }
@@ -107,8 +109,11 @@ function isAvailable(credit: ServerProviderResetCredit): boolean {
 
 const expiryOrder = (reset: Reset) => reset.expiresAtMs ?? Number.POSITIVE_INFINITY;
 
+/** On equal expiry, one offered now goes before one held for a limit. */
 function earliestExpiry(resets: ReadonlyArray<Reset>): Reset | undefined {
-  return resets.toSorted((a, b) => expiryOrder(a) - expiryOrder(b))[0];
+  return resets.toSorted(
+    (a, b) => expiryOrder(a) - expiryOrder(b) || Number(a.held) - Number(b.held),
+  )[0];
 }
 
 /** The unscoped meters at 100%, or, when the provider says usage is blocked, the fullest ones. */

@@ -679,11 +679,8 @@ export const OrchestratorMcpBankedReset = Schema.Struct({
   program: Schema.String,
   /** What the reset clears; null when the provider's answer named no kind. */
   kind: Schema.NullOr(ServerProviderResetKind),
-  /**
-   * Why `kind` is null: `total_only` when Claude named only a total over its grants, `low_priority`
-   * when it answered that resets wait while the account runs at lower priority, before reading any.
-   */
-  kindUnknownReason: Schema.optional(Schema.Literals(["total_only", "low_priority"])),
+  /** Why `kind` is null: `total_only` when Claude named only a total over its grants. */
+  kindUnknownReason: Schema.optional(Schema.Literals(["total_only"])),
   resetsLeft: Schema.optional(Schema.Number),
   usableNow: Schema.optional(Schema.Boolean),
   requiresLimit: Schema.optional(Schema.Boolean),
@@ -699,6 +696,8 @@ export const OrchestratorMcpUsageError = Schema.Literals([
   "read_failed",
   /** The provider's terminal showed a screen this server does not know, so nothing was guessed. */
   "unrecognized_screen",
+  /** Claude answered that resets wait while the account runs at lower priority, before reading any. */
+  "low_priority",
 ]);
 export type OrchestratorMcpUsageError = typeof OrchestratorMcpUsageError.Type;
 
