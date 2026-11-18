@@ -25,7 +25,7 @@ import {
   MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH,
 } from "@t3tools/shared/toolOutput";
 
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { signalProcessGroup } from "@t3tools/shared/processGroup";
 
 export class PiRpcError extends Schema.TaggedError<PiRpcError>()("PiRpcError", {
   operation: Schema.String,
