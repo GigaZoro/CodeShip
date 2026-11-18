@@ -3435,10 +3435,13 @@ describe("storage cleanup reports and local file policies", () => {
     ([state, outcome, reason]) =>
       runCleanupTest(
         Effect.gen(function* () {
-          const { service, fs, repo, worktree, command } = yield* cleanupFixture({
+          const { service, fs, repo, worktree, command, setThreads } = yield* cleanupFixture({
             ...DEFAULT_SERVER_SETTINGS.storageCleanup,
             worktreeUnchanged: true,
           });
+          setThreads([
+            shell({ branch: "feature", worktreePath: worktree, archivedAt: at(-DAY_MS) }),
+          ]);
           const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
           yield* command(remote, ["init", "--bare", "-b", "main"]);
           yield* command(repo, ["remote", "add", "origin", remote]);
