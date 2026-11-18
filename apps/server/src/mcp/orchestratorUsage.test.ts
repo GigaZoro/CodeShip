@@ -12,6 +12,7 @@ import {
   providerUsageFields,
   publishesUsage,
   staleUsageObservations,
+  type UsagePublication,
 } from "./orchestratorUsage.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -64,6 +65,8 @@ const claudeLimits: ServerProviderUsageLimits = {
       model: "Fable",
       resetsAt: "2026-09-06T00:00:00.000Z",
     },
+    // A spending cap: no window and no reset, so at 100% it holds nothing back.
+    { id: "monthly_spend", kind: "monthly", label: "Monthly spend", usedPercent: 100 },
   ],
   credits: { balance: "453.69", currency: "USD", unlimited: false },
 };
@@ -96,6 +99,16 @@ describe("publishesUsage", () => {
   });
 });
 
+const publish = (account: ServerProvider, publication: Partial<UsagePublication> = {}) =>
+  providerUsageFields(account, {
+    limited: false,
+    redemptions: new Map(),
+    credits: null,
+    nowMs: now,
+    maxWaitHours: 48,
+    ...publication,
+  });
+
 describe("providerUsageFields", () => {
   it("publishes native quota IDs and scopes for a metered driver outside Claude and Codex", () => {
     const antigravity = provider("antigravity", {
@@ -109,7 +122,7 @@ describe("providerUsageFields", () => {
       },
     });
     expect(publishesUsage(antigravity)).toBe(true);
-    expect(providerUsageFields(antigravity, false).usage?.meters).toMatchObject([
+    expect(publish(antigravity).usage?.meters).toMatchObject([
       { id: "gemini-weekly", scope: "gemini-default" },
       { id: "gemini-argon-wtu-weekly", scope: "gemini-argon" },
       { id: "3p-weekly", scope: "third-party" },
@@ -121,22 +134,17 @@ describe("providerUsageFields", () => {
       usageLimits: { checkedAt: claudeLimits.checkedAt, windows: [] },
     });
     expect(publishesUsage(custom)).toBe(true);
-    expect(providerUsageFields(custom, false)).toEqual({ usage: null, usageError: "not_read" });
+    expect(publish(custom)).toEqual({ usage: null, usageError: "not_read" });
     const scope = { models: ["example/model-a", "example/model-b"] } as const;
     const observedAt = "2026-09-02T11:55:00.000Z";
     const window = { ...claudeLimits.windows[0]!, id: "shared-pool", scope, observedAt };
-    const usage = providerUsageFields(
-      { ...custom, usageLimits: { ...claudeLimits, windows: [window] } },
-      false,
-    ).usage;
+    const usage = publish({ ...custom, usageLimits: { ...claudeLimits, windows: [window] } }).usage;
     const meters = decodeMeters(usage?.meters);
     expect(meters).toMatchObject([{ id: "shared-pool", scope, observedAt }]);
   });
 
-  it("publishes meters by stable id, and a spent scoped meter leaves the account's usage allowed", () => {
-    expect(
-      providerUsageFields(provider("claudeAgent", { usageLimits: claudeLimits }), false),
-    ).toEqual({
+  it("publishes meters by stable id with the reset rule's decision for each limit", () => {
+    expect(publish(provider("claudeAgent", { usageLimits: claudeLimits }))).toEqual({
       usage: {
         accountKey: "07e998012c1137de",
         plan: "max",
@@ -151,6 +159,7 @@ describe("providerUsageFields", () => {
             usedPercent: 40,
             windowMinutes: 300,
             resetsAt: "2026-09-03T14:00:00.000Z",
+            rateLimit: true,
           },
           {
             id: "weekly_all",
@@ -161,6 +170,7 @@ describe("providerUsageFields", () => {
             usedPercent: 70,
             windowMinutes: 10080,
             resetsAt: "2026-09-06T00:00:00.000Z",
+            rateLimit: true,
           },
           {
             id: "weekly_scoped:Fable",
@@ -171,12 +181,31 @@ describe("providerUsageFields", () => {
             usedPercent: 100,
             windowMinutes: 10080,
             resetsAt: "2026-09-06T00:00:00.000Z",
+            rateLimit: true,
+          },
+          {
+            id: "monthly_spend",
+            model: null,
+            usedPercent: 100,
+            windowMinutes: null,
+            resetsAt: null,
+            rateLimit: false,
           },
         ],
         credits: { balance: "453.69", currency: "USD", unlimited: false },
         bankedResets: null,
         bankedResetsError: "not_read",
         usageAllowed: true,
+        // The spent Fable week waits 60 hours, past the 48-hour wait, with no reset to claim.
+        resetDecisions: [
+          { model: null, action: "run", reason: "plan-available", until: null },
+          {
+            model: "Fable",
+            action: "wait",
+            reason: "no-reset",
+            until: "2026-09-06T00:00:00.000Z",
+          },
+        ],
         lastRedemption: null,
       },
     });
@@ -191,17 +220,15 @@ describe("providerUsageFields", () => {
     } as const;
     const redemptions = new Map([["07e998012c1137de", record]]);
     const held = (accountKey: string) =>
-      providerUsageFields(
-        provider("claudeAgent", { usageLimits: { ...claudeLimits, accountKey } }),
-        false,
+      publish(provider("claudeAgent", { usageLimits: { ...claudeLimits, accountKey } }), {
         redemptions,
-      ).usage?.lastRedemption;
+      }).usage?.lastRedemption;
     expect(held("07e998012c1137de")).toEqual(record);
     expect(held("5d41402abc4b2a76")).toBeNull();
   });
 
   it("takes Codex's own usage answer and lists each banked reset without its id", () => {
-    const fields = providerUsageFields(
+    const fields = publish(
       provider("codex", {
         usageLimits: {
           checkedAt: "2026-09-03T11:55:00.000Z",
@@ -222,7 +249,6 @@ describe("providerUsageFields", () => {
           },
         },
       }),
-      false,
     );
     expect(fields.usage?.bankedResets).toEqual({
       available: 1,
@@ -246,7 +272,7 @@ describe("providerUsageFields", () => {
       weeklySession: true,
       weeklySessionAvailableAt: "2026-09-08T00:00:00.000Z",
     };
-    const fields = providerUsageFields(
+    const fields = publish(
       provider("claudeAgent", {
         usageLimits: {
           ...claudeLimits,
@@ -268,7 +294,6 @@ describe("providerUsageFields", () => {
           resetPrograms,
         },
       }),
-      false,
     );
     expect(fields.usage?.bankedResets).toEqual({
       available: 2,
@@ -295,7 +320,7 @@ describe("providerUsageFields", () => {
       ],
     });
     expect(fields.usage?.resetPrograms).toEqual(resetPrograms);
-    const totalOnly = providerUsageFields(
+    const totalOnly = publish(
       provider("claudeAgent", {
         usageLimits: {
           ...claudeLimits,
@@ -315,7 +340,6 @@ describe("providerUsageFields", () => {
           resetPrograms,
         },
       }),
-      false,
     ).usage;
     expect(totalOnly?.bankedResets?.resets).toEqual([
       {
@@ -330,7 +354,7 @@ describe("providerUsageFields", () => {
         paused: true,
       },
     ]);
-    const unknown = providerUsageFields(
+    const unknown = publish(
       provider("claudeAgent", {
         usageLimits: {
           ...claudeLimits,
@@ -338,18 +362,16 @@ describe("providerUsageFields", () => {
           resetPrograms: { granted: true, weeklySession: false },
         },
       }),
-      false,
     ).usage;
     expect(unknown).toMatchObject({
       bankedResets: null,
       bankedResetsError: "unrecognized_screen",
       resetPrograms: { granted: true, weeklySession: false, weeklySessionAvailableAt: null },
     });
-    const noGrants = providerUsageFields(
+    const noGrants = publish(
       provider("claudeAgent", {
         usageLimits: { ...claudeLimits, resetPrograms: { granted: false, weeklySession: false } },
       }),
-      false,
     ).usage;
     expect(noGrants).toMatchObject({ bankedResets: { available: 0, resets: [] } });
     expect(noGrants).not.toHaveProperty("bankedResetsError");
@@ -357,13 +379,13 @@ describe("providerUsageFields", () => {
 
   it("withholds usage while the account is held, though its meters show room", () => {
     expect(
-      providerUsageFields(provider("claudeAgent", { usageLimits: claudeLimits }), true).usage
+      publish(provider("claudeAgent", { usageLimits: claudeLimits }), { limited: true }).usage
         ?.usageAllowed,
     ).toBe(false);
   });
 
   it("keeps a spent Codex credit cap separate from ordinary plan usage", () => {
-    const fields = providerUsageFields(
+    const fields = publish(
       provider("codex", {
         usageLimits: {
           checkedAt: claudeLimits.checkedAt,
@@ -379,15 +401,78 @@ describe("providerUsageFields", () => {
           credits: { balance: "25.00", unlimited: false },
         },
       }),
-      false,
-      new Map(),
-      "used_up",
+      { credits: "used_up" },
     );
     expect(fields.usage).toMatchObject({
       meters: [{ id: "individual", scope: "spending-cap" }],
       credits: { balance: "25.00" },
       usageAllowed: true,
     });
+  });
+
+  it("decides on Codex's rate limits, not its monthly credit limit, at the server's wait", () => {
+    const codex = provider("codex", {
+      usageLimits: {
+        checkedAt: "2026-09-03T11:55:00.000Z",
+        accountKey: "5d41402abc4b2a76",
+        windows: [
+          {
+            id: "primary",
+            kind: "session",
+            label: "Session",
+            usedPercent: 20,
+            windowDurationMins: 300,
+            resetsAt: "2026-09-03T15:00:00.000Z",
+          },
+          {
+            id: "secondary",
+            kind: "weekly",
+            label: "Weekly",
+            usedPercent: 100,
+            windowDurationMins: 10080,
+            resetsAt: "2026-09-06T12:00:00.000Z",
+          },
+          // Codex states no window and no reset for it; a reset does not refill it.
+          { id: "individual", kind: "monthly", label: "Monthly credit limit", usedPercent: 100 },
+        ],
+        usageAllowed: false,
+        resetCredits: {
+          availableCount: 1,
+          credits: [
+            {
+              program: "codexRateLimits",
+              kind: "full",
+              status: "available",
+              expiresAt: "2026-10-01T00:00:00.000Z",
+            },
+          ],
+        },
+      },
+    });
+    const usage = publish(codex).usage;
+    expect(usage?.meters.map(({ id, rateLimit }) => ({ id, rateLimit }))).toEqual([
+      { id: "session", rateLimit: true },
+      { id: "weekly_all", rateLimit: true },
+      { id: "individual", rateLimit: false },
+    ]);
+    // The week resets in 72 hours, past the 48-hour wait, so the banked reset is claimed.
+    expect(usage?.resetDecisions).toEqual([
+      {
+        model: null,
+        action: "claim",
+        reason: "reset-too-far",
+        until: "2026-09-06T12:00:00.000Z",
+        kind: "full",
+      },
+    ]);
+    expect(publish(codex, { maxWaitHours: 72 }).usage?.resetDecisions).toEqual([
+      {
+        model: null,
+        action: "wait",
+        reason: "plan-resets-soon",
+        until: "2026-09-06T12:00:00.000Z",
+      },
+    ]);
   });
 
   it.each([
@@ -405,9 +490,7 @@ describe("providerUsageFields", () => {
           credits: { balance: "25.00", unlimited: false },
         },
       });
-      expect(providerUsageFields(codex, false, new Map(), credits).usage?.usageAllowed).toBe(
-        allowed,
-      );
+      expect(publish(codex, { credits }).usage?.usageAllowed).toBe(allowed);
     },
   );
 
@@ -439,7 +522,7 @@ describe("providerUsageFields", () => {
   ])(
     "publishes null usage with a code when %s, never the provider's text",
     (_, overrides, code) => {
-      const fields = providerUsageFields(provider("codex", overrides), false);
+      const fields = publish(provider("codex", overrides));
       expect(fields).toEqual({ usage: null, usageError: code });
     },
   );

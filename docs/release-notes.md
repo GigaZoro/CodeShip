@@ -414,6 +414,11 @@
 - Reaching a spending cap leaves included plan allowance available. When models have separate quotas, exhausting one model’s pool leaves the others available.
 - Codex usage and reset credits now follow the signed-in workspace, including when two workspaces share an email. A delayed update from a previous session can no longer replace the current workspace’s balance.
 
+## 2026-11-25 — Agents see the usage reset decision for each limit
+
+- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
+- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
+
 ## 2026-11-25 — Landers wait for their Windows check
 
 - Maintainers: after landing, the ship skill and the upstream sync run `node .github/scripts/windows-check.cjs <commit>`. It waits for that commit's `check:changed` run on Windows and exits 3 with its failing steps and test lines when it does not pass. It also exits 3, with an `unreadable` result and its reason, when GitHub does not show the run or the check cannot run: an unknown commit, a tree git cannot read, or an `origin` that pushes to several GitHub repositories. A Windows-only failure therefore reaches the chat that landed it.
