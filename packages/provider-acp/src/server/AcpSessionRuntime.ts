@@ -45,7 +45,7 @@ import {
   type WindowsProcessTreeRoot,
 } from "@t3tools/shared/windowsProcessTree";
 
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { signalProcessGroup } from "@t3tools/shared/processGroup";
 import { redactProviderOutput } from "@t3tools/provider-core/server/providerOutput";
 import { appendAcpStderrTail } from "./stderr.ts";
 import {
