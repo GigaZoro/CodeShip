@@ -1,6 +1,5 @@
 import {
   CommandId,
-  type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type ProviderThreadId,
   type RunAttemptId,
@@ -1318,66 +1317,6 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const readThread = (threadId: ThreadId) =>
-    projections
-      .getThread(threadId)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderRuntimeRecoveryError({ operation: "read-projections", threadId, cause }),
-        ),
-      );
-
-  // A purged ancestor ends the count; every thread below it then counts from the same place.
-  const countAncestors = Effect.fn("ProviderRuntimeRecoveryService.countAncestors")(function* (
-    thread: OrchestrationV2AppThread,
-  ) {
-    const seen = new Set([thread.id]);
-    let parentThreadId = thread.lineage.parentThreadId;
-    while (parentThreadId !== null && !seen.has(parentThreadId)) {
-      const parent = yield* projections.getThread(parentThreadId).pipe(
-        Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
-        Effect.mapError(
-          (cause) =>
-            new ProviderRuntimeRecoveryError({
-              operation: "read-projections",
-              threadId: thread.id,
-              cause,
-            }),
-        ),
-      );
-      if (parent === null) break;
-      seen.add(parent.id);
-      parentThreadId = parent.lineage.parentThreadId;
-    }
-    return seen.size - 1;
-  });
-
-  // Shutdown does not drain admitted commands, so a group reads and commits under the locks they
-  // plan under, taken before its writer transaction, in the lock order commands nest them in.
-  const withThreadLocks = Effect.fn("ProviderRuntimeRecoveryService.withThreadLocks")(function* <
-    A,
-    E,
-    R,
-  >(threadIds: ReadonlyArray<ThreadId>, effect: Effect.Effect<A, E, R>) {
-    const ordered =
-      threadIds.length < 2
-        ? threadIds
-        : (yield* Effect.forEach(threadIds, (threadId) =>
-            readThread(threadId).pipe(
-              Effect.flatMap((thread) =>
-                countAncestors(thread).pipe(Effect.map((ancestors) => ({ ...thread, ancestors }))),
-              ),
-            ),
-          ))
-            .toSorted(ThreadCommandExecutor.compareLockOrder)
-            .map((thread) => thread.id);
-    return yield* ordered.reduceRight<Effect.Effect<A, E, R>>(
-      (locked, threadId) => threadDispatch.withLock(threadId, locked),
-      effect,
-    );
-  });
-
   const reconcile = Effect.fn("ProviderRuntimeRecoveryService.reconcile")(function* (
     trigger: "startup" | "shutdown",
   ) {
@@ -1449,16 +1388,18 @@ export const make = Effect.gen(function* () {
           retiredEffects += result.retiredEffects;
         }
       });
-      yield* withThreadLocks(
-        group,
-        grouped ? eventSink.withProviderBatch(reconcileGroup) : reconcileGroup,
-      ).pipe(
-        Effect.mapError((cause) =>
-          isProviderRuntimeRecoveryError(cause)
-            ? cause
-            : new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
-        ),
-      );
+      // Shutdown does not drain admitted commands, so a group reads and commits under the locks
+      // they plan under, taken before its writer transaction. Commands nest them in lineage
+      // order, which a concurrent create can change, so the group takes them all at once.
+      yield* threadDispatch
+        .withLocks(group, grouped ? eventSink.withProviderBatch(reconcileGroup) : reconcileGroup)
+        .pipe(
+          Effect.mapError((cause) =>
+            isProviderRuntimeRecoveryError(cause)
+              ? cause
+              : new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
+          ),
+        );
       // Eventless outbox cancellations also wait for the group's durable commit.
       if (cancelledEffectIds.length > 0) yield* outbox.signalCancellations(cancelledEffectIds);
     }

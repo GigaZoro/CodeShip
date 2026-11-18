@@ -18,7 +18,9 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
@@ -532,36 +534,48 @@ it.effect("reads and commits each thread under its command lock at shutdown", ()
   }),
 );
 
-it.effect("locks a parent before its side chat at shutdown when both carry one creation time", () =>
+it.effect("takes a shutdown group's locks while a command holds one and waits for another", () =>
   Effect.gen(function* () {
-    // Deleting a parent locks it before its side chats, whatever their ids or creation times.
-    const parentId = ThreadId.make("thread_z_parent");
-    const sideChatId = ThreadId.make("thread_a_side_chat");
+    // A fork holds its source and waits for its target, which another command just created as a
+    // root, so the target sorts first by lineage, age and id.
+    const rootId = ThreadId.make("thread_c_root");
+    const sourceId = ThreadId.make("thread_b_fork_source");
+    const targetId = ThreadId.make("thread_a_fork_target");
     const createdAt = DateTime.makeUnsafe("2026-11-18T10:00:00.000Z");
     const threads = {
-      [parentId]: { parentThreadId: null, relationshipToParent: null },
-      [sideChatId]: { parentThreadId: parentId, relationshipToParent: "fork", sideChat: true },
+      [rootId]: { parentThreadId: null, rootThreadId: rootId },
+      [sourceId]: { parentThreadId: rootId, rootThreadId: rootId },
+      [targetId]: { parentThreadId: null, rootThreadId: targetId },
     };
     const threadCommands = yield* ThreadCommandExecutor.make;
-    const locked: Array<ThreadId> = [];
+    // Nested locking signals once it holds its first lock; withLocks holds none while it waits.
+    const locking = yield* Deferred.make<void>();
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, {
             ...threadCommands,
             withLock: (threadId, effect) =>
-              Effect.sync(() => locked.push(threadId)).pipe(
-                Effect.andThen(threadCommands.withLock(threadId, effect)),
+              threadCommands.withLock(
+                threadId,
+                Deferred.succeed(locking, undefined).pipe(Effect.andThen(effect)),
+              ),
+            withLocks: (threadIds, effect) =>
+              Deferred.succeed(locking, undefined).pipe(
+                Effect.andThen(threadCommands.withLocks(threadIds, effect)),
               ),
           }),
           ServerSettings.layerTest(),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getRecoveryThreadIds: () => Effect.succeed([sideChatId, parentId]),
+            getRecoveryThreadIds: () => Effect.succeed([sourceId, targetId]),
             getThread: (threadId) =>
               Effect.succeed({
                 id: threadId,
                 createdAt,
-                lineage: { ...threads[threadId as keyof typeof threads], rootThreadId: parentId },
+                lineage: {
+                  ...threads[threadId as keyof typeof threads],
+                  relationshipToParent: null,
+                },
               } as never),
             getRuntimeRecoveryProjection: (threadId) =>
               Effect.succeed({
@@ -597,9 +611,18 @@ it.effect("locks a parent before its side chat at shutdown when both carry one c
       ),
     );
 
-    yield* recovery.reconcile("shutdown");
-
-    assert.deepEqual(locked, [parentId, sideChatId]);
+    const shutdown = yield* threadCommands.withLock(
+      sourceId,
+      recovery.reconcile("shutdown").pipe(
+        Effect.forkChild,
+        Effect.tap(() =>
+          Deferred.await(locking).pipe(
+            Effect.andThen(threadCommands.withLock(targetId, Effect.void)),
+          ),
+        ),
+      ),
+    );
+    yield* Fiber.join(shutdown);
   }),
 );
 

@@ -63,6 +63,33 @@ describe("KeyedLock", () => {
     }),
   );
 
+  it.effect("takes several keys without holding one while it waits for another", () =>
+    Effect.gen(function* () {
+      const lock = yield* KeyedLock.make<string>();
+      const order: Array<string> = [];
+      const group = yield* lock.withLock(
+        "b",
+        lock
+          .withLocks(
+            ["a", "b", "a"],
+            Effect.sync(() => order.push("group")),
+          )
+          .pipe(
+            Effect.forkChild({ startImmediately: true }),
+            Effect.tap(() =>
+              lock.withLock(
+                "a",
+                Effect.sync(() => order.push("holder of b")),
+              ),
+            ),
+          ),
+      );
+      yield* Fiber.join(group);
+      assert.deepStrictEqual(order, ["holder of b", "group"]);
+      assert.deepStrictEqual(yield* lock.activeKeys, []);
+    }),
+  );
+
   it.effect("keeps no lock for a key once its holders and waiters are gone", () =>
     Effect.gen(function* () {
       const lock = yield* KeyedLock.make<string>();

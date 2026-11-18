@@ -1,9 +1,19 @@
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 
 export interface KeyedLock<Key> {
   readonly withLock: <A, E, R>(key: Key, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /**
+   * Holds every key while `effect` runs. It never holds one key while it waits for another, so it
+   * cannot deadlock with holders that nest the same keys in any order.
+   */
+  readonly withLocks: <A, E, R>(
+    keys: ReadonlyArray<Key>,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   readonly activeKeys: Effect.Effect<ReadonlyArray<Key>>;
 }
 
@@ -44,6 +54,31 @@ export const make = Effect.fn("KeyedLock.make")(function* <Key>(): Effect.fn.Ret
       return next;
     });
 
+  // Waits only for a key it found busy, holding no other, then tries the rest without waiting.
+  const holdAll = <A, E, R>(
+    semaphores: ReadonlyArray<Semaphore.Semaphore>,
+    effect: Effect.Effect<A, E, R>,
+    busy?: Semaphore.Semaphore,
+  ): Effect.Effect<A, E, R> => {
+    const rest = semaphores.reduceRight<Effect.Effect<Result.Result<A, Semaphore.Semaphore>, E, R>>(
+      (inner, semaphore) =>
+        semaphore === busy
+          ? inner
+          : semaphore
+              .withPermitsIfAvailable(1)(inner)
+              .pipe(Effect.map(Option.getOrElse(() => Result.fail(semaphore)))),
+      Effect.map(effect, Result.succeed),
+    );
+    return (busy === undefined ? rest : busy.withPermit(rest)).pipe(
+      Effect.flatMap(
+        Result.match({
+          onSuccess: Effect.succeed,
+          onFailure: (next) => holdAll(semaphores, effect, next),
+        }),
+      ),
+    );
+  };
+
   return {
     withLock: (key, effect) =>
       Effect.acquireUseRelease(
@@ -51,6 +86,14 @@ export const make = Effect.fn("KeyedLock.make")(function* <Key>(): Effect.fn.Ret
         (semaphore) => semaphore.withPermit(effect),
         () => release(key),
       ),
+    withLocks: (keys, effect) => {
+      const unique = Array.from(new Set(keys));
+      return Effect.acquireUseRelease(
+        Effect.forEach(unique, acquire),
+        (semaphores) => holdAll(semaphores, effect),
+        () => Effect.forEach(unique, release, { discard: true }),
+      );
+    },
     activeKeys: Effect.map(Ref.get(locks), (current) => Array.from(current.keys())),
   } satisfies KeyedLock<Key>;
 });
