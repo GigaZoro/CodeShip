@@ -239,6 +239,7 @@ describe("claudeUsageResponseToLimits", () => {
       checkedAt,
       windows: [],
       zeroSpendCap: true,
+      credits: { balance: "0.00", currency: "USD", unlimited: false },
     });
   });
 
