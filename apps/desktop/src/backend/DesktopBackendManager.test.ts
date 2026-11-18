@@ -710,114 +710,147 @@ describe("DesktopBackendManager", () => {
       }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("waits out a slow or migrating startup and reports one that never becomes ready", () =>
-    Effect.gen(function* () {
-      const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
-      const migration = (progress: number): EnvironmentStartup => ({
-        migration: "91_CompactOrchestrationIds",
-        progress,
-      });
-      const lastProgress = yield* Ref.make(Option.none<EnvironmentStartup>());
-      const startInstance = (
-        status: Ref.Ref<number | EnvironmentStartup>,
-        onReady?: Effect.Effect<void>,
-        stdout = "",
-      ) =>
-        makeTestInstance({
-          spawnerLayer: Layer.succeed(
-            ChildProcessSpawner.ChildProcessSpawner,
-            ChildProcessSpawner.make(() =>
-              Effect.succeed(
-                makeProcess({
-                  exitCode: Effect.never,
-                  stdout: Stream.make(new TextEncoder().encode(stdout)),
-                }),
-              ),
+  describe("startup readiness", () => {
+    const migration = (progress: number): EnvironmentStartup => ({
+      migration: "91_CompactOrchestrationIds",
+      progress,
+    });
+
+    // Every simulated second costs real polls, so each scenario is its own case to keep the test timeout.
+    const startInstance = (input: {
+      readonly status: Ref.Ref<number | EnvironmentStartup>;
+      readonly onReady?: Effect.Effect<void>;
+      readonly stdout?: string;
+      readonly onStartupFailure?: (
+        failure: DesktopBackendManager.BackendStartupFailure,
+      ) => Effect.Effect<void>;
+      readonly onStartupProgress?: (startup: EnvironmentStartup) => Effect.Effect<void>;
+    }) =>
+      makeTestInstance({
+        spawnerLayer: Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.succeed(
+              makeProcess({
+                exitCode: Effect.never,
+                stdout: Stream.make(new TextEncoder().encode(input.stdout ?? "")),
+              }),
             ),
           ),
-          httpClientLayer: layerHttpClient((request) =>
-            Ref.get(status).pipe(
-              Effect.map((code) =>
-                typeof code === "number"
-                  ? responseForRequest(request, code)
-                  : HttpClientResponse.fromWeb(
-                      request,
-                      new Response(
-                        JSON.stringify({ startup: code } satisfies EnvironmentStartingResponse),
-                        { status: 503 },
-                      ),
+        ),
+        httpClientLayer: layerHttpClient((request) =>
+          Ref.get(input.status).pipe(
+            Effect.map((code) =>
+              typeof code === "number"
+                ? responseForRequest(request, code)
+                : HttpClientResponse.fromWeb(
+                    request,
+                    new Response(
+                      JSON.stringify({ startup: code } satisfies EnvironmentStartingResponse),
+                      { status: 503 },
                     ),
-              ),
+                  ),
             ),
           ),
+        ),
+        ...(input.onStartupFailure ? { onStartupFailure: input.onStartupFailure } : {}),
+        ...(input.onStartupProgress ? { onStartupProgress: input.onStartupProgress } : {}),
+        ...(input.onReady ? { onReady: input.onReady } : {}),
+      }).pipe(Effect.tap((instance) => instance.start));
+
+    it.effect("waits out a slow startup without reporting a failure", () =>
+      Effect.gen(function* () {
+        const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
+        const lastProgress = yield* Ref.make(Option.none<EnvironmentStartup>());
+        const status = yield* Ref.make<number | EnvironmentStartup>(503);
+        const ready = yield* Deferred.make<void>();
+        yield* startInstance({
+          status,
+          onReady: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
           onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
           onStartupProgress: (startup) => Ref.set(lastProgress, Option.some(startup)),
-          ...(onReady ? { onReady } : {}),
-        }).pipe(Effect.tap((instance) => instance.start));
+        });
+        yield* TestClock.adjust(Duration.seconds(66));
+        yield* Ref.set(status, 200);
+        yield* TestClock.adjust(Duration.millis(100));
+        yield* Deferred.await(ready);
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        assert.isTrue(Option.isNone(yield* Ref.get(lastProgress)));
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
 
-      const slowStatus = yield* Ref.make<number | EnvironmentStartup>(503);
-      const ready = yield* Deferred.make<void>();
-      yield* startInstance(slowStatus, Deferred.succeed(ready, undefined).pipe(Effect.asVoid));
-      yield* TestClock.adjust(Duration.seconds(66));
-      yield* Ref.set(slowStatus, 200);
-      yield* TestClock.adjust(Duration.millis(100));
-      yield* Deferred.await(ready);
-      assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
-      assert.isTrue(Option.isNone(yield* Ref.get(lastProgress)));
+    it.effect("treats each 3-minute round in which the migration moves as no failure", () =>
+      Effect.gen(function* () {
+        const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
+        const lastProgress = yield* Ref.make(Option.none<EnvironmentStartup>());
+        const status = yield* Ref.make<number | EnvironmentStartup>(migration(0.5));
+        const ready = yield* Deferred.make<void>();
+        yield* startInstance({
+          status,
+          onReady: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+          onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
+          onStartupProgress: (startup) => Ref.set(lastProgress, Option.some(startup)),
+        });
+        yield* TestClock.adjust(Duration.minutes(4));
+        yield* Ref.set(status, migration(0.75));
+        yield* TestClock.adjust(Duration.minutes(3));
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        assert.deepEqual(yield* Ref.get(lastProgress), Option.some(migration(0.75)));
+        yield* TestClock.adjust(Duration.minutes(3));
+        const stalled = yield* Queue.poll(reports);
+        assert.equal(
+          Option.getOrUndefined(stalled)?.reason,
+          "The server started but did not become ready in time.",
+        );
+        yield* Ref.set(status, 200);
+        yield* TestClock.adjust(Duration.millis(100));
+        yield* Deferred.await(ready);
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
 
-      // Each 3-minute round in which the migration moves is not a failure; a stalled one is.
-      const progressStatus = yield* Ref.make<number | EnvironmentStartup>(migration(0.5));
-      const progressed = yield* Deferred.make<void>();
-      yield* startInstance(
-        progressStatus,
-        Deferred.succeed(progressed, undefined).pipe(Effect.asVoid),
-      );
-      yield* TestClock.adjust(Duration.minutes(4));
-      yield* Ref.set(progressStatus, migration(0.75));
-      yield* TestClock.adjust(Duration.minutes(3));
-      assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
-      assert.deepEqual(yield* Ref.get(lastProgress), Option.some(migration(0.75)));
-      yield* TestClock.adjust(Duration.minutes(3));
-      const stalled = yield* Queue.poll(reports);
-      assert.equal(
-        Option.getOrUndefined(stalled)?.reason,
-        "The server started but did not become ready in time.",
-      );
-      yield* Ref.set(progressStatus, 200);
-      yield* TestClock.adjust(Duration.millis(100));
-      yield* Deferred.await(progressed);
+    it.effect("keeps waiting while the output shows a database upgrade in progress", () =>
+      Effect.gen(function* () {
+        const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
+        const status = yield* Ref.make<number | EnvironmentStartup>(503);
+        const ready = yield* Deferred.make<void>();
+        yield* startInstance({
+          status,
+          onReady: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+          onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
+          // Enough progress lines that the start line scrolls out of the output tail.
+          stdout:
+            `INFO ${DATABASE_MIGRATIONS_STARTED_MESSAGE}\n` +
+            Array.from(
+              { length: 80 },
+              (_, index) =>
+                `INFO ${DATABASE_MIGRATION_PROGRESS_MESSAGE} migration=${index}_Migration progress="${index + 1} of 80"\n`,
+            ).join(""),
+        });
+        // Past two 3-minute readiness rounds.
+        yield* TestClock.adjust(Duration.minutes(7));
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        yield* Ref.set(status, 200);
+        yield* TestClock.adjust(Duration.millis(100));
+        yield* Deferred.await(ready);
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
 
-      const migratingStatus = yield* Ref.make<number | EnvironmentStartup>(503);
-      const migrated = yield* Deferred.make<void>();
-      yield* startInstance(
-        migratingStatus,
-        Deferred.succeed(migrated, undefined).pipe(Effect.asVoid),
-        // Enough progress lines that the start line scrolls out of the output tail.
-        `INFO ${DATABASE_MIGRATIONS_STARTED_MESSAGE}\n` +
-          Array.from(
-            { length: 80 },
-            (_, index) =>
-              `INFO ${DATABASE_MIGRATION_PROGRESS_MESSAGE} migration=${index}_Migration progress="${index + 1} of 80"\n`,
-          ).join(""),
-      );
-      yield* TestClock.adjust(Duration.minutes(10));
-      assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
-      yield* Ref.set(migratingStatus, 200);
-      yield* TestClock.adjust(Duration.millis(100));
-      yield* Deferred.await(migrated);
-
-      yield* startInstance(
-        yield* Ref.make<number | EnvironmentStartup>(503),
-        undefined,
-        `${DATABASE_MIGRATIONS_STARTED_MESSAGE}\n${DATABASE_MIGRATIONS_FINISHED_MESSAGE}\n`,
-      );
-      yield* TestClock.adjust(Duration.seconds(179));
-      assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
-      yield* TestClock.adjust(Duration.seconds(1));
-      const failure = yield* Queue.take(reports);
-      assert.equal(failure.reason, "The server started but did not become ready in time.");
-    }).pipe(Effect.provide(TestClock.layer())),
-  );
+    it.effect("reports a startup that never becomes ready", () =>
+      Effect.gen(function* () {
+        const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
+        yield* startInstance({
+          status: yield* Ref.make<number | EnvironmentStartup>(503),
+          onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
+          stdout: `${DATABASE_MIGRATIONS_STARTED_MESSAGE}\n${DATABASE_MIGRATIONS_FINISHED_MESSAGE}\n`,
+        });
+        yield* TestClock.adjust(Duration.seconds(179));
+        assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
+        yield* TestClock.adjust(Duration.seconds(1));
+        const failure = yield* Queue.take(reports);
+        assert.equal(failure.reason, "The server started but did not become ready in time.");
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+  });
 
   it.effect("the quit stop keeps waiting for a backend that outlasts its deadline", () =>
     Effect.gen(function* () {
