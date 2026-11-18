@@ -10,6 +10,7 @@ import {
   isFifoHolderHeld,
   layerHeldProcessGroups,
   releaseFifoHolder,
+  signalProcessGroup,
 } from "@t3tools/shared/processGroup";
 import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import * as Deferred from "effect/Deferred";
@@ -32,7 +33,7 @@ const layerNodeServices = layerHeldProcessGroups.pipe(Layer.provideMerge(NodeSer
 
 const groupExists = (pgid: number) => {
   try {
-    process.kill(-pgid, 0);
+    signalProcessGroup(pgid, 0);
     return true;
   } catch {
     return false;
@@ -43,7 +44,7 @@ const groupExists = (pgid: number) => {
 const killGroup = (pgid: number) =>
   Effect.sync(() => {
     try {
-      process.kill(-pgid, "SIGKILL");
+      signalProcessGroup(pgid, "SIGKILL");
     } catch (cause) {
       if (!(cause instanceof Error && "code" in cause && cause.code === "ESRCH")) throw cause;
     }
