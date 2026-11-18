@@ -1220,6 +1220,120 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
     }),
   );
 
+  // A fork decides to lock its source before it waits for it, and its target can meanwhile become
+  // a newer side chat of the source's parent, which a parent delete locks before the source.
+  it.effect("a parent delete and a fork onto a target created meanwhile do not deadlock", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const projectId = ProjectId.make("runtime-fork-target-race");
+      const parentId = ThreadId.make("runtime-fork-target-race-parent");
+      const sourceId = ThreadId.make("runtime-fork-target-race-source");
+      const targetId = ThreadId.make("runtime-fork-target-race-target");
+      yield* projects.create({
+        commandId: CommandId.make("runtime-fork-target-race-project"),
+        projectId,
+        title: "Fork target race",
+        workspaceRoot: "/work/fork-target-race",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("runtime-fork-target-race-create"),
+        createdBy: "user",
+        creationSource: "web",
+        threadId: parentId,
+        projectId,
+        title: "Parent",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const forkFromParent = (targetThreadId: ThreadId) =>
+        orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make(`runtime-fork-target-race-side-chat-${targetThreadId}`),
+          sourceThreadId: parentId,
+          targetThreadId,
+          sourcePoint: { type: "latest_stable" },
+          sideChat: true,
+          createdBy: "user",
+          creationSource: "web",
+        });
+      yield* forkFromParent(sourceId);
+
+      const holdsSource = yield* Deferred.make<void>();
+      const releaseSource = yield* Deferred.make<void>();
+      const holder = yield* executor
+        .withLock(
+          sourceId,
+          Deferred.succeed(holdsSource, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseSource)),
+          ),
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(holdsSource);
+      const sourceRequests = yield* Queue.unbounded<void>();
+      const { withLock, withLocks } = executor;
+      const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+        key,
+        effect,
+      ) =>
+        key === sourceId
+          ? Queue.offer(sourceRequests, undefined).pipe(Effect.andThen(withLock(key, effect)))
+          : withLock(key, effect);
+      const observeLocks: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLocks"] = (
+        keys,
+        effect,
+      ) =>
+        keys.includes(sourceId)
+          ? Queue.offer(sourceRequests, undefined).pipe(Effect.andThen(withLocks(keys, effect)))
+          : withLocks(keys, effect);
+      const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+      const locksSpy = vi.spyOn(executor, "withLocks").mockImplementation(observeLocks);
+      yield* Effect.gen(function* () {
+        const forkFiber = yield* orchestrator
+          .dispatch({
+            type: "thread.fork",
+            commandId: CommandId.make("runtime-fork-target-race-fork"),
+            sourceThreadId: sourceId,
+            targetThreadId: targetId,
+            sourcePoint: { type: "latest_stable" },
+            createdBy: "user",
+            creationSource: "web",
+          })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        yield* Queue.take(sourceRequests);
+        yield* forkFromParent(targetId);
+        const deleteFiber = yield* orchestrator
+          .dispatch({
+            type: "thread.delete",
+            commandId: CommandId.make("runtime-fork-target-race-delete"),
+            threadId: parentId,
+          })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        // The delete holds the newer side chat and waits for the source.
+        yield* Queue.take(sourceRequests);
+        yield* Deferred.succeed(releaseSource, undefined);
+        yield* Fiber.join(holder);
+        yield* Fiber.join(deleteFiber);
+        yield* Fiber.join(forkFiber);
+        for (const threadId of [parentId, sourceId, targetId]) {
+          assert.isNotNull((yield* orchestrator.getThreadProjection(threadId)).thread.deletedAt);
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            lockSpy.mockRestore();
+            locksSpy.mockRestore();
+          }),
+        ),
+      );
+    }),
+  );
+
   it.effect("deleted sources keep the html_render pages any live fork shows", () =>
     Effect.gen(function* () {
       const projects = yield* ProjectService.ProjectService;
