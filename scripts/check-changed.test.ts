@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
 import { afterAll, assert, describe, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -25,6 +26,7 @@ import {
   ignoredCheckInputs,
   runSteps,
   splitTests,
+  testStepTimeoutSeconds,
   type Step,
   testsReaching,
 } from "./check-changed.ts";
@@ -168,6 +170,35 @@ describe("check:changed", () => {
     }),
   );
 
+  it.effect(
+    "gives the next free slot to the run holding the landing turn ahead of an earlier waiter",
+    () =>
+      Effect.gen(function* () {
+        const started: Array<string> = [];
+        const step = (name: string, seconds: number): Step<never> => ({
+          name,
+          run: () =>
+            Effect.gen(function* () {
+              started.push(name);
+              yield* Effect.sleep(`${seconds} seconds`);
+              return { ok: true, output: "" };
+            }),
+        });
+        const options = { concurrency: 1, timeoutSeconds: 60, slotDirectory: yield* slotDirectory };
+        const holder = yield* runSteps([step("holder", 3)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("100 millis");
+        const earlier = yield* runSteps([step("earlier", 1)], options).pipe(Effect.forkChild);
+        yield* TestClock.adjust("100 millis");
+        const landing = yield* runSteps([step("landing", 1)], { ...options, landing: true }).pipe(
+          Effect.forkChild,
+        );
+        for (let second = 0; second < 10; second++) yield* TestClock.adjust("1 second");
+        yield* Effect.all([Fiber.join(holder), Fiber.join(earlier), Fiber.join(landing)]);
+
+        assert.deepStrictEqual(started, ["holder", "landing", "earlier"]);
+      }),
+  );
+
   it.effect("interrupts a step at its timeout and reports TIMEOUT, apart from FAIL", () =>
     Effect.gen(function* () {
       let interrupted = false;
@@ -202,6 +233,40 @@ describe("check:changed", () => {
       );
     }),
   );
+
+  it.effect("prints what a step wrote before its timeout killed it", () =>
+    Effect.gen(function* () {
+      const logs: Array<string> = [];
+      const fiber = yield* runSteps(
+        [
+          {
+            name: "hangs after writing",
+            run: (_slots, collect) =>
+              Effect.sync(() => collect("FAIL apps/server/x.test.ts\n")).pipe(
+                Effect.andThen(Effect.never),
+              ),
+          },
+        ],
+        { concurrency: 1, timeoutSeconds: 10, slotDirectory: yield* slotDirectory },
+      ).pipe(
+        Effect.provideService(Console.Console, {
+          ...globalThis.console,
+          log: (...args: ReadonlyArray<unknown>) => void logs.push(args.join(" ")),
+        } as Console.Console),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("10 seconds");
+      yield* Fiber.join(fiber);
+      assert.isTrue(logs.some((line) => line.includes("FAIL apps/server/x.test.ts")));
+    }),
+  );
+
+  it("bounds the test step by an explicit timeout and caps its per-file growth otherwise", () => {
+    assert.strictEqual(testStepTimeoutSeconds(3, 900, false), 900);
+    assert.strictEqual(testStepTimeoutSeconds(20, 900, false), 2400);
+    assert.strictEqual(testStepTimeoutSeconds(5000, 900, false), 3600);
+    assert.strictEqual(testStepTimeoutSeconds(5000, 600, true), 600);
+  });
 
   it("runs the .github/scripts node:test files with node --test, not vitest", () => {
     assert.deepStrictEqual(

@@ -114,6 +114,7 @@ import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeComp
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { linkDirectory } from "@t3tools/shared/testing/symlinks";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
@@ -6296,7 +6297,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             );
           }
           yield* fileSystem.makeDirectory(path.join(root, "sub"));
-          yield* fileSystem.symlink(path.join(root, "sub"), path.join(cwd, "link"));
+          yield* linkDirectory(path.join(root, "sub"), path.join(cwd, "link"));
           const named = throughSymlink ? `${path.join(cwd, "link")}/..` : root;
           const { environment } = yield* ClaudeSettingsCascade.readClaudeSettingsEnvironment({
             homePath: home,

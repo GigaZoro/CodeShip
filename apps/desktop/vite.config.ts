@@ -5,6 +5,7 @@ import { defaultInclude, defineConfig } from "vite-plus";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { TEST_MAX_WORKERS } from "../../scripts/lib/test-workers.ts";
 
 const repoEnv = loadRepoEnv();
 const domTests = ["src/preview/PickPreload.test.ts"];
@@ -167,6 +168,7 @@ export default defineConfig({
     },
   ],
   test: {
+    maxWorkers: TEST_MAX_WORKERS,
     // The Windows lane runs workspace suites concurrently; filesystem-heavy
     // desktop integration tests can exceed Vitest's 5 second default there.
     testTimeout: 15_000,

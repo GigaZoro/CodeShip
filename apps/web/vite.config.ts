@@ -20,6 +20,7 @@ import {
 
 import { loadRepoEnv } from "../../scripts/lib/public-config";
 import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version";
+import { TEST_MAX_WORKERS } from "../../scripts/lib/test-workers";
 import {
   shippedThirdPartyLicenses,
   thirdPartyLicensesPlugin,
@@ -436,6 +437,7 @@ export default defineConfig(({ command }) => {
     },
     worker: { format: "es" },
     test: {
+      maxWorkers: TEST_MAX_WORKERS,
       projects: [
         defineProject(unitTestProject),
         defineProject(browserTestProject),

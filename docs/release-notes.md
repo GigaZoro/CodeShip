@@ -16,6 +16,50 @@
 - Maintainers: `node scripts/upstream-sync.ts begin` on a sync branch a held run pushed now reports `resumed` and keeps the upstream that branch merged, also when upstream has new commits since. It used to start a second upstream merge on top of the resolved one.
 - Maintainers: when `node scripts/upstream-sync.ts land` merges a main whose newest release-notes entry is newer than the sync's entries, the sync's entries now take that date, so the notes it puts on top stay newest first. Before, the release-notes check rejected them. When the new date would repeat a heading, `land` holds on the release-notes conflict instead.
 
+## 2026-11-18 — Lint rejects two tests with the same name in one file
+
+- A merge that kept both sides of a test file could leave two tests with one name, and Vitest reports them together so a stale copy hid. The new `t3code/no-duplicate-test-title` lint rule fails a file with two same-named tests in one describe block, including `it.effect` and `it.live`, which the built-in rule skips. No change to the app.
+
+## 2026-11-18 — Server file locks always release
+
+- The Claude and Codex config locks and the ChatGPT session lock now go through one helper that releases with no arguments, so a lock taken for a copy or an update is freed when it finishes and the next edit no longer waits for it to time out.
+
+## 2026-11-18 — Background git work is counted and a run past its budget is logged
+
+- The pull request refresh and the thread settlement sweep now count the git processes they start, and the server log records a warning with the count when a run passes 150. On Windows each git process blocks the server for about 130 ms, so a sweep that starts to fan out again shows in the log instead of freezing the app. No change to what either sweep does.
+
+## 2026-11-18 — check:changed shows what a timed-out step printed and bounds its test step
+
+- A `check:changed` step killed at its time limit now prints the output it had produced, so a hung run names where it stopped. The test step grows by 2 minutes per selected file up to one hour, or stops at `--timeout` / `CHECK_CHANGED_TIMEOUT` when you set one, so a sync-sized diff that selects every test file no longer runs for hours; it also says so and points to the packages' own test scripts. No change to the app.
+
+## 2026-11-18 — Test runs from several worktrees no longer overload the machine
+
+- Vitest started about one worker per core in every test run, so a machine with several chats testing at once ran several times its core count in workers. Every Vite config now takes its worker cap from `scripts/lib/test-workers.ts`: 2 locally, every core in CI, and `T3CODE_TEST_MAX_WORKERS` overrides both. A test checks that each config sets it. pnpm also runs at most 2 install scripts at once. No change to the app.
+
+## 2026-11-18 — Landings on main take turns
+
+- Landing on main now takes a turn: the lander holds a lease on the remote while it rebases, runs the checks and pushes, and a push without it is refused. A landing no longer reruns the full checks each time main moves, and its check run gets free slots before other runs. No change to the app.
+
+## 2026-11-18 — The relay install tests pass on Windows
+
+- The relay client install tests built lock paths with slashes that the Windows filesystem hooks never matched, and checked the simulated Linux executable bit on NTFS, which cannot hold one. They now build paths with the host's path rules and model the simulated platform's executable bits themselves, so the contended-lock, legacy-lock and staging cases run the same on every host. No change to the app.
+
+## 2026-11-18 — The Codex installation tests run on Windows
+
+- The tests that check how the server finds and verifies an installed Codex used a shell script as the fake `codex` program, which Windows cannot run. They now use a fake process starter instead, so they run the same on every host. The launcher-symlink case no longer compiles a C program. No change to the app.
+
+## 2026-11-18 — Agents start long test runs and builds with t3_command_run
+
+- The instructions agents get now tell them to start every test suite, build, install, push or deploy through `t3_command_run` unless it ends within seconds, instead of running it in their own shell. A run started in an agent's shell was lost when CodeShip restarted for an update, and the chat never heard its result.
+
+## 2026-11-18 — The SQLite reader-fallback test passes on Windows
+
+- The test that checks the server falls back to the writer when its database reader cannot open the file deleted the live database to force that, which Windows refuses while the file is open. It now makes the reader worker report the failure instead, so it runs the same on every host. No change to the app.
+
+## 2026-11-18 — Symlink tests run on Windows without file-symlink privilege
+
+- Tests that link a directory now use a junction, which Windows creates without privilege, through one shared `linkDirectory` fixture. Tests that need a real file symlink skip when the host cannot create one, as the other symlink tests already do.
+
 ## 2026-11-18 — The eval for setting a Claude account's Auto-compact after has run
 
 - The `account-auto-compact-window` eval case failed on the tool text from before agents could set a provider account's shared settings and passes on the current text, on GPT-6 Luna and GPT-6 Astra. The results are in the MCP tool use eval's README.

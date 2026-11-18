@@ -23,6 +23,7 @@
 // group, or its process tree on Windows, and reported as TIMEOUT. A rerun on
 // exactly the files of the last passing run prints that run's summary.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
@@ -54,6 +55,13 @@ import { vitePlusCommand } from "./check-changed-command.ts";
 const GiB = 1024 ** 3;
 // The test step's limit grows by this much per selected file: server tests run one at a time.
 const TEST_FILE_SECONDS = 120;
+// Without an explicit timeout, a test step stops growing here, so a run selecting thousands of files ends.
+const TEST_STEP_MAX_SECONDS = 3600;
+
+export const testStepTimeoutSeconds = (files: number, timeoutSeconds: number, explicit: boolean) =>
+  explicit
+    ? timeoutSeconds
+    : Math.min(Math.max(timeoutSeconds, TEST_FILE_SECONDS * files), TEST_STEP_MAX_SECONDS);
 
 // A typecheck or test step can take several cores and gigabytes of memory, so
 // allow one step per two cores and per 6 GiB of available memory.
@@ -70,7 +78,7 @@ const isSqliteBusy = (cause: unknown) =>
 // Every run sharing `directory` draws from this budget. A slot is an open exclusive
 // transaction on its file, which the OS releases when the process exits, killed or not.
 // Open the files only through SQLite: closing any other handle drops this process's lock.
-const sharedBudget = (directory: string, size: number) => {
+const sharedBudget = (directory: string, size: number, landing: boolean) => {
   const files = Array.from({ length: size }, (_, index) =>
     NodePath.join(directory, `slot-${index}.sqlite`),
   );
@@ -90,10 +98,49 @@ const sharedBudget = (directory: string, size: number) => {
     yield* Deferred.succeed(waiting, undefined);
   });
 
+  // A landing run (the one holding main's landing turn, scripts/landing-turn.cjs) holds a marker file's
+  // transaction while it waits for a slot; other runs leave free slots to it. The OS drops the marker with
+  // its process, so a crashed landing blocks nobody.
+  const markerPrefix = "landing-wait-";
+  let marker: NodeSqlite.DatabaseSync | undefined;
+  const markLanding = () => {
+    if (!landing || marker) return;
+    marker = new NodeSqlite.DatabaseSync(
+      NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`),
+    );
+    marker.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+  };
+  const unmarkLanding = () => {
+    marker?.close();
+    marker = undefined;
+    NodeFS.rmSync(NodePath.join(directory, `${markerPrefix}${process.pid}.sqlite`), {
+      force: true,
+    });
+  };
+  const landingWaits = () =>
+    NodeFS.readdirSync(directory)
+      .filter((name) => name.startsWith(markerPrefix))
+      .some((name) => {
+        const file = NodePath.join(directory, name);
+        const db = new NodeSqlite.DatabaseSync(file);
+        try {
+          db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+        } catch (cause) {
+          if (isSqliteBusy(cause)) return true;
+          throw cause;
+        } finally {
+          db.close();
+        }
+        // Nobody held it: a marker its landing left behind.
+        NodeFS.rmSync(file, { force: true });
+        return false;
+      });
+
   const lockFree = (max: number) =>
     Effect.try({
       try: () => {
         const held: Array<NodeSqlite.DatabaseSync> = [];
+        if (!landing && landingWaits()) return held;
         try {
           for (const file of files) {
             if (held.length === max) break;
@@ -128,7 +175,11 @@ const sharedBudget = (directory: string, size: number) => {
           ),
         ),
       );
-      if (held.length > 0) return held.length;
+      if (held.length > 0) {
+        unmarkLanding();
+        return held.length;
+      }
+      yield* Effect.try({ try: markLanding, catch: String });
       if (holding === 0 && !announced) {
         announced = true;
         yield* Console.log(
@@ -149,8 +200,10 @@ export type Outcome = "pass" | "FAIL" | "TIMEOUT";
 export interface Step<R> {
   readonly name: string;
   // Gets the number of budget slots the step holds, which is how many workers it may run.
+  // Reports each piece of output through `collect` as it arrives, so a step killed at its timeout still has it.
   readonly run: (
     slots: number,
+    collect: (chunk: string) => void,
   ) => Effect.Effect<{ readonly ok: boolean; readonly output: string }, never, R>;
   // The most workers the step can run in parallel. It starts once one slot is
   // free and takes as many free ones as it can use, so other runs never wait on it.
@@ -171,9 +224,11 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
     readonly timeoutSeconds: number;
     // An existing directory holding the machine's budget slots; every run given the same one shares them.
     readonly slotDirectory: string;
+    // Set for the run that holds main's landing turn: it gets the next free slots ahead of other runs.
+    readonly landing?: boolean;
   },
 ) {
-  const budget = sharedBudget(options.slotDirectory, options.concurrency);
+  const budget = sharedBudget(options.slotDirectory, options.concurrency, options.landing ?? false);
   // Steps claim budget one at a time, in order, so a step later in the list
   // never starts ahead of one still waiting for a slot.
   const admission = yield* Semaphore.make(1);
@@ -184,7 +239,13 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
       const timed = Effect.fnUntraced(function* (slots: number) {
         const timeoutSeconds = step.timeoutSeconds ?? options.timeoutSeconds;
         const started = yield* Clock.currentTimeMillis;
-        const result = yield* Effect.timeoutOption(step.run(slots), `${timeoutSeconds} seconds`);
+        let collected = "";
+        const result = yield* Effect.timeoutOption(
+          step.run(slots, (chunk) => {
+            collected += chunk;
+          }),
+          `${timeoutSeconds} seconds`,
+        );
         const seconds = ((yield* Clock.currentTimeMillis) - started) / 1000;
         const outcome: Outcome = Option.match(result, {
           onNone: () => "TIMEOUT",
@@ -193,7 +254,7 @@ export const runSteps = Effect.fn("checkChanged.runSteps")(function* <R>(
         const time =
           outcome === "TIMEOUT" ? `killed after ${timeoutSeconds}s` : `${seconds.toFixed(1)}s`;
         yield* Console.log(`\n> vp ${step.name}  ${outcome}  ${time}`);
-        const output = Option.getOrUndefined(result)?.output.trimEnd();
+        const output = Option.isSome(result) ? result.value.output.trimEnd() : collected.trimEnd();
         if (output) yield* Console.log(output);
         return { name: step.name, outcome, time };
       });
@@ -538,10 +599,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         platform === "darwin" ? NodeOS.totalmem() : process.availableMemory(),
       ),
   );
-  const timeoutSeconds = Option.getOrElse(
-    yield* override("timeout", input.timeout, "CHECK_CHANGED_TIMEOUT"),
-    () => 900,
-  );
+  const timeoutOverride = yield* override("timeout", input.timeout, "CHECK_CHANGED_TIMEOUT");
+  const explicitTimeout = Option.isSome(timeoutOverride);
+  const timeoutSeconds = Option.getOrElse(timeoutOverride, () => 900);
 
   const lines = (...args: Array<string>) => gitLines(root, args);
 
@@ -559,7 +619,11 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
 
   // Output is piped, so keep the colors a terminal would get.
   const env = process.stdout.isTTY ? { FORCE_COLOR: "1" } : {};
-  const vp = (args: ReadonlyArray<string>, cwd = root) =>
+  const vp = (
+    args: ReadonlyArray<string>,
+    cwd = root,
+    collect: (chunk: string) => void = () => {},
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         const [command, commandArgs] = vitePlusCommand(args, platform);
@@ -571,8 +635,17 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             forceKillAfter: "5 seconds",
           }),
         );
-        const [output, exitCode] = yield* Effect.all(
-          [Stream.mkString(Stream.decodeText(handle.all)), handle.exitCode],
+        let output = "";
+        const [, exitCode] = yield* Effect.all(
+          [
+            Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+              Effect.sync(() => {
+                output += chunk;
+                collect(chunk);
+              }),
+            ),
+            handle.exitCode,
+          ],
           { concurrency: 2 },
         );
         return { ok: exitCode === 0, output };
@@ -689,6 +762,16 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
+  const allVitestTests = splitTests(
+    [...workspaceFiles].filter((file) => CODE.test(file) && TEST.test(file)),
+  ).vitestTests;
+  if (vitestTests.length > 0 && vitestTests.length === allVitestTests.length) {
+    yield* Console.log(
+      `check:changed: this change selects every test file (${vitestTests.length}). The test step ` +
+        `ends within ${explicitTimeout ? "--timeout" : `${TEST_STEP_MAX_SECONDS}s`}; ` +
+        "for a full run, use each package's own test script (vp run -r test).",
+    );
+  }
 
   // Web browser tests run in the Chromium build CI installs for this Playwright, which no
   // package install fetches. Already installed, this takes about two seconds.
@@ -817,7 +900,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =>
     files.some((file) => file.startsWith(`${dir}/`)),
   );
-  const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: () => vp(args) });
+  const command = (name: string, args: ReadonlyArray<string>) => ({
+    name,
+    run: (_slots: number, collect: (chunk: string) => void) => vp(args, root, collect),
+  });
   const fileCommands = (name: string, args: ReadonlyArray<string>, files: ReadonlyArray<string>) =>
     argumentBatches(files, commandLineLimit(platform)).map((batch, index, batches) =>
       command(batchName(name, index, batches.length), [...args, ...batch]),
@@ -859,11 +945,15 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     // From the repo root, the root vite.config.ts hands each file to its package's config.
     ...argumentBatches(vitestTests, commandLineLimit(platform)).map((batch, index, batches) => ({
       name: batchName(`test (${batch.length} files)`, index, batches.length),
-      run: (slots: number) =>
-        vp(["test", "run", "--passWithNoTests", "--maxWorkers", String(slots), ...batch]),
+      run: (slots: number, collect: (chunk: string) => void) =>
+        vp(
+          ["test", "run", "--passWithNoTests", "--maxWorkers", String(slots), ...batch],
+          root,
+          collect,
+        ),
       workers: testWorkers(batch),
       serial: true,
-      timeoutSeconds: Math.max(timeoutSeconds, TEST_FILE_SECONDS * batch.length),
+      timeoutSeconds: testStepTimeoutSeconds(batch.length, timeoutSeconds, explicitTimeout),
     })),
     ...(nodeTests.length > 0
       ? [
@@ -903,7 +993,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     .trim();
   const slotDirectory = path.join(gitDirectory, "t3-check-changed");
   yield* fs.makeDirectory(slotDirectory, { recursive: true });
-  const results = yield* runSteps(steps, { concurrency, timeoutSeconds, slotDirectory });
+  const results = yield* runSteps(steps, {
+    concurrency,
+    timeoutSeconds,
+    slotDirectory,
+    // The landing command (.github/scripts/landing-turn.cjs) gives its checks the turn it holds.
+    landing: Option.isSome(yield* Config.option(Config.String("T3_LANDING_TURN"))),
+  });
 
   const summary = ["check:changed summary"];
   for (const result of results) {

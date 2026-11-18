@@ -296,6 +296,10 @@ export check's workspace selectors as more workspaces become clean. Review calle
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
 
+### Landing on main
+
+A pass of `check:changed` covers only the tree it checked, and main moves faster than a slow machine's check, so landings take turns. `node .github/scripts/landing-turn.cjs land` takes a lease on `refs/heads/landing-lease/main` on origin (it expires after three hours, so a dead lander cannot hold it), rebases onto main, runs the checks once and pushes, then gives the lease back. `.vite-hooks/pre-push` refuses a push to `main` from anyone else, and a `check:changed` run started by the lander takes free budget slots ahead of other runs. `vp run check:changed` for your own work needs none of this.
+
 ## Desktop artifacts
 
 Local artifact builds are unsigned by default and write to `release/`:

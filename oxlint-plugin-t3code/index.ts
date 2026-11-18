@@ -30,6 +30,7 @@ import noRawTaskkill from "./rules/no-raw-taskkill.ts";
 import noRemoteGitThroughExecute from "./rules/no-remote-git-through-execute.ts";
 import noRawResizeObserver from "./rules/no-raw-resize-observer.ts";
 import noRealTimeWaitInTests from "./rules/no-real-time-wait-in-tests.ts";
+import noDuplicateTestTitle from "./rules/no-duplicate-test-title.ts";
 import noTestInLoop from "./rules/no-test-in-loop.ts";
 import noTestTimeoutOrUnreasonedSkip from "./rules/no-test-timeout-or-unreasoned-skip.ts";
 import noRpcPermissionBypass from "./rules/no-rpc-permission-bypass.ts";
@@ -78,6 +79,7 @@ export default definePlugin({
     "no-remote-git-through-execute": noRemoteGitThroughExecute,
     "no-raw-resize-observer": noRawResizeObserver,
     "no-real-time-wait-in-tests": noRealTimeWaitInTests,
+    "no-duplicate-test-title": noDuplicateTestTitle,
     "no-test-in-loop": noTestInLoop,
     "no-test-timeout-or-unreasoned-skip": noTestTimeoutOrUnreasonedSkip,
     "no-rpc-permission-bypass": noRpcPermissionBypass,

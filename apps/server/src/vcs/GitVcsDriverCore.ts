@@ -48,6 +48,7 @@ import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import { timeoutProcessOption } from "../process/processDeadline.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { countGitSpawn } from "./GitSpawnBudget.ts";
 import { removeEmptyDirectory, type RemoveEmptyDirectoryError } from "./removeEmptyDirectory.ts";
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
 import {
@@ -1352,7 +1353,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
 
   const execute: GitVcsDriver.GitVcsDriver["Service"]["execute"] = (input) =>
-    executeRaw(input).pipe(
+    Effect.andThen(countGitSpawn, executeRaw(input)).pipe(
       withMetrics({
         counter: gitCommandsTotal,
         timer: gitCommandDuration,

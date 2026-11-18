@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 const MAX_MERGES = 3;
 export const RUN_LIMIT_MS = 3 * 60 * 60 * 1000;
 
+const LANDING_TURN = NodePath.join(import.meta.dirname, "../../.github/scripts/landing-turn.cjs");
 const STATE_FILE = "upstream-sync.json";
 const RELEASE_NOTES = "docs/release-notes.md";
 const DATED_HEADING = /^## (\d{4}-\d{2}-\d{2}) — /gm;
@@ -194,7 +195,12 @@ export function land(worktree: string, now: Date): SyncResult {
   gitOrThrow(worktree, "fetch", "-q", "origin");
   let main = gitOrThrow(worktree, "rev-parse", "origin/main");
   if (main === state.base) {
-    const pushed = git(worktree, "push", "-q", "origin", "HEAD:refs/heads/main");
+    // Main refuses a push from anyone who does not hold its landing turn (.github/scripts/landing-turn.cjs).
+    const landed = NodeChildProcess.spawnSync(process.execPath, [LANDING_TURN, "push"], {
+      cwd: worktree,
+      encoding: "utf8",
+    });
+    const pushed = { ok: landed.status === 0, stderr: landed.stderr.trim() };
     if (pushed.ok) return { status: "landed", commit: gitOrThrow(worktree, "rev-parse", "HEAD") };
     gitOrThrow(worktree, "fetch", "-q", "origin");
     main = gitOrThrow(worktree, "rev-parse", "origin/main");

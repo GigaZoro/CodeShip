@@ -12,12 +12,13 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as PlatformError from "effect/PlatformError";
-import { lock } from "proper-lockfile";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
+import { acquireFileLock } from "../FileLock.ts";
+import { fileSystemFailure } from "../fileSystemFailure.ts";
 
 export interface CodexHomeLayout {
   readonly mode: "direct" | "authOverlay";
@@ -397,15 +398,6 @@ const decodeWindowsLinkRecord = Schema.decodeUnknownEffect(
 );
 const encodeWindowsLinkRecord = Schema.encodeSync(Schema.fromJsonString(WindowsLinkRecord));
 
-const fileSystemFailure = (method: string, pathOrDescriptor: string) => (cause: unknown) =>
-  PlatformError.systemError({
-    _tag: "Unknown",
-    module: "FileSystem",
-    method,
-    pathOrDescriptor,
-    cause,
-  });
-
 const windowsFileVersion = Effect.fn("CodexHomeLayout.windowsFileVersion")(function* (
   filePath: string,
 ) {
@@ -552,31 +544,17 @@ const recoverWindowsAside = Effect.fn("CodexHomeLayout.recoverWindowsAside")(fun
 const withSharedFileLock = <A, E, R>(lockPath: string, effect: Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const services = yield* Effect.context<never>();
-      yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () =>
-            lock(lockPath, {
-              lockfilePath: `${lockPath}.lock`,
-              realpath: false,
-              stale: 10_000,
-              retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
-              onCompromised: (error) =>
-                Effect.runSyncWith(services)(
-                  Effect.logWarning("A Codex shared-file lock was taken over during setup.", {
-                    path: lockPath,
-                    error,
-                  }),
-                ),
-            }),
-          catch: fileSystemFailure("lock", lockPath),
-        }),
-        (release) =>
-          Effect.tryPromise({
-            try: () => release(),
-            catch: fileSystemFailure("unlock", lockPath),
-          }).pipe(Effect.ignoreCause({ log: true })),
-      );
+      yield* acquireFileLock(lockPath, {
+        lockfilePath: `${lockPath}.lock`,
+        realpath: false,
+        stale: 10_000,
+        retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
+        onCompromised: (error) =>
+          Effect.logWarning("A Codex shared-file lock was taken over during setup.", {
+            path: lockPath,
+            error,
+          }),
+      });
       return yield* effect;
     }),
   );

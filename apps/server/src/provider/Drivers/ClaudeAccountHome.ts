@@ -8,9 +8,9 @@ import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
-import { lock } from "proper-lockfile";
+import { acquireFileLock } from "../FileLock.ts";
+import { fileSystemFailure } from "../fileSystemFailure.ts";
 
 /** An added Claude account keeps its own login here; T3.CodeShip creates the folder and links the rest. */
 export const claudeAccountHomePath = (
@@ -39,15 +39,6 @@ const isPrivateEntry = (entry: string) =>
   /\.lock(?:\.|$)/.test(entry);
 // Created in the shared folder first, so every account's sessions land in one place and threads can move between accounts.
 const SHARED_DIRECTORIES = ["projects"];
-
-const fileSystemFailure = (method: string, pathOrDescriptor: string) => (cause: unknown) =>
-  PlatformError.systemError({
-    _tag: "Unknown",
-    module: "FileSystem",
-    method,
-    pathOrDescriptor,
-    cause,
-  });
 
 /** Windows links folders with a junction, and files with a hard link when symlinks need elevation. */
 export const linkPath = (
@@ -246,30 +237,13 @@ const writeClaudeConfig = Effect.fn("ClaudeAccountHome.writeClaudeConfig")(funct
 const withClaudeConfigLock = <A, E, R>(configPath: string, task: Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const services = yield* Effect.context<never>();
-      yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () =>
-            lock(configPath, {
-              lockfilePath: `${configPath}.lock`,
-              realpath: false,
-              retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
-              onCompromised: (error) =>
-                Effect.runSyncWith(services)(
-                  Effect.logWarning("Claude's config lock was taken during a copy.", {
-                    configPath,
-                    error,
-                  }),
-                ),
-            }),
-          catch: fileSystemFailure("lock", configPath),
-        }),
-        (release) =>
-          Effect.tryPromise({
-            try: () => release(),
-            catch: fileSystemFailure("unlock", configPath),
-          }).pipe(Effect.ignoreCause({ log: true })),
-      );
+      yield* acquireFileLock(configPath, {
+        lockfilePath: `${configPath}.lock`,
+        realpath: false,
+        retries: { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 },
+        onCompromised: (error) =>
+          Effect.logWarning("Claude's config lock was taken during a copy.", { configPath, error }),
+      });
       return yield* task;
     }),
   );

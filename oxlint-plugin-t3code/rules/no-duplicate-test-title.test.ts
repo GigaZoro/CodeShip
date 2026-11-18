@@ -1,0 +1,84 @@
+import { assert, describe } from "@effect/vitest";
+
+import { createOxlintRuleHarness } from "../test/utils.ts";
+
+const rule = createOxlintRuleHarness("t3code/no-duplicate-test-title", {
+  filename: "fixture.test.ts",
+});
+
+describe("t3code/no-duplicate-test-title", () => {
+  rule.valid(
+    "allows the same title in different describe blocks and distinct titles",
+    `
+      import { describe, it } from "@effect/vitest";
+      import * as Effect from "effect/Effect";
+
+      describe("a", () => {
+        it.effect("cancels", () => Effect.void);
+        it("other", () => {});
+      });
+      describe("b", () => {
+        it.effect("cancels", () => Effect.void);
+      });
+    `,
+  );
+
+  rule.valid(
+    "ignores dynamic titles and .each cases",
+    `
+      import { it } from "@effect/vitest";
+
+      it(\`handles \${1}\`, () => {});
+      it(\`handles \${2}\`, () => {});
+      it.each([1, 2])("same", () => {});
+      it.each([3, 4])("same", () => {});
+    `,
+  );
+
+  rule.invalid(
+    "reports two it.effect tests with one title at the top level",
+    `
+      import { it } from "@effect/vitest";
+      import * as Effect from "effect/Effect";
+
+      it.effect("cancels a stalled registration", () => Effect.void);
+      it.effect("cancels a stalled registration", () => Effect.void);
+    `,
+    (output) => {
+      assert.equal(output.match(/no-duplicate-test-title/g)?.length, 1);
+    },
+  );
+
+  rule.invalid(
+    "reports a plain it and an it.live that share a title in one describe",
+    `
+      import { describe, it } from "@effect/vitest";
+
+      describe("a", () => {
+        it("same", () => {});
+        it.live("same", () => {});
+      });
+    `,
+  );
+
+  rule.valid(
+    "allows describe blocks that share a title",
+    `
+      import { describe } from "vitest";
+
+      describe("same", () => {});
+      describe("same", () => {});
+    `,
+  );
+});
+
+const productionRule = createOxlintRuleHarness("t3code/no-duplicate-test-title");
+
+productionRule.valid(
+  "ignores non-test files",
+  `
+    const it = (_name: string) => {};
+    it("same");
+    it("same");
+  `,
+);

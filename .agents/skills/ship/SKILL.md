@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, run `vp run check:changed`, land it on main with a fast-forward push, confirm it landed, then delete the branch locally and on the remote and remove its worktree. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship", and when a task in this repository is done (AGENTS.md, "Ship finished work"). Not for when the developer asked for a PR or review first, or asked only to commit.
+description: Finish a T3.CodeShip branch end to end without a PR. Commit the work, land it on main under the landing turn (`vp run check:changed` runs once there), confirm it landed, then delete the branch locally and on the remote and remove its worktree. Use for "commit, push, merge to main", "ship it", "land this", "merge and delete the branch", "finish this branch" or "/ship", and when a task in this repository is done (AGENTS.md, "Ship finished work"). Not for when the developer asked for a PR or review first, or asked only to commit.
 ---
 
 # Ship
@@ -22,27 +22,32 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 - Leave out plans, scratch files, screenshots, logs, `.env`, `.t3/`, and secrets. Leave out untracked files you cannot place too, and name them in your report.
 - Prepend a dated entry to `docs/release-notes.md` (`## YYYY-MM-DD — Title`, then user-facing bullets), even for docs or maintenance. See [Release notes](../../../docs/operations/release.md#release-notes-for-every-shipment).
 
-## 3. Verify
+## 3. Pre-check
 
 - For code changes, run the harness's pre-commit step (such as `/simplify`) first when it has one. Skip it when only docs or tests changed.
-- Run `vp run check:changed`. Fix failures. Never land red.
+- Fix what it finds before you commit. The check that counts runs in step 5.
 
 ## 4. Commit
 
 - Conventional title in plain language (`fix(web): new threads no longer spike CPU`). In the body, give the problem in a sentence or two, then the fix.
 - End with the attribution trailer the harness gives. Pass the message through a heredoc.
 
-## 5. Sync
+## 5. Land
 
-- `git fetch origin`, then `git rev-list --left-right --count HEAD...origin/<default>`.
-- If the branch is behind, `git rebase origin/<default>`, resolve conflicts, and rerun step 3.
+Main has one landing turn, so a pass of `vp run check:changed` covers the tree that is pushed and is never repeated for a main that moved. Run the landing with `t3_command_run` (`timeoutMinutes: 720`; it may wait for the turn behind other landers):
 
-## 6. Land
+`node .github/scripts/landing-turn.cjs land`
 
-- `git push origin HEAD:<default>`. This is a fast-forward push. Never use `--force` or `--force-with-lease`.
-- If the push is rejected because the default branch moved, go back to step 5.
-- If it is rejected by branch protection, stop and offer a PR instead.
+It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. `--check "<command>"` replaces the check. Main refuses a push from anyone who does not hold the turn (`.vite-hooks/pre-push`), so never push to main any other way and never use `--force` or `--force-with-lease`.
+
+- A check that fails ends the landing with exit status 1 and the turn released: fix the cause, commit, and land again.
+- A rebase that conflicts stops the landing with the turn released: resolve it, then land again.
+- Branch protection that refuses the push: stop and offer a PR instead.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
+
+## 6. Verify the landing
+
+The command prints the landed commit. The rebase may have changed your commit's id, so use the printed one in your report.
 
 ## 7. Clean up
 

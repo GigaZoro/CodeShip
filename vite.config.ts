@@ -3,6 +3,7 @@ import { defineConfig } from "vite-plus";
 import * as NodeURL from "node:url";
 import { remoteCacheUrl } from "./infra/task-cache/src/remoteCache.ts";
 import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
+import { TEST_MAX_WORKERS } from "./scripts/lib/test-workers.ts";
 
 const TEST_EXCLUDE = [
   "**/.repos/**",
@@ -139,6 +140,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    maxWorkers: TEST_MAX_WORKERS,
     // Fixture subprocesses must not inherit the outer task runner’s cache policy.
     env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },
     exclude: TEST_EXCLUDE,
@@ -337,6 +339,7 @@ export default defineConfig({
       "t3code/no-raw-taskkill": "error",
       "t3code/no-remote-git-through-execute": "error",
       "t3code/no-real-time-wait-in-tests": "error",
+      "t3code/no-duplicate-test-title": "error",
       "t3code/no-test-in-loop": "error",
       "t3code/no-test-timeout-or-unreasoned-skip": "error",
       "t3code/no-rpc-permission-bypass": ["error", { allowRawClientAccess: true }],
