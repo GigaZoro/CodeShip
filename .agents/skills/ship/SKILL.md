@@ -38,10 +38,11 @@ Main has one landing turn, so a pass of `vp run check:changed` covers the tree t
 
 `node .github/scripts/landing-turn.cjs land`
 
-It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. `--check "<command>"` replaces the check. Main refuses a push from anyone who does not hold the turn (`.vite-hooks/pre-push`), so never push to main any other way and never use `--force` or `--force-with-lease`.
+It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed <main commit>` once from the worktree root (it gets the next free check slot ahead of other runs, and compares with the main it lands on), pushes the commit it checked to `main` as a fast-forward and gives the turn back. `--check "<command>"` replaces the check; the command finds that main commit in `T3_LANDING_TURN_MAIN`. Main refuses a push from anyone who does not hold the turn (`.vite-hooks/pre-push`), so never push to main any other way and never use `--force` or `--force-with-lease`.
 
+- Commit everything first. The landing refuses uncommitted changes, untracked files and files marked assume-unchanged or skip-worktree, before it waits for the turn, once it has it and again after its rebase, since the check would run on them but the push would not carry them. A HEAD that moved to another branch or commit while it waited, or a check that changes the worktree or HEAD, ends it the same way: land again.
 - A check that fails ends the landing with exit status 1 and the turn released: fix the cause, commit, and land again.
-- A rebase that conflicts stops the landing with the turn released: resolve it, then land again.
+- Release-notes entries main gained meanwhile are merged for you. Any other conflict aborts the rebase with the turn released and your branch as it was: rebase onto `origin/main` by hand, then land again.
 - Branch protection that refuses the push: stop and offer a PR instead.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
 

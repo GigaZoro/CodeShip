@@ -29,6 +29,12 @@
 
 - Moving a checkout while a turn names a worktree folder that has since been deleted failed with a git error. A folder that is gone now counts as no repository, so the move proceeds.
 
+## 2026-11-18 — Landings push only the commit their checks ran on
+
+- Maintainers: `node .github/scripts/landing-turn.cjs land` now refuses a worktree with uncommitted changes, untracked files or files marked assume-unchanged or skip-worktree, before it waits for the turn, once it has it and again after its rebase. It gives the turn back when HEAD moved to another branch or commit while it waited, and when HEAD's branch or commit or the worktree changed while the checks ran, and it pushes the commit it checked. Before, the checks could run on files the push did not carry, and the lander pushed whatever HEAD was once they finished.
+- Its rebase runs without the worktree's git hooks, so none can stop it, write files into it or switch the branch under it. A conflict the release-notes merge driver does not resolve now aborts the rebase and gives the turn back with the branch as it was, instead of leaving the worktree in the middle of a rebase. A rebase someone else started or stopped in the worktree is left for them, even one of the same commits onto the same main, since the lander marks its own rebase and aborts only that one.
+- It rebases onto the `main` commit it fetched into a ref of its own, so another fetch that rewrites `FETCH_HEAD`, such as an editor's, cannot change the base. The default check, `vp run check:changed <main commit>`, runs from the worktree root wherever `land` starts and compares the branch with that commit, and a `--check` command finds the commit in `T3_LANDING_TURN_MAIN`.
+
 ## 2026-11-18 — `check:changed` stops a git call that runs away
 
 - **Maintenance:** every git call `vp run check:changed` makes now fails after 5 minutes and its process is killed, so a listing that runs away can no longer hold a core for the rest of the run. Each call normally takes seconds. A git that ignores the stop signal is force-killed 5 seconds later, and a comparison with a remote's `main` that runs out of time fails the run instead of passing for a missing ref. A process that git started and that still holds git's output no longer keeps the run from exiting.
