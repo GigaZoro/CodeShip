@@ -92,7 +92,14 @@ must reject that operation before changing the filesystem.
 
 Thread settlement is server-owned. The
 [settlement service](../../apps/server/src/orchestration-v2/ThreadSettlementService.ts) evaluates PR
-and inactivity settings without a connected client. Merge notifications invalidate cached PR state
+and inactivity settings without a connected client. A subagent never runs those rules: it settles
+once its parent holds the result of its latest task, as a remote delegate does on its machine, or
+otherwise with its parent, whatever the settings say. A
+provider-native subagent runs on its parent's run, so no settle takes it while that task works, a
+settle on its result rejects once the task has changed, and the ingestor reopens it when the
+provider resumes it. A
+child working in its parent's worktree leaves that worktree's unmerged work and settle action to the
+parent, as storage cleanup does. Merge notifications invalidate cached PR state
 and trigger a check. A merge outside T3, such as an agent running `gh pr merge`, sends no
 notification, so the [PR sync reactor](../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts)
 re-reads a thread's open links when a run that ran a merge or close command ends. Each forge's

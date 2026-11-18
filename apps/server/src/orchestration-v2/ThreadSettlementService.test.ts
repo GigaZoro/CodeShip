@@ -5,6 +5,8 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   EventId,
+  NodeId,
+  ProviderDriverKind,
   ProviderInstanceId,
   MessageId,
   RuntimeRequestId,
@@ -62,7 +64,10 @@ function at(offsetMs: number): DateTime.Utc {
 }
 
 type SettlementShell = OrchestrationV2ThreadShell &
-  Pick<ProjectionStore.ProjectionSettlementCandidate, "latestUserAuthoredMessageAt">;
+  Pick<
+    ProjectionStore.ProjectionSettlementCandidate,
+    "latestUserAuthoredMessageAt" | "parentWorktreePath" | "parentResultAt" | "parentDone"
+  >;
 
 function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
   return {
@@ -102,6 +107,9 @@ function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
     latestRunCompletedAt: null,
     latestUserMessageAt: null,
     latestUserAuthoredMessageAt: overrides.latestUserMessageAt ?? null,
+    parentWorktreePath: null,
+    parentResultAt: null,
+    parentDone: false,
     createdAt: at(-30 * DAY_MS),
     updatedAt: at(-10 * DAY_MS),
     archivedAt: null,
@@ -1098,24 +1106,31 @@ describe("ThreadSettlementServiceV2 worker", () => {
           { name: "closed PR", work: pushed, pr: "closed", settles: true, opensPr: false },
           { name: "setting off", work: unmerged, pr: null, settles: false, opensPr: false },
           { name: "no remote", work: unmerged, pr: null, settles: false, opensPr: false },
-          // The store offers a subagent only once its parent is done; it settles with the parent
-          // and never publishes the work agents wrote.
+          // A subagent whose parent is done settles with the parent and never publishes the work
+          // agents wrote.
           { name: "subagent", work: unmerged, pr: null, settles: true, opensPr: false },
+          // Before that, agents wrote its prompts, so the agent that started it decides how its
+          // own worktree's work lands.
+          { name: "delivered subagent", work: unmerged, pr: null, settles: false, opensPr: false },
           // Agents and scheduled runs own how their work lands; auto-settle never publishes it.
           { name: "nobody wrote", work: unmerged, pr: null, settles: false, opensPr: false },
         ] as const;
         for (const testCase of cases) {
           const threadId = ThreadId.make(`worktree-${testCase.name}`);
+          const subagent = testCase.name === "subagent" || testCase.name === "delivered subagent";
           const thread = makeThread(threadId, {
             branch: "feature",
             worktreePath: "/worktrees/feature",
-            ...(testCase.name === "subagent"
+            ...(subagent
               ? {
                   lineage: {
                     parentThreadId: ThreadId.make("parent"),
                     relationshipToParent: "subagent",
                     rootThreadId: ThreadId.make("parent"),
                   },
+                  ...(testCase.name === "subagent"
+                    ? { parentDone: true }
+                    : { parentResultAt: at(-DAY_MS) }),
                 }
               : {}),
           });
@@ -1129,8 +1144,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
             existingWorktreePaths: ["/worktrees/feature"],
             ...(testCase.work === undefined ? {} : { unmergedWork: testCase.work }),
             hasPrimaryRemote: testCase.name !== "no remote",
-            unwrittenThreadIds:
-              testCase.name === "nobody wrote" || testCase.name === "subagent" ? [threadId] : [],
+            unwrittenThreadIds: testCase.name === "nobody wrote" || subagent ? [threadId] : [],
             branchPullRequest: () =>
               Effect.succeed(testCase.pr === null ? null : makeBranchPullRequest(testCase.pr)),
           });
@@ -2550,6 +2564,175 @@ describe("ThreadSettlementServiceV2 worker", () => {
       }),
     ),
   );
+
+  describe("delegated children", () => {
+    const nowMs = Date.parse(NOW);
+    const minutesAgo = (minutes: number) => DateTime.makeUnsafe(nowMs - minutes * 60_000);
+    const parentId = ThreadId.make("parent");
+    const resultAt = minutesAgo(1);
+    const ranAt = minutesAgo(2);
+    // A delegate_task child in its parent's worktree whose run produced the parent's result.
+    const child = (id: string, overrides: Partial<SettlementShell> = {}) =>
+      makeThread(id, {
+        lineage: {
+          parentThreadId: parentId,
+          relationshipToParent: "subagent",
+          rootThreadId: parentId,
+        },
+        createdBy: "agent",
+        creationSource: "mcp",
+        worktreePath: "/worktrees/parent",
+        parentWorktreePath: "/worktrees/parent",
+        updatedAt: resultAt,
+        latestUserMessageAt: minutesAgo(10),
+        latestRunId: RunId.make(`run:${id}`),
+        latestRunRequestedAt: minutesAgo(10),
+        latestRunStartedAt: minutesAgo(10),
+        latestRunCompletedAt: ranAt,
+        status: "completed",
+        parentResultAt: resultAt,
+        ...overrides,
+      });
+    const delivered = child("delivered");
+    const native = child("native", {
+      creationSource: "provider",
+      latestUserMessageAt: null,
+      latestRunId: null,
+      latestRunRequestedAt: null,
+      latestRunStartedAt: null,
+      latestRunCompletedAt: null,
+      status: "idle",
+    });
+    // The parent's latest task on these has no result, or the child ran again after it.
+    const keptActive = [
+      child("failed", { status: "failed", parentResultAt: null }),
+      child("interrupted", { status: "interrupted", parentResultAt: null }),
+      child("ran-again", { latestRunCompletedAt: DateTime.makeUnsafe(nowMs) }),
+      child("waiting", {
+        status: "waiting",
+        activityRunStatus: "waiting",
+        latestRunCompletedAt: null,
+      }),
+      child("queued", { status: "queued", latestRunCompletedAt: null }),
+      child("own-worktree", { worktreePath: "/worktrees/own" }),
+    ];
+
+    it.effect("settles children whose parent holds their result and keeps the rest active", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(nowMs);
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([delivered, native, ...keptActive]),
+            settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
+            existingWorktreePaths: ["/worktrees/parent", "/worktrees/own"],
+            // The parent's worktree has work to land; it, not its children, keeps it in view.
+            unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
+            unwrittenThreadIds: [delivered, native, ...keptActive].map((thread) => thread.id),
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            const settled = (yield* Ref.get(fixture.commands)).map((command) => ({
+              threadId: command.threadId,
+              settledAt: command.settledAt,
+              parentResultAt: command.parentResultAt,
+              rule: command.commandId.split(":").slice(0, 2).join(":"),
+            }));
+            const onResult = { parentResultAt: resultAt, rule: "server:settle-delivered-child" };
+            expect(
+              settled.toSorted((left, right) => left.threadId.localeCompare(right.threadId)),
+            ).toEqual([
+              { threadId: delivered.id, settledAt: ranAt, ...onResult },
+              { threadId: native.id, settledAt: resultAt, ...onResult },
+            ]);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+    );
+
+    it.effect("settles a child on its result while automatic settlement is off", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(nowMs);
+          const idle = makeThread("idle-branch", { branch: "feature" });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([idle, delivered]),
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sidebarAutoSettleAfterDays: null,
+              sidebarAutoSettleOnMerge: false,
+            },
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            expect((yield* Ref.get(fixture.commands)).map((command) => command.threadId)).toEqual([
+              delivered.id,
+            ]);
+            assert.deepStrictEqual(yield* Ref.get(fixture.branchCalls), []);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+    );
+
+    it.effect("settles a child as soon as its parent records the result", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(nowMs);
+          const waiting = child("awaiting-result", { parentResultAt: null });
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([waiting]),
+            settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
+          });
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+            assert.deepStrictEqual(yield* Ref.get(fixture.commands), []);
+            yield* Ref.set(
+              fixture.snapshots,
+              makeSnapshot([{ ...waiting, parentResultAt: resultAt }]),
+            );
+            yield* fixture.publishEvent({
+              type: "subagent.updated",
+              id: EventId.make("event:task-completed"),
+              threadId: parentId,
+              runId: RunId.make("run:parent"),
+              nodeId: NodeId.make("node:task"),
+              driver: ProviderDriverKind.make("codex"),
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              occurredAt: resultAt,
+              payload: {
+                id: NodeId.make("node:task"),
+                threadId: parentId,
+                runId: RunId.make("run:parent"),
+                parentNodeId: NodeId.make("node:parent"),
+                origin: "app_owned",
+                createdBy: "agent",
+                driver: ProviderDriverKind.make("codex"),
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                providerThreadId: null,
+                childThreadId: waiting.id,
+                nativeTaskRef: null,
+                prompt: "Do the work",
+                title: "Task",
+                model: null,
+                status: "completed",
+                result: "Done",
+                startedAt: minutesAgo(10),
+                completedAt: resultAt,
+                updatedAt: resultAt,
+              },
+            });
+            yield* Queue.take(fixture.snapshotReads);
+            yield* service.drain;
+            expect((yield* Ref.get(fixture.commands)).map((command) => command.threadId)).toEqual([
+              waiting.id,
+            ]);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+    );
+  });
 });
 
 describe("ThreadSettlementServiceV2 terminals", () => {
@@ -2577,11 +2760,22 @@ describe("ThreadSettlementServiceV2 terminals", () => {
     Effect.gen(function* () {
       const shared = appThread("shared-checkout-thread", "settled");
       const missing = appThread("removed-worktree-thread", "settled", "/worktrees/removed");
+      const parent = appThread("parent-thread", "active", "/worktrees/parent");
+      // The parent still works in this worktree, so a side chat there leaves the settle action to it.
+      const sideChat: OrchestrationV2AppThread = {
+        ...appThread("side-chat-thread", "settled", "/worktrees/parent"),
+        lineage: {
+          parentThreadId: parent.id,
+          rootThreadId: parent.id,
+          relationshipToParent: "fork",
+          sideChat: true,
+        },
+      };
       const worktree = appThread("worktree-thread", "settled", "/worktrees/thread");
       const fixture = yield* makeHarness({
         snapshot: makeSnapshot([]),
-        currentThreads: [shared, missing, worktree],
-        existingWorktreePaths: ["/worktrees/thread"],
+        currentThreads: [shared, missing, parent, sideChat, worktree],
+        existingWorktreePaths: ["/worktrees/thread", "/worktrees/parent"],
       });
 
       yield* Effect.gen(function* () {
@@ -2589,6 +2783,7 @@ describe("ThreadSettlementServiceV2 terminals", () => {
         yield* startHarness(service, fixture.activation, fixture.snapshotReads);
         yield* fixture.publishEvent(settledEvent(shared));
         yield* fixture.publishEvent(settledEvent(missing));
+        yield* fixture.publishEvent(settledEvent(sideChat));
         yield* fixture.publishEvent(settledEvent(worktree));
         const run = yield* Queue.take(fixture.scriptRuns);
         assert.strictEqual(run.threadId, worktree.id);

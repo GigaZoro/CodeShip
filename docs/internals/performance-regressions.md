@@ -121,9 +121,11 @@ The focused regression coverage lives in `OrchestrationEventStore.sequence.test.
 
 The settlement worker reads active, unpinned threads without explicit settlement overrides from
 `ProjectionStore.getSettlementCandidates`. It reads the latest run and user-message timestamps,
-rejects active runs and pending requests, and checks background work using the same derivation as
-the shell. It does not load archived histories, fork ancestry, transcript counts, or provider
-sessions. The orchestrator still validates the current thread before applying settlement.
+and a child's parent worktree and latest task result through indexed lookups, rejects active runs,
+a provider-native subagent's working task and pending requests, and checks background work using
+the same derivation as the shell, which
+for a thread without runs, such as a provider-native subagent, also counts what it still runs. It
+does not load archived histories, fork ancestry, transcript counts, or provider sessions. The orchestrator still validates the current thread before applying settlement.
 
 Read receipts use `ProjectionStore.getThread` to load only canonical thread metadata. A visit
 advances `lastVisitedAt` monotonically without changing `updatedAt` or decoding history. Shell

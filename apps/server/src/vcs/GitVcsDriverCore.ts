@@ -625,11 +625,11 @@ function isMissingGitCwdError(error: GitCommandError): boolean {
   );
 }
 
-// Git 2.56+ reports a `.git` gitfile pointing nowhere as "gitfile does not point to a valid
-// repository"; older releases said "not a git repository". Both mean the cwd is not a repository.
+// Git 2.56+ and Git for Windows report a `.git` file pointing nowhere as "... does not point to a
+// valid repository"; older releases said "not a git repository". Both mean the cwd is not a repository.
 const NON_REPOSITORY_STDERR_PHRASES = [
   "not a git repository",
-  "gitfile does not point to a valid repository",
+  "does not point to a valid repository",
 ] as const;
 
 export function isNonRepositoryGitStderr(stderr: string): boolean {
@@ -5583,6 +5583,60 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return { commitSha };
   });
 
+  const countUnmergedCommits: GitVcsDriver.GitVcsDriver["Service"]["countUnmergedCommits"] =
+    Effect.fn("GitVcsDriver.countUnmergedCommits")(function* (input) {
+      const { cwd } = input;
+      let base = input.baseRef ?? null;
+      if (base === null) {
+        const refName = (yield* runGitStdout("GitVcsDriver.countUnmergedCommits.branch", cwd, [
+          "symbolic-ref",
+          "--quiet",
+          "--short",
+          "HEAD",
+        ]).pipe(Effect.orElseSucceed(() => ""))).trim();
+        if (refName === "") return 0;
+        base = (yield* resolveBaseBranchForNoUpstream(cwd, refName))?.comparisonRef ?? null;
+        if (base === null) return 0;
+      }
+      const bySha = Number.parseInt(
+        (yield* runGitStdout("GitVcsDriver.countUnmergedCommits.rangeCount", cwd, [
+          "rev-list",
+          "--count",
+          "--end-of-options",
+          `${base}..HEAD`,
+        ])).trim(),
+        10,
+      );
+      if (!Number.isFinite(bySha) || bySha <= 0) return 0;
+      // A rebase or squash that shipped the same changes leaves the base's tree unchanged by HEAD.
+      const merged = yield* executeGit(
+        "GitVcsDriver.countUnmergedCommits.mergeTree",
+        cwd,
+        ["merge-tree", "--write-tree", "--end-of-options", base, "HEAD"],
+        { allowNonZeroExit: true },
+      );
+      if (merged.exitCode === 0) {
+        const baseTree = (yield* runGitStdout("GitVcsDriver.countUnmergedCommits.baseTree", cwd, [
+          "rev-parse",
+          "--verify",
+          `${base}^{tree}`,
+        ])).trim();
+        if (merged.stdout.trim().split("\n")[0] === baseTree) return 0;
+      }
+      const byPatch = Number.parseInt(
+        (yield* runGitStdout("GitVcsDriver.countUnmergedCommits.patchCount", cwd, [
+          "rev-list",
+          "--count",
+          "--cherry-pick",
+          "--right-only",
+          "--end-of-options",
+          `${base}...HEAD`,
+        ])).trim(),
+        10,
+      );
+      return Number.isFinite(byPatch) ? Math.min(bySha, Math.max(0, byPatch)) : bySha;
+    });
+
   const fetchRefCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchRefCommit"] = Effect.fn(
     "GitVcsDriver.fetchRefCommit",
   )(function* (input) {
@@ -6313,6 +6367,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }),
     fetchRefCommit,
     resolveCommit,
+    countUnmergedCommits,
     refreshCheckedOutBranch: Effect.fnUntraced(function* (input) {
       return yield* withListRefsInvalidation(input.cwd, refreshCheckedOutBranch(input));
     }),

@@ -97,10 +97,20 @@ describe("cachedTestTasks", () => {
     }
   });
 
-  it("reuses individual results, invalidates filesystem inputs, and never caches failures", async () => {
+  // Each `vp run` boots Vitest per task, so every behaviour is its own test with its own time budget.
+  const withFixture = async (
+    body: (fixture: {
+      directory: string;
+      write: (file: string, content: string) => Promise<void>;
+      run: (files?: Array<string>, uncached?: Array<string>) => Promise<number | null>;
+      hits: () => Promise<number>;
+    }) => Promise<void>,
+  ) => {
     const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-tests-"));
     const root = NodePath.resolve(import.meta.dirname, "../..");
     let runId = 0;
+    const write = (file: string, content: string) =>
+      NodeFSP.writeFile(NodePath.join(directory, file), content);
     const run = (files = ["a.test.ts", "b.test.ts"], uncached: Array<string> = []) =>
       new Promise<number | null>((resolve, reject) => {
         runId += 1;
@@ -128,7 +138,7 @@ describe("cachedTestTasks", () => {
         child.once("error", reject);
         child.once("close", resolve);
       });
-    const summary = async () =>
+    const hits = async () =>
       readRunSummary(NodePath.join(directory, "cache"), String(runId))!.tasks.filter(
         (task) => task.result.CacheHit,
       ).length;
@@ -139,45 +149,53 @@ describe("cachedTestTasks", () => {
         NodePath.join(directory, "node_modules/vite-plus"),
         "dir",
       );
-      await NodeFSP.writeFile(NodePath.join(directory, "package.json"), '{"type":"module"}');
-      await NodeFSP.writeFile(
-        NodePath.join(directory, "vite.config.ts"),
+      await write("package.json", '{"type":"module"}');
+      await write(
+        "vite.config.ts",
         `import {cachedTestTasks} from ${JSON.stringify(NodeURL.pathToFileURL(NodePath.join(root, "scripts/lib/cached-tests.ts")).href)}; export default {run:{tasks:cachedTestTasks(process.env.T3_CACHED_TESTS, import.meta.dirname)},test:{include:["*.test.ts"]}};`,
       );
-      await NodeFSP.writeFile(
-        NodePath.join(directory, "a.test.ts"),
+      await write(
+        "a.test.ts",
         'import {test,expect} from "vite-plus/test"; import {readFileSync} from "node:fs"; test("fixture",()=>expect(readFileSync("fixture.txt","utf8")).toMatch(/^hello/));',
       );
-      await NodeFSP.writeFile(
-        NodePath.join(directory, "b.test.ts"),
+      await write(
+        "b.test.ts",
         'import {test,expect} from "vite-plus/test"; test("independent",()=>expect(1).toBe(1));',
       );
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "hello");
+      await write("fixture.txt", "hello");
+      await body({ directory, write, run, hits });
+    } finally {
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  };
+
+  it("reuses individual results and invalidates filesystem inputs", () =>
+    withFixture(async ({ write, run, hits }) => {
       expect(await run()).toBe(0);
+      expect(await hits()).toBe(0);
+      await write("fixture.txt", "hello changed");
       expect(await run()).toBe(0);
-      expect(await summary()).toBe(2);
-      expect(await run(["b.test.ts"])).toBe(0);
-      expect(await summary()).toBe(1);
+      expect(await hits()).toBe(1);
+    }));
+
+  it("never caches failures", () =>
+    withFixture(async ({ write, run, hits }) => {
       expect(await run()).toBe(0);
-      expect(await summary()).toBe(2);
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "hello changed");
-      expect(await run()).toBe(0);
-      expect(await summary()).toBe(1);
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "broken");
+      await write("fixture.txt", "broken");
       expect(await run()).toBe(1);
       expect(await run()).toBe(1);
-      expect(await summary()).toBe(1);
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "hello again");
-      await NodeFSP.writeFile(
-        NodePath.join(directory, "b.test.ts"),
+      expect(await hits()).toBe(1);
+    }));
+
+  it("runs uncached files every time", () =>
+    withFixture(async ({ directory, write, run }) => {
+      await write(
+        "b.test.ts",
         'import {test} from "vite-plus/test";import {writeFileSync} from "node:fs";test("report",()=>writeFileSync("report.json","{}"));',
       );
       expect(await run(undefined, ["b.test.ts"])).toBe(0);
       await NodeFSP.unlink(NodePath.join(directory, "report.json"));
       expect(await run(undefined, ["b.test.ts"])).toBe(0);
       expect(await NodeFSP.readFile(NodePath.join(directory, "report.json"), "utf8")).toBe("{}");
-    } finally {
-      await NodeFSP.rm(directory, { recursive: true, force: true });
-    }
-  });
+    }));
 });

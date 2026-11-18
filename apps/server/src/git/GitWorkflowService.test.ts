@@ -162,6 +162,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       const git = (dir: string, args: ReadonlyArray<string>) =>
         driver.execute({ operation: "test.setupRepo", cwd: dir, args: [...args] });
       const commit = ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty"];
+      // Empty commits carry no change, so each commit below edits a file of its own.
+      const change = (name: string) =>
+        Effect.gen(function* () {
+          yield* fileSystem.writeFileString(`${cwd}/${name}.txt`, name);
+          yield* git(cwd, ["add", `${name}.txt`]);
+          yield* git(cwd, [...commit.slice(0, -1), "-m", name]);
+        });
       yield* git(origin, ["init", "--bare", "-b", "main"]);
       for (const args of [
         ["init", "-b", "main"],
@@ -178,8 +185,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       });
 
       yield* git(cwd, ["switch", "-c", "t3/feature"]);
-      yield* git(cwd, [...commit, "-m", "one"]);
-      yield* git(cwd, [...commit, "-m", "two"]);
+      yield* change("one");
+      yield* change("two");
       yield* fileSystem.writeFileString(`${cwd}/notes.txt`, "draft");
       assert.deepEqual(yield* workflow.unmergedWork({ cwd }), {
         refName: "t3/feature",
@@ -200,7 +207,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
         headSha: head.commitSha,
       };
       assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
-      yield* git(cwd, [...commit, "-m", "after merge"]);
+      yield* change("after-merge");
       assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 3);
 
       // Shipped from another checkout: the local default ref lags until the check fetches it.
@@ -209,6 +216,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       yield* git(cwd, ["update-ref", "refs/remotes/origin/main", staleMain.commitSha]);
       pullRequest = null;
       assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
+
+      // The same change reached the default branch under another SHA (cherry-pick, rebase).
+      yield* git(cwd, ["switch", "-c", "t3/picked"]);
+      yield* change("picked");
+      yield* git(cwd, ["switch", "-c", "other", "HEAD~1"]);
+      yield* change("picked");
+      yield* git(cwd, ["push", "origin", "other:main"]);
+      yield* git(cwd, ["switch", "t3/picked"]);
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
+      yield* change("real-work");
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 1);
       assert.deepEqual(yield* workflow.unmergedWork({ cwd: `${root}/missing` }), {
         refName: null,
         changedFileCount: 0,

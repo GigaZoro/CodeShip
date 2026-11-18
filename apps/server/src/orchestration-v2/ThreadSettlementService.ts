@@ -8,6 +8,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
+  isListedThreadLineage,
   isOrchestrationV2WorkActive,
   type ThreadId,
   type OrchestrationV2DomainEvent,
@@ -181,8 +182,14 @@ export function dropExpiredHolds<K>(holds: Map<K, number>, nowMs: number): void 
   for (const [key, untilMs] of holds) if (untilMs <= nowMs) holds.delete(key);
 }
 
+/** The fields the inactivity and pull request rules read; delegated children add their parent's. */
+type SettlementRuleThread = Omit<
+  ProjectionStore.ProjectionSettlementCandidate,
+  "parentWorktreePath" | "parentResultAt" | "parentDone"
+>;
+
 export function isAutoSettlementCandidate(
-  thread: Omit<ProjectionStore.ProjectionSettlementCandidate, "latestUserAuthoredMessageAt">,
+  thread: Omit<SettlementRuleThread, "latestUserAuthoredMessageAt">,
   nowMs: number,
 ): boolean {
   if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
@@ -233,8 +240,45 @@ export function isSnoozed(
   return !wokeOnError;
 }
 
+/**
+ * A subagent or side chat in its parent's worktree leaves the worktree to the parent, as storage
+ * cleanup does: the parent keeps its unmerged work in view and runs its settle action.
+ */
+function sharesParentWorktree(
+  thread: Pick<
+    ProjectionStore.ProjectionSettlementCandidate,
+    "lineage" | "worktreePath" | "parentWorktreePath"
+  >,
+): boolean {
+  return (
+    thread.worktreePath !== null &&
+    thread.worktreePath === thread.parentWorktreePath &&
+    !isListedThreadLineage(thread.lineage)
+  );
+}
+
+/**
+ * A subagent whose parent holds the result of its latest task, with no run of its own since, has
+ * nothing left to do, whatever the inactivity and merge settings say. It settles at the run that
+ * produced the result, or at the result for a provider-native subagent, which has no runs.
+ */
+function deliveredChildSettlementAt(
+  thread: ProjectionStore.ProjectionSettlementCandidate,
+  nowMs: number,
+): DateTime.Utc | null {
+  const resultAtMs = toMillis(thread.parentResultAt);
+  if (thread.lineage.relationshipToParent !== "subagent" || resultAtMs === null) return null;
+  if (!isAutoSettlementCandidate(thread, nowMs)) return null;
+  // A watched pull request will still wake the child.
+  if ((thread.pullRequests ?? []).some((link) => link.watch !== undefined)) return null;
+  if (thread.latestRunId === null) return thread.parentResultAt;
+  const ranAt = thread.latestRunCompletedAt;
+  if (thread.status !== "completed" || ranAt == null) return null;
+  return DateTime.toEpochMillis(ranAt) <= resultAtMs ? ranAt : null;
+}
+
 export function resolveAutoSettlementAt(input: {
-  readonly thread: ProjectionStore.ProjectionSettlementCandidate;
+  readonly thread: SettlementRuleThread;
   readonly pullRequest: SettlementPullRequest | null;
   readonly nowMs: number;
   readonly autoSettleAfterDays: number | null;
@@ -519,6 +563,7 @@ export const make = Effect.gen(function* () {
     // A thread that is not a candidate now (still running) must not keep a merged PR's quiet entry.
     if (mergedPullRequest !== null) yield* pauseQuietReads();
     const settings = yield* settingsService.getSettings;
+    // Subagents settle with their parent or on their result even when no inactivity or merge rule is on.
     const automaticSettlementEnabled = autoSettlementConfigured(settings);
     if (threadId === undefined) {
       // An archived, deleted or hand-settled thread is no candidate, so only this drops its hold.
@@ -547,9 +592,11 @@ export const make = Effect.gen(function* () {
     // Runs per candidate thread, thousands per sweep on busy servers; the sweep owns the span.
     const settleThread = Effect.fnUntraced(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
-        if (thread.lineage.relationshipToParent === "subagent") {
-          // The store returns a subagent only once its parent is done, so it
-          // settles with the parent and never runs its own lookup.
+        const decisionNowMs = DateTime.toEpochMillis(yield* DateTime.now);
+        // The store returns a subagent only once its parent is done or holds its result, so it
+        // settles with the parent or on the result and never runs its own lookup.
+        const subagent = thread.lineage.relationshipToParent === "subagent";
+        if (subagent && thread.parentDone) {
           const uuid = yield* random.uuidV4();
           yield* orchestrator.dispatch({
             type: "thread.auto-settle",
@@ -559,37 +606,46 @@ export const make = Effect.gen(function* () {
           });
           return null;
         }
+        const deliveredAt = deliveredChildSettlementAt(thread, decisionNowMs);
+        if (subagent && deliveredAt === null) return null;
         // thread.auto-settle does not recheck settings, so read them per decision; reads are cached.
         const currentSettings = resolveProjectSettings(
           yield* settingsService.getSettings,
           thread.projectId,
         ).settings;
-        const decisionNow = yield* DateTime.now;
-        const settledAt = resolveAutoSettlementAt({
-          thread,
-          pullRequest,
-          nowMs: DateTime.toEpochMillis(decisionNow),
-          autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
-          autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
-          autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
-        });
+        const settledAt =
+          deliveredAt ??
+          resolveAutoSettlementAt({
+            thread,
+            pullRequest,
+            nowMs: decisionNowMs,
+            autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
+            autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
+            autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
+          });
         if (settledAt === null) return thread;
         if (
+          !sharesParentWorktree(thread) &&
           !(yield* releasesUnmergedWork(
             thread,
             currentSettings.sidebarAutoSettleOpensPullRequests,
-            DateTime.toEpochMillis(decisionNow),
+            decisionNowMs,
           ))
         ) {
           return null;
         }
         const uuid = yield* random.uuidV4();
+        // Its own prefix keeps settles on delivery apart from inactivity and merge settles.
+        const rule = deliveredAt === null ? "auto-settle" : "settle-delivered-child";
         yield* orchestrator.dispatch({
           type: "thread.auto-settle",
-          commandId: CommandId.make(`server:auto-settle:${thread.id}:${uuid}`),
+          commandId: CommandId.make(`server:${rule}:${thread.id}:${uuid}`),
           threadId: thread.id,
           snapshotAt: thread.updatedAt,
           settledAt,
+          ...(deliveredAt === null || thread.parentResultAt === null
+            ? {}
+            : { parentResultAt: thread.parentResultAt }),
         });
         return null;
       },
@@ -899,24 +955,20 @@ export const make = Effect.gen(function* () {
       yield* terminals.closeOnSettle({ threadId });
       const worktreePath = settled.worktreePath;
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
+      const parentThreadId = settled.lineage.parentThreadId;
+      const parentWorktreePath =
+        parentThreadId === null
+          ? null
+          : yield* projections.getThread(parentThreadId).pipe(
+              Effect.map((parent) => parent.worktreePath),
+              Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+            );
+      if (sharesParentWorktree({ ...settled, parentWorktreePath })) return;
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
       const settledAtMs = toMillis(thread.settledAt);
       if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
-      // The parent's worktree belongs to the parent; shared-worktree children
-      // skip duplicate cleanup there.
-      if (
-        thread.lineage.relationshipToParent === "subagent" &&
-        thread.lineage.parentThreadId !== null
-      ) {
-        const parent = yield* projections.getThread(thread.lineage.parentThreadId).pipe(
-          Effect.catchTags({
-            ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
-          }),
-        );
-        if (parent?.worktreePath === worktreePath) return;
-      }
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,
@@ -955,10 +1007,14 @@ export const make = Effect.gen(function* () {
       case "run.background-work-cancelled":
         return enqueueThread(event.threadId);
       // Sweep only when the work can have ended: progress updates cannot settle anything.
-      case "subagent.updated":
-        return isOrchestrationV2WorkActive(event.payload.status)
-          ? Effect.void
-          : enqueueThread(event.threadId);
+      case "subagent.updated": {
+        if (isOrchestrationV2WorkActive(event.payload.status)) return Effect.void;
+        // The parent's result is what settles a delegated child.
+        const childThreadId = event.payload.childThreadId;
+        return childThreadId === null
+          ? enqueueThread(event.threadId)
+          : Effect.andThen(enqueueThread(event.threadId), enqueueThread(childThreadId));
+      }
       case "provider-thread.updated":
         return backgroundWorkHoldsCompletion(event.payload.pendingBackgroundTasks ?? [])
           ? Effect.void

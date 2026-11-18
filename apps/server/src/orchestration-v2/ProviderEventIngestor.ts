@@ -17,6 +17,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -391,6 +392,56 @@ export const layer: Layer.Layer<
         );
       },
     );
+
+    /**
+     * A resumed native subagent works on its parent's run, so no message reopens its settled thread
+     * or, as a message does, ends a hand-set active state once its task starts again after it.
+     * Read under the child's lock: a settle checked before this task started may still be committing.
+     */
+    const reopenResumedSubagentThread = Effect.fn(
+      "ProviderEventIngestor.reopenResumedSubagentThread",
+    )(function* (input: ProviderEventIngestInput, subagent: OrchestrationV2Subagent) {
+      const { childThreadId, startedAt } = subagent;
+      if (
+        subagent.origin !== "provider_native" ||
+        childThreadId === null ||
+        !isOrchestrationV2WorkActive(subagent.status)
+      ) {
+        return [];
+      }
+      return yield* threadCommands.withLock(
+        childThreadId,
+        Effect.gen(function* () {
+          const thread = yield* projections
+            .getThread(childThreadId)
+            .pipe(
+              Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+            );
+          if (thread === null) return [];
+          const keptActiveAt = thread.unsettledAt ?? null;
+          const restartedSinceKeptActive =
+            thread.settledOverride === "active" &&
+            startedAt !== null &&
+            keptActiveAt !== null &&
+            DateTime.toEpochMillis(startedAt) > DateTime.toEpochMillis(keptActiveAt);
+          if (thread.settledOverride !== "settled" && !restartedSinceKeptActive) return [];
+          const now = yield* DateTime.now;
+          const event = yield* makeDomainEvent(input, {
+            type: "thread.unsettled",
+            threadId: thread.id,
+            payload: {
+              ...thread,
+              settledOverride: null,
+              settledAt: null,
+              unsettledAt: restartedSinceKeptActive ? keptActiveAt : now,
+              updatedAt: now,
+            },
+            occurredAt: now,
+          });
+          return yield* eventSink.write({ events: [event] }).pipe(retryLockTimeout);
+        }),
+      );
+    });
 
     /** Retire rewound runs like CheckpointRollbackService; retain the reporting run and its lastRunOrdinal. */
     const rollBackRewoundRuns = Effect.fn("ProviderEventIngestor.rollBackRewoundRuns")(function* (
@@ -1008,8 +1059,11 @@ export const layer: Layer.Layer<
               Effect.flatMap((storedEvents) =>
                 storedEvents.length === 0 || input.event.type !== "subagent.updated"
                   ? Effect.succeed(storedEvents)
-                  : syncSubagentThreadModel(input, input.event.subagent).pipe(
-                      Effect.map((synced) => [...storedEvents, ...synced]),
+                  : Effect.all([
+                      syncSubagentThreadModel(input, input.event.subagent),
+                      reopenResumedSubagentThread(input, input.event.subagent),
+                    ]).pipe(
+                      Effect.map(([synced, reopened]) => [...storedEvents, ...synced, ...reopened]),
                       Effect.mapError(
                         (cause) =>
                           new ProviderEventPublishError({

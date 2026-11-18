@@ -2442,6 +2442,145 @@ layer("ProviderEventIngestorV2", (it) => {
       ),
     ),
   );
+
+  it.effect("reopens a native subagent's thread when its task resumes", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const rootEvent = yield* threadCreatedEvent(now);
+      if (rootEvent.type !== "thread.created") {
+        throw new Error("Expected a thread.created fixture event");
+      }
+      const childThreadId = idAllocator.derive.threadFromProviderThread({
+        driver: CODEX_DRIVER,
+        nativeThreadId: "native-resumed-subagent",
+      });
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: rootEvent.threadId,
+      });
+      const ingest = (event: ProviderEventIngestor.ProviderEventIngestInput["event"]) =>
+        ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId: rootEvent.threadId,
+          event,
+        });
+      const task = (status: "running" | "completed", startedAt = now) =>
+        ({
+          type: "subagent.updated",
+          driver: CODEX_DRIVER,
+          subagent: {
+            id: NodeId.make("node:resumed-subagent"),
+            threadId: rootEvent.threadId,
+            runId: null,
+            parentNodeId: NodeId.make("node:root"),
+            origin: "provider_native",
+            createdBy: "agent",
+            driver: CODEX_DRIVER,
+            providerInstanceId: modelSelection.instanceId,
+            providerThreadId: null,
+            childThreadId,
+            nativeTaskRef: null,
+            prompt: "Review the design",
+            title: "review design",
+            model: null,
+            status,
+            result: status === "completed" ? "Looks good" : null,
+            startedAt,
+            completedAt: status === "completed" ? now : null,
+            updatedAt: now,
+          },
+        }) satisfies ProviderEventIngestor.ProviderEventIngestInput["event"];
+      yield* eventSink.write({ events: [rootEvent] });
+      yield* ingest({
+        type: "app_thread.created",
+        driver: CODEX_DRIVER,
+        appThread: {
+          ...rootEvent.payload,
+          id: childThreadId,
+          title: "review design",
+          activeProviderThreadId: null,
+          lineage: {
+            parentThreadId: rootEvent.threadId,
+            relationshipToParent: "subagent",
+            rootThreadId: rootEvent.threadId,
+          },
+        },
+      });
+      yield* ingest(task("completed"));
+      yield* eventSink.write({
+        events: [
+          {
+            id: yield* idAllocator.allocate.event(),
+            type: "thread.settled",
+            threadId: childThreadId,
+            occurredAt: now,
+            payload: {
+              ...(yield* projectionStore.getThread(childThreadId)),
+              settledOverride: "settled",
+              settledAt: now,
+              updatedAt: now,
+            },
+          },
+        ],
+      });
+
+      const resumed = yield* ingest(task("running"));
+      const progressed = yield* ingest(task("running"));
+
+      assert.deepEqual(
+        resumed.map((stored) => [stored.event.type, stored.event.threadId]),
+        [
+          ["subagent.updated", rootEvent.threadId],
+          ["thread.unsettled", childThreadId],
+        ],
+      );
+      assert.deepEqual(
+        progressed.map((stored) => stored.event.type),
+        ["subagent.updated"],
+      );
+      assert.deepInclude(yield* projectionStore.getThread(childThreadId), {
+        settledOverride: null,
+        settledAt: null,
+        unsettledAt: now,
+      });
+
+      // Kept active by hand, it returns to automatic settling once its task starts again, as a
+      // message would end that; progress on the task it was kept during does not.
+      const keptActiveAt = DateTime.add(now, { minutes: 1 });
+      yield* eventSink.write({
+        events: [
+          {
+            id: yield* idAllocator.allocate.event(),
+            type: "thread.unsettled",
+            threadId: childThreadId,
+            occurredAt: keptActiveAt,
+            payload: {
+              ...(yield* projectionStore.getThread(childThreadId)),
+              settledOverride: "active",
+              unsettledAt: keptActiveAt,
+              updatedAt: keptActiveAt,
+            },
+          },
+        ],
+      });
+      const keptActive = yield* ingest(task("running"));
+      const restarted = yield* ingest(task("running", DateTime.add(now, { minutes: 2 })));
+
+      assert.deepEqual(
+        [keptActive, restarted].map((stored) => stored.map(({ event }) => event.type)),
+        [["subagent.updated"], ["subagent.updated", "thread.unsettled"]],
+      );
+      assert.deepInclude(yield* projectionStore.getThread(childThreadId), {
+        settledOverride: null,
+        unsettledAt: keptActiveAt,
+      });
+    }),
+  );
 });
 
 const ingestCompletedProviderTurn = (

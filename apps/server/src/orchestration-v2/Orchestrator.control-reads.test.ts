@@ -2568,6 +2568,117 @@ it.effect("keeps a snooze when a live question is cancelled or an approval is an
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("settling a native child rejects while its parent's task on it works again", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const parentThreadId = ThreadId.make("thread:settle-child-parent");
+    const childThreadId = ThreadId.make("thread:settle-child");
+    const createdAt = yield* DateTime.now;
+    for (const [threadId, relationshipToParent] of [
+      [parentThreadId, null],
+      [childThreadId, "subagent"],
+    ] as const) {
+      yield* projections.apply({
+        id: EventId.make(`event:create:${threadId}`),
+        type: "thread.created",
+        threadId,
+        occurredAt: createdAt,
+        payload: {
+          createdBy: "agent",
+          creationSource: "provider",
+          id: threadId,
+          projectId: ProjectId.make("project:settle-child"),
+          title: threadId,
+          providerInstanceId: instanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: {
+            parentThreadId: relationshipToParent === null ? null : parentThreadId,
+            relationshipToParent,
+            rootThreadId: parentThreadId,
+          },
+          forkedFrom: null,
+          createdAt,
+          updatedAt: createdAt,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+    }
+    // A provider-native subagent's turns run on its parent's run and never touch its own thread.
+    const recordTask = (status: "running" | "completed", at: DateTime.Utc) => {
+      const id = NodeId.make("node:settle-child-task");
+      const driver = ProviderDriverKind.make("codex");
+      return projections.apply({
+        id: EventId.make(`event:settle-child-task:${status}:${DateTime.toEpochMillis(at)}`),
+        type: "subagent.updated",
+        threadId: parentThreadId,
+        nodeId: id,
+        driver,
+        providerInstanceId: instanceId,
+        occurredAt: at,
+        payload: {
+          id,
+          threadId: parentThreadId,
+          runId: null,
+          parentNodeId: NodeId.make("node:settle-child-parent"),
+          origin: "provider_native",
+          createdBy: "agent",
+          driver,
+          providerInstanceId: instanceId,
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Do the work",
+          title: "Child task",
+          model: null,
+          status,
+          result: status === "completed" ? "Done" : null,
+          startedAt: createdAt,
+          completedAt: status === "completed" ? at : null,
+          updatedAt: at,
+        },
+      });
+    };
+    const settle = (name: string, settledAt: DateTime.Utc, parentResultAt?: DateTime.Utc) =>
+      orchestrator.dispatch({
+        type: "thread.auto-settle",
+        commandId: CommandId.make(`settle-delivered-child-${name}`),
+        threadId: childThreadId,
+        snapshotAt: createdAt,
+        settledAt,
+        ...(parentResultAt === undefined ? {} : { parentResultAt }),
+      });
+    const settleOnResult = (name: string, parentResultAt: DateTime.Utc) =>
+      settle(name, parentResultAt, parentResultAt);
+    const firstResultAt = DateTime.add(createdAt, { minutes: 1 });
+    yield* recordTask("completed", firstResultAt);
+    yield* recordTask("running", DateTime.add(createdAt, { minutes: 2 }));
+    const stale = yield* settleOnResult("stale", firstResultAt).pipe(Effect.flip);
+    assert.instanceOf(stale, Orchestrator.OrchestratorDispatchError);
+    // The inactivity rule reads the child's own thread, which the working task leaves untouched.
+    const inactive = yield* settle("inactive", createdAt).pipe(Effect.flip);
+    assert.instanceOf(inactive, Orchestrator.OrchestratorDispatchError);
+    assert.isNull((yield* projections.getThread(childThreadId)).settledOverride);
+
+    const secondResultAt = DateTime.add(createdAt, { minutes: 3 });
+    yield* recordTask("completed", secondResultAt);
+    yield* settleOnResult("current", secondResultAt);
+    assert.deepInclude(yield* projections.getThread(childThreadId), {
+      settledOverride: "settled",
+      settledAt: secondResultAt,
+    });
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("dispatch records the command outcome and its duration", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

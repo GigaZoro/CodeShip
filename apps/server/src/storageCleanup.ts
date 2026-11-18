@@ -461,7 +461,9 @@ const make = Effect.gen(function* () {
             if (stat.type !== "File" || Option.getOrElse(stat.nlink, () => 1n) !== 1n) return empty;
             const bytes = Option.match(stat.blocks, {
               onNone: () => Number(stat.size),
-              onSome: (blocks) => Number(blocks * 512n),
+              // Node reports zero blocks for every file on Windows.
+              onSome: (blocks) =>
+                isWindows && blocks === 0n ? Number(stat.size) : Number(blocks * 512n),
             });
             return { ...empty, bytes };
           }),
@@ -1515,13 +1517,19 @@ const make = Effect.gen(function* () {
             args: ["merge-base", "--is-ancestor", head.commitSha, base.commitSha],
             allowNonZeroExit: true,
           });
-          const integrated = ancestor.exitCode === 0;
+          // Work that reached the default branch under other SHAs (cherry-pick, a rebase shipped
+          // from another worktree) counts as integrated too.
+          const integrated =
+            ancestor.exitCode === 0 ||
+            (yield* git
+              .countUnmergedCommits({ cwd: worktreePath, baseRef: base.commitSha })
+              .pipe(Effect.orElseSucceed(() => 1))) === 0;
           eligible = integrated && unchangedApplies;
           if (eligible)
             removalReason =
               remote === null
                 ? "no commits beyond the project branch"
-                : "no commits beyond the default branch";
+                : "its changes are on the default branch";
           if (!eligible && remote !== null && settings.worktreeOnMerge && thread.branch !== null) {
             const pullRequest = yield* gitManager.branchPullRequest(
               { cwd: worktreePath, branch: thread.branch },

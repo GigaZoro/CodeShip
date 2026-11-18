@@ -16,6 +16,24 @@
 - Maintainers: `node scripts/upstream-sync.ts begin` on a sync branch a held run pushed now reports `resumed` and keeps the upstream that branch merged, also when upstream has new commits since. It used to start a second upstream merge on top of the resolved one.
 - Maintainers: when `node scripts/upstream-sync.ts land` merges a main whose newest release-notes entry is newer than the sync's entries, the sync's entries now take that date, so the notes it puts on top stay newest first. Before, the release-notes check rejected them. When the new date would repeat a heading, `land` holds on the release-notes conflict instead.
 
+## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
+
+- A subagent, or a chat an agent handed a task to with `delegate_task` on this machine, now settles as soon as its parent has its result, as a task delegated to another machine already did. Before, it settled only after three days of inactivity, so finished children stayed active in the Agents list. One whose task failed or was interrupted, or that is waiting, queued, working again or still running background work, stays active, and a settled subagent its parent picks up again returns to the active list. This applies even with automatic settlement turned off. Children that had already finished settle at the first check after the update, at the time they finished.
+- A subagent or side chat working in its parent's worktree now leaves that worktree to the parent: settling it no longer runs the project's settle action there, and the parent's unmerged work no longer keeps it active or opens a pull request from it.
+- Maintainers: these settles carry the command id prefix `server:settle-delivered-child:`, and their `settledAt` is the time the child finished, so measure how long settling took from the `thread.settled` event's time.
+
+## 2026-11-18 — Cleanup removes a worktree whose work reached the default branch under other commits
+
+- Storage cleanup now removes a settled thread's unchanged worktree when its changes are already on the default branch, even if they got there by cherry-pick or a rebase shipped from another worktree. Before, only a worktree whose commits were themselves on the default branch was removed, so such worktrees piled up. The unmerged-work warning when settling a thread uses the same check, so it no longer counts those commits either.
+
+## 2026-11-18 — Storage cleanup reports freed space and broken checkouts correctly on Windows
+
+- On Windows, the storage cleanup report showed 0 bytes for every removed worktree, because Node reports no allocated blocks there. It now counts file sizes, so the freed space is right. A checkout whose `.git` file names a missing folder is now also treated as no longer a repository, as on other systems, so cleanup keeps it instead of reporting a Git error.
+
+## 2026-11-18 — Script tests fit their time limit on a loaded machine
+
+- The `scripts` cache test and Knip schema test each ran several slow subprocess steps in one test, 50 to 70 s on a busy machine against a 60 s limit. Each behaviour is now its own test with its own budget. No change to the app.
+
 ## 2026-11-18 — Lint rejects two tests with the same name in one file
 
 - A merge that kept both sides of a test file could leave two tests with one name, and Vitest reports them together so a stale copy hid. The new `t3code/no-duplicate-test-title` lint rule fails a file with two same-named tests in one describe block, including `it.effect` and `it.live`, which the built-in rule skips. No change to the app.

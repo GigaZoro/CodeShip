@@ -413,22 +413,22 @@ Threads** to keep these threads active instead. A thread also stays active when
 its pull request cannot be opened, for example in a repository without a remote.
 A thread whose pull request was closed settles without a new one.
 
-A thread you never wrote in, such as a scheduled run or a chat an agent started,
-never gets a pull request this way: where a thread you wrote in would get one, it
-stays active instead, because the task or agent that started it decides how that
-work lands. Once you write in it from the app, it is treated like any thread you
-wrote in. Messages T3.CodeShip sends for you, such as the automatic "continue"
-after a network or usage-limit stop, do not count. A subagent never gets one
-either: it settles once its parent thread settles, is archived or is deleted, even
-while the rules in **Settings → Threads** are off. A subagent that is pinned,
-snoozed, set to **Never**, or still working or waiting on you stays active.
+A thread you never wrote in, such as a scheduled run, a subagent or a chat an
+agent started, never gets a pull request this way: where a thread you wrote in
+would get one, it stays active instead, because the task or agent that started
+it decides how that work lands. Once you write in it from the app, it is treated
+like any thread you wrote in. Messages T3.CodeShip sends for you, such as the
+automatic "continue" after a network or usage-limit stop, do not count. A
+subagent or side chat working in its parent's worktree leaves that work to the
+parent and settles without this check, and so does a subagent whose parent is done.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a
 `t3.json` script, for example `cargo clean`. It runs each time a thread in its own
 worktree settles, manually or automatically, even if a terminal there still runs a
-command such as a dev server. Threads in the project's main checkout skip it. Its terminal
-closes when the command succeeds and stays open when it fails.
+command such as a dev server. Threads in the project's main checkout skip it, and so do
+subagents and side chats working in their parent's worktree. Its terminal closes when the
+command succeeds and stays open when it fails.
 
 On web and desktop, press a thread's **Settle** button and drag up or down to
 settle every thread in that section between it and the one you release on.
@@ -445,11 +445,18 @@ but an old closed or merged pull request does not settle work you
 resumed after it closed. Only your own messages count as resuming. A turn that
 finished background work or a pull request watch starts on its own does not.
 
+A subagent, including a chat an agent hands a task to with `delegate_task`, settles as soon as
+its parent has its result, even with these rules turned off. One whose task failed or was
+interrupted, or that ran again since, settles once its parent settles, is archived or is
+deleted. A subagent that is pinned, snoozed, set to **Never**, or still working, queued,
+waiting on you or running background work stays active. A settled subagent its parent picks
+up again returns to the active list.
+
 To keep one thread out of the settled shelf no matter how long it sits idle, open its menu,
 choose **Auto-settle behavior**, and pick **Never**. The current option is checked. Pick
 **Follow settings** to return to the rules in **Settings → Threads**. While those rules are off,
 a thread on **Follow settings** does not settle automatically either, except a subagent whose
-parent is done. Manual settle, snooze, and
+parent has its result or is done. Manual settle, snooze, and
 archive still work while it is set to **Never**.
 
 Change these rules in **Settings → Threads**.
