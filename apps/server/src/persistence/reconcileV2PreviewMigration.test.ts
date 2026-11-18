@@ -76,6 +76,7 @@ describe("V2 preview upgrade", () => {
         [94, "PullRequestReviewGuideLanguages"],
         [95, "CommandRunLossEvidence"],
         [96, "MonitoringThreadAnalyses"],
+        [97, "NodePayloadWithoutColumnKeys"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -195,6 +196,7 @@ describe("V2 preview upgrade", () => {
         [94, "PullRequestReviewGuideLanguages"],
         [95, "CommandRunLossEvidence"],
         [96, "MonitoringThreadAnalyses"],
+        [97, "NodePayloadWithoutColumnKeys"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

@@ -103,6 +103,7 @@ import Migration0093 from "./Migrations/093_ManualStepReviewLanguages.ts";
 import Migration0094 from "./Migrations/094_PullRequestReviewGuideLanguages.ts";
 import Migration0095 from "./Migrations/095_CommandRunLossEvidence.ts";
 import Migration0096 from "./Migrations/096_MonitoringThreadAnalyses.ts";
+import Migration0097 from "./Migrations/097_NodePayloadWithoutColumnKeys.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -202,6 +203,7 @@ const migrationEntries = [
   [94, "PullRequestReviewGuideLanguages", Migration0094],
   [95, "CommandRunLossEvidence", Migration0095],
   [96, "MonitoringThreadAnalyses", Migration0096],
+  [97, "NodePayloadWithoutColumnKeys", Migration0097],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

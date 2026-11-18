@@ -7702,7 +7702,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         1,
       );
       assert.lengthOf(
-        statements.filter((statement) => statement.includes("SELECT node.payload_json")),
+        statements.filter((statement) => statement.includes("json_set(node.payload_json")),
         1,
       );
       assert.lengthOf(boundedFork.projection.turnItems, 0);

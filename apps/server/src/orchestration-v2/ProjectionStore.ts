@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
+import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -1356,6 +1357,12 @@ function parseEncodedPayload(json: string): Record<string, unknown> {
   return JSON.parse(json) as Record<string, unknown>;
 }
 
+function canonicalPayload(json: string): string {
+  return JSON.stringify(
+    Object.entries(parseEncodedPayload(json)).toSorted(([a], [b]) => (a < b ? -1 : 1)),
+  );
+}
+
 function stringField(payload: Record<string, unknown>, field: string): string {
   const value = payload[field];
   return typeof value === "string" ? value : String(value);
@@ -2375,7 +2382,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ${event.payload.providerTurnId},
                 ${nullableStringField(payload, "startedAt")},
                 ${nullableStringField(payload, "completedAt")},
-                ${payloadJson}
+                ${stripNodePayloadColumns(payload)}
               )
               ON CONFLICT(node_id)
               DO UPDATE SET
@@ -3558,7 +3565,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ? Effect.succeed([])
             : window === undefined
               ? sql<PayloadRow>`
-            SELECT payload_json
+            SELECT ${sql.literal(nodePayloadSql("node"))} AS payload_json
             FROM orchestration_v2_projection_nodes AS node
             WHERE node.thread_id = ${threadId}
               ${filter?.nodeIds === undefined ? sql`` : sql`AND node.node_id IN (SELECT value FROM json_each(${encodeIdList(filter.nodeIds)}))`}
@@ -3581,7 +3588,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : sql<PayloadRow & { readonly position: number }>`
             -- Keep retained IDs outermost so SQLite looks up each node by its
             -- primary key instead of scanning every historical node in the thread.
-            SELECT node.payload_json, retained.key AS position
+            SELECT ${sql.literal(nodePayloadSql("node"))} AS payload_json, retained.key AS position
             FROM json_each(${cohortNodeIds}) AS retained
             CROSS JOIN orchestration_v2_projection_nodes AS node
               ON node.node_id = retained.value
@@ -5020,7 +5027,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT rowid AS row_id, ${sql(table.id)} AS entity_id,
                 ${sql(table.name === "context_transfers" ? "source_thread_id" : "thread_id")} AS thread_id,
                 ${table.name === "context_transfers" ? sql`target_thread_id` : sql`NULL`} AS target_thread_id,
-                payload_json
+                ${table.name === "nodes" ? sql.literal(`${nodePayloadSql()} AS payload_json`) : sql`payload_json`}
               FROM ${sql(`orchestration_v2_projection_${table.name}`)}
               WHERE rowid > ${afterRowId}
               ORDER BY rowid ASC LIMIT ${pageSize}
@@ -5095,7 +5102,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE thread_id = ${threadId} ORDER BY run_id ASC, attempt_ordinal ASC
             `.pipe(Effect.flatMap(decodeRows(decodeRunAttemptPayload, threadId)));
             const nodes = yield* sql<PayloadRow>`
-              SELECT payload_json FROM orchestration_v2_projection_nodes
+              SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes
               -- Look up the root node by key, not every node in the thread.
               INDEXED BY sqlite_autoindex_orchestration_v2_projection_nodes_1
               WHERE thread_id = ${threadId} AND node_id IN (SELECT json_extract(payload_json, '$.rootNodeId') FROM orchestration_v2_projection_runs WHERE thread_id = ${threadId} AND run_id = ${runId}) ORDER BY node_id ASC
@@ -5283,7 +5290,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY attempt.run_id ASC, attempt.attempt_ordinal ASC
             `,
             sql<PayloadRow>`
-              SELECT node.payload_json FROM orchestration_v2_projection_nodes AS node
+              SELECT ${sql.literal(nodePayloadSql("node"))} AS payload_json FROM orchestration_v2_projection_nodes AS node
               WHERE node.thread_id = ${threadId}
                 AND node.status IN ('pending', 'starting', 'running', 'waiting')
                 AND (
@@ -5605,7 +5612,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             )(rows)).filter((request) => request.responseCapability.type !== "message");
             if (runtimeRequests.length === 0) return { runtimeRequests, nodes: [], turnItems: [] };
             const nodeRows = yield* sql<PayloadRow>`
-          SELECT payload_json FROM orchestration_v2_projection_nodes
+          SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes
           WHERE thread_id = ${threadId} AND ${sql.in(
             "node_id",
             runtimeRequests.map((request) => request.nodeId),
@@ -5695,9 +5702,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       function* (node) {
         const payloadJson = yield* encodeNodePayload(node);
         const rows = yield* sql<PayloadRow>`
-          SELECT payload_json FROM orchestration_v2_projection_nodes WHERE node_id = ${node.id}
+          SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes WHERE node_id = ${node.id}
         `;
-        return rows[0]?.payload_json === payloadJson;
+        return (
+          rows[0] !== undefined &&
+          canonicalPayload(rows[0].payload_json) === canonicalPayload(payloadJson)
+        );
       },
       (effect, node) => effect.pipe(Effect.mapError(controlReadError(node.threadId))),
     );
@@ -5861,7 +5871,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             if (request === undefined)
               return { request, node: undefined, item: undefined, session: undefined };
             const nodeRows =
-              yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_nodes
+              yield* sql<PayloadRow>`SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes
           WHERE thread_id = ${threadId} AND node_id = ${request.nodeId}`;
             const itemRows =
               yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_turn_items
@@ -5963,7 +5973,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ? undefined
                 : yield* decodeRunPayload(runRows[0].payload_json);
             const [nodeRows, scopeRows, providerRows, readyRows] = yield* Effect.all([
-              sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_nodes
+              sql<PayloadRow>`SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes
             WHERE thread_id = ${threadId} AND node_id = ${run?.rootNodeId ?? null}`,
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_checkpoint_scopes
             WHERE thread_id = ${threadId} AND scope_id = ${target.scopeId}`,
@@ -6085,7 +6095,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const targetAttempt = (yield* decodeRollbackTargetAttempts(attemptRows))[0];
             const laterRuns = yield* decodeRows(decodeRunPayload, threadId)(runRows);
             const [nodeRows, turnRows] = yield* Effect.all([
-              sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_nodes
+              sql<PayloadRow>`SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes
             WHERE thread_id = ${threadId} AND ${sql.in(
               "node_id",
               laterRuns.map((run) => run.rootNodeId),
