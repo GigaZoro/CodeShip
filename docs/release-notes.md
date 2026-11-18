@@ -1,4 +1,4 @@
-## 2026-11-16 — Updates from T3 Code
+## 2026-11-18 — Updates from T3 Code
 
 - A first run now opens one Welcome page instead of a three-step wizard.
 - Kiro joins the providers, and Claude Fable 5.2 is in the model picker. The picker checks for new models when it opens, and you can @-mention a model in the composer to name it for the agent.
@@ -9,9 +9,10 @@
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
 - In Ukrainian, the mobile app also translates the message of its alerts for an archived project, a draft or pending task being discarded, triage that could not start, and a server that could not be deregistered.
 
-## 2026-11-16 — A held upstream sync resumes after upstream moves on
+## 2026-11-18 — A held upstream sync resumes after upstream moves on
 
 - Maintainers: `node scripts/upstream-sync.ts begin` on a sync branch a held run pushed now reports `resumed` and keeps the upstream that branch merged, also when upstream has new commits since. It used to start a second upstream merge on top of the resolved one.
+- Maintainers: when `node scripts/upstream-sync.ts land` merges a main whose newest release-notes entry is newer than the sync's entries, the sync's entries now take that date, so the notes it puts on top stay newest first. Before, the release-notes check rejected them.
 
 ## 2026-11-18 — The eval for setting a Claude account's Auto-compact after has run
 

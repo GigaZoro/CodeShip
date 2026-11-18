@@ -10,6 +10,7 @@ export const RUN_LIMIT_MS = 3 * 60 * 60 * 1000;
 
 const STATE_FILE = "upstream-sync.json";
 const RELEASE_NOTES = "docs/release-notes.md";
+const DATED_HEADING = /^## (\d{4}-\d{2}-\d{2}) — /gm;
 const UPSTREAM_URL = "https://github.com/pingdotgg/t3code.git";
 
 interface MergeAttempt {
@@ -147,7 +148,10 @@ export function status(worktree: string, now: Date): SyncStatus {
   };
 }
 
-/** Both sides only prepend entries, so the result is this branch's new entries above main's file. */
+/**
+ * Both sides only prepend entries, so the result is this branch's new entries above main's file.
+ * Entries run newest first, so a branch entry older than main's newest takes that date.
+ */
 function resolveReleaseNotes(worktree: string): boolean {
   // Untrimmed: the stages are compared and written byte for byte.
   const [base, ours, theirs] = [1, 2, 3].map((index) =>
@@ -157,7 +161,12 @@ function resolveReleaseNotes(worktree: string): boolean {
   const [baseText, oursText, theirsText] = [base.stdout, ours.stdout, theirs.stdout];
   if (!oursText.endsWith(baseText) || !theirsText.endsWith(baseText)) return false;
   const added = oursText.slice(0, oursText.length - baseText.length);
-  NodeFS.writeFileSync(NodePath.join(worktree, RELEASE_NOTES), added + theirsText);
+  // "" when main has no dated entry, which no date sorts below.
+  const newest = theirsText.matchAll(DATED_HEADING).next().value?.[1] ?? "";
+  const dated = added.replace(DATED_HEADING, (heading, date: string) =>
+    date < newest ? `## ${newest} — ` : heading,
+  );
+  NodeFS.writeFileSync(NodePath.join(worktree, RELEASE_NOTES), dated + theirsText);
   gitOrThrow(worktree, "add", RELEASE_NOTES);
   return true;
 }

@@ -129,14 +129,15 @@ describe("upstream sync", () => {
     expect(status(repo.sync, later(60)).mergesLeft).toBe(1);
   });
 
-  it("keeps the sync's release notes above main's new ones", () => {
+  it("keeps the sync's release notes above main's new ones, dated no older than main's", () => {
     const repo = fixture();
     begin(repo.sync, START);
-    commitFiles(repo.sync, { "docs/release-notes.md": "## sync\n## old\n" }, "notes");
-    repo.advanceMain({ "docs/release-notes.md": "## main\n## old\n" });
+    const sync = "## 2026-11-19 — Newer\n\n- a\n\n## 2026-11-16 — Older\n\n- b\n\n";
+    commitFiles(repo.sync, { "docs/release-notes.md": `${sync}## old\n` }, "notes");
+    repo.advanceMain({ "docs/release-notes.md": "## 2026-11-18 — Main\n\n- c\n\n## old\n" });
     expect(land(repo.sync, later(60))).toMatchObject({ status: "verify" });
     expect(NodeFS.readFileSync(NodePath.join(repo.sync, "docs/release-notes.md"), "utf8")).toBe(
-      "## sync\n## main\n## old\n",
+      "## 2026-11-19 — Newer\n\n- a\n\n## 2026-11-18 — Older\n\n- b\n\n## 2026-11-18 — Main\n\n- c\n\n## old\n",
     );
   });
 
