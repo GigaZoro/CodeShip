@@ -486,6 +486,7 @@ it.effect("reads and commits each thread under its command lock at shutdown", ()
         {
           id: RunId.make("run_shutdown_locked"),
           status: "running",
+          activeAttemptId: null,
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
       ],
