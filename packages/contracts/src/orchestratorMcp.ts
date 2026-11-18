@@ -670,8 +670,43 @@ export const OrchestratorMcpUsageMeter = Schema.Struct({
   usedPercent: Schema.Number,
   windowMinutes: Schema.NullOr(Schema.Number),
   resetsAt: Schema.NullOr(Schema.String),
+  /** A rate limit the reset rule counts; false for a spending cap, such as a monthly credit or spend limit. */
+  rateLimit: Schema.Boolean,
 });
 export type OrchestratorMcpUsageMeter = typeof OrchestratorMcpUsageMeter.Type;
+
+export const OrchestratorMcpResetRunReason = Schema.Literals(["plan-available", "usage-allowed"]);
+export type OrchestratorMcpResetRunReason = typeof OrchestratorMcpResetRunReason.Type;
+
+export const OrchestratorMcpResetWaitReason = Schema.Literals([
+  "unmeasured",
+  "unknown-plan-reset",
+  "stale-reading",
+  "plan-resets-soon",
+  "no-reset",
+]);
+export type OrchestratorMcpResetWaitReason = typeof OrchestratorMcpResetWaitReason.Type;
+
+/** `reset-too-far`: the plan reset was past the wait. `reset-expiring`: the reset would lapse unused. */
+export const OrchestratorMcpResetClaimReason = Schema.Literals(["reset-too-far", "reset-expiring"]);
+export type OrchestratorMcpResetClaimReason = typeof OrchestratorMcpResetClaimReason.Type;
+
+/** What the reset rule calls for on one of an account's limits. */
+export const OrchestratorMcpResetDecision = Schema.Struct({
+  /** Null for the account's own limits, always the first entry; else the model a scoped meter limits. */
+  model: Schema.NullOr(Schema.String),
+  action: Schema.Literals(["run", "wait", "claim"]),
+  reason: Schema.Union([
+    OrchestratorMcpResetRunReason,
+    OrchestratorMcpResetWaitReason,
+    OrchestratorMcpResetClaimReason,
+  ]),
+  /** The plan reset the limit waits for or a claim clears; null when it runs or that reset is unknown. */
+  until: Schema.NullOr(Schema.String),
+  /** The reset a claim spends. */
+  kind: Schema.optional(ServerProviderResetKind),
+});
+export type OrchestratorMcpResetDecision = typeof OrchestratorMcpResetDecision.Type;
 
 export const OrchestratorMcpBankedReset = Schema.Struct({
   status: Schema.NullOr(Schema.String),
@@ -716,8 +751,7 @@ export const OrchestratorMcpLastRedemption = Schema.Struct({
   at: Schema.String,
   outcome: OrchestratorMcpRedemptionOutcome,
   kind: ServerProviderResetKind,
-  /** `reset-too-far`: the plan reset was past the wait. `reset-expiring`: the reset would lapse unused. */
-  reason: Schema.Literals(["reset-too-far", "reset-expiring"]),
+  reason: OrchestratorMcpResetClaimReason,
 });
 export type OrchestratorMcpLastRedemption = typeof OrchestratorMcpLastRedemption.Type;
 
@@ -751,6 +785,12 @@ export const OrchestratorMcpProviderUsage = Schema.Struct({
   ),
   /** False while the account is usageLimited or its provider says it may not run (Codex). */
   usageAllowed: Schema.Boolean,
+  /**
+   * The reset rule's decision for each limit on this reading, now and with `maxWaitHours`: the
+   * account's own, then each model-scoped meter at 100%. The server claims the first claim only
+   * while `redeemUsageResets` is on.
+   */
+  resetDecisions: Schema.Array(OrchestratorMcpResetDecision),
   /** The last banked reset this server claimed for the account; null when it has claimed none. */
   lastRedemption: Schema.NullOr(OrchestratorMcpLastRedemption),
 });
