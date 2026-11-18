@@ -1,5 +1,5 @@
 {
-  "$comment": "The machines that run T3.CodeShip's scheduled tasks share this configuration (~/.agents/rules/machines.md). Check a machine with: node ~/.agents/tools/machine-config.mjs check <checkout>. Only 'machines' differs per machine. 'automations' says where each task runs and 'scheduled_tasks' its prompt file, schedule and model; the check compares each machine's CodeShip tasks with them.",
+  "$comment": "The machines that work on T3.CodeShip share this configuration (~/.agents/rules/machines.md). Check a machine with: node ~/.agents/tools/machine-config.mjs check <checkout>. Only 'machines' differs per machine. 'automations' says where each task runs and 'scheduled_tasks' its prompt file, schedule and model; the check compares each machine's CodeShip tasks with them. 'toolchain.node' makes the check compare the machine's Node with package.json engines.node, the version check:changed requires.",
   "schema": 1,
   "project": "CodeShip",
   "repository": "https://github.com/GigaZoro/CodeShip.git",
@@ -31,11 +31,18 @@
   "git_config": {
     "gc.pruneExpire": "1.day.ago"
   },
+  "toolchain": {
+    "node": "package.json"
+  },
   "tools": {
     "git": {},
     "vp": {}
   },
   "machines": {
+    "Zoro-PC": {
+      "checkout": "C:/Users/Admin/source/repos/CodeShip",
+      "codeship_environment_id": "432bb6b2-fa71-4676-8ba7-3fe3e55b9941"
+    },
     "Zoro-VPS": {
       "checkout": "/home/zoro/Projects/CodeShip",
       "codeship_environment_id": "52d42658-8c86-4dcd-a55c-fa12e79ebb54"
