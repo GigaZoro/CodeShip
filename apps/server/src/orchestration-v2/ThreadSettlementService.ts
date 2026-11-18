@@ -593,29 +593,21 @@ export const make = Effect.gen(function* () {
     const settleThread = Effect.fnUntraced(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
         const decisionNowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        // The store returns a subagent only once its parent is done or holds its result, so it
-        // settles with the parent or on the result and never runs its own lookup.
-        const subagent = thread.lineage.relationshipToParent === "subagent";
-        if (subagent && thread.parentDone) {
-          const uuid = yield* random.uuidV4();
-          yield* orchestrator.dispatch({
-            type: "thread.auto-settle",
-            commandId: CommandId.make(`server:auto-settle:${thread.id}:${uuid}`),
-            threadId: thread.id,
-            snapshotAt: thread.updatedAt,
-          });
-          return null;
-        }
         const deliveredAt = deliveredChildSettlementAt(thread, decisionNowMs);
-        if (subagent && deliveredAt === null) return null;
-        // thread.auto-settle does not recheck settings, so read them per decision; reads are cached.
-        const currentSettings = resolveProjectSettings(
-          yield* settingsService.getSettings,
-          thread.projectId,
-        ).settings;
-        const settledAt =
-          deliveredAt ??
-          resolveAutoSettlementAt({
+        // The store returns a subagent only once its parent is done or holds its result. One whose
+        // parent is done settles with the parent and never runs its own lookup; a result it
+        // delivered still dates the settle.
+        const subagent = thread.lineage.relationshipToParent === "subagent";
+        const settlesWithParent = subagent && thread.parentDone;
+        if (subagent && !settlesWithParent && deliveredAt === null) return null;
+        let settledAt = deliveredAt;
+        if (!settlesWithParent) {
+          // thread.auto-settle does not recheck settings, so read them per decision; reads are cached.
+          const currentSettings = resolveProjectSettings(
+            yield* settingsService.getSettings,
+            thread.projectId,
+          ).settings;
+          settledAt ??= resolveAutoSettlementAt({
             thread,
             pullRequest,
             nowMs: decisionNowMs,
@@ -623,26 +615,27 @@ export const make = Effect.gen(function* () {
             autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
             autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
           });
-        if (settledAt === null) return thread;
-        if (
-          !sharesParentWorktree(thread) &&
-          !(yield* releasesUnmergedWork(
-            thread,
-            currentSettings.sidebarAutoSettleOpensPullRequests,
-            decisionNowMs,
-          ))
-        ) {
-          return null;
+          if (settledAt === null) return thread;
+          if (
+            !sharesParentWorktree(thread) &&
+            !(yield* releasesUnmergedWork(
+              thread,
+              currentSettings.sidebarAutoSettleOpensPullRequests,
+              decisionNowMs,
+            ))
+          ) {
+            return null;
+          }
         }
         const uuid = yield* random.uuidV4();
-        // Its own prefix keeps settles on delivery apart from inactivity and merge settles.
+        // Its own prefix keeps settles on delivery apart from the other rules' settles.
         const rule = deliveredAt === null ? "auto-settle" : "settle-delivered-child";
         yield* orchestrator.dispatch({
           type: "thread.auto-settle",
           commandId: CommandId.make(`server:${rule}:${thread.id}:${uuid}`),
           threadId: thread.id,
           snapshotAt: thread.updatedAt,
-          settledAt,
+          ...(settledAt === null ? {} : { settledAt }),
           ...(deliveredAt === null || thread.parentResultAt === null
             ? {}
             : { parentResultAt: thread.parentResultAt }),

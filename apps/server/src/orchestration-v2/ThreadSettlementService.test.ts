@@ -2603,6 +2603,8 @@ describe("ThreadSettlementServiceV2 worker", () => {
       latestRunCompletedAt: null,
       status: "idle",
     });
+    // Its parent is done too, so it settles with the parent, lookup-free, but on its result.
+    const parentDone = child("parent-done", { parentDone: true, worktreePath: "/worktrees/own" });
     // The parent's latest task on these has no result, or the child ran again after it.
     const keptActive = [
       child("failed", { status: "failed", parentResultAt: null }),
@@ -2622,12 +2624,14 @@ describe("ThreadSettlementServiceV2 worker", () => {
         Effect.gen(function* () {
           yield* TestClock.setTime(nowMs);
           const fixture = yield* makeHarness({
-            snapshot: makeSnapshot([delivered, native, ...keptActive]),
+            snapshot: makeSnapshot([delivered, native, parentDone, ...keptActive]),
             settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
             existingWorktreePaths: ["/worktrees/parent", "/worktrees/own"],
             // The parent's worktree has work to land; it, not its children, keeps it in view.
             unmergedWork: { refName: "feature", changedFileCount: 1, unmergedCommitCount: 2 },
-            unwrittenThreadIds: [delivered, native, ...keptActive].map((thread) => thread.id),
+            unwrittenThreadIds: [delivered, native, parentDone, ...keptActive].map(
+              (thread) => thread.id,
+            ),
           });
           yield* Effect.gen(function* () {
             const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
@@ -2644,6 +2648,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
             ).toEqual([
               { threadId: delivered.id, settledAt: ranAt, ...onResult },
               { threadId: native.id, settledAt: resultAt, ...onResult },
+              { threadId: parentDone.id, settledAt: ranAt, ...onResult },
             ]);
           }).pipe(Effect.provide(fixture.layer));
         }),
