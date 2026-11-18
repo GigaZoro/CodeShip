@@ -261,13 +261,12 @@ it.effect.each([
         if (scenario === "queued-direct") {
           yield* orchestrator.dispatch({
             type: "thread.stop",
-            commandId: CommandId.make("hold-continuation"),
+            commandId: CommandId.make("stop-queued-continuation"),
             threadId,
           });
           expect((yield* projections.getThreadProjection(threadId)).runs.at(-1)).toMatchObject({
             id: latest.id,
-            status: "queued",
-            queueHeld: true,
+            status: "cancelled",
           });
         }
         if (pending) {
@@ -372,7 +371,10 @@ it.effect.each([
         }
         if (Result.isFailure(result)) return yield* result.failure;
         expect(result.success).toMatchObject({
-          type: scenario === "ended" ? "already_terminal" : "interrupt_requested",
+          type:
+            scenario === "ended" || scenario === "queued-direct"
+              ? "already_terminal"
+              : "interrupt_requested",
           run: { id: latest.id },
         });
         if (pending || queued || scenario === "failed-unprepared" || scenario === "lost-work") {
@@ -424,6 +426,7 @@ it.effect.each([
             expect.objectContaining({
               runId: latest.id,
               type: "run_interrupt_request",
+              ...(scenario === "failed-unprepared" ? { nodeId: null, providerThreadId: null } : {}),
             }),
           );
         } else if (scenario !== "ended") {
