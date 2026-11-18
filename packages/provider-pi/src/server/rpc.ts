@@ -12,7 +12,6 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { withWindowsTreeStop, withoutWindowsTreeEnding } from "@t3tools/shared/windowsProcessTree";
@@ -21,7 +20,7 @@ import {
   MAX_TOOL_OUTPUT_IMAGE_BASE64_LENGTH,
 } from "@t3tools/shared/toolOutput";
 
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { signalSpawnedGroup } from "@t3tools/shared/processGroup";
 
 export class PiRpcError extends Schema.TaggedError<PiRpcError>()("PiRpcError", {
   operation: Schema.String,
@@ -170,20 +169,13 @@ function parsePiRecord(line: string): PiRpcRecord | undefined {
   }
 }
 
-/**
- * `hasExited` is consulted before each signal. Once the original child is
- * gone its pid/pgid can be recycled by the OS, so escalating blindly could
- * deliver SIGKILL to an unrelated process.
- */
+/** SIGTERM to Pi's group, then SIGKILL to what is left of it after the grace period. */
 const terminatePiProcess = Effect.fn("PiRpc.terminatePiProcess")(function* (
-  kill: (signal: NodeJS.Signals) => boolean,
-  hasExited: () => boolean,
+  child: ChildProcessSpawner.ChildProcessHandle,
 ) {
-  if (hasExited()) return;
-  if (!kill("SIGTERM")) return;
+  if (!(yield* signalSpawnedGroup(child, "SIGTERM"))) return;
   yield* Effect.sleep(TERMINATION_GRACE);
-  if (hasExited()) return;
-  kill("SIGKILL");
+  yield* signalSpawnedGroup(child, "SIGKILL");
 });
 
 export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSpawnOptions) {
@@ -210,20 +202,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
       Effect.mapError((cause) => new PiRpcError({ operation: "spawn", cause })),
     );
 
-  let childExited = false;
   let diagnosingStdoutClose = false;
-
-  const killProcessGroup = (signal: NodeJS.Signals): boolean => {
-    try {
-      signalProcessGroup(Number(child.pid), signal);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const hasExited = (): boolean =>
-    childExited || !isProcessAlive(Number(child.pid), signalProcessGroup);
 
   // Windows process.kill leaves extension children and pipes alive, also after Pi exited.
   const terminateProcess =
@@ -232,10 +211,13 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.ignore({ log: "Error" }),
         )
-      : terminatePiProcess(killProcessGroup, hasExited);
+      : terminatePiProcess(child);
 
   // Register teardown immediately after spawn so interrupted setup cannot leak a detached process.
-  yield* Scope.addFinalizer(scope, terminateProcess.pipe(Effect.ignore, Effect.uninterruptible));
+  yield* Scope.addFinalizer(
+    scope,
+    terminateProcess.pipe(Effect.ignore({ log: true }), Effect.uninterruptible),
+  );
 
   const pendingRequests = new Map<string, PendingPiRequest>();
   const events = yield* Queue.unbounded<PiRpcRecord, PiRpcError>();
@@ -285,11 +267,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
     Effect.matchEffect({
       onFailure: (cause) =>
         Deferred.fail(exitDeferred, new PiRpcError({ operation: "exit", cause })),
-      onSuccess: (code) =>
-        Effect.suspend(() => {
-          childExited = true;
-          return Deferred.succeed(exitDeferred, Number(code));
-        }),
+      onSuccess: (code) => Deferred.succeed(exitDeferred, Number(code)),
     }),
     Effect.forkIn(scope),
   );

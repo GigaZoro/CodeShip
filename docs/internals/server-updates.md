@@ -351,8 +351,10 @@ reported and its last output. Its end completes the task through `delegated_task
 which wakes the chat through the durable delivery a child's result uses and refuses a second
 result, so a restart between the end and its delivery cannot wake the chat twice. task_cancel,
 Stop, archiving and deleting the thread also give the task its result, and the runner then kills
-the command's process group (its tree on Windows). The hold leaves these tasks out like every
-app-owned task, and the continuation of a cut turn tells the agent the commands it started still
+the command's process group (its tree on Windows). On POSIX a holder outside that group, reading a
+FIFO in the command's state folder, keeps the group's number from launch until the end is delivered,
+across restarts too; once neither it nor the wrapper runs, the runner signals no group, since the
+number may be another's. The hold leaves these tasks out like every app-owned task, and the continuation of a cut turn tells the agent the commands it started still
 run and will wake it.
 
 The hold also lists a running turn's in-flight tool calls and native subagents as `turnCall`

@@ -24,6 +24,7 @@ import noOutsetStateIndicators from "./rules/no-outset-state-indicators.ts";
 import noPlatformEarlyReturnInTests from "./rules/no-platform-early-return-in-tests.ts";
 import noPollingLoopInTests from "./rules/no-polling-loop-in-tests.ts";
 import noRawMcpRegistration from "./rules/no-raw-mcp-registration.ts";
+import noRawProcessGroupSignal from "./rules/no-raw-process-group-signal.ts";
 import noRawProcessProbe from "./rules/no-raw-process-probe.ts";
 import noRawTaskkill from "./rules/no-raw-taskkill.ts";
 import noRetiredEventTable from "./rules/no-retired-event-table.ts";
@@ -73,6 +74,7 @@ export default definePlugin({
     "no-platform-early-return-in-tests": noPlatformEarlyReturnInTests,
     "no-polling-loop-in-tests": noPollingLoopInTests,
     "no-raw-mcp-registration": noRawMcpRegistration,
+    "no-raw-process-group-signal": noRawProcessGroupSignal,
     "no-raw-process-probe": noRawProcessProbe,
     "no-raw-taskkill": noRawTaskkill,
     "no-retired-event-table": noRetiredEventTable,

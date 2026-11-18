@@ -371,6 +371,10 @@
       "types": "./src/HostProcess.ts",
       "import": "./src/HostProcess.ts"
     },
+    "./processGroup": {
+      "types": "./src/processGroup.ts",
+      "import": "./src/processGroup.ts"
+    },
     "./processProbe": {
       "types": "./src/processProbe.ts",
       "import": "./src/processProbe.ts"
@@ -390,6 +394,10 @@
     "./testing/hostPlatform": {
       "types": "./src/testing/hostPlatform.ts",
       "import": "./src/testing/hostPlatform.ts"
+    },
+    "./testing/freedProcessGroups": {
+      "types": "./src/testing/freedProcessGroups.ts",
+      "import": "./src/testing/freedProcessGroups.ts"
     },
     "./testing/symlinks": {
       "types": "./src/testing/symlinks.ts",
