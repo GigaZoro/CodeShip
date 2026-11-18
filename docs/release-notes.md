@@ -13,6 +13,10 @@
 - The coordinator model list also offers the models of a provider whose accounts all report a warning, such as a Codex account whose model list did not load in time, since Auto still runs on them.
 - When a new thread's Auto default is out of usage on its account, another account of that provider now counts as able to take the thread only when it offers that model and its provider check did not fail, the same as for an Auto fallback model. When no other account can run it, the thread now switches to the fallback model, if that can run, instead of waiting for the reset. Manual-step chats and a default model inherited from another machine also skip accounts whose provider check failed.
 
+## 2026-11-18 — `vp test run` inside a package uses the repo test settings
+
+- Running `vp test run <files>` from `scripts/` or a package folder now loads the repo's test settings (60 s timeouts, fake-timer list, no retries) instead of Vitest defaults, so a test no longer passes or fails by how it was started. A check fails when a package's test script has no config beside it. No change to the app.
+
 ## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
 
 - A subagent, or a chat an agent handed a task to with `delegate_task` on this machine, now settles as soon as its parent has its result, as a task delegated to another machine already did. Before, it settled only after three days of inactivity, so finished children stayed active in the Agents list. One whose task failed or was interrupted, or that is waiting, queued, working again or still running background work, stays active, and a settled subagent its parent picks up again returns to the active list. This applies even with automatic settlement turned off. Children that had already finished settle at the first check after the update, at the time they finished.
