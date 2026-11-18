@@ -165,6 +165,11 @@
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
 
+## 2026-11-19 — Agents see the usage reset decision for each limit
+
+- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
+- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
+
 ## 2026-11-19 — The upstream sync checks against its own base
 
 - Maintainers: `node scripts/upstream-sync.ts check` runs the sync's `check:changed` against the base in the run's state file, with the 3600 s step timeout, so a held or hurried run no longer types a narrower range that skips files only the upstream merge changed. The scheduled task and the upstream-sync skill use it. No change to the app.
