@@ -12,6 +12,11 @@
 
 - Maintainers: `node scripts/upstream-sync.ts begin` on a sync branch a held run pushed now reports `resumed` and keeps the upstream that branch merged, also when upstream has new commits since. It used to start a second upstream merge on top of the resolved one.
 
+## 2026-11-16 — On Windows, an agent session also stops what its CLI left running
+
+- On Windows, a Codex, Claude, OpenCode, Muse or ACP agent session (such as Antigravity) that ended left running what its CLI had started, such as MCP servers and the commands of a turn, once the CLI itself had exited, because Windows ends only the process it is told to. A session now also stops those processes when it ends, as Pi and Grok sessions already did, and closing a Claude or Muse session or quitting CodeShip waits for that stop to finish. Muse model and usage checks, which run no tools, stop what they left running only when they fail or keep their output open, so they stay as fast as before. A Muse host started through `muse.cmd` also no longer leaves Muse running after CodeShip closes it.
+- The rest of the server's commands, such as provider version checks and maintenance probes, now stop what they left running when CodeShip kills or cancels them, or when their output is still held open as they end. A command that exits on its own and closes its output starts no extra PowerShell, so checks stay as fast as before.
+
 ## 2026-11-16 — A fork finds its project on another machine, and agents and mobile set the update interval
 
 - A delegated task sent to another machine without a project, and a scheduled task shared with other machines, now find the project there by any remote either side knows, the fork's own `origin` first. A fork whose copy on the other machine has no `upstream` remote failed to find it before. A new shared task in a fork is keyed by the fork's own `origin`. Shared tasks this machine stored under a fork's upstream move to that key once, at the next start, and keep their machine order; a task another machine shared keeps its key when you edit it here, so it still finds its project there.

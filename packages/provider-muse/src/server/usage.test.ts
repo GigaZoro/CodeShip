@@ -4,6 +4,7 @@ import { totalTokens } from "@t3tools/provider-core/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
@@ -232,7 +233,7 @@ describe("Muse history discovery", () => {
         });
         expect(close).toHaveBeenCalledOnce();
       }).pipe(
-        Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
+        Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         onPath,
         Effect.provideService(HostProcess.HomeDirectory, "/test-home"),
         Effect.provideService(HostProcess.Environment, {
@@ -258,7 +259,7 @@ describe("Muse history discovery", () => {
       expect(directories).toEqual([]);
       expect(create).not.toHaveBeenCalled();
     }).pipe(
-      Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
+      Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
       Effect.provideService(SpawnExecutableResolution, () => undefined),
     ),
   );
@@ -283,7 +284,10 @@ describe("Muse history discovery", () => {
         AWAIT_REFRESH,
       );
       expect(directories).toEqual([]);
-    }).pipe(Effect.provide([NodeServices.layer, MuseUsageHome.layer]), onPath),
+    }).pipe(
+      Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+      onPath,
+    ),
   );
 
   it.effect(
@@ -330,7 +334,7 @@ describe("Muse history discovery", () => {
         expect(create).toHaveBeenCalledOnce();
         expect(close).toHaveBeenCalledOnce();
       }).pipe(
-        Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
+        Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         onPath,
         Effect.provideService(HostProcess.HomeDirectory, "/test-home"),
         Effect.provideService(HostProcess.Environment, {}),
@@ -381,7 +385,7 @@ describe("Muse history discovery", () => {
         expect(inherited).not.toEqual(changed);
         expect(create).toHaveBeenCalledTimes(4);
       }).pipe(
-        Effect.provide([NodeServices.layer, MuseUsageHome.layer]),
+        Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         onPath,
         Effect.provideService(HostProcess.Environment, { XDG_DATA_HOME: "/host-data" }),
       ),
@@ -436,7 +440,10 @@ describe("Muse history discovery", () => {
       );
       expect(create).toHaveBeenCalledOnce();
       expect(close).toHaveBeenCalledOnce();
-    }).pipe(Effect.provide([NodeServices.layer, MuseUsageHome.layer]), onPath),
+    }).pipe(
+      Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+      onPath,
+    ),
   );
 
   it.effect("briefly caches failed discovery and retries after installation recovers", () =>
@@ -467,6 +474,9 @@ describe("Muse history discovery", () => {
       yield* TestClock.adjust("30 seconds");
       expect(yield* museUsageReader.directories(instance, AWAIT_REFRESH)).toHaveLength(1);
       expect(create).toHaveBeenCalledTimes(2);
-    }).pipe(Effect.provide([NodeServices.layer, MuseUsageHome.layer]), onPath),
+    }).pipe(
+      Effect.provide(MuseUsageHome.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+      onPath,
+    ),
   );
 });

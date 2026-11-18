@@ -13,6 +13,11 @@ import type { RuntimeMode } from "@t3tools/contracts";
 import { envTrampoline, supportsEnvChdir } from "@t3tools/shared/envTrampoline";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import {
+  type WindowsProcessTreeRoot,
+  windowsTreeRootFromNow,
+  windowsTreeStopper,
+} from "@t3tools/shared/windowsProcessTree";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -61,7 +66,29 @@ export interface MuseSdkHostOptions {
   readonly signal?: AbortSignal;
   readonly startupTimeoutMs?: number;
   readonly onProcessExit?: (exit: ProcessExit) => void;
+  /**
+   * Stops what the host left running once it exits, on Windows, where the SDK ends only the host;
+   * `close` waits for it. A read-only host runs no tools, so it gets a stop only when it exited
+   * uncleanly or its output stayed open, and a probe that ends cleanly costs no PowerShell.
+   */
+  readonly stopTree?: (root: WindowsProcessTreeRoot) => Promise<void>;
 }
+
+/** A host's output closes within this of its exit unless something it left running holds it. */
+const MUSE_OUTPUT_DRAIN_MS = 2_000;
+
+const leftSomethingBehind = (exit: ProcessExit, outputClosed: Promise<unknown>) =>
+  exit.code !== 0 || exit.signal !== null
+    ? Promise.resolve(true)
+    : new Promise<boolean>((resolve) => {
+        const held = setTimeout(() => resolve(true), MUSE_OUTPUT_DRAIN_MS);
+        held.unref();
+        const drained = () => {
+          clearTimeout(held);
+          resolve(false);
+        };
+        outputClosed.then(drained, drained);
+      });
 
 export function makeMuseEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
@@ -170,18 +197,40 @@ export async function createMuseSdkHost(
 ): Promise<MuseSdkHost> {
   options.signal?.throwIfAborted();
   const launch = options.launch ?? { command: options.binaryPath, args: [] };
+  const { onProcessExit, stopTree } = options;
+  const rootOf = windowsTreeRootFromNow();
+  let root: WindowsProcessTreeRoot | undefined;
+  let treeStopped = Promise.resolve();
   const handshake = spawn({
     command: launch.command,
     args: [...launch.args, ...(options.launchArgs ?? []), ...museServeArgs(options)],
     ...(options.cwd ? { cwd: options.cwd } : {}),
     env: options.environment ?? makeMuseEnvironment(),
     shutdownTimeoutMs: 10_000,
-    ...(options.onProcessExit ? { onProcessExit: options.onProcessExit } : {}),
+    ...(onProcessExit || stopTree
+      ? {
+          onProcessExit: (exit: ProcessExit) => {
+            const tree = root;
+            if (tree !== undefined && stopTree) {
+              const stop = options.readOnly
+                ? leftSomethingBehind(exit, handshake.exited)
+                : Promise.resolve(true);
+              treeStopped = stop.then((stops) => (stops ? stopTree(tree) : undefined));
+            }
+            onProcessExit?.(exit);
+          },
+        }
+      : {}),
   });
+  if (stopTree && handshake.child.pid !== undefined) root = rootOf(handshake.child.pid);
   let closePromise: Promise<void> | undefined;
   const close = () => {
     options.signal?.removeEventListener("abort", onAbort);
-    return (closePromise ??= handshake.close().then(() => undefined));
+    // The host exited before `exited` settles, so its tree's stop has begun by then.
+    return (closePromise ??= handshake
+      .close()
+      .finally(() => treeStopped)
+      .then(() => undefined));
   };
   let rejectStartup: (reason: unknown) => void = () => {};
   const onAbort = () => {
@@ -228,12 +277,14 @@ export const createMuseSdkHostEffect = Effect.fn("createMuseSdkHostEffect")(func
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
 ) {
   const native = options.launch ?? (yield* museLaunch(options.binaryPath, options.environment));
+  const platform = yield* HostProcess.Platform;
   // The Muse SDK hands libuv the cwd and the PATH search, which freeze the server while a
   // mount under either hangs; `env` does both in the child.
   const throughEnv =
-    (yield* HostProcess.Platform) === "linux" && (yield* Effect.promise(supportsEnvChdir))
+    platform === "linux" && (yield* Effect.promise(supportsEnvChdir))
       ? envTrampoline(native.command, native.args, options.cwd)
       : undefined;
+  const stopTree = platform === "win32" ? yield* windowsTreeStopper : undefined;
   const { cwd: _enteredByEnv, ...withoutCwd } = options;
   const hostOptions =
     throughEnv === undefined
@@ -242,7 +293,7 @@ export const createMuseSdkHostEffect = Effect.fn("createMuseSdkHostEffect")(func
   let startup: Promise<MuseSdkHost> | undefined;
   return yield* Effect.tryPromise({
     try: (signal) => {
-      startup = createHost({ ...hostOptions, signal });
+      startup = createHost({ ...hostOptions, signal, ...(stopTree ? { stopTree } : {}) });
       return startup;
     },
     catch: (cause) => new MuseSdkError({ operation: "start", cause }),

@@ -1,5 +1,5 @@
 diff --git a/dist/src/connection/spawn.d.ts b/dist/src/connection/spawn.d.ts
-index b67e690eae07748e6aee2c8ee59bbfef13b2eea8..581ef3e9184da89cde8471a8fe03c86209ac7c81 100644
+index b67e690eae07748e6aee2c8ee59bbfef13b2eea8..91d9680fbd08e03e2479f6acff1efc21d92eb164 100644
 --- a/dist/src/connection/spawn.d.ts
 +++ b/dist/src/connection/spawn.d.ts
 @@ -20,6 +20,8 @@ export interface SpawnMspConnectionOptions {
@@ -20,11 +20,30 @@ index b67e690eae07748e6aee2c8ee59bbfef13b2eea8..581ef3e9184da89cde8471a8fe03c862
      /**
       * Deterministic-test seam; production always uses `child_process.spawn`.
       * A stub here observes the exact options the call site passes, so a
+@@ -151,6 +155,8 @@ export declare function buildSpawnOptions(options: {
+ export declare class MuseServeChild {
+     #private;
+     readonly exit: Promise<ExitClassification>;
++    /** The host's pid, undefined when the spawn failed. */
++    readonly pid: number | undefined;
+     private constructor();
+     static spawn(options: MuseServeChildOptions): MuseServeChild;
+     get stderrTail(): readonly string[];
 diff --git a/dist/src/connection/spawn.js b/dist/src/connection/spawn.js
-index 28aeb6246ba937c5321f1393dc120eface0707f3..0c835bb9d45a73eacd6a35b5e589191f04104537 100644
+index 28aeb6246ba937c5321f1393dc120eface0707f3..a6820c4b7a2c27f26e5cf624954e02b74cb6e368 100644
 --- a/dist/src/connection/spawn.js
 +++ b/dist/src/connection/spawn.js
-@@ -390,7 +390,10 @@ export class MuseServeChild {
+@@ -361,7 +361,9 @@ export class MuseServeChild {
+     #tail = new StderrTail();
+     #transport;
+     exit;
++    pid;
+     constructor(child, onStderr, shutdownTimeoutMs, ownsProcessGroup = false) {
++        this.pid = child.pid;
+         this.#transport = new ChildStdioTransport(child, (chunk) => {
+             this.#tail.push(chunk);
+             onStderr?.(chunk);
+@@ -390,7 +392,10 @@ export class MuseServeChild {
              detached: ownsProcessGroup,
          });
          const spawnChild = options.spawnFn ?? spawn;
@@ -36,7 +55,7 @@ index 28aeb6246ba937c5321f1393dc120eface0707f3..0c835bb9d45a73eacd6a35b5e589191f
      }
      get stderrTail() {
          return this.#tail.lines();
-@@ -414,6 +417,7 @@ export class MspHandshake {
+@@ -414,6 +419,7 @@ export class MspHandshake {
      constructor(options) {
          this.child = MuseServeChild.spawn({
              museBin: options.command,

@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
@@ -25,6 +26,7 @@ export class MuseUsageHome extends Context.Service<
 
 const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const cache = yield* Cache.makeWith(
     Effect.fn("MuseUsageHome.initialize")(function* (input: {
       readonly binaryPath: string;
@@ -33,7 +35,9 @@ const make = Effect.gen(function* () {
       return yield* Effect.scoped(
         Effect.gen(function* () {
           const host = yield* Effect.acquireRelease(
-            createMuseSdkHostEffect({ ...input, readOnly: true, startupTimeoutMs: 5_000 }),
+            createMuseSdkHostEffect({ ...input, readOnly: true, startupTimeoutMs: 5_000 }).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            ),
             (host) =>
               Effect.tryPromise({
                 try: () => host.close(),

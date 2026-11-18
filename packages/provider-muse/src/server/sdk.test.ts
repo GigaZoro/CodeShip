@@ -3,10 +3,18 @@ import * as NodeFSP from "node:fs/promises";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The Muse SDK spawns with Node's child_process, so the launch test quotes arguments the same way.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { spawnMspConnection, type MspHandshake, type SpawnedMspConnection } from "@muse-code/sdk";
+import {
+  spawnMspConnection,
+  type MspHandshake,
+  type ProcessExit,
+  type SpawnedMspConnection,
+} from "@muse-code/sdk";
 import { it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import { probeProcess } from "@t3tools/shared/processProbe";
+import { type WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTree";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -38,9 +46,11 @@ function pending<A>() {
   return { promise, resolve, reject };
 }
 
+const MOCK_HOST_PID = 4242;
+
 function mockSpawn() {
   const startup = pending<SpawnedMspConnection>();
-  const shutdown = pending<{ code: number; signal: null }>();
+  const shutdown = pending<ProcessExit>();
   const closing = pending<void>();
   const initializing = pending<void>();
   const initialize = vi.fn(() => {
@@ -51,7 +61,12 @@ function mockSpawn() {
     closing.resolve();
     return shutdown.promise;
   });
-  const handshake = { initialize, close } as unknown as MspHandshake;
+  const handshake = {
+    initialize,
+    close,
+    child: { pid: MOCK_HOST_PID },
+    exited: shutdown.promise,
+  } as unknown as MspHandshake;
   vi.mocked(spawnMspConnection).mockReturnValue(handshake);
   const ready = {
     connection: {},
@@ -252,7 +267,58 @@ describe("Muse SDK host", () => {
       yield* Fiber.join(interrupted);
       expect(released).toBe(true);
       expect(host.close).toHaveBeenCalledOnce();
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("the tree a Muse host leaves", () => {
+  it.each([
+    { host: "a session host that exited cleanly", readOnly: false, code: 0, held: false, stops: 1 },
+    { host: "a probe that exited cleanly", readOnly: true, code: 0, held: false, stops: 0 },
+    { host: "a probe that failed", readOnly: true, code: 1, held: false, stops: 1 },
+    { host: "a probe whose output stayed open", readOnly: true, code: 0, held: true, stops: 1 },
+  ])("is stopped $stops time(s) for $host", async ({ readOnly, code, held, stops }) => {
+    vi.useFakeTimers();
+    const fake = mockSpawn();
+    const stopTree = vi.fn((_root: WindowsProcessTreeRoot) => Promise.resolve());
+    const running = createMuseSdkHost({ binaryPath: "muse", readOnly, stopTree });
+    fake.startup.resolve(fake.ready);
+    const host = await running;
+
+    vi.mocked(spawnMspConnection).mock.lastCall?.[0].onProcessExit?.({ code, signal: null });
+    if (held) await vi.runOnlyPendingTimersAsync();
+    fake.shutdown.resolve({ code, signal: null });
+    await host.close();
+
+    expect(stopTree.mock.calls).toEqual(
+      Array.from({ length: stops }, () => [expect.objectContaining({ pid: MOCK_HOST_PID })]),
+    );
+  });
+});
+
+// The SDK ends only the host on Windows, so what it started outlives it there.
+describe.runIf(isWindowsHost)("a Muse host on Windows", () => {
+  it.live("has ended what the host left running once its startup is cancelled", () =>
+    Effect.gen(function* () {
+      const sdk = yield* Effect.promise(() =>
+        vi.importActual<typeof import("@muse-code/sdk")>("@muse-code/sdk"),
+      );
+      // The leader never answers initialize and exits once the SDK ends its input.
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
+      const starting = yield* createMuseSdkHostEffect(
+        {
+          binaryPath: process.execPath,
+          launch: { command: process.execPath, args: ["-e", leftover.source] },
+        },
+        (options) => createMuseSdkHost(options, sdk.spawnMspConnection),
+      ).pipe(Effect.forkChild);
+      const pid = yield* leftover.started;
+
+      yield* Fiber.interrupt(starting);
+
+      expect(probeProcess(pid).state).toBe("gone");
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
 
@@ -309,7 +375,7 @@ describe("Muse launch", () => {
           launch: { command: "/opt/a=b/muse", args: [] },
           cwd: "/work",
         });
-      }),
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   // cmd's quote rules only show with a real cmd.exe, spawning as the SDK does.

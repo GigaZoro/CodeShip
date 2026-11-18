@@ -44,6 +44,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
@@ -532,15 +533,16 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ...(input.environment ? { env: input.environment } : { extendEnv: true }),
         }),
       );
-      const terminateCommandGroup =
-        hostPlatform === "win32"
-          ? child.kill({ killSignal: "SIGKILL" }).pipe(Effect.asVoid)
-          : Effect.sync(() => {
-              try {
-                signalProcessGroup(Number(child.pid), "SIGKILL");
-              } catch {}
-            });
-      yield* Effect.addFinalizer(() => terminateCommandGroup.pipe(Effect.ignore));
+      // On Windows the spawner's release ends a command still running, and what it left running.
+      if (hostPlatform !== "win32") {
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              signalProcessGroup(Number(child.pid), "SIGKILL");
+            } catch {}
+          }),
+        );
+      }
       const [stdout, stderr, code] = yield* Effect.all(
         [collectStreamAsString(child.stdout), collectStreamAsString(child.stderr), child.exitCode],
         { concurrency: "unbounded" },
@@ -628,7 +630,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     // Scopes close in reverse order. Forking this before the group kill is
     // registered forgets the ledger entry only once the group is stopped.
     const ledgerScope = yield* Scope.fork(runtimeScope);
-    const child = yield* spawner
+    // On Windows what the server left running ends with it, also after it exited.
+    const child = yield* endingWindowsTrees(spawner, hostPlatform)
       .spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           detached: hostPlatform !== "win32",

@@ -87,6 +87,11 @@ import {
 import * as ProviderProcesses from "../../process/providerProcesses.ts";
 import * as SpawnWorker from "../../process/SpawnWorker.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  type WindowsProcessTreeRoot,
+  windowsTreeRootFromNow,
+  windowsTreeStopper,
+} from "@t3tools/shared/windowsProcessTree";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { CLAUDE_MODEL_FAMILIES, claudeUsageWindowScope } from "@t3tools/shared/usageLimits";
 import { compareSemverVersions } from "@t3tools/shared/semver";
@@ -409,6 +414,8 @@ const CLAUDE_DESCENDANT_POLL = "1 second";
 // Claude Code's refusal of bypassPermissions as root, which it explains only on stderr.
 const CLAUDE_ROOT_REFUSAL =
   "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons";
+// The SDK's close gives the CLI this long to exit once its input ends before it escalates.
+const CLAUDE_CLOSE_GRACE = "2 seconds";
 
 // fd 4 gates the launch until the server has recorded the process it is about to become.
 // The shell enters the cwd itself: as a native cwd, a mount that hangs chdir freezes the server.
@@ -533,6 +540,49 @@ function claudeDescendants(
   }
   return found;
 }
+
+/**
+ * Windows has no process groups and Node ends only the CLI, so what the CLI left running, such as
+ * its MCP servers, is stopped through `stopTree` once it exits, however it exited; `ended` settles
+ * when that stop finished.
+ */
+function spawnClaudeProcessTree(
+  options: ClaudeSpawnOptions,
+  stopTree: (root: WindowsProcessTreeRoot) => Promise<void>,
+  onStderr?: (text: string) => void,
+) {
+  const rootOf = windowsTreeRootFromNow();
+  const child = SpawnWorker.spawnPiped(options.command, options.args, {
+    cwd: options.cwd,
+    env: options.env,
+    signal: options.signal,
+    windowsHide: true,
+  });
+  // The launcher thread reports the pid once the process exists; a failed launch reports none.
+  const root = new Promise<WindowsProcessTreeRoot | undefined>((resolve) => {
+    child.once("spawn", () => resolve(child.pid === undefined ? undefined : rootOf(child.pid)));
+    child.once("error", () => resolve(undefined));
+  });
+  child.stderr.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  return {
+    child,
+    exited,
+    ended: root.then((tree) =>
+      tree === undefined ? undefined : exited.then(() => stopTree(tree)),
+    ),
+  };
+}
+
+type ClaudeWindowsCli = ReturnType<typeof spawnClaudeProcessTree>;
+
+/** Gives a CLI still running the SDK's close grace, kills it, and waits for its tree's stop. */
+const endWindowsCli = (cli: ClaudeWindowsCli) =>
+  Effect.promise(() => cli.exited).pipe(
+    Effect.timeoutOption(CLAUDE_CLOSE_GRACE),
+    Effect.andThen(Effect.sync(() => cli.child.kill())),
+    Effect.andThen(Effect.promise(() => cli.ended)),
+  );
 
 export const ClaudeProviderCapabilitiesV2 = {
   sessions: {
@@ -1447,6 +1497,12 @@ export const layerQueryRunner: Layer.Layer<
     const providerProcesses = yield* ProviderProcesses.ProviderProcesses;
     const platform = yield* HostProcess.Platform;
     const runFork = Effect.runForkWith(yield* Effect.context<never>());
+    const stopWindowsTree = yield* windowsTreeStopper;
+    // The server exits once its layers have closed, which would cut short a tree's stop.
+    const windowsClis = new Set<ClaudeWindowsCli>();
+    yield* Effect.addFinalizer(() =>
+      Effect.forEach([...windowsClis], endWindowsCli, { concurrency: "unbounded", discard: true }),
+    );
     const hostEnvironment = yield* HostProcess.Environment;
     const portDiscovery = yield* PortScanner.PortDiscovery;
     // A failed open leaves no transcript until a prompt was sent, but the CLI refuses a fresh ID
@@ -1593,6 +1649,7 @@ export const layerQueryRunner: Layer.Layer<
             stderrTail = (stderrTail + text).slice(-CLAUDE_STDERR_TAIL_LENGTH);
           };
           let refreshDescendants: Effect.Effect<void> = Effect.void;
+          let windowsCli: ClaudeWindowsCli | undefined;
           const spawnProcess =
             options.spawnClaudeCodeProcess ??
             ((spawnOptions: ClaudeSpawnOptions) => {
@@ -1621,17 +1678,14 @@ export const layerQueryRunner: Layer.Layer<
                 }
                 return child;
               }
-              const child = SpawnWorker.spawnPiped(spawnOptions.command, spawnOptions.args, {
-                cwd: spawnOptions.cwd,
-                env: spawnOptions.env,
-                signal: spawnOptions.signal,
-                windowsHide: true,
-              });
-              child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+              const cli = spawnClaudeProcessTree(spawnOptions, stopWindowsTree, (chunk) => {
                 appendStderr(chunk);
                 options.stderr?.(chunk);
               });
-              return child;
+              windowsCli = cli;
+              windowsClis.add(cli);
+              void cli.ended.then(() => windowsClis.delete(cli));
+              return cli.child;
             });
           let spawnedProcess: ClaudeSpawnedProcess | undefined;
           let processExited = false;
@@ -1996,6 +2050,12 @@ export const layerQueryRunner: Layer.Layer<
                     type: "query.close",
                   },
                 }),
+              ),
+              // A closed session's CLI has ended, and so has what it left running.
+              Effect.andThen(
+                Effect.suspend(() =>
+                  windowsCli === undefined ? Effect.void : endWindowsCli(windowsCli),
+                ),
               ),
             ),
           } satisfies ClaudeAgentSdkQuerySession;

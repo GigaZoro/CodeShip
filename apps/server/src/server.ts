@@ -19,6 +19,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentHttpApi, type RepositoryIdentity } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
@@ -27,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -387,6 +389,16 @@ const layerRelayClient = Layer.unwrap(
 // NodeServices and NodeHttpServer each output Node's own spawner, so each is followed by this one.
 const layerSpawner = SpawnWorker.layerServer.pipe(Layer.provide(NodeServices.layer));
 
+// Wraps the spawner beneath it. On Windows, what a command left running ends with it once
+// something shows it did.
+const layerServerSpawner = Layer.effect(
+  ChildProcessSpawner.ChildProcessSpawner,
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return endingWindowsTrees(spawner, yield* HostProcess.Platform, "leftBehind");
+  }),
+).pipe(Layer.provide(NonBlockingSpawner.layer));
+
 const isAddressInUse = (cause: unknown) =>
   typeof cause === "object" && cause !== null && "code" in cause && cause.code === "EADDRINUSE";
 
@@ -465,7 +477,7 @@ export const layerHttpServer = Layer.unwrap(
 ).pipe(
   Layer.provide(ManagedPolicy.layer),
   // NodeHttpServer.layer also outputs NodeServices, whose spawner would shadow the wrapped one.
-  (layer) => NonBlockingSpawner.layer.pipe(Layer.provideMerge(layer)),
+  (layer) => layerServerSpawner.pipe(Layer.provideMerge(layer)),
 );
 
 // A trial update the launcher started is rolled back when it stops making progress.
@@ -477,8 +489,8 @@ const layerMigrationProgress = Layer.effect(
   }),
 );
 
-const layerPlatformServices = DocumentText.layer.pipe(
-  Layer.provideMerge(NonBlockingSpawner.layer),
+export const layerPlatformServices = DocumentText.layer.pipe(
+  Layer.provideMerge(layerServerSpawner),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, layerSpawner)),
 );
 
@@ -1529,5 +1541,5 @@ const layerMakeServer = Layer.unwrap(
 
 export const runServer = Layer.launch(
   // For the layers above whose spawner requirement is not met by one of them.
-  layerMakeServer.pipe(Layer.provide(NonBlockingSpawner.layer.pipe(Layer.provide(layerSpawner)))),
+  layerMakeServer.pipe(Layer.provide(layerServerSpawner.pipe(Layer.provide(layerSpawner)))),
 );

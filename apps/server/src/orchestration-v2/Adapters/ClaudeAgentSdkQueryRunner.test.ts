@@ -25,7 +25,9 @@ import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AGENT_NICE_INCREMENT, AgentScope } from "@t3tools/shared/AgentScope";
-import { isDarwinHost } from "@t3tools/shared/testing/hostPlatform";
+import { isDarwinHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { leaderLeavingChild } from "@t3tools/shared/testing/leftoverChild";
+import { probeProcess } from "@t3tools/shared/processProbe";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -1108,5 +1110,29 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       const maxNice = isDarwinHost ? 20 : 19;
       assert.equal(priority, Math.min(maxNice, NodeOS.getPriority() + AGENT_NICE_INCREMENT));
     }),
+  );
+});
+
+// Node ends only the CLI on Windows, so what it started, such as its MCP servers, outlives it there.
+describe.runIf(isWindowsHost)("the Claude CLI on Windows", () => {
+  it.live("has ended what the CLI left running once its session has closed", () =>
+    Effect.gen(function* () {
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
+      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-claude-cli-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+      );
+      const cli = NodePath.join(dir, "cli.js");
+      NodeFS.writeFileSync(cli, leftover.source);
+
+      yield* Effect.gen(function* () {
+        const session = yield* openFakeCli(cli);
+        const pid = yield* leftover.started;
+        yield* session.close;
+        assert.strictEqual(probeProcess(pid).state, "gone");
+      }).pipe(Effect.provide(realQueryRunner));
+
+      yield* leftover.ended;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

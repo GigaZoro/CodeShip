@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { ChildProcessSpawner } from "effect/process";
 
 import {
   createMuseSdkHost,
@@ -214,6 +215,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
 ) {
   const { environment, modelCatalog = Effect.succeed([]), createHost } = options;
   const fileSystem = yield* FileSystem.FileSystem;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const runMuseJson = Effect.fn("runMuseJson")(function* <S extends Schema.Top>(input: {
     operation: Operation;
     prompt: string;
@@ -256,7 +258,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
             sessionLogging: true,
           },
           createHost,
-        ),
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
         (host: MuseSdkHost) => Effect.promise(() => host.close()),
         { interruptible: true },
       );

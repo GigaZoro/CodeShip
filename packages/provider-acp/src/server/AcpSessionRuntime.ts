@@ -39,8 +39,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive as isProcessAliveByProbe } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import {
+  endingWindowsTrees,
   stopWindowsProcessTree,
   withWindowsTreeRoot,
+  withoutWindowsTreeEnding,
   type WindowsProcessTreeRoot,
 } from "@t3tools/shared/windowsProcessTree";
 
@@ -1233,8 +1235,12 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   ChildProcessSpawner.ChildProcessSpawner | SecureRandom.SecureRandom | Scope.Scope
 > {
   const random = yield* SecureRandom.SecureRandom;
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const hostPlatform = yield* HostProcess.Platform;
+  // On Windows a session's tree ends with it; a tree the session owns is stopped below instead.
+  const spawner =
+    options.ownDetachedProcessGroup === true
+      ? withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner)
+      : endingWindowsTrees(yield* ChildProcessSpawner.ChildProcessSpawner, hostPlatform);
   const runtimeScope = yield* Scope.fork(yield* Scope.Scope);
   const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);

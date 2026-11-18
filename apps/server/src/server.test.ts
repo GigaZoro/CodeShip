@@ -1,18 +1,21 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import { HttpServer, HttpServerError } from "effect/http";
+import { ChildProcessSpawner } from "effect/process";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
+import { withoutWindowsTreeEnding } from "@t3tools/shared/windowsProcessTree";
 
 import * as ServerConfig from "./config.ts";
 import * as MigrationProgress from "./persistence/MigrationProgress.ts";
-import { layerHttpServer } from "./server.ts";
+import { layerHttpServer, layerPlatformServices } from "./server.ts";
 
 // Holds a port on a specific non-loopback address, so a wildcard bind on that
 // port fails with EADDRINUSE while a loopback bind is still free.
@@ -91,4 +94,33 @@ it.live.skipIf(!wildcardBindConflicts)(
         assert.propertyVal(error.cause, "code", "EADDRINUSE");
       }),
     ),
+);
+
+// A spawner a later layer provides wins, so one over these would leave trees running on Windows.
+it.effect("the server's spawners end on Windows what a command left running", () =>
+  Effect.gen(function* () {
+    const platform = yield* ChildProcessSpawner.ChildProcessSpawner.pipe(
+      Effect.provide(layerPlatformServices),
+    );
+    assert.notStrictEqual(withoutWindowsTreeEnding(platform), platform);
+    // The HTTP server outputs Node's spawner, which shadows the platform one for layers above it.
+    const http = yield* ChildProcessSpawner.ChildProcessSpawner.pipe(
+      Effect.provide(
+        httpServerWithConfig({ host: "127.0.0.1", port: 0, privateNetworkOnly: undefined }).pipe(
+          // As win32 the managed policy would come from the registry, which Linux and macOS lack.
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({
+                env: {
+                  ...process.env,
+                  T3CODE_DEV_MANAGED_POLICY_PATH: `${NodeOS.tmpdir()}/t3-no-managed-policy-${process.pid}/policy.json`,
+                },
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+    assert.notStrictEqual(withoutWindowsTreeEnding(http), http);
+  }).pipe(Effect.provideService(HostProcess.Platform, "win32")),
 );

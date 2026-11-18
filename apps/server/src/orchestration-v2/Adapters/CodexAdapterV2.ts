@@ -51,6 +51,7 @@ import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { CHATGPT_APP_CAP_CODE } from "@t3tools/shared/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { endingWindowsTrees } from "@t3tools/shared/windowsProcessTree";
 import {
   COMPUTER_USE_TOOL_SOURCE,
   dynamicToolSurface,
@@ -1836,7 +1837,11 @@ export const layerAppServerClientFactory: Layer.Layer<
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    // On Windows what the app server left running ends with the session, also after it exited.
+    const spawner = endingWindowsTrees(
+      yield* ChildProcessSpawner.ChildProcessSpawner,
+      yield* HostProcess.Platform,
+    );
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
     const portDiscovery = yield* PortScanner.PortDiscovery;

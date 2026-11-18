@@ -7,6 +7,7 @@
  */
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -88,16 +89,19 @@ export const windowsStopTreeArgs = (root: WindowsProcessTreeRoot): Array<string>
   );
 };
 
+/** Call just before a spawn; what it returns gives the process's root once its pid is known. */
+export const windowsTreeRootFromNow = (): ((pid: number) => WindowsProcessTreeRoot) => {
+  const since = Date.now();
+  return (pid) => ({ pid, since, created: { from: since, to: Date.now() } });
+};
+
 /** Runs a spawn and pairs its handle with the root a stop of its tree needs. */
 export const withWindowsTreeRoot = <A extends { readonly pid: number }, E, R>(
   spawn: Effect.Effect<A, E, R>,
 ): Effect.Effect<{ readonly handle: A; readonly root: WindowsProcessTreeRoot }, E, R> =>
   Effect.suspend(() => {
-    const since = Date.now();
-    return Effect.map(spawn, (handle) => ({
-      handle,
-      root: { pid: handle.pid, since, created: { from: since, to: Date.now() } },
-    }));
+    const rootOf = windowsTreeRootFromNow();
+    return Effect.map(spawn, (handle) => ({ handle, root: rootOf(handle.pid) }));
   });
 
 const STOP_TIMEOUT = Duration.seconds(30);
@@ -112,9 +116,18 @@ const stopFailed = (root: WindowsProcessTreeRoot, tag: PlatformError.SystemError
     description: `Could not stop the process tree of ${root.pid}: ${why}`,
   });
 
+type Spawner = ChildProcessSpawner.ChildProcessSpawner["Service"];
+
+const beneath = new WeakMap<Spawner, Spawner>();
+
+/** The spawner beneath `endingWindowsTrees`, for code that stops its processes' trees itself. */
+export const withoutWindowsTreeEnding = (spawner: Spawner): Spawner =>
+  beneath.get(spawner) ?? spawner;
+
+/** Runs on the spawner beneath `endingWindowsTrees`, so a stop never stops a tree of its own. */
 export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
   function* (root: WindowsProcessTreeRoot) {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
     const handle = yield* spawner.spawn(
       ChildProcess.make("powershell.exe", windowsStopTreeArgs(root), {
         stdin: "ignore",
@@ -150,57 +163,109 @@ export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
 );
 
 /**
- * Ends each spawned process with its tree when its scope closes or it is killed, also after it
- * exited, as a process group does on POSIX. A stop starts PowerShell, so this suits spawners that
- * start few processes. An unreferenced process outlives its scope. A pipeline fails: its handle
- * reports only the last process, so what an earlier one left running would survive.
+ * A function that starts a stop of a tree at once, for a Node callback such as a child's `exit`, and
+ * returns its completion, which never rejects: a failure is logged. The stop outlives the caller's
+ * scope, so code that ends with the server awaits it.
+ */
+export const windowsTreeStopper = Effect.map(
+  Effect.context<ChildProcessSpawner.ChildProcessSpawner>(),
+  (context) => {
+    const runPromise = Effect.runPromiseWith(context);
+    return (root: WindowsProcessTreeRoot): Promise<void> =>
+      runPromise(stopWindowsProcessTree(root).pipe(Effect.ignoreCause({ log: "Error" })));
+  },
+);
+
+/**
+ * When `endingWindowsTrees` stops a tree, which starts PowerShell. `always`: on a kill or the scope's
+ * close, for an agent's CLI. `leftBehind`: on a kill, a close while it runs or by interruption, or a
+ * close with a begun read of its output unended, as when a leftover holds that pipe; a command that
+ * exits and closes its output costs no walk.
+ */
+export type WindowsTreeEnding = "always" | "leftBehind";
+
+/**
+ * Ends spawned processes with their trees on Windows, also after they exited, as a process group
+ * does on POSIX, when `ending` says to. Wrapping a wrapped spawner replaces its policy, so one
+ * process never costs two walks. An unreferenced process outlives its scope. A pipeline fails: its
+ * handle reports only the last process, so what an earlier one left running would survive.
  */
 export const endingWindowsTrees = (
-  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  spawner: Spawner,
   platform: NodeJS.Platform,
-): ChildProcessSpawner.ChildProcessSpawner["Service"] =>
-  platform !== "win32"
-    ? spawner
-    : ChildProcessSpawner.make(
-        Effect.fnUntraced(function* (command) {
-          if (command._tag === "PipedCommand") {
-            return yield* PlatformError.badArgument({
-              module: "ChildProcess",
-              method: "spawn",
-              description:
-                "endingWindowsTrees ends one process's tree; spawn a pipeline's stages one by one",
-            });
+  ending: WindowsTreeEnding = "always",
+): Spawner => {
+  if (platform !== "win32") return spawner;
+  const inner = withoutWindowsTreeEnding(spawner);
+  const wrapped = ChildProcessSpawner.make(
+    Effect.fnUntraced(function* (command) {
+      if (command._tag === "PipedCommand") {
+        return yield* PlatformError.badArgument({
+          module: "ChildProcess",
+          method: "spawn",
+          description:
+            "endingWindowsTrees ends one process's tree; spawn a pipeline's stages one by one",
+        });
+      }
+      const { handle, root } = yield* withWindowsTreeRoot(inner.spawn(command));
+      let referenced = true;
+      let unendedReads = 0;
+      // A kill and the scope's close share one walk.
+      const stopTree = yield* Effect.cached(
+        stopWindowsProcessTree(root).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, inner),
+        ),
+      );
+      // The leader ends first, so its exit is known before the inner spawner's release looks.
+      const kill = (options?: ChildProcess.KillOptions) =>
+        Effect.exit(handle.kill(options)).pipe(
+          Effect.flatMap((killed) => Effect.andThen(stopTree, killed)),
+        );
+      yield* Effect.addFinalizer((exit) =>
+        Effect.gen(function* () {
+          if (!referenced) return;
+          if (yield* handle.isRunning) return yield* kill();
+          if (ending === "always" || Exit.hasInterrupts(exit) || unendedReads > 0) {
+            yield* stopTree;
           }
-          const { handle, root } = yield* withWindowsTreeRoot(spawner.spawn(command));
-          let referenced = true;
-          const stopTree = stopWindowsProcessTree(root).pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        }).pipe(Effect.ignore({ log: "Error" })),
+      );
+      const read = <E>(output: Stream.Stream<Uint8Array, E>) =>
+        Stream.suspend(() => {
+          unendedReads++;
+          return Stream.onEnd(
+            output,
+            Effect.sync(() => {
+              unendedReads--;
+            }),
           );
-          yield* Effect.addFinalizer(() =>
-            referenced ? Effect.ignore(stopTree, { log: "Error" }) : Effect.void,
-          );
-          return ChildProcessSpawner.makeHandle({
-            ...handle,
-            kill: (options) =>
-              Effect.exit(handle.kill(options)).pipe(
-                Effect.flatMap((killed) => Effect.andThen(stopTree, killed)),
-              ),
-            unref: handle.unref.pipe(
+        });
+      return ChildProcessSpawner.makeHandle({
+        ...handle,
+        stdout: read(handle.stdout),
+        stderr: read(handle.stderr),
+        all: read(handle.all),
+        getOutputFd: (fd) => read(handle.getOutputFd(fd)),
+        kill,
+        unref: handle.unref.pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              referenced = false;
+            }),
+          ),
+          Effect.map((reref) =>
+            reref.pipe(
               Effect.tap(() =>
                 Effect.sync(() => {
-                  referenced = false;
+                  referenced = true;
                 }),
               ),
-              Effect.map((reref) =>
-                reref.pipe(
-                  Effect.tap(() =>
-                    Effect.sync(() => {
-                      referenced = true;
-                    }),
-                  ),
-                ),
-              ),
             ),
-          });
-        }),
-      );
+          ),
+        ),
+      });
+    }),
+  );
+  beneath.set(wrapped, inner);
+  return wrapped;
+};
