@@ -1,3 +1,5 @@
+import * as DateTime from "effect/DateTime";
+
 import type {
   OrchestratorMcpBankedReset,
   OrchestratorMcpLastRedemption,
@@ -66,15 +68,29 @@ function meter(
   };
 }
 
+const isoAt = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+
 function resetDecision(decision: UsageResetDecision): OrchestratorMcpResetDecision {
-  const boundaryMs = decision.action === "run" ? null : decision.boundaryMs;
-  return {
-    model: decision.model,
-    action: decision.action,
-    reason: decision.reason,
-    until: boundaryMs === null ? null : new Date(boundaryMs).toISOString(),
-    ...(decision.action === "claim" ? { kind: decision.kind } : {}),
-  };
+  const { model } = decision;
+  switch (decision.action) {
+    case "run":
+      return { model, action: "run", reason: decision.reason, until: null };
+    case "wait":
+      return {
+        model,
+        action: "wait",
+        reason: decision.reason,
+        until: decision.boundaryMs === null ? null : isoAt(decision.boundaryMs),
+      };
+    case "claim":
+      return {
+        model,
+        action: "claim",
+        reason: decision.reason,
+        until: isoAt(decision.boundaryMs),
+        kind: decision.kind,
+      };
+  }
 }
 
 const RESET_READ_ERRORS = {

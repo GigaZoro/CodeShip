@@ -858,21 +858,36 @@ export type OrchestratorMcpResetWaitReason = typeof OrchestratorMcpResetWaitReas
 export const OrchestratorMcpResetClaimReason = Schema.Literals(["reset-too-far", "reset-expiring"]);
 export type OrchestratorMcpResetClaimReason = typeof OrchestratorMcpResetClaimReason.Type;
 
-/** What the reset rule calls for on one of an account's limits. */
-export const OrchestratorMcpResetDecision = Schema.Struct({
+const OrchestratorMcpResetDecisionLimit = {
   /** Null for the account's own limits, always the first entry; else the model a scoped meter limits. */
   model: Schema.NullOr(Schema.String),
-  action: Schema.Literals(["run", "wait", "claim"]),
-  reason: Schema.Union([
-    OrchestratorMcpResetRunReason,
-    OrchestratorMcpResetWaitReason,
-    OrchestratorMcpResetClaimReason,
-  ]),
-  /** The plan reset the limit waits for or a claim clears; null when it runs or that reset is unknown. */
-  until: Schema.NullOr(Schema.String),
-  /** The reset a claim spends. */
-  kind: Schema.optional(ServerProviderResetKind),
-});
+};
+
+/** What the reset rule calls for on one of an account's limits. */
+export const OrchestratorMcpResetDecision = Schema.Union([
+  Schema.Struct({
+    ...OrchestratorMcpResetDecisionLimit,
+    action: Schema.Literal("run"),
+    reason: OrchestratorMcpResetRunReason,
+    until: Schema.Null,
+  }),
+  Schema.Struct({
+    ...OrchestratorMcpResetDecisionLimit,
+    action: Schema.Literal("wait"),
+    reason: OrchestratorMcpResetWaitReason,
+    /** The plan reset the limit waits for; null when it is unknown. */
+    until: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    ...OrchestratorMcpResetDecisionLimit,
+    action: Schema.Literal("claim"),
+    reason: OrchestratorMcpResetClaimReason,
+    /** The plan reset the claim clears. */
+    until: Schema.String,
+    /** The reset the claim spends. */
+    kind: ServerProviderResetKind,
+  }),
+]);
 export type OrchestratorMcpResetDecision = typeof OrchestratorMcpResetDecision.Type;
 
 export const OrchestratorMcpBankedReset = Schema.Struct({
