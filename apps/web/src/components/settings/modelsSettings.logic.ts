@@ -1,11 +1,20 @@
 import type { ServerProvider, ServerSettings } from "@t3tools/contracts";
+import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import {
+  canAccountRun,
   orderProviderInstancesForFailover,
   supportsAccountFailover,
 } from "@t3tools/shared/serverSettings";
-import { groupBy } from "effect/Array";
+import { dedupeWith, groupBy } from "effect/Array";
 
 import { msg, type Message } from "~/i18n";
+import { getAppModelOptionsForInstance, type AppModelOption } from "~/modelSelection";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  isProviderInstancePickerReady,
+  type ProviderInstanceEntry,
+} from "~/providerInstances";
 
 /** Roles whose model another role can inherit while it is unset. */
 type InheritedModelRole = "default" | "titles" | "writing";
@@ -60,4 +69,44 @@ export function accountGroups(
   return Object.values(accountsByDriver).map((accounts) =>
     orderProviderInstancesForFailover(order, accounts),
   );
+}
+
+export interface AutoModeModelChoices {
+  readonly entry: ProviderInstanceEntry;
+  readonly options: ReadonlyArray<AppModelOption>;
+}
+
+/**
+ * Auto's model choices for one provider's accounts, in the order tried: what each account Auto can
+ * run on this machine offers under its own model settings, as one entry, since Auto runs each turn
+ * on an account that has the model.
+ */
+export function autoModeModelChoices(
+  accounts: ReadonlyArray<ServerProvider>,
+  settings: UnifiedSettings,
+): AutoModeModelChoices {
+  const entries = applyProviderInstanceSettings(
+    deriveProviderInstanceEntries(accounts),
+    settings,
+    null,
+  );
+  const runnable = entries.filter((entry) => canAccountRun(entry.snapshot, settings, null));
+  const sources = runnable.length > 0 ? runnable : entries.slice(0, 1);
+  const sameSlug = (left: { slug: string }, right: { slug: string }) => left.slug === right.slug;
+  return {
+    entry: {
+      ...(sources.find(isProviderInstancePickerReady) ?? sources[0]!),
+      // The picker lists only a ready entry's models, and Auto also runs on an account whose
+      // check only warned.
+      ...(runnable.length > 0 ? { status: "ready" as const } : {}),
+      models: dedupeWith(
+        sources.flatMap((entry) => entry.models),
+        sameSlug,
+      ),
+    },
+    options: dedupeWith(
+      sources.flatMap((entry) => getAppModelOptionsForInstance(settings, entry)),
+      sameSlug,
+    ),
+  };
 }

@@ -5578,6 +5578,9 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
         }),
         ServerSettings.layerTest({
+          providerInstances: {
+            [claudeInstanceId]: { driver: ProviderDriverKind.make("claudeAgent") },
+          },
           autoModeProvider: ProviderDriverKind.make("claudeAgent"),
           autoModeModels: { [ProviderDriverKind.make("claudeAgent")]: { model: "claude-opus" } },
         }),

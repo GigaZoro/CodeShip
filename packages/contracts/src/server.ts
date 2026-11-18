@@ -284,7 +284,7 @@ export type ServerProvider = typeof ServerProvider.Type;
 export const ServerProviders = ForwardCompatibleArray(ServerProvider);
 export type ServerProviders = typeof ServerProviders.Type;
 
-export const isProviderAvailable = (snapshot: ServerProvider): boolean =>
+export const isProviderAvailable = (snapshot: Pick<ServerProvider, "availability">): boolean =>
   snapshot.availability !== "unavailable";
 
 /** Legacy producers omit this field and support text generation. */

@@ -27,7 +27,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
-import { createModelSelection, readCustomModelEntries, resolveSelectableModel } from "./model.ts";
+import {
+  createModelSelection,
+  readCustomModelEntries,
+  resolveSelectableModel,
+  type SelectableModelOption,
+} from "./model.ts";
 import {
   getBackgroundActivityBaseProfile,
   normalizeBackgroundActivitySettings,
@@ -135,14 +140,56 @@ export function orderProviderInstancesForFailover<
 
 type AutoModeSettings = Pick<
   ServerSettings,
-  "autoModeProvider" | "autoModeModels" | "providerInstanceFailoverOrder"
+  | "autoModeProvider"
+  | "autoModeModels"
+  | "providerInstanceFailoverOrder"
+  | "providerInstances"
+  | "projectSettingsOverrides"
 >;
 
-type AutoModeAccount = {
-  readonly instanceId: ProviderInstanceId;
+type RunnableAccount = Pick<
+  ServerProvider,
+  "instanceId" | "enabled" | "installed" | "status" | "auth" | "availability"
+>;
+
+type AutoModeAccount = RunnableAccount & {
   readonly driver: ProviderDriverKind;
-  readonly enabled: boolean;
+  readonly models: ReadonlyArray<SelectableModelOption>;
 };
+
+function isAccountEnabledIn(
+  account: RunnableAccount,
+  settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+): boolean {
+  return (
+    account.enabled &&
+    resolveProjectProviderInstanceEnabled(settings, projectId, account.instanceId)
+  );
+}
+
+/** Whether the account itself can take turns, before its machine's settings for a project. */
+export function isAccountReady(account: RunnableAccount): boolean {
+  return (
+    account.enabled &&
+    account.installed &&
+    account.status !== "error" &&
+    account.auth.status !== "unauthenticated" &&
+    isProviderAvailable(account)
+  );
+}
+
+/**
+ * Whether this account can take a turn in the project (null: on this machine), usage limits and
+ * models aside.
+ */
+export function canAccountRun(
+  account: RunnableAccount,
+  settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+): boolean {
+  return isAccountReady(account) && isAccountEnabledIn(account, settings, projectId);
+}
 
 /** Auto's primary provider, or null while Auto mode is off. */
 export function activeAutoModeProvider(settings: AutoModeSettings): ProviderDriverKind | null {
@@ -159,61 +206,82 @@ export function autoModeModelFor(
   return model === undefined ? null : typeof model === "string" ? { model } : model;
 }
 
-/**
- * The selection an Auto pick runs, or null while Auto cannot run. It takes the primary
- * provider, or `lockedDriver` for a thread that already ran, and that provider's first account.
- */
-export function autoModePick(input: {
+interface AutoModeInput {
   readonly settings: AutoModeSettings;
   readonly accounts: ReadonlyArray<AutoModeAccount>;
-  readonly lockedDriver: ProviderDriverKind | null;
-}): ModelSelection | null {
+  /** Where the thread runs; null for this machine's settings. */
+  readonly projectId: ProjectId | null;
+}
+
+/**
+ * Auto's model on its primary provider (`lockedDriver` for a thread that already ran), with the
+ * accounts enabled in the project in the order tried, those that can run first; null while Auto
+ * cannot run.
+ */
+function autoModeRun(input: AutoModeInput, lockedDriver: ProviderDriverKind | null) {
   const primary = activeAutoModeProvider(input.settings);
-  const driver = primary === null ? null : (input.lockedDriver ?? primary);
+  const driver = primary === null ? null : (lockedDriver ?? primary);
   if (driver === null || !supportsAccountFailover(driver)) return null;
   const auto = autoModeModelFor(input.settings, driver);
-  const account = orderProviderInstancesForFailover(
+  if (auto === null) return null;
+  const enabled = orderProviderInstancesForFailover(
     input.settings.providerInstanceFailoverOrder,
-    input.accounts.filter((candidate) => candidate.enabled && candidate.driver === driver),
-  )[0];
-  if (auto === null || account === undefined) return null;
-  return {
-    ...createModelSelection(account.instanceId, auto.model, auto.options),
-    autoAccount: true,
-  };
+    input.accounts.filter(
+      (candidate) =>
+        candidate.driver === driver &&
+        isAccountEnabledIn(candidate, input.settings, input.projectId),
+    ),
+  );
+  if (enabled.length === 0) return null;
+  // While none can run (as the server starts, before any check finishes), every enabled one is
+  // tried, so the turn goes to one that lists the model and its provider reports what it lacks.
+  const runnable = enabled.filter((candidate) =>
+    canAccountRun(candidate, input.settings, input.projectId),
+  );
+  return { auto, accounts: runnable.length > 0 ? runnable : enabled };
+}
+
+/** `auto` on `account`, by the id its catalog gives the model when it lists it. */
+function autoModeSelection(account: AutoModeAccount, auto: AutoModeModel): ModelSelection {
+  const model = resolveSelectableModel(account.driver, auto.model, account.models) ?? auto.model;
+  return { ...createModelSelection(account.instanceId, model, auto.options), autoAccount: true };
+}
+
+/**
+ * What a new Auto thread starts on, or null while Auto cannot run: the primary provider's Auto
+ * model on its first account that can run in the project and offers that model.
+ */
+export function autoModePick(input: AutoModeInput): ModelSelection | null {
+  const run = autoModeRun(input, null);
+  if (run === null) return null;
+  // With no catalog listing the model (one still loading), the first account runs it and its
+  // provider reports what it lacks.
+  const account =
+    run.accounts.find(
+      (candidate) =>
+        resolveSelectableModel(candidate.driver, run.auto.model, candidate.models) !== null,
+    ) ?? run.accounts[0];
+  return account === undefined ? null : autoModeSelection(account, run.auto);
 }
 
 /**
  * What turning Auto on for `selection` runs, or null where Auto cannot run. A new thread starts
- * on the primary provider's first account; a thread that already ran keeps its provider and
- * account. Either way it runs that provider's Auto model and options from settings.
+ * as `autoModePick` says; a thread that already ran keeps its provider and account and runs that
+ * provider's Auto model and options.
  */
-export function autoModeTarget(input: {
-  readonly selection: ModelSelection;
-  readonly settings: AutoModeSettings;
-  readonly accounts: ReadonlyArray<AutoModeAccount>;
-  readonly started: boolean;
-}): ModelSelection | null {
-  const ownDriver = input.accounts.find(
-    (account) => account.instanceId === input.selection.instanceId,
-  )?.driver;
-  if (input.started && ownDriver === undefined) return null;
-  const pick = autoModePick({
-    settings: input.settings,
-    accounts: input.accounts,
-    lockedDriver: input.started ? (ownDriver ?? null) : null,
-  });
-  if (pick === null) return null;
-  return input.started ? { ...pick, instanceId: input.selection.instanceId } : pick;
+export function autoModeTarget(
+  input: AutoModeInput & { readonly selection: ModelSelection; readonly started: boolean },
+): ModelSelection | null {
+  if (!input.started) return autoModePick(input);
+  const own = input.accounts.find((account) => account.instanceId === input.selection.instanceId);
+  const run = own === undefined ? null : autoModeRun(input, own.driver);
+  return own === undefined || run === null ? null : autoModeSelection(own, run.auto);
 }
 
 /** What an Auto pick runs (see `autoModeTarget`); with Auto mode off, it runs as it names. */
-export function resolveAutoModelSelection(input: {
-  readonly selection: ModelSelection;
-  readonly settings: AutoModeSettings;
-  readonly accounts: ReadonlyArray<AutoModeAccount>;
-  readonly started: boolean;
-}): ModelSelection {
+export function resolveAutoModelSelection(
+  input: AutoModeInput & { readonly selection: ModelSelection; readonly started: boolean },
+): ModelSelection {
   if (input.selection.autoAccount !== true) return input.selection;
   return autoModeTarget(input) ?? input.selection;
 }
@@ -249,16 +317,7 @@ export function resolveInheritedDefaultModelSelection(input: {
     if (driver === undefined) continue;
     const runnable = target.providers.flatMap((provider) => {
       const ready =
-        provider.driver === driver &&
-        provider.enabled &&
-        provider.installed &&
-        provider.auth.status !== "unauthenticated" &&
-        isProviderAvailable(provider) &&
-        resolveProjectProviderInstanceEnabled(
-          target.settings,
-          input.projectId,
-          provider.instanceId,
-        );
+        provider.driver === driver && canAccountRun(provider, target.settings, input.projectId);
       const model = ready ? resolveSelectableModel(driver, selection.model, provider.models) : null;
       return model === null ? [] : [{ instanceId: provider.instanceId, model }];
     });

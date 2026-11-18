@@ -1,6 +1,5 @@
 import {
   CodexSettings,
-  isProviderAvailable,
   type ModelSelection,
   type ProjectId,
   type ProviderInstanceConfig,
@@ -8,7 +7,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderUsageHold,
-  resolveProjectProviderInstanceEnabled,
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
@@ -16,6 +14,8 @@ import { mergedProviderInstanceEnvironmentName } from "@t3tools/provider-core/se
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { modelPicksEqual, resolveSelectableModel } from "@t3tools/shared/model";
 import {
+  autoModeModelFor,
+  canAccountRun,
   orderProviderInstancesForFailover,
   resolveAutoModelSelection,
   supportsAccountFailover,
@@ -239,21 +239,6 @@ export function modelScopeHolds(
   return refusalEnds(provider, scoped, input.nowMs, canonicalModel(provider, model)).length > 0;
 }
 
-/** Whether this account can take a turn in the project, usage limits and models aside. */
-function canRun(
-  provider: ServerProvider,
-  input: Pick<AccountRoutingContext, "settings"> & { readonly projectId: ProjectId },
-): boolean {
-  return (
-    provider.enabled &&
-    provider.installed &&
-    provider.status !== "error" &&
-    provider.auth.status !== "unauthenticated" &&
-    isProviderAvailable(provider) &&
-    resolveProjectProviderInstanceEnabled(input.settings, input.projectId, provider.instanceId)
-  );
-}
-
 /** The model this account would run for `model`, usage limits aside, or null when it cannot. */
 function runnableModel(
   provider: ServerProvider,
@@ -262,7 +247,7 @@ function runnableModel(
     readonly model: string;
   },
 ): string | null {
-  return canRun(provider, input)
+  return canAccountRun(provider, input.settings, input.projectId)
     ? resolveSelectableModel(provider.driver, input.model, provider.models)
     : null;
 }
@@ -403,6 +388,35 @@ function firstAccountWithRoomAgain(input: AccountSearch) {
 }
 
 /**
+ * What an Auto selection runs, and the model other accounts are searched for: the saved Auto
+ * model, which each account matches against its own catalog, since `selection` names it by the id
+ * its own account lists.
+ */
+export function resolveAutoRoute(
+  input: Pick<AccountRoutingContext, "settings" | "providers"> & {
+    readonly selection: ModelSelection;
+    readonly projectId: ProjectId;
+    readonly started: boolean;
+  },
+) {
+  const selection = resolveAutoModelSelection({
+    selection: input.selection,
+    settings: input.settings,
+    accounts: input.providers,
+    projectId: input.projectId,
+    started: input.started,
+  });
+  const driver = input.providers.find(
+    (provider) => provider.instanceId === selection.instanceId,
+  )?.driver;
+  const auto =
+    selection === input.selection || driver === undefined
+      ? null
+      : autoModeModelFor(input.settings, driver);
+  return { selection, driver, searchModel: auto?.model ?? selection.model };
+}
+
+/**
  * Where an Auto selection runs: its provider's Auto model. With account switching on, a thread keeps
  * an account with room unless it must sign in to an MCP server again and the top one need not; else
  * the top one with room (for a scheduled run, the soonest weekly reset). With none, it keeps one that
@@ -422,24 +436,15 @@ export function routeAutoAccount(
     },
 ): ModelSelection {
   if (input.selection.autoAccount !== true) return input.selection;
-  const selection = resolveAutoModelSelection({
-    selection: input.selection,
-    settings: input.settings,
-    accounts: input.providers,
-    started: input.started,
-  });
-  if (selection === input.selection) return selection;
-  const driver = input.providers.find(
-    (provider) => provider.instanceId === selection.instanceId,
-  )?.driver;
-  if (driver === undefined) return selection;
+  const { selection, driver, searchModel } = resolveAutoRoute(input);
+  if (selection === input.selection || driver === undefined) return selection;
   const current = input.providers.find(
     (provider) => provider.instanceId === input.currentInstanceId && provider.driver === driver,
   );
   const search = {
     ...input,
     driver,
-    model: selection.model,
+    model: searchModel,
     preferEarliestReset: input.scheduled === true,
   };
   const pickTarget = () => {
@@ -631,7 +636,7 @@ function delegateWait(
   return waitForRoom(
     driver,
     input.providers.flatMap((provider) =>
-      provider.driver === driver && canRun(provider, input)
+      provider.driver === driver && canAccountRun(provider, input.settings, input.projectId)
         ? [
             {
               instanceId: provider.instanceId,
@@ -1193,6 +1198,7 @@ export const layer = Layer.effect(
                 selection: input.selection,
                 settings,
                 accounts: providers,
+                projectId: input.projectId,
                 started: false,
               })
             : input.selection;

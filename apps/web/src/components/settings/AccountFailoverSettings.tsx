@@ -24,7 +24,7 @@ export function AccountFailoverSettings({
   readonly settings: UnifiedSettings;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly readOnly: boolean;
-  /** Whether Auto mode starts new chats on the first account in this order. */
+  /** Whether Auto mode starts new chats on the first account in this order that can run its model. */
   readonly supportsAutoMode: boolean;
 }) {
   const updateSettings = useUpdateEnvironmentSettings(environmentId);

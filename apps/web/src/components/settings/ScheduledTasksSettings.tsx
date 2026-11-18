@@ -2883,7 +2883,11 @@ function ScheduledTaskEditorForm({
     draft.baseModelSelection.model !== activeSelection.model
       ? activeSelection
       : draft.baseModelSelection;
-  const autoPick = autoModePick({ settings, accounts: providers, lockedDriver: null });
+  const autoPick = autoModePick({
+    settings,
+    accounts: providers,
+    projectId: selectedProject?.id ?? null,
+  });
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";

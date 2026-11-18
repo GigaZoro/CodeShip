@@ -862,6 +862,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selection: activeThreadModelSelection,
       settings,
       accounts: providerStatuses,
+      projectId: activeProjectId,
       started: lockedProvider !== null,
     });
 
@@ -997,6 +998,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selection: selectedModelSelection,
     settings,
     accounts: providerStatuses,
+    projectId: activeProjectId,
     started: lockedProvider !== null,
   });
   const selectedModelForPicker = selectedModel;

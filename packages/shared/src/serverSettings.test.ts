@@ -970,10 +970,21 @@ describe("supportsAccountFailover", () => {
 describe("Auto mode", () => {
   const claude = ProviderDriverKind.make("claudeAgent");
   const codex = ProviderDriverKind.make("codex");
-  const account = (instanceId: string, driver: ProviderDriverKind) => ({
+  const account = (
+    instanceId: string,
+    driver: ProviderDriverKind,
+    models: ReadonlyArray<string | { slug: string; name: string }> = [],
+    auth: ServerProvider["auth"]["status"] = "authenticated",
+  ) => ({
     instanceId: ProviderInstanceId.make(instanceId),
     driver,
     enabled: true,
+    installed: true,
+    status: "ready" as const,
+    auth: { status: auth },
+    models: models.map((model) =>
+      typeof model === "string" ? { slug: model, name: model } : model,
+    ),
   });
   const accounts = [
     account("claude_second", claude),
@@ -992,6 +1003,12 @@ describe("Auto mode", () => {
       [codex]: { model: "gpt-6-astra", options: ultra },
     },
     providerInstanceFailoverOrder: [ProviderInstanceId.make("claude_first")],
+    providerInstances: {
+      [ProviderInstanceId.make("claude_first")]: { driver: claude, enabled: true },
+      [ProviderInstanceId.make("claude_second")]: { driver: claude, enabled: true },
+      [ProviderInstanceId.make("claude_signed_out")]: { driver: claude, enabled: true },
+      [ProviderInstanceId.make("codex_main")]: { driver: codex, enabled: true },
+    },
   };
   const resolve = (
     selection: ModelSelection,
@@ -1002,6 +1019,7 @@ describe("Auto mode", () => {
       selection,
       settings: { ...settings, ...overrides },
       accounts,
+      projectId: null,
       started,
     });
   const auto = (instanceId: string, model = "claude-sonnet-5-5"): ModelSelection => ({
@@ -1040,6 +1058,58 @@ describe("Auto mode", () => {
     expect(resolve(selection, started)).toEqual({ ...expected, autoAccount: true });
   });
 
+  const project = ProjectId.make("project");
+  const opus = { slug: "claude-opus-5-5", name: "Claude Opus 5.5" };
+  it.each([
+    [
+      "a new thread starts on the first account that offers the Auto model",
+      false,
+      [account("claude_second", claude, [opus]), account("claude_first", claude, ["sonnet"])],
+      false,
+      "claude_second",
+    ],
+    [
+      "a new thread starts on the first account that can run in its project",
+      false,
+      [
+        account("claude_first", claude, [opus]),
+        account("claude_signed_out", claude, [opus], "unauthenticated"),
+        account("claude_second", claude, [opus]),
+      ],
+      true,
+      "claude_second",
+    ],
+    [
+      "a thread that already ran gets the model id its own account lists",
+      true,
+      [
+        account("claude_first", claude, ["claude-opus-5"]),
+        account("claude_second", claude, [opus]),
+      ],
+      false,
+      "claude_second",
+    ],
+  ] as const)("%s", (_, started, accounts, firstOffInProject, instanceId) => {
+    const firstOff = {
+      [project]: {
+        providerInstances: { [ProviderInstanceId.make("claude_first")]: { enabled: false } },
+      },
+    };
+    expect(
+      resolveAutoModelSelection({
+        selection: auto("claude_second"),
+        settings: {
+          ...settings,
+          autoModeModels: { [claude]: { model: "Claude Opus 5.5" } },
+          projectSettingsOverrides: firstOffInProject ? firstOff : {},
+        },
+        accounts,
+        projectId: project,
+        started,
+      }),
+    ).toEqual({ instanceId, model: "claude-opus-5-5", autoAccount: true });
+  });
+
   it("runs a provider with no Auto model on its default model", () => {
     expect(resolve(auto("claude_second"), false, { autoModeModels: {} })).toEqual({
       instanceId: "claude_first",
@@ -1053,7 +1123,7 @@ describe("Auto mode", () => {
     const selection = auto("claude_second");
     expect(resolve(selection, false, overrides)).toBe(selection);
     expect(
-      autoModePick({ settings: { ...settings, ...overrides }, accounts, lockedDriver: null }),
+      autoModePick({ settings: { ...settings, ...overrides }, accounts, projectId: null }),
     ).toBeNull();
   });
 

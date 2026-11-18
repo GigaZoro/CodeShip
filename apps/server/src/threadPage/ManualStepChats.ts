@@ -1,6 +1,5 @@
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
-  isProviderAvailable,
   type ManualStepDecision,
   ManualStepStartChatError,
   type ManualStepStartChatFailure,
@@ -9,12 +8,12 @@ import {
   MessageId,
   type ModelSelection,
   type ProjectId,
-  resolveProjectProviderInstanceEnabled,
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { canAccountRun } from "@t3tools/shared/serverSettings";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -94,17 +93,6 @@ function manualStepChatTitle(step: Step): string {
 
 type Providers = ReadonlyArray<ServerProvider>;
 
-const canRunTurns = (
-  provider: ServerProvider,
-  settings: ServerSettingsValue,
-  projectId: ProjectId,
-) =>
-  provider.enabled &&
-  provider.installed &&
-  provider.auth.status !== "unauthenticated" &&
-  isProviderAvailable(provider) &&
-  resolveProjectProviderInstanceEnabled(settings, projectId, provider.instanceId);
-
 /**
  * The selection on an account that can run a turn, or null. The card has no model picker, so a
  * default that cannot run would leave the decision undone. An auto-account selection moves to
@@ -118,12 +106,12 @@ function runnableSelection(
 ): ModelSelection | null {
   const own = providers.find((provider) => provider.instanceId === selection.instanceId);
   if (own === undefined) return null;
-  if (canRunTurns(own, settings, projectId)) return selection;
+  if (canAccountRun(own, settings, projectId)) return selection;
   const sibling =
     selection.autoAccount === true
       ? providers.find(
           (provider) =>
-            provider.driver === own.driver && canRunTurns(provider, settings, projectId),
+            provider.driver === own.driver && canAccountRun(provider, settings, projectId),
         )
       : undefined;
   return sibling === undefined ? null : { ...selection, instanceId: sibling.instanceId };
@@ -138,7 +126,7 @@ function firstRunnableSelection(
   for (const provider of providers) {
     const model =
       provider.models.find((candidate) => candidate.isDefault)?.slug ?? provider.models[0]?.slug;
-    if (model !== undefined && canRunTurns(provider, settings, projectId)) {
+    if (model !== undefined && canAccountRun(provider, settings, projectId)) {
       return { instanceId: provider.instanceId, model };
     }
   }

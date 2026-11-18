@@ -34,7 +34,11 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { ModelSelectionControl } from "./ModelSelectionControl";
 import { ModelSubRow } from "./ModelSubRow";
-import { accountGroups } from "./modelsSettings.logic";
+import {
+  accountGroups,
+  autoModeModelChoices,
+  type AutoModeModelChoices,
+} from "./modelsSettings.logic";
 import { searchableSetting } from "./settingsSearch";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 import { msg, t, type Message } from "~/i18n";
@@ -123,39 +127,43 @@ export function MachineModelsProvider({
 /** A machine-wide model choice with its effort, or Auto; `selection` null shows `emptyLabel`. */
 function MachineModelControl({
   machine,
-  providers: providersOverride,
   label,
   selection,
   emptyLabel,
-  autoModeModel = false,
+  autoModeModel,
   onChange,
 }: {
   readonly machine: MachineModels;
-  readonly providers?: ReadonlyArray<ServerProvider>;
   readonly label: string;
   readonly selection: ModelSelection | null;
   readonly emptyLabel?: string;
-  /** Picks a provider's Auto model: no Auto option, and no account, since Auto picks that. */
-  readonly autoModeModel?: boolean;
+  /** A provider's Auto model choices: no Auto option, and no account, since Auto picks that. */
+  readonly autoModeModel?: AutoModeModelChoices;
   readonly onChange: (selection: ModelSelection) => void;
 }) {
-  const { settings } = machine;
-  const providers = providersOverride ?? machine.providers;
-  const instanceEntries = providerInstanceEntriesFor(providers, settings, null);
+  const { settings, providers } = machine;
   const entries = autoModeModel
-    ? instanceEntries.map((entry) => ({
-        ...entry,
-        displayName: providerName(entry.driverKind),
-        accentColor: undefined,
-      }))
-    : instanceEntries;
+    ? [
+        {
+          ...autoModeModel.entry,
+          displayName: providerName(autoModeModel.entry.driverKind),
+          accentColor: undefined,
+        },
+      ]
+    : providerInstanceEntriesFor(providers, settings, null);
   const fallbackEntry = entries.find(isProviderInstancePickerReady);
   const autoPick = autoModeModel
     ? null
-    : autoModePick({ settings, accounts: providers, lockedDriver: null });
+    : autoModePick({ settings, accounts: providers, projectId: null });
   const resolved =
     selection &&
-    resolveAutoModelSelection({ selection, settings, accounts: providers, started: false });
+    resolveAutoModelSelection({
+      selection,
+      settings,
+      accounts: providers,
+      projectId: null,
+      started: false,
+    });
   const shown =
     resolved ??
     (fallbackEntry === undefined
@@ -171,12 +179,11 @@ function MachineModelControl({
       label={label}
       shown={shown}
       entries={entries}
-      modelOptionsByInstance={getCustomModelOptionsByInstance(
-        settings,
-        providers,
-        shown.instanceId,
-        shown.model,
-      )}
+      modelOptionsByInstance={
+        autoModeModel
+          ? new Map([[autoModeModel.entry.instanceId, autoModeModel.options]])
+          : getCustomModelOptionsByInstance(settings, providers, shown.instanceId, shown.model)
+      }
       showEffort={selection !== null}
       {...(selection === null && emptyLabel !== undefined ? { triggerLabel: emptyLabel } : {})}
       {...(autoModeModel
@@ -205,10 +212,10 @@ export function AutoModeModelRow() {
       description={
         settings.failoverLimitedThreads
           ? t(
-              "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account with usage left and runs its coordinator model, set below. Pick Auto in the model picker to use it.",
+              "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below, and has usage left. Pick Auto in the model picker to use it.",
             )
           : t(
-              "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account and runs its coordinator model, set below. Pick Auto in the model picker to use it.",
+              "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below. Pick Auto in the model picker to use it.",
             )
       }
       control={
@@ -247,11 +254,7 @@ export function AutoModeModelRow() {
         const driver = accounts[0]!.driver;
         const name = providerName(driver);
         const autoModel = autoModeModelFor(settings, driver);
-        // Auto's model belongs to the provider, so the picker lists one usable account's models.
-        const modelAccount =
-          accounts.find(
-            (account) => account.status === "ready" && account.auth.status !== "unauthenticated",
-          ) ?? accounts[0]!;
+        const choices = autoModeModelChoices(accounts, settings);
         const stored = settings.autoModeModels[driver];
         return (
           <ModelSubRow
@@ -276,14 +279,13 @@ export function AutoModeModelRow() {
             control={
               <MachineModelControl
                 machine={machine}
-                providers={[modelAccount]}
                 label={t("{provider} coordinator model", { provider: name })}
                 selection={
                   autoModel &&
-                  createModelSelection(modelAccount.instanceId, autoModel.model, autoModel.options)
+                  createModelSelection(choices.entry.instanceId, autoModel.model, autoModel.options)
                 }
                 emptyLabel={t("Choose a model")}
-                autoModeModel
+                autoModeModel={choices}
                 onChange={(selection) =>
                   updateSettings({
                     autoModeModels: {

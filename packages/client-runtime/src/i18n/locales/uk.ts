@@ -8690,10 +8690,10 @@ const catalog: MessageCatalog = {
   "Physical activity": "Фізична активність",
   "Pick a color from the app": "Виберіть колір із застосунку",
   "Pick a date and time.": "Виберіть дату й час.",
-  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account and runs its coordinator model, set below. Pick Auto in the model picker to use it.":
-    "Виберіть основного провайдера, щоб увімкнути режим Auto. Auto запускає нові чати на першому обліковому записі цього провайдера й використовує його модель-координатор, указану нижче. Щоб ним скористатися, виберіть Auto у списку моделей.",
-  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account with usage left and runs its coordinator model, set below. Pick Auto in the model picker to use it.":
-    "Виберіть основного провайдера, щоб увімкнути режим Auto. Auto запускає нові чати на першому обліковому записі цього провайдера з вільним лімітом і використовує його модель-координатор, указану нижче. Щоб ним скористатися, виберіть Auto у списку моделей.",
+  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below, and has usage left. Pick Auto in the model picker to use it.":
+    "Виберіть основного провайдера, щоб увімкнути режим Auto. Auto запускає нові чати на першому обліковому записі цього провайдера, який може запустити його модель-координатор, указану нижче, і має вільний ліміт. Щоб ним скористатися, виберіть Auto у списку моделей.",
+  "Pick a primary provider to enable Auto mode. Auto starts new chats on that provider's first account that can run its coordinator model, set below. Pick Auto in the model picker to use it.":
+    "Виберіть основного провайдера, щоб увімкнути режим Auto. Auto запускає нові чати на першому обліковому записі цього провайдера, який може запустити його модель-координатор, указану нижче. Щоб ним скористатися, виберіть Auto у списку моделей.",
   "Pick a thread to continue": "Виберіть чат, щоб продовжити",
   "Pick where to host it, then point us at a repo to push to.":
     "Виберіть, де його розмістити, а потім вкажіть репозиторій для надсилання.",

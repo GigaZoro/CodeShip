@@ -11,7 +11,6 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import { limitRecoveryDeclined, snoozeHoldsStop } from "@t3tools/shared/orchestrationV2ThreadError";
-import { resolveAutoModelSelection } from "@t3tools/shared/serverSettings";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -32,6 +31,7 @@ import {
   modelWithRoom,
   nextAccountRoomAt,
   recoveryRoomAt,
+  resolveAutoRoute,
   routeAutoAccount,
 } from "./AccountRouting.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -245,14 +245,14 @@ function continueLimitedRun(
  */
 function nextTurnModel(
   input: Pick<AccountRoutingContext, "settings" | "providers">,
-  selection: ModelSelection,
+  thread: Pick<ProjectionStore.ProjectionSignedOutCandidate, "projectId" | "modelSelection">,
 ): string {
-  return resolveAutoModelSelection({
-    selection,
-    settings: input.settings,
-    accounts: input.providers,
+  return resolveAutoRoute({
+    ...input,
+    selection: thread.modelSelection,
+    projectId: thread.projectId,
     started: true,
-  }).model;
+  }).searchModel;
 }
 
 /** The search for another account of `current`'s driver that could run the thread's next turn. */
@@ -265,7 +265,7 @@ function otherAccountSearch<Input extends AccountRoutingContext & McpSignIns>(
     ...input,
     driver: current.driver,
     projectId: thread.projectId,
-    model: nextTurnModel(input, thread.modelSelection),
+    model: nextTurnModel(input, thread),
     exceptInstanceId: current.instanceId,
   };
 }
@@ -320,7 +320,7 @@ export function resetCreditResumeCommand(input: FailoverInput): DispatchCommand 
     modelWithRoom(account.provider, {
       ...input,
       projectId: thread.projectId,
-      model: nextTurnModel(input, thread.modelSelection),
+      model: nextTurnModel(input, thread),
     }) === null
   )
     return null;

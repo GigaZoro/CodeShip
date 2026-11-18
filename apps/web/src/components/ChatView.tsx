@@ -797,6 +797,7 @@ export default function ChatView(props: ChatViewProps) {
           selection: draftDefaultSelection,
           settings,
           accounts: providersByEnvironment.get(draftThread.environmentId) ?? [],
+          projectId: draftThread.projectId,
           started: false,
         })
       : draftDefaultSelection;

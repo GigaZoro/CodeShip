@@ -6,10 +6,10 @@ import {
   type EnvironmentId,
   type ProviderDriverKind,
   ProviderInstanceId,
-  resolveProjectProviderInstanceEnabled,
   type ThreadContextRecord,
 } from "@t3tools/contracts";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { canAccountRun, isAccountReady } from "@t3tools/shared/serverSettings";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { toastManager } from "../ui/toast";
 import {
@@ -93,16 +93,12 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
                     provider.instanceId === activeProviderInstanceId) &&
                   provider.driver === selectedProvider &&
                   (environment.serverConfig?.settings
-                    ? resolveProjectProviderInstanceEnabled(
+                    ? canAccountRun(
+                        provider,
                         environment.serverConfig.settings,
                         candidate.projectId,
-                        provider.instanceId,
                       )
-                    : provider.enabled) &&
-                  provider.installed &&
-                  provider.status !== "error" &&
-                  provider.auth.status !== "unauthenticated" &&
-                  provider.availability !== "unavailable",
+                    : isAccountReady(provider)),
               )
           );
         })

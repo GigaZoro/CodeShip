@@ -1132,8 +1132,11 @@ function TaskForm({
   const autoOn =
     taskModel?.autoAccount === true &&
     config?.environment.capabilities.autoMode === true &&
-    autoModePick({ settings: config.settings, accounts: config.providers, lockedDriver: null }) !==
-      null;
+    autoModePick({
+      settings: config.settings,
+      accounts: config.providers,
+      projectId: draft.projectId,
+    }) !== null;
   // Existing webhook tasks keep the option so they can still switch to a timer.
   const webhookDenial = managedCapabilityDenial(config?.managedPolicy, "webhookTasks");
   const canOperate = useAtomValue(

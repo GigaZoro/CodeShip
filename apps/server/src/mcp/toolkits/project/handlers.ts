@@ -198,6 +198,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   Effect.mapError(unavailable),
                 ),
                 yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
+                projectId,
               );
         const strategy = yield* withWorktreeBase(input.workspaceStrategy, readProject);
         // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.

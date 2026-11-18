@@ -3,7 +3,6 @@ import {
   type ModelSelection,
   type ServerSettings,
   type ProjectId,
-  resolveProjectProviderInstanceEnabled,
   type UsageLimitsReport,
   type ProviderInstanceId,
   REASONING_EFFORT_OPTION_IDS,
@@ -20,11 +19,14 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import {
+  canAccountRun,
+  isAccountReady,
   orderProviderInstancesForFailover,
   resolveAutoModelSelection,
   supportsAccountFailover,
 } from "./serverSettings.ts";
 import { msg, t, tn } from "./i18n.ts";
+import { resolveSelectableModel } from "./model.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -211,24 +213,23 @@ export function resolveNewThreadModelSelection(input: {
   const window = exhaustedUsageWindow(provider, input.now, selection.model);
   const usable = (entry: ServerProvider | undefined, model: string): entry is ServerProvider =>
     entry !== undefined &&
-    entry.enabled &&
-    entry.installed &&
-    entry.auth.status !== "unauthenticated" &&
-    isProviderAvailable(entry) &&
-    !exhaustedUsageWindow(entry, input.now, model) &&
-    (!input.settings ||
-      resolveProjectProviderInstanceEnabled(
-        input.settings,
-        input.projectId ?? null,
-        entry.instanceId,
-      ));
+    (input.settings
+      ? canAccountRun(entry, input.settings, input.projectId ?? null)
+      : isAccountReady(entry)) &&
+    !exhaustedUsageWindow(entry, input.now, model);
+  // As account switching does, an account takes an Auto thread only when it lists the model.
   const anyAccountUsable = (driver: ServerProvider["driver"], model: string) =>
-    input.providers.some((entry) => entry.driver === driver && usable(entry, model));
+    input.providers.some((entry) => {
+      const listed =
+        entry.driver === driver ? resolveSelectableModel(driver, model, entry.models) : null;
+      return listed !== null && usable(entry, listed);
+    });
   const fallbackSelection = input.settings
     ? resolveAutoModelSelection({
         selection: input.fallbackSelection,
         settings: input.settings,
         accounts: input.providers,
+        projectId: input.projectId ?? null,
         started: false,
       })
     : input.fallbackSelection;
