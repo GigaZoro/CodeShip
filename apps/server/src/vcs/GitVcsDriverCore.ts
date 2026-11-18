@@ -566,7 +566,9 @@ export function isNonRepositoryGitStderr(stderr: string): boolean {
   // Git for Windows words a .git file that names a missing directory this way.
   return (
     normalized.includes("not a git repository") ||
-    normalized.includes("does not point to a valid repository")
+    normalized.includes("does not point to a valid repository") ||
+    // `git -C <dir>` on a folder that is gone, such as a removed worktree a turn still names.
+    (normalized.includes("cannot change to") && normalized.includes("no such file or directory"))
   );
 }
 function isUnbornHeadStderr(stderr: string): boolean {
