@@ -783,8 +783,16 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
   );
 }
 
+const LoginGeneration = Schema.optionalKey(
+  Schema.Struct({
+    id: Schema.String.check(Schema.isUUID(4)),
+    binding: Schema.String,
+  }).pipe(Schema.annotateKey({ providerSettingsForm: { hidden: true } })),
+);
+
 export const CodexSettings = makeProviderSettingsSchema(
   {
+    loginGeneration: LoginGeneration,
     setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
@@ -868,6 +876,7 @@ const InstanceIdleCompaction = Schema.Literals(
 
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
+    loginGeneration: LoginGeneration,
     oauthToken: Schema.optionalKey(
       Schema.Struct({
         issuedAt: Schema.String,

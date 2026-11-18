@@ -122,26 +122,36 @@ export const makeProviderAuthService = Effect.gen(function* () {
     return instance.auth;
   });
 
+  const bindingInstances = Effect.fn("ProviderAuthService.bindingInstances")(function* (
+    instanceId: ProviderInstanceId,
+    binding: ProviderAuthController["credentialBinding"],
+  ) {
+    if (!binding) return [instanceId];
+    return [
+      instanceId,
+      ...(yield* registry.listInstances)
+        .filter(
+          (instance) =>
+            instance.instanceId !== instanceId &&
+            instance.auth?.credentialBinding?.key === binding.key &&
+            instance.auth.credentialBinding.owner === binding.owner,
+        )
+        .map((instance) => instance.instanceId),
+    ];
+  });
+
   // Invalidate credentials using session bindings; model selection may already point to another provider.
   const stopSessions = Effect.fn("ProviderAuthService.stopSessions")(function* (
     instanceId: ProviderInstanceId,
     binding: ProviderAuthController["credentialBinding"],
+    previousInstances?: ReadonlyArray<ProviderInstanceId>,
   ) {
     yield* Effect.annotateCurrentSpan("instanceId", instanceId);
     const failure = (detail: string) =>
       new ProviderSetupError({ instanceId, operation: "stopSessions", detail });
-    const affectedIds = new Set([
-      instanceId,
-      ...(binding === undefined
-        ? []
-        : (yield* registry.listInstances)
-            .filter(
-              (instance) =>
-                instance.auth?.credentialBinding?.key === binding.key &&
-                instance.auth.credentialBinding.owner === binding.owner,
-            )
-            .map((instance) => instance.instanceId)),
-    ]);
+    const affectedIds = new Set(
+      previousInstances ?? (yield* bindingInstances(instanceId, binding)),
+    );
     const threadIds = yield* projections
       .getRecoveryThreadIds("runtime")
       .pipe(
@@ -165,10 +175,13 @@ export const makeProviderAuthService = Effect.gen(function* () {
                 Effect.gen(function* () {
                   if (session.providerInstanceId !== instanceId) {
                     const current = yield* registry.getInstance(session.providerInstanceId);
+                    // Settings reconciliation removes the captured aliases while retiring their old drivers.
                     if (
-                      !binding ||
-                      current?.auth?.credentialBinding?.key !== binding.key ||
-                      current.auth.credentialBinding.owner !== binding.owner
+                      current === undefined
+                        ? !previousInstances
+                        : !binding ||
+                          current.auth?.credentialBinding?.key !== binding.key ||
+                          current.auth.credentialBinding.owner !== binding.owner
                     )
                       return;
                   }
@@ -275,12 +288,18 @@ export const makeProviderAuthService = Effect.gen(function* () {
           // A limits login sits beside the account's own sign-in, so its sessions keep running.
           const limitsLogin = input.purpose === "limits";
           if (!limitsLogin) yield* checkSharedBinding(input.instanceId, "start", auth);
+          const peers = limitsLogin
+            ? [input.instanceId]
+            : yield* bindingInstances(input.instanceId, auth.credentialBinding);
           return yield* auth.start(
             ownerSessionId,
-            limitsLogin ? Effect.void : stopSessions(input.instanceId, auth.credentialBinding),
+            limitsLogin
+              ? Effect.void
+              : stopSessions(input.instanceId, auth.credentialBinding, peers),
             input.methodId,
             input.returnUrl,
             input.callbackMode,
+            peers,
           );
         }),
       );

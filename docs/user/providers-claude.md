@@ -9,9 +9,12 @@ shared provider settings.
 Each Claude provider is one account. To add another, add a Claude instance in
 **Settings > Providers & models** and choose **Sign in**. T3.CodeShip runs `claude auth login`
 in a terminal on the environment's machine; sign in with the other account in your
-browser. Each provider then shows its account's email and plan.
+browser. Chats can keep using the current account while you sign in. After the new
+login is saved, T3.CodeShip closes sessions on the previous login. Cancelling or
+leaving the sign-in unfinished keeps the current login available.
 
-The first Claude provider uses the Claude CLI's own login. Every other Claude
+The first Claude provider starts with the Claude CLI's own login. Signing in from
+T3.CodeShip selects a private login for the app. Every other Claude
 provider keeps its login in a folder T3.CodeShip creates for it, and that folder links
 to everything else in `~/.claude`: CLAUDE.md, skills, settings, plugins, and past
 sessions, so threads can move between accounts. Claude saves MCP servers with the
@@ -20,8 +23,8 @@ as ones added with `claude mcp add --scope user`, into each account. Each accoun
 signs in to those servers on its own. A server sign-in that renews itself every hour, such as
 ThreadPage's, is renewed by T3.CodeShip a few minutes before it ends, with `claude mcp get`, so
 the account's chats never renew it at the same moment. After the computer sleeps past that point, a
-chat that starts waits a few seconds for the renewal. **Sign out** signs that account out; sign the
-first provider out with `claude auth logout` in a terminal.
+chat that starts waits a few seconds for the renewal. **Sign out** signs the app's private
+login out. Use `claude auth logout` in a terminal for the CLI's own login.
 
 A Claude sign-in expires on a schedule: the access token renews by itself, but the login stops
 working a few weeks after you last signed in, and every request then fails with "Login expired".

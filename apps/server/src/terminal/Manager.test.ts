@@ -2198,6 +2198,7 @@ it.layer(
       const environment = yield* TerminalManager.resolveProviderInstanceTerminalEnvironment({
         serverSettings,
         path,
+        stateDir: "/state",
         rawProviderInstanceId: "configured_home",
         env: undefined,
       });

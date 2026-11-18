@@ -1,3 +1,7 @@
+## 2026-11-19 — Claude and Codex keep chats available during sign-in
+
+- Chats can keep running and new turns can start on the current account while you sign in with Claude or Codex. The app retires sessions using the previous login once it saves the replacement. Cancelling, leaving the login unfinished, or a failed save keeps the previous sessions available.
+
 ## 2026-11-19 — Environment tools can manage banked usage reset preferences
 
 - Agents can read and set whether CodeShip redeems banked usage resets and how long it waits for a plan reset. Changes apply locally unless the agent explicitly requests sharing. A regression check requires read and update support for every shared preference or a documented exception.
