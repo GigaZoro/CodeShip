@@ -2244,7 +2244,7 @@ it.effect.each([
       })
       .pipe(Effect.result, Effect.forkChild);
     yield* Deferred.await(fetchStarted);
-    yield* TestClock.adjust("30 seconds");
+    yield* TestClock.adjust("5 minutes");
     const outcome = yield* Fiber.join(result);
 
     if (localRef) {
@@ -2258,7 +2258,13 @@ it.effect.each([
         GIT_REMOTE_TIMED_OUT_DETAIL,
       );
     }
-  }).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
+  }).pipe(
+    Effect.provide(
+      layerServerConfig.pipe(
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      ),
+    ),
+  ),
 );
 
 it.effect("lets a worktree checkout that is still working run past five minutes", () =>
