@@ -1406,6 +1406,7 @@ type AutoSwitch = {
 export function withAutoSwitch(input: {
   readonly serverConfig: Pick<ServerConfig, "environment" | "settings" | "providers"> | null;
   readonly selection: ModelSelection | null;
+  readonly projectId: ProjectId | null;
   readonly started: boolean;
   readonly onChange: (selection: ModelSelection) => void;
 }): { readonly auto?: AutoSwitch } {
@@ -1415,6 +1416,7 @@ export function withAutoSwitch(input: {
     selection,
     settings: serverConfig.settings,
     accounts: serverConfig.providers,
+    projectId: input.projectId,
     started: input.started,
   });
   if (pick === null) return {};
@@ -1478,6 +1480,7 @@ export function ExistingThreadSettingsRouteScreen({
         selection: storedModelSelection,
         settings: serverConfig.settings,
         accounts: serverConfig.providers,
+        projectId: selectedThread.projectId,
         started,
       })
     : storedModelSelection;
@@ -1526,6 +1529,7 @@ export function ExistingThreadSettingsRouteScreen({
       {...withAutoSwitch({
         serverConfig,
         selection: modelSelection,
+        projectId: selectedThread.projectId,
         started,
         onChange: updateModelSelection,
       })}
@@ -1569,6 +1573,7 @@ export function NewTaskThreadSettingsRouteScreen() {
       {...withAutoSwitch({
         serverConfig: flow.serverConfig,
         selection: flow.selectedModel,
+        projectId: flow.selectedProject?.id ?? null,
         started: false,
         onChange: flow.setSelectedModelSelection,
       })}

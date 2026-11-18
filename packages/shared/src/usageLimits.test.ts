@@ -62,7 +62,9 @@ function provider(overrides: Partial<ServerProvider>): ServerProvider {
 describe("new thread model fallback", () => {
   const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
   const fallback = { instanceId: ProviderInstanceId.make("claude"), model: "claude-fable-5-1" };
+  const listing = (slug: string) => [{ slug, name: slug, isCustom: false, capabilities: null }];
   const limited = provider({
+    models: listing(selection.model),
     usageLimits: {
       checkedAt: "2026-09-03T11:00:00.000Z",
       windows: [{ ...window, usedPercent: 100 }],
@@ -71,6 +73,7 @@ describe("new thread model fallback", () => {
   const available = provider({
     instanceId: fallback.instanceId,
     driver: ProviderDriverKind.make("claudeAgent"),
+    models: listing(fallback.model),
   });
 
   const defaults = {
@@ -92,10 +95,44 @@ describe("new thread model fallback", () => {
         providers: [
           limited,
           available,
-          provider({ instanceId: ProviderInstanceId.make("codex_2") }),
+          provider({
+            instanceId: ProviderInstanceId.make("codex_2"),
+            models: listing(selection.model),
+          }),
         ],
       },
       { ...selection, autoAccount: true },
+    ],
+    [
+      "auto-account default whose other account lacks its model",
+      {
+        defaultSelection: { ...selection, autoAccount: true },
+        providers: [
+          limited,
+          available,
+          provider({
+            instanceId: ProviderInstanceId.make("codex_2"),
+            models: listing("gpt-6-luna"),
+          }),
+        ],
+      },
+      fallback,
+    ],
+    [
+      "auto-account default whose other account failed its check",
+      {
+        defaultSelection: { ...selection, autoAccount: true },
+        providers: [
+          limited,
+          available,
+          provider({
+            instanceId: ProviderInstanceId.make("codex_2"),
+            status: "error",
+            models: listing(selection.model),
+          }),
+        ],
+      },
+      fallback,
     ],
     [
       "auto-account default with every account out",
@@ -116,7 +153,11 @@ describe("new thread model fallback", () => {
         providers: [
           limited,
           { ...available, usageLimits: limited.usageLimits },
-          provider({ instanceId: ProviderInstanceId.make("claude_2"), driver: available.driver }),
+          provider({
+            instanceId: ProviderInstanceId.make("claude_2"),
+            driver: available.driver,
+            models: listing(fallback.model),
+          }),
         ],
       },
       { ...fallback, autoAccount: true },

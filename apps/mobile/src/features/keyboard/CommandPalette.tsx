@@ -355,6 +355,13 @@ export function CommandPalette(props: {
         run: () => openSettings(navigation, "SettingsUsage"),
       },
       {
+        key: "monitoring",
+        kind: "action",
+        title: t("Monitoring"),
+        searchTerms: ["process", "chats", "time", "weak points", "findings", "analysis"],
+        run: () => openSettings(navigation, "SettingsMonitoring"),
+      },
+      {
         key: "machines",
         kind: "action",
         title: t("Machines"),

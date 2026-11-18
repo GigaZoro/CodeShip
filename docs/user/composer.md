@@ -318,7 +318,8 @@ cannot use may not work.
 
 Put skills you want in every provider in `~/.agents/skills` on the environment's
 machine. Codex, Cursor, and fx read that folder themselves, and T3.CodeShip adds it
-to Claude. Keep skills for one provider in its own folder, such as
+to Claude, unless Claude's own skills folder links skills from it and so picks the
+shared skills Claude loads. Keep skills for one provider in its own folder, such as
 `~/.claude/skills` or `~/.codex/skills`. Keep each skill in only one of these
 folders, because Codex lists both copies of a duplicate. All accounts of a
 provider use the same folders, unless you gave an account its own config

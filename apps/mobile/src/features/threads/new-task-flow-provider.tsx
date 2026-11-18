@@ -455,6 +455,7 @@ export function NewTaskFlowProvider(
           selection: storedDefaultModelSelection,
           settings: selectedEnvironmentServerConfig.settings,
           accounts: selectedEnvironmentServerConfig.providers,
+          projectId: selectedProject?.id ?? null,
           started: false,
         })
       : storedDefaultModelSelection;
@@ -465,6 +466,7 @@ export function NewTaskFlowProvider(
           selection: storedStickyModelSelection,
           settings: selectedEnvironmentServerConfig.settings,
           accounts: selectedEnvironmentServerConfig.providers,
+          projectId: selectedProject?.id ?? null,
           started: false,
         })
       : storedStickyModelSelection,

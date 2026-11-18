@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  ActivityIcon,
   CalendarClockIcon,
   ChartNoAxesColumnIcon,
   GaugeIcon,
@@ -57,6 +58,7 @@ type SidebarNavDestination =
   | "manual-steps"
   | "machines"
   | "usage"
+  | "monitoring"
   | "settings";
 
 function resolveActiveDestination(pathname: string): SidebarNavDestination | null {
@@ -65,6 +67,7 @@ function resolveActiveDestination(pathname: string): SidebarNavDestination | nul
   if (pathname === "/artifacts") return "artifacts";
   if (pathname === "/extensions") return "extensions";
   if (pathname === "/usage") return "usage";
+  if (pathname === "/monitoring") return "monitoring";
   if (pathname === "/machines") return "machines";
   if (pathname === "/scheduled-tasks") return "scheduled-tasks";
   if (pathname === "/thread-page") return "thread-page";
@@ -111,6 +114,26 @@ function SidebarNavRailItem({
       </Tooltip>
       {badge}
     </SidebarMenuItem>
+  );
+}
+
+function SidebarNavRailMonitoringItem({
+  isActive,
+  onClick,
+}: {
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const shortcut = shortcutLabelForCommand(keybindings, "monitoring.open");
+  return (
+    <SidebarNavRailItem
+      icon={<ActivityIcon />}
+      label={t("Monitoring")}
+      tooltip={shortcut ? t("Monitoring ({shortcut})", { shortcut }) : t("Monitoring")}
+      isActive={isActive}
+      onClick={onClick}
+    />
   );
 }
 
@@ -275,6 +298,10 @@ export const SidebarNavRail = memo(function SidebarNavRail() {
         <SidebarNavRailMachinesItem
           isActive={active === "machines"}
           onClick={go(() => navigate({ to: "/machines" }))}
+        />
+        <SidebarNavRailMonitoringItem
+          isActive={active === "monitoring"}
+          onClick={go(() => navigate({ to: "/monitoring" }))}
         />
         <SidebarNavRailUsageItem
           isActive={active === "usage"}

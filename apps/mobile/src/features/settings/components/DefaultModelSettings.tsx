@@ -79,8 +79,9 @@ export function DefaultModelSettings(props: {
     ? (providersByEnvironment.get(props.targets[0].environment.environmentId) ?? [])
     : [];
   const accountSettings = props.targets[0]?.settings;
+  const projectId = props.targets[0]?.projectId ?? null;
   const autoPick = accountSettings
-    ? autoModePick({ settings: accountSettings, accounts: accountProviders, lockedDriver: null })
+    ? autoModePick({ settings: accountSettings, accounts: accountProviders, projectId })
     : null;
   const autoChecked = selection?.autoAccount === true && autoPick !== null;
   // An Auto default shows the model and account Auto starts threads on.
@@ -90,6 +91,7 @@ export function DefaultModelSettings(props: {
           selection,
           settings: accountSettings,
           accounts: accountProviders,
+          projectId,
           started: false,
         })
       : selection;

@@ -100,10 +100,17 @@ function useDefaultModelState() {
           providers,
           settings.defaultModelSelection ?? inheritedSelection,
         );
-  const autoPick = autoModePick({ settings, accounts: providers, lockedDriver: null });
+  const projectId = target?.projectId ?? null;
+  const autoPick = autoModePick({ settings, accounts: providers, projectId });
   // An Auto pick shows the model and account Auto starts threads on.
   const resolveAuto = (stored: ModelSelection) =>
-    resolveAutoModelSelection({ selection: stored, settings, accounts: providers, started: false });
+    resolveAutoModelSelection({
+      selection: stored,
+      settings,
+      accounts: providers,
+      projectId,
+      started: false,
+    });
   const selection = storedSelection
     ? resolveEffectiveDefaultModelSelection(settings, providers, resolveAuto(storedSelection))
     : null;

@@ -337,6 +337,7 @@ export default defineConfig({
       "t3code/no-raw-mcp-registration": "error",
       "t3code/no-raw-process-probe": "error",
       "t3code/no-raw-taskkill": "error",
+      "t3code/no-retired-event-table": "error",
       "t3code/no-remote-git-through-execute": "error",
       "t3code/no-real-time-wait-in-tests": "error",
       "t3code/no-duplicate-test-title": "error",
@@ -431,6 +432,15 @@ export default defineConfig({
       {
         files: ["apps/server/src/mcp/McpHttpServer.ts"],
         rules: { "t3code/no-raw-mcp-registration": "off" },
+      },
+      {
+        // The migrations copy the retired table; the runtime test checks nothing writes to it.
+        files: [
+          "apps/server/src/persistence/Migrations/**",
+          "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+          "oxlint-plugin-t3code/rules/no-retired-event-table{,.test}.ts",
+        ],
+        rules: { "t3code/no-retired-event-table": "off" },
       },
       {
         files: ["packages/shared/src/processProbe.ts"],

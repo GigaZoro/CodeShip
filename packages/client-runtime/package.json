@@ -111,6 +111,14 @@
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"
     },
+    "./monitoring": {
+      "types": "./src/monitoring/aggregate.ts",
+      "default": "./src/monitoring/aggregate.ts"
+    },
+    "./monitoring-text": {
+      "types": "./src/monitoring/text.ts",
+      "default": "./src/monitoring/text.ts"
+    },
     "./scheduled-task-groups": {
       "types": "./src/scheduledTaskGroups.ts",
       "default": "./src/scheduledTaskGroups.ts"

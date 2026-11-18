@@ -351,6 +351,11 @@ describe("routeAutoAccount", () => {
       },
       { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", isCustom: false, capabilities: null },
     ];
+    // The second account lists the same model under an id of its own.
+    const secondModels = [
+      models[0]!,
+      { slug: "sonnet-5-5-latest", name: "Claude Sonnet 5.5", isCustom: false, capabilities: null },
+    ];
     const routeWith = (input: {
       readonly selection: ModelSelection;
       readonly currentInstanceId: ProviderInstanceId | null;
@@ -363,7 +368,7 @@ describe("routeAutoAccount", () => {
         mcpSignInsNeeded: signIns(),
         providers: [
           provider(primary, { models }),
-          provider(second, { models }),
+          provider(second, { models: secondModels }),
           provider(codex, {
             driver: codexDriver,
             models: [
@@ -373,8 +378,12 @@ describe("routeAutoAccount", () => {
         ],
         settings: {
           ...settings([primary, second]),
+          providerInstances: {
+            ...settings([primary, second]).providerInstances,
+            [codex]: { driver: codexDriver },
+          },
           autoModeModels: {
-            [claude]: { model: "claude-sonnet-5-5", options: effort("max") },
+            [claude]: { model: "Claude Sonnet 5.5", options: effort("max") },
             [codexDriver]: { model: "gpt-6-astra", options: effort("ultra") },
           },
         },
@@ -389,13 +398,19 @@ describe("routeAutoAccount", () => {
         "a new thread runs the primary's Auto model and effort on the first account with room",
         { instanceId: codex, model: "gpt-5.5", autoAccount: true },
         null,
-        { instanceId: second, model: "claude-sonnet-5-5", options: effort("max") },
+        { instanceId: second, model: "sonnet-5-5-latest", options: effort("max") },
       ],
       [
         "a thread runs its provider's Auto model, not an effort of its own",
         { instanceId: second, model: "claude-opus-5-5", options: effort("low"), autoAccount: true },
         second,
-        { instanceId: second, model: "claude-sonnet-5-5", options: effort("max") },
+        { instanceId: second, model: "sonnet-5-5-latest", options: effort("max") },
+      ],
+      [
+        "a thread on a limited account moves to the id the next account lists",
+        { instanceId: primary, model: "claude-opus-5-5", autoAccount: true },
+        primary,
+        { instanceId: second, model: "sonnet-5-5-latest", options: effort("max") },
       ],
       [
         "a thread that already ran keeps its provider",

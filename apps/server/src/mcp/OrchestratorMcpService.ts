@@ -599,8 +599,9 @@ export const requireAdvertisedModel = (provider: ServerProvider, model: string) 
 export const requireAutoModePick = (
   settings: Parameters<typeof autoModePick>[0]["settings"],
   providers: ReadonlyArray<ServerProvider>,
+  projectId: ProjectId,
 ) => {
-  const pick = autoModePick({ settings, accounts: providers, lockedDriver: null });
+  const pick = autoModePick({ settings, accounts: providers, projectId });
   return pick === null
     ? Effect.fail(
         failure(
@@ -4122,7 +4123,11 @@ const make = Effect.gen(function* () {
                 : null;
               const autoPick =
                 request.auto === true && committedThread === null
-                  ? yield* requireAutoModePick(yield* readSettings, providers)
+                  ? yield* requireAutoModePick(
+                      yield* readSettings,
+                      providers,
+                      parent.thread.projectId,
+                    )
                   : undefined;
               const resolved = yield* resolveTargetRechecking({
                 parent,

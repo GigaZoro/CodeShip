@@ -92,6 +92,7 @@ export function ScheduledTaskModelPickerRouteScreen() {
       {...withAutoSwitch({
         serverConfig: config,
         selection: selectedModel,
+        projectId,
         started: false,
         onChange: (modelSelection) =>
           setEditor((current) =>

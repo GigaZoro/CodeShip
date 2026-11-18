@@ -27,6 +27,7 @@ import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-reques
 import { Route as ChatProjectsRouteImport } from './routes/_chat.projects'
 import { Route as ChatPluginsRouteImport } from './routes/_chat.plugins'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
+import { Route as ChatMonitoringRouteImport } from './routes/_chat.monitoring'
 import { Route as ChatModelContextServersRouteImport } from './routes/_chat.model-context-servers'
 import { Route as ChatManualStepsRouteImport } from './routes/_chat.manual-steps'
 import { Route as ChatMachinesRouteImport } from './routes/_chat.machines'
@@ -151,6 +152,11 @@ const ChatPluginsRoute = ChatPluginsRouteImport.update({
 const ChatNewRoute = ChatNewRouteImport.update({
   id: '/new',
   path: '/new',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatMonitoringRoute = ChatMonitoringRouteImport.update({
+  id: '/monitoring',
+  path: '/monitoring',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatModelContextServersRoute = ChatModelContextServersRouteImport.update({
@@ -354,6 +360,7 @@ export interface FileRoutesByFullPath {
   '/machines': typeof ChatMachinesRoute
   '/manual-steps': typeof ChatManualStepsRoute
   '/model-context-servers': typeof ChatModelContextServersRoute
+  '/monitoring': typeof ChatMonitoringRoute
   '/new': typeof ChatNewRoute
   '/plugins': typeof ChatPluginsRoute
   '/projects': typeof ChatProjectsRoute
@@ -408,6 +415,7 @@ export interface FileRoutesByTo {
   '/machines': typeof ChatMachinesRoute
   '/manual-steps': typeof ChatManualStepsRoute
   '/model-context-servers': typeof ChatModelContextServersRoute
+  '/monitoring': typeof ChatMonitoringRoute
   '/new': typeof ChatNewRoute
   '/plugins': typeof ChatPluginsRoute
   '/projects': typeof ChatProjectsRoute
@@ -465,6 +473,7 @@ export interface FileRoutesById {
   '/_chat/machines': typeof ChatMachinesRoute
   '/_chat/manual-steps': typeof ChatManualStepsRoute
   '/_chat/model-context-servers': typeof ChatModelContextServersRoute
+  '/_chat/monitoring': typeof ChatMonitoringRoute
   '/_chat/new': typeof ChatNewRoute
   '/_chat/plugins': typeof ChatPluginsRoute
   '/_chat/projects': typeof ChatProjectsRoute
@@ -523,6 +532,7 @@ export interface FileRouteTypes {
     | '/machines'
     | '/manual-steps'
     | '/model-context-servers'
+    | '/monitoring'
     | '/new'
     | '/plugins'
     | '/projects'
@@ -577,6 +587,7 @@ export interface FileRouteTypes {
     | '/machines'
     | '/manual-steps'
     | '/model-context-servers'
+    | '/monitoring'
     | '/new'
     | '/plugins'
     | '/projects'
@@ -633,6 +644,7 @@ export interface FileRouteTypes {
     | '/_chat/machines'
     | '/_chat/manual-steps'
     | '/_chat/model-context-servers'
+    | '/_chat/monitoring'
     | '/_chat/new'
     | '/_chat/plugins'
     | '/_chat/projects'
@@ -814,6 +826,13 @@ declare module '@tanstack/react-router' {
       path: '/new'
       fullPath: '/new'
       preLoaderRoute: typeof ChatNewRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/monitoring': {
+      id: '/_chat/monitoring'
+      path: '/monitoring'
+      fullPath: '/monitoring'
+      preLoaderRoute: typeof ChatMonitoringRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/model-context-servers': {
@@ -1142,6 +1161,7 @@ interface ChatRouteChildren {
   ChatMachinesRoute: typeof ChatMachinesRoute
   ChatManualStepsRoute: typeof ChatManualStepsRoute
   ChatModelContextServersRoute: typeof ChatModelContextServersRoute
+  ChatMonitoringRoute: typeof ChatMonitoringRoute
   ChatNewRoute: typeof ChatNewRoute
   ChatPluginsRoute: typeof ChatPluginsRoute
   ChatProjectsRoute: typeof ChatProjectsRoute
@@ -1163,6 +1183,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatMachinesRoute: ChatMachinesRoute,
   ChatManualStepsRoute: ChatManualStepsRoute,
   ChatModelContextServersRoute: ChatModelContextServersRoute,
+  ChatMonitoringRoute: ChatMonitoringRoute,
   ChatNewRoute: ChatNewRoute,
   ChatPluginsRoute: ChatPluginsRoute,
   ChatProjectsRoute: ChatProjectsRoute,

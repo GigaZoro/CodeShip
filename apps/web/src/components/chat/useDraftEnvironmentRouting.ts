@@ -6,7 +6,6 @@ import {
   type EnvironmentId,
   type ProviderDriverKind,
   ProviderInstanceId,
-  resolveProjectProviderInstanceEnabled,
   type ThreadContextRecord,
 } from "@t3tools/contracts";
 import {
@@ -18,6 +17,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { canAccountRun, isAccountReady } from "@t3tools/shared/serverSettings";
 import { isTriagePrompt, replaceTriagePlaybookLink } from "@t3tools/shared/triagePrompt";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -113,16 +113,12 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
                     provider.instanceId === activeProviderInstanceId) &&
                   provider.driver === selectedProvider &&
                   (environment.serverConfig?.settings
-                    ? resolveProjectProviderInstanceEnabled(
+                    ? canAccountRun(
+                        provider,
                         environment.serverConfig.settings,
                         candidate.projectId,
-                        provider.instanceId,
                       )
-                    : provider.enabled) &&
-                  provider.installed &&
-                  provider.status !== "error" &&
-                  provider.auth.status !== "unauthenticated" &&
-                  provider.availability !== "unavailable",
+                    : isAccountReady(provider)),
               )
           );
         })

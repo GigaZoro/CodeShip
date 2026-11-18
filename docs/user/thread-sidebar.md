@@ -596,12 +596,13 @@ provider.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers & models → Models** on web or desktop: pick a primary provider under **Auto mode**, and
-choose the coordinator model and effort for each provider. Auto keeps these choices
-for the coordinator. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
+choose the coordinator model and effort for each provider. The list offers the models of every
+account of that provider that can run on this machine. Auto keeps these choices for the
+coordinator. Then pick **Auto** at the top of the model picker, or turn on **Auto** under
 the default model in settings for new threads. A scheduled task's model can be Auto
 too, and an agent you ask to start a thread in Auto, or `t3 thread start --auto`,
-starts it there. A new thread starts on the primary provider's first account in its
-account order. With account switching enabled in **Settings → Threads**, it starts on the first
+starts it there. A new thread starts on the first account in the primary provider's account
+order that can run in its project and has its coordinator model. With account switching enabled in **Settings → Threads**, it starts on the first
 signed-in one that has usage left, or, when none has, on the signed-in one whose limit ends
 first, and switches accounts at usage limits. A scheduled task on Auto starts its new thread on
 the account with usage left whose weekly limit resets soonest, so usage that would reset unused

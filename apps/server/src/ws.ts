@@ -131,6 +131,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
+import * as MonitoringService from "./monitoring/MonitoringService.ts";
 import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
@@ -1493,6 +1494,7 @@ export const layerWsRpc = (
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
       const scheduledTaskStats = yield* ScheduledTaskStats.ScheduledTaskStats;
+      const monitoring = yield* MonitoringService.MonitoringService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -2326,6 +2328,9 @@ export const layerWsRpc = (
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribeLinked]: (_input) => linkedScheduledTasks.subscribe(),
         [WS_METHODS.scheduledTasksStats]: (input) => scheduledTaskStats.stats(input),
+        [WS_METHODS.monitoringOverview]: (input) => monitoring.overview(input),
+        [WS_METHODS.monitoringThread]: (input) => monitoring.thread(input),
+        [WS_METHODS.monitoringSubscribeChanges]: (_input) => monitoring.subscribeChanges,
         [WS_METHODS.scheduledTasksUpsert]: (input) =>
           scheduledTasks.upsert(input, ScheduledTasks.CHANGED_IN_APP),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
@@ -3688,6 +3693,7 @@ export const layer = Layer.unwrap(
     const sharedSettings = yield* SharedSettings.SharedSettings;
     const linkedScheduledTasks = yield* LinkedScheduledTasks.LinkedScheduledTasks;
     const scheduledTaskStats = yield* ScheduledTaskStats.ScheduledTaskStats;
+    const monitoring = yield* MonitoringService.MonitoringService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3791,6 +3797,7 @@ export const layer = Layer.unwrap(
               Layer.provide(
                 Layer.succeed(ScheduledTaskStats.ScheduledTaskStats, scheduledTaskStats),
               ),
+              Layer.provide(Layer.succeed(MonitoringService.MonitoringService, monitoring)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

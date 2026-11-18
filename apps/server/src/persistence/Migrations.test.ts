@@ -249,7 +249,7 @@ it.effect("registers every migration file", () =>
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each([85, 92, 94, 95])(
+it.effect.each([85, 92, 94, 95, 96])(
   "upgrades released fork history through %s without replaying fork migrations",
   (throughId) =>
     Effect.gen(function* () {

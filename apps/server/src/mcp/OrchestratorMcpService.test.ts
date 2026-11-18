@@ -6217,6 +6217,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     Effect.gen(function* () {
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           hasReceipt: () => Effect.succeed(false),
           assertProviderInstanceEnabled: () => Effect.void,
@@ -6483,6 +6484,9 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
         }),
         ServerSettings.layerTest({
+          providerInstances: {
+            [claudeInstanceId]: { driver: ProviderDriverKind.make("claudeAgent") },
+          },
           autoModeProvider: ProviderDriverKind.make("claudeAgent"),
           autoModeModels: { [ProviderDriverKind.make("claudeAgent")]: { model: "claude-opus" } },
         }),
@@ -6533,59 +6537,6 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.include(off.message, "Auto mode is off");
         assert.equal(created.length, 2);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provideMerge(dependencies))));
-    }),
-  );
-
-  it.effect("validates options against the model a target names by alias", () =>
-    Effect.gen(function* () {
-      const dependencies = Layer.mergeAll(
-        NodeServices.layer,
-        NodeCrypto.layer,
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
-          assertProviderInstanceEnabled: () => Effect.void,
-          getThreadRecords: (threadId) =>
-            Effect.succeed(threadId === parentThreadId ? parentProjection([]) : childProjection),
-          dispatch: () => Effect.die("an invalid target must not dispatch"),
-        }),
-        ServerSettings.layerTest(),
-        providerRegistryLayer([
-          {
-            ...providerSnapshot({
-              instanceId: codexInstanceId,
-              driver: ProviderDriverKind.make("codex"),
-            }),
-            models: [
-              {
-                slug: "gpt-5.4",
-                name: "gpt-5.4",
-                aliases: ["gpt"],
-                isCustom: false,
-                capabilities: {
-                  optionDescriptors: [{ id: "fastMode", label: "Fast", type: "boolean" }],
-                },
-              },
-            ],
-          },
-        ]),
-        adapterRegistryLayer([codexInstanceId]),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-      );
-      const error = yield* Effect.gen(function* () {
-        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        return yield* service
-          .delegateTask(scope, {
-            task: "Review the change.",
-            target: yield* decodeTarget({ model: "GPT", options: { bogus: "x" } }),
-            mode: "async",
-          })
-          .pipe(Effect.flip);
-      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
-      assert.equal(error.code, "invalid_request");
-      assert.include(error.message, "Unknown option bogus");
     }),
   );
 

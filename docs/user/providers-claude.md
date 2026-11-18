@@ -147,8 +147,10 @@ five minutes away.
 Claude skills come from the config directory's `skills` folder, the project's
 `.claude/skills` folder, and `~/.agents/skills`, the
 [folder every provider shares](./composer.md#commands-and-skills). If two define
-the same name, the config-directory copy wins, then the project's. Skills disabled
-in Claude's settings do not appear in the composer.
+the same name, the config-directory copy wins, then the project's. When the config
+directory's `skills` folder links skills from `~/.agents/skills` itself, it picks
+which shared skills Claude loads, and T3.CodeShip adds none of the others. Skills
+disabled in Claude's settings do not appear in the composer.
 
 Use `$` in the composer to select a skill. Enabled installed Claude plugins,
 and plugins synced from your claude.ai account, also contribute skills under

@@ -1,5 +1,6 @@
 import type { Icon } from "@tabler/icons-react-native/types";
 /* Package-root imports eagerly register the entire Tabler icon set in Metro. */
+import IconActivity from "@tabler/icons-react-native/IconActivity";
 import IconAdjustmentsHorizontal from "@tabler/icons-react-native/IconAdjustmentsHorizontal";
 import IconAlignLeft from "@tabler/icons-react-native/IconAlignLeft";
 import IconAlertCircle from "@tabler/icons-react-native/IconAlertCircle";
@@ -183,6 +184,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   camera: IconCamera,
   car: IconCar,
   "chart.bar.xaxis": IconChartBar,
+  "waveform.path.ecg": IconActivity,
   checkmark: IconCheck,
   "checkmark.circle": IconCircleCheck,
   "checkmark.circle.fill": IconCircleCheck,

@@ -228,6 +228,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   Effect.mapError(unavailable),
                 ),
                 yield* (yield* ProviderRegistry.ProviderRegistry).getProviders,
+                projectId,
               );
         const projectSettings =
           project === undefined
