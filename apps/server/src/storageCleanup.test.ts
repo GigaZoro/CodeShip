@@ -313,6 +313,10 @@ const allocatedBytes = (fs: FileSystem.FileSystem, file: string) =>
     );
   });
 
+// Git hides `.git` on Windows, and opening a hidden file for plain write fails with EPERM.
+const overwriteGitFile = (fs: FileSystem.FileSystem, file: string, content: string) =>
+  fs.truncate(file).pipe(Effect.andThen(fs.writeFileString(file, content, { flag: "r+" })));
+
 const underWorktrees = (
   fixture: { readonly config: { readonly worktreesDir: string } },
   relative: string,
@@ -2232,9 +2236,9 @@ describe("storage cleanup reports and local file policies", () => {
         expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
         yield* fs.remove(`${index.trim()}.lock`);
         const gitFile = yield* fs.readFileString(`${worktree}/.git`);
-        yield* fs.writeFileString(`${worktree}/.git`, "gitdir: /missing-git-directory\n");
+        yield* overwriteGitFile(fs, `${worktree}/.git`, "gitdir: /missing-git-directory\n");
         expect((yield* service.runNow).entries[0]).toMatchObject(changed);
-        yield* fs.writeFileString(`${worktree}/.git`, gitFile);
+        yield* overwriteGitFile(fs, `${worktree}/.git`, gitFile);
         expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
         expect(fullStatusCalls()).toBe(0);
       }),
