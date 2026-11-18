@@ -226,13 +226,6 @@ export const ComposerCodeExtension = Code.extend({
   addProseMirrorPlugins() {
     return [...(this.parent?.() ?? []), codePairCaretPlugin(this.type)];
   },
-  // Mod+E formats selected text only; without a selection the key falls
-  // through to the Recent Threads shortcut.
-  addKeyboardShortcuts() {
-    return {
-      "Mod-e": () => !this.editor.state.selection.empty && this.editor.commands.toggleCode(),
-    };
-  },
   // Tiptap's rule reads back from the caret, so after a literal `enabled` the
   // next typed backtick would reuse its closing backtick and wrap ` and ` in
   // code. Backticks pair left to right, so skip an opener that closes a pair.

@@ -17,8 +17,14 @@ import { userEvent } from "vite-plus/test/browser";
 
 import { act, fakeTimers, render } from "../../test/render";
 
+import {
+  dispatchCommandPalette,
+  useCommandPaletteMount,
+  useCommandPaletteStore,
+} from "~/commandPaletteStore";
 import { flatToMarkdown, pmToFlat, serializeEditorDoc } from "~/composer-rich-text-doc";
 import { isMacPlatform } from "~/lib/utils";
+import { installCommandPaletteCommands } from "~/shortcuts/commandPaletteCommands";
 import { registerCommands } from "~/shortcuts/dispatcher";
 import {
   ComposerPromptEditorTiptap as ComposerPromptEditor,
@@ -201,32 +207,38 @@ it.each([
   expect(textWithMark(editor, mark)).toEqual(["now"]);
 });
 
+function MountedPalette() {
+  useCommandPaletteMount();
+  return null;
+}
+
 it("applies code with Mod+E only when text is selected", async () => {
   await using screen = await mountEditor("ship it");
+  await using _palette = await render(<MountedPalette />);
+  using _commands = { [Symbol.dispose]: installCommandPaletteCommands(screen.router!) };
   const { editor } = screen;
   const chord = isMacPlatform(navigator.platform) ? "{Meta>}e{/Meta}" : "{Control>}e{/Control}";
   await act(async () => {
     editor.commands.focus("end");
   });
   await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
-  const consumed: boolean[] = [];
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "e") consumed.push(event.defaultPrevented);
-  };
-  using listener = new DisposableStack();
-  window.addEventListener("keydown", onKeyDown);
-  listener.defer(() => window.removeEventListener("keydown", onKeyDown));
 
   await userEvent.keyboard(chord);
   expect(editor.state.storedMarks).toBeNull();
-  expect(consumed).toEqual([false]);
+  expect(useCommandPaletteStore.getState()).toMatchObject({
+    open: true,
+    openIntent: { kind: "recent-threads" },
+  });
 
+  dispatchCommandPalette({ _tag: "SetOpen", open: false });
   await act(async () => {
     editor.commands.setTextSelection({ from: 1, to: 5 });
   });
   await userEvent.keyboard(chord);
-  await vi.waitFor(() => expect(textWithMark(editor, "code")).toEqual(["ship"]));
-  expect(consumed).toEqual([false, true]);
+  await vi.waitFor(() => expect(serializeEditorDoc(editor.state.doc).value).toBe("`ship` it"));
+  expect(useCommandPaletteStore.getState().open).toBe(false);
+  await userEvent.keyboard("{End}");
+  expect(textWithMark(editor, "code")).toEqual(["ship"]);
 });
 
 it.each([

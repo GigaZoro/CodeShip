@@ -12,6 +12,7 @@ import { notifyThemeSaveFailure } from "../components/CommandPaletteThemeItems";
 import { toggleThemeEditorForTheme } from "../components/settings/themeEditorStore";
 import { toastManager } from "../components/ui/toast";
 import { getThemeSnapshot, setAppearanceMode } from "../hooks/useTheme";
+import { isRichTextFormattingShortcut } from "../keybindings";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import {
   type CommandHandler,
@@ -25,6 +26,19 @@ import { resolveThreadRouteTarget } from "../threadRoutes";
 function consume(event: KeyboardEvent): void {
   event.preventDefault();
   event.stopPropagation();
+}
+
+// The rich-text composer keeps its formatting chords for selected text, so
+// Recent Threads on Mod+E yields there and still opens from a collapsed cursor.
+function formatsComposerSelection(event: KeyboardEvent): boolean {
+  const selection = window.getSelection();
+  return (
+    isRichTextFormattingShortcut(event) &&
+    selection !== null &&
+    !selection.isCollapsed &&
+    event.target instanceof Element &&
+    event.target.closest('[data-composer-rich-text="true"]') !== null
+  );
 }
 
 const toggleOverlay =
@@ -66,6 +80,27 @@ export function installCommandPaletteCommands(
     },
   );
 
+  const scope = {
+    ...options,
+    when: isCommandPaletteMounted,
+    context: () => {
+      const threadRef = readRouteThreadRef();
+      return {
+        terminalOpen: threadRef
+          ? selectThreadTerminalUiState(
+              useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+              threadRef,
+            ).terminalOpen
+          : false,
+        previewOpen: threadRef
+          ? selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, threadRef) ===
+            "preview"
+          : false,
+        usagePageOpen: router.state.location.pathname === "/usage",
+      };
+    },
+  };
+
   const disposeCommands = registerCommands(
     {
       "appearance.cycle": (event) => {
@@ -105,34 +140,21 @@ export function installCommandPaletteCommands(
         void router.navigate({ to: "/usage" });
       },
       "commandPalette.toggle": toggleOverlay("commandPalette.toggle"),
+      "filePicker.toggle": toggleOverlay("filePicker.toggle"),
+      "projectSearch.toggle": toggleOverlay("projectSearch.toggle"),
+    },
+    scope,
+  );
+
+  const disposeRecentThreads = registerCommands(
+    {
       "commandPalette.recentThreads": (event) => {
         consume(event);
         if (event.repeat) return;
         dispatchCommandPalette({ _tag: "OpenRecentThreads" });
       },
-      "filePicker.toggle": toggleOverlay("filePicker.toggle"),
-      "projectSearch.toggle": toggleOverlay("projectSearch.toggle"),
     },
-    {
-      ...options,
-      when: isCommandPaletteMounted,
-      context: () => {
-        const threadRef = readRouteThreadRef();
-        return {
-          terminalOpen: threadRef
-            ? selectThreadTerminalUiState(
-                useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
-                threadRef,
-              ).terminalOpen
-            : false,
-          previewOpen: threadRef
-            ? selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, threadRef) ===
-              "preview"
-            : false,
-          usagePageOpen: router.state.location.pathname === "/usage",
-        };
-      },
-    },
+    { ...scope, when: (event) => isCommandPaletteMounted() && !formatsComposerSelection(event) },
   );
 
   const disposeMenuAction = registerMenuAction("commandPalette.open", () => openCommandPalette());
@@ -140,6 +162,7 @@ export function installCommandPaletteCommands(
   return () => {
     disposeEscape();
     disposeCommands();
+    disposeRecentThreads();
     disposeMenuAction();
   };
 }
