@@ -543,14 +543,14 @@ describe("ChatMarkdown streaming", () => {
     await act(async () => original.click());
     expect(editedText).toBe("- [ ] A longer first task\n- [x] Second");
     await vi.waitFor(() => expect(checkboxes()[1]!.checked).toBe(true));
+    await rerender(message("- [ ] A longer first task\n- [ ] Second"));
+    expect(checkboxes()[1]).toBe(original);
+    expect(checkboxes()[1]!.checked).toBe(false);
 
     // Each block reads offsets from its own text, so the edit adds where the block starts.
     await rerender(message("Intro\n\n- [ ] First\n\nBetween\n\n- [ ] Second"));
     await act(async () => checkboxes()[1]!.click());
     expect(editedText).toBe("Intro\n\n- [ ] First\n\nBetween\n\n- [x] Second");
-    await rerender(message("- [ ] A longer first task\n- [ ] Second"));
-    expect(checkboxes()[1]).toBe(original);
-    expect(checkboxes()[1]!.checked).toBe(false);
   });
 
   it.each([
