@@ -255,6 +255,11 @@ export function derivePendingBackgroundWork(input: {
   readonly turnItems: ReadonlyArray<PendingBackgroundWorkTurnItem>;
   readonly activeProviderThreadId?: string | null;
   readonly hasActiveRun?: boolean;
+  /**
+   * Without a latest run, count what the thread still runs as background work, as for a finished
+   * provider-native subagent, whose turns ran on its parent's run.
+   */
+  readonly holdsWorkWithoutRun?: boolean;
   /** Excludes rolled-back runs; optional only when the caller already filtered them, as SQL shell reads do. */
   readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
   readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
@@ -269,9 +274,8 @@ export function derivePendingBackgroundWork(input: {
     return [];
   }
   if (input.latestRun == null) {
-    return pullRequestWatchTasks(input.pullRequests);
-  }
-  if (!isLatestRunSettledForBackgroundWait(input.latestRun)) {
+    if (input.holdsWorkWithoutRun !== true) return pullRequestWatchTasks(input.pullRequests);
+  } else if (!isLatestRunSettledForBackgroundWait(input.latestRun)) {
     return [];
   }
 

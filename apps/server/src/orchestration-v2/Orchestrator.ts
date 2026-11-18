@@ -14309,6 +14309,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             cause: `Thread ${command.threadId} changed before automatic settlement.`,
           });
         }
+        // A native subagent resumes on its parent's run without touching its own thread.
+        if (thread.lineage.relationshipToParent === "subagent") {
+          const [candidate] = yield* projectionStore
+            .getSettlementCandidates(command.threadId)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+              ),
+            );
+          const resultAt = candidate?.parentResultAt ?? null;
+          if (
+            candidate === undefined ||
+            (command.parentResultAt !== undefined &&
+              (resultAt === null ||
+                DateTime.toEpochMillis(resultAt) !==
+                  DateTime.toEpochMillis(command.parentResultAt)))
+          ) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: `Thread ${command.threadId}'s parent task changed before automatic settlement.`,
+            });
+          }
+        }
         yield* dispatchThreadMutation(
           {
             type: "thread.settle",

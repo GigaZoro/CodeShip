@@ -1,3 +1,9 @@
+## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
+
+- A subagent, or a chat an agent handed a task to with `delegate_task` on this machine, now settles as soon as its parent has its result, as a task delegated to another machine already did. Before, it settled only after three days of inactivity, so finished children stayed active in the Agents list. One whose task failed or was interrupted, or that is waiting, queued, working again or still running background work, stays active, and a settled subagent its parent picks up again returns to the active list. This applies even with automatic settlement turned off. Children that had already finished settle at the first check after the update, at the time they finished.
+- A subagent or side chat working in its parent's worktree now leaves that worktree to the parent: settling it no longer runs the project's settle action there, and the parent's unmerged work no longer keeps it active or opens a pull request from it.
+- Maintainers: these settles carry the command id prefix `server:settle-delivered-child:`, and their `settledAt` is the time the child finished, so measure how long settling took from the `thread.settled` event's time.
+
 ## 2026-11-18 — Storage cleanup reports freed space and broken checkouts correctly on Windows
 
 - On Windows, the storage cleanup report showed 0 bytes for every removed worktree, because Node reports no allocated blocks there. It now counts file sizes, so the freed space is right. A checkout whose `.git` file names a missing folder is now also treated as no longer a repository, as on other systems, so cleanup keeps it instead of reporting a Git error.

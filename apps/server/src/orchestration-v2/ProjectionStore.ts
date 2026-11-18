@@ -284,6 +284,10 @@ export type ProjectionSettlementCandidate = Pick<
 > &
   Pick<OrchestrationV2AppThread, "lastSnoozeWakeAt"> & {
     readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
+    /** The parent's worktree, which a subagent or side chat working in it leaves to the parent. */
+    readonly parentWorktreePath: string | null;
+    /** When the parent's latest task on this child completed with a result. */
+    readonly parentResultAt: DateTime.Utc | null;
   };
 
 const ProjectionCheckpointContext = Schema.Struct({
@@ -1206,7 +1210,10 @@ type SettlementThreadRow = Pick<
   | "latest_run_completed_at"
   | "latest_user_message_at"
   | "latest_user_authored_message_at"
->;
+> & {
+  readonly parent_worktree_path: string | null;
+  readonly parent_result_at: string | null;
+};
 
 type ShellRunItemCountRow = {
   readonly thread_id: string;
@@ -7154,13 +7161,32 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   AND NOT ${isIdleCompactionMessage("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
-              ) AS latest_user_authored_message_at
+              ) AS latest_user_authored_message_at,
+              (
+                SELECT json_extract(parent.payload_json, '$.worktreePath')
+                FROM orchestration_v2_projection_threads parent
+                WHERE parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
+              ) AS parent_worktree_path,
+              CASE
+                WHEN task.status = 'completed'
+                  AND json_extract(task.payload_json, '$.result') IS NOT NULL
+                THEN task.completed_at
+              END AS parent_result_at
             FROM orchestration_v2_projection_threads t
             LEFT JOIN orchestration_v2_projection_runs r ON r.run_id = (
               SELECT latest.run_id FROM orchestration_v2_projection_runs latest
               WHERE latest.thread_id = t.thread_id
                 AND NOT ${isSilentShellRun("latest")}
               ORDER BY latest.ordinal DESC, latest.run_id DESC
+              LIMIT 1
+            )
+            -- The parent's latest task on this child. Started time, not updated: acknowledging an
+            -- older task's delivery bumps its row.
+            LEFT JOIN orchestration_v2_projection_subagents task ON task.subagent_id = (
+              SELECT latest.subagent_id FROM orchestration_v2_projection_subagents latest
+              WHERE latest.child_thread_id = t.thread_id
+                AND latest.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
+              ORDER BY coalesce(latest.started_at, latest.updated_at) DESC, latest.subagent_id DESC
               LIMIT 1
             )
             WHERE t.deleted_at IS NULL${threadId === undefined ? sql`` : sql` AND t.thread_id = ${threadId}`}
@@ -7172,6 +7198,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 SELECT 1 FROM orchestration_v2_projection_runs active
                 WHERE active.thread_id = t.thread_id
                   AND active.status IN ('preparing', 'starting', 'running', 'waiting')
+              )
+              -- A provider-native subagent works on its parent's run, so only its task shows it working.
+              AND NOT coalesce(
+                task.origin = 'provider_native' AND task.status IN ('pending', 'running', 'waiting'),
+                0
               )
               AND NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runtime_requests request
@@ -7227,6 +7258,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     row.latest_user_authored_message_at === null
                       ? null
                       : DateTime.makeUnsafe(row.latest_user_authored_message_at),
+                  parentWorktreePath: row.parent_worktree_path,
+                  parentResultAt:
+                    row.parent_result_at === null
+                      ? null
+                      : DateTime.makeUnsafe(row.parent_result_at),
                   activityRunStatus: null,
                   activityRunStartedAt: null,
                   pendingRuntimeRequest: null,
@@ -7240,6 +7276,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     turnItems: pendingTurnItemsByThreadId.get(thread.id) ?? [],
                     activeProviderThreadId: thread.activeProviderThreadId,
                     hasActiveRun: false,
+                    holdsWorkWithoutRun: latestRunId === null,
                     pullRequests: thread.pullRequests,
                   }),
                 } satisfies ProjectionSettlementCandidate;

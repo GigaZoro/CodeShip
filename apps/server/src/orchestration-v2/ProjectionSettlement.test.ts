@@ -452,3 +452,173 @@ it.effect("sql: an unsettled-only shell read skips settled threads", () =>
     assert.equal(all.threads.length, 4);
   }).pipe(Effect.provide(layerSql)),
 );
+
+const recordTask = Effect.fn(function* (
+  parentId: ThreadId,
+  childThreadId: ThreadId,
+  name: string,
+  task: {
+    readonly origin?: "provider_native";
+    readonly status: "running" | "completed" | "failed";
+    readonly result: string | null;
+    readonly startedAt: DateTime.Utc;
+    readonly completedAt: DateTime.Utc | null;
+    readonly updatedAt: DateTime.Utc;
+  },
+) {
+  const store = yield* ProjectionStore.ProjectionStoreV2;
+  const driver = ProviderDriverKind.make("codex");
+  const id = NodeId.make(`node:task:${name}`);
+  yield* store.apply({
+    id: EventId.make(`event:task:${name}`),
+    type: "subagent.updated",
+    threadId: parentId,
+    nodeId: id,
+    driver,
+    providerInstanceId,
+    occurredAt: task.updatedAt,
+    payload: {
+      id,
+      threadId: parentId,
+      runId: null,
+      parentNodeId: NodeId.make("node:task-parent"),
+      origin: "app_owned",
+      createdBy: "agent",
+      driver,
+      providerInstanceId,
+      providerThreadId: null,
+      childThreadId,
+      nativeTaskRef: null,
+      prompt: "Do the work",
+      title: name,
+      model: null,
+      ...task,
+    },
+  });
+});
+
+it.effect(
+  "sql: a delegated child reads its parent, its latest task and its own background work",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const parent = yield* createThread("delegating-parent", {
+        worktreePath: "/worktrees/parent",
+      });
+      const childOf = (name: string) =>
+        createThread(name, {
+          createdBy: "agent",
+          creationSource: "mcp",
+          worktreePath: "/worktrees/parent",
+          lineage: {
+            parentThreadId: parent,
+            relationshipToParent: "subagent",
+            rootThreadId: parent,
+          },
+        });
+      const at = (hours: number) => DateTime.add(old, { hours });
+      const delivered = yield* childOf("delivered-child");
+      // Acknowledging the older task's delivery later must not make it the latest task.
+      yield* recordTask(parent, delivered, "delivered-first", {
+        status: "completed",
+        result: "First",
+        startedAt: at(0),
+        completedAt: at(1),
+        updatedAt: at(5),
+      });
+      yield* recordTask(parent, delivered, "delivered-again", {
+        status: "completed",
+        result: "Second",
+        startedAt: at(2),
+        completedAt: at(3),
+        updatedAt: at(3),
+      });
+      const failed = yield* childOf("failed-child");
+      yield* recordTask(parent, failed, "failed", {
+        status: "failed",
+        result: "Partial",
+        startedAt: at(0),
+        completedAt: at(1),
+        updatedAt: at(1),
+      });
+      const rerun = yield* childOf("rerun-child");
+      yield* recordTask(parent, rerun, "rerun-first", {
+        status: "completed",
+        result: "First",
+        startedAt: at(0),
+        completedAt: at(1),
+        updatedAt: at(1),
+      });
+      yield* recordTask(parent, rerun, "rerun-again", {
+        status: "running",
+        result: null,
+        startedAt: at(2),
+        completedAt: null,
+        updatedAt: at(2),
+      });
+      // Only the thread the child belongs to holds its result.
+      const stranger = yield* createThread("unrelated-parent");
+      const misattributed = yield* childOf("misattributed-child");
+      yield* recordTask(stranger, misattributed, "misattributed", {
+        status: "completed",
+        result: "Done",
+        startedAt: at(0),
+        completedAt: at(1),
+        updatedAt: at(1),
+      });
+      // A provider-native subagent ran on its parent's run, so it has no run of its own.
+      const native = yield* childOf("native-child");
+      yield* recordTask(parent, native, "native", {
+        origin: "provider_native",
+        status: "completed",
+        result: "Done",
+        startedAt: at(0),
+        completedAt: at(1),
+        updatedAt: at(1),
+      });
+      yield* createItem(native, yield* createRun(parent), "running");
+      // Only its task shows a resumed one working, so no settle rule may take it.
+      const resumed = yield* childOf("resumed-native-child");
+      yield* recordTask(parent, resumed, "resumed-first", {
+        origin: "provider_native",
+        status: "completed",
+        result: "First",
+        startedAt: at(0),
+        completedAt: at(1),
+        updatedAt: at(1),
+      });
+      yield* recordTask(parent, resumed, "resumed-again", {
+        origin: "provider_native",
+        status: "running",
+        result: null,
+        startedAt: at(2),
+        completedAt: null,
+        updatedAt: at(2),
+      });
+
+      const candidates = new Map(
+        (yield* store.getSettlementCandidates()).map((thread) => [
+          thread.id,
+          [
+            thread.parentWorktreePath,
+            thread.parentResultAt === null ? null : DateTime.formatIso(thread.parentResultAt),
+            thread.pendingBackgroundTasks?.length ?? 0,
+          ],
+        ]),
+      );
+      assert.deepEqual(
+        [delivered, native, resumed, failed, rerun, misattributed, parent].map((id) =>
+          candidates.get(id),
+        ),
+        [
+          ["/worktrees/parent", DateTime.formatIso(at(3)), 0],
+          ["/worktrees/parent", DateTime.formatIso(at(1)), 1],
+          undefined,
+          ["/worktrees/parent", null, 0],
+          ["/worktrees/parent", null, 0],
+          ["/worktrees/parent", null, 0],
+          [null, null, 0],
+        ],
+      );
+    }).pipe(Effect.provide(layerSql)),
+);
