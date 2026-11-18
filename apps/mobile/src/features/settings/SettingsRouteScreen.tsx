@@ -155,6 +155,13 @@ const MACHINES_ROW: SettingsListRow = {
   target: "SettingsMachines",
 };
 
+const MONITORING_ROW: SettingsListRow = {
+  id: "SettingsMonitoring",
+  icon: "waveform.path.ecg",
+  label: msg("Monitoring"),
+  target: "SettingsMonitoring",
+};
+
 function environmentsRow(count: number): SettingsListRow {
   return {
     id: "SettingsEnvironments",
@@ -180,7 +187,7 @@ function SettingsList(props: { readonly connections: readonly SettingsListRow[] 
   const indexSections = useSettingsIndexSections();
   const sections = filterSettingsSections(
     [
-      { rows: [...overflowRows, MACHINES_ROW] },
+      { rows: [...overflowRows, MACHINES_ROW, MONITORING_ROW] },
       { title: msg("Connections"), rows: props.connections },
       ...indexSections,
     ],

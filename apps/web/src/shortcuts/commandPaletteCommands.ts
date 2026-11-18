@@ -104,6 +104,11 @@ export function installCommandPaletteCommands(
         dispatchCommandPalette({ _tag: "SetOpen", open: false });
         void router.navigate({ to: "/usage" });
       },
+      "monitoring.open": (event) => {
+        consume(event);
+        dispatchCommandPalette({ _tag: "SetOpen", open: false });
+        void router.navigate({ to: "/monitoring" });
+      },
       "commandPalette.toggle": toggleOverlay("commandPalette.toggle"),
       "commandPalette.recentThreads": (event) => {
         consume(event);

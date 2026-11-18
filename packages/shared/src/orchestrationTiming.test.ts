@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveSubagentElapsedMs } from "./orchestrationTiming.ts";
+import { deriveSubagentElapsedMs, formatDuration } from "./orchestrationTiming.ts";
 
 describe("deriveSubagentElapsedMs", () => {
   const startedAt = "2026-09-21T12:00:00.000Z";
@@ -20,5 +20,16 @@ describe("deriveSubagentElapsedMs", () => {
     expect(
       deriveSubagentElapsedMs({ status: "running", startedAt: null, completedAt: null }, now),
     ).toBeNull();
+  });
+});
+
+describe("formatDuration", () => {
+  it.each([
+    [0, "0ms"],
+    [0.2, "1ms"],
+    [-5, "0ms"],
+    [1_500, "1.5s"],
+  ] as const)("formats %d ms as %s", (durationMs, text) => {
+    expect(formatDuration(durationMs)).toBe(text);
   });
 });

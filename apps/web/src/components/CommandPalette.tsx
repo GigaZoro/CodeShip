@@ -66,6 +66,7 @@ import {
   BlocksIcon,
   BugIcon,
   CalendarClockIcon,
+  ActivityIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -1960,6 +1961,28 @@ function OpenCommandPaletteDialog(props: {
     shortcutCommand: "usage.open",
     run: async () => {
       await navigate({ to: "/usage" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:monitoring",
+    searchTerms: [
+      "monitoring",
+      "process",
+      "slow",
+      "weak points",
+      "time",
+      "where time goes",
+      "bottleneck",
+      "waste",
+      "chats",
+    ],
+    title: t("Open monitoring"),
+    icon: <ActivityIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "monitoring.open",
+    run: async () => {
+      await navigate({ to: "/monitoring" });
     },
   });
 

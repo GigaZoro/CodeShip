@@ -33,7 +33,12 @@ export type SettingsPath =
   | "/settings/maintenance";
 
 /** Pages outside Settings that people still look for from its search. */
-type SettingsSearchAppPage = "/scheduled-tasks" | "/extensions" | "/usage" | "/machines";
+type SettingsSearchAppPage =
+  | "/scheduled-tasks"
+  | "/extensions"
+  | "/usage"
+  | "/monitoring"
+  | "/machines";
 
 export type SettingsSearchScope =
   | "environment"
@@ -110,6 +115,7 @@ const SETTINGS_SEARCH_APP_PAGE_LABELS: Readonly<Record<SettingsSearchAppPage, Me
   "/scheduled-tasks": msg("Scheduled tasks"),
   "/extensions": msg("Extensions"),
   "/usage": msg("Usage"),
+  "/monitoring": msg("Monitoring"),
   "/machines": msg("Machines"),
 };
 
@@ -1438,6 +1444,14 @@ export const SETTINGS_SEARCH_APP_PAGES: ReadonlyArray<SettingsSearchItem> = [
     title: msg("Usage"),
     to: "/usage",
     searchTerms: ["usage limits tokens cost spend rate limit account failover"],
+  },
+  {
+    id: "monitoring-page",
+    title: msg("Monitoring"),
+    to: "/monitoring",
+    searchTerms: [
+      "monitoring process slow weak points time lost steps timeline queue retries failures bottleneck",
+    ],
   },
   {
     id: "machines-page",

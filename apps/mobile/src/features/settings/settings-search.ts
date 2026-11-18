@@ -53,6 +53,15 @@ const SETTINGS_SEARCH_TERMS = {
     msg("recurring"),
     msg("webhook"),
   ],
+  SettingsMonitoring: [
+    msg("process"),
+    msg("chats"),
+    msg("time"),
+    msg("weak points"),
+    msg("findings"),
+    msg("analysis"),
+    msg("cost"),
+  ],
   SettingsMachines: [
     msg("resources"),
     msg("cpu"),

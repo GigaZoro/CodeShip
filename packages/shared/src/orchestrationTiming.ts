@@ -22,7 +22,7 @@ export function deriveSubagentElapsedMs(
 }
 
 export function formatDuration(durationMs: number): string {
-  if (!Number.isFinite(durationMs) || durationMs < 0) return t("{count}ms", { count: 0 });
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return t("{count}ms", { count: 0 });
   if (durationMs < 1_000) return t("{count}ms", { count: Math.max(1, Math.round(durationMs)) });
   if (durationMs < 10_000) return t("{count}s", { count: Math.round(durationMs / 100) / 10 });
   const totalSeconds = Math.round(durationMs / 1_000);

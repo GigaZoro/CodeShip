@@ -1390,6 +1390,23 @@ export function createServerEnvironmentAtoms<R, E>(
         : AsyncResult.success(result.value, result);
     }).pipe(Atom.withLabel(`environment-data:server:welcome:${environmentId}`)),
   );
+  // A settled chat changes the analyses, so both queries follow this stream instead of polling.
+  const monitoringChanges = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:monitoring:changes",
+    tag: WS_METHODS.monitoringSubscribeChanges,
+  });
+  const monitoringOverview = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:monitoring:overview",
+    tag: WS_METHODS.monitoringOverview,
+    staleTimeMs: 60_000,
+    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
+  });
+  const monitoringThread = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:monitoring:thread",
+    tag: WS_METHODS.monitoringThread,
+    staleTimeMs: 60_000,
+    refreshTrigger: ({ environmentId }) => monitoringChanges({ environmentId, input: {} }),
+  });
   // The server lifts a hold when a sign-in changes, so a switch shows here within the minute.
   const usageHolds = createEnvironmentRpcQueryAtomFamily(runtime, {
     label: "environment-data:provider:usage-holds",
@@ -1450,6 +1467,9 @@ export function createServerEnvironmentAtoms<R, E>(
   });
 
   return {
+    monitoringChanges,
+    monitoringOverview,
+    monitoringThread,
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",

@@ -133,6 +133,8 @@ import { SettingsProjectActionRouteScreen } from "./features/settings/SettingsPr
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { MachinesRouteScreen } from "./features/machines/MachinesRouteScreen";
+import { MonitoringRouteScreen } from "./features/monitoring/MonitoringRouteScreen";
+import { MonitoringThreadRouteScreen } from "./features/monitoring/MonitoringThreadRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
 import { SettingsEnvironmentFilterProvider } from "./features/settings/settings-environment-filter";
@@ -462,6 +464,18 @@ const SETTINGS_SCREENS = {
       ...SETTINGS_PAGE_OPTIONS,
       title: t("Usage"),
     }),
+  }),
+  SettingsMonitoring: createNativeStackScreen({
+    screen: MonitoringRouteScreen,
+    linking: "settings/monitoring",
+    options: () => ({
+      ...SETTINGS_PAGE_OPTIONS,
+      title: t("Monitoring"),
+    }),
+  }),
+  SettingsMonitoringThread: createNativeStackScreen({
+    screen: MonitoringThreadRouteScreen,
+    options: () => ({ ...SETTINGS_PAGE_OPTIONS, title: t("Chat analysis") }),
   }),
   SettingsMachines: createNativeStackScreen({
     screen: MachinesRouteScreen,

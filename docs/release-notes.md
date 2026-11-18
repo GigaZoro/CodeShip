@@ -1,3 +1,7 @@
+## 2026-11-19 — Monitoring shows where your chats' time went
+
+- A new **Monitoring** page analyzes every settled chat: how its lifetime split between the model working, commands, tools, approvals, the queue, usage limits, helpers and waiting for you; its runs, failures, tokens, cost, cache reuse and how often it was reopened; and its weak points, such as slow, repeated or failing commands, usage-limit stops, restarts and long queues, each with advice. It ranks weak points across chats, groups shell commands by step (install, build, test, ship and so on), shows a daily trend and breakdowns by project, kind and model, and opens a deep dive for one chat with a timeline of its runs and helpers. Commands show as you would type them, without the shell wrapper, and steps started by a helper carry the helper's name. It updates by itself whenever a chat settles. Open it from the sidebar, the command palette or, on mobile, Settings.
+
 ## 2026-11-19 — Auto offers and runs every account's models
 
 - In **Settings → Providers & models → Models**, a provider's coordinator model list under **Auto mode** now offers the models of every account of that provider that can run on this machine, each with that account's own custom and hidden models. Before, it listed only the first account's models, so a model only another account offers, such as GPT-6.2-Astra on a ChatGPT-connected Codex account while the managed Codex CLI is too old to be offered it, could not be picked.

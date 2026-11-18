@@ -403,6 +403,14 @@ import {
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
+  MonitoringChange,
+  MonitoringError,
+  MonitoringOverviewInput,
+  MonitoringOverviewResult,
+  MonitoringThreadInput,
+  MonitoringThreadResult,
+} from "./monitoring.ts";
+import {
   DetectedManualStepsResult,
   ManualStepReview,
   ManualStepReviewError,
@@ -654,6 +662,9 @@ export const WS_METHODS = {
   scheduledTasksSetPlacement: "scheduledTasks.setPlacement",
   scheduledTasksSetGroupPaused: "scheduledTasks.setGroupPaused",
   scheduledTasksStats: "scheduledTasks.stats",
+  monitoringOverview: "monitoring.overview",
+  monitoringThread: "monitoring.thread",
+  monitoringSubscribeChanges: "monitoring.subscribeChanges",
   scheduledTasksReorderPinned: "scheduledTasks.reorderPinned",
   scheduledTasksSetFollowsDefaultModel: "scheduledTasks.setFollowsDefaultModel",
   scheduledTasksDelete: "scheduledTasks.delete",
@@ -2273,6 +2284,25 @@ const WsScheduledTasksStatsRpc = Rpc.make(WS_METHODS.scheduledTasksStats, {
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
+const WsMonitoringOverviewRpc = Rpc.make(WS_METHODS.monitoringOverview, {
+  payload: MonitoringOverviewInput,
+  success: MonitoringOverviewResult,
+  error: Schema.Union([MonitoringError, EnvironmentAuthorizationError]),
+});
+
+const WsMonitoringThreadRpc = Rpc.make(WS_METHODS.monitoringThread, {
+  payload: MonitoringThreadInput,
+  success: MonitoringThreadResult,
+  error: Schema.Union([MonitoringError, EnvironmentAuthorizationError]),
+});
+
+const WsMonitoringSubscribeChangesRpc = Rpc.make(WS_METHODS.monitoringSubscribeChanges, {
+  payload: Schema.Struct({}),
+  success: MonitoringChange,
+  error: Schema.Union([MonitoringError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsScheduledTasksReorderPinnedRpc = Rpc.make(WS_METHODS.scheduledTasksReorderPinned, {
   payload: ScheduledTaskReorderPinnedInput,
   success: ScheduledTaskReorderPinnedResult,
@@ -2472,6 +2502,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksSetPlacementRpc,
   WsScheduledTasksSetGroupPausedRpc,
   WsScheduledTasksStatsRpc,
+  WsMonitoringOverviewRpc,
+  WsMonitoringThreadRpc,
+  WsMonitoringSubscribeChangesRpc,
   WsScheduledTasksReorderPinnedRpc,
   WsScheduledTasksSetFollowsDefaultModelRpc,
   WsScheduledTasksDeleteRpc,

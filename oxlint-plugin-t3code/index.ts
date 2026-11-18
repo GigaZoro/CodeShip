@@ -25,6 +25,7 @@ import noPollingLoopInTests from "./rules/no-polling-loop-in-tests.ts";
 import noRawMcpRegistration from "./rules/no-raw-mcp-registration.ts";
 import noRawProcessProbe from "./rules/no-raw-process-probe.ts";
 import noRawTaskkill from "./rules/no-raw-taskkill.ts";
+import noRetiredEventTable from "./rules/no-retired-event-table.ts";
 import noRemoteGitThroughExecute from "./rules/no-remote-git-through-execute.ts";
 import noRawResizeObserver from "./rules/no-raw-resize-observer.ts";
 import noRealTimeWaitInTests from "./rules/no-real-time-wait-in-tests.ts";
@@ -72,6 +73,7 @@ export default definePlugin({
     "no-raw-mcp-registration": noRawMcpRegistration,
     "no-raw-process-probe": noRawProcessProbe,
     "no-raw-taskkill": noRawTaskkill,
+    "no-retired-event-table": noRetiredEventTable,
     "no-remote-git-through-execute": noRemoteGitThroughExecute,
     "no-raw-resize-observer": noRawResizeObserver,
     "no-real-time-wait-in-tests": noRealTimeWaitInTests,

@@ -4,7 +4,6 @@ import {
   type ScheduledTaskRunStats,
   type ScheduledTaskStatsInput,
   type ScheduledTaskStatsResult,
-  type UsageTokenTotals,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Arr from "effect/Array";
@@ -13,9 +12,9 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { priceTurns } from "../usage/TurnPricing.ts";
 import * as UsageService from "../usage/UsageService.ts";
 
 const SQL_CHUNK = 400;
@@ -27,20 +26,6 @@ const CONTINUATION_PREFIXES = [
   "async-answer:",
 ] as const;
 const FAILED_STATUSES: ReadonlySet<string> = new Set(["failed", "interrupted", "cancelled"]);
-
-const TurnUsageJson = Schema.fromJsonString(
-  Schema.Struct({
-    usageStatus: Schema.String,
-    inputTokens: Schema.optional(Schema.Number),
-    outputTokens: Schema.optional(Schema.Number),
-    cachedInputTokens: Schema.optional(Schema.Number),
-    cacheCreationTokens: Schema.optional(Schema.Number),
-    reasoningTokens: Schema.optional(Schema.Number),
-    models: Schema.optional(Schema.Array(Schema.String)),
-    localCommand: Schema.optional(Schema.Boolean),
-  }),
-);
-const decodeTurnUsage = Schema.decodeUnknownOption(TurnUsageJson);
 
 interface ScheduledRunRow {
   readonly run_id: string;
@@ -337,51 +322,23 @@ const make = Effect.gen(function* () {
         for (const run of chain) modelByRun.set(run.runId, run.model);
       }
       const unpricedByRun = new Set<string>();
-      const priceable: Array<{
-        readonly runId: string;
-        readonly model: string;
-        readonly totals: UsageTokenTotals;
-      }> = [];
-      for (const turn of data.turns) {
-        const decoded = turn.usageJson === null ? Option.none() : decodeTurnUsage(turn.usageJson);
-        if (Option.isNone(decoded)) {
-          unpricedByRun.add(turn.runId);
-          continue;
-        }
-        const turnUsage = decoded.value;
-        if (turnUsage.localCommand === true) continue;
-        const model = turnUsage.models?.[0] ?? modelByRun.get(turn.runId) ?? null;
-        if (turnUsage.usageStatus === "unavailable" || model === null) {
-          unpricedByRun.add(turn.runId);
-          continue;
-        }
-        const cached = turnUsage.cachedInputTokens ?? 0;
-        const created = turnUsage.cacheCreationTokens ?? 0;
-        priceable.push({
-          runId: turn.runId,
-          model,
-          totals: {
-            uncachedInputTokens: Math.max(0, (turnUsage.inputTokens ?? 0) - cached - created),
-            cachedInputTokens: cached,
-            cacheCreationTokens: created,
-            outputTokens: turnUsage.outputTokens ?? 0,
-            reasoningTokens: turnUsage.reasoningTokens ?? 0,
-          },
-        });
-      }
-      const prices = yield* usage
-        .priceTokens(priceable)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ScheduledTaskError({ message: "Could not price scheduled runs.", cause }),
-          ),
-        );
       const costByRun = new Map<string, number>();
-      priceable.forEach((item, index) => {
-        const price = prices[index];
-        if (price === null || price === undefined) unpricedByRun.add(item.runId);
-        else costByRun.set(item.runId, (costByRun.get(item.runId) ?? 0) + price);
+      const priced = yield* priceTurns(
+        usage,
+        data.turns.map((turn) => ({
+          usageJson: turn.usageJson,
+          fallbackModel: modelByRun.get(turn.runId) ?? null,
+        })),
+      ).pipe(
+        Effect.mapError(
+          (cause) => new ScheduledTaskError({ message: "Could not price scheduled runs.", cause }),
+        ),
+      );
+      data.turns.forEach((turn, index) => {
+        const result = priced[index];
+        if (result === null || result === undefined) return;
+        if (result.costUsd === null) unpricedByRun.add(turn.runId);
+        else costByRun.set(turn.runId, (costByRun.get(turn.runId) ?? 0) + result.costUsd);
       });
 
       const counters = new Map<string, Counters>(
