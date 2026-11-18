@@ -10363,6 +10363,7 @@ const catalog: MessageCatalog = {
   Resolved: "Розв’язано",
   "Resolved (native)": "Розв’язано (нативно)",
   "Resolved (portable)": "Розв’язано (переносно)",
+  "Resolved conversation": "Вирішена розмова",
   "Resolved or dismissed": "Розв’язані або відхилені",
   "Resolving {kind}...": "Визначення: {kind}...",
   "Resource checks are still running. You can choose a machine in the composer.":

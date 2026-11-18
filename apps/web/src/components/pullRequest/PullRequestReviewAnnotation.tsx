@@ -191,11 +191,10 @@ export function InlineReviewThreads({
     authors.set(comment.author?.login ?? "ghost", comment.author);
   }
   if (authors.size === 0) authors.set("ghost", null);
-  const label = tn(
-    resolved.length,
-    "{count} resolved conversation",
-    "{count} resolved conversations",
-  );
+  const label =
+    resolved.length === 1
+      ? t("Resolved conversation")
+      : tn(resolved.length, "{count} resolved conversation", "{count} resolved conversations");
   return (
     <>
       {resolved.length > 0 ? (
