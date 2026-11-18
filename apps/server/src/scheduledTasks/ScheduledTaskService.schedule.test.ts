@@ -5,10 +5,12 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
   type MemoryShortage,
+  type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
   type ScheduledTask,
   ScheduledTaskUpsertInput,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -23,6 +25,9 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as AccountRouting from "../orchestration-v2/AccountRouting.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderMcp from "../provider/ProviderMcp.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -856,6 +861,134 @@ it.effect(
         });
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { scenario: "configured alternative", explicit: true, codexLimited: false },
+  { scenario: "Auto model", explicit: false, codexLimited: false },
+  { scenario: "all providers limited", explicit: true, codexLimited: true },
+])("routes a scheduled occurrence with $scenario", ({ explicit, codexLimited }) =>
+  Effect.gen(function* () {
+    const start = "2026-11-10T12:00:00.000Z";
+    const codexReset = "2026-11-10T14:00:00.000Z";
+    const claudeReset = "2026-11-11T12:00:00.000Z";
+    yield* TestClock.setTime(Date.parse(start));
+    const codex = ProviderInstanceId.make("codex_test");
+    const claude = ProviderInstanceId.make("claude_primary");
+    const alternative = {
+      instanceId: codex,
+      model: "gpt-alternative",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    } satisfies ModelSelection;
+    const provider = (
+      instanceId: ProviderInstanceId,
+      driver: ProviderDriverKind,
+      models: ReadonlyArray<string>,
+    ): ServerProvider => ({
+      instanceId,
+      driver,
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: start,
+      models: models.map((slug) => ({
+        slug,
+        name: slug,
+        aliases: [],
+        isCustom: false,
+        capabilities: null,
+      })),
+      slashCommands: [],
+      skills: [],
+    });
+    const refusals = new Map([
+      [claude, [{ resetAt: claudeReset, refusedAt: start }]],
+      ...(codexLimited ? [[codex, [{ resetAt: codexReset, refusedAt: start }]] as const] : []),
+    ]);
+    const routing = AccountRouting.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          ServerSettings.layerTest({
+            failoverLimitedThreads: true,
+            autoModeModels: { [ProviderDriverKind.make("codex")]: { model: "gpt-auto" } },
+            providerInstances: {
+              [codex]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+              [claude]: { driver: ProviderDriverKind.make("claudeAgent"), enabled: true },
+            },
+          }).pipe(Layer.orDie),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([
+              provider(claude, ProviderDriverKind.make("claudeAgent"), ["claude-opus-5-5"]),
+              provider(codex, ProviderDriverKind.make("codex"), ["gpt-auto", alternative.model]),
+            ]),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUsageLimitedProviderInstances: () => Effect.succeed(refusals),
+          }),
+          Layer.mock(ProviderMcp.ProviderMcp)({
+            listLoaded: () => Effect.succeedNone,
+            discover: () => Effect.succeedNone,
+          }),
+        ),
+      ),
+    );
+    const launches = yield* Ref.make<ReadonlyArray<ThreadLaunchService.ThreadLaunchInput>>([]);
+    const layer = runHistoryLayer(
+      (input) =>
+        Ref.update(launches, (seen) => [...seen, input]).pipe(
+          Effect.as({ threadId: ThreadId.make("thread-codex"), resumed: false } as never),
+        ),
+      routing,
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const { task } = yield* service.upsert(
+        yield* historyTask("Routed occurrence", {
+          schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          ...(explicit ? { fallbackModelSelections: [alternative] } : {}),
+        }),
+        ScheduledTaskService.CHANGED_IN_APP,
+      );
+      if (explicit) expect(task.fallbackModelSelections).toEqual([alternative]);
+      const done = yield* service.subscribeList().pipe(
+        Stream.filter(({ tasks }) =>
+          tasks.some(
+            (row) =>
+              row.id === task.id &&
+              (codexLimited ? row.nextRunAt === codexReset : row.lastRunStatus === "succeeded"),
+          ),
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("35 seconds");
+      yield* Fiber.join(done);
+      const { runs } = yield* service.listRuns({ id: task.id });
+      const sent = yield* Ref.get(launches);
+      if (codexLimited) {
+        expect(sent).toEqual([]);
+        expect(runs).toMatchObject([
+          {
+            outcome: "skipped",
+            skipReason: "usage_limited",
+            usageLimit: { driver: "codex", until: codexReset },
+          },
+        ]);
+      } else {
+        expect(sent).toMatchObject([
+          {
+            modelSelection: explicit ? alternative : { instanceId: codex, model: "gpt-auto" },
+            initialMessage: { crossProviderFailoverFrom: claude },
+          },
+        ]);
+        expect(runs).toMatchObject([
+          { outcome: "succeeded", failover: { from: claude, to: codex, reason: "usageLimit" } },
+        ]);
+      }
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect(

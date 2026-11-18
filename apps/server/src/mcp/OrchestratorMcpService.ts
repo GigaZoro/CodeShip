@@ -385,6 +385,9 @@ function scheduledTaskSummary(
   return {
     modelSelection: task.modelSelection,
     followsDefaultModel: task.followsDefaultModel ?? false,
+    ...(task.fallbackModelSelections === undefined
+      ? {}
+      : { fallbackModelSelections: task.fallbackModelSelections }),
     scheduledTaskId: task.id,
     title: task.title,
     ...(includePrompt ? { prompt: task.prompt } : {}),
@@ -575,6 +578,7 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
     input: {
       readonly selection: ModelSelection;
       readonly projectId: ProjectId;
+      readonly allowFailover?: boolean;
     },
     routing: Option.Option<AccountRouting.AccountRouting["Service"]>,
   ) {
@@ -2441,14 +2445,14 @@ const make = Effect.gen(function* () {
   const lastRunOf = Effect.fn("OrchestratorMcpService.lastRunOf")(function* (task: ScheduledTask) {
     if (task.lastRunAt === null || task.lastRunStatus === "never") return null;
     const scheduledFor = task.lastRunScheduledFor;
-    const run = {
+    const occurrence = {
       at: task.lastRunAt,
       ...(scheduledFor === undefined
         ? {}
         : { occurrence: scheduledFor === null ? null : occurrenceOf(task, scheduledFor) }),
     };
-    if (task.lastRunStatus === "running") return { ...run, outcome: "working" as const };
-    if (task.lastRunStatus === "failed") return { ...run, outcome: "failed" as const };
+    if (task.lastRunStatus === "running") return { ...occurrence, outcome: "working" as const };
+    if (task.lastRunStatus === "failed") return { ...occurrence, outcome: "failed" as const };
     const threadId = task.lastRunThreadId;
     const records =
       threadId == null
@@ -2457,6 +2461,15 @@ const make = Effect.gen(function* () {
             .getThreadRecords(threadId, ["runs", "subagents", "providerThreads"])
             .pipe(Effect.orElseSucceed(() => undefined));
     const runs = records?.runs ?? [];
+    const launch =
+      task.threadId === null ? runs.find((candidate) => candidate.ordinal === 1) : undefined;
+    const run = {
+      ...occurrence,
+      ...(launch?.modelSelection === undefined ? {} : { modelSelection: launch.modelSelection }),
+      ...(launch?.crossProviderFailoverFrom === undefined
+        ? {}
+        : { crossProviderFailover: "usageLimit" as const }),
+    };
     const started = runs.filter((candidate) => candidate.startedAt !== null);
     // A queued run cancelled before it started says nothing about how the work ended.
     const latest = ThreadManagementService.latestRun({ runs: started.length > 0 ? started : runs });
@@ -2773,6 +2786,9 @@ const make = Effect.gen(function* () {
         threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
         workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
         modelSelection,
+        ...(input.fallbackModelSelections === undefined
+          ? {}
+          : { fallbackModelSelections: input.fallbackModelSelections }),
         followsDefaultModel: input.followsDefaultModel ?? input.modelSelection === undefined,
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
@@ -3005,6 +3021,9 @@ const make = Effect.gen(function* () {
           threadId,
           workspaceStrategy,
           modelSelection: input.modelSelection ?? existing.modelSelection,
+          ...(input.fallbackModelSelections === undefined
+            ? {}
+            : { fallbackModelSelections: input.fallbackModelSelections }),
           followsDefaultModel:
             input.followsDefaultModel ??
             (input.modelSelection === undefined ? (existing.followsDefaultModel ?? false) : false),
@@ -3420,7 +3439,7 @@ const make = Effect.gen(function* () {
       const roleSelection =
         committedThread === null ? yield* delegatedTaskRoleSelection(input) : undefined;
       // The role's model stands in for the parent's, so the child inherits it the same way.
-      const target =
+      const primaryTarget =
         committedThread !== null
           ? {
               modelSelection: committedThread.modelSelection,
@@ -3441,11 +3460,31 @@ const make = Effect.gen(function* () {
                   }).pipe(Effect.andThen(resolveDelegateTarget(parent))),
                 ),
               );
+      const projectId = foreignProjectId ?? parent.thread.projectId;
+      const route =
+        !isRetryOfAcceptedDelegation && input.target === undefined && Option.isSome(accountRouting)
+          ? yield* accountRouting.value.failoverLaunch({
+              selection: primaryTarget.modelSelection,
+              projectId,
+              discoverMcpSignIns: false,
+            })
+          : null;
+      const crossProviderFailoverFrom =
+        route?.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined;
+      const target =
+        route !== null && crossProviderFailoverFrom !== undefined
+          ? {
+              modelSelection: route.selection,
+              supportedRuntimeModes: providers.find(
+                (provider) => provider.instanceId === route.selection.instanceId,
+              )?.supportedRuntimeModes,
+            }
+          : primaryTarget;
       if (!isRetryOfAcceptedDelegation) {
         yield* requireAccountWithRoom(
           {
             selection: target.modelSelection,
-            projectId: foreignProjectId ?? parent.thread.projectId,
+            projectId,
           },
           accountRouting,
         );
@@ -3510,6 +3549,7 @@ const make = Effect.gen(function* () {
           task: taskPrompt(input),
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,
+          ...(crossProviderFailoverFrom === undefined ? {} : { crossProviderFailoverFrom }),
           runtimeMode,
           interactionMode,
           ...(foreignProjectId === undefined ? {} : { projectId: foreignProjectId }),
@@ -3934,6 +3974,7 @@ const make = Effect.gen(function* () {
                   {
                     selection: target.modelSelection,
                     projectId: parent.thread.projectId,
+                    allowFailover: true,
                   },
                   accountRouting,
                 ).pipe(

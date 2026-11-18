@@ -331,6 +331,11 @@ const decodeWorkspaceStrategyJson = Schema.decodeUnknownEffect(
 const decodeModelSelectionJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.modelSelection),
 );
+const FallbackModelSelectionsJson = Schema.fromJsonString(
+  Schema.Array(ScheduledTask.fields.modelSelection),
+);
+const encodeFallbackModelSelectionsJson = Schema.encodeSync(FallbackModelSelectionsJson);
+const decodeFallbackModelSelectionsJson = Schema.decodeUnknownEffect(FallbackModelSelectionsJson);
 const decodeSharedProjectJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTaskSharing.fields.project),
 );
@@ -393,6 +398,7 @@ interface ScheduledTaskRow {
   readonly thread_id: string | null;
   readonly workspace_strategy_json: string;
   readonly model_selection_json: string;
+  readonly fallback_model_selections_json: string | null;
   readonly runtime_mode: string;
   readonly interaction_mode: string;
   readonly created_by: string;
@@ -830,6 +836,13 @@ const decodeRow = Effect.fnUntraced(
       threadId: row.thread_id,
       workspaceStrategy,
       modelSelection,
+      ...(row.fallback_model_selections_json == null
+        ? {}
+        : {
+            fallbackModelSelections: yield* decodeFallbackModelSelectionsJson(
+              row.fallback_model_selections_json,
+            ),
+          }),
       runtimeMode: row.runtime_mode,
       interactionMode: row.interaction_mode,
       createdBy: row.created_by,
@@ -1243,6 +1256,10 @@ export const layer = Layer.effect(
         changed_by_json TEXT NOT NULL
       )
     `;
+    const taskColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_tasks)`;
+    if (!taskColumns.some((column) => column.name === "fallback_model_selections_json")) {
+      yield* sql`ALTER TABLE scheduled_tasks ADD COLUMN fallback_model_selections_json TEXT`;
+    }
     const runColumns = yield* sql<{ name: string }>`PRAGMA table_info(scheduled_task_runs)`;
     if (!runColumns.some((column) => column.name === "usage_limit_json")) {
       yield* sql`ALTER TABLE scheduled_task_runs ADD COLUMN usage_limit_json TEXT`;
@@ -1407,6 +1424,7 @@ export const layer = Layer.effect(
         thread_id,
         workspace_strategy_json,
         model_selection_json,
+        fallback_model_selections_json,
         runtime_mode,
         interaction_mode,
         created_by,
@@ -1516,6 +1534,7 @@ export const layer = Layer.effect(
         thread_id,
         workspace_strategy_json,
         model_selection_json,
+        fallback_model_selections_json,
         runtime_mode,
         interaction_mode,
         created_by,
@@ -1655,6 +1674,7 @@ export const layer = Layer.effect(
           thread_id,
           workspace_strategy_json,
           model_selection_json,
+          fallback_model_selections_json,
           runtime_mode,
           interaction_mode,
           created_by,
@@ -1679,6 +1699,7 @@ export const layer = Layer.effect(
           ${task.threadId},
           ${JSON.stringify(task.workspaceStrategy)},
           ${JSON.stringify(task.modelSelection)},
+          ${task.fallbackModelSelections === undefined ? null : encodeFallbackModelSelectionsJson(task.fallbackModelSelections)},
           ${task.runtimeMode},
           ${task.interactionMode},
           ${task.createdBy},
@@ -1704,6 +1725,7 @@ export const layer = Layer.effect(
           thread_id = excluded.thread_id,
           workspace_strategy_json = excluded.workspace_strategy_json,
           model_selection_json = excluded.model_selection_json,
+          fallback_model_selections_json = COALESCE(excluded.fallback_model_selections_json, scheduled_tasks.fallback_model_selections_json),
           runtime_mode = excluded.runtime_mode,
           interaction_mode = excluded.interaction_mode,
           creation_source = excluded.creation_source,
@@ -2233,14 +2255,26 @@ export const layer = Layer.effect(
       const own: ModelSelection = launchModelSelection(yield* readSettings, task);
       const route = Option.isNone(accountRouting)
         ? { selection: own, failover: null }
-        : yield* accountRouting.value.failoverLaunch({ selection: own, projectId: task.projectId });
+        : yield* accountRouting.value.failoverLaunch({
+            selection: own,
+            projectId: task.projectId,
+            scheduled: true,
+            ...(task.fallbackModelSelections === undefined
+              ? {}
+              : { fallbackModelSelections: task.fallbackModelSelections }),
+          });
       return {
         selection: route.selection,
+        crossProviderFailoverFrom:
+          route.failover?.reason === "usageLimit" ? route.failover.crossProviderFrom : undefined,
         failover:
           route.failover === null
             ? null
             : {
-                from: own.instanceId,
+                from:
+                  route.failover.reason === "usageLimit"
+                    ? (route.failover.crossProviderFrom ?? own.instanceId)
+                    : own.instanceId,
                 to: route.selection.instanceId,
                 ...route.failover,
               },
@@ -2552,6 +2586,9 @@ export const layer = Layer.effect(
                     initialMessage: {
                       messageId,
                       scheduledTaskId: active.id,
+                      ...(target.crossProviderFailoverFrom === undefined
+                        ? {}
+                        : { crossProviderFailoverFrom: target.crossProviderFailoverFrom }),
                       text: prompt.success,
                       attachments: [],
                     },
@@ -2902,6 +2939,9 @@ export const layer = Layer.effect(
             current.threadId === null ? launchModelSelection(yield* readSettings, current) : null,
           projectId: current.projectId,
           delegates,
+          ...(current.fallbackModelSelections === undefined
+            ? {}
+            : { fallbackModelSelections: current.fallbackModelSelections }),
         });
         if (block === null) return false;
         const now = yield* localNow;
@@ -4422,6 +4462,9 @@ export const layer = Layer.effect(
                   schedule: task.schedule,
                   workspaceStrategy: task.workspaceStrategy,
                   modelSelection: task.modelSelection,
+                  ...(task.fallbackModelSelections === undefined
+                    ? {}
+                    : { fallbackModelSelections: task.fallbackModelSelections }),
                   followsDefaultModel: task.followsDefaultModel ?? false,
                   ...(task.catchUpMissedRun === undefined
                     ? {}
@@ -4834,6 +4877,9 @@ export const layer = Layer.effect(
         threadId: input.threadId ?? null,
         workspaceStrategy,
         modelSelection: input.modelSelection,
+        ...(input.fallbackModelSelections === undefined
+          ? {}
+          : { fallbackModelSelections: input.fallbackModelSelections }),
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
         createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
@@ -5012,6 +5058,18 @@ export const layer = Layer.effect(
               SELECT path FROM scheduled_task_prompt_files WHERE task_id = ${taskId}`;
             const [delegates] = yield* sql<{ readonly providers_json: string }>`
               SELECT providers_json FROM scheduled_task_delegate_providers WHERE task_id = ${taskId}`;
+            const fallbacks =
+              task.fallbackModelSelections === undefined
+                ? null
+                : encodeFallbackModelSelectionsJson(task.fallbackModelSelections);
+            const filledFallbacks =
+              fallbacks === null
+                ? []
+                : yield* sql`
+              UPDATE scheduled_tasks SET fallback_model_selections_json = ${fallbacks}
+              WHERE task_id = ${taskId} AND fallback_model_selections_json IS NULL
+              RETURNING task_id
+            `;
             const liveRunLimitDiffers =
               task.maxLiveRuns !== undefined &&
               task.maxLiveRuns !== (yield* liveRunLimitOf(taskId));
@@ -5045,7 +5103,8 @@ export const layer = Layer.effect(
               !promptFileDiffers &&
               !delegatesDiffer &&
               !liveRunLimitDiffers &&
-              !changedByMissing
+              !changedByMissing &&
+              filledFallbacks.length === 0
             ) {
               return { outcome: "stale" as const };
             }
@@ -5148,6 +5207,9 @@ export const layer = Layer.effect(
         threadId: null,
         workspaceStrategy,
         modelSelection: task.modelSelection,
+        ...(task.fallbackModelSelections === undefined
+          ? {}
+          : { fallbackModelSelections: task.fallbackModelSelections }),
         runtimeMode: task.runtimeMode,
         interactionMode: task.interactionMode,
         createdBy: existingTask?.createdBy ?? task.createdBy,

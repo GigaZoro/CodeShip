@@ -269,6 +269,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             {
               selection: modelSelection,
               projectId,
+              allowFailover: input.delegatedFrom === undefined,
             },
             yield* Effect.serviceOption(AccountRouting.AccountRouting),
           );

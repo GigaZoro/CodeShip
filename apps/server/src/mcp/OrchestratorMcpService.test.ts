@@ -2467,6 +2467,8 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
           Layer.mock(AccountRouting.AccountRouting)({
             launchLimit: () => Ref.get(limit),
+            failoverLaunch: (input) =>
+              Effect.succeed({ selection: input.selection, failover: null }),
             accountsWithRoom: () =>
               Ref.get(limit).pipe(
                 Effect.map((limited) =>
@@ -2609,6 +2611,8 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
                 Layer.mock(AccountRouting.AccountRouting)({
                   launchLimit: () => Ref.get(limit),
+                  failoverLaunch: (input) =>
+                    Effect.succeed({ selection: input.selection, failover: null }),
                   accountsWithRoom: () => Effect.succeed([]),
                 }),
               ),
@@ -2842,6 +2846,33 @@ describe("OrchestratorMcpService provider resolution", () => {
             candidateDriver: driver,
           },
           {
+            name: "untargeted-healthy",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            target: undefined,
+            selectedInstanceId: codexInstanceId,
+            candidateDriver: driver,
+          },
+          {
+            name: "explicit-model",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: true,
+            target: { model: parentModelSelection.model },
+            selectedInstanceId: codexInstanceId,
+            candidateDriver: driver,
+          },
+          {
+            name: "explicit-options",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: true,
+            target: { options: parentModelSelection.options },
+            selectedInstanceId: codexInstanceId,
+            candidateDriver: driver,
+          },
+          {
             name: "driver-only-rechecks-not-installed",
             inheritedEnabled: true,
             peerEnabled: false,
@@ -2914,6 +2945,12 @@ describe("OrchestratorMcpService provider resolution", () => {
             }),
             Layer.mock(AccountRouting.AccountRouting)({
               launchLimit: () => Effect.succeed(null),
+              failoverLaunch: (input) =>
+                Effect.sync(() => {
+                  assert.equal(testCase.name, "untargeted-healthy");
+                  assert.isFalse(input.discoverMcpSignIns);
+                  return { selection: input.selection, failover: null };
+                }),
               accountsWithRoom: () =>
                 Effect.succeed([
                   ...(testCase.peerEnabled
@@ -2967,16 +3004,18 @@ describe("OrchestratorMcpService provider resolution", () => {
           yield* Effect.gen(function* () {
             const service = yield* OrchestratorMcpService.OrchestratorMcpService;
             const target =
-              testCase.name === "inherited-unavailable"
-                ? undefined
-                : testCase.explicit
-                  ? ({
-                      providerInstanceId:
-                        testCase.selectedInstanceId === null
-                          ? codexInstanceId
-                          : testCase.selectedInstanceId,
-                    } as const)
-                  : ({ driverKind: testCase.candidateDriver } as const);
+              "target" in testCase
+                ? testCase.target
+                : testCase.name === "inherited-unavailable"
+                  ? undefined
+                  : testCase.explicit
+                    ? ({
+                        providerInstanceId:
+                          testCase.selectedInstanceId === null
+                            ? codexInstanceId
+                            : testCase.selectedInstanceId,
+                      } as const)
+                    : ({ driverKind: testCase.candidateDriver } as const);
             if (testCase.selectedInstanceId === null) {
               const error = yield* service
                 .delegateTask(scope, {
@@ -4050,6 +4089,17 @@ describe("OrchestratorMcpService provider resolution", () => {
         outcome: null,
       },
       {
+        name: "routed to another provider",
+        task: {
+          threadId: null,
+          lastRunAt: "2026-10-05T01:00:00.000Z",
+          lastRunStatus: "succeeded",
+        },
+        runStatus: "completed",
+        outcome: "completed",
+        routedModel: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-test" },
+      },
+      {
         name: "started after an earlier skip",
         task: {
           lastRunAt: "2026-10-05T01:00:00.000Z",
@@ -4096,6 +4146,12 @@ describe("OrchestratorMcpService provider resolution", () => {
                                     status: runStatus,
                                     threadId: "thread:last-run",
                                     startedAt: "2026-10-05T01:00:00.000Z",
+                                    ...("routedModel" in row
+                                      ? {
+                                          modelSelection: row.routedModel,
+                                          crossProviderFailoverFrom: "claudeAgent",
+                                        }
+                                      : {}),
                                   },
                                   ...("cancelledQueuedRun" in row
                                     ? [
@@ -4137,6 +4193,9 @@ describe("OrchestratorMcpService provider resolution", () => {
                   outcome,
                   ...("stopRequested" in row ? { stopped: true } : {}),
                   ...("occurrence" in row ? { occurrence: row.occurrence } : {}),
+                  ...("routedModel" in row
+                    ? { modelSelection: row.routedModel, crossProviderFailover: "usageLimit" }
+                    : {}),
                 },
           );
           assert.equal(tasks[0]?.checkingSince, checkingSince);

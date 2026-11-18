@@ -873,6 +873,10 @@ const scheduledTaskMachineOrderField = {
 };
 
 const scheduledTaskModelFields = {
+  fallbackModelSelections: Schema.optional(Schema.Array(CanonicalModelSelection)).annotate({
+    description:
+      "Ordered alternatives for new-thread runs whose primary provider is out of usage. Omit to keep the saved list; [] clears it.",
+  }),
   modelSelection: Schema.optional(CanonicalModelSelection).annotate({
     description:
       "Own model for new-thread runs; autoAccount:true selects Auto. Not for a bound task.",
@@ -968,6 +972,7 @@ export const OrchestratorMcpScheduledOccurrence = IsoDateTime.annotate({
 
 export const OrchestratorMcpScheduledTask = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.optional(Schema.Boolean),
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
@@ -1043,6 +1048,8 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
         outcome: Schema.Literals(["working", "completed", "failed"]),
         stopped: Schema.optional(Schema.Literal(true)),
         occurrence: Schema.optional(Schema.NullOr(OrchestratorMcpScheduledOccurrence)),
+        modelSelection: Schema.optional(ModelSelection),
+        crossProviderFailover: Schema.optional(Schema.Literal("usageLimit")),
       }),
     ),
   ).annotate({

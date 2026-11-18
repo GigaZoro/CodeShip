@@ -783,6 +783,7 @@ export const OrchestrationV2Run = Schema.Struct({
   ordinal: PositiveInt,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
+  crossProviderFailoverFrom: Schema.optional(ProviderInstanceId),
   providerThreadId: Schema.NullOr(ProviderThreadId),
   userMessageId: MessageId,
   rootNodeId: Schema.NullOr(NodeId),
@@ -3917,7 +3918,18 @@ const OrchestrationV2InternalCommand = Schema.Union([
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
-export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
+type LaunchCommand = Extract<
+  OrchestrationV2Command,
+  { readonly type: "message.dispatch" | "delegated_task.request" }
+>;
+export type OrchestrationV2ServerCommand =
+  | Exclude<OrchestrationV2Command, LaunchCommand>
+  | (LaunchCommand & {
+      readonly crossProviderFailoverFrom?: ProviderInstanceId;
+      readonly requestedModelSelection?: ModelSelection;
+      readonly launchAlreadyRouted?: true;
+    })
+  | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",

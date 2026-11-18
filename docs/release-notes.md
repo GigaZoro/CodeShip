@@ -1,3 +1,7 @@
+## 2026-11-19 — Fresh runs can switch providers when usage runs out
+
+- A new chat or scheduled run can start on another provider when its primary provider has no room. Scheduled tasks can set ordered model alternatives and show which model last ran and whether a usage limit caused the switch.
+
 ## 2026-11-19 — Chats keep running during provider sign-in
 
 - Claude, Codex, Cursor, and Antigravity browser sign-in keep chats on their current account until the replacement login is saved. Canceling or a failed save leaves those chats running.

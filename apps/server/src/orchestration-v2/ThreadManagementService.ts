@@ -818,11 +818,17 @@ const make = Effect.gen(function* () {
     }
   };
 
-  /** Puts an Auto turn on its model and account, before anything checks the target. */
+  /** Routes the first turn or an Auto turn before anything checks its target. */
   const routeDispatchAccount = (
     command: OrchestrationV2ServerCommand,
   ): Effect.Effect<OrchestrationV2ServerCommand, Orchestrator.OrchestratorV2Error> => {
-    if (Option.isNone(accountRouting)) return Effect.succeed(command);
+    if (
+      Option.isNone(accountRouting) ||
+      (command.type !== "message.dispatch" && command.type !== "delegated_task.request") ||
+      command.crossProviderFailoverFrom !== undefined
+    ) {
+      return Effect.succeed(command);
+    }
     const routing = accountRouting.value;
     const route = Effect.fn("ThreadManagementService.routeDispatchAccount")(function* (input: {
       readonly threadId: ThreadId;
@@ -831,15 +837,45 @@ const make = Effect.gen(function* () {
       readonly newThread: boolean;
       readonly scheduled: boolean;
     }) {
-      if (input.selection !== undefined && input.selection.autoAccount !== true) return command;
+      if (input.newThread && input.selection?.autoAccount !== true) return command;
+      const thread = yield* orchestrator.getThreadShell(input.threadId);
+      if (thread === null) return command;
+      const selection = input.selection ?? thread.modelSelection;
+      const fresh =
+        !input.newThread &&
+        command.launchAlreadyRouted !== true &&
+        thread.delegatedFrom === undefined &&
+        thread.latestRunId === null &&
+        thread.activeProviderThreadId === null;
+      if (!fresh && selection.autoAccount !== true) return command;
       // A retried command keeps the account its first attempt chose.
       const receipt = yield* receipts
         .getByCommandId(command.commandId)
         .pipe(Effect.orElseSucceed(Option.none));
       if (Option.isSome(receipt)) return command;
-      const thread = yield* orchestrator.getThreadShell(input.threadId);
-      if (thread === null) return command;
-      const selection = input.selection ?? thread.modelSelection;
+      if (fresh) {
+        const launch = yield* routing.failoverLaunch({
+          selection,
+          projectId: thread.projectId,
+          scheduled: input.scheduled,
+          discoverMcpSignIns: false,
+        });
+        if (launch.failover?.reason === "usageLimit") {
+          const from = launch.failover.crossProviderFrom;
+          return {
+            ...command,
+            modelSelection: launch.selection,
+            ...(from === undefined
+              ? {}
+              : {
+                  crossProviderFailoverFrom: from,
+                  ...(input.selection === undefined
+                    ? {}
+                    : { requestedModelSelection: input.selection }),
+                }),
+          };
+        }
+      }
       if (selection.autoAccount !== true) return command;
       const routed = yield* routing.route({
         selection,
@@ -874,8 +910,6 @@ const make = Effect.gen(function* () {
           newThread: true,
           scheduled: false,
         });
-      default:
-        return Effect.succeed(command);
     }
   };
 

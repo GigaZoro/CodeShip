@@ -679,6 +679,7 @@ export const ScheduledTask = Schema.Struct({
   threadId: Schema.NullOr(ThreadId),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,
@@ -825,6 +826,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   threadId: Schema.optional(Schema.NullOr(ThreadId)),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.optional(Schema.Boolean).annotate({
     description: "Run the scheduled tasks default model. Omitted keeps the stored choice.",
   }),
@@ -878,6 +880,7 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   schedule: ScheduledTaskSchedule,
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   modelSelection: ModelSelection,
+  fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.Boolean,
   /** Absent from machines without catch-up; the receiving machine keeps its own choice. */
   catchUpMissedRun: Schema.optional(Schema.Boolean),

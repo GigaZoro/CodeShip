@@ -15,6 +15,7 @@ import {
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ThreadProjection,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ProviderInteractionMode,
   ProjectId,
   type RunId,
@@ -74,6 +75,7 @@ export type ThreadLaunchWorkspaceStrategy =
 export interface ThreadLaunchInitialMessage {
   readonly messageId?: MessageId;
   readonly scheduledTaskId?: ScheduledTaskId;
+  readonly crossProviderFailoverFrom?: ProviderInstanceId;
   readonly senderThreadId?: ThreadId;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -976,7 +978,13 @@ const make = Effect.gen(function* () {
               text: input.initialMessage.text,
               ...(input.initialMessage.scheduledTaskId === undefined
                 ? {}
-                : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
+                : {
+                    scheduledTaskId: input.initialMessage.scheduledTaskId,
+                    launchAlreadyRouted: true as const,
+                  }),
+              ...(input.initialMessage.crossProviderFailoverFrom === undefined
+                ? {}
+                : { crossProviderFailoverFrom: input.initialMessage.crossProviderFailoverFrom }),
               ...(input.initialMessage.senderThreadId === undefined
                 ? {}
                 : { senderThreadId: input.initialMessage.senderThreadId }),

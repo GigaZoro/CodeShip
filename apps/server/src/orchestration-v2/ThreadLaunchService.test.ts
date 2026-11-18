@@ -441,6 +441,51 @@ it.effect(
   },
 );
 
+it.effect("records the first run's provider failover and ignores a stale second route", () => {
+  const harness = makeHarness({ adapters: [adapter, claudeAdapter] });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const { threadId } = yield* launches.launch({
+      ...launchInput({ command: "command:launch:failover", thread: "thread:launch:failover" }),
+      modelSelection: claudeModelSelection,
+    });
+    const requested = { ...modelSelection, model: "gpt-5.4" };
+    const dispatch = (
+      ordinal: number,
+      selection: typeof modelSelection | typeof claudeModelSelection,
+      requestedModelSelection?: typeof requested,
+    ) =>
+      threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`command:launch:failover:${ordinal}`),
+        messageId: MessageId.make(`message:launch:failover:${ordinal}`),
+        threadId,
+        text: "Run a check.",
+        attachments: [],
+        modelSelection: selection,
+        crossProviderFailoverFrom:
+          ordinal === 1 ? claudeModelSelection.instanceId : modelSelection.instanceId,
+        ...(requestedModelSelection === undefined ? {} : { requestedModelSelection }),
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+    yield* dispatch(1, modelSelection);
+    yield* dispatch(2, claudeModelSelection);
+    yield* dispatch(3, claudeModelSelection, requested);
+    const { runs } = yield* threads.getThreadProjection(threadId);
+    assert.deepEqual(
+      runs.map((run) => [run.modelSelection, run.crossProviderFailoverFrom]),
+      [
+        [modelSelection, claudeModelSelection.instanceId],
+        [modelSelection, undefined],
+        [requested, undefined],
+      ],
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("runs a thread-bound automation on the provider the thread uses now", () => {
   const harness = makeHarness({ adapters: [adapter, claudeAdapter] });
   const layerScheduledTasks = ScheduledTasks.layer.pipe(
