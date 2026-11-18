@@ -1,24 +1,21 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import type {
-  EnvironmentId,
-  MonitoringFindingCode,
-  MonitoringThreadKind,
-  ThreadId,
+import {
+  MONITORING_CHAT_LIMIT_MAX,
+  type EnvironmentId,
+  type MonitoringChatSort,
+  type MonitoringFindingCode,
+  type MonitoringOverviewInput,
+  type MonitoringThreadKind,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
-  filterChats,
-  mainModel,
   NO_MODEL,
   monitoringChatKey,
-  monitoringWindowStart,
-  phaseTotals,
   projectKey,
-  rankFindings,
-  sortChats,
-  sumTimeBuckets,
-  totalsOf,
   type MonitoringChat,
+  type MonitoringOverviewView,
+  type MonitoringProjectOption,
 } from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_TEXT,
@@ -27,7 +24,12 @@ import {
   SEVERITY_LABEL,
 } from "@t3tools/client-runtime/monitoring-text";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { formatDateTimeShort, formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
+import {
+  formatDateTimeShort,
+  formatPercent,
+  formatUsd,
+  makeWindow,
+} from "@t3tools/shared/usageFormat";
 import { useMemo, useState, type ReactNode } from "react";
 import { FlatList, Pressable, RefreshControl, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -62,7 +64,7 @@ const WINDOW_OPTIONS = [
 ] as const;
 
 interface Scope {
-  readonly project: string | null;
+  readonly project: MonitoringProjectOption | null;
   readonly kind: MonitoringThreadKind | null;
   /** A model name; NO_MODEL is chats that ran none. */
   readonly model: string | null;
@@ -75,21 +77,33 @@ const OPTION_PREFIX = "option:";
 
 const MAX_CONTENT_WIDTH = 720;
 const PAGE_SIZE = 40;
+const NEWEST_FIRST: MonitoringChatSort = { key: "settledAt", direction: "desc" };
 
 export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<MonitoringRoutes>>();
-  // The window start is read once per choice: a new value on every render would change the query key.
-  const [windowChoice, setWindowChoice] = useState(() => ({
-    days: 30,
-    since: monitoringWindowStart(30, Date.now()),
-  }));
+  const [days, setDays] = useState<(typeof WINDOW_OPTIONS)[number]["value"]>(30);
   const [finding, setFinding] = useState<MonitoringFindingCode | null>(null);
   const [scope, setScope] = useState<Scope>(NO_SCOPE);
   const [shown, setShown] = useState(PAGE_SIZE);
-  const { overview, refresh } = useMonitoringOverview({ since: windowChoice.since });
+  const { sinceDay, untilDay, timeZone } = makeWindow(days);
+  const input: MonitoringOverviewInput = {
+    sinceDay,
+    untilDay,
+    timeZone,
+    ...(scope.project ? { projectId: scope.project.projectId } : {}),
+    ...(scope.kind ? { kind: scope.kind } : {}),
+    ...(scope.model !== null ? { model: scope.model } : {}),
+    ...(finding ? { findingCode: finding } : {}),
+    sort: NEWEST_FIRST,
+    chatLimit: shown,
+  };
+  const {
+    overview,
+    isRefreshing: refreshing,
+    refresh,
+  } = useMonitoringOverview(input, scope.project?.environmentId ?? null);
   const projects = useProjects();
-  const refreshing = overview.environments.some((environment) => environment.isPending);
 
   const projectTitles = useMemo(
     () =>
@@ -98,29 +112,18 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
       ),
     [projects],
   );
+  const projectTitleOfKey = (key: string) => projectTitles.get(key) ?? t("Unknown project");
   const projectTitleOf = (chat: MonitoringChat) =>
-    projectTitles.get(projectKey(chat.environmentId, chat.summary.projectId)) ??
-    t("Unknown project");
+    projectTitleOfKey(projectKey(chat.environmentId, chat.row.projectId));
 
-  const chats = overview.chats;
-  const scoped = useMemo(
-    () => filterChats(chats, { projectKey: scope.project, kind: scope.kind, model: scope.model }),
-    [chats, scope],
-  );
-  const totals = useMemo(() => totalsOf(scoped), [scoped]);
-  const buckets = useMemo(() => sumTimeBuckets(scoped), [scoped]);
-  const ranks = useMemo(() => rankFindings(scoped), [scoped]);
-  const phases = useMemo(() => phaseTotals(scoped), [scoped]);
-  const listed = useMemo(
-    () => sortChats(filterChats(scoped, { findingCode: finding }), "settledAt", "desc"),
-    [scoped, finding],
-  );
+  const { totals, chats } = overview;
+  const filtered = scope.project !== null || scope.kind !== null || scope.model !== null;
   const body = monitoringBody();
   function monitoringBody(): "empty-environments" | "failed" | "loading" | "empty" | "ready" {
-    if (overview.environments.length === 0) return "empty-environments";
+    if (!overview.connected) return "empty-environments";
     if (overview.failed) return "failed";
     if (overview.isLoading) return "loading";
-    return chats.length === 0 ? "empty" : "ready";
+    return totals.chats === 0 && !filtered && finding === null ? "empty" : "ready";
   }
 
   const controls = (
@@ -131,9 +134,9 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
           label: t(option.label),
           accessibilityLabel: t(option.accessibilityLabel),
         }))}
-        selected={windowChoice.days}
-        onSelect={(days) => {
-          setWindowChoice({ days, since: monitoringWindowStart(days, Date.now()) });
+        selected={days}
+        onSelect={(next) => {
+          setDays(next);
           setFinding(null);
           setScope(NO_SCOPE);
           setShown(PAGE_SIZE);
@@ -168,29 +171,28 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
           )}
         />
       ) : null}
-      {overview.truncated ? (
-        <Note
-          text={t("More chats settled in this period than can be shown. These are the newest.")}
-        />
-      ) : null}
     </View>
+  );
+
+  const scopeFilters = (
+    <ScopeFilters
+      options={overview.options}
+      scope={scope}
+      projectTitleOfKey={projectTitleOfKey}
+      onChange={(next) => {
+        setScope(next);
+        setFinding(null);
+        setShown(PAGE_SIZE);
+      }}
+    />
   );
 
   const header =
     body === "ready" ? (
       <View className="gap-5">
         {controls}
-        <ScopeFilters
-          chats={chats}
-          scope={scope}
-          projectTitleOf={projectTitleOf}
-          onChange={(next) => {
-            setScope(next);
-            setFinding(null);
-            setShown(PAGE_SIZE);
-          }}
-        />
-        {scoped.length === 0 ? (
+        {scopeFilters}
+        {totals.chats === 0 ? (
           <EmptyState
             variant="plain"
             title={t("No chats match these filters")}
@@ -232,17 +234,17 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
         </View>
         <SettingsSection title={t("Where the time goes")}>
           <View className="p-4">
-            <MonitoringTimeBar buckets={buckets} />
+            <MonitoringTimeBar buckets={overview.time} />
           </View>
         </SettingsSection>
         <SettingsSection
           title={t("Weak points")}
           footer={t("Choose one to list only the chats it hit.")}
         >
-          {ranks.length === 0 ? (
+          {overview.findings.length === 0 ? (
             <Text className="p-4 text-foreground-muted">{t("No weak points found.")}</Text>
           ) : (
-            ranks.map((rank, index) => {
+            overview.findings.map((rank, index) => {
               const text = FINDING_TEXT[rank.code];
               const active = rank.code === finding;
               const stats = [
@@ -284,10 +286,10 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
           )}
         </SettingsSection>
         <SettingsSection title={t("Steps")} footer={t("Shell commands by what they were for.")}>
-          {phases.length === 0 ? (
+          {overview.phases.length === 0 ? (
             <Text className="p-4 text-foreground-muted">{t("No commands ran.")}</Text>
           ) : (
-            phases.map((phase, index) => (
+            overview.phases.map((phase, index) => (
               <View
                 key={phase.phase}
                 accessible
@@ -312,6 +314,12 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {t("Chats")}
         </Text>
+      </View>
+    ) : body === "failed" ? (
+      // A scope on a failing environment is undone here.
+      <View className="gap-5">
+        {controls}
+        {scopeFilters}
       </View>
     ) : (
       controls
@@ -344,7 +352,9 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
       />
     ) : null;
 
-  const visible = body === "ready" ? listed.slice(0, shown) : [];
+  const visible = body === "ready" ? chats : [];
+  const hasMore = visible.length < overview.listedChats;
+  const capReached = shown >= MONITORING_CHAT_LIMIT_MAX;
 
   return (
     <SettingsScreen title={t("Monitoring")} workspaceRoot={props.workspace}>
@@ -374,16 +384,25 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
               onPress={() =>
                 navigation.navigate("SettingsMonitoringThread", {
                   environmentId: item.environmentId as EnvironmentId,
-                  threadId: item.summary.threadId,
+                  threadId: item.row.threadId,
                 })
               }
             />
           </View>
         )}
         ListFooterComponent={
-          visible.length < listed.length ? (
-            <View className="items-center pt-4">
-              <Button label={t("Show more")} onPress={() => setShown(shown + PAGE_SIZE)} />
+          hasMore ? (
+            <View className="items-center gap-2 pt-4">
+              {capReached ? (
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {t("Narrow the filters to see the rest.")}
+                </Text>
+              ) : (
+                <Button
+                  label={t("Show more")}
+                  onPress={() => setShown(Math.min(MONITORING_CHAT_LIMIT_MAX, shown + PAGE_SIZE))}
+                />
+              )}
             </View>
           ) : undefined
         }
@@ -393,21 +412,13 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
 }
 
 function ScopeFilters(props: {
-  readonly chats: ReadonlyArray<MonitoringChat>;
+  readonly options: MonitoringOverviewView["options"];
   readonly scope: Scope;
-  readonly projectTitleOf: (chat: MonitoringChat) => string;
+  readonly projectTitleOfKey: (key: string) => string;
   readonly onChange: (scope: Scope) => void;
 }) {
-  const { chats, scope } = props;
-  const projects = new Map<string, string>();
-  for (const chat of chats) {
-    projects.set(
-      projectKey(chat.environmentId, chat.summary.projectId),
-      props.projectTitleOf(chat),
-    );
-  }
-  const kinds = [...new Set(chats.map((chat) => chat.summary.kind))];
-  const models = [...new Set(chats.map((chat) => mainModel(chat.summary)))];
+  const { options, scope } = props;
+  const { projects, kinds, models } = options;
   const modelLabel = (model: string) => (model === NO_MODEL ? t("No model") : model);
   const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label);
   return (
@@ -415,9 +426,16 @@ function ScopeFilters(props: {
       <FilterMenu
         label={t("Project")}
         allLabel={t("All projects")}
-        value={scope.project}
-        options={[...projects].map(([value, label]) => ({ value, label })).sort(byLabel)}
-        onChange={(project) => props.onChange({ ...scope, project })}
+        value={scope.project?.key ?? null}
+        options={projects
+          .map((project) => ({ value: project.key, label: props.projectTitleOfKey(project.key) }))
+          .sort(byLabel)}
+        onChange={(key) =>
+          props.onChange({
+            ...scope,
+            project: projects.find((project) => project.key === key) ?? null,
+          })
+        }
       />
       <FilterMenu
         label={t("Kind")}
@@ -500,14 +518,13 @@ function ChatRow(props: {
   readonly projectTitle: string;
   readonly onPress: () => void;
 }) {
-  const { summary } = props.chat;
-  const model = mainModel(summary);
-  const title = summary.title || t("Untitled chat");
+  const { row } = props.chat;
+  const title = row.title || t("Untitled chat");
   const metrics = [
-    formatDateTimeShort(summary.settledAt),
-    formatDuration(summary.lifetimeMs),
-    formatUsd(summary.costUsd),
-    tn(summary.findings.length, "{count} finding", "{count} findings"),
+    formatDateTimeShort(row.settledAt),
+    formatDuration(row.lifetimeMs),
+    formatUsd(row.costUsd),
+    tn(row.findings, "{count} finding", "{count} findings"),
   ].join(" · ");
   return (
     <Pressable
@@ -524,8 +541,8 @@ function ChatRow(props: {
         <Text textRole="footnote" className="text-foreground-muted" numberOfLines={1}>
           {[
             props.projectTitle,
-            model,
-            summary.kind === "interactive" ? null : t(KIND_LABEL[summary.kind]),
+            row.model,
+            row.kind === "interactive" ? null : t(KIND_LABEL[row.kind]),
           ]
             .filter(Boolean)
             .join(" · ")}

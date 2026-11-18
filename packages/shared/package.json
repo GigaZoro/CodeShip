@@ -407,6 +407,10 @@
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"
     },
+    "./monitoring": {
+      "types": "./src/monitoring.ts",
+      "import": "./src/monitoring.ts"
+    },
     "./usageMerge": {
       "types": "./src/usageMerge.ts",
       "import": "./src/usageMerge.ts"

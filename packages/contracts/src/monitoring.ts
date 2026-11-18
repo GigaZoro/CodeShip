@@ -4,11 +4,14 @@ import {
   ForwardCompatibleArray,
   IsoDateTime,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   RunId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { UsageDay } from "./usage.ts";
 
 export class MonitoringError extends Schema.TaggedError<MonitoringError>()("MonitoringError", {
   message: Schema.String,
@@ -320,26 +323,159 @@ export const MonitoringThreadDetail = Schema.Struct({
 });
 export type MonitoringThreadDetail = typeof MonitoringThreadDetail.Type;
 
-/** Chats settled from `since` until `until` (default now). */
+/** Longest period one overview may cover, in days; keeps the settled-chat read bounded. */
+export const MONITORING_MAX_WINDOW_DAYS = 90;
+/** Most chat rows one overview returns. */
+export const MONITORING_CHAT_LIMIT_MAX = 1_000;
+/** Chats listed under each outlier heading. */
+export const MONITORING_OUTLIER_LIMIT = 3;
+
+/**
+ * Millisecond durations bucketed on a log scale so environments' distributions merge; quantiles
+ * read back within about 1%. Buckets are sorted by index ascending and never empty.
+ */
+export const MonitoringDurationSketch = Schema.Struct({
+  /** Durations of zero, which have no log-scale bucket. */
+  zeros: NonNegativeInt,
+  buckets: Schema.Array(Schema.Tuple([NonNegativeInt, PositiveInt])),
+});
+export type MonitoringDurationSketch = typeof MonitoringDurationSketch.Type;
+
+export const MonitoringChatSortKey = Schema.Literals([
+  "settledAt",
+  "lifetimeMs",
+  "activeMs",
+  "costUsd",
+  "findings",
+]);
+export type MonitoringChatSortKey = typeof MonitoringChatSortKey.Type;
+
+export const MonitoringChatSort = Schema.Struct({
+  key: MonitoringChatSortKey,
+  direction: Schema.Literals(["asc", "desc"]),
+});
+export type MonitoringChatSort = typeof MonitoringChatSort.Type;
+
+/** One listed chat: what the chat table and the outlier lists show. */
+export const MonitoringChatRow = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  title: Schema.String,
+  kind: MonitoringThreadKind,
+  /** The chat's main model; empty when it ran none. */
+  model: Schema.String,
+  settledAt: IsoDateTime,
+  lifetimeMs: NonNegativeInt,
+  activeMs: NonNegativeInt,
+  costUsd: Schema.Number,
+  /** Failed runs plus failed commands. */
+  failures: NonNegativeInt,
+  findings: NonNegativeInt,
+});
+export type MonitoringChatRow = typeof MonitoringChatRow.Type;
+
+/**
+ * Chats settled from `sinceDay` through `untilDay` (calendar days in `timeZone`, as Usage does).
+ * `projectId`, `kind` and `model` narrow every figure; `findingCode` narrows only the chat list.
+ */
 export const MonitoringOverviewInput = Schema.Struct({
-  since: IsoDateTime,
-  until: Schema.optional(IsoDateTime),
+  sinceDay: UsageDay,
+  untilDay: UsageDay,
+  timeZone: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+  kind: Schema.optional(MonitoringThreadKind),
+  model: Schema.optional(Schema.String),
+  findingCode: Schema.optional(MonitoringFindingCode),
+  sort: MonitoringChatSort,
+  chatLimit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MONITORING_CHAT_LIMIT_MAX })),
 });
 export type MonitoringOverviewInput = typeof MonitoringOverviewInput.Type;
 
+export const MonitoringOverviewTotals = Schema.Struct({
+  chats: NonNegativeInt,
+  lifetimeMs: NonNegativeInt,
+  activeMs: NonNegativeInt,
+  lifetime: MonitoringDurationSketch,
+  active: MonitoringDurationSketch,
+  time: MonitoringTimeBuckets,
+  costUsd: Schema.Number,
+  unpricedTurns: NonNegativeInt,
+  tokens: Schema.Struct({
+    inputTokens: NonNegativeInt,
+    cachedInputTokens: NonNegativeInt,
+    outputTokens: NonNegativeInt,
+  }),
+  runs: NonNegativeInt,
+  failedRuns: NonNegativeInt,
+  userPrompts: NonNegativeInt,
+  /** Subagents, delegates, commands and workflows. */
+  helpers: NonNegativeInt,
+  findings: NonNegativeInt,
+});
+export type MonitoringOverviewTotals = typeof MonitoringOverviewTotals.Type;
+
+export const MonitoringFindingRollup = Schema.Struct({
+  code: MonitoringFindingCode,
+  chats: NonNegativeInt,
+  occurrences: NonNegativeInt,
+  wastedMs: NonNegativeInt,
+  /** The highest severity any chat had. */
+  severity: MonitoringFindingSeverity,
+});
+export type MonitoringFindingRollup = typeof MonitoringFindingRollup.Type;
+
+/** One calendar day in the requested zone; days with no chats are present with zeros. */
+export const MonitoringDayRollup = Schema.Struct({
+  day: UsageDay,
+  chats: NonNegativeInt,
+  lifetime: MonitoringDurationSketch,
+  activeMs: NonNegativeInt,
+  costUsd: Schema.Number,
+});
+export type MonitoringDayRollup = typeof MonitoringDayRollup.Type;
+
+export const MonitoringBreakdownGroup = Schema.Struct({
+  /** A project id, a kind, or a main model; empty when a chat ran no model. */
+  key: Schema.String,
+  chats: NonNegativeInt,
+  lifetime: MonitoringDurationSketch,
+  active: MonitoringDurationSketch,
+  costUsd: Schema.Number,
+  findings: NonNegativeInt,
+});
+export type MonitoringBreakdownGroup = typeof MonitoringBreakdownGroup.Type;
+
 export const MonitoringOverviewResult = Schema.Struct({
-  /** Newest settle first, capped at {@link MONITORING_OVERVIEW_LIMIT}. */
-  threads: ForwardCompatibleArray(MonitoringThreadSummary),
-  /** More chats settled in the window than the result holds. */
-  truncated: Schema.Boolean,
+  totals: MonitoringOverviewTotals,
+  phases: ForwardCompatibleArray(MonitoringPhaseStats),
+  findings: ForwardCompatibleArray(MonitoringFindingRollup),
+  days: ForwardCompatibleArray(MonitoringDayRollup),
+  breakdowns: Schema.Struct({
+    projects: ForwardCompatibleArray(MonitoringBreakdownGroup),
+    kinds: ForwardCompatibleArray(MonitoringBreakdownGroup),
+    models: ForwardCompatibleArray(MonitoringBreakdownGroup),
+  }),
+  outliers: Schema.Struct({
+    slowest: Schema.Array(MonitoringChatRow),
+    mostExpensive: Schema.Array(MonitoringChatRow),
+    mostFailures: Schema.Array(MonitoringChatRow),
+  }),
+  /** The first `chatLimit` listed chats in the requested order. */
+  chats: Schema.Array(MonitoringChatRow),
+  /** Chats the list holds in all, which may exceed `chats`. */
+  listedChats: NonNegativeInt,
+  /** Choices for the filters, over every analyzed chat in the period whatever the filters. */
+  options: Schema.Struct({
+    projectIds: Schema.Array(ProjectId),
+    kinds: Schema.Array(MonitoringThreadKind),
+    models: Schema.Array(Schema.String),
+  }),
   /** Settled chats still waiting for their first analysis. */
   pendingAnalysis: NonNegativeInt,
   /** Settled chats whose analysis failed; they are analyzed again later. */
   failedAnalysis: NonNegativeInt,
 });
 export type MonitoringOverviewResult = typeof MonitoringOverviewResult.Type;
-
-export const MONITORING_OVERVIEW_LIMIT = 2_000;
 
 export const MonitoringThreadInput = Schema.Struct({
   threadId: ThreadId,

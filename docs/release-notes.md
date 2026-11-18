@@ -1,3 +1,10 @@
+## 2026-11-20 — Monitoring counts every chat of a busy period
+
+- **Monitoring** now counts every chat that settled in the period, however many there were, and loads faster: each environment adds up its own chats and sends the totals instead of every chat. Before, a period with more than 2,000 chats showed only the newest 2,000. The chat list starts with the newest 50 in the order you sort it, and **Show more** adds more, up to 1,000.
+- A chat renamed or moved to another project after it settled now shows its current title and project.
+- With a project chosen, the counts of chats still being analyzed or that could not be analyzed cover only that project, and the filters stay on the page when the chosen project's environment cannot be read, so you can change them.
+- While a backlog of chats is being analyzed, the page refreshes when the backlog is done, or every 200 chats, instead of after every 25.
+
 ## 2026-11-20 — A clock change no longer makes a running command look lost
 
 - Background commands are now recognized by their start in ticks since boot on Linux and by the creation time Windows stored, instead of a start time derived from the wall clock. A clock change after a command started no longer reports it lost or leaves it running unwatched, and on Windows a stop still reaches what the command started.

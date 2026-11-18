@@ -10,7 +10,7 @@ import type {
 } from "@t3tools/contracts";
 import { msg, t, type Message } from "@t3tools/shared/i18n";
 
-import type { TimeBucketKey } from "./aggregate.ts";
+import type { TimeBucketKey } from "@t3tools/shared/monitoring";
 
 export interface FindingText {
   readonly title: Message;

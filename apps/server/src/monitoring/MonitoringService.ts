@@ -1,5 +1,6 @@
+// @effect-diagnostics globalDateInEffect:off - settled_at is compared as an ISO string against day-aligned bounds.
 import {
-  MONITORING_OVERVIEW_LIMIT,
+  MONITORING_MAX_WINDOW_DAYS,
   MonitoringError,
   MonitoringThreadSummary,
   type MonitoringChange,
@@ -7,9 +8,11 @@ import {
   type MonitoringOverviewResult,
   type MonitoringThreadDetail,
   type OrchestrationV2AppThread,
+  type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { enumerateDays } from "@t3tools/shared/usageFormat";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -27,12 +30,17 @@ import * as Stream from "effect/Stream";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { forkParked } from "../serverActivation.ts";
+import { makeDayFormatter } from "../usage/usageAggregation.ts";
 import { priceTurns } from "../usage/TurnPricing.ts";
 import * as UsageService from "../usage/UsageService.ts";
 import { readThreadAnalysis, settledListedThread } from "./ThreadAnalysisReader.ts";
+import { makeOverviewFold } from "./overviewAggregation.ts";
 import { ANALYZER_VERSION, analyzeThread, type AnalysisTurn } from "./ThreadAnalyzer.ts";
 
 const ANALYSIS_BATCH = 25;
+const DAY_MS = 86_400_000;
+/** During a long backfill the page still hears of progress after this many stored passes. */
+const PUBLISH_EVERY_PASSES = 8;
 const ANALYSIS_ERROR_LENGTH = 300;
 /** A failed analysis is tried again this long after it failed, and the loop wakes this often. */
 const ANALYSIS_RETRY = Duration.minutes(30);
@@ -173,63 +181,70 @@ const make = Effect.gen(function* () {
   const overview: MonitoringService["Service"]["overview"] = Effect.fn(
     "MonitoringService.overview",
   )(function* (input) {
-    const sinceTime = DateTime.make(input.since);
-    const untilTime =
-      input.until === undefined ? Option.some(yield* DateTime.now) : DateTime.make(input.until);
-    if (Option.isNone(sinceTime) || Option.isNone(untilTime)) {
-      return yield* new MonitoringError({ message: "The monitoring window is not a valid time." });
+    const windowDays = enumerateDays(input.sinceDay, input.untilDay).length;
+    if (windowDays === 0 || windowDays > MONITORING_MAX_WINDOW_DAYS) {
+      return yield* new MonitoringError({
+        message: `The monitoring period is not valid: it must span 1 to ${MONITORING_MAX_WINDOW_DAYS} days.`,
+      });
     }
-    const since = DateTime.formatIso(sinceTime.value);
-    const until = DateTime.formatIso(untilTime.value);
+    const dayOf = makeDayFormatter(input.timeZone);
+    // Zones are at most a day away from UTC, so one day either side covers every offset.
+    const settledFrom = new Date(Date.parse(`${input.sinceDay}T00:00:00.000Z`) - DAY_MS);
+    const settledBefore = new Date(Date.parse(`${input.untilDay}T00:00:00.000Z`) + 2 * DAY_MS);
 
-    const data = yield* Effect.gen(function* () {
-      const rows = yield* sql<{ readonly thread_id: string; readonly summary_json: string }>`
-        SELECT m.thread_id, m.summary_json
-        FROM monitoring_thread_analyses m
-        JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
-        WHERE ${settledListedThread(sql)}
-          AND json_extract(t.payload_json, '$.settledAt') = m.settled_at
-          AND m.analyzer_version = ${ANALYZER_VERSION}
-          AND m.summary_json IS NOT NULL
-          AND m.settled_at >= ${since} AND m.settled_at < ${until}
-        ORDER BY m.settled_at DESC, m.thread_id
-        LIMIT ${MONITORING_OVERVIEW_LIMIT + 1}
-      `;
-      const counts = yield* sql<{ readonly pending: number; readonly failed: number }>`
-        SELECT
-          COUNT(*) FILTER (WHERE m.thread_id IS NULL) AS pending,
-          COUNT(*) FILTER (WHERE m.error IS NOT NULL) AS failed
-        FROM orchestration_v2_projection_threads t
-        LEFT JOIN monitoring_thread_analyses m
-          ON m.thread_id = t.thread_id
-          AND m.analyzer_version = ${ANALYZER_VERSION}
-          AND m.settled_at = json_extract(t.payload_json, '$.settledAt')
-        WHERE ${settledListedThread(sql)}
-          AND json_extract(t.payload_json, '$.settledAt') >= ${since}
-          AND json_extract(t.payload_json, '$.settledAt') < ${until}
-      `;
-      return { rows, pending: counts[0]?.pending ?? 0, failed: counts[0]?.failed ?? 0 };
-    }).pipe(
+    const rows = yield* sql<{
+      readonly thread_id: string;
+      readonly settled_at: string;
+      readonly title: string;
+      readonly project_id: string;
+      readonly summary_json: string | null;
+      readonly failed: number;
+    }>`
+      SELECT t.thread_id, json_extract(t.payload_json, '$.settledAt') AS settled_at,
+        t.title, t.project_id, m.summary_json, m.error IS NOT NULL AS failed
+      FROM orchestration_v2_projection_threads t
+      LEFT JOIN monitoring_thread_analyses m
+        ON m.thread_id = t.thread_id
+        AND m.analyzer_version = ${ANALYZER_VERSION}
+        AND m.settled_at = json_extract(t.payload_json, '$.settledAt')
+      WHERE ${settledListedThread(sql)}
+        AND json_extract(t.payload_json, '$.settledAt') >= ${settledFrom.toISOString()}
+        AND json_extract(t.payload_json, '$.settledAt') < ${settledBefore.toISOString()}
+    `.pipe(
       NodeSqliteClient.readOnly,
       Effect.mapError(toError("Could not read the monitoring overview.")),
     );
 
-    const summaries = yield* Effect.forEach(data.rows.slice(0, MONITORING_OVERVIEW_LIMIT), (row) =>
-      decodeSummary(row.summary_json).pipe(
+    const fold = makeOverviewFold(input);
+    let pendingAnalysis = 0;
+    let failedAnalysis = 0;
+    for (const row of rows) {
+      const dayKey = dayOf(Date.parse(row.settled_at));
+      if (dayKey < input.sinceDay || dayKey > input.untilDay) continue;
+      if (row.summary_json === null) {
+        // A chat not analyzed yet has no kind or model, so only the project narrows these counts.
+        if (input.projectId !== undefined && row.project_id !== input.projectId) continue;
+        if (row.failed === 1) failedAnalysis += 1;
+        else pendingAnalysis += 1;
+        continue;
+      }
+      const summary = yield* decodeSummary(row.summary_json).pipe(
         Effect.asSome,
         Effect.catch(() =>
           Effect.logWarning("A stored chat analysis could not be read.", {
             threadId: row.thread_id,
           }).pipe(Effect.as(Option.none<MonitoringThreadSummary>())),
         ),
-      ),
-    );
-    return {
-      threads: summaries.flatMap((summary) => (Option.isSome(summary) ? [summary.value] : [])),
-      truncated: data.rows.length > MONITORING_OVERVIEW_LIMIT,
-      pendingAnalysis: data.pending,
-      failedAnalysis: data.failed,
-    };
+      );
+      // A rename or move after the analysis is not in the stored summary.
+      if (Option.isSome(summary)) {
+        fold.add({
+          summary: { ...summary.value, title: row.title, projectId: row.project_id as ProjectId },
+          dayKey,
+        });
+      }
+    }
+    return { ...fold.finish(), pendingAnalysis, failedAnalysis };
   });
 
   const thread: MonitoringService["Service"]["thread"] = Effect.fn("MonitoringService.thread")(
@@ -328,12 +343,12 @@ const make = Effect.gen(function* () {
     const stale = yield* selectStale();
     if (stale.length === 0) return false;
     const stored = yield* Effect.forEach(stale, analyzeAndStore);
-    if (!stored.some(Boolean)) return false;
-    yield* publishChange();
-    return true;
+    return stored.some(Boolean);
   });
 
   const analysisLoop = Effect.gen(function* () {
+    // Every publish makes each open client refetch, so a backfill publishes once it drains.
+    let unpublishedPasses = 0;
     for (;;) {
       const progressed = yield* analysisPass().pipe(
         Effect.catchCauseIf(notInterrupt, (cause) =>
@@ -342,6 +357,11 @@ const make = Effect.gen(function* () {
           }).pipe(Effect.as(false)),
         ),
       );
+      if (progressed) unpublishedPasses += 1;
+      if (unpublishedPasses > 0 && (!progressed || unpublishedPasses >= PUBLISH_EVERY_PASSES)) {
+        unpublishedPasses = 0;
+        yield* publishChange();
+      }
       if (!progressed) yield* Queue.take(wake).pipe(Effect.timeoutOption(ANALYSIS_RETRY));
     }
   });

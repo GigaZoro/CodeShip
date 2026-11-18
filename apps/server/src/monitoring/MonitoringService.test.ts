@@ -5,7 +5,9 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  UsageDay,
   UsageReadError,
+  type MonitoringOverviewInput,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -23,8 +25,13 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as UsageService from "../usage/UsageService.ts";
 import * as MonitoringService from "./MonitoringService.ts";
 
-const SINCE = "2026-01-01T00:00:00.000Z";
-const UNTIL = "2026-02-01T00:00:00.000Z";
+const WINDOW = {
+  sinceDay: UsageDay.make("2026-01-01"),
+  untilDay: UsageDay.make("2026-01-31"),
+  timeZone: "UTC",
+  sort: { key: "settledAt", direction: "desc" },
+  chatLimit: 50,
+} satisfies MonitoringOverviewInput;
 const CREATED_AT = "2026-01-10T00:00:00.000Z";
 const SETTLED_AT = "2026-01-10T02:00:00.000Z";
 
@@ -116,9 +123,9 @@ const makeHarness = Effect.fn("makeHarness")(function* (
 });
 
 const overviewIds = (monitoring: MonitoringService.MonitoringService["Service"]) =>
-  monitoring.overview({ since: SINCE, until: UNTIL }).pipe(
+  monitoring.overview(WINDOW).pipe(
     Effect.map((result) => ({
-      ids: result.threads.map((t) => t.threadId),
+      ids: result.chats.map((chat) => chat.threadId),
       pending: result.pendingAnalysis,
       failed: result.failedAnalysis,
     })),
@@ -283,9 +290,13 @@ it.effect("stores a chat whose analysis fails and analyzes it again later", () =
       SELECT thread_id, error FROM monitoring_thread_analyses ORDER BY thread_id
     `;
 
+    const otherProject = { ...WINDOW, projectId: ProjectId.make("project-2") };
+    expect((yield* monitoring.overview(otherProject)).pendingAnalysis).toBe(0);
+
     yield* monitoring.start();
     const failed = yield* nextChange(monitoring, 0);
     expect(yield* overviewIds(monitoring)).toEqual({ ids: [], pending: 0, failed: 2 });
+    expect((yield* monitoring.overview(otherProject)).failedAnalysis).toBe(0);
 
     pricing.result = Effect.die("pricing bug");
     yield* TestClock.adjust("30 minutes");
@@ -305,5 +316,70 @@ it.effect("stores a chat whose analysis fails and analyzes it again later", () =
       pending: 0,
       failed: 0,
     });
+  }).pipe(Effect.scoped),
+);
+
+it.effect("shows a chat's current title in the overview after it was renamed", () =>
+  Effect.gen(function* () {
+    const { monitoring, seedThread, sql } = yield* makeHarness();
+    yield* seedThread("renamed-chat");
+    yield* monitoring.thread({ threadId: ThreadId.make("renamed-chat") });
+
+    yield* sql`
+      UPDATE orchestration_v2_projection_threads
+      SET title = 'New name', project_id = 'project-2' WHERE thread_id = 'renamed-chat'
+    `;
+    const result = yield* monitoring.overview(WINDOW);
+
+    expect(result.chats.map((chat) => [chat.title, chat.projectId])).toEqual([
+      ["New name", "project-2"],
+    ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("publishes once when a backfill that spans several batches drains", () =>
+  Effect.gen(function* () {
+    const { monitoring, seedThread } = yield* makeHarness();
+    for (let index = 0; index < 30; index += 1) yield* seedThread(`backfill-${index}`);
+
+    yield* monitoring.start();
+    const revision = yield* nextChange(monitoring, 0);
+
+    expect(revision).toBe(1);
+    expect((yield* monitoring.overview(WINDOW)).pendingAnalysis).toBe(0);
+    expect((yield* monitoring.overview(WINDOW)).listedChats).toBe(30);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("rejects a period that is reversed or longer than the maximum", () =>
+  Effect.gen(function* () {
+    const { monitoring } = yield* makeHarness();
+    const reversed = yield* monitoring
+      .overview({ ...WINDOW, sinceDay: UsageDay.make("2026-02-01") })
+      .pipe(Effect.flip);
+    const tooLong = yield* monitoring
+      .overview({ ...WINDOW, sinceDay: UsageDay.make("2025-01-01") })
+      .pipe(Effect.flip);
+
+    expect([reversed, tooLong].map((error) => error._tag)).toEqual([
+      "MonitoringError",
+      "MonitoringError",
+    ]);
+    expect(reversed.message).toContain("not valid");
+  }).pipe(Effect.scoped),
+);
+
+it.effect("puts a chat on the calendar day of the requested zone", () =>
+  Effect.gen(function* () {
+    const { monitoring, seedThread } = yield* makeHarness();
+    yield* seedThread("late-chat", { settledAt: "2026-01-10T23:30:00.000Z" });
+    yield* monitoring.thread({ threadId: ThreadId.make("late-chat") });
+    const day = UsageDay.make("2026-01-10");
+    const onDay = (timeZone: string) =>
+      monitoring
+        .overview({ ...WINDOW, sinceDay: day, untilDay: day, timeZone })
+        .pipe(Effect.map((result) => result.listedChats));
+
+    expect([yield* onDay("UTC"), yield* onDay("Europe/Kyiv")]).toEqual([1, 0]);
   }).pipe(Effect.scoped),
 );

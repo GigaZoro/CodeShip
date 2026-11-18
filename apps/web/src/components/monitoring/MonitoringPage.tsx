@@ -2,30 +2,22 @@ import { Link, useSearch } from "@tanstack/react-router";
 import {
   EnvironmentId,
   ThreadId,
+  MONITORING_CHAT_LIMIT_MAX,
+  type MonitoringChatSort,
   type MonitoringFindingCode,
+  type MonitoringOverviewInput,
   type MonitoringThreadKind,
 } from "@t3tools/contracts";
 import {
   NO_MODEL,
-  breakdownByKind,
-  breakdownByModel,
-  breakdownByProject,
-  dailyTrend,
-  dayKey,
-  filterChats,
-  mainModel,
   monitoringChatKey,
-  monitoringWindowStart,
-  outliers,
-  phaseTotals,
   projectKey,
-  rankFindings,
-  sumTimeBuckets,
-  totalsOf,
   type MonitoringChat,
+  type MonitoringOutliers as MonitoringOutlierChats,
+  type MonitoringProjectOption,
 } from "@t3tools/client-runtime/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { enumerateDays, formatPercent, formatUsd } from "@t3tools/shared/usageFormat";
+import { formatPercent, formatUsd, makeWindow } from "@t3tools/shared/usageFormat";
 import { CircleAlertIcon, InfoIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -45,7 +37,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
-import { MonitoringChatList } from "./MonitoringChatList";
+import { CHAT_PAGE_SIZE, MonitoringChatList } from "./MonitoringChatList";
 import { MonitoringFindingRanking } from "./MonitoringFindings";
 import { MonitoringKpi, MonitoringSection } from "./MonitoringSection";
 import { MonitoringBreakdownTable, MonitoringPhaseTable } from "./MonitoringTables";
@@ -65,7 +57,7 @@ const ALL = "all";
 const MODEL_PREFIX = "model:";
 
 interface Filters {
-  readonly project: string | null;
+  readonly project: MonitoringProjectOption | null;
   readonly kind: MonitoringThreadKind | null;
   /** A model name; {@link NO_MODEL} is chats that ran none. */
   readonly model: string | null;
@@ -73,23 +65,47 @@ interface Filters {
 }
 
 const NO_FILTERS: Filters = { project: null, kind: null, model: null, finding: null };
+const NEWEST_FIRST: MonitoringChatSort = { key: "settledAt", direction: "desc" };
 
 export function MonitoringPage() {
   const search = useSearch({ from: "/_chat/monitoring" });
   const [days, setDays] = useState<(typeof WINDOW_OPTIONS)[number]["days"]>(30);
-  // Read once so the query key stays put until the person changes the window.
-  const [now] = useState(() => Date.now());
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
-  const since = monitoringWindowStart(days, now);
-  const overview = useMonitoringOverview({ since });
+  const [sort, setSort] = useState<MonitoringChatSort>(NEWEST_FIRST);
+  const [chatLimit, setChatLimit] = useState(CHAT_PAGE_SIZE);
+  const { sinceDay, untilDay, timeZone } = makeWindow(days);
+  const input: MonitoringOverviewInput = {
+    sinceDay,
+    untilDay,
+    timeZone,
+    ...(filters.project ? { projectId: filters.project.projectId } : {}),
+    ...(filters.kind ? { kind: filters.kind } : {}),
+    ...(filters.model !== null ? { model: filters.model } : {}),
+    ...(filters.finding ? { findingCode: filters.finding } : {}),
+    sort,
+    chatLimit,
+  };
+  const { overview, isRefreshing: refreshing } = useMonitoringOverview(
+    input,
+    filters.project?.environmentId ?? null,
+  );
   const projects = useProjects();
+
+  const changeFilters = (next: Filters) => {
+    setFilters(next);
+    setChatLimit(CHAT_PAGE_SIZE);
+  };
+  const changeSort = (next: MonitoringChatSort) => {
+    setSort(next);
+    setChatLimit(CHAT_PAGE_SIZE);
+  };
 
   const projectTitles = new Map(
     projects.map((project) => [projectKey(project.environmentId, project.id), project.title]),
   );
   const projectTitleOfKey = (key: string) => projectTitles.get(key) ?? t("Unknown project");
   const projectTitleOf = (chat: MonitoringChat) =>
-    projectTitleOfKey(projectKey(chat.environmentId, chat.summary.projectId));
+    projectTitleOfKey(projectKey(chat.environmentId, chat.row.projectId));
 
   const deepDive =
     search.environment && search.thread
@@ -102,9 +118,8 @@ export function MonitoringPage() {
   const refresh = () =>
     refreshMonitoringOverview(
       overview.environments.map((environment) => environment.environmentId),
-      { since },
+      input,
     );
-  const refreshing = overview.environments.some((environment) => environment.isPending);
 
   return (
     <SidebarInset
@@ -125,7 +140,10 @@ export function MonitoringPage() {
             value={[String(days)]}
             onValueChange={(next) => {
               const option = WINDOW_OPTIONS.find((entry) => String(entry.days) === next[0]);
-              if (option) setDays(option.days);
+              if (option) {
+                setDays(option.days);
+                setChatLimit(CHAT_PAGE_SIZE);
+              }
             }}
           >
             {WINDOW_OPTIONS.map((option) => (
@@ -157,10 +175,14 @@ export function MonitoringPage() {
           ) : (
             <MonitoringOverview
               overview={overview}
-              days={days}
-              now={now}
               filters={filters}
-              onFiltersChange={setFilters}
+              onFiltersChange={changeFilters}
+              sort={sort}
+              onSortChange={changeSort}
+              chatLimit={chatLimit}
+              onShowMore={() =>
+                setChatLimit((limit) => Math.min(MONITORING_CHAT_LIMIT_MAX, limit + CHAT_PAGE_SIZE))
+              }
               projectTitleOfKey={projectTitleOfKey}
               projectTitleOf={projectTitleOf}
               onRetry={refresh}
@@ -174,24 +196,28 @@ export function MonitoringPage() {
 
 function MonitoringOverview({
   overview,
-  days,
-  now,
   filters,
   onFiltersChange,
+  sort,
+  onSortChange,
+  chatLimit,
+  onShowMore,
   projectTitleOfKey,
   projectTitleOf,
   onRetry,
 }: {
-  readonly overview: ReturnType<typeof useMonitoringOverview>;
-  readonly days: number;
-  readonly now: number;
+  readonly overview: ReturnType<typeof useMonitoringOverview>["overview"];
   readonly filters: Filters;
   readonly onFiltersChange: (filters: Filters) => void;
+  readonly sort: MonitoringChatSort;
+  readonly onSortChange: (sort: MonitoringChatSort) => void;
+  readonly chatLimit: number;
+  readonly onShowMore: () => void;
   readonly projectTitleOfKey: (key: string) => string;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
   readonly onRetry: () => void;
 }) {
-  if (overview.environments.length === 0) {
+  if (!overview.connected) {
     return (
       <Empty>
         <EmptyHeader>
@@ -203,21 +229,33 @@ function MonitoringOverview({
       </Empty>
     );
   }
+  // Every failure state keeps the filters: a filter on a failing environment is undone here.
+  const filterBar = (
+    <MonitoringFilters
+      options={overview.options}
+      filters={filters}
+      onChange={onFiltersChange}
+      projectTitleOfKey={projectTitleOfKey}
+    />
+  );
   if (overview.failed) {
     return (
-      <Alert variant="error">
-        <CircleAlertIcon />
-        <AlertDescription>
-          {t("Could not load monitoring: {error}", {
-            error: overview.environments[0]!.error ?? "",
-          })}
-        </AlertDescription>
-        <AlertAction>
-          <Button size="xs" variant="outline" onClick={onRetry}>
-            {t("Retry")}
-          </Button>
-        </AlertAction>
-      </Alert>
+      <div className="flex flex-col gap-8">
+        <Alert variant="error">
+          <CircleAlertIcon />
+          <AlertDescription>
+            {t("Could not load monitoring: {error}", {
+              error: overview.environments[0]!.error ?? "",
+            })}
+          </AlertDescription>
+          <AlertAction>
+            <Button size="xs" variant="outline" onClick={onRetry}>
+              {t("Retry")}
+            </Button>
+          </AlertAction>
+        </Alert>
+        {filterBar}
+      </div>
     );
   }
   if (overview.isLoading) {
@@ -230,21 +268,7 @@ function MonitoringOverview({
     );
   }
 
-  const scoped = filterChats(overview.chats, {
-    projectKey: filters.project,
-    kind: filters.kind,
-    model: filters.model,
-  });
-  const listed = filterChats(scoped, { findingCode: filters.finding });
-  const totals = totalsOf(scoped);
-  const buckets = sumTimeBuckets(scoped);
-  const ranks = rankFindings(scoped);
-  const phases = phaseTotals(scoped);
-  const lastDay = dayKey(new Date(now).toISOString());
-  const trend = dailyTrend(scoped, {
-    days: enumerateDays(dayKey(monitoringWindowStart(days, now)), lastDay),
-  });
-  const top = outliers(scoped, 3);
+  const { totals } = overview;
   const failedEnvironments = overview.environments.filter((environment) => environment.error);
   const filtered = filters.project !== null || filters.kind !== null || filters.model !== null;
 
@@ -289,23 +313,10 @@ function MonitoringOverview({
           </AlertDescription>
         </Alert>
       ) : null}
-      {overview.truncated ? (
-        <Alert variant="info">
-          <InfoIcon />
-          <AlertDescription>
-            {t("More chats settled in this period than can be shown. These are the newest.")}
-          </AlertDescription>
-        </Alert>
-      ) : null}
 
-      <MonitoringFilters
-        chats={overview.chats}
-        filters={filters}
-        onChange={onFiltersChange}
-        projectTitleOfKey={projectTitleOfKey}
-      />
+      {filterBar}
 
-      {scoped.length === 0 ? (
+      {totals.chats === 0 ? (
         <Empty>
           <EmptyHeader>
             <EmptyTitle>
@@ -360,7 +371,7 @@ function MonitoringOverview({
               "Every chat's lifetime, from creation to settling, split by what it waited on.",
             )}
           >
-            <MonitoringTimeBar buckets={buckets} />
+            <MonitoringTimeBar buckets={overview.time} />
           </MonitoringSection>
 
           <MonitoringSection
@@ -368,7 +379,7 @@ function MonitoringOverview({
             description={t("Choose one to list only the chats it hit.")}
           >
             <MonitoringFindingRanking
-              ranks={ranks}
+              ranks={overview.findings}
               activeCode={filters.finding}
               onSelect={(finding) => onFiltersChange({ ...filters, finding })}
             />
@@ -378,11 +389,11 @@ function MonitoringOverview({
             title={t("Steps")}
             description={t("Shell commands by what they were for.")}
           >
-            <MonitoringPhaseTable phases={phases} />
+            <MonitoringPhaseTable phases={overview.phases} />
           </MonitoringSection>
 
           <MonitoringSection title={t("Daily trend")}>
-            <MonitoringTrendChart points={trend} />
+            <MonitoringTrendChart points={overview.days} />
           </MonitoringSection>
 
           <MonitoringSection title={t("Breakdowns")}>
@@ -390,19 +401,19 @@ function MonitoringOverview({
               <MonitoringBreakdownTable
                 caption={t("By project")}
                 dimension={t("Project")}
-                rows={breakdownByProject(scoped)}
+                rows={overview.breakdowns.projects}
                 labelOf={projectTitleOfKey}
               />
               <MonitoringBreakdownTable
                 caption={t("By kind")}
                 dimension={t("Kind")}
-                rows={breakdownByKind(scoped)}
+                rows={overview.breakdowns.kinds}
                 labelOf={(key) => t(KIND_LABEL[key as MonitoringThreadKind])}
               />
               <MonitoringBreakdownTable
                 caption={t("By model")}
                 dimension={t("Model")}
-                rows={breakdownByModel(scoped)}
+                rows={overview.breakdowns.models}
                 labelOf={(key) => (key === NO_MODEL ? t("No model") : key)}
               />
             </div>
@@ -423,8 +434,16 @@ function MonitoringOverview({
               ) : undefined
             }
           >
-            <MonitoringOutliers outliers={top} projectTitleOf={projectTitleOf} />
-            <MonitoringChatList chats={listed} projectTitleOf={projectTitleOf} />
+            <MonitoringOutliers outliers={overview.outliers} projectTitleOf={projectTitleOf} />
+            <MonitoringChatList
+              chats={overview.chats}
+              listedChats={overview.listedChats}
+              sort={sort}
+              onSortChange={onSortChange}
+              chatLimit={chatLimit}
+              onShowMore={onShowMore}
+              projectTitleOf={projectTitleOf}
+            />
           </MonitoringSection>
         </>
       )}
@@ -436,25 +455,24 @@ function MonitoringOutliers({
   outliers: top,
   projectTitleOf,
 }: {
-  readonly outliers: ReturnType<typeof outliers>;
+  readonly outliers: MonitoringOutlierChats;
   readonly projectTitleOf: (chat: MonitoringChat) => string;
 }) {
   const groups = [
     {
       label: t("Slowest"),
       chats: top.slowest,
-      value: (chat: MonitoringChat) => formatDuration(chat.summary.lifetimeMs),
+      value: (chat: MonitoringChat) => formatDuration(chat.row.lifetimeMs),
     },
     {
       label: t("Most expensive"),
       chats: top.mostExpensive,
-      value: (chat: MonitoringChat) => formatUsd(chat.summary.costUsd),
+      value: (chat: MonitoringChat) => formatUsd(chat.row.costUsd),
     },
     {
       label: t("Most failures"),
       chats: top.mostFailures,
-      value: (chat: MonitoringChat) =>
-        String(chat.summary.runs.failed + chat.summary.commands.failed),
+      value: (chat: MonitoringChat) => String(chat.row.failures),
     },
   ].filter((group) => group.chats.length > 0);
   if (groups.length === 0) return null;
@@ -494,11 +512,11 @@ function OutlierGroup({
           <li key={monitoringChatKey(chat)}>
             <Link
               to="/monitoring"
-              search={{ environment: chat.environmentId, thread: chat.summary.threadId }}
+              search={{ environment: chat.environmentId, thread: chat.row.threadId }}
               className="flex min-w-0 items-baseline justify-between gap-3 px-3 py-2 text-sm hover:bg-accent/50"
             >
               <span className="min-w-0">
-                <span className="block truncate text-foreground">{chat.summary.title}</span>
+                <span className="block truncate text-foreground">{chat.row.title}</span>
                 <span className="block truncate text-xs text-muted-foreground">
                   {projectTitleOf(chat)}
                 </span>
@@ -547,21 +565,17 @@ function FilterSelect({
 }
 
 function MonitoringFilters({
-  chats,
+  options,
   filters,
   onChange,
   projectTitleOfKey,
 }: {
-  readonly chats: ReadonlyArray<MonitoringChat>;
+  readonly options: ReturnType<typeof useMonitoringOverview>["overview"]["options"];
   readonly filters: Filters;
   readonly onChange: (filters: Filters) => void;
   readonly projectTitleOfKey: (key: string) => string;
 }) {
-  const projectKeys = [
-    ...new Set(chats.map((chat) => projectKey(chat.environmentId, chat.summary.projectId))),
-  ];
-  const kinds = [...new Set(chats.map((chat) => chat.summary.kind))];
-  const models = [...new Set(chats.map((chat) => mainModel(chat.summary)))];
+  const { projects, kinds, models } = options;
   // The model filter is keyed by a prefixed value because the no-model bucket is the empty string.
   const modelValue = filters.model === null ? null : `${MODEL_PREFIX}${filters.model}`;
   const active = filters.project !== null || filters.kind !== null || filters.model !== null;
@@ -570,11 +584,16 @@ function MonitoringFilters({
       <FilterSelect
         label={t("Project")}
         allLabel={t("All projects")}
-        value={filters.project}
-        options={projectKeys
-          .map((key) => ({ value: key, label: projectTitleOfKey(key) }))
+        value={filters.project?.key ?? null}
+        options={projects
+          .map((project) => ({ value: project.key, label: projectTitleOfKey(project.key) }))
           .toSorted((a, b) => a.label.localeCompare(b.label))}
-        onChange={(project) => onChange({ ...filters, project })}
+        onChange={(key) =>
+          onChange({
+            ...filters,
+            project: projects.find((project) => project.key === key) ?? null,
+          })
+        }
       />
       <FilterSelect
         label={t("Kind")}

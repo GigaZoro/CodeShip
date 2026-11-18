@@ -1,24 +1,16 @@
-import { EnvironmentId, type MonitoringThreadSummary } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type MonitoringChatRow,
+  type MonitoringOverviewInput,
+  type MonitoringOverviewResult,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import { sketchDurations, TIME_BUCKET_KEYS } from "@t3tools/shared/monitoring";
 
 import {
-  breakdownByModel,
-  dailyTrend,
-  dayKey,
-  filterChats,
-  median,
   mergeMonitoringOverviews,
-  monitoringWindowStart,
   monitoringChatKey,
-  outliers,
-  percentile,
-  phaseTotals,
-  rankFindings,
-  sortChats,
-  sumTimeBuckets,
-  totalsOf,
-  TIME_BUCKET_KEYS,
-  type MonitoringChat,
+  monitoringEnvironmentInput,
   type MonitoringEnvironmentReport,
 } from "./aggregate.ts";
 
@@ -35,271 +27,309 @@ const zeroTime = {
   settleTailMs: 0,
 };
 
-function chat(
-  id: string,
-  overrides: Partial<Omit<MonitoringThreadSummary, "threadId">> = {},
-  environmentId = "env-a",
-): MonitoringChat {
-  const summary = {
+const row = (id: string, overrides: Partial<MonitoringChatRow> = {}): MonitoringChatRow =>
+  ({
     threadId: id,
     projectId: "p1",
     title: id,
     kind: "interactive",
-    providerInstanceId: "claude",
-    models: ["opus"],
-    helperModels: [],
-    createdAt: "2026-11-10T10:00:00.000Z",
+    model: "opus",
     settledAt: "2026-11-10T12:00:00.000Z",
     lifetimeMs: 1000,
     activeMs: 400,
-    time: { ...zeroTime, agentMs: 400, userResponseMs: 600 },
-    runs: {
-      total: 2,
-      completed: 1,
-      failed: 1,
-      interrupted: 0,
-      cancelled: 0,
-      userPrompts: 1,
-      automatic: 1,
-      retries: 0,
-      steeringRestarts: 0,
-      providerRecoveries: 0,
-    },
-    errors: {},
-    tokens: {
-      inputTokens: 100,
-      cachedInputTokens: 25,
-      cacheCreationTokens: 0,
-      outputTokens: 10,
-      reasoningTokens: 0,
-    },
     costUsd: 1,
-    unpricedTurns: 0,
-    peakContextRatio: null,
-    compactions: 0,
-    handoffs: 0,
-    helpers: { subagents: 1, delegates: 0, commands: 1, workflows: 0, failed: 0 },
-    commands: { count: 0, failed: 0, durationMs: 0 },
-    phases: [],
-    filesChanged: 0,
-    reopens: 0,
-    findings: [],
+    failures: 0,
+    findings: 0,
     ...overrides,
-  } as unknown as MonitoringThreadSummary;
-  return { environmentId, summary };
+  }) as MonitoringChatRow;
+
+const group = (key: string, chats: number, lifetimes: number[], costUsd = 1, findings = 0) => ({
+  key,
+  chats,
+  lifetime: sketchDurations(lifetimes),
+  active: sketchDurations(lifetimes.map((value) => value / 2)),
+  costUsd,
+  findings,
+});
+
+function result(overrides: Partial<MonitoringOverviewResult> = {}): MonitoringOverviewResult {
+  return {
+    totals: {
+      chats: 2,
+      lifetimeMs: 4000,
+      activeMs: 1400,
+      lifetime: sketchDurations([1000, 3000]),
+      active: sketchDurations([400, 1000]),
+      time: { ...zeroTime, agentMs: 1000, commandMs: 400, idleMs: 2600 },
+      costUsd: 3,
+      unpricedTurns: 1,
+      tokens: { inputTokens: 100, cachedInputTokens: 25, outputTokens: 10 },
+      runs: 4,
+      failedRuns: 1,
+      userPrompts: 2,
+      helpers: 3,
+      findings: 2,
+    },
+    phases: [{ phase: "test", count: 2, failed: 1, durationMs: 4000 }],
+    findings: [
+      { code: "retries", chats: 1, occurrences: 1, wastedMs: 100, severity: "low" },
+      { code: "usage_limit", chats: 1, occurrences: 1, wastedMs: 5000, severity: "medium" },
+    ],
+    days: [
+      { day: "2026-11-09", chats: 0, lifetime: sketchDurations([]), activeMs: 0, costUsd: 0 },
+      {
+        day: "2026-11-10",
+        chats: 2,
+        lifetime: sketchDurations([1000, 3000]),
+        activeMs: 1400,
+        costUsd: 3,
+      },
+    ],
+    breakdowns: {
+      projects: [group("p1", 2, [1000, 3000], 3)],
+      kinds: [group("interactive", 2, [1000, 3000], 3)],
+      models: [group("opus", 2, [1000, 3000], 3)],
+    },
+    outliers: {
+      slowest: [row("a", { lifetimeMs: 3000 })],
+      mostExpensive: [row("a", { lifetimeMs: 3000 })],
+      mostFailures: [],
+    },
+    chats: [row("a", { lifetimeMs: 3000 }), row("b")],
+    listedChats: 2,
+    options: { projectIds: ["p1"], kinds: ["interactive"], models: ["opus"] },
+    pendingAnalysis: 1,
+    failedAnalysis: 2,
+    ...overrides,
+  } as MonitoringOverviewResult;
 }
 
-describe("percentile", () => {
-  it("interpolates between neighbours and handles empty and single inputs", () => {
-    expect(median([])).toBe(0);
-    expect(median([7])).toBe(7);
-    expect(median([4, 1, 3, 2])).toBe(2.5);
-    expect(percentile([10, 20, 30, 40, 50], 0.9)).toBe(46);
-    expect(percentile([1, 2], 2)).toBe(2);
-  });
+const report = (
+  environmentId: string,
+  overrides: Partial<MonitoringEnvironmentReport> = {},
+): MonitoringEnvironmentReport => ({
+  environmentId: EnvironmentId.make(environmentId),
+  label: environmentId,
+  isPending: false,
+  error: null,
+  result: result(),
+  optionsOnly: false,
+  ...overrides,
 });
 
-describe("totalsOf and sumTimeBuckets", () => {
-  const chats = [
-    chat("a", { lifetimeMs: 1000, activeMs: 400 }),
-    chat("b", {
-      lifetimeMs: 3000,
-      activeMs: 1000,
-      time: { ...zeroTime, commandMs: 1000, idleMs: 2000 },
-      costUsd: 2,
-    }),
-  ];
-
-  it("sums buckets so they still add up to the summed lifetime", () => {
-    const buckets = sumTimeBuckets(chats);
-    expect(buckets.agentMs).toBe(400);
-    expect(buckets.commandMs).toBe(1000);
-    expect(TIME_BUCKET_KEYS.reduce((total, key) => total + buckets[key], 0)).toBe(4000);
-  });
-
-  it("derives shares, cache reuse and counts", () => {
-    const totals = totalsOf(chats);
-    expect(totals.chats).toBe(2);
-    expect(totals.medianLifetimeMs).toBe(2000);
-    expect(totals.workingMs).toBe(1400);
-    expect(totals.workingShare).toBeCloseTo(0.35);
-    expect(totals.costUsd).toBe(3);
-    expect(totals.cacheReuse).toBe(0.25);
-    expect(totals.failedRuns).toBe(2);
-    expect(totals.helpers).toBe(4);
-  });
-
-  it("has no cache reuse or share without data", () => {
-    const totals = totalsOf([]);
-    expect(totals.cacheReuse).toBeNull();
-    expect(totals.workingShare).toBe(0);
-  });
-});
-
-describe("rankFindings", () => {
-  it("merges per code across chats and ranks by time lost, keeping the worst severity", () => {
-    const ranks = rankFindings([
-      chat("a", {
-        findings: [
-          { code: "retries", severity: "low", wastedMs: 100, count: 1, detail: null },
-          { code: "usage_limit", severity: "medium", wastedMs: 5000, count: 1, detail: null },
-        ],
-      }),
-      chat("b", {
-        findings: [{ code: "retries", severity: "high", wastedMs: 200, count: 2, detail: null }],
-      }),
-      chat("c", {
-        findings: [{ code: "many_prompts", severity: "low", wastedMs: 0, count: 7, detail: null }],
-      }),
-    ]);
-    expect(ranks.map((rank) => rank.code)).toEqual(["usage_limit", "retries", "many_prompts"]);
-    const retries = ranks[1]!;
-    expect(retries).toMatchObject({ chats: 2, occurrences: 3, wastedMs: 300, severity: "high" });
-    expect(retries.chatKeys).toEqual(["env-a:a", "env-a:b"]);
-  });
-
-  it("keeps the same thread id in two environments apart", () => {
-    const finding = {
-      code: "retries",
-      severity: "low",
-      wastedMs: 1,
-      count: 1,
-      detail: null,
-    } as const;
-    const [rank] = rankFindings([
-      chat("a", { findings: [finding] }, "env-a"),
-      chat("a", { findings: [finding] }, "env-b"),
-    ]);
-    expect(rank!.chats).toBe(2);
-  });
-});
-
-describe("dailyTrend", () => {
-  it("groups by day in the given zone and fills listed empty days", () => {
-    // 23:30 UTC on the 10th is already the 11th in Auckland (UTC+13 in November).
-    const late = chat("a", { settledAt: "2026-11-10T23:30:00.000Z", lifetimeMs: 100 });
-    const next = chat("b", { settledAt: "2026-11-11T01:00:00.000Z", lifetimeMs: 300 });
-    expect(dayKey(late.summary.settledAt, "UTC")).toBe("2026-11-10");
-    expect(dayKey(late.summary.settledAt, "Pacific/Auckland")).toBe("2026-11-11");
-
-    const utc = dailyTrend([late, next], {
-      timeZone: "UTC",
-      days: ["2026-11-09", "2026-11-10", "2026-11-11"],
-    });
-    expect(utc.map((point) => [point.day, point.chats])).toEqual([
-      ["2026-11-09", 0],
-      ["2026-11-10", 1],
-      ["2026-11-11", 1],
-    ]);
-    const nz = dailyTrend([late, next], { timeZone: "Pacific/Auckland" });
-    expect(nz).toHaveLength(1);
-    expect(nz[0]).toMatchObject({ chats: 2, medianLifetimeMs: 200, p90LifetimeMs: 280 });
-  });
-});
-
-describe("breakdowns, filters, sorting and outliers", () => {
-  const chats = [
-    chat("a", { models: ["opus"], lifetimeMs: 100, costUsd: 5 }),
-    chat("b", { models: ["haiku"], kind: "scheduled", lifetimeMs: 900, costUsd: 0.5 }, "env-b"),
-    chat("c", {
-      models: [],
-      lifetimeMs: 500,
-      costUsd: 0,
-      runs: { ...chat("x").summary.runs, failed: 0 },
-    }),
-  ];
-
-  it("breaks down by main model with an empty key for chats without one", () => {
-    const rows = breakdownByModel(chats);
-    expect(rows.map((row) => row.key).toSorted()).toEqual(["", "haiku", "opus"]);
-  });
-
-  it("filters by project, kind and model across environments", () => {
-    expect(filterChats(chats, { kind: "scheduled" }).map(monitoringChatKey)).toEqual(["env-b:b"]);
-    expect(filterChats(chats, { projectKey: "env-b:p1" }).map(monitoringChatKey)).toEqual([
-      "env-b:b",
-    ]);
-    expect(filterChats(chats, { model: "" }).map(monitoringChatKey)).toEqual(["env-a:c"]);
-    expect(filterChats(chats, {})).toBe(chats);
-  });
-
-  it("sorts and picks outliers, leaving out zero scores", () => {
-    expect(sortChats(chats, "lifetimeMs", "desc").map((c) => c.summary.threadId)).toEqual([
-      "b",
-      "c",
-      "a",
-    ]);
-    const top = outliers(chats, 2);
-    expect(top.slowest.map((c) => c.summary.threadId)).toEqual(["b", "c"]);
-    expect(top.mostExpensive.map((c) => c.summary.threadId)).toEqual(["a", "b"]);
-    expect(top.mostFailures.map((c) => c.summary.threadId)).toEqual(["a", "b"]);
-  });
-});
-
-describe("phaseTotals", () => {
-  it("sums phases across chats, computes rates, and drops phases that never ran", () => {
-    const totals = phaseTotals([
-      chat("a", {
-        phases: [
-          { phase: "test", count: 2, failed: 1, durationMs: 4000 },
-          { phase: "build", count: 0, failed: 0, durationMs: 0 },
-        ],
-      }),
-      chat("b", { phases: [{ phase: "test", count: 2, failed: 1, durationMs: 2000 }] }),
-    ]);
-    expect(totals).toEqual([
-      { phase: "test", count: 4, failed: 2, failureRate: 0.5, durationMs: 6000, averageMs: 1500 },
-    ]);
-  });
-});
-
-describe("monitoringWindowStart", () => {
-  it("starts at local midnight, days - 1 days back", () => {
-    // @effect-diagnostics-next-line globalDate:off - The helper does local calendar math, so the test reads local fields.
-    const now = new Date(2026, 10, 18, 15, 30).getTime();
-    // @effect-diagnostics-next-line globalDate:off - The helper does local calendar math, so the test reads local fields.
-    const start = new Date(monitoringWindowStart(7, now));
-    expect([start.getFullYear(), start.getMonth(), start.getDate(), start.getHours()]).toEqual([
-      2026, 10, 12, 0,
-    ]);
-    // @effect-diagnostics-next-line globalDate:off - The helper does local calendar math, so the test reads local fields.
-    expect(new Date(monitoringWindowStart(1, now)).getDate()).toBe(18);
-  });
-});
+const LIST = { sort: { key: "settledAt", direction: "desc" }, chatLimit: 3 } as const;
 
 describe("mergeMonitoringOverviews", () => {
-  const report = (
-    environmentId: string,
-    overrides: Partial<MonitoringEnvironmentReport> = {},
-  ): MonitoringEnvironmentReport => ({
-    environmentId: EnvironmentId.make(environmentId),
-    label: environmentId,
-    isPending: false,
-    error: null,
-    result: {
-      threads: [chat("t1", {}, environmentId).summary],
-      truncated: false,
-      pendingAnalysis: 1,
-      failedAnalysis: 2,
-    },
-    ...overrides,
-  });
-
-  it("sums the answers, keeps chats apart by environment and is failed only when all failed", () => {
-    const merged = mergeMonitoringOverviews([
-      report("env-a"),
-      report("env-b", { error: "offline", result: null }),
-      report("env-c", { isPending: true }),
-    ]);
-    expect(merged.chats.map((entry) => monitoringChatKey(entry))).toEqual(["env-a:t1", "env-c:t1"]);
+  it("sums the answers and is failed only when every environment failed", () => {
+    const merged = mergeMonitoringOverviews(
+      [
+        report("env-a"),
+        report("env-b", { error: "offline", result: null }),
+        report("env-c", { isPending: true }),
+      ],
+      LIST,
+    );
     expect([merged.pendingAnalysis, merged.failedAnalysis]).toEqual([2, 4]);
     expect([merged.isLoading, merged.failed]).toEqual([false, false]);
+    expect(merged.totals).toMatchObject({
+      chats: 4,
+      costUsd: 6,
+      failedRuns: 2,
+      helpers: 6,
+      workingShare: 0.35,
+      cacheReuse: 0.25,
+    });
+    expect(TIME_BUCKET_KEYS.reduce((total, key) => total + merged.time[key], 0)).toBe(8000);
   });
 
   it("loads until some environment answers and fails when every one failed", () => {
-    const waiting = mergeMonitoringOverviews([report("env-a", { isPending: true, result: null })]);
-    const failed = mergeMonitoringOverviews([report("env-a", { error: "offline", result: null })]);
+    const waiting = mergeMonitoringOverviews(
+      [report("env-a", { isPending: true, result: null })],
+      LIST,
+    );
+    const failed = mergeMonitoringOverviews(
+      [report("env-a", { error: "offline", result: null })],
+      LIST,
+    );
     expect([waiting.isLoading, waiting.failed]).toEqual([true, false]);
     expect([failed.isLoading, failed.failed]).toEqual([false, true]);
+    expect(failed.totals.chats).toBe(0);
+    expect(failed.days).toEqual([]);
+  });
+
+  it("merges days, kinds, models and findings and keeps projects apart per environment", () => {
+    const merged = mergeMonitoringOverviews(
+      [
+        report("env-a"),
+        report("env-b", {
+          result: result({
+            days: [
+              {
+                day: "2026-11-10",
+                chats: 1,
+                lifetime: sketchDurations([5000]),
+                activeMs: 1,
+                costUsd: 1,
+              },
+              {
+                day: "2026-11-11",
+                chats: 0,
+                lifetime: sketchDurations([]),
+                activeMs: 0,
+                costUsd: 0,
+              },
+            ] as unknown as MonitoringOverviewResult["days"],
+            breakdowns: {
+              projects: [group("p1", 1, [5000])],
+              kinds: [group("interactive", 1, [5000]), group("scheduled", 4, [10], 9)],
+              models: [group("", 1, [5000])],
+            } as MonitoringOverviewResult["breakdowns"],
+            options: { projectIds: ["p9"], kinds: ["scheduled"], models: [""] } as never,
+          }),
+        }),
+      ],
+      LIST,
+    );
+    expect(merged.days.map((day) => [day.day, day.chats])).toEqual([
+      ["2026-11-09", 0],
+      ["2026-11-10", 3],
+      ["2026-11-11", 0],
+    ]);
+    expect(merged.days[1]!.p90LifetimeMs).toBeGreaterThan(merged.days[1]!.medianLifetimeMs);
+    expect(merged.breakdowns.projects.map((row) => row.key).toSorted()).toEqual([
+      "env-a:p1",
+      "env-b:p1",
+    ]);
+    expect(merged.breakdowns.kinds.map((row) => [row.key, row.chats])).toEqual(
+      [
+        ["interactive", 3],
+        ["scheduled", 4],
+      ].toSorted((a, b) => (b[1] as number) - (a[1] as number)),
+    );
+    expect(merged.breakdowns.models.map((row) => row.key).toSorted()).toEqual(["", "opus"]);
+    expect(merged.findings.map((rank) => [rank.code, rank.chats])).toEqual([
+      ["usage_limit", 2],
+      ["retries", 2],
+    ]);
+    expect(merged.phases).toEqual([
+      { phase: "test", count: 4, failed: 2, failureRate: 0.5, durationMs: 8000, averageMs: 2000 },
+    ]);
+    expect(merged.options).toEqual({
+      projects: [
+        { key: "env-a:p1", environmentId: "env-a", projectId: "p1" },
+        { key: "env-b:p9", environmentId: "env-b", projectId: "p9" },
+      ],
+      kinds: ["interactive", "scheduled"],
+      models: ["opus", ""],
+    });
+  });
+
+  it("merges the chat lists in the requested order up to the limit, keeping environments apart", () => {
+    const merged = mergeMonitoringOverviews(
+      [
+        report("env-a"),
+        report("env-b", {
+          result: result({
+            chats: [
+              row("a", { settledAt: "2026-11-12T00:00:00.000Z" }),
+              row("z", { settledAt: "2026-11-01T00:00:00.000Z" }),
+            ],
+            listedChats: 7,
+          }),
+        }),
+      ],
+      LIST,
+    );
+    expect(merged.chats.map(monitoringChatKey)).toEqual(["env-b:a", "env-a:a", "env-a:b"]);
+    expect(merged.listedChats).toBe(9);
+
+    const byCost = mergeMonitoringOverviews(
+      [
+        report("env-a", { result: result({ chats: [row("c", { costUsd: 1 })] }) }),
+        report("env-b", { result: result({ chats: [row("d", { costUsd: 8 })] }) }),
+      ],
+      { sort: { key: "costUsd", direction: "asc" }, chatLimit: 1 },
+    );
+    expect(byCost.chats.map(monitoringChatKey)).toEqual(["env-a:c"]);
+  });
+
+  it("merges outliers across environments without listing a chat twice", () => {
+    const merged = mergeMonitoringOverviews(
+      [
+        report("env-a"),
+        report("env-b", {
+          result: result({
+            outliers: {
+              slowest: [
+                row("a", { lifetimeMs: 9000, costUsd: 0 }),
+                row("x", { lifetimeMs: 10, costUsd: 0 }),
+              ],
+              mostExpensive: [],
+              mostFailures: [row("a", { lifetimeMs: 9000, failures: 3, costUsd: 0 })],
+            },
+          }),
+        }),
+      ],
+      LIST,
+    );
+    expect(merged.outliers.slowest.map(monitoringChatKey)).toEqual([
+      "env-b:a",
+      "env-a:a",
+      "env-b:x",
+    ]);
+    expect(merged.outliers.mostExpensive.map(monitoringChatKey)).toEqual(["env-a:a"]);
+    expect(merged.outliers.mostFailures.map(monitoringChatKey)).toEqual(["env-b:a"]);
+  });
+});
+
+describe("a project filter", () => {
+  it("counts only the project's environment and keeps every environment's filter options", () => {
+    const input = {
+      sinceDay: "2026-11-01",
+      untilDay: "2026-11-10",
+      timeZone: "UTC",
+      projectId: "p1",
+      sort: LIST.sort,
+      chatLimit: 3,
+    } as unknown as MonitoringOverviewInput;
+    const other = monitoringEnvironmentInput(
+      input,
+      EnvironmentId.make("env-a"),
+      EnvironmentId.make("env-b"),
+    );
+    expect(other.optionsOnly).toBe(true);
+    expect("projectId" in other.input).toBe(false);
+    expect(
+      monitoringEnvironmentInput(input, EnvironmentId.make("env-a"), EnvironmentId.make("env-a")),
+    ).toEqual({
+      input,
+      optionsOnly: false,
+    });
+
+    const merged = mergeMonitoringOverviews(
+      [
+        report("env-a"),
+        report("env-b", {
+          optionsOnly: true,
+          error: "offline",
+          result: result({
+            options: { projectIds: ["p9"], kinds: ["scheduled"], models: [] } as never,
+          }),
+        }),
+      ],
+      LIST,
+    );
+    expect(merged.totals.chats).toBe(2);
+    expect(merged.environments.map((environment) => environment.environmentId)).toEqual(["env-a"]);
+    expect(merged.options.projects.map((project) => project.key)).toEqual(["env-a:p1", "env-b:p9"]);
+    expect(merged.options.kinds).toEqual(["interactive", "scheduled"]);
+  });
+
+  it("still shows the filters when the project's environment is gone", () => {
+    const merged = mergeMonitoringOverviews([report("env-b", { optionsOnly: true })], LIST);
+    expect([merged.connected, merged.isLoading, merged.failed]).toEqual([true, false, false]);
+    expect(merged.environments).toEqual([]);
+    expect(merged.totals.chats).toBe(0);
+    expect(merged.options.projects.map((project) => project.key)).toEqual(["env-b:p1"]);
   });
 });

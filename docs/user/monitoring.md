@@ -6,7 +6,7 @@ the sidebar or the command palette, or on mobile from **Settings → Monitoring*
 
 A chat appears once it has settled and been analyzed. The page updates by itself when a chat
 settles, so there is nothing to refresh. A note at the top says how many settled chats are still
-being analyzed, and when more chats settled in the period than can be shown.
+being analyzed.
 
 ## The overview
 
@@ -20,7 +20,9 @@ you are connected to; if one cannot be read, a warning names it.
   reuse. Select one to list only the chats it hit.
 - **Steps** groups shell commands by what they were for.
 - **Daily trend**, the **breakdowns** and the **chat list** compare days, projects, kinds and
-  models. Select a chat to open its deep dive.
+  models. Select a chat to open its deep dive. The list starts with the newest chats, and **Show
+  more** adds more, up to 1,000; filter it to reach the rest of a busy period. Every figure on the
+  page still counts all the chats that match the filters.
 
 ## A single chat
 

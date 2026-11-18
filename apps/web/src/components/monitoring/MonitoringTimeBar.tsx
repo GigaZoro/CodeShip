@@ -1,5 +1,5 @@
 import type { MonitoringTimeBuckets } from "@t3tools/contracts";
-import { TIME_BUCKET_KEYS } from "@t3tools/client-runtime/monitoring";
+import { TIME_BUCKET_KEYS } from "@t3tools/shared/monitoring";
 import { formatPercent } from "@t3tools/shared/usageFormat";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 

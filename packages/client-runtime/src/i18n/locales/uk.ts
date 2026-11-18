@@ -7591,8 +7591,6 @@ const catalog: MessageCatalog = {
   "More actions for this machine": "Більше дій для цього комп’ютера",
   "More activity is available on the provider.": "Більше активності доступно у провайдера.",
   "More approval options": "Більше варіантів схвалення",
-  "More chats settled in this period than can be shown. These are the newest.":
-    "За цей період завершилося більше чатів, ніж можна показати. Показано найновіші.",
   "More comments could not be loaded": "Не вдалося завантажити інші коментарі",
   "More composer controls": "Більше елементів керування",
   "More device actions": "Більше дій з пристроєм",
@@ -7653,6 +7651,7 @@ const catalog: MessageCatalog = {
   "Name your theme first.": "Спершу назвіть вашу тему.",
   "Name, icon, checkouts and actions for this project.":
     "Назва, значок, чекаути та дії цього проєкту.",
+  "Narrow the filters to see the rest.": "Звузьте фільтри, щоб побачити решту.",
   "Narrow your search to find more pull requests.":
     "Звузьте пошук, щоб знайти більше пул-реквестів.",
   Native: "Нативний",
