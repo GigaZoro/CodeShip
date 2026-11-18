@@ -48,11 +48,11 @@ const RESET_READ_ERRORS = {
   signedOut: "signed_out",
   unrecognizedScreen: "unrecognized_screen",
   readFailed: "read_failed",
+  lowPriority: "low_priority",
 } as const satisfies Record<ServerProviderResetCreditsError, OrchestratorMcpUsageError>;
 
 const KIND_UNKNOWN_REASONS = {
   totalOnly: "total_only",
-  lowPriority: "low_priority",
 } as const satisfies Record<
   ServerProviderResetKindUnknownReason,
   NonNullable<OrchestratorMcpBankedReset["kindUnknownReason"]>

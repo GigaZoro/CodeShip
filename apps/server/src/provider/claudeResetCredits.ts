@@ -180,12 +180,16 @@ const isAtLimit = (usageLimits: ServerProviderUsageLimits) =>
   usageLimits.usageAllowed === false ||
   usageLimits.windows.some((window) => window.usedPercent >= 100);
 
-const failureReason = (error: ClaudeLimitResetError): ServerProviderResetCreditsError =>
-  error.reason === "signedOut" || error.reason === "readFailed"
-    ? error.reason
-    : error.reason === "unrecognizedScreen" || error.reason === "programChanged"
-      ? "unrecognizedScreen"
-      : "readFailed";
+const FAILURE_REASONS = {
+  signedOut: "signedOut",
+  unrecognizedScreen: "unrecognizedScreen",
+  programChanged: "unrecognizedScreen",
+  readFailed: "readFailed",
+  lowPriority: "lowPriority",
+  unavailable: "readFailed",
+  accountChanged: "readFailed",
+  unconfirmed: "readFailed",
+} as const satisfies Record<ClaudeLimitResetError["reason"], ServerProviderResetCreditsError>;
 
 /** `state` once `usageLimits` is seen; unread usage, or older than the newest seen, changes nothing. */
 export function withUsage(
@@ -307,7 +311,7 @@ export const makeClaudeLimitResets = Effect.fn("makeClaudeLimitResets")(function
     );
     const at = yield* Clock.currentTimeMillis;
     if (result._tag === "Failure") {
-      const reason = failureReason(result.failure);
+      const reason = FAILURE_REASONS[result.failure.reason];
       yield* Effect.logWarning("Claude limit resets could not be read.", { reason });
       yield* Ref.update(state, ({ reading: _reading, failure, ...current }) => ({
         ...current,

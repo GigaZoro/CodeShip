@@ -175,6 +175,7 @@ function parseCount(text: string | undefined): number | undefined {
 export type ClaudeLimitResetGrant =
   | {
       readonly kind: ServerProviderResetKind;
+      readonly kindUnknownReason?: never;
       readonly resetsLeft: number;
       readonly expiresAt?: string;
       readonly usableNow: true;
@@ -182,12 +183,14 @@ export type ClaudeLimitResetGrant =
     }
   | {
       readonly kind: ServerProviderResetKind;
+      readonly kindUnknownReason?: never;
       readonly usableNow: false;
       readonly requiresLimit?: true;
     }
   | {
+      readonly kind?: never;
       readonly kindUnknownReason: ServerProviderResetKindUnknownReason;
-      readonly resetsLeft?: number;
+      readonly resetsLeft: number;
       readonly expiresAt?: string;
       readonly usableNow: false;
       readonly requiresLimit?: true;
@@ -198,7 +201,9 @@ export type ClaudeUsableGrant = Extract<ClaudeLimitResetGrant, { readonly usable
 /** The answer to a bare `/limit-reset` when Claude offers no grant to use now. */
 export type ClaudeNoOfferAnswer =
   | { readonly _tag: "grants"; readonly grants: ReadonlyArray<ClaudeLimitResetGrant> }
-  | { readonly _tag: "transient" };
+  | { readonly _tag: "transient" }
+  /** Resets wait while the account runs at lower priority; Claude says so before reading any. */
+  | { readonly _tag: "lowPriority" };
 
 const NOT_AT_LIMIT = "No reset to use · you're not at a usage limit right now";
 const LOW_PRIORITY =
@@ -218,9 +223,7 @@ export function parseNoOfferAnswer(
   if (TRANSIENT_ANSWERS.includes(text) || text === texts.unconfirmedAnytimeLine) {
     return { _tag: "transient" };
   }
-  if (text === LOW_PRIORITY) {
-    return { _tag: "grants", grants: [{ kindUnknownReason: "lowPriority", usableNow: false }] };
-  }
+  if (text === LOW_PRIORITY) return { _tag: "lowPriority" };
   const spent = matchTemplate(texts.spentLine, text);
   if (spent !== undefined && parseCount(spent.resets) === 0) return { _tag: "grants", grants: [] };
   const held =

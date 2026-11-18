@@ -141,12 +141,6 @@ describe("readClaudeLimitResets", () => {
         },
       ],
     },
-    {
-      name: "lower priority",
-      answer:
-        "Resets can't be used while you continue at lower priority · run /limit-reset after that ends",
-      grants: [{ kindUnknownReason: "lowPriority", usableNow: false }],
-    },
   ])("reads Claude's $name answer", ({ answer, grants: expected }) =>
     Effect.gen(function* () {
       const { grants, fake } = yield* read({ reactions: { "/limit-reset": { answer } } });
@@ -160,6 +154,19 @@ describe("readClaudeLimitResets", () => {
       name: "an answer it does not know",
       script: { reactions: { "/limit-reset": { answer: "Resets work differently now" } } },
       reason: "unrecognizedScreen",
+      submitted: ["/limit-reset"],
+    },
+    {
+      name: "the lower-priority answer, given before any grant is read",
+      script: {
+        reactions: {
+          "/limit-reset": {
+            answer:
+              "Resets can't be used while you continue at lower priority · run /limit-reset after that ends",
+          },
+        },
+      },
+      reason: "lowPriority",
       submitted: ["/limit-reset"],
     },
     {

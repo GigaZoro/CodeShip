@@ -1,3 +1,9 @@
+## 2026-11-21 — Claude's held resets say what they clear, or why they cannot
+
+- In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude gave only a total because no reset can be used now, the reset has `kind: null` and `kindUnknownReason: "total_only"`.
+- When Claude answers that resets wait while the account continues at lower priority, it reads none of them, so `bankedResets` is now `null` with `bankedResetsError: "low_priority"` instead of listing a reset that may not exist.
+- Automatic redemption now uses a Claude reset kept for when the account reaches a limit as soon as the account is at a limit that reset clears, even if CodeShip read Claude's resets before that limit was reached. A reset Claude offers now still goes first, and a reset whose kind Claude did not name is never redeemed automatically.
+
 ## 2026-11-21 — Chats that resume by themselves wait for memory and start one at a time
 
 - After a restart, every chat it cut resumed at once, which could overload the machine: one had 1.7 GiB free 13 minutes after it started. Chats that continue by themselves after a restart, a network outage or a usage limit now resume one at a time, the chat that stopped first first, each once the one before it has reached its agent, and none starts while memory is short (**Settings → Maintenance & about → Background activity**). A waiting chat says **Waiting for memory** and keeps its place through another restart; a message you send in it starts it at once. Chats you start are never held.
@@ -227,11 +233,6 @@
 ## 2026-11-20 — Thread creation retries survive a removed provider
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
-
-## 2026-11-19 — Claude's held resets say what they clear, or why they cannot
-
-- In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude's answer named no kind, the reset has `kind: null` and a `kindUnknownReason`: `total_only` when Claude gave only a total because no reset can be used now, `low_priority` when it said resets wait while the account runs at lower priority.
-- Automatic redemption now counts a Claude reset that is kept for when the account reaches a limit as soon as the account is at a limit that reset clears, even if CodeShip read Claude's resets before that limit was reached. A reset whose kind Claude did not name is never redeemed automatically.
 
 ## 2026-11-19 — The upstream sync checks against its own base
 
