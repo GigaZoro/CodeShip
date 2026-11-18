@@ -1392,6 +1392,59 @@ it.effect("names the credential helper that never answered when a fetch times ou
   }).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
 );
 
+it.effect.each([
+  { name: "starts from the local tracking ref", localRef: true },
+  { name: "still fails the timeout when no tracking ref exists", localRef: false },
+] as const)("a worktree base fetch that times out $name", ({ localRef }) =>
+  Effect.gen(function* () {
+    const fetchStarted = yield* Deferred.make<void>();
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        if (!ChildProcess.isStandardCommand(command))
+          return yield* Effect.die("expected Git command");
+        if (command.args[0] === "fetch") {
+          yield* Deferred.succeed(fetchStarted, undefined);
+          return ChildProcessSpawner.makeHandle({
+            ...makeNonRepositoryHandle(),
+            exitCode: Effect.never,
+            isRunning: Effect.succeed(true),
+            stderr: Stream.empty,
+          });
+        }
+        if (command.args[0] === "rev-parse" && localRef) return makeSuccessfulHandle("abc123\n");
+        return makeNonRepositoryHandle();
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    const cwd = yield* makeTmpDir();
+
+    const result = yield* driver
+      .fetchWorktreeBaseCommit({
+        cwd,
+        refName: "main",
+        remote: { remoteName: "origin", branchName: "main" },
+      })
+      .pipe(Effect.result, Effect.forkChild);
+    yield* Deferred.await(fetchStarted);
+    yield* TestClock.adjust("30 seconds");
+    const outcome = yield* Fiber.join(result);
+
+    if (localRef) {
+      assert.deepEqual(
+        outcome,
+        Result.succeed({ commitSha: "abc123", remoteRefName: "origin/main" }),
+      );
+    } else {
+      assert.equal(
+        Result.isFailure(outcome) && outcome.failure.detail,
+        GIT_REMOTE_TIMED_OUT_DETAIL,
+      );
+    }
+  }).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
 it.effect("lets a worktree checkout that is still working run past five minutes", () =>
   Effect.gen(function* () {
     const checkoutStarted = yield* Deferred.make<void>();

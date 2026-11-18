@@ -4729,15 +4729,39 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const { remoteName, branchName } = target;
       const remoteRefName = `${remoteName}/${branchName}`;
       // A missing remote branch can leave a stale tracking ref; never resolve it.
-      if (!(yield* fetchRemote({ cwd: input.cwd, remoteName, refName: remoteRefName }))) {
-        return null;
-      }
-      const resolved = yield* executeGit(
+      const resolveTrackingRef = executeGit(
         "GitVcsDriver.fetchWorktreeBaseCommit",
         input.cwd,
         ["rev-parse", "--verify", "--quiet", `refs/remotes/${remoteRefName}^{commit}`],
         { allowNonZeroExit: true },
       );
+      const fetched = yield* fetchRemote({
+        cwd: input.cwd,
+        remoteName,
+        refName: remoteRefName,
+      }).pipe(
+        // A fetch with no answer says nothing about the remote branch, so a
+        // tracking ref from an earlier fetch is a usable, possibly stale, base.
+        // Without one the timeout still fails, and preparation retries it.
+        Effect.catchIf(
+          (error) => error.detail === GIT_REMOTE_TIMED_OUT_DETAIL,
+          (error) =>
+            resolveTrackingRef.pipe(
+              Effect.flatMap((local) =>
+                local.exitCode === 0
+                  ? Effect.logWarning(
+                      "worktree base fetch timed out; starting from the local tracking ref, which may be stale",
+                      { remoteRefName, diagnostics: error.diagnostics },
+                    ).pipe(Effect.as(true))
+                  : Effect.fail(error),
+              ),
+            ),
+        ),
+      );
+      if (!fetched) {
+        return null;
+      }
+      const resolved = yield* resolveTrackingRef;
       return resolved.exitCode === 0 ? { commitSha: resolved.stdout.trim(), remoteRefName } : null;
     });
 
