@@ -38,6 +38,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { withGitSpawnBudget } from "../vcs/GitSpawnBudget.ts";
 
 export interface SettlementPullRequest {
   readonly state: "open" | "closed" | "merged";
@@ -51,6 +52,8 @@ const HOUR_MS = 60 * 60 * 1_000;
 const UNMERGED_WORK_RECHECK_MS = HOUR_MS;
 // Each attempt can run text generation for a commit and pull request, so failures back off.
 const UNMERGED_WORK_RETRY_AFTER_FAILURE_MS = 6 * HOUR_MS;
+// Each git spawn blocks the server's main thread on Windows, so a sweep stays far below this.
+const SETTLEMENT_SWEEP_SPAWN_BUDGET = 150;
 const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 
 /**
@@ -740,6 +743,7 @@ export const make = Effect.gen(function* () {
     threadId?: ThreadId,
   ) =>
     sweep(mergedPullRequest, threadId).pipe(
+      withGitSpawnBudget("thread-settlement-sweep", SETTLEMENT_SWEEP_SPAWN_BUDGET),
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>

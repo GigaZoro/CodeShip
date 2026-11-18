@@ -20,6 +20,7 @@ import * as Stream from "effect/Stream";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitManager from "../git/GitManager.ts";
+import { withGitSpawnBudget } from "../vcs/GitSpawnBudget.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
@@ -76,6 +77,9 @@ const resolveProjectForPullRequestDiscovery = Effect.fn(
     repository: sourceControlDefinitions.repositorySelector(repositoryIdentity),
   };
 });
+
+// A sweep reads git state once per repository; past this many spawns the snapshot is not shared.
+const PULL_REQUEST_SYNC_SPAWN_BUDGET = 150;
 
 export function projectWorkspaceMatchesSnapshot(
   currentProject: Option.Option<Pick<OrchestrationProjectShell, "workspaceRoot">>,
@@ -353,6 +357,7 @@ export const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker((request: RefreshRequest) =>
     synchronize(request).pipe(
+      withGitSpawnBudget("thread-pull-request-sync", PULL_REQUEST_SYNC_SPAWN_BUDGET),
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
