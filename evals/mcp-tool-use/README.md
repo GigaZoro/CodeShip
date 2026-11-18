@@ -34,6 +34,14 @@ Cases are JSON lines in `cases/`, one file per area. The case schema in `run.ts`
 
 Check that the case builds with `--dry-run --case <id>`. Then run it on the text before your fix, where it must fail, and on the text after, where it must pass.
 
+## Provider account settings case
+
+`account-auto-compact-window` (bad, `cases/environment-preferences.ndjson`) asks an agent to set a Claude account's Auto-compact after. It passes when the agent calls `t3_environment_preferences_update` with `providerAccounts` instead of leaving the setting as a manual step. Passes per text and model, 3 samples each, the text before `9913d115e9` (checked out at `a6539d8ae2`, run with this checkout's case file) → current main:
+
+| Case                        | GPT-6 Luna | GPT-6 Astra |
+| --------------------------- | ---------- | ----------- |
+| account-auto-compact-window | 0/3 → 3/3  | 0/3 → 3/3   |
+
 ## Windows command cases
 
 `t3_command_run` runs its command in Windows PowerShell 5.1 on Windows, which drops every `"` inside an argument it passes to a program. In `cases/background-work.ndjson`, `windows-posix-command-keeps-its-quotes` (bad) asks for a test run and a quoted `grep` on a Windows machine. It fails unless a `t3_command_run` runs the suite, and fails a call without `shell: "bash"` that passes a quoted command through `bash -c` or uses POSIX syntax PowerShell 5.1 rejects. `windows-powershell-script-stays-in-powershell` (control) keeps a PowerShell script in PowerShell.

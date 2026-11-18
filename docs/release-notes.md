@@ -1,3 +1,7 @@
+## 2026-11-18 — The eval for setting a Claude account's Auto-compact after has run
+
+- The `account-auto-compact-window` eval case failed on the tool text from before agents could set a provider account's shared settings and passes on the current text, on GPT-6 Luna and GPT-6 Astra. The results are in the MCP tool use eval's README.
+
 ## 2026-11-18 — A worktree fetch that times out starts from the last fetched base
 
 - When a new worktree's fetch of its base branch got no answer in time (a sleeping or overloaded machine), the run failed in workspace preparation. If an earlier fetch left that branch's remote-tracking ref, the worktree now starts from it, possibly a little behind, and the server log records that. Without such a ref the timeout still fails and preparation retries it as before.
