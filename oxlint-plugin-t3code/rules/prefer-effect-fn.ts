@@ -1,4 +1,10 @@
 import { defineRule, type ESTree } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { findVariable, resolvePropertyName } from "../utils.ts";
+
+/** Combinators whose object of callbacks is inline code, not a service: `Option.match(o, { onNone: ... })`. */
+const CALLBACK_COMBINATORS = new Set(["catchTags", "match", "matchEffect", "matchCauseEffect"]);
 
 export default defineRule({
   meta: {
@@ -8,50 +14,42 @@ export default defineRule({
     },
   },
   create(context) {
-    const isEffectImport = (identifier: ESTree.IdentifierReference, member: string) => {
-      let scope = context.sourceCode.getScope(identifier);
-      while (true) {
-        const variable = scope.set.get(identifier.name);
-        if (variable !== undefined) {
-          return variable.defs.some((def) => {
-            if (def.type !== "ImportBinding" || def.parent?.type !== "ImportDeclaration") {
-              return false;
-            }
-            const source = def.parent.source.value;
-            if (source === "effect/Effect") {
-              if (member === "") {
-                return (
-                  def.node.type === "ImportSpecifier" &&
-                  (def.node.imported.type === "Identifier"
-                    ? def.node.imported.name
-                    : def.node.imported.value) === "gen"
-                );
-              }
-              return def.node.type === "ImportNamespaceSpecifier";
-            }
+    const isEffectImport = (identifier: ESTree.IdentifierReference, member: string) =>
+      findVariable(context.sourceCode.getScope(identifier), identifier.name)?.defs.some((def) => {
+        if (def.type !== "ImportBinding" || def.parent?.type !== "ImportDeclaration") {
+          return false;
+        }
+        const source = def.parent.source.value;
+        if (source === "effect/Effect") {
+          if (member === "") {
             return (
-              source === "effect" &&
               def.node.type === "ImportSpecifier" &&
               (def.node.imported.type === "Identifier"
                 ? def.node.imported.name
-                : def.node.imported.value) === "Effect"
+                : def.node.imported.value) === "gen"
             );
-          });
+          }
+          return def.node.type === "ImportNamespaceSpecifier";
         }
-        if (scope.upper === null) return false;
-        scope = scope.upper;
-      }
-    };
+        return (
+          source === "effect" &&
+          def.node.type === "ImportSpecifier" &&
+          (def.node.imported.type === "Identifier"
+            ? def.node.imported.name
+            : def.node.imported.value) === "Effect"
+        );
+      }) ?? false;
 
     const isGeneratorCall = (expression: ESTree.Expression): boolean => {
       if (expression.type !== "CallExpression") return false;
       const callee = expression.callee;
       if (callee.type === "Identifier") return isEffectImport(callee, "");
-      if (callee.type !== "MemberExpression" || callee.computed) return false;
-      if (callee.property.type !== "Identifier") return false;
-      if (callee.property.name === "pipe") return isGeneratorCall(callee.object);
+      if (callee.type !== "MemberExpression") return false;
+      // `Effect["gen"]`, or `Effect[key]` with `const key = "gen"`, is the same call.
+      const method = resolvePropertyName(context.sourceCode, callee.property);
+      if (Option.contains(method, "pipe")) return isGeneratorCall(callee.object);
       return (
-        callee.property.name === "gen" &&
+        Option.contains(method, "gen") &&
         callee.object.type === "Identifier" &&
         isEffectImport(callee.object, "gen")
       );
@@ -65,22 +63,17 @@ export default defineRule({
           if (parent.kind !== "method") return;
         } else if (parent.type === "Property") {
           if (parent.kind !== "init") return;
-          const name =
-            parent.key.type === "Identifier"
-              ? parent.key.name
-              : parent.key.type === "Literal"
-                ? parent.key.value
-                : undefined;
+          // `{ [key]: ... }` and `a[method](...)` name what `key` and `method` hold, not `key` and `method`.
+          const name = resolvePropertyName(context.sourceCode, parent.key);
           const call = parent.parent.parent;
           if (call?.type === "CallExpression") {
             let callee = call.callee;
             while (callee.type === "CallExpression") callee = callee.callee;
-            if (callee.type === "MemberExpression" && callee.property.type === "Identifier") {
+            if (callee.type === "MemberExpression") {
+              const method = resolvePropertyName(context.sourceCode, callee.property);
               if (
-                ["catchTags", "match", "matchEffect", "matchCauseEffect"].includes(
-                  callee.property.name,
-                ) ||
-                (name === "defaultValue" && callee.property.name === "Reference")
+                Option.exists(method, (value) => CALLBACK_COMBINATORS.has(value)) ||
+                (Option.contains(name, "defaultValue") && Option.contains(method, "Reference"))
               ) {
                 return;
               }

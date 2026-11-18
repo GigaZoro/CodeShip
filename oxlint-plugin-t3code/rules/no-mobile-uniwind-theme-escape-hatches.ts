@@ -1,7 +1,7 @@
 import { defineRule, type Variable } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { findVariable, getPropertyName, unwrapExpression } from "../utils.ts";
 
 const APPEARANCE_VARIANT_PATTERN = /\b(?:dark|light):(?=\S)/u;
 const APPEARANCE_VARIANT_MESSAGE =
@@ -58,13 +58,7 @@ export default defineRule({
     const resolveVariable = (node: unknown): Variable | undefined => {
       const identifier = unwrapExpression(node);
       if (Option.isNone(identifier) || identifier.value.type !== "Identifier") return undefined;
-
-      let scope = context.sourceCode.getScope(identifier.value);
-      while (true) {
-        const variable = scope.set.get(identifier.value.name);
-        if (variable !== undefined || scope.upper === null) return variable;
-        scope = scope.upper;
-      }
+      return findVariable(context.sourceCode.getScope(identifier.value), identifier.value.name);
     };
 
     return {
