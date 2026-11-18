@@ -1204,30 +1204,22 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("skips a guest destroyed while another guest's session opens", () =>
+  effectIt.effect("a guest slow to answer its first command holds up no other guest", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         const slow = makeAttachingGuest(46);
-        let releaseSlow = () => {};
-        const slowCommand = new Promise<void>((resolve) => {
-          releaseSlow = resolve;
-        });
-        slow.sendCommand.mockImplementation(() => slowCommand);
-        const queued = makeAttachingGuest(47);
+        slow.sendCommand.mockImplementation(() => new Promise<never>(() => {}));
+        const next = makeAttachingGuest(47);
+        const destroyed = makeAttachingGuest(49);
+        destroyed.destroy();
 
-        const slowFiber = yield* manager
-          .prepareWebview(slow.wc)
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        const queuedFiber = yield* manager
-          .prepareWebview(queued.wc)
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        queued.destroy();
-        releaseSlow();
+        yield* manager.prepareWebview(slow.wc);
+        yield* manager.prepareWebview(next.wc);
+        yield* manager.prepareWebview(destroyed.wc);
 
-        expect(Exit.isSuccess(yield* Fiber.await(slowFiber))).toBe(true);
-        expect(Exit.isSuccess(yield* Fiber.await(queuedFiber))).toBe(true);
         expect(slow.attach).toHaveBeenCalledTimes(1);
-        expect(queued.attach).not.toHaveBeenCalled();
+        expect(next.attach).toHaveBeenCalledTimes(1);
+        expect(destroyed.attach).not.toHaveBeenCalled();
       }),
     ),
   );

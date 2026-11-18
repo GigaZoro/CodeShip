@@ -1094,15 +1094,22 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               wcDebugger.on("message", onMessage);
               wcDebugger.on("detach", onDetach);
               wcDebugger.attach("1.3");
-            });
-            // Set an opaque base before first paint or background-less dark pages retain white-on-white text.
-            yield* attemptPromise(
-              { operation: "initializeDebugger.defaultBackground", webContentsId: wc.id },
-              () =>
-                wcDebugger.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
+              // Sent first, so an opaque base precedes first paint and every later command; dark
+              // pages without a background would keep white-on-white text. Not awaited: a guest
+              // still loading can take seconds to answer, and every other tab waits on this lock.
+              wcDebugger
+                .sendCommand("Emulation.setDefaultBackgroundColorOverride", {
                   color: { r: 255, g: 255, b: 255, a: 1 },
-                }),
-            );
+                })
+                .catch((cause: unknown) =>
+                  runFork(
+                    Effect.logWarning("Preview guest default background was not set.", {
+                      webContentsId: wc.id,
+                      cause,
+                    }),
+                  ),
+                );
+            });
             return [
               control,
               replaceMap(sessions, (copy) => {
