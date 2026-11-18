@@ -95,6 +95,10 @@ function meterOf(window: ServerProviderUsageWindow): Meter | null {
 
 const modelKey = (meter: Meter) => meter.model?.toLowerCase();
 
+/** A model-scoped meter at 100%: its own limit, which gets its own decision. */
+const isSpentScoped = (meter: Meter): meter is Meter & { readonly model: string } =>
+  meter.model !== undefined && meter.usedPercent >= 100;
+
 /** A reset kind is a contract about meters, never about a provider's choice of id. */
 function clearsMeter(kind: ServerProviderResetKind, meter: Meter): boolean {
   if (kind === "full") return true;
@@ -294,11 +298,16 @@ export function decideUsageReset(
   limits: ServerProviderUsageLimits,
   options: UsageResetOptions,
 ): ReadonlyArray<UsageResetDecision> {
+  const meters = limits.windows.flatMap((window) => meterOf(window) ?? []);
+  const spentScoped = meters.filter(isSpentScoped);
   const measuredMs = Date.parse(limits.checkedAt);
   if (limits.unavailable !== undefined || !Number.isFinite(measuredMs)) {
-    return [{ model: null, action: "wait", reason: "unmeasured", boundaryMs: null }];
+    const unmeasured = { action: "wait", reason: "unmeasured", boundaryMs: null } as const;
+    return [
+      { model: null, ...unmeasured },
+      ...spentScoped.map((meter) => ({ model: meter.model, ...unmeasured })),
+    ];
   }
-  const meters = limits.windows.flatMap((window) => meterOf(window) ?? []);
   const unscoped = meters.filter((meter) => meter.model === undefined);
   const resets = availableResets(limits, options.nowMs);
   const shared = {
@@ -321,12 +330,14 @@ export function decideUsageReset(
   // A model-scoped meter (Claude's Fable week) is its own limit, but while the account is blocked
   // that model waits for the account's meters too, so its reset must clear them as well.
   const accountBlocking = account.action === "run" ? [] : blocking;
-  const scoped = meters.flatMap((meter): UsageResetDecision[] => {
-    if (meter.model === undefined || meter.usedPercent < 100) return [];
-    const limitId = `${meter.kind}_scoped:${modelKey(meter)}`;
-    const blocked = decideBlocked({ ...shared, blocking: [...accountBlocking, meter], limitId });
-    return [{ model: meter.model, ...blocked }];
-  });
+  const scoped = spentScoped.map((meter): UsageResetDecision => ({
+    model: meter.model,
+    ...decideBlocked({
+      ...shared,
+      blocking: [...accountBlocking, meter],
+      limitId: `${meter.kind}_scoped:${modelKey(meter)}`,
+    }),
+  }));
   return [{ model: null, ...account }, ...scoped];
 }
 
