@@ -1,3 +1,7 @@
+## 2026-11-18 — Agents start long test runs and builds with t3_command_run
+
+- The instructions agents get now tell them to start every test suite, build, install, push or deploy through `t3_command_run` unless it ends within seconds, instead of running it in their own shell. A run started in an agent's shell was lost when CodeShip restarted for an update, and the chat never heard its result.
+
 ## 2026-11-18 — The SQLite reader-fallback test passes on Windows
 
 - The test that checks the server falls back to the writer when its database reader cannot open the file deleted the live database to force that, which Windows refuses while the file is open. It now makes the reader worker report the failure instead, so it runs the same on every host. No change to the app.
@@ -9,6 +13,7 @@
 ## 2026-11-18 — A worktree fetch that times out starts from the last fetched base
 
 - When a new worktree's fetch of its base branch got no answer in time (a sleeping or overloaded machine), the run failed in workspace preparation. If an earlier fetch left that branch's remote-tracking ref, the worktree now starts from it, possibly a little behind, and the server log records that. Without such a ref the timeout still fails and preparation retries it as before.
+
 
 ## 2026-11-16 — On Windows, an agent session also stops what its CLI left running
 
