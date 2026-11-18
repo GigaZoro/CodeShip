@@ -1,3 +1,8 @@
+## 2026-11-19 — Environment tools can manage banked usage reset preferences
+
+- Agents can read and set whether CodeShip redeems banked usage resets and how long it waits for a plan reset. Changes apply locally unless the agent explicitly requests sharing. A regression check requires read and update support for every shared preference or a documented exception.
+- On Windows, the verification suite now handles escaped attachment paths, checks Claude settings against Windows filesystem behavior, and uses the simulated machine's paths in device evals.
+
 ## 2026-11-19 — A refused delegation on a machine short of memory points to a linked machine
 
 - When `delegate_task` is refused because this machine is short of memory and a reachable linked machine has full access, the message now names it and its `environmentId` and says to delegate there with `target.environmentId`. Before, it always said to do the work inline, which kept heavy work such as test runs on the machine that was out of memory. Without such a machine, the advice is unchanged.
