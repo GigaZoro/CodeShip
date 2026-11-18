@@ -9,6 +9,7 @@
 ## 2026-11-18 — The SQLite reader-fallback test passes on Windows
 
 - The test that checks the server falls back to the writer when its database reader cannot open the file deleted the live database to force that, which Windows refuses while the file is open. It now makes the reader worker report the failure instead, so it runs the same on every host. No change to the app.
+
 ## 2026-11-18 — Symlink tests run on Windows without file-symlink privilege
 
 - Tests that link a directory now use a junction, which Windows creates without privilege, through one shared `linkDirectory` fixture. Tests that need a real file symlink skip when the host cannot create one, as the other symlink tests already do.
