@@ -909,7 +909,18 @@ it("compares against an explicit ref instead of the closest remote main", async 
   assert.strictEqual(result.ref, "origin/main");
 });
 
-function launcherFixture() {
+// The run under test takes its step budget from neither this machine's free memory nor the check:changed run (or
+// landing turn) that is running these tests: its steps are stubs, so a fixed budget keeps their schedule the same.
+// Windows reads environment names in any case, so the caller's settings are left out whatever their case.
+const CALLER_SETTINGS = /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/iu;
+const launcherEnv = (
+  from: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> => ({
+  ...Object.fromEntries(Object.entries(from).filter(([name]) => !CALLER_SETTINGS.test(name))),
+  CHECK_CHANGED_CONCURRENCY: "4",
+});
+
+function launcherFixture(caller: Readonly<Record<string, string>> = {}) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
   );
@@ -945,7 +956,8 @@ function launcherFixture() {
     import fs from 'node:fs';
     import path from 'node:path';
     const args = process.argv.slice(2);
-    fs.writeFileSync(path.join(process.env.RECORDS, process.pid + '.json'), JSON.stringify({ args, cwd: process.cwd() }));
+    const settings = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(?:CHECK_CHANGED_|T3_LANDING_TURN)/i.test(name)));
+    fs.writeFileSync(path.join(process.env.RECORDS, process.pid + '.json'), JSON.stringify({ args, cwd: process.cwd(), settings }));
     console.log('fixture stdout: ' + args[0]);
     console.error('fixture stderr: ' + args[0]);
     if (args[0] === process.env.EDIT_STEP) fs.appendFileSync(process.env.EDIT_FILE, "// edited\\n");
@@ -989,6 +1001,14 @@ function launcherFixture() {
   );
   const records = NodePath.join(root, "records");
   NodeFS.mkdirSync(records);
+  const recorded = (): Array<{
+    args: Array<string>;
+    cwd: string;
+    settings: Record<string, string>;
+  }> =>
+    NodeFS.readdirSync(records).map((file) =>
+      JSON.parse(NodeFS.readFileSync(NodePath.join(records, file), "utf8")),
+    );
   return {
     root,
     source,
@@ -998,7 +1018,7 @@ function launcherFixture() {
         cwd: root,
         encoding: "utf8",
         env: {
-          ...env,
+          ...launcherEnv({ ...env, ...caller }),
           TEMP: NodeOS.tmpdir(),
           RECORDS: records,
           FAIL_STEP: failStep,
@@ -1008,9 +1028,8 @@ function launcherFixture() {
       });
     },
     calls: (): Array<{ args: Array<string>; cwd: string }> =>
-      NodeFS.readdirSync(records).map((file) =>
-        JSON.parse(NodeFS.readFileSync(NodePath.join(records, file), "utf8")),
-      ),
+      recorded().map(({ args, cwd }) => ({ args, cwd })),
+    settings: (): Array<Record<string, string>> => recorded().map(({ settings }) => settings),
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
     },
@@ -1035,6 +1054,21 @@ it("checks changed source paths through the Windows launcher", () => {
   ]);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
+});
+
+it("gives a launcher run a fixed step budget and none of its caller's check:changed or landing-turn settings", () => {
+  using project = launcherFixture({
+    check_changed_concurrency: "1",
+    CHECK_CHANGED_BASE: "origin/main",
+    t3_landing_turn: "turn",
+    T3_LANDING_TURN_MAIN: "main",
+  });
+  project.write(project.source, "export const value = 2;\n");
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const settings = project.settings();
+  expect(settings.length).toBeGreaterThan(0);
+  for (const step of settings) expect(step).toEqual({ CHECK_CHANGED_CONCURRENCY: "4" });
 });
 
 it("fails a run whose files changed while its checks ran", () => {
