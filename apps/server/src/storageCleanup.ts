@@ -375,7 +375,9 @@ const make = Effect.gen(function* () {
           if (Option.getOrElse(stat.nlink, () => 1n) !== 1n) continue;
           bytes += Option.match(stat.blocks, {
             onNone: () => Number(stat.size),
-            onSome: (blocks) => Number(blocks * 512n),
+            // Node reports zero blocks for every file on Windows.
+            onSome: (blocks) =>
+              isWindows && blocks === 0n ? Number(stat.size) : Number(blocks * 512n),
           });
         } else if (stat.type === "Directory") {
           const dirents =
