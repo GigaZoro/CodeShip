@@ -1,16 +1,18 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { resolvePropertyName } from "../utils.ts";
 
 const DETAIL_ROUTES = new Set(["Thread", "PullRequest"]);
 
 const MESSAGE =
   "`navigate` to a Thread or PullRequest pushes or updates in place depending on what is on top. Use useSelectWorkspaceDetail to show it as the page, or StackActions.push to open it over the current one.";
 
-function calleeName(callee: ESTree.Expression) {
-  if (callee.type === "Identifier") return callee.name;
-  if (callee.type === "MemberExpression" && callee.property.type === "Identifier") {
-    return callee.property.name;
-  }
-  return null;
+/** The function a call names: `navigate`, `navigation.navigate`, or `navigation[method]` with `method` a const holding it. */
+function calleeName(sourceCode: SourceCode, callee: ESTree.Expression): Option.Option<string> {
+  if (callee.type === "Identifier") return Option.some(callee.name);
+  if (callee.type === "MemberExpression") return resolvePropertyName(sourceCode, callee.property);
+  return Option.none();
 }
 
 export default defineRule({
@@ -24,7 +26,14 @@ export default defineRule({
   create(context) {
     return {
       CallExpression(node) {
-        if (calleeName(node.callee as ESTree.Expression) !== "navigate") return;
+        if (
+          !Option.contains(
+            calleeName(context.sourceCode, node.callee as ESTree.Expression),
+            "navigate",
+          )
+        ) {
+          return;
+        }
         const [route] = node.arguments;
         if (route?.type !== "Literal" || typeof route.value !== "string") return;
         if (!DETAIL_ROUTES.has(route.value)) return;

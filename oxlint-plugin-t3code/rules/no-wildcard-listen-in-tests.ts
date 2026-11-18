@@ -1,15 +1,19 @@
-import { defineRule, type ESTree } from "@oxlint/plugins";
+import { defineRule, type ESTree, type SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
+import {
+  type ConstWrite,
+  findVariable,
+  isIdentifier,
+  resolveConstValue,
+  resolvePropertyName,
+  unwrapExpression,
+} from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 
 const MESSAGE =
   'Test server listens on all interfaces, so another program\'s 127.0.0.1 listener on the same port answers in its place. Pass host "127.0.0.1", the address its client dials.';
-
-/** How far a chain of `const` aliases is followed before the value counts as unknown. */
-const MAX_ALIAS_DEPTH = 4;
 
 /** What a `listen` argument is; "unknown" when the source cannot tell, which is never reported. */
 type ArgumentKind = "port" | "text" | "function" | "options" | "unknown";
@@ -34,37 +38,65 @@ const kindOf = (node: Option.Option<ESTree.Node>): ArgumentKind => {
   }
 };
 
-/** Port options that name no address: `{ port }` without `host`, `path` or a spread that may carry one. */
-const isPortWithoutHost = (node: Option.Option<ESTree.Node>) =>
-  Option.exists(node, (expression) => {
-    if (expression.type !== "ObjectExpression") return false;
+/** An argument's value, with the changes the program makes to it through the `const` names that hold it. */
+type ArgumentValue = {
+  readonly value: Option.Option<ESTree.Node>;
+  readonly writes: ReadonlyArray<ConstWrite>;
+};
+
+const ADDRESS_KEYS = new Set(["host", "path"]);
+
+/** A change that may give the options an address: `options.host = ...`, a key the source cannot read, or `Object.assign`. */
+const mayAddAddress = (write: ConstWrite) =>
+  write._tag === "Assign" ||
+  (write._tag === "Property" && !Option.exists(write.key, (key) => !ADDRESS_KEYS.has(key)));
+
+/**
+ * Port options that name no address on some run: `{ port }` without `host`, `path`, a spread or bracketed key the
+ * source cannot read, which may carry one, or a change through the options' name that may add one. A port set, or an
+ * address deleted, through the name counts, since the change may run before the server listens.
+ */
+const isPortWithoutHost = (sourceCode: SourceCode, { value, writes }: ArgumentValue) =>
+  Option.exists(value, (expression) => {
+    if (expression.type !== "ObjectExpression" || writes.some(mayAddAddress)) return false;
     const keys = new Set<string>();
     for (const property of expression.properties) {
       if (property.type !== "Property") return false;
-      Option.map(getPropertyName(property.key), (key) => keys.add(key));
+      const key = resolvePropertyName(sourceCode, property.key);
+      if (Option.isNone(key) && property.computed) return false;
+      Option.map(key, (name) => keys.add(name));
     }
-    return keys.has("port") && !keys.has("host") && !keys.has("path");
+    const changed = (tag: ConstWrite["_tag"], key: string) =>
+      writes.some(
+        (write) => write._tag !== "Assign" && write._tag === tag && Option.contains(write.key, key),
+      );
+    return (
+      (keys.has("port") || changed("Property", "port")) &&
+      ![...ADDRESS_KEYS].some((key) => keys.has(key) && !changed("Delete", key))
+    );
   });
 
-const memberName = (node: unknown) =>
+const memberName = (sourceCode: SourceCode, node: unknown) =>
   Option.flatMap(unwrapExpression(node), (callee) =>
-    callee.type === "MemberExpression" ? getPropertyName(callee.property) : Option.none(),
+    callee.type === "MemberExpression"
+      ? resolvePropertyName(sourceCode, callee.property)
+      : Option.none(),
   );
 
-const isWebSocketServer = (node: unknown) =>
+const isWebSocketServer = (sourceCode: SourceCode, node: unknown) =>
   Option.exists(unwrapExpression(node), (callee) =>
     callee.type === "Identifier"
       ? callee.name === "WebSocketServer"
-      : Option.contains(memberName(callee), "WebSocketServer"),
+      : Option.contains(memberName(sourceCode, callee), "WebSocketServer"),
   );
 
-const isNodeHttpServerLayer = (node: unknown) =>
+const isNodeHttpServerLayer = (sourceCode: SourceCode, node: unknown) =>
   Option.exists(
     unwrapExpression(node),
     (callee) =>
       callee.type === "MemberExpression" &&
       isIdentifier(unwrapExpression(callee.object), "NodeHttpServer") &&
-      Option.contains(getPropertyName(callee.property), "layer"),
+      Option.contains(resolvePropertyName(sourceCode, callee.property), "layer"),
   );
 
 /** `fn` is the executor of `new Promise(fn)`, whose parameters are `resolve` and `reject`. */
@@ -84,43 +116,27 @@ export default defineRule({
   },
   create(context) {
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
-
-    const variableOf = (identifier: ESTree.Node & { readonly name: string }) => {
-      let scope = context.sourceCode.getScope(identifier);
-      while (true) {
-        const variable = scope.set.get(identifier.name);
-        if (variable !== undefined || scope.upper === null) return variable;
-        scope = scope.upper;
-      }
-    };
+    const sourceCode = context.sourceCode;
 
     /**
      * The value an argument stands for: a `const` is followed to its initializer, a function
      * name to its declaration, and a `new Promise` executor's `resolve` or `reject` to the
      * executor, which is as much a function as they are.
      */
-    const valueOf = (node: unknown, depth = 0): Option.Option<ESTree.Node> =>
-      Option.flatMap(unwrapExpression(node), (expression) => {
-        if (expression.type !== "Identifier" || depth >= MAX_ALIAS_DEPTH) {
-          return Option.some(expression);
-        }
-        const defs = variableOf(expression)?.defs ?? [];
-        const def = defs.length === 1 ? defs[0] : undefined;
-        if (def === undefined) return Option.some(expression);
-        if (def.type === "FunctionName") return Option.some(def.node);
-        if (def.type === "Parameter" && isPromiseExecutor(def.node)) return Option.some(def.node);
-        if (
-          def.type === "Variable" &&
-          def.node.type === "VariableDeclarator" &&
-          def.node.id.type === "Identifier" &&
-          def.parent?.type === "VariableDeclaration" &&
-          def.parent.kind === "const" &&
-          def.node.init !== null
-        ) {
-          return valueOf(def.node.init, depth + 1);
-        }
-        return Option.some(expression);
-      });
+    const valueOf = (node: unknown): ArgumentValue => {
+      const { value, writes } = resolveConstValue(sourceCode, node);
+      return {
+        value: Option.map(value, (expression) => {
+          if (expression.type !== "Identifier") return expression;
+          const defs = findVariable(sourceCode.getScope(expression), expression.name)?.defs ?? [];
+          const def = defs.length === 1 ? defs[0] : undefined;
+          if (def?.type === "FunctionName") return def.node;
+          if (def?.type === "Parameter" && isPromiseExecutor(def.node)) return def.node;
+          return expression;
+        }),
+        writes,
+      };
+    };
 
     /**
      * `server.listen(port)`, `server.listen(port, callback)` or `server.listen({ port })`: a port
@@ -129,11 +145,11 @@ export default defineRule({
      */
     const listensOnEveryInterface = (args: ReadonlyArray<unknown>) => {
       const first = valueOf(args[0]);
-      switch (kindOf(first)) {
+      switch (kindOf(first.value)) {
         case "options":
-          return isPortWithoutHost(first);
+          return isPortWithoutHost(sourceCode, first);
         case "port":
-          return args.length === 1 || kindOf(valueOf(args[1])) === "function";
+          return args.length === 1 || kindOf(valueOf(args[1]).value) === "function";
         default:
           return false;
       }
@@ -142,13 +158,17 @@ export default defineRule({
     return {
       CallExpression(node) {
         const listens =
-          (Option.contains(memberName(node.callee), "listen") &&
+          (Option.contains(memberName(sourceCode, node.callee), "listen") &&
             listensOnEveryInterface(node.arguments)) ||
-          (isNodeHttpServerLayer(node.callee) && isPortWithoutHost(valueOf(node.arguments[1])));
+          (isNodeHttpServerLayer(sourceCode, node.callee) &&
+            isPortWithoutHost(sourceCode, valueOf(node.arguments[1])));
         if (listens) context.report({ node, message: MESSAGE });
       },
       NewExpression(node) {
-        if (isWebSocketServer(node.callee) && isPortWithoutHost(valueOf(node.arguments[0]))) {
+        if (
+          isWebSocketServer(sourceCode, node.callee) &&
+          isPortWithoutHost(sourceCode, valueOf(node.arguments[0]))
+        ) {
           context.report({ node, message: MESSAGE });
         }
       },
