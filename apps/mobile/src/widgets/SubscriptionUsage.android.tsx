@@ -127,7 +127,7 @@ export function SubscriptionUsage(props: SubscriptionUsageProps, environment: Wi
           modifiers={[padding(0, 10, 0, 0)]}
         >
           {props.checkedAt
-            ? `As of ${new Date(props.checkedAt).toLocaleString(undefined, { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" })}`
+            ? `As of ${new Date(props.checkedAt).toLocaleString("en-US", { hour: "numeric", minute: "2-digit", month: "short", day: "numeric" })}`
             : "Tap to connect in T3.CodeShip"}
         </Text>
       </Column>

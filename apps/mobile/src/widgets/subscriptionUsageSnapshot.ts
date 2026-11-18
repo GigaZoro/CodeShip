@@ -107,7 +107,7 @@ function subscriptionUsageProps(
                 label: window.label,
                 remaining: Math.round(window.remainingPercent),
                 reset: window.resets[0]
-                  ? `Next reset ${new Date(window.resets[0].at).toLocaleString(undefined, {
+                  ? `Next reset ${new Date(window.resets[0].at).toLocaleString("en-US", {
                       month: "short",
                       day: "numeric",
                       hour: "numeric",

@@ -18,7 +18,7 @@ import {
 } from "react-native";
 import { AppText } from "../../components/ui/AppText";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
-import { t } from "../../lib/i18n";
+import { getFormattingLocale, t } from "../../lib/i18n";
 
 export function CustomSnoozeSheet(props: {
   readonly onClose: () => void;
@@ -76,8 +76,11 @@ export function CustomSnoozeSheet(props: {
                   <AppText>{value === "date" ? t("Date") : t("Time")}</AppText>
                   <AppText>
                     {value === "date"
-                      ? date.toLocaleDateString()
-                      : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                      ? date.toLocaleDateString(getFormattingLocale())
+                      : date.toLocaleTimeString(getFormattingLocale(), {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
                   </AppText>
                 </Pressable>
               ))}

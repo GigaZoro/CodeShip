@@ -658,6 +658,16 @@ export default defineConfig({
         rules: { "t3code/no-manual-memo": ["error", { allowMemoHooks: true }] },
       },
       {
+        // Unlocalized formatting follows the runtime default, which desktop pins to en-US.
+        files: [
+          "apps/web/src/**",
+          "apps/mobile/src/**",
+          "apps/desktop/src/**",
+          "packages/client-runtime/src/**",
+        ],
+        rules: { "t3code/require-formatting-locale": "error" },
+      },
+      {
         files: ["apps/web/src/**", "apps/mobile/src/**", "packages/*/src/**"],
         rules: { "t3code/no-unreasoned-state-sync": "error" },
       },

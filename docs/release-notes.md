@@ -12,6 +12,9 @@
 - A new Auto thread now starts on the first account in the provider's account order that can run in its project and has its coordinator model, under the model id that account lists. Before, it started on the first enabled account whether or not it had the model, was signed in or was turned on for the project, so with account switching off, such a thread failed to start.
 - The coordinator model list also offers the models of a provider whose accounts all report a warning, such as a Codex account whose model list did not load in time, since Auto still runs on them.
 - When a new thread's Auto default is out of usage on its account, another account of that provider now counts as able to take the thread only when it offers that model and its provider check did not fail, the same as for an Auto fallback model. When no other account can run it, the thread now switches to the fallback model, if that can run, instead of waiting for the reset. Manual-step chats and a default model inherited from another machine also skip accounts whose provider check failed.
+## 2026-11-18 — Dates and numbers follow the chosen language everywhere
+
+- A few dates and numbers (access times in Connections settings, message times and snooze pickers on mobile, pull request additions and deletions) were formatted with the device's default locale, so a user who chose Ukrainian on an English system saw US formatting, and desktop always did. They now follow the chosen language, and a new `t3code/require-formatting-locale` lint rule fails client code that formats without a locale. Widget text stays in English formatting to match its copy.
 
 ## 2026-11-18 — `vp test run` inside a package uses the repo test settings
 
