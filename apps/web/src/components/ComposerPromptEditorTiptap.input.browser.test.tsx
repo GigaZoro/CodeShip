@@ -519,9 +519,17 @@ it.each([
   {
     name: "Markdown inside inline code",
     value: "`xy`",
-    caret: 2,
+    caret: 3,
     pasted: "a_b_ **c**",
     expected: "`xa_b_ **c**y`",
+  },
+  {
+    name: "a skill name inside inline code",
+    value: "`xy`",
+    caret: 3,
+    pasted: "run $babysit now",
+    expected: "`xrun $babysit nowy`",
+    skills: [babysit],
   },
   {
     name: "bold markers inside a pasted code span",
@@ -530,8 +538,8 @@ it.each([
     pasted: "see `**x**` now",
     expected: "see `**x**` now",
   },
-])("sends pasted $name exactly as pasted", async ({ value, caret, pasted, expected }) => {
-  await using screen = await mountEditor(value);
+])("sends pasted $name exactly as pasted", async ({ value, caret, pasted, expected, skills }) => {
+  await using screen = await mountEditor(value, true, skills);
   const { editor } = screen;
   await act(async () => {
     editor.commands.setTextSelection(caret);
@@ -546,10 +554,12 @@ it.each([
 it.each([" _a_\nb", "`__z__`"])(
   "rebuilds a paste of %j into a code span unchanged",
   async (pasted) => {
-    await using screen = await mountEditor("`xy`");
+    await using screen = await mountEditor("xy");
     const { editor } = screen;
     await act(async () => {
+      // A caret in a code span shows its source, so only a stored code mark pastes into the mark itself.
       editor.commands.setTextSelection(2);
+      editor.commands.toggleCode();
       const clipboardData = new DataTransfer();
       clipboardData.setData("text/plain", pasted);
       editor.view.dom.dispatchEvent(

@@ -591,3 +591,16 @@ export const ComposerMarkdownSourceExtension = TiptapMark.create({
     return [markdownSourcePlugin(this.type), replayPlugin];
   },
 });
+
+/** Whether the selection starts inside an inline code span whose Markdown source is shown. */
+export function isSelectionInShownCode(state: EditorState): boolean {
+  const type = state.schema.marks[MARKDOWN_SOURCE_MARK];
+  if (!type) return false;
+  const { from } = state.selection;
+  return sourceRegions(state.doc, type).some((region) => {
+    if (from < region.from || from > region.to) return false;
+    const { units } = regionUnits(state.doc, region);
+    const offset = from - region.from;
+    return [units[offset - 1], units[offset]].some((marks) => marks?.includes("code") === true);
+  });
+}

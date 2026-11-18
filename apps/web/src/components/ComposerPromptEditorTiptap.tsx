@@ -65,6 +65,7 @@ import { caretLineDirection, ComposerTextDirectionExtension } from "~/composer-t
 import {
   collapseShownMarkdownSource,
   ComposerMarkdownSourceExtension,
+  isSelectionInShownCode,
 } from "~/composer-markdown-source";
 import { MARKDOWN_SOURCE_MARK } from "~/composer-rich-text";
 import {
@@ -1410,7 +1411,8 @@ function ComposerPromptEditorTiptapInner(
           // Code spans cannot hold a newline or backtick, so those pastes take the Markdown path and split the span.
           const inCodeSpan =
             !/[\n`]/.test(pastedText) &&
-            (storedMarks ?? selection.$from.marks()).some((mark) => mark.type.name === "code");
+            ((storedMarks ?? selection.$from.marks()).some((mark) => mark.type.name === "code") ||
+              isSelectionInShownCode(view.state));
           if (isInCodeBlock(view) || inCodeSpan) {
             const { from, to } = view.state.selection;
             view.dispatch(
