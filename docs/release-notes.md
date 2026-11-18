@@ -1,8 +1,15 @@
+## 2026-11-19 — Use expiring Claude API credits
+
+- Claude accounts can spend subscriber API grants through the Agent SDK with a key kept in the secret store, linked to the plan that grants them.
+- Account routing spends plan windows and API credits in expiry order, before banked resets or extra usage. Spent credit waits for the next billing cycle or a successful credit check.
+- Usage shows each Claude plan's API grant, cycle spend, estimated remaining credit, expiry and claim steps for unlinked plans.
+
 ## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
 
 - A subagent, or a chat an agent handed a task to with `delegate_task` on this machine, now settles as soon as its parent has its result, as a task delegated to another machine already did. Before, it settled only after three days of inactivity, so finished children stayed active in the Agents list. One whose task failed or was interrupted, or that is waiting, queued, working again or still running background work, stays active, and a settled subagent its parent picks up again returns to the active list. This applies even with automatic settlement turned off. Children that had already finished settle at the first check after the update, at the time they finished.
 - A subagent or side chat working in its parent's worktree now leaves that worktree to the parent: settling it no longer runs the project's settle action there, and the parent's unmerged work no longer keeps it active or opens a pull request from it.
 - Maintainers: these settles carry the command id prefix `server:settle-delivered-child:`, and their `settledAt` is the time the child finished, so measure how long settling took from the `thread.settled` event's time.
+
 ## 2026-11-18 — Cleanup removes a worktree whose work reached the default branch under other commits
 
 - Storage cleanup now removes a settled thread's unchanged worktree when its changes are already on the default branch, even if they got there by cherry-pick or a rebase shipped from another worktree. Before, only a worktree whose commits were themselves on the default branch was removed, so such worktrees piled up. The unmerged-work warning when settling a thread uses the same check, so it no longer counts those commits either.

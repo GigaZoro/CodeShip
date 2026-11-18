@@ -25,8 +25,15 @@ export function describeUsageHold(
   hold: ProviderUsageHold,
   formatTime: (isoDate: string) => string,
 ): string {
+  if (hold.apiCredit)
+    return t("API credit spent; waits for the next billing cycle or a successful credit check");
   if (hold.appCap) return t("ChatGPT's app limit stopped it");
   if (hold.heldUntil === undefined) return t("Held until its next turn");
   const time = formatTime(hold.heldUntil);
   return hold.estimated ? t("Held until about {time}", { time }) : t("Held until {time}", { time });
 }
+
+export const apiCreditCheckDescription = () =>
+  t(
+    "Runs a tiny billable check when API credits are next in expiry order. The account stays blocked until the next cycle or the API confirms available credit.",
+  );

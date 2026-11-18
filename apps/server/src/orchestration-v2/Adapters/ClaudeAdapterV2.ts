@@ -1,3 +1,4 @@
+import * as ApiCreditBalance from "../../provider/ApiCreditBalance.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
@@ -181,6 +182,7 @@ import {
   ClaudeTermsReviewRequiredError,
   isClaudeTermsReviewNotice,
   makeClaudeEnvironment,
+  validateClaudeBillingSettings,
   mergeClaudeInstanceEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
@@ -4798,6 +4800,30 @@ export interface ClaudeAdapterV2Options {
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   adapterOptions: ClaudeAdapterV2Options,
 ) {
+  const apiCreditBalance = yield* Effect.serviceOption(ApiCreditBalance.ApiCreditBalance);
+  const paid = adapterOptions.settings.billingKind === "payPerUse";
+  const assertApiCredit: Effect.Effect<
+    void,
+    ApiCreditBalance.ApiCreditExhausted | ProviderAdapter.ProviderAdapterProtocolError
+  > = !paid
+    ? Effect.void
+    : Option.isSome(apiCreditBalance)
+      ? apiCreditBalance.value.assertAvailable(adapterOptions.instanceId)
+      : Effect.fail(
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail:
+              "API credit tracking is unavailable. This pay-per-use account cannot start work.",
+          }),
+        );
+  const recordApiFailure = (error: unknown) =>
+    paid && Option.isSome(apiCreditBalance)
+      ? apiCreditBalance.value.recordFailure(adapterOptions.instanceId, "claudeAgent", error)
+      : Effect.void;
+  const recordApiSuccess =
+    paid && Option.isSome(apiCreditBalance)
+      ? apiCreditBalance.value.recordSuccess(adapterOptions.instanceId)
+      : Effect.void;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
@@ -4891,6 +4917,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     }),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
+        yield* assertApiCredit;
         const sessionScope = yield* Effect.scope;
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -8603,6 +8630,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           const message = input.message;
+          if (
+            input.replayed !== true &&
+            (message.type === "assistant" || message.type === "result")
+          ) {
+            if (
+              (message.type === "assistant" && message.error) ||
+              (message.type === "result" && message.is_error)
+            )
+              yield* recordApiFailure(message);
+            if (
+              message.type === "result" &&
+              message.subtype === "success" &&
+              !message.is_error &&
+              message.usage.output_tokens > 0
+            )
+              yield* recordApiSuccess;
+          }
+
           // Track before routing: idle-wake Monitors report tasks before replaying their tool calls.
           yield* trackClaudeMonitorCalls(message);
           // Update before routing because the idle wake gate reads this.
@@ -9843,23 +9888,37 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? yield* Ref.get(adapterOptions.scopedLimitNames)
                 : { overageIncluded: undefined },
             );
-            const resultFailure = interrupted
-              ? null
-              : limitedCompaction !== null
+            const creditBalance =
+              paid && Option.isSome(apiCreditBalance)
+                ? yield* apiCreditBalance.value.snapshot(adapterOptions.instanceId)
+                : undefined;
+            const creditFailure =
+              creditBalance?.balanceState === "exhausted"
                 ? makeProviderFailure({
                     class: "usage_limit",
-                    message: limitedCompaction.message ?? failureHint,
-                    code: "compaction_failed",
+                    code: "api_credit_exhausted",
+                    message: creditBalance.reason ?? "API credit is exhausted.",
                   })
-                : providerFailureFromResult(
-                    message,
-                    bufferedResultArrivals.get(message) ?? completedAt,
-                    failureHint,
-                    usageLimited,
-                    signedOut,
-                  );
+                : null;
+            const resultFailure =
+              creditFailure ??
+              (interrupted
+                ? null
+                : limitedCompaction !== null
+                  ? makeProviderFailure({
+                      class: "usage_limit",
+                      message: limitedCompaction.message ?? failureHint,
+                      code: "compaction_failed",
+                    })
+                  : providerFailureFromResult(
+                      message,
+                      bufferedResultArrivals.get(message) ?? completedAt,
+                      failureHint,
+                      usageLimited,
+                      signedOut,
+                    ));
             const terminalFailure =
-              resultFailure?.class === "usage_limit"
+              creditFailure === null && resultFailure?.class === "usage_limit"
                 ? {
                     ...resultFailure,
                     resetAt: resetAt ?? resultFailure.resetAt ?? null,
@@ -9868,11 +9927,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : resultFailure;
             yield* finalizeActiveTurn({
               context,
-              status: interrupted
-                ? "interrupted"
-                : limitedCompaction !== null
+              status:
+                creditFailure !== null
                   ? "failed"
-                  : terminalStatusFromResult(message, failureHint),
+                  : interrupted
+                    ? "interrupted"
+                    : limitedCompaction !== null
+                      ? "failed"
+                      : terminalStatusFromResult(message, failureHint),
               completedAt,
               result: message,
               // The Stop that interrupted this turn closes the process next.
@@ -10688,6 +10750,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     ),
                   );
             });
+            yield* validateClaudeBillingSettings(
+              adapterOptions.settings,
+              (yield* turnCascade).tiers,
+              adapterOptions.environment,
+            );
             const queryPolicy =
               decidedPolicies.get(flagKey) ??
               (yield* queryPolicyForTurn(turnInput, flagKey, turnCascade));
@@ -10878,6 +10945,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
           if (adapterOptions.prepareHome !== undefined) yield* adapterOptions.prepareHome;
+          yield* assertApiCredit;
           const querySession = yield* queryRunner
             .open({
               threadId: turnInput.threadId,
@@ -10885,6 +10953,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               options: queryOptions,
             })
             .pipe(
+              Effect.tapError(recordApiFailure),
               Effect.catch((cause) =>
                 Effect.gen(function* () {
                   const failure =
@@ -11000,6 +11069,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }),
               ),
             ),
+            Effect.tapError(recordApiFailure),
             Effect.exit,
             Effect.flatMap(
               Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
@@ -11034,6 +11104,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (requestedTurnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+            yield* assertApiCredit;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(requestedTurnInput.providerThread);
             // Only the session that requested a continuation holds its wake. One this session never
@@ -11236,6 +11307,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
             });
             if (userMessage !== null) {
+              yield* assertApiCredit;
               yield* attachTurn;
               yield* startUserTurnForWakeReports(nativeThreadId);
               yield* Effect.uninterruptibleMask((restore) =>
@@ -11244,6 +11316,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     pdfReservation.commit();
                   }),
                 ).pipe(
+                  Effect.tapError(recordApiFailure),
                   Effect.tap(() =>
                     Effect.sync(() => {
                       pdfReservation.commit();
@@ -11623,12 +11696,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               next.add(turnInput.providerTurnId);
               return next;
             });
+            yield* assertApiCredit;
             yield* Effect.uninterruptibleMask((restore) =>
               restore(
                 existing.query.offer(userMessage, () => {
                   pdfReservation.commit();
                 }),
               ).pipe(
+                Effect.tapError(recordApiFailure),
                 Effect.tap(() =>
                   Effect.sync(() => {
                     pdfReservation.commit();

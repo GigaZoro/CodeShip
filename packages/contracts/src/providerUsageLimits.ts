@@ -194,6 +194,7 @@ export type ProviderConsumeResetCreditResult = typeof ProviderConsumeResetCredit
 /** An account CodeShip skips after a usage refusal until the hold ends or Try again lifts it. */
 export const ProviderUsageHold = Schema.Struct({
   instanceId: ProviderInstanceId,
+  apiCredit: Schema.optional(Schema.Literal(true)),
   /** When the hold ends by itself; absent when only the next turn shows whether the cap is gone. */
   heldUntil: Schema.optional(IsoDateTime),
   /** `heldUntil` is CodeShip's guess, not a reset the provider reported. */

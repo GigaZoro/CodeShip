@@ -7,6 +7,7 @@ import type {
   ServerProviderResetCreditsError,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+
 /** How old a usage reading may be before `orchestrator_capabilities` with `usage` reads it again. */
 const USAGE_READING_MAX_AGE_MS = 10 * 60_000;
 
@@ -97,10 +98,31 @@ export function providerUsageFields(
   limited: boolean,
   /** The redeemer's last claims by account key; only the account held now is published. */
   redemptions: ReadonlyMap<string, OrchestratorMcpLastRedemption> = new Map(),
+  credit?: ServerProvider["payPerUse"],
 ): {
   readonly usage: OrchestratorMcpProviderUsage | null;
   readonly usageError?: OrchestratorMcpUsageError;
 } {
+  if (provider.driver === "claudeAgent" && provider.billingKind === "payPerUse") {
+    const balance = credit ?? provider.payPerUse;
+    return {
+      usage: {
+        billingKind: "payPerUse",
+        accountKey: null,
+        plan: null,
+        measuredAt: balance?.checkedAt ?? provider.checkedAt,
+        meters: [],
+        credits: null,
+        bankedResets: null,
+        lastRedemption: null,
+        usageAllowed:
+          !limited &&
+          provider.auth.status === "authenticated" &&
+          balance?.balanceState === "available",
+        ...((credit ?? provider.payPerUse) ? { payPerUse: credit ?? provider.payPerUse } : {}),
+      },
+    };
+  }
   const error = usageError(provider);
   const limits = provider.usageLimits;
   if (error !== undefined || limits === undefined) {

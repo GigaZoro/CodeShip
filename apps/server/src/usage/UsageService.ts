@@ -10,6 +10,7 @@ import {
   type UsageSummaryInput,
   type UsageTokenTotals,
   UsageReadError,
+  UsageDay,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -145,10 +146,22 @@ const decodeCachedSources = Schema.decodeUnknownOption(
   Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
 );
 
+export interface AccountSpend {
+  readonly spendUsd: number | null;
+  readonly unpricedUsage: boolean;
+  readonly sharedWith?: ProviderInstanceId;
+}
+
 export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
+    readonly readAccountSpend: (
+      accounts: ReadonlyArray<{
+        readonly instanceId: ProviderInstanceId;
+        readonly since: string | null;
+      }>,
+    ) => Effect.Effect<ReadonlyMap<ProviderInstanceId, AccountSpend>, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
     /** Standard-speed API-equivalent cost per item at the current prices, aliases and overrides; null when the model has no price. */
     readonly priceTokens: (
@@ -339,13 +352,16 @@ export const make = Effect.gen(function* () {
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
     settings: ServerSettingsValue,
     retentionCutoffMs: number,
+    instanceIds?: ReadonlySet<ProviderInstanceId>,
   ) {
     const dirs: Array<TranscriptSource> = [];
     const seen = new Set<string>();
     for (const { driver, reader } of transcriptReaders) {
       const { provider, format } = reader;
       const directories = yield* Effect.forEach(
-        yield* usageInstances(driver, settings),
+        (yield* usageInstances(driver, settings)).filter(
+          (instance) => instanceIds === undefined || instanceIds.has(instance.instanceId),
+        ),
         (instance) => reader.directories(instance),
       );
       for (const { dir: directory, fileName } of directories.flat()) {
@@ -626,13 +642,14 @@ export const make = Effect.gen(function* () {
     settings: ServerSettingsValue,
     retentionCutoffMs: number,
     awaitRefresh: boolean,
+    instanceIds?: ReadonlySet<ProviderInstanceId>,
   ) {
-    const dirs = yield* resolveTranscriptDirs(settings, retentionCutoffMs).pipe(
+    const dirs = yield* resolveTranscriptDirs(settings, retentionCutoffMs, instanceIds).pipe(
       Effect.provideContext(readerContext),
     );
 
     const scans = Effect.forEach(
-      scanReaders,
+      instanceIds === undefined ? scanReaders : [],
       ({ driver, reader }) =>
         usageInstances(driver, settings).pipe(
           Effect.flatMap((instances) =>
@@ -670,6 +687,8 @@ export const make = Effect.gen(function* () {
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
+    instanceIds?: ReadonlySet<ProviderInstanceId>,
+    sinceBySource?: ReadonlyMap<string, number>,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -720,7 +739,13 @@ export const make = Effect.gen(function* () {
     const [, scannedDirs] = yield* Effect.all(
       [
         ensureRates(false),
-        collectDirs(windowStartMs, settings, retentionCutoffMs, input.awaitRefresh === true),
+        collectDirs(
+          windowStartMs,
+          settings,
+          retentionCutoffMs,
+          input.awaitRefresh === true,
+          instanceIds,
+        ),
       ],
       { concurrency: 2 },
     );
@@ -826,6 +851,11 @@ export const make = Effect.gen(function* () {
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
           const record = correctedRecord(rawRecord);
+          if (
+            sinceBySource !== undefined &&
+            record.timestampMs < (sinceBySource.get(dir) ?? Infinity)
+          )
+            continue;
           let usageRecord = record;
           if (
             sharedSessionProviders.has(record.provider) &&
@@ -962,7 +992,83 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return { readSummary, refreshRates, awaitPersisted, priceTokens } as const;
+  const readAccountSpend = Effect.fn("UsageService.readAccountSpend")(function* (
+    accounts: ReadonlyArray<{
+      readonly instanceId: ProviderInstanceId;
+      readonly since: string | null;
+    }>,
+  ) {
+    const result = new Map<ProviderInstanceId, AccountSpend>();
+    const instanceIds = accounts
+      .filter((account) => account.since !== null && Number.isFinite(Date.parse(account.since)))
+      .map((account) => account.instanceId);
+    for (const account of accounts)
+      result.set(account.instanceId, { spendUsd: null, unpricedUsage: true });
+    if (instanceIds.length === 0) return result;
+    yield* ensureScanCacheLoaded;
+    const settings = yield* readSettings;
+    const now = yield* DateTime.now;
+    const retainedSince = DateTime.toEpochMillis(now) - CACHE_RETENTION_DAYS * 86400000;
+    const owners = new Map<string, ProviderInstanceId>();
+    const sinceBySource = new Map<string, number>();
+    const paths = new Map<ProviderInstanceId, ReadonlySet<string>>();
+    for (const instanceId of instanceIds) {
+      const dirs = yield* resolveTranscriptDirs(
+        settings,
+        retainedSince,
+        new Set([instanceId]),
+      ).pipe(Effect.provideContext(readerContext));
+      const owned = new Set<string>();
+      const since = Date.parse(
+        accounts.find((account) => account.instanceId === instanceId)!.since!,
+      );
+      for (const source of dirs) {
+        sinceBySource.set(source.dir, Math.min(sinceBySource.get(source.dir) ?? Infinity, since));
+        const previous = owners.get(source.dir);
+        if (previous !== undefined) {
+          result.set(instanceId, { spendUsd: null, unpricedUsage: false, sharedWith: previous });
+        } else {
+          owners.set(source.dir, instanceId);
+          owned.add(source.dir);
+        }
+      }
+      paths.set(instanceId, owned);
+    }
+    if (sinceBySource.size === 0) return result;
+    const summary = yield* scanSummary(
+      {
+        timeZone: "UTC",
+        sinceDay: UsageDay.make(
+          DateTime.formatIso(DateTime.makeUnsafe(Math.min(...sinceBySource.values()))).slice(0, 10),
+        ),
+        untilDay: UsageDay.make(DateTime.formatIso(now).slice(0, 10)),
+      },
+      settings,
+      new Set(instanceIds),
+      sinceBySource,
+    );
+    for (const instanceId of instanceIds) {
+      const owned = paths.get(instanceId)!;
+      const buckets = summary.buckets.filter(
+        (bucket) => bucket.sourcePath !== undefined && owned.has(bucket.sourcePath),
+      );
+      const sources = summary.sources.filter((source) =>
+        owned.has(source.fingerprint.resolvedHomePath),
+      );
+      const incomplete = sources.some((source) => source.status !== "ok");
+      result.set(instanceId, {
+        ...result.get(instanceId),
+        spendUsd: sources.every((source) => source.status === "missing")
+          ? null
+          : buckets.reduce((total, bucket) => total + bucket.costUsd, 0),
+        unpricedUsage: incomplete || buckets.some((bucket) => bucket.unpricedRecords > 0),
+      });
+    }
+    yield* schedulePersist;
+    return result;
+  });
+
+  return { readSummary, refreshRates, awaitPersisted, priceTokens, readAccountSpend } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

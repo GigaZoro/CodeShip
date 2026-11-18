@@ -1454,6 +1454,10 @@ it.layer(NodeServices.layer)("server settings", (it) => {
                 { name: "BASE_URL", value: "https://example.test", sensitive: false },
               ],
             },
+            [ProviderInstanceId.make("claude_prepaid")]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              config: { billingKind: "payPerUse", apiKey: "claude-prepaid-secret" },
+            },
           },
           sourceControlHosts: {
             github: { tokens: { "github.com": "github-secret" } },
@@ -1483,6 +1487,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         });
         const values = [
           "config-secret",
+          "claude-prepaid-secret",
           "env-secret",
           "github-secret",
           "bitbucket-secret",

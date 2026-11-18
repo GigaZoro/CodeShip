@@ -8,6 +8,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ScheduledTask,
+  type ServerProvider,
   ScheduledTaskUpsertInput,
   ThreadId,
 } from "@t3tools/contracts";
@@ -17,6 +18,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
@@ -855,6 +858,154 @@ it.effect(
           lastRunScheduledFor: "2026-11-10T12:02:00.000Z",
         });
       }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each([
+  { restart: false, until: null },
+  { restart: true, until: null },
+  { restart: false, until: "2026-12-01T00:00:00.000Z" },
+  { restart: true, until: "2026-12-01T00:00:00.000Z" },
+])(
+  "readmits a once usage wait when capacity returns (restart: $restart, until: $until)",
+  ({ restart, until }) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-10T12:00:00.000Z"));
+      const snapshots = yield* Queue.unbounded<ReadonlyArray<ServerProvider>>();
+      const account = (
+        balanceState: "available" | "exhausted",
+        auth: "authenticated" | "unauthenticated" = "authenticated",
+      ): ServerProvider => ({
+        instanceId: ProviderInstanceId.make("claude_api"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        billingKind: until === null ? "plan" : "payPerUse",
+        enabled: true,
+        installed: true,
+        version: null,
+        status: "ready",
+        auth: { status: auth },
+        checkedAt: "2026-11-10T12:00:00.000Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+        usageLimits: {
+          checkedAt: "2026-11-10T12:00:00.000Z",
+          windows: [],
+          usageAllowed: balanceState === "available",
+        },
+        payPerUse:
+          until === null
+            ? undefined
+            : {
+                linkedPlanInstanceId: ProviderInstanceId.make("claude_plan"),
+                grantUsd: 50,
+                meteringStartedAt: "2026-09-01T00:00:00.000Z",
+                unpricedUsage: false,
+                cycleStart: "2026-09-01T00:00:00.000Z",
+                cycleEnd: "2026-12-01T00:00:00.000Z",
+                estimatedRemainingUsd: 48,
+                balanceState,
+                checkedAt: "2026-11-10T12:00:00.000Z",
+                spendSource: "metered",
+                spendUsd: null,
+              },
+      });
+      const provider = yield* Ref.make(account("exhausted"));
+      const launches = yield* Ref.make<ReadonlyArray<string>>([]);
+      const dependencies = Layer.mergeAll(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Ref.get(provider).pipe(Effect.map((value) => [value])),
+          streamChanges: Stream.fromQueue(snapshots),
+        }),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () =>
+            Ref.get(provider).pipe(
+              Effect.map((value) =>
+                value.usageLimits?.usageAllowed === true ||
+                value.payPerUse?.balanceState === "available"
+                  ? null
+                  : {
+                      driver: value.driver,
+                      until,
+                      accounts: [value.instanceId],
+                    },
+              ),
+            ),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+      );
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launches, (titles) => [...titles, input.title]).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-recredited"), resumed: false } as never),
+          ),
+        dependencies,
+      );
+      const awaitTask = (
+        service: ScheduledTaskService.ScheduledTaskService["Service"],
+        title: string,
+        done: (task: ScheduledTask) => boolean,
+      ) =>
+        service.subscribeList().pipe(
+          Stream.filter(({ tasks }) => tasks.some((task) => task.title === title && done(task))),
+          Stream.runHead,
+        );
+      const resumed = Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const ran = yield* awaitTask(
+          service,
+          "Waiting",
+          (task) => task.lastRunStatus === "succeeded",
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("6 seconds");
+        yield* Fiber.join(ran);
+        expect(yield* Ref.get(launches)).toEqual(["Waiting"]);
+        expect((yield* service.list()).tasks.find((task) => task.title === "Paused")?.enabled).toBe(
+          false,
+        );
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const waiting = yield* service.upsert(
+          yield* historyTask("Waiting", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const paused = yield* service.upsert(
+          yield* historyTask("Paused", {
+            schedule: { type: "once", runAt: "2026-11-10T12:00:30.000Z" },
+          }),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const skipped = yield* awaitTask(
+          service,
+          "Waiting",
+          (task) => task.nextRunAt === until,
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("35 seconds");
+        yield* Fiber.join(skipped);
+        yield* service.setEnabled(
+          { id: paused.task.id, enabled: false },
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        expect((yield* service.listRuns({ id: waiting.task.id })).runs[0]).toMatchObject({
+          skipReason: "usage_limited",
+          usageLimit: { until },
+        });
+        yield* Queue.offer(snapshots, [account("exhausted", "unauthenticated")]);
+        yield* Queue.offer(snapshots, [account("exhausted")]);
+        expect(yield* Ref.get(launches)).toEqual([]);
+        if (!restart) {
+          yield* Ref.set(provider, account("available"));
+          yield* Queue.offer(snapshots, [account("available")]);
+          yield* resumed;
+        }
+      }).pipe(Effect.provide(layer));
+      if (restart) {
+        yield* Ref.set(provider, account("available"));
+        yield* resumed.pipe(Effect.provide(layer));
+      }
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

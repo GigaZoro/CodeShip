@@ -12,12 +12,83 @@ import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
+  validateClaudeBillingSettings,
   mergeClaudeInstanceEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
+  it.effect("isolates API and subscription credentials by billing mode", () =>
+    Effect.gen(function* () {
+      const ambient = {
+        ANTHROPIC_API_KEY: "ambient",
+        ANTHROPIC_AUTH_TOKEN: "bearer",
+        CLAUDE_CODE_OAUTH_TOKEN: "plan-token",
+      };
+      const plan = yield* makeClaudeEnvironment(
+        { homePath: "", billingKind: "plan", apiKey: "stored" },
+        ambient,
+      );
+      expect(plan).toEqual({
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+        CLAUDE_CODE_OAUTH_TOKEN: "plan-token",
+      });
+      const api = yield* makeClaudeEnvironment(
+        { homePath: "", billingKind: "payPerUse", apiKey: "stored" },
+        ambient,
+      );
+      expect(api).toEqual({
+        ANTHROPIC_API_KEY: "stored",
+        ANTHROPIC_AUTH_TOKEN: "",
+        CLAUDE_CODE_OAUTH_TOKEN: "",
+      });
+      const missingKey = yield* makeClaudeEnvironment(
+        { homePath: "", billingKind: "payPerUse" },
+        ambient,
+      );
+      expect(missingKey).toEqual({
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_AUTH_TOKEN: "",
+        CLAUDE_CODE_OAUTH_TOKEN: "",
+      });
+      const missingKeyError = yield* validateClaudeBillingSettings(
+        { billingKind: "payPerUse", apiKey: "" },
+        [],
+      ).pipe(Effect.flip);
+      expect(missingKeyError._tag).toBe("ClaudeBillingConfigurationError");
+      const mismatch = yield* validateClaudeBillingSettings({ billingKind: "plan", apiKey: "" }, [
+        { env: { ANTHROPIC_API_KEY: "project-key" } },
+      ]).pipe(Effect.flip);
+      expect(mismatch._tag).toBe("ClaudeBillingConfigurationError");
+      yield* validateClaudeBillingSettings({ billingKind: "payPerUse", apiKey: "stored" }, [
+        { env: { ANTHROPIC_API_KEY: "stored" } },
+      ]);
+      const oauthMismatch = yield* validateClaudeBillingSettings(
+        { billingKind: "payPerUse", apiKey: "stored" },
+        [{ env: { CLAUDE_CODE_OAUTH_TOKEN: "plan" } }],
+      ).pipe(Effect.flip);
+      expect(oauthMismatch._tag).toBe("ClaudeBillingConfigurationError");
+    }),
+  );
+  it.effect.each([
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_BASE_URL",
+  ])("rejects alternate billing via inherited or project %s", (key) =>
+    Effect.gen(function* () {
+      const env = { [key]: key === "ANTHROPIC_BASE_URL" ? "https://other.example" : "1" };
+      for (const billingKind of ["plan", "payPerUse"] as const) {
+        const config = { billingKind, apiKey: "stored" };
+        const inherited = yield* validateClaudeBillingSettings(config, [], env).pipe(Effect.flip);
+        const project = yield* validateClaudeBillingSettings(config, [{ env }]).pipe(Effect.flip);
+        expect(inherited._tag).toBe("ClaudeBillingConfigurationError");
+        expect(project._tag).toBe("ClaudeBillingConfigurationError");
+      }
+    }),
+  );
   describe("Claude home resolution", () => {
     it.effect("resolves configured Claude HOME and stamps continuation/cache keys with it", () =>
       Effect.gen(function* () {

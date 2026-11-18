@@ -9,11 +9,13 @@ export function RetryAccountButton({
   onRetry,
   variant = "ghost",
   resumes = false,
+  apiCredit = false,
 }: {
   readonly onRetry: () => Promise<void>;
   readonly variant?: "ghost" | "outline";
   /** The chat is set to resume, so the server continues it once the account has room. */
   readonly resumes?: boolean;
+  readonly apiCredit?: boolean;
 }) {
   const [pending, setPending] = useState(false);
   return (
@@ -27,7 +29,7 @@ export function RetryAccountButton({
           .then(() =>
             toastManager.add({
               type: "success",
-              title: t("Account released"),
+              title: apiCredit ? t("API credit available") : t("Account released"),
               description: resumes
                 ? t("The chat continues on it within a minute.")
                 : t("Send a message to try the account again."),
@@ -36,14 +38,22 @@ export function RetryAccountButton({
           .catch((cause: unknown) =>
             toastManager.add({
               type: "error",
-              title: t("Could not release the account"),
+              title: apiCredit
+                ? t("Could not confirm API credit")
+                : t("Could not release the account"),
               description: cause instanceof Error ? cause.message : t("An error occurred."),
             }),
           )
           .finally(() => setPending(false));
       }}
     >
-      {pending ? t("Saving...") : t("Try again")}
+      {pending
+        ? apiCredit
+          ? t("Checking...")
+          : t("Saving...")
+        : apiCredit
+          ? t("Check API credit")
+          : t("Try again")}
     </Button>
   );
 }

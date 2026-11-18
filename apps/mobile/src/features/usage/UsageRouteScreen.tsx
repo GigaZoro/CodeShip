@@ -1,3 +1,4 @@
+import { ApiCredits } from "./ApiCredits";
 import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ChatGptUsageSummary } from "./ChatGptUsageSummary";
@@ -334,6 +335,15 @@ function UsageScreen(props: {
               role="tab"
             />
           )}
+          {selectedEnvironments
+            .filter((environment) => environment.canReadDiagnostics && environment.isConnected)
+            .map((environment) => (
+              <ApiCredits
+                key={environment.environmentId}
+                environmentId={environment.environmentId}
+                label={environment.label}
+              />
+            ))}
           <Animated.View
             key={showingLimits ? "limits" : "usage"}
             entering={FadeIn.duration(160).reduceMotion(ReduceMotion.System)}

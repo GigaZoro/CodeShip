@@ -1,3 +1,4 @@
+import { apiCreditCheckDescription } from "@t3tools/client-runtime/usage-holds";
 import { useNavigation } from "@react-navigation/native";
 import { CHATGPT_APP_CAP_CODE } from "@t3tools/shared/usageLimits";
 import { Button } from "../../components/ui/Button";
@@ -24,6 +25,7 @@ export function UsageLimitRecoveryCard({
   environmentId: EnvironmentId;
 }) {
   const navigation = useNavigation();
+  const apiCredit = thread.runtime?.lastErrorCode === "api_credit_exhausted";
   const appCap = thread.runtime?.lastErrorCode === CHATGPT_APP_CAP_CODE;
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
   const [pending, setPending] = useState(false);
@@ -78,7 +80,17 @@ export function UsageLimitRecoveryCard({
   const instanceId = thread.runtime.providerInstanceId;
   return (
     <View className="mx-3 mb-2 gap-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
-      {appCap ? (
+      {apiCredit ? (
+        <>
+          <Text accessibilityRole="header" className="text-sm font-t3-medium text-foreground">
+            {t("API credit exhausted")}
+          </Text>
+          <Text className="text-sm text-warning-foreground">{apiCreditCheckDescription()}</Text>
+          {instanceId ? (
+            <RetryAccountButton environmentId={environmentId} instanceId={instanceId} apiCredit />
+          ) : null}
+        </>
+      ) : appCap ? (
         <>
           <Text accessibilityRole="header" className="text-sm font-t3-medium text-foreground">
             {t("ChatGPT's app limit stopped this account")}

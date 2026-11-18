@@ -831,7 +831,6 @@ const make = Effect.gen(function* () {
       readonly newThread: boolean;
       readonly scheduled: boolean;
     }) {
-      if (input.selection !== undefined && input.selection.autoAccount !== true) return command;
       // A retried command keeps the account its first attempt chose.
       const receipt = yield* receipts
         .getByCommandId(command.commandId)
@@ -840,7 +839,6 @@ const make = Effect.gen(function* () {
       const thread = yield* orchestrator.getThreadShell(input.threadId);
       if (thread === null) return command;
       const selection = input.selection ?? thread.modelSelection;
-      if (selection.autoAccount !== true) return command;
       const routed = yield* routing.route({
         selection,
         projectId: thread.projectId,

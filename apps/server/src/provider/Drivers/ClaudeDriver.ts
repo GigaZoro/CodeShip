@@ -326,12 +326,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     );
     const auth = yield* makeClaudeAuth({
       instanceId,
+      billingKind: config.billingKind,
       binaryPath: effectiveConfig.binaryPath,
       cwd: stateDir,
       environment: claudeEnvironment,
       configDir,
       prepare: prepareAccountHome,
-      canLogout: accountHome !== undefined,
+      canLogout: accountHome !== undefined && config.billingKind !== "payPerUse",
       saveToken: (token) =>
         saveClaudeOAuthToken(instanceId, token).pipe(
           Effect.asVoid,
@@ -435,13 +436,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       accentColor,
       continuationGroupKey,
     });
-    const stampIdentity: typeof stampBaseIdentity = (draft) =>
-      stampBaseIdentity({
+    const stampIdentity: typeof stampBaseIdentity = (draft) => ({
+      ...stampBaseIdentity({
         ...draft,
         setup: { canInstall: false, ...draft.setup, canAuthenticate: auth.canAuthenticate },
         // The first Claude provider uses the Claude CLI's own login, which other apps share.
-        auth: { ...draft.auth, canLogout: accountHome !== undefined },
-      });
+        auth: {
+          ...draft.auth,
+          canLogout: accountHome !== undefined && config.billingKind !== "payPerUse",
+        },
+      }),
+      billingKind: config.billingKind,
+    });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
     const authenticationFailure = yield* makeClaudeAuthenticationFailure(readLoginExpiry);

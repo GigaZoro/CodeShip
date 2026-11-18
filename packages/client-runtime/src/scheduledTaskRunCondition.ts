@@ -159,6 +159,13 @@ export function usageLimitSkipText(
   formatTime: (iso: string) => string,
 ): string {
   if (usageLimit == null) return t("Every account this task can use was out of usage.");
+  if (usageLimit.until === null)
+    return t(
+      "Every {provider} account this task can use was out of usage. It will wait until an account reports available usage again.",
+      {
+        provider: providerDriverDisplayName(usageLimit.driver),
+      },
+    );
   return t("Every {provider} account this task can use was out of usage until {time}.", {
     provider: providerDriverDisplayName(usageLimit.driver),
     time: formatTime(usageLimit.until),

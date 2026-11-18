@@ -288,7 +288,7 @@ function ProviderCommandArguments({
 function readProviderConfigString(config: unknown, key: string): string {
   if (config === null || typeof config !== "object") return "";
   const value = (config as Record<string, unknown>)[key];
-  return typeof value === "string" ? value : "";
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
 
 function readProviderConfigBoolean(config: unknown, key: string, defaultValue = false): boolean {
@@ -324,7 +324,10 @@ export function nextProviderConfigWithFieldValue(
   if (field.clearWhenEmpty === "omit" && trimmed.length === 0) {
     delete base[field.key];
   } else {
-    base[field.key] = value;
+    base[field.key] =
+      field.control === "number" && trimmed !== "" && Number.isFinite(Number(trimmed))
+        ? Number(trimmed)
+        : value;
   }
   return Object.keys(base).length > 0 ? base : undefined;
 }
@@ -547,7 +550,14 @@ function ProviderSettingsFieldRow({
           aria-describedby={descriptionId}
           size="sm"
           className="w-full max-w-full @min-[32rem]/settings-row:w-56"
-          type={field.control === "password" ? "password" : undefined}
+          type={
+            field.control === "password"
+              ? "password"
+              : field.control === "number"
+                ? "number"
+                : undefined
+          }
+          step={field.control === "number" ? "any" : undefined}
           autoComplete={field.control === "password" ? "off" : undefined}
           value={readProviderConfigString(value, field.key)}
           placeholder={field.placeholder}
@@ -632,7 +642,8 @@ function ProviderSettingsFieldRow({
     );
   }
 
-  const type = field.control === "password" ? "password" : undefined;
+  const type =
+    field.control === "password" ? "password" : field.control === "number" ? "number" : undefined;
   const BufferedInput = field.secret ? SecretInput : DraftInput;
   const ControlledInput = field.secret ? SecretInput : Input;
   return (
@@ -645,6 +656,7 @@ function ProviderSettingsFieldRow({
             size="sm"
             className="mt-1.5"
             type={field.secret ? undefined : type}
+            step={field.control === "number" ? "any" : undefined}
             autoComplete={!field.secret && field.control === "password" ? "off" : undefined}
             value={readProviderConfigString(value, field.key)}
             onCommit={(next) => onChange(nextProviderConfigWithFieldValue(value, field, next))}
@@ -655,6 +667,7 @@ function ProviderSettingsFieldRow({
           <ControlledInput
             id={inputId}
             type={field.secret ? undefined : type}
+            step={field.control === "number" ? "any" : undefined}
             autoComplete={!field.secret && field.control === "password" ? "off" : undefined}
             value={readProviderConfigString(value, field.key)}
             onChange={(event) =>

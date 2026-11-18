@@ -90,8 +90,12 @@ export const layer = McpToolAccess.toLayer(ProviderMcpToolkit, {
       yield* routing
         .retryAccount(instanceId)
         .pipe(
-          Effect.mapError(() =>
-            invalid(`No provider account ${instanceId} on this machine; list accounts first.`),
+          Effect.mapError((error) =>
+            invalid(
+              error._tag === "ApiCreditRecoveryError"
+                ? error.detail
+                : `No provider account ${instanceId} on this machine; list accounts first.`,
+            ),
           ),
         );
       return { message: `Released ${instanceId}; its next turn tries it again.` };
