@@ -220,6 +220,13 @@ const rows: ReadonlyArray<Row> = [
     expected: [wait("unmeasured", null)],
   },
   {
+    name: "waits on a spent Fable meter too when the provider's limits are unreadable",
+    limits: limits([weekly(100), fable(2)], [grant("fable", 1)], {
+      unavailable: { reason: "probeFailed" },
+    }),
+    expected: [wait("unmeasured", null), wait("unmeasured", null, "Fable")],
+  },
+  {
     name: "never claims a paused grant",
     limits: limits([weekly(100)], [grant("full", 1, { paused: true })]),
     expected: [wait("no-reset", 100)],

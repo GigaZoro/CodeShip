@@ -1,3 +1,8 @@
+## 2026-11-21 — Agents see the usage reset decision for each limit
+
+- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
+- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
+
 ## 2026-11-21 — check:changed on Windows no longer waits two seconds after each git call
 
 - Maintainers: on Windows, `vp run check:changed` started PowerShell after each of its git calls to end anything the call left running, about two seconds a call and half a minute a run. git's calls leave nothing the run should end, so they now skip that step; the checks it runs still end what they start. No change to the app.
@@ -164,11 +169,6 @@
 ## 2026-11-20 — Thread creation retries survive a removed provider
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
-
-## 2026-11-19 — Agents see the usage reset decision for each limit
-
-- `orchestrator_capabilities` with `usage: true` now marks each meter with `rateLimit`: true for a rate-limit window, false for a spending cap such as Claude's monthly spend or Codex's monthly credit limit, which a usage reset does not refill.
-- Each Claude and Codex account now also lists `resetDecisions`: what the usage reset rule calls for on each limit, first the account's own and then each model-scoped meter at 100%. Each says whether to run, wait or claim a banked reset, why, and until when. The rule decides with the server's maximum wait, as of the moment the answer is given, whether or not usage resets are redeemed automatically, so an agent no longer works the rule out itself.
 
 ## 2026-11-19 — The upstream sync checks against its own base
 
