@@ -1,3 +1,7 @@
+## 2026-11-18 — Storage cleanup reports freed space and broken checkouts correctly on Windows
+
+- On Windows, the storage cleanup report showed 0 bytes for every removed worktree, because Node reports no allocated blocks there. It now counts file sizes, so the freed space is right. A checkout whose `.git` file names a missing folder is now also treated as no longer a repository, as on other systems, so cleanup keeps it instead of reporting a Git error.
+
 ## 2026-11-18 — Script tests fit their time limit on a loaded machine
 
 - The `scripts` cache test and Knip schema test each ran several slow subprocess steps in one test, 50 to 70 s on a busy machine against a 60 s limit. Each behaviour is now its own test with its own budget. No change to the app.
