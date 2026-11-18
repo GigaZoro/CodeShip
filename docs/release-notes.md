@@ -1,3 +1,7 @@
+## 2026-11-21 — The `check:changed` launcher tests no longer depend on who runs them
+
+- Maintainers: each launcher test starts a real `check:changed` run, which now gets a fixed step concurrency of 4 and none of the caller's `CHECK_CHANGED_*` or landing-turn settings, whatever case Windows gives their names. Before, the run under test took its concurrency from the host's free memory and inherited the settings of the run that started the tests, so its schedule changed with whoever ran it. No change to the app.
+
 ## 2026-11-21 — `check:changed` stops a git call that runs away
 
 - **Maintenance:** every git call `vp run check:changed` makes now fails after 5 minutes and its process is killed, so a listing that runs away can no longer hold a core for the rest of the run. Each call normally takes seconds. A git that ignores the stop signal is force-killed 5 seconds later, and a comparison with a remote's `main` that runs out of time fails the run instead of passing for a missing ref. So does a remote's `main` whose commit this clone lacks, with git's message, instead of being skipped: `git fetch` repairs it. A process that git started and that still holds git's output no longer keeps the run from exiting, and neither does any process that code lets run on after it is done with it, while a reader of their output still gets all of it.
