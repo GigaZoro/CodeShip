@@ -1098,9 +1098,9 @@ describe("ThreadSettlementServiceV2 worker", () => {
           { name: "closed PR", work: pushed, pr: "closed", settles: true, opensPr: false },
           { name: "setting off", work: unmerged, pr: null, settles: false, opensPr: false },
           { name: "no remote", work: unmerged, pr: null, settles: false, opensPr: false },
-          // Agents wrote its prompts. Settling would run the settle script in its worktree, which
-          // can be the checkout its parent still works in.
-          { name: "subagent", work: unmerged, pr: null, settles: false, opensPr: false },
+          // The store offers a subagent only once its parent is done; it settles with the parent
+          // and never publishes the work agents wrote.
+          { name: "subagent", work: unmerged, pr: null, settles: true, opensPr: false },
           // Agents and scheduled runs own how their work lands; auto-settle never publishes it.
           { name: "nobody wrote", work: unmerged, pr: null, settles: false, opensPr: false },
         ] as const;

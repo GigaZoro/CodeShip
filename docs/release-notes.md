@@ -8,6 +8,7 @@
 - T3 Connect asks you to approve each new device, and an agent's sign-in can be approved through T3 Connect instead of a code.
 - Pull request comments can be added to the chat, and watched pull requests react to check suites and host events instead of waiting for the two-minute sweep. GitLab reviews can request changes, and a merged merge request can be reverted.
 - In Ukrainian, the mobile app also translates the message of its alerts for an archived project, a draft or pending task being discarded, triage that could not start, and a server that could not be deregistered.
+- A subagent's thread settles when its parent thread settles, is archived or is deleted, and never opens a pull request for its work.
 - Maintainers: `vp run typecheck` and `vp run check:changed` print only Effect's errors and warnings. Its suggestions, which numbered several hundred after this update's Effect upgrade, stay in the editor.
 
 ## 2026-11-18 — A held upstream sync resumes after upstream moves on
