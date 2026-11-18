@@ -82,7 +82,7 @@ const legacyOwnerIsLive = Effect.fn("legacyOwnerIsLive")(function* (
   const recordedAt = Date.parse(state.startedAt);
   if (!Number.isFinite(recordedAt)) return true;
   const startedAt = yield* readProcessStartedAt(state.pid);
-  // ps reports whole seconds. Unknown identity stays conservative.
+  // A start time is exact to the second. Unknown identity stays conservative.
   return startedAt === undefined || startedAt <= recordedAt + 1_000;
 });
 

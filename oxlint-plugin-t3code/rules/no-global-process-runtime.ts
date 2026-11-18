@@ -4,6 +4,7 @@ import * as Option from "effect/Option";
 import { getPropertyName, isIdentifier, unwrapExpression } from "../utils.ts";
 
 const RUNTIME_PROPERTIES = new Set(["platform", "arch"]);
+const PROCESS_RUNTIME_PROPERTIES = new Set([...RUNTIME_PROPERTIES, "report"]);
 const NODE_OS_MODULES = new Set(["node:os", "os"]);
 
 const isGlobalProcessObject = (node: unknown): boolean => {
@@ -18,8 +19,15 @@ const isGlobalProcessObject = (node: unknown): boolean => {
   );
 };
 
+const HOST_REFERENCES: Record<string, string> = {
+  platform: "Platform",
+  arch: "Architecture",
+  // A report's network section resolves each open socket's host by a blocking reverse DNS query.
+  report: "LinuxLibc",
+};
+
 const message = (property: string) =>
-  `Use HostProcess.${property === "arch" ? "Architecture" : "Platform"} instead of process.${property}; inject the runtime reference in Effect code and provide it explicitly in tests.`;
+  `Use HostProcess.${HOST_REFERENCES[property]} instead of process.${property}; inject the runtime reference in Effect code and provide it explicitly in tests.`;
 
 const getLiteralStringValue = (node: unknown): Option.Option<string> => {
   if (typeof node !== "object" || node === null) return Option.none();
@@ -33,7 +41,7 @@ export default defineRule({
     type: "problem",
     docs: {
       description:
-        "Disallow direct host runtime platform/architecture reads; the shared host process references are exempted in the lint config.",
+        "Disallow direct host runtime platform, architecture and report reads; the shared host process references are exempted in the lint config.",
     },
   },
   createOnce(context) {
@@ -103,7 +111,7 @@ export default defineRule({
       ImportDeclaration: trackImportDeclaration,
       MemberExpression(node) {
         const property = getPropertyName(node.property);
-        if (Option.isNone(property) || !RUNTIME_PROPERTIES.has(property.value)) return;
+        if (Option.isNone(property) || !PROCESS_RUNTIME_PROPERTIES.has(property.value)) return;
         if (!isGlobalProcessObject(node.object)) return;
 
         context.report({
