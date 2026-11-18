@@ -317,6 +317,7 @@ export default defineConfig({
       "t3code/no-raw-taskkill": "error",
       "t3code/no-remote-git-through-execute": "error",
       "t3code/no-real-time-wait-in-tests": "error",
+      "t3code/no-duplicate-test-title": "error",
       "t3code/no-test-in-loop": "error",
       "t3code/no-test-timeout-or-unreasoned-skip": "error",
       "t3code/no-rpc-permission-bypass": ["error", { allowRawClientAccess: true }],
