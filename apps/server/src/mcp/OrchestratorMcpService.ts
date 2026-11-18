@@ -3249,6 +3249,8 @@ const make = Effect.gen(function* () {
         input.usage === true && Option.isSome(usageResetRedeemer)
           ? yield* usageResetRedeemer.value.lastRedemptions
           : new Map<string, OrchestratorMcpLastRedemption>();
+      // Readings re-read above can be newer than `nowMs`; the reset rule decides as of now.
+      const publishedAtMs = yield* Clock.currentTimeMillis;
       const inherited = parent?.thread.modelSelection;
       const inheritedProvider = providers.find(
         (provider) => provider.instanceId === inherited?.instanceId,
@@ -3329,7 +3331,12 @@ const make = Effect.gen(function* () {
               ? { limitedUntilEstimated: true as const }
               : {}),
             ...(input.usage === true && publishesUsage(provider)
-              ? providerUsageFields(provider, limitedUntil !== undefined, redemptions)
+              ? providerUsageFields(provider, {
+                  limited: limitedUntil !== undefined,
+                  redemptions,
+                  nowMs: publishedAtMs,
+                  maxWaitHours: settings.maxPlanResetWaitHours,
+                })
               : {}),
           };
         }),
