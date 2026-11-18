@@ -63,4 +63,21 @@ describe("t3code/no-mobile-pull-request-glyph-literals", () => {
   );
 
   rule.invalid("reports glyphs in template literals", "const name = `square.3.layers.3d`;");
+
+  rule.invalid(
+    "reports an Android pull request glyph behind a bracketed key a const holds",
+    `
+      const androidKey = "android";
+      const iosKey = "ios";
+      const icon = { [iosKey]: "arrow.triangle.branch", [androidKey]: "merge" };
+    `,
+  );
+
+  rule.valid(
+    "allows merge behind a bracketed key whose const names no platform",
+    `
+      const android = "label";
+      const command = { ios: "arrow.triangle.branch", [android]: "merge" };
+    `,
+  );
 });

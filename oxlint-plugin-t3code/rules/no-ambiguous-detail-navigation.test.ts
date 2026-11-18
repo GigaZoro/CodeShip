@@ -1,4 +1,4 @@
-import { describe } from "@effect/vitest";
+import { assert, describe } from "@effect/vitest";
 
 import { createOxlintRuleHarness } from "../test/utils.ts";
 
@@ -14,6 +14,24 @@ describe("t3code/no-ambiguous-detail-navigation", () => {
       navigation.dispatch(StackActions.push("PullRequest", params));
       navigation.navigate("ThreadFiles", params);
     `,
+  );
+
+  rule.valid(
+    "reads a bracketed method through the const that holds its name",
+    `
+      const navigate = "push";
+      navigation[navigate]("Thread", params);
+    `,
+  );
+
+  rule.invalid(
+    "reports navigate called through brackets",
+    `
+      const method = "navigate";
+      navigation[method]("Thread", params);
+      navigation["navigate"]("PullRequest", params);
+    `,
+    (output) => assert.equal(output.match(/no-ambiguous-detail-navigation/g)?.length, 2),
   );
 
   rule.invalid("reports navigating to a thread", `navigation.navigate("Thread", params);`);
