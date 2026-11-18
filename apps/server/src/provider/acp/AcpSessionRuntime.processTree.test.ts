@@ -1,9 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import type * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 
 import { describe, expect, it, vi } from "@effect/vitest";
+import { HOLDER_LINES, holdProcessGroup } from "@t3tools/shared/processGroup";
 import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -814,6 +816,40 @@ describe("terminatePosixOwnedProcessTree", () => {
       expect(fixture.processes.has(111)).toBe(false);
       expect(fixture.processes.has(112)).toBe(false);
     }),
+  );
+
+  it.live.skipIf(!isLinuxHost)(
+    "leaves running the holder that keeps a held provider's group number",
+    () =>
+      Effect.gen(function* () {
+        const held = holdProcessGroup(
+          { command: "/bin/sh", args: ["-c", "echo ready; exec sleep 600"] },
+          { fd: 3 },
+        );
+        if (held === undefined) return yield* Effect.die(new Error("No holder on this host"));
+        const child = NodeChildProcess.spawn(held.command, held.args, {
+          detached: true,
+          stdio: ["ignore", "pipe", "inherit", "pipe"],
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            (child.stdio[3] as NodeNet.Socket).end(HOLDER_LINES.quit);
+          }),
+        );
+        yield* Effect.callback<void>((resume) => {
+          child.stdout!.once("data", () => resume(Effect.void));
+        });
+        const controller = AcpSessionRuntime.makePosixProcessTreeController("linux");
+        const rootPid = child.pid!;
+
+        yield* AcpSessionRuntime.terminatePosixOwnedProcessTree({ controller, grace: 0, rootPid });
+
+        const holders = controller
+          .snapshot()
+          .filter((entry) => entry.sid === rootPid && entry.pid !== rootPid && entry.state !== "Z");
+        expect(holders).toHaveLength(1);
+      }),
   );
 
   it("fails closed where a stable POSIX identity provider is unavailable", () => {

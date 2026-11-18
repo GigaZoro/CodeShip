@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Command, Flag } from "effect/cli";
 import { FetchHttpClient, HttpClient } from "effect/http";
+import { holdProcessGroup, ownProcessGroup } from "@t3tools/shared/processGroup";
 
 import { CASES, type MobileBehaviorCase } from "./cases.ts";
 import { APP_ID, DeviceError, makeDevice, SCHEME } from "./device.ts";
@@ -24,6 +25,7 @@ import { blockingResults, checkFails, resultsFor, summarize, type SampleRow } fr
 import { SCENARIOS, type Pose, type ScenarioContext } from "./scenarios.ts";
 
 const REPO_ROOT = NodePath.resolve(import.meta.dirname, "../..");
+const METRO_HOLDER_FD = 3;
 const POSES = ["phone", "duo-closed", "duo-open", "ipad"] as const satisfies ReadonlyArray<Pose>;
 
 /** This machine's address as the simulator sees it: the tailnet address, else the first LAN IPv4. */
@@ -41,28 +43,48 @@ function reachableHost(): string {
 const startMetro = Effect.fn("run.startMetro")(function* (host: string, out: string) {
   const port = yield* freePort();
   const log = NodeFS.openSync(NodePath.join(out, "metro.log"), "w");
+  const launch = {
+    command: "npx",
+    args: ["expo", "start", "--dev-client", "--scheme", SCHEME, "--lan", "--port", String(port)],
+    cwd: NodePath.join(REPO_ROOT, "apps/mobile"),
+    env: {
+      ...process.env,
+      APP_VARIANT: "development",
+      CI: "1",
+      // Lazily fetched chunks sometimes arrive broken on pool emulators and throw SyntaxErrors.
+      EXPO_NO_METRO_LAZY: "1",
+      EXPO_PUBLIC_T3_BEHAVIOR_PROBE: "1",
+      REACT_NATIVE_PACKAGER_HOSTNAME: host,
+    },
+  };
+  const held = holdProcessGroup(launch, { fd: METRO_HOLDER_FD });
   yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      NodeChildProcess.spawn(
-        "npx",
-        ["expo", "start", "--dev-client", "--scheme", SCHEME, "--lan", "--port", String(port)],
+    Effect.sync(() => {
+      const child = NodeChildProcess.spawn(
+        held?.command ?? launch.command,
+        held?.args ?? launch.args,
         {
-          cwd: NodePath.join(REPO_ROOT, "apps/mobile"),
+          cwd: launch.cwd,
           detached: true,
-          stdio: ["ignore", log, log],
-          env: {
-            ...process.env,
-            APP_VARIANT: "development",
-            CI: "1",
-            // Lazily fetched chunks sometimes arrive broken on pool emulators and throw SyntaxErrors.
-            EXPO_NO_METRO_LAZY: "1",
-            EXPO_PUBLIC_T3_BEHAVIOR_PROBE: "1",
-            REACT_NATIVE_PACKAGER_HOSTNAME: host,
-          },
+          stdio: ["ignore", log, log, held === undefined ? "ignore" : "pipe"],
+          env: launch.env,
         },
-      ),
-    ),
-    (child) => Effect.sync(() => child.pid !== undefined && process.kill(-child.pid, "SIGTERM")),
+      );
+      return {
+        child,
+        group: ownProcessGroup(child, held === undefined ? undefined : METRO_HOLDER_FD),
+      };
+    }),
+    ({ child, group }) =>
+      Effect.sync(() => {
+        if (child.pid === undefined) return;
+        try {
+          group.signal("SIGTERM");
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+        }
+        group.release();
+      }),
   );
   const metro = `http://${host}:${port}`;
   for (let attempt = 0; attempt < 120; attempt++) {

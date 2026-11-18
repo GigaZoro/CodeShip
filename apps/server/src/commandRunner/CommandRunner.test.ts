@@ -20,10 +20,16 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import {
+  isFifoHolderHeld,
+  layerHeldProcessGroups,
+  releaseFifoHolder,
+  signalProcessGroup,
+} from "@t3tools/shared/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
+import { watchFreedGroupSignals } from "@t3tools/shared/testing/freedProcessGroups";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -146,7 +152,11 @@ const layerTest = Layer.mergeAll(
   ProcessRunner.layer,
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-runner-" }),
   NodeCrypto.layer,
-).pipe(Layer.provideMerge(layerOrchestration), Layer.provideMerge(NodeServices.layer));
+).pipe(
+  Layer.provideMerge(layerOrchestration),
+  // As the server spawns: each detached group stays held until its spawn's scope closes.
+  Layer.provideMerge(layerHeldProcessGroups.pipe(Layer.provideMerge(NodeServices.layer))),
+);
 
 /** One server's life: a fresh runner that picks up what an earlier one left, until `use` ends. */
 const withServer = <A, E, R>(
@@ -176,19 +186,25 @@ const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
 });
 
 /**
- * Resolves once `file` exists, from its state rather than folder events: on macOS a file made just
- * after `fs.watch` returns can raise none, and a sandbox refuses the watch.
+ * Watches for `file`, which nothing may create until this returns, and gives what resolves once
+ * another process has. `watchFile` reports a file only against a first look that found none, which
+ * this waits for; on macOS `fs.watch` misses a file made just after it returns.
  */
-const awaitFile = (file: string) =>
-  Effect.callback<void>((resume) => {
-    const look = () => {
-      if (!NodeFS.existsSync(file)) return;
-      NodeFS.unwatchFile(file, look);
-      resume(Effect.void);
+const watchForFile = (file: string) =>
+  Effect.gen(function* () {
+    if (NodeFS.existsSync(file)) return yield* Effect.die(new Error(`${file} exists already`));
+    const looked = yield* Deferred.make<void>();
+    const created = yield* Deferred.make<void>();
+    const listener = (current: NodeFS.Stats) => {
+      Deferred.doneUnsafe(looked, Effect.void);
+      if (current.nlink > 0) Deferred.doneUnsafe(created, Effect.void);
     };
-    NodeFS.watchFile(file, { interval: 20 }, look);
-    look();
-    return Effect.sync(() => NodeFS.unwatchFile(file, look));
+    yield* Effect.acquireRelease(
+      Effect.sync(() => NodeFS.watchFile(file, { interval: 20 }, listener)),
+      () => Effect.sync(() => NodeFS.unwatchFile(file, listener)),
+    );
+    yield* Deferred.await(looked);
+    return Deferred.await(created);
   });
 
 /** Resolves once each of `threadIds` has been offered a wake. */
@@ -261,8 +277,12 @@ const liveChat = (name: string) =>
         SELECT pid, directory FROM command_runs WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
-          Effect.forEach(rows, (row) =>
-            Effect.try(() =>
+          Effect.forEach(rows, (row) => {
+            const holder = NodePath.join(row.directory, "group-holder");
+            return Effect.try(() => {
+              // Once its holder is released, the group's number may be another group's.
+              if (!isFifoHolderHeld(holder)) return;
+              // oxlint-disable-next-line t3code/no-raw-process-group-signal -- its holder keeps the number
               signalProcessGroup(
                 // A failed test can leave a row without its pid; the wrapper's pid file still names it.
                 row.pid ??
@@ -271,9 +291,12 @@ const liveChat = (name: string) =>
                     10,
                   ),
                 "SIGKILL",
-              ),
-            ).pipe(Effect.ignore),
-          ),
+              );
+            }).pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.try(() => releaseFifoHolder(holder)).pipe(Effect.ignore)),
+            );
+          }),
         ),
         Effect.ignore,
         Effect.andThen(
@@ -302,8 +325,11 @@ const cancellationOf = (threadId: ThreadId, taskId: string) =>
     result: "Cancelled.",
   }) as const;
 
-/** Starts a child that writes `ready` once it can note a stop signal, and `stopped` on one. */
-const STOP_NOTING_CHILD = `sh -c 'trap "echo > stopped; exit 0" TERM; echo > ready; while :; do sleep 1; done' &`;
+/**
+ * Starts a child that writes `ready` once it can note a stop signal, and `stopped` on one. It ends
+ * once the test's folder is gone, since the cleanup leaves alone a group the runner let go.
+ */
+const STOP_NOTING_CHILD = `sh -c 'trap "echo > stopped; exit 0" TERM; echo > ready; while [ -e ready ]; do sleep 1; done' &`;
 /** Once `go` exists it kills its wrapper, leaving no exit status, then writes `orphaned`. */
 const ORPHANING_COMMAND = `echo orphaning; ${STOP_NOTING_CHILD} until [ -e go ]; do sleep 0.05; done; kill -9 $PPID; echo > orphaned; wait`;
 
@@ -358,9 +384,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             command: "until [ -e go ]; do sleep 0.05; done; echo built",
           }),
         );
-        NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
         const statusFile = NodePath.join(NodePath.dirname(started.logPath), "exit-status");
-        yield* awaitFile(statusFile);
+        const ended = yield* watchForFile(statusFile);
+        NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
+        yield* ended;
         // The status file is written as it ends, so its time is the end, not the next server's start.
         const startedAt = Date.parse((yield* commandRow(started.taskId))!.started_at);
         const endedAtSeconds = (startedAt + 42_000) / 1000;
@@ -377,13 +404,14 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-pid-unrecorded");
+        const running = yield* watchForFile(NodePath.join(chat.workspace, "running"));
         const started = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), {
-            command: "until [ -e go ]; do sleep 0.05; done; echo adopted",
+            command: "echo > running; until [ -e go ]; do sleep 0.05; done; echo adopted",
           }),
         );
-        // Its wrapper names itself at once; a restart takes far longer.
-        yield* awaitFile(NodePath.join(NodePath.dirname(started.logPath), "pid"));
+        // Its wrapper names itself before it runs the command; a restart takes far longer.
+        yield* running;
         yield* forgetPid(started.taskId);
         yield* withServer(() =>
           Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "")).pipe(
@@ -642,7 +670,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const chat = yield* liveChat(name);
           // As a reboot would; what it started lives on.
           const request = { command: ORPHANING_COMMAND };
-          const go = awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+          const orphaned = yield* watchForFile(NodePath.join(chat.workspace, "orphaned"));
+          const go = ready.pipe(
             Effect.andThen(
               Effect.sync(() => NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "")),
             ),
@@ -656,7 +686,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             : yield* withServer((runner) => runner.run(callerOf(chat.threadId), request)).pipe(
                 Effect.tap(({ taskId }) =>
                   go.pipe(
-                    Effect.andThen(awaitFile(NodePath.join(chat.workspace, "orphaned"))),
+                    Effect.andThen(orphaned),
                     Effect.andThen(pidUnrecorded ? forgetPid(taskId) : Effect.void),
                     Effect.andThen(withServer(() => nextWake(chat.threadId))),
                   ),
@@ -676,6 +706,25 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         }),
     );
 
+    // As if an unrelated group took the number of the command's once that ended, and left members.
+    it.effect("signals no group after the command's own ended with its wrapper", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-group-freed");
+        const { started, signals } = yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const freed = yield* watchFreedGroupSignals;
+            const started = yield* runner.run(callerOf(chat.threadId), { command: LOSING_COMMAND });
+            go(chat);
+            yield* nextWake(chat.threadId);
+            return { started, signals: freed.signals() };
+          }),
+        );
+
+        assert.equal((yield* commandRow(started.taskId))?.lost_reason, "gone");
+        assert.deepEqual(signals, []);
+      }),
+    );
+
     it.effect(
       "waits while a probe cannot tell whether its wrapper runs, stopping nothing and still trimming its log",
       () =>
@@ -683,13 +732,15 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const chat = yield* liveChat("command-probe-unknown");
           const probes = yield* Queue.unbounded<void>();
           const kill = process.kill.bind(process);
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+          const orphaned = yield* watchForFile(NodePath.join(chat.workspace, "orphaned"));
           yield* withServer((runner) =>
             Effect.gen(function* () {
               const started = yield* runner.run(callerOf(chat.threadId), {
                 // As ORPHANING_COMMAND, with a log too large once `go` exists.
                 command: `${STOP_NOTING_CHILD} until [ -e go ]; do sleep 0.05; done; head -c 9000000 /dev/zero | tr '\\0' x; echo; kill -9 $PPID; echo > orphaned; wait`,
               });
-              yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+              yield* ready;
               const wrapperPid = (yield* commandRow(started.taskId))!.pid!;
               // A probe failure that is not ESRCH, as an overloaded or restricted host can give.
               const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
@@ -699,7 +750,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
               });
               yield* Effect.addFinalizer(() => Effect.sync(() => probe.mockRestore()));
               NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
-              yield* awaitFile(NodePath.join(chat.workspace, "orphaned"));
+              yield* orphaned;
               // Its wrapper is gone, and the check that made the first later probe has finished.
               yield* Queue.clear(probes);
               yield* Queue.take(probes);
@@ -817,11 +868,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     Effect.gen(function* () {
       const chat = yield* liveChat("command-chat-deleted-late");
       const agentScope = yield* AgentScope;
-      const processRunner = yield* ProcessRunner.ProcessRunner;
+      const threads = yield* ThreadManagement.ThreadManagementService;
       const starting = yield* Deferred.make<void>();
       const proceed = yield* Deferred.make<void>();
-      // Its first process lookup is the one that names the command it just started.
-      let spawning = false;
+      const deletionStopHeld = yield* Deferred.make<void>();
+      const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+      const stopped = yield* watchForFile(NodePath.join(chat.workspace, "stopped"));
       const started = yield* withServer((runner) =>
         Effect.gen(function* () {
           const request = yield* runner
@@ -833,29 +885,33 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           );
           yield* Deferred.succeed(proceed, undefined);
           const result = yield* Fiber.join(request);
-          yield* awaitFile(NodePath.join(chat.workspace, "stopped"));
+          yield* stopped;
           return result;
         }),
       ).pipe(
+        // run() wraps the command just before it spawns it, holding the lock until it watches it.
         Effect.provideService(AgentScope, {
           ...agentScope,
           wrap: (input) =>
-            Effect.sync(() => {
-              spawning = true;
-            }).pipe(Effect.andThen(agentScope.wrap(input))),
-        }),
-        Effect.provideService(ProcessRunner.ProcessRunner, {
-          run: (input) => {
-            if (!spawning || input.command !== "ps") return processRunner.run(input);
-            spawning = false;
-            return awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
-              Effect.andThen(Deferred.succeed(starting, undefined)),
+            Deferred.succeed(starting, undefined).pipe(
               Effect.andThen(Deferred.await(proceed)),
-              Effect.andThen(processRunner.run(input)),
-            );
-          },
+              Effect.andThen(agentScope.wrap(input)),
+            ),
+        }),
+        // The deletion records the task's end before it stops the command, which by then can note
+        // the stop signal; one that came first would end it without a note. A failed start's end,
+        // with no child to write `ready`, passes at once.
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          ...threads,
+          dispatch: (command) =>
+            (command.type === "delegated_task.command.complete" &&
+            command.commandId === `command:command-task-deleted:${command.taskId}`
+              ? ready.pipe(Effect.andThen(Deferred.succeed(deletionStopHeld, undefined)))
+              : Effect.void
+            ).pipe(Effect.andThen(threads.dispatch(command))),
         }),
       );
+      assert.isTrue(yield* Deferred.isDone(deletionStopHeld));
       assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
     }),
   );
@@ -897,16 +953,18 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("command-cancelled");
+        const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+        const stopped = yield* watchForFile(NodePath.join(chat.workspace, "stopped"));
         yield* withServer((runner) =>
           Effect.gen(function* () {
             // A grandchild that notes the stop signal, so the test sees the whole tree got it.
             const started = yield* runner.run(callerOf(chat.threadId), {
               command: `${STOP_NOTING_CHILD} wait`,
             });
-            yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+            yield* ready;
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
-            yield* awaitFile(NodePath.join(chat.workspace, "stopped"));
+            yield* stopped;
             const row = yield* commandRow(started.taskId);
             assert.equal(row?.status, "stopped");
           }),
@@ -927,16 +985,18 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     ] as const)("stops a command when %s, once a server starts", ([, name, cutStop, wrapperGone]) =>
       Effect.gen(function* () {
         const chat = yield* liveChat(name);
+        const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+        const orphaned = yield* watchForFile(NodePath.join(chat.workspace, "orphaned"));
         const started = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), {
             command: wrapperGone ? ORPHANING_COMMAND : `${STOP_NOTING_CHILD} wait`,
           }),
         );
-        yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+        yield* ready;
         if (wrapperGone) {
           // Its wrapper ended, as it does on the stop signal, while what it started still runs.
           NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
-          yield* awaitFile(NodePath.join(chat.workspace, "orphaned"));
+          yield* orphaned;
         }
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
@@ -955,6 +1015,37 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         assert.isNotNull(row?.delivered_at);
       }),
     );
+
+    it.effect(
+      "signals no group under a running pid whose start it cannot tell, without a holder",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-identity-unknown");
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* ready;
+          const sql = yield* SqlClient.SqlClient;
+          const [run] = yield* sql<{ readonly directory: string; readonly pid: number }>`
+          SELECT directory, pid FROM command_runs WHERE task_id = ${started.taskId}
+        `;
+          // Out of the runner's sight, the holder still keeps the number, for the cleanup to use.
+          const holder = NodePath.join(run!.directory, "group-holder");
+          const hidden = `${holder}.hidden`;
+          NodeFS.renameSync(holder, hidden);
+          yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.renameSync(hidden, holder)));
+          yield* sql`
+          UPDATE command_runs SET process_started_at = NULL WHERE task_id = ${started.taskId}
+        `;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+          yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+
+          assert.isTrue(isProcessAlive(run!.pid));
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        }),
+    );
   });
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
@@ -966,15 +1057,17 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       ([, name, wrapperGone]) =>
         Effect.gen(function* () {
           const chat = yield* liveChat(name);
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+          const orphaned = yield* watchForFile(NodePath.join(chat.workspace, "orphaned"));
           const started = yield* withServer((runner) =>
             runner.run(callerOf(chat.threadId), {
               command: wrapperGone ? ORPHANING_COMMAND : `${STOP_NOTING_CHILD} wait`,
             }),
           );
-          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          yield* ready;
           if (wrapperGone) {
             NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
-            yield* awaitFile(NodePath.join(chat.workspace, "orphaned"));
+            yield* orphaned;
           }
           const sql = yield* SqlClient.SqlClient;
           // Started before the machine last booted, so what its pid names now is someone else's.
@@ -1756,6 +1849,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
         Effect.gen(function* () {
           // The commands are PowerShell: other platforms have their own wrapper, tested above.
           const chat = yield* liveChat(name);
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
           const started = yield* withServer((runner) =>
             runner.run(callerOf(chat.threadId), {
               command:
@@ -1763,7 +1857,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
                 "Set-Content -LiteralPath child.pid -Value $p.Id; Set-Content -LiteralPath ready -Value 1; Start-Sleep 300",
             }),
           );
-          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          yield* ready;
           const childPid = Number.parseInt(
             NodeFS.readFileSync(NodePath.join(chat.workspace, "child.pid"), "utf8"),
             10,
