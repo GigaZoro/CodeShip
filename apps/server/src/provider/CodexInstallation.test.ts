@@ -12,10 +12,11 @@ import * as PlatformError from "effect/PlatformError";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
+import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { ChildProcessSpawner } from "effect/process";
 import * as CodexInstallation from "./CodexInstallation.ts";
 
 const archive = Buffer.from(
@@ -28,6 +29,13 @@ const asset = {
   url: "https://github.com/openai/codex/releases/download/test/package.tar.gz",
   archiveBytes: archive.length,
 };
+// A host-runnable stand-in: the "#!" header makes it count as a launcher; the file is data the fake spawner below reads, because a shell script
+// cannot be executed on Windows and a compiled binary cannot be built on every host.
+const localFixture = (local: {
+  version: string;
+  appServerFails?: boolean;
+  versionFails?: boolean;
+}) => `#!fake-codex\n${JSON.stringify(local)}`;
 const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   input: {
     options?: Partial<CodexInstallation.CodexInstallationOptions>;
@@ -49,11 +57,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   const probeLog = `${baseDir}/local-probes.txt`;
   if (input.local) {
     yield* fs.makeDirectory(localDirectory, { recursive: true });
-    yield* fs.writeFileString(
-      localBinaryPath,
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${probeLog}'\ncase "$1" in\n--version) ${input.local.versionFails ? "exit 1" : `printf '%s\\n' 'codex-cli ${input.local.version}'`};;\napp-server) exit ${input.local.appServerFails ? "1" : "0"};;\nesac\n`,
-      { mode: 0o755 },
-    );
+    yield* fs.writeFileString(localBinaryPath, localFixture(input.local), { mode: 0o755 });
   }
   let downloads = 0;
   const crypto = yield* Crypto.Crypto;
@@ -81,7 +85,43 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
           : fs.rename(from, to),
       ),
   };
-  const spawner = input.spawner ?? (yield* ChildProcessSpawner.ChildProcessSpawner);
+  const realSpawner = input.spawner ?? (yield* ChildProcessSpawner.ChildProcessSpawner);
+  const spawner = ChildProcessSpawner.make((command) => {
+    if (command._tag !== "StandardCommand" || command.command !== localBinaryPath) {
+      return realSpawner.spawn(command);
+    }
+    return Effect.gen(function* () {
+      const fixture = JSON.parse(
+        (yield* fs.readFileString(localBinaryPath)).split("\n")[1] ?? "",
+      ) as {
+        version: string;
+        appServerFails?: boolean;
+        versionFails?: boolean;
+      };
+      yield* fs.writeFileString(probeLog, `${command.args.join(" ")}\n`, { flag: "a" });
+      const [subcommand] = command.args;
+      const failed =
+        subcommand === "--version"
+          ? fixture.versionFails === true
+          : subcommand === "app-server"
+            ? fixture.appServerFails === true
+            : false;
+      const stdout = subcommand === "--version" && !failed ? `codex-cli ${fixture.version}\n` : "";
+      return ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(1),
+        stdout: Stream.make(new TextEncoder().encode(stdout)),
+        stderr: Stream.empty,
+        all: Stream.empty,
+        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(failed ? 1 : 0)),
+        isRunning: Effect.succeed(false),
+        kill: () => Effect.void,
+        stdin: Sink.drain,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      });
+    });
+  });
   const installation = yield* CodexInstallation.makeCodexInstallation({
     baseDir,
     releaseAsset: { ...asset, sha256 },
@@ -192,27 +232,12 @@ it.effect.each([
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-const compileNative = Effect.fn("test.compileNative")(function* (
-  executablePath: string,
-  source: string,
-) {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const compiler = yield* spawner.spawn(
-    ChildProcess.make("cc", ["-x", "c", "-", "-o", executablePath], {
-      stdin: Stream.make(new TextEncoder().encode(source)),
-      stdout: "inherit",
-      stderr: "inherit",
-    }),
-  );
-  expect(yield* compiler.exitCode).toBe(0);
-}, Effect.scoped);
-
 it.effect("rechecks compatibility after the local executable is replaced", () =>
   Effect.gen(function* () {
     const h = yield* makeHarness({ local: { version: "0.156.1" } });
     expect((yield* h.installation.resolve()).source).toBe("local");
     yield* h.fs.remove(h.localBinaryPath);
-    yield* h.fs.writeFileString(h.localBinaryPath, "#!/bin/sh\nprintf 'codex-cli 0.128.9\\n'\n", {
+    yield* h.fs.writeFileString(h.localBinaryPath, localFixture({ version: "0.128.9" }), {
       mode: 0o755,
     });
     yield* h.installation.start;
@@ -268,43 +293,18 @@ it.effect("uses bundled Codex compatibility when the remote manifest omits its p
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each([
-  { kind: "script", name: "volta-shim" },
-  { kind: "native", name: "volta-shim" },
-  { kind: "native", name: "mise" },
-  { kind: "native", name: "aqua-proxy" },
-])("preserves the invoked name of $kind $name launcher symlinks", ({ kind, name }) =>
-  Effect.gen(function* () {
-    const h = yield* makeHarness({ local: { version: "0.156.1" } });
-    const launcher = `${h.baseDir}/${name}`;
-    if (kind === "native") {
-      const payload = `${h.baseDir}/codex.js`;
-      yield* h.fs.rename(h.localBinaryPath, payload);
-      yield* compileNative(
-        launcher,
-        `#include <string.h>
-#include <unistd.h>
-int main(int argc, char **argv) {
-  const char *name = strrchr(argv[0], '/');
-  if (strcmp(name ? name + 1 : argv[0], "codex") != 0) return 1;
-  execv(${JSON.stringify(payload)}, argv);
-  return 1;
-}
-`,
-      );
-    } else {
-      yield* h.fs.writeFileString(
-        launcher,
-        '#!/bin/sh\ncase "$0" in */codex) ;; *) exit 1;; esac\ncase "$1" in --version) printf "codex-cli 0.156.1\\n";; app-server) exit 0;; esac\n',
-        { mode: 0o755 },
-      );
-      yield* h.fs.remove(h.localBinaryPath);
-    }
-    yield* h.fs.symlink(launcher, h.localBinaryPath);
-    expect(yield* h.installation.start).toMatchObject({ source: "local", phase: "succeeded" });
-    expect((yield* h.installation.resolve()).executablePath).toBe(h.localBinaryPath);
-    expect(h.downloads()).toBe(0);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+it.effect.each(["volta-shim", "mise", "aqua-proxy"])(
+  "runs a launcher symlink as codex without resolving it to %s",
+  (name) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ local: { version: "0.156.1" } });
+      const launcher = `${h.baseDir}/${name}`;
+      yield* h.fs.rename(h.localBinaryPath, launcher);
+      yield* h.fs.symlink(launcher, h.localBinaryPath);
+      expect(yield* h.installation.start).toMatchObject({ source: "local", phase: "succeeded" });
+      expect((yield* h.installation.resolve()).executablePath).toBe(h.localBinaryPath);
+      expect(h.downloads()).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect(
