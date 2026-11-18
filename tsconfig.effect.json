@@ -5,6 +5,8 @@
         "name": "@effect/language-service",
         "namespaceImportPackages": ["@effect/platform-node", "effect"],
         "effectFn": ["span", "inferred-span", "suggested-span"],
+        // Suggestions stay in the editor: hundreds of them in `typecheck` output bury its errors.
+        "includeSuggestionsInTsc": false,
         "diagnosticSeverity": {
           "abortControllerInEffect": "error",
           "runEffectInsideEffect": "error",
