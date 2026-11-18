@@ -28,11 +28,19 @@ export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 export const ServerProviderResetKind = Schema.Literals(["full", "weekly", "five_hour", "fable"]);
 export type ServerProviderResetKind = typeof ServerProviderResetKind.Type;
 
+/**
+ * Why a Claude grant has no `kind`: Claude named only a total over its grants (`totalOnly`), or
+ * answered that resets wait while the account runs at lower priority, before reading any (`lowPriority`).
+ */
+export const ServerProviderResetKindUnknownReason = Schema.Literals(["totalOnly", "lowPriority"]);
+export type ServerProviderResetKindUnknownReason = typeof ServerProviderResetKindUnknownReason.Type;
+
 /** One banked reset or grant, without the provider's id for it. */
 export const ServerProviderResetCredit = Schema.Struct({
   program: TrimmedNonEmptyString,
-  /** Absent when the provider names only a total over its resets (Claude's held grants). */
+  /** Absent only when the provider's answer named no kind; `kindUnknownReason` then says why. */
   kind: Schema.optional(ServerProviderResetKind),
+  kindUnknownReason: Schema.optional(ServerProviderResetKindUnknownReason),
   status: Schema.optional(TrimmedNonEmptyString),
   grantedAt: Schema.optional(IsoDateTime),
   expiresAt: Schema.optional(IsoDateTime),

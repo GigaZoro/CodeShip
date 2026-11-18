@@ -224,7 +224,7 @@ describe("UsageResetRedeemer", () => {
     }),
   );
 
-  it.effect("never claims a paused grant", () =>
+  it.effect("never claims a grant held back for something other than a limit", () =>
     Effect.gen(function* () {
       const { claims, sweeps, layer } = yield* harness({
         provider: account("claudeAgent", 100, {}, { kind: "weekly", usableNow: false }),
