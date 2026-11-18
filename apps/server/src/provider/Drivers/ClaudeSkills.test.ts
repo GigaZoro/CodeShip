@@ -512,7 +512,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
       const bridge = path.join(tempDir, "bridge");
       const link = path.join(bridge, ".claude", "skills");
       const linkShared = (bridgeDirectory: string) =>
-        linkClaudeSharedSkills(bridgeDirectory).pipe(
+        linkClaudeSharedSkills(bridgeDirectory, path.join(tempDir, "claude-home")).pipe(
           Effect.provideService(HostProcess.HomeDirectory, home),
         );
 
@@ -533,6 +533,43 @@ it.layer(Layer.mergeAll(NodeServices.layer, isolatedHome))("discoverClaudeSkills
       yield* writeSkill(realFolder, "mine", "---\n---");
       assert.isUndefined(yield* linkShared(path.join(tempDir, "real")));
       assert.isTrue(yield* fs.exists(path.join(realFolder, "mine", "SKILL.md")));
+    }),
+  );
+
+  it.effect("leaves the shared skills to a Claude skills folder that links them itself", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-skills-" }),
+      );
+      const home = path.join(tempDir, "home");
+      const shared = path.join(home, ".agents", "skills");
+      const configDir = path.join(tempDir, "claude-home");
+      const bridge = path.join(tempDir, "bridge");
+      const link = path.join(bridge, ".claude", "skills");
+      const withHome = Effect.provideService(HostProcess.HomeDirectory, home);
+      for (const name of ["review", "audit-full"]) {
+        yield* writeSkill(shared, name, `---\nname: ${name}\n---`);
+      }
+      yield* writeSkill(path.join(configDir, "skills"), "mine", "---\nname: mine\n---");
+      assert.equal(yield* linkClaudeSharedSkills(bridge, configDir).pipe(withHome), bridge);
+
+      // A machine setup links only the shared skills it switches on, here not audit-full.
+      yield* fs.symlink(path.join(shared, "review"), path.join(configDir, "skills", "review"));
+
+      assert.isUndefined(yield* linkClaudeSharedSkills(bridge, configDir).pipe(withHome));
+      assert.isFalse(yield* fs.exists(path.join(link, "audit-full")));
+      assert.isTrue(yield* fs.exists(path.join(shared, "audit-full", "SKILL.md")));
+      assert.deepEqual(
+        (yield* discoverClaudeSkills({ homePath: configDir }).pipe(withHome)).map(
+          (skill) => skill.path,
+        ),
+        [
+          path.join(configDir, "skills", "mine", "SKILL.md"),
+          path.join(configDir, "skills", "review", "SKILL.md"),
+        ],
+      );
     }),
   );
 

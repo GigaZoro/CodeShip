@@ -156,6 +156,7 @@ import {
   claudeLaunchArgDirectories,
   discoverClaudeSkills,
   linkClaudeSharedSkills,
+  resolveClaudeConfigDirPath,
 } from "../../provider/Drivers/ClaudeSkills.ts";
 import {
   claudeProjectConfigRoot,
@@ -4849,15 +4850,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
   // Checked every turn so a shared folder created later reaches running threads.
   const sharedSkillsLock = yield* Semaphore.make(1);
-  const linkSharedSkills =
-    adapterOptions.sharedSkillsBridgeDirectory === undefined
+  const linkSharedSkills = (cwd: string | null) => {
+    const bridgeDirectory = adapterOptions.sharedSkillsBridgeDirectory;
+    return bridgeDirectory === undefined
       ? Effect.undefined
       : sharedSkillsLock.withPermits(1)(
-          linkClaudeSharedSkills(adapterOptions.sharedSkillsBridgeDirectory).pipe(
+          resolveClaudeConfigDirPath(
+            adapterOptions.settings,
+            adapterOptions.environment,
+            cwd ?? undefined,
+          ).pipe(
+            Effect.flatMap((configDirPath) =>
+              linkClaudeSharedSkills(bridgeDirectory, configDirPath),
+            ),
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, path),
           ),
         );
+  };
 
   const userInvocableSkills = (cwd: string | null, text: string) =>
     text.search(SKILL_MENTION_PATTERN) === -1
@@ -10840,7 +10850,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
-            sharedSkillsDirectory: yield* linkSharedSkills,
+            sharedSkillsDirectory: yield* linkSharedSkills(turnInput.runtimePolicy.cwd),
             settings: adapterOptions.settings,
             // Claude Code would drop the turn's own fields with --settings it rejects, and keep
             // a restriction the tool search switch had made valid.

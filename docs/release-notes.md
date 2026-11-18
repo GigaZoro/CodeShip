@@ -1,3 +1,7 @@
+## 2026-11-19 — Claude loads only the shared skills its own skills folder picks
+
+- When a Claude account's skills folder links skills from `~/.agents/skills` itself, as a machine setup does for the shared skills it switches on, T3.CodeShip no longer adds the whole shared folder to Claude sessions. Before, every Claude session also listed the shared skills that folder leaves out, which cost context and let them be invoked. The composer's skill list follows the same rule. Without such links, Claude still gets every skill in `~/.agents/skills`, as before.
+
 ## 2026-11-19 — Monitoring shows where your chats' time went
 
 - A new **Monitoring** page analyzes every settled chat: how its lifetime split between the model working, commands, tools, approvals, the queue, usage limits, helpers and waiting for you; its runs, failures, tokens, cost, cache reuse and how often it was reopened; and its weak points, such as slow, repeated or failing commands, usage-limit stops, restarts and long queues, each with advice. It ranks weak points across chats, groups shell commands by step (install, build, test, ship and so on), shows a daily trend and breakdowns by project, kind and model, and opens a deep dive for one chat with a timeline of its runs and helpers. Commands show as you would type them, without the shell wrapper, and steps started by a helper carry the helper's name. It updates by itself whenever a chat settles. Open it from the sidebar, the command palette or, on mobile, Settings.

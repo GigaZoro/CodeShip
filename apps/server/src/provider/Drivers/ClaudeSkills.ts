@@ -492,30 +492,65 @@ export function claudeLaunchArgDirectories(launchArgs?: string): ReadonlyArray<s
   return directories;
 }
 
-/** Skills shared by every agent. Codex, Cursor and OpenCode read this folder themselves. */
-const sharedSkillsDirectory = (path: Path.Path, home: string) =>
-  path.join(home, ".agents", "skills");
+/**
+ * `~/.agents/skills`, unless Claude's own `skills` folder links skills from it: then that folder
+ * picks the shared skills (a machine setup links only those it switches on), and adding the whole
+ * folder would bring back the rest. Codex, Cursor and OpenCode read it themselves.
+ */
+const sharedSkillsForClaude = Effect.fn("sharedSkillsForClaude")(function* (
+  configDirPath: string,
+): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const shared = path.join(yield* HostProcess.HomeDirectory, ".agents", "skills");
+  const sharedTarget = yield* fileSystem.realPath(shared).pipe(Effect.option);
+  if (Option.isNone(sharedTarget)) return undefined;
+  const platform = yield* HostProcess.Platform;
+  // Windows paths are case-insensitive, and a junction's target need not match the home folder's case.
+  const foldCase = (value: string) => (platform === "win32" ? value.toLowerCase() : value);
+  const ownSkills = path.join(configDirPath, "skills");
+  const entries = yield* fileSystem
+    .readDirectory(ownSkills)
+    .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+  const linkedSharedSkill = yield* Effect.findFirst(entries, (entry) =>
+    fileSystem.realPath(path.join(ownSkills, entry)).pipe(
+      Effect.map((target) => foldCase(path.dirname(target)) === foldCase(sharedTarget.value)),
+      Effect.orElseSucceed(() => false),
+    ),
+  );
+  return Option.isSome(linkedSharedSkill) ? undefined : shared;
+});
 
 /**
  * Claude reads no shared skills folder, but loads `.claude/skills` in an added directory.
  * Links `bridgeDirectory/.claude/skills` to the shared folder and returns the directory to add,
- * or undefined when there is no shared folder or it cannot be linked.
+ * or undefined when Claude's own skills folder decides the shared skills, there is no shared
+ * folder, or it cannot be linked.
  */
 export const linkClaudeSharedSkills = Effect.fn("linkClaudeSharedSkills")(function* (
   bridgeDirectory: string,
+  configDirPath: string,
 ): Effect.fn.Return<string | undefined, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
-  const target = sharedSkillsDirectory(path, yield* HostProcess.HomeDirectory);
   const link = path.join(bridgeDirectory, ".claude", "skills");
-  const linked = Effect.all([fileSystem.realPath(link), fileSystem.realPath(target)]).pipe(
-    Effect.map(([actual, expected]) => actual === expected),
-    Effect.orElseSucceed(() => false),
-  );
   return yield* Effect.gen(function* () {
-    if (!(yield* fileSystem.exists(target))) return undefined;
-    if (yield* linked) return bridgeDirectory;
+    const target = yield* sharedSkillsForClaude(configDirPath);
+    if (target === undefined) {
+      // Sessions started with an earlier turn's link would keep seeing every shared skill.
+      const isLink = yield* fileSystem.readLink(link).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+      if (isLink) yield* fileSystem.remove(link);
+      return undefined;
+    }
+    const linked = yield* Effect.all([fileSystem.realPath(link), fileSystem.realPath(target)]).pipe(
+      Effect.map(([actual, expected]) => actual === expected),
+      Effect.orElseSucceed(() => false),
+    );
+    if (linked) return bridgeDirectory;
     // Missing, dangling, or pointing elsewhere. A non-recursive remove never empties a real folder.
     yield* fileSystem
       .remove(link)
@@ -525,7 +560,7 @@ export const linkClaudeSharedSkills = Effect.fn("linkClaudeSharedSkills")(functi
     return bridgeDirectory;
   }).pipe(
     Effect.catch((error) =>
-      Effect.logWarning("Shared skills are not linked for Claude.", { link, target, error }).pipe(
+      Effect.logWarning("Shared skills are not linked for Claude.", { link, error }).pipe(
         Effect.as(undefined),
       ),
     ),
@@ -558,6 +593,7 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
   // that: dispatch points at the file. Claude Code still lists its skills as slash commands.
   if (Option.isNone(settings)) return [];
   const { skillOverrides, enabledPlugins } = readSkillSettings(settings.value);
+  const sharedSkills = yield* sharedSkillsForClaude(configDirPath);
 
   const roots: ReadonlyArray<ClaudeSkillRoot> = [
     { directory: path.join(configDirPath, "skills"), scope: "user" },
@@ -568,7 +604,7 @@ export const discoverClaudeSkills = Effect.fn("discoverClaudeSkills")(function* 
         directory: path.join(path.resolve(cwd ?? ".", directory), ".claude", "skills"),
         scope: "project" as const,
       })),
-    { directory: sharedSkillsDirectory(path, yield* HostProcess.HomeDirectory), scope: "user" },
+    ...(sharedSkills === undefined ? [] : [{ directory: sharedSkills, scope: "user" as const }]),
     ...(yield* discoverPluginSkillRoots(
       configDirPath,
       cwd,
