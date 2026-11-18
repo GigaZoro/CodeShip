@@ -1725,10 +1725,11 @@ const make = Effect.gen(function* () {
     const stoppedChildThreadIds = new Set<ThreadId>();
     for (const task of subagents) {
       if (task.origin !== "app_owned") continue;
-      // A command ends with its result here; the command runner then stops its processes.
+      // A command ends with its result here; the command runner then stops its processes. Its
+      // completion is this thread's own command, so like a remote task's it takes remoteDispatch.
       if (task.command !== undefined) {
         if (task.result !== null) continue;
-        yield* dispatch({
+        yield* (input.remoteDispatch ?? dispatch)({
           type: "delegated_task.command.complete",
           commandId: CommandId.make(`${input.commandId}:stop:${task.id}`),
           parentThreadId: input.threadId,

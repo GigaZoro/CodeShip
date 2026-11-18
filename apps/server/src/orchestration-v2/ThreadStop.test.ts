@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import {
   CommandId,
   ContextTransferId,
@@ -42,6 +42,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1312,6 +1313,73 @@ it.effect("a delegated task that cannot be stopped fails the walk after its sibl
     );
     assert.isTrue(Exit.isFailure(walked));
     assert.deepEqual((yield* threadState(childThreadId)).runs, ["interrupted"]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("cancelling a delegated task ends its child's unfinished command task", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+    const parentThreadId = ThreadId.make("thread:cancel-command-task");
+    yield* createWatchingThread(parentThreadId, 12);
+    yield* send(parentThreadId, "work", "start_immediately");
+    const childThreadId = yield* delegate(parentThreadId, "task that runs a command");
+    const childRun = (yield* orchestrator.getThreadProjection(childThreadId)).runs.at(-1)!;
+    yield* orchestrator.dispatch({
+      type: "delegated_task.command.request",
+      commandId: CommandId.make("command:cancel-command-task"),
+      parentThreadId: childThreadId,
+      parentRunId: childRun.id,
+      parentNodeId: childRun.rootNodeId!,
+      title: "Checks",
+      driver: ProviderDriverKind.make("command"),
+      providerInstanceId: instanceId,
+      command: {
+        command: "vp run check:changed",
+        cwd: "/work/checkout",
+        logPath: "/state/logs/commands/task/output.log",
+        timeoutMinutes: 60,
+      },
+    });
+    const task = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents[0]!;
+    const stopCommandId = CommandId.make("stop:cancel-command-task");
+    // Thread locks are not reentrant, so asking again for a lock this flow holds never returns.
+    const withLock = executor.withLock;
+    const refuseHeldLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+      threadId,
+      effect,
+    ) =>
+      executor.activeKeys.pipe(
+        Effect.flatMap((held) =>
+          held.includes(threadId)
+            ? Effect.die(`${threadId} was locked again while held`)
+            : withLock(threadId, effect),
+        ),
+      );
+    const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(refuseHeldLock);
+
+    yield* orchestrator
+      .cancelDelegatedTask({
+        parentThreadId,
+        taskId: task.id,
+        command: {
+          type: "thread.stop",
+          commandId: stopCommandId,
+          threadId: childThreadId,
+          stopDelegatedTasks: false,
+        },
+        stopDescendants: (remoteDispatch) =>
+          threads.stopDelegatedTasks({
+            threadId: childThreadId,
+            commandId: stopCommandId,
+            remoteDispatch,
+          }),
+      })
+      .pipe(Effect.ensuring(Effect.sync(() => lockSpy.mockRestore())));
+
+    const commandTask = (yield* orchestrator.getThreadProjection(childThreadId)).subagents[0]!;
+    assert.equal(commandTask.status, "interrupted");
   }).pipe(Effect.provide(layerTest)),
 );
 
