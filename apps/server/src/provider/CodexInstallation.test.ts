@@ -29,13 +29,19 @@ const asset = {
   url: "https://github.com/openai/codex/releases/download/test/package.tar.gz",
   archiveBytes: archive.length,
 };
-// A host-runnable stand-in: the "#!" header makes it count as a launcher; the file is data the fake spawner below reads, because a shell script
+// A host-runnable stand-in: the file is data the fake spawner below reads, because a shell script
 // cannot be executed on Windows and a compiled binary cannot be built on every host.
-const localFixture = (local: {
+// A "#!" header makes it a script launcher; an ELF header stands for a native binary, which runs only
+// with its codex-code-mode-host beside it.
+type LocalCodex = {
   version: string;
   appServerFails?: boolean;
   versionFails?: boolean;
-}) => `#!fake-codex\n${JSON.stringify(local)}`;
+  native?: boolean;
+  codeModeHost?: boolean;
+};
+const localFixture = (local: LocalCodex) =>
+  `${local.native ? "\x7fELF" : "#!fake-codex"}\n${JSON.stringify(local)}`;
 const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   input: {
     options?: Partial<CodexInstallation.CodexInstallationOptions>;
@@ -43,7 +49,7 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
     body?: Stream.Stream<Uint8Array, HttpClientError.HttpClientError>;
     downloadStatus?: number;
     baseDir?: string;
-    local?: { version: string; appServerFails?: boolean; versionFails?: boolean };
+    local?: LocalCodex;
     platform?: NodeJS.Platform;
     spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     runtimeRenameFailures?: number;
@@ -58,6 +64,12 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   if (input.local) {
     yield* fs.makeDirectory(localDirectory, { recursive: true });
     yield* fs.writeFileString(localBinaryPath, localFixture(input.local), { mode: 0o755 });
+    if (input.local.codeModeHost)
+      yield* fs.writeFileString(
+        `${localDirectory}/codex-code-mode-host${input.platform === "win32" ? ".exe" : ""}`,
+        "host",
+        { mode: 0o755 },
+      );
   }
   let downloads = 0;
   const crypto = yield* Crypto.Crypto;
@@ -178,11 +190,17 @@ const terminalState = (installation: CodexInstallation.CodexInstallation["Servic
     Effect.map(Option.getOrThrow),
   );
 
-it.effect.each(["0.156.0", "0.156.1", "0.156.2", "0.157.0"])(
-  "reuses installed Codex %s without downloading or taking ownership of it",
-  (version) =>
+it.effect.each([
+  { version: "0.156.0" },
+  { version: "0.156.1" },
+  { version: "0.156.2" },
+  { version: "0.157.0" },
+  { version: "0.156.1", native: true, codeModeHost: true },
+])(
+  "reuses installed Codex %j without downloading or taking ownership of it",
+  ({ version, ...local }) =>
     Effect.gen(function* () {
-      const h = yield* makeHarness({ local: { version } });
+      const h = yield* makeHarness({ local: { version, ...local } });
       expect(yield* h.installation.start).toMatchObject({
         source: "local",
         phase: "succeeded",
@@ -217,6 +235,7 @@ it.effect.each([
   { version: "unknown" },
   { version: "0.156.1", appServerFails: true },
   { version: "0.156.1", versionFails: true },
+  { version: "0.156.1", native: true },
 ])("downloads the pinned release when the local CLI is unsupported or broken: %j", (local) =>
   Effect.gen(function* () {
     const h = yield* makeHarness({ local });
@@ -293,18 +312,24 @@ it.effect("uses bundled Codex compatibility when the remote manifest omits its p
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each(["volta-shim", "mise", "aqua-proxy"])(
-  "runs a launcher symlink as codex without resolving it to %s",
-  (name) =>
-    Effect.gen(function* () {
-      const h = yield* makeHarness({ local: { version: "0.156.1" } });
-      const launcher = `${h.baseDir}/${name}`;
-      yield* h.fs.rename(h.localBinaryPath, launcher);
-      yield* h.fs.symlink(launcher, h.localBinaryPath);
-      expect(yield* h.installation.start).toMatchObject({ source: "local", phase: "succeeded" });
-      expect((yield* h.installation.resolve()).executablePath).toBe(h.localBinaryPath);
-      expect(h.downloads()).toBe(0);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+// A native launcher has no adjacent codex-code-mode-host; only its name lets it run.
+it.effect.each([
+  { kind: "script", name: "codex-wrapper" },
+  { kind: "native", name: "volta-shim" },
+  { kind: "native", name: "mise" },
+  { kind: "native", name: "aqua-proxy" },
+] as const)("runs a $kind $name launcher symlink as codex without resolving it", ({ kind, name }) =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({ local: { version: "0.156.1" } });
+    const launcher = `${h.baseDir}/${name}`;
+    const local = { version: "0.156.1", native: kind === "native" };
+    yield* h.fs.writeFileString(launcher, localFixture(local), { mode: 0o755 });
+    yield* h.fs.remove(h.localBinaryPath);
+    yield* h.fs.symlink(launcher, h.localBinaryPath);
+    expect(yield* h.installation.start).toMatchObject({ source: "local", phase: "succeeded" });
+    expect((yield* h.installation.resolve()).executablePath).toBe(h.localBinaryPath);
+    expect(h.downloads()).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect(

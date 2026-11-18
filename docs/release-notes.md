@@ -1,3 +1,7 @@
+## 2026-11-19 — Codex installation tests cover native launchers again
+
+- The Codex installation tests tell a native `volta-shim`, `mise` or `aqua-proxy` launcher apart from a script launcher again, and check both sides of the rule for a native Codex: with its code-mode host beside it, it is used; without it, the managed download replaces it. Since every test fixture became a script, losing either rule would have gone unnoticed. No change to the app.
+
 ## 2026-11-19 — Release notes keep their order when a rebase meets another shipment's notes
 
 - Maintainers: when a rebase or merge meets new entries on both sides of `docs/release-notes.md`, a merge driver now places the other side's new entries by date. `vp i` sets it up, and the landing turn uses it on every machine. Before, git could splice an entry into the middle of another one's lines, or leave a conflict, so a landing failed its format check after waiting for its turn. An entry that was edited, dropped or reordered still merges as text. No change to the app.
