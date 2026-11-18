@@ -17145,22 +17145,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchWithReceiptEffect(command),
     );
     // A fork holds its source's lock, so a source deletion and its fork never interleave. It takes
-    // both locks at once, since its target can meanwhile take any place in the lock order. Dispatch
-    // rejects a side chat fork from a side chat and a fork onto an existing thread, so they skip it.
-    if (command.type === "thread.fork" && command.sourceThreadId !== command.targetThreadId) {
-      const source = yield* findThread(command.sourceThreadId);
-      const target = yield* findThread(command.targetThreadId);
-      const skipsSourceLock =
-        source === null ||
-        target !== null ||
-        (command.sideChat === true && source.lineage.sideChat === true);
-      return yield* skipsSourceLock
-        ? dispatch
-        : threadDispatch.withLocks(
-            [command.sourceThreadId, command.targetThreadId],
-            dispatchWithReceiptEffect(command),
-          );
-    }
+    // both locks at once: either thread can be created or deleted before it gets them, so no
+    // earlier read decides which it needs, and no lock order between them holds.
+    if (command.type === "thread.fork")
+      return yield* threadDispatch.withLocks(
+        [command.sourceThreadId, command.targetThreadId],
+        dispatchWithReceiptEffect(command),
+      );
     if (command.type === "thread.delete")
       return yield* threadDispatch.withDeletionLock(
         threadDispatch.withLock(

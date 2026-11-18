@@ -1166,7 +1166,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
       const deleteHoldsParent = yield* Deferred.make<void>();
       const releaseDelete = yield* Deferred.make<void>();
       const forkWaitsForParent = yield* Deferred.make<void>();
-      const withLock = executor.withLock;
+      const { withLock, withLocks } = executor;
       let parentLockRequests = 0;
       const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
         key,
@@ -1188,7 +1188,17 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
               ),
         );
       };
+      const observeLocks: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLocks"] = (
+        keys,
+        effect,
+      ) =>
+        keys.includes(parentId)
+          ? Deferred.succeed(forkWaitsForParent, undefined).pipe(
+              Effect.andThen(withLocks(keys, effect)),
+            )
+          : withLocks(keys, effect);
       const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+      const locksSpy = vi.spyOn(executor, "withLocks").mockImplementation(observeLocks);
       yield* Effect.gen(function* () {
         const deleteFiber = yield* orchestrator
           .dispatch({
@@ -1216,7 +1226,14 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
         yield* Fiber.join(forkFiber);
         assert.isNotNull((yield* orchestrator.getThreadProjection(parentId)).thread.deletedAt);
         assert.isNotNull((yield* orchestrator.getThreadProjection(sideChatId)).thread.deletedAt);
-      }).pipe(Effect.ensuring(Effect.sync(() => lockSpy.mockRestore())));
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            lockSpy.mockRestore();
+            locksSpy.mockRestore();
+          }),
+        ),
+      );
     }),
   );
 
@@ -1334,6 +1351,61 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
     }),
   );
 
+  // A command can create the source before the fork gets its locks, so the fork waits for the
+  // source's lock even while no source exists.
+  it.effect("a fork of a missing source waits for that source's lock", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const sourceId = ThreadId.make("runtime-fork-missing-source");
+      const holdsSource = yield* Deferred.make<void>();
+      const releaseSource = yield* Deferred.make<void>();
+      const holder = yield* executor
+        .withLock(
+          sourceId,
+          Deferred.succeed(holdsSource, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseSource)),
+          ),
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(holdsSource);
+      const sourceRequested = yield* Deferred.make<void>();
+      const { withLocks } = executor;
+      const observeLocks: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLocks"] = (
+        keys,
+        effect,
+      ) =>
+        keys.includes(sourceId)
+          ? Deferred.succeed(sourceRequested, undefined).pipe(
+              Effect.andThen(withLocks(keys, effect)),
+            )
+          : withLocks(keys, effect);
+      const locksSpy = vi.spyOn(executor, "withLocks").mockImplementation(observeLocks);
+      yield* Effect.gen(function* () {
+        const forkFiber = yield* orchestrator
+          .dispatch({
+            type: "thread.fork",
+            commandId: CommandId.make("runtime-fork-missing-source-fork"),
+            sourceThreadId: sourceId,
+            targetThreadId: ThreadId.make("runtime-fork-missing-source-target"),
+            sourcePoint: { type: "latest_stable" },
+            sideChat: true,
+            createdBy: "user",
+            creationSource: "web",
+          })
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        const first = yield* Effect.raceFirst(
+          Deferred.await(sourceRequested).pipe(Effect.as("waits for the source")),
+          Fiber.await(forkFiber).pipe(Effect.as("finished without it")),
+        );
+        assert.strictEqual(first, "waits for the source");
+        yield* Deferred.succeed(releaseSource, undefined);
+        yield* Fiber.join(holder);
+        yield* Fiber.join(forkFiber);
+      }).pipe(Effect.ensuring(Effect.sync(() => locksSpy.mockRestore())));
+    }),
+  );
+
   it.effect("deleted sources keep the html_render pages any live fork shows", () =>
     Effect.gen(function* () {
       const projects = yield* ProjectService.ProjectService;
@@ -1437,11 +1509,18 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
             planned && isHeld ? Queue.offer(blocked, undefined) : Effect.void,
           ),
         );
-      const { withLock, withDeletionLock } = executor;
+      const { withLock, withLocks, withDeletionLock } = executor;
       const observeLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
         key,
         effect,
       ) => requestsHeld(Effect.succeed(key === first)).pipe(Effect.andThen(withLock(key, effect)));
+      const observeLocks: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLocks"] = (
+        keys,
+        effect,
+      ) =>
+        requestsHeld(Effect.succeed(keys.includes(first))).pipe(
+          Effect.andThen(withLocks(keys, effect)),
+        );
       const observeDeletion: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withDeletionLock"] =
         (effect) =>
           requestsHeld(Ref.get(deletionHeld)).pipe(
@@ -1455,6 +1534,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
             ),
           );
       const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observeLock);
+      const locksSpy = vi.spyOn(executor, "withLocks").mockImplementation(observeLocks);
       const deletionSpy = vi
         .spyOn(executor, "withDeletionLock")
         .mockImplementation(observeDeletion);
@@ -1483,6 +1563,7 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
         Effect.ensuring(
           Effect.sync(() => {
             lockSpy.mockRestore();
+            locksSpy.mockRestore();
             deletionSpy.mockRestore();
             attachmentSpy.mockRestore();
           }),
