@@ -1,3 +1,7 @@
+## 2026-11-19 — Windows Git driver checks
+
+- The Git driver tests use local repositories to check SSH errors, nested paths and submodule checkouts on Windows. Related tests run in separate files within the existing time budget.
+
 ## 2026-11-19 — Fresh runs can switch providers when usage runs out
 
 - A new chat or scheduled run can start on another provider when its primary provider has no room. Scheduled tasks can set ordered model alternatives and show which model last ran and whether a usage limit caused the switch.
