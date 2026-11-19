@@ -3,6 +3,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import type * as NodeStream from "node:stream";
 import * as NodeStreamPromises from "node:stream/promises";
+import * as NodeURL from "node:url";
+import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
@@ -278,34 +280,115 @@ describe("SpawnWorker", () => {
       }),
   );
 
-  // Last: it closes the pool that spawnPiped shares.
-  it.live("keeps a child working after its pool closes, then ends its launcher", () =>
+  it.live("keeps a child working after its spawner layer closes, then ends its launcher", () =>
     Effect.gen(function* () {
       // A child's scope can outlive the spawner layer whose release closes the pool.
       for (const finish of ["ends its input", "is stopped"] as const) {
-        const child = SpawnWorker.spawnPiped(
-          process.execPath,
-          ["-e", "process.stdin.pipe(process.stdout)"],
-          {},
-        );
-        yield* Effect.promise(() => new Promise((resolve) => child.once("spawn", resolve)));
-        const launcherExited = new Promise((resolve) => child.worker.worker.once("exit", resolve));
-        let output = "";
-        child.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
-        child.worker.pool.close();
-        const settled: Array<string | undefined> = [];
-        const settle = (error?: Error | null) => settled.push(error?.message);
-        if (finish === "ends its input") {
-          child.stdin.write("input", settle);
-          child.stdin.end(settle);
-        } else child.kill();
-        yield* Effect.promise(() => launcherExited);
-        expect([finish, output, child.exitCode, child.signalCode, settled]).toEqual(
-          finish === "ends its input"
-            ? [finish, "input", 0, null, [undefined, undefined]]
-            : [finish, "", null, "SIGTERM", []],
-        );
+        const launcherEnded = Promise.withResolvers<void>();
+        const terminate = NodeWorkerThreads.Worker.prototype.terminate;
+        using _terminate = vi
+          .spyOn(NodeWorkerThreads.Worker.prototype, "terminate")
+          .mockImplementation(function (this: NodeWorkerThreads.Worker) {
+            const exited = terminate.call(this);
+            void exited.then(() => launcherEnded.resolve());
+            return exited;
+          });
+        yield* Effect.gen(function* () {
+          const child = yield* Effect.gen(function* () {
+            const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+            return yield* spawner.spawn(
+              node(
+                "process.stdin.pipe(process.stdout)",
+                [],
+                finish === "ends its input"
+                  ? { stdin: Stream.encodeText(Stream.make("input")) }
+                  : {},
+              ),
+            );
+          }).pipe(Effect.provide(layer));
+          if (finish === "ends its input") {
+            expect(yield* text(child.stdout)).toBe("input");
+            expect(yield* child.exitCode).toBe(0);
+          } else {
+            yield* child.kill();
+            expect(yield* child.isRunning).toBe(false);
+          }
+        }).pipe(Effect.scoped);
+        yield* Effect.promise(() => launcherEnded.promise);
       }
     }),
+  );
+
+  it.live(
+    "closes a child whose output the caller destroys after it exits, while a descendant holds it",
+    () =>
+      Effect.gen(function* () {
+        const child = SpawnWorker.spawnPiped(
+          process.execPath,
+          [
+            "-e",
+            `const descendant = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"] });
+           process.stderr.write(String(descendant.pid), () => process.exit(0));`,
+          ],
+          {},
+        );
+        let pid = "";
+        child.stderr.setEncoding("utf8").on("data", (chunk: string) => (pid += chunk));
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        yield* Effect.promise(() =>
+          Promise.all([exited, NodeStreamPromises.finished(child.stderr)]),
+        );
+        const descendant = Number(pid);
+        // A pid of 0 would signal this whole process group.
+        expect(Number.isSafeInteger(descendant) && descendant > 0).toBe(true);
+        yield* Effect.addFinalizer(() => Effect.sync(() => process.kill(descendant)));
+        const closed = new Promise((resolve) => child.once("close", resolve));
+        child.stdout.destroy();
+        yield* Effect.promise(() => closed);
+      }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "takes a file URL as the working directory, and an unref before the start is reported",
+    () =>
+      Effect.gen(function* () {
+        const cwd = NodeOS.tmpdir();
+        const located = SpawnWorker.spawnPiped(
+          process.execPath,
+          ["-e", "process.stdout.write(process.cwd())"],
+          {
+            cwd: NodeURL.pathToFileURL(cwd),
+          },
+        );
+        let output = "";
+        located.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+        yield* Effect.promise(() => new Promise((resolve) => located.once("close", resolve)));
+        expect(output).toBe(NodePath.resolve(cwd));
+        const pool = located.worker.pool;
+        // Node refuses this URL before it starts anything, and so must the launch it never sends.
+        expect(() =>
+          SpawnWorker.spawnPiped(process.execPath, [], { cwd: new URL("https://example.com/") }),
+        ).toThrow(expect.objectContaining({ code: "ERR_INVALID_URL_SCHEME" }));
+        expect([...pool.workers].map((worker) => [worker.launching, worker.children.size])).toEqual(
+          [...pool.workers].map(() => [0, 0]),
+        );
+        // A referenced launcher shows as a MessagePort; an unref() made during the launch releases it.
+        const referenced = () =>
+          process.getActiveResourcesInfo().filter((resource) => resource === "MessagePort").length;
+        const idle = referenced();
+        const quiet = SpawnWorker.spawnPiped(
+          process.execPath,
+          ["-e", "process.stdin.resume()"],
+          {},
+        );
+        quiet.unref();
+        const started = yield* Effect.promise(
+          () => new Promise<number>((resolve) => quiet.once("spawn", () => resolve(referenced()))),
+        );
+        const closed = new Promise((resolve) => quiet.once("close", resolve));
+        quiet.kill();
+        yield* Effect.promise(() => closed);
+        expect(started).toBe(idle);
+      }),
   );
 });

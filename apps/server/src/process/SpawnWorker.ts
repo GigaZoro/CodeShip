@@ -2,6 +2,7 @@
 import * as NodeEvents from "node:events";
 import type * as NodeChildProcess from "node:child_process";
 import * as NodeStream from "node:stream";
+import * as NodeURL from "node:url";
 import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeChildProcessSpawner from "@effect/platform-node-shared/NodeChildProcessSpawner";
 import * as Effect from "effect/Effect";
@@ -231,9 +232,10 @@ class WorkerChild
       this.#finals.set(fd, callback);
       this.worker.post({ type: "end", id: this.id, fd });
     };
-    // A caller that destroys its end closes the child pipe, as it would with a real pipe.
+    // A caller that destroys its end closes the child pipe, as it would with a real pipe. After the
+    // exit too: a descendant can hold the pipe open, and the child closes only once it is shut.
     const destroy = (error: Error | null, callback: (error?: Error | null) => void) => {
-      if (!this.exited) this.worker.post({ type: "destroy", id: this.id, fd });
+      if (!this.#abandoned) this.worker.post({ type: "destroy", id: this.id, fd });
       callback(error);
     };
     if (fd === 0) return new NodeStream.Writable({ write, final, destroy });
@@ -349,9 +351,28 @@ class SpawnWorker {
     const io = options.stdio;
     const stdio =
       typeof io === "string" || io === undefined ? [io ?? "pipe", io ?? "pipe", io ?? "pipe"] : io;
-    const child = new WorkerChild(this, id, stdio);
     // An AbortSignal cannot cross to the worker, so this thread kills on abort as Node would.
     const { signal, ...rest } = options;
+    // Sent before the child is registered: an option the worker cannot receive throws here.
+    try {
+      this.post({
+        type: "spawn",
+        id,
+        command,
+        args: [...args],
+        options: {
+          ...rest,
+          cwd: rest.cwd instanceof URL ? NodeURL.fileURLToPath(rest.cwd) : rest.cwd,
+          stdio,
+          // A worker's process.env is a copy from when it started; children get the server's current one.
+          env: rest.env ?? { ...process.env },
+        },
+      });
+    } catch (error) {
+      this.pool.release(this);
+      throw error;
+    }
+    const child = new WorkerChild(this, id, stdio);
     if (signal !== undefined) {
       const abort = () => child.kill();
       if (signal.aborted) queueMicrotask(abort);
@@ -363,14 +384,6 @@ class SpawnWorker {
     this.children.set(id, child);
     this.launching++;
     this.syncRef();
-    this.post({
-      type: "spawn",
-      id,
-      command,
-      args: [...args],
-      // A worker's process.env is a copy from when it started; children get the server's current one.
-      options: { ...rest, stdio, env: rest.env ?? { ...process.env } },
-    });
     return child;
   }
 
@@ -388,6 +401,8 @@ class SpawnWorker {
     switch (message.type) {
       case "spawn":
         this.launching--;
+        // An unref() made while the launch was in flight takes effect now.
+        this.syncRef();
         child.spawned = true;
         child.pid = message.pid;
         if (message.pid !== undefined) {
