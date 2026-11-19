@@ -4,7 +4,7 @@
 // cannot move under the checked tree and one verification covers the landed tree.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { MERGE_DRIVER_CONFIG } = require("./release-notes.cjs");
+const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
 const TURN_ENV = "T3_LANDING_TURN";
@@ -191,6 +191,9 @@ function land({ cwd, remote, check, branch = "main", ...rest }) {
   // so the pre-push hook would refuse it only after the whole check.
   const uncommitted = git(cwd, ["status", "--porcelain"]).stdout;
   if (uncommitted) return { status: "uncommitted", files: uncommitted.split("\n") };
+  // Found before the wait, not after a rebase that breaks the notes and checks that fail on them.
+  const problem = notesMergeProblem(cwd);
+  if (problem) throw new Error(problem);
   return withTurn({ cwd, remote, ...rest }, (turn) => {
     git(cwd, ["fetch", "--quiet", "--no-tags", remote, branch]);
     const base = git(cwd, ["rev-parse", "FETCH_HEAD"]).stdout;

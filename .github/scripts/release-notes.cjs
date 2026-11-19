@@ -5,8 +5,9 @@ const path = require("node:path");
 const NOTES_PATH = "docs/release-notes.md";
 // .gitattributes names this driver for NOTES_PATH. `configure`, which `vp i` runs, sets it for manual rebases and
 // merges; the landing turn passes it to its own rebase.
+const MERGE_DRIVER = "release-notes";
 const MERGE_DRIVER_CONFIG = [
-  ["merge.release-notes.driver", "node .github/scripts/release-notes.cjs merge %O %A %B"],
+  [`merge.${MERGE_DRIVER}.driver`, "node .github/scripts/release-notes.cjs merge %O %A %B"],
 ];
 
 function splitEntries(text) {
@@ -123,6 +124,25 @@ function mergeFiles(basePath, oursPath, theirsPath) {
   return text.status ?? 1;
 }
 
+/**
+ * Why rebases and merges in `cwd` would not merge NOTES_PATH with the driver, or null. The script that asks comes from
+ * a tree whose .gitattributes names the driver, so any other value, unspecified included, is a local override.
+ */
+function notesMergeProblem(cwd, env = process.env) {
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8", env });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
+    return result.stdout;
+  };
+  const value = git("check-attr", "-z", "merge", "--", NOTES_PATH).split("\0")[2];
+  if (value === MERGE_DRIVER) return null;
+  // It outranks .gitattributes, and no `-c` option overrides it.
+  const local = path.resolve(cwd, git("rev-parse", "--git-path", "info/attributes").trim());
+  const merge = value === "unspecified" ? "no merge attribute" : `the merge attribute \`${value}\``;
+  return `release-notes: rebases and merges here merge ${NOTES_PATH} with ${merge} instead of its driver, which can break its entries. Remove the line for it from ${local}, and keep the one in .gitattributes.`;
+}
+
 function configureMergeDriver(root) {
   const localVars = spawnSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" });
   if (localVars.status !== 0) return;
@@ -156,6 +176,13 @@ function configureMergeDriver(root) {
       );
     }
   }
+  let problem;
+  try {
+    problem = notesMergeProblem(root, env);
+  } catch (error) {
+    problem = `release-notes: ${error.message}`;
+  }
+  if (problem) process.stderr.write(`${problem}\n`);
 }
 
 function readNotesAt(root, ref) {
@@ -205,5 +232,6 @@ module.exports = {
   MERGE_DRIVER_CONFIG,
   addedReleaseNotes,
   mergeReleaseNotes,
+  notesMergeProblem,
   requireNewReleaseNotes,
 };

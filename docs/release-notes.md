@@ -1,3 +1,7 @@
+## 2026-11-20 — Landings refuse a local merge rule that breaks the release notes
+
+- Maintainers: a landing now stops before it waits for its turn when the checkout's own git attributes give `docs/release-notes.md` another merge than its merge driver, and it names the file to fix. Such an attribute in `.git/info/attributes` outranks the repository's own, so every rebase joined two entries without the blank line between them, and the landing failed its format check only after it had waited for its turn and run its checks. `vp i` warns about it too. No change to the app.
+
 ## 2026-11-20 — Landings wait through a passing network failure
 
 - A landing that waits its turn for `main` no longer ends when one look at the landing lease meets a passing network or sign-in failure. It says so and tries again, and gives up when the failures go on for ten minutes or its six-hour wait runs out. A failed step that does not reach GitHub, such as writing the lease commit, still ends it at once; a failed call to GitHub is tried again even when a local git setting causes it. A landing that could not fetch the current holder's lease no longer takes the turn from that holder. A take of the turn that reached GitHub although git reported it failed or ran out of time now counts as taken instead of leaving the landing waiting hours for its own turn to expire, and one GitHub refused is reported instead of waited out. Each lease check gives up after a minute instead of hanging, and a landing that cannot give its turn back says so.

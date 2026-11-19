@@ -39,6 +39,7 @@ function setup() {
     return dir;
   };
   const seed = clone("seed");
+  fs.copyFileSync(path.join(__dirname, "../../.gitattributes"), path.join(seed, ".gitattributes"));
   fs.writeFileSync(path.join(seed, "base.txt"), "base\n");
   git(seed, "add", ".");
   git(seed, "commit", "-qm", "base");
@@ -122,9 +123,10 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
     const seed = path.join(root, "seed");
     fs.mkdirSync(path.join(seed, ".github/scripts"), { recursive: true });
     fs.mkdirSync(path.join(seed, "docs"));
-    for (const file of [".github/scripts/release-notes.cjs", ".gitattributes"]) {
-      fs.copyFileSync(path.join(__dirname, "../..", file), path.join(seed, file));
-    }
+    fs.copyFileSync(
+      path.join(__dirname, "release-notes.cjs"),
+      path.join(seed, ".github/scripts/release-notes.cjs"),
+    );
     ship(seed, shipped);
     git(seed, "push", "-q", "origin", "HEAD:main");
     const lander = clone("lander");
@@ -132,6 +134,20 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
     const mover = clone("mover");
     ship(mover, newer, shipped);
     git(mover, "push", "-q", "origin", "HEAD:main");
+    // A local attribute outranks .gitattributes. The lander refuses before it waits behind another one's turn.
+    const local = path.join(lander, ".git/info/attributes");
+    fs.mkdirSync(path.dirname(local), { recursive: true });
+    const held = tryAcquire({ cwd: mover, remote: origin, runId: "mover" });
+    const waited = () => assert.fail("waited for the turn");
+    for (const rule of ["merge=union", "!merge"]) {
+      fs.writeFileSync(local, `docs/release-notes.md ${rule}\n`);
+      assert.throws(
+        () => land({ cwd: lander, remote: origin, check: () => true, sleep: waited }),
+        /instead of its driver/,
+      );
+    }
+    release({ cwd: mover, remote: origin }, held);
+    fs.rmSync(local);
 
     const result = land({ cwd: lander, remote: origin, check: () => true });
 

@@ -197,6 +197,7 @@ test("git rebases a shipment over another one's notes through the configured mer
 const withScript = (dir) => {
   fs.mkdirSync(path.join(dir, ".github/scripts"), { recursive: true });
   fs.copyFileSync(__dirname + "/release-notes.cjs", dir + "/.github/scripts/release-notes.cjs");
+  fs.copyFileSync(__dirname + "/../../.gitattributes", dir + "/.gitattributes");
   return dir;
 };
 const configureIn = (dir, env = {}) =>
@@ -266,6 +267,11 @@ test("configure replaces stale values, and warns without failing the install whe
       [overridden.status, /with `true` from .*config\.worktree/.test(overridden.stderr)],
       [0, true],
     );
+    git("config", "--worktree", key, value);
+    fs.mkdirSync(path.join(own, ".git/info"), { recursive: true });
+    fs.writeFileSync(path.join(own, ".git/info/attributes"), "docs/release-notes.md merge=union\n");
+    const union = configureIn(own);
+    assert.deepEqual([union.status, /merge attribute `union`/.test(union.stderr)], [0, true]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
