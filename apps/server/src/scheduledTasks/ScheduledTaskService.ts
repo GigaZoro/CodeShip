@@ -2945,9 +2945,17 @@ export const layer = Layer.effect(
         });
         if (block === null) return false;
         const now = yield* localNow;
+        const following = nextRunAt(current, now);
+        // A daily task would lose its whole day to a limit that lifts within it, so a fixed-time
+        // task that catches up runs once the room returns, unless its next time comes first.
+        const waitsForRoom =
+          current.schedule.type === "once" ||
+          (current.schedule.type === "fixed_time" &&
+            (current.catchUpMissedRun ?? defaultCatchUpMissedRun(current.schedule)) &&
+            (following === null || Date.parse(block.until) < Date.parse(following)));
         const skipped = yield* recordQuietSkip(task, fire, occurrenceUnmoved(task), {
           reason: "usage_limited",
-          next: current.schedule.type === "once" ? block.until : nextRunAt(current, now),
+          next: waitsForRoom ? block.until : following,
           now,
           usageLimit: { driver: block.driver, until: block.until },
         });

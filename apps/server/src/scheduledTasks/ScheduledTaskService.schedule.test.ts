@@ -991,6 +991,66 @@ it.effect.each([
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect.each([
+  { why: "returns before its next time", untilAt: [10, 12], nextAt: [10, 12] },
+  { why: "returns after its next time", untilAt: [11, 9], nextAt: [11, 7] },
+] as const)(
+  "a fixed-time run skipped for usage waits once for the room when it $why",
+  ({ untilAt, nextAt }) =>
+    Effect.gen(function* () {
+      const at = (day: number, hour: number, minute = 0) =>
+        DateTime.makeZonedUnsafe(
+          { year: 2026, month: 11, day, hour, minute, second: 0, millisecond: 0 },
+          { timeZone: DateTime.zoneMakeLocal(), adjustForTimeZone: true },
+        );
+      const isoAt = (day: number, hour: number) =>
+        DateTime.formatIso(DateTime.toUtc(at(day, hour)));
+      yield* TestClock.setTime(DateTime.toEpochMillis(at(10, 6, 59)));
+      const launched = yield* Ref.make<ReadonlyArray<string>>([]);
+      const until = isoAt(untilAt[0], untilAt[1]);
+      const block = yield* Ref.make<AccountRouting.UsageBlock | null>({
+        driver: ProviderDriverKind.make("claude"),
+        until,
+        accounts: [ProviderInstanceId.make("claude_primary")],
+      });
+      const layer = runHistoryLayer(
+        (input) =>
+          Ref.update(launched, (titles) => [...titles, input.title]).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-room"), resumed: false } as never),
+          ),
+        Layer.mock(AccountRouting.AccountRouting)({
+          scheduledRunBlock: () => Ref.get(block),
+          failoverLaunch: (input) => Effect.succeed({ selection: input.selection, failover: null }),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { task } = yield* service.upsert(
+          yield* historyTask("Daily"),
+          ScheduledTaskService.CHANGED_IN_APP,
+        );
+        const waiting = yield* service.subscribeList().pipe(
+          Stream.filter(
+            ({ tasks }) => tasks.find((t) => t.id === task.id)?.nextRunAt !== task.nextRunAt,
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("90 seconds");
+        yield* Fiber.join(waiting);
+        expect((yield* service.list()).tasks.find((t) => t.id === task.id)?.nextRunAt).toBe(
+          isoAt(nextAt[0], nextAt[1]),
+        );
+
+        yield* Ref.set(block, null);
+        yield* TestClock.setTime(Date.parse(isoAt(nextAt[0], nextAt[1])) + 5_000);
+        yield* TestClock.adjust("6 seconds");
+        yield* Effect.yieldNow;
+        expect(yield* Ref.get(launched)).toEqual(["Daily"]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect(
   "skips a scheduled run while memory is short, names the reading, and runs the next once it frees",
   () =>

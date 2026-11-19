@@ -1,3 +1,7 @@
+## 2026-11-19 — A daily scheduled task refused for a usage limit runs when the allowance returns
+
+- A fixed-time scheduled task that catches up missed runs used to lose its whole day when its account was out of usage at its time. It now waits and runs once when the allowance returns, unless its next time comes first. Interval tasks are unchanged.
+
 ## 2026-11-19 — Windows Git driver checks
 
 - The Git driver tests use local repositories to check SSH errors, nested paths and submodule checkouts on Windows. Related tests run in separate files within the existing time budget.
