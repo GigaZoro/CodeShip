@@ -1,4 +1,4 @@
-import type { ESTree } from "@oxlint/plugins";
+import type { ESTree, SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
 type ExpressionWrapper =
@@ -45,6 +45,23 @@ export function getPropertyName(node: unknown): Option.Option<string> {
     }
     return Option.none();
   });
+}
+
+/**
+ * The import a name resolves to where it is used. A value reference resolves only to a value, so a
+ * parameter of that name hides the import and a local type of that name does not.
+ */
+export function importBinding(
+  sourceCode: SourceCode,
+  identifier: AstNode,
+): Option.Option<{ readonly source: string; readonly specifier: AstNode }> {
+  const reference = sourceCode
+    .getScope(identifier)
+    .references.find((candidate) => candidate.identifier === identifier);
+  const def = reference?.resolved?.defs[0];
+  return def?.type === "ImportBinding" && def.parent?.type === "ImportDeclaration"
+    ? Option.some({ source: def.parent.source.value, specifier: def.node })
+    : Option.none();
 }
 
 export function isIdentifier(node: Option.Option<AstNode>, name?: string): boolean {

@@ -1,4 +1,7 @@
 import { defineRule, type ESTree } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { getPropertyName, importBinding } from "../utils.ts";
 
 export default defineRule({
   meta: {
@@ -8,40 +11,17 @@ export default defineRule({
     },
   },
   create(context) {
-    const isEffectImport = (identifier: ESTree.IdentifierReference, member: string) => {
-      let scope = context.sourceCode.getScope(identifier);
-      while (true) {
-        const variable = scope.set.get(identifier.name);
-        if (variable !== undefined) {
-          return variable.defs.some((def) => {
-            if (def.type !== "ImportBinding" || def.parent?.type !== "ImportDeclaration") {
-              return false;
-            }
-            const source = def.parent.source.value;
-            if (source === "effect/Effect") {
-              if (member === "") {
-                return (
-                  def.node.type === "ImportSpecifier" &&
-                  (def.node.imported.type === "Identifier"
-                    ? def.node.imported.name
-                    : def.node.imported.value) === "gen"
-                );
-              }
-              return def.node.type === "ImportNamespaceSpecifier";
-            }
-            return (
-              source === "effect" &&
-              def.node.type === "ImportSpecifier" &&
-              (def.node.imported.type === "Identifier"
-                ? def.node.imported.name
-                : def.node.imported.value) === "Effect"
-            );
-          });
+    const isEffectImport = (identifier: ESTree.IdentifierReference, member: string) =>
+      Option.exists(importBinding(context.sourceCode, identifier), ({ source, specifier }) => {
+        const imported =
+          specifier.type === "ImportSpecifier"
+            ? Option.getOrUndefined(getPropertyName(specifier.imported))
+            : undefined;
+        if (source === "effect/Effect") {
+          return member === "" ? imported === "gen" : specifier.type === "ImportNamespaceSpecifier";
         }
-        if (scope.upper === null) return false;
-        scope = scope.upper;
-      }
-    };
+        return source === "effect" && imported === "Effect";
+      });
 
     const isGeneratorCall = (expression: ESTree.Expression): boolean => {
       if (expression.type !== "CallExpression") return false;

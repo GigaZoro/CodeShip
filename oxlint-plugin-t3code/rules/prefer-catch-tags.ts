@@ -1,4 +1,7 @@
 import { defineRule, type ESTree } from "@oxlint/plugins";
+import * as Option from "effect/Option";
+
+import { importBinding } from "../utils.ts";
 
 const MESSAGE = "Catch known tags with `Effect.catchTags({ Tag: handler })`, even for one tag.";
 
@@ -10,23 +13,12 @@ export default defineRule({
     },
   },
   create(context) {
-    const isEffectNamespace = (identifier: ESTree.IdentifierReference) => {
-      let scope = context.sourceCode.getScope(identifier);
-      while (true) {
-        const variable = scope.set.get(identifier.name);
-        if (variable !== undefined) {
-          return variable.defs.some(
-            (def) =>
-              def.type === "ImportBinding" &&
-              def.node.type === "ImportNamespaceSpecifier" &&
-              def.parent?.type === "ImportDeclaration" &&
-              def.parent.source.value === "effect/Effect",
-          );
-        }
-        if (scope.upper === null) return false;
-        scope = scope.upper;
-      }
-    };
+    const isEffectNamespace = (identifier: ESTree.IdentifierReference) =>
+      Option.exists(
+        importBinding(context.sourceCode, identifier),
+        ({ source, specifier }) =>
+          source === "effect/Effect" && specifier.type === "ImportNamespaceSpecifier",
+      );
 
     return {
       ImportDeclaration(node) {

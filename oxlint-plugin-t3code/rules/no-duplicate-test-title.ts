@@ -1,7 +1,7 @@
 import { defineRule, type ESTree } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
-import { getPropertyName, unwrapExpression } from "../utils.ts";
+import { getPropertyName, importBinding, unwrapExpression } from "../utils.ts";
 
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/u;
 const SUITES = new Set(["describe", "suite"]);
@@ -28,23 +28,20 @@ export default defineRule({
   create(context) {
     if (!TEST_FILE_PATTERN.test(context.filename)) return {};
 
-    /** The @effect/vitest export a name is bound to where it is used: `it` for `it as effectIt`. */
+    // Only these names can resolve to @effect/vitest's exports, so other calls skip scope analysis.
+    const effectVitestNames = new Set<string>();
+
+    /** The @effect/vitest export a call's name resolves to: `it` for `it as effectIt`. */
     const effectVitestExport = (identifier: ESTree.Node & { readonly name: string }) => {
-      let scope = context.sourceCode.getScope(identifier);
-      while (true) {
-        const variable = scope.set.get(identifier.name);
-        if (variable !== undefined) {
-          const def = variable.defs[0];
-          return def?.type === "ImportBinding" &&
-            def.node.type === "ImportSpecifier" &&
-            def.parent?.type === "ImportDeclaration" &&
-            def.parent.source.value === EFFECT_VITEST
-            ? Option.getOrUndefined(getPropertyName(def.node.imported))
-            : undefined;
-        }
-        if (scope.upper === null) return undefined;
-        scope = scope.upper;
-      }
+      if (!effectVitestNames.has(identifier.name)) return undefined;
+      return importBinding(context.sourceCode, identifier).pipe(
+        Option.flatMap(({ source, specifier }) =>
+          source === EFFECT_VITEST && specifier.type === "ImportSpecifier"
+            ? getPropertyName(specifier.imported)
+            : Option.none(),
+        ),
+        Option.getOrUndefined,
+      );
     };
 
     // A merge that keeps both sides of a test file leaves two tests that Vitest reports under one name.
@@ -97,6 +94,16 @@ export default defineRule({
     const seen = new Map<ESTree.Node | undefined, Set<string>>();
 
     return {
+      Program(program) {
+        for (const statement of program.body) {
+          if (statement.type !== "ImportDeclaration" || statement.source.value !== EFFECT_VITEST) {
+            continue;
+          }
+          for (const specifier of statement.specifiers) {
+            if (specifier.type === "ImportSpecifier") effectVitestNames.add(specifier.local.name);
+          }
+        }
+      },
       CallExpression(node) {
         const kind = callKind(node.callee);
         if (kind !== "test") return;

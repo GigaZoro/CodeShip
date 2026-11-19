@@ -166,6 +166,17 @@ describe("t3code/prefer-effect-fn", () => {
   );
 
   rule.invalid(
+    "recognizes the Effect namespace beside a local type of the same name",
+    `
+    import * as Effect from "effect/Effect";
+    export function makeService() {
+      type Effect = string;
+      return { read: () => Effect.gen(function* () { yield* Effect.void; }) };
+    }
+  `,
+  );
+
+  rule.invalid(
     "recognizes bare-package Effect imports",
     `
     import { Effect } from "effect";

@@ -60,5 +60,17 @@ describe("t3code/prefer-catch-tags", () => {
     `,
   );
 
+  rule.invalid(
+    "reports Effect.catchTag beside a local type of the same name",
+    `
+      import * as Effect from "effect/Effect";
+
+      export function recover() {
+        type Effect = string;
+        return Effect.catchTag("A", () => Effect.void);
+      }
+    `,
+  );
+
   rule.invalid("reports a named catchTag import", `import { catchTag } from "effect/Effect";`);
 });

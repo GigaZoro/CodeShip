@@ -84,6 +84,19 @@ describe("t3code/no-duplicate-test-title", () => {
   );
 
   rule.invalid(
+    "reports a title an aliased it repeats beside a local type of the same name",
+    `
+      import { describe, it as effectIt } from "@effect/vitest";
+
+      describe("a", () => {
+        type effectIt = string;
+        effectIt("same", () => {});
+        effectIt("same", () => {});
+      });
+    `,
+  );
+
+  rule.invalid(
     "reports a title repeated across calls of a parameter that shadows the imported layer",
     `
       import { it, layer } from "@effect/vitest";
