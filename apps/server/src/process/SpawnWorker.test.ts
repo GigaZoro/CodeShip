@@ -145,7 +145,13 @@ describe("SpawnWorker", () => {
     () =>
       Effect.gen(function* () {
         // spawnPiped gives no descriptor beyond stderr; the pool it uses does.
-        const pool = SpawnWorker.spawnPiped(process.execPath, ["-e", ""], {}).worker.pool;
+        const first = SpawnWorker.spawnPiped(process.execPath, ["-e", ""], {});
+        // Closed first, so no row's launcher still holds it.
+        yield* Effect.promise(
+          () =>
+            new Promise((resolve, reject) => first.once("close", resolve).once("error", reject)),
+        );
+        const pool = first.worker.pool;
         for (const leave of ["finds no command", "loses its launcher first", "closes"] as const) {
           const missing = leave === "finds no command";
           const child = pool.spawn(
@@ -270,5 +276,36 @@ describe("SpawnWorker", () => {
           ]).toEqual([stop, false, reported ? 1 : 0]);
         }
       }),
+  );
+
+  // Last: it closes the pool that spawnPiped shares.
+  it.live("keeps a child working after its pool closes, then ends its launcher", () =>
+    Effect.gen(function* () {
+      // A child's scope can outlive the spawner layer whose release closes the pool.
+      for (const finish of ["ends its input", "is stopped"] as const) {
+        const child = SpawnWorker.spawnPiped(
+          process.execPath,
+          ["-e", "process.stdin.pipe(process.stdout)"],
+          {},
+        );
+        yield* Effect.promise(() => new Promise((resolve) => child.once("spawn", resolve)));
+        const launcherExited = new Promise((resolve) => child.worker.worker.once("exit", resolve));
+        let output = "";
+        child.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+        child.worker.pool.close();
+        const settled: Array<string | undefined> = [];
+        const settle = (error?: Error | null) => settled.push(error?.message);
+        if (finish === "ends its input") {
+          child.stdin.write("input", settle);
+          child.stdin.end(settle);
+        } else child.kill();
+        yield* Effect.promise(() => launcherExited);
+        expect([finish, output, child.exitCode, child.signalCode, settled]).toEqual(
+          finish === "ends its input"
+            ? [finish, "input", 0, null, [undefined, undefined]]
+            : [finish, "", null, "SIGTERM", []],
+        );
+      }
+    }),
   );
 });

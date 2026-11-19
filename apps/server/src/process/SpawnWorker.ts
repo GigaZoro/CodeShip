@@ -476,6 +476,7 @@ class SpawnWorkerPool {
   readonly platform: NodeJS.Platform;
   readonly #runFork: (effect: Effect.Effect<void>) => unknown;
   #nextId = 0;
+  #closed = false;
 
   constructor(
     platform: NodeJS.Platform,
@@ -555,11 +556,16 @@ class SpawnWorkerPool {
     const idle = [...this.workers].filter(
       (candidate) => candidate.children.size === 0 && candidate.launching === 0,
     );
-    if (idle.length > MAX_IDLE_WORKERS) worker.close();
+    if (this.#closed || idle.length > MAX_IDLE_WORKERS) worker.close();
   }
 
+  /**
+   * Keeps no idle launcher from now on. A launcher with children ends after its last one closes,
+   * so a child whose scope outlives the pool can still be written to, stopped and seen to exit.
+   */
   close(): void {
-    for (const worker of this.workers) worker.close();
+    this.#closed = true;
+    for (const worker of this.workers) this.release(worker);
   }
 }
 
