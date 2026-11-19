@@ -12688,8 +12688,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       target === "exact-run"
         ? selectedRun
         : latestRestartContinuation(projection.runs, selectedRun);
-    // Cancelling a run that never started cannot make it the owner of background work.
-    const lastNonQueuedRun = projection.runs.findLast((candidate) => candidate.status !== "queued");
+    const lastExecuted = latestExecutedRun(projection.runs);
     const queuedContinuation =
       run.status === "queued" && run.restartContinuationOfRunId !== undefined ? run : undefined;
     const now = yield* DateTime.now;
@@ -12740,7 +12739,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
     const hasBackgroundWork =
-      run.id === lastNonQueuedRun?.id &&
+      run.id === lastExecuted?.id &&
       derivePendingBackgroundWork({
         latestRun: run,
         providerThreads: projection.providerThreads,
@@ -12783,9 +12782,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           (run.status === "running" || candidate.status === "running" || hasBackgroundWork),
       ) ??
       (hasBackgroundWork
-        ? projection.providerTurns.findLast(
+        ? (projection.providerTurns.findLast(
+            (candidate) =>
+              candidate.providerThreadId === run.providerThreadId &&
+              projection.attempts.some(
+                (attempt) => attempt.id === candidate.runAttemptId && attempt.runId === run.id,
+              ),
+          ) ??
+          projection.providerTurns.findLast(
             (candidate) => candidate.providerThreadId === run.providerThreadId,
-          )
+          ))
         : undefined);
     const completionMessage = projection.messages.find(
       (candidate) => candidate.id === run.userMessageId,
@@ -13394,7 +13400,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.stopDelegatedTasks === false || !projection.subagents.some(isAppOwnedTaskWork)
         ? Effect.void
         : Ref.update(effects, (existing) => [...existing, delegatedTasksStopEffect(command)]);
-    const latestRun = projection.runs.findLast((run) => run.status !== "queued");
+    const latestRun = latestExecutedRun(projection.runs);
     const target =
       projection.runs.findLast(
         (run) =>
@@ -13407,7 +13413,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeProviderThreadId: projection.thread.activeProviderThreadId,
         runs: projection.runs,
       }).length > 0
-        ? latestRun
+        ? (latestRun ?? undefined)
         : undefined);
     if (target !== undefined) {
       const interruptEvents = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
@@ -13446,7 +13452,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = yield* DateTime.now;
     // Record that Stop reached the turn it could not interrupt and the thread's last executed
     // run, so a late tool call from their agent starts nothing.
-    const executed = latestExecutedRun(projection.runs);
+    const executed = latestRun;
     const reached = new Map<RunId, OrchestrationV2Run>();
     if (target !== undefined) reached.set(target.id, target);
     if (executed !== null && !hasLiveRun({ runs: [executed] })) reached.set(executed.id, executed);
