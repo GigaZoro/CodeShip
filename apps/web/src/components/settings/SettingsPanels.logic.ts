@@ -430,12 +430,10 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
     "enableProviderUpdateChecks",
     "autoUpdateProviders",
   ]),
-  restorable("/settings/maintenance", msg("Install updates automatically when idle"), [
+  restorable("/settings/maintenance", msg("Install updates automatically"), [
     "installUpdatesAutomatically",
   ]),
-  restorable("/settings/maintenance", msg("Time between automatic updates"), [
-    "minHoursBetweenAutomaticUpdates",
-  ]),
+  restorable("/settings/maintenance", msg("Automatic update time"), ["automaticUpdateTime"]),
   restorable("/settings/threads", msg("Continue threads after restarts"), [
     "continueThreadsAfterServerUpdate",
   ]),

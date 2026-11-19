@@ -24,12 +24,15 @@ export const DesktopBackendBootstrap = Schema.Struct({
   otlpLogsUrl: Schema.optional(Schema.String),
   desktopTelemetryFd: Schema.optionalKey(PositiveInt),
   desktopTelemetryControlFd: Schema.optionalKey(PositiveInt),
+  desktopUpdateHttpControl: Schema.optionalKey(Schema.Boolean),
   desktopBrowserFd: Schema.optionalKey(PositiveInt),
   desktopBrowserControlFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),
 });
 
 export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;
+
+export const DESKTOP_UPDATE_CONTROL_PATH = "/api/desktop/update-control";
 
 /** Written to `<t3Home>/runtime` before update shutdown so the backend retains its managed tunnel. */
 export const DESKTOP_UPDATE_RESTART_MARKER_FILE = "desktop-update-restart";

@@ -374,7 +374,7 @@ export const DesktopTelemetrySetHostPowerIntervals = Schema.Struct({
 export type DesktopTelemetrySetHostPowerIntervals =
   typeof DesktopTelemetrySetHostPowerIntervals.Type;
 
-/** Runs check/download/quit-and-install without local confirmation; the remote RPC click supplies consent. */
+/** Prepares a desktop release. The server sends a separate commit to start installation. */
 export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   version: Schema.Literal(1),
   type: Schema.Literal("requestDesktopUpdate"),
@@ -382,6 +382,7 @@ export const DesktopTelemetryRequestDesktopUpdate = Schema.Struct({
   /** A track switch: move to this channel first, and install only `targetVersion`. */
   channel: Schema.optionalKey(DesktopUpdateChannelSchema),
   targetVersion: Schema.optionalKey(TrimmedNonEmptyString),
+  minimumVersion: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type DesktopTelemetryRequestDesktopUpdate = typeof DesktopTelemetryRequestDesktopUpdate.Type;
 

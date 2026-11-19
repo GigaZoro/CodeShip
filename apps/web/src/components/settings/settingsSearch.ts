@@ -703,7 +703,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "install-updates-automatically",
-    title: msg("Install updates automatically when idle"),
+    title: msg("Install updates automatically"),
     to: "/settings/maintenance",
     searchTerms: [
       "automatic auto install update release restart idle background service server desktop",
@@ -711,10 +711,10 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
-    id: "min-hours-between-automatic-updates",
-    title: msg("Time between automatic updates"),
+    id: "automatic-update-time",
+    title: msg("Automatic update time"),
     to: "/settings/maintenance",
-    searchTerms: ["automatic update install interval wait hours restart release frequency"],
+    searchTerms: ["automatic update install daily schedule time restart release"],
     scope: "environment-defaults",
   },
   {

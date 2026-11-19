@@ -126,7 +126,7 @@ const SHARED_SETTING_PRESENTATION: Record<
   },
   autoUpdateProviders: "grouped",
   installUpdatesAutomatically: { id: "install-updates-automatically" },
-  minHoursBetweenAutomaticUpdates: { id: "min-hours-between-automatic-updates" },
+  automaticUpdateTime: { id: "automatic-update-time" },
   continueThreadsAfterServerUpdate: { id: "continue-threads-after-server-update" },
   backgroundActivity: { id: "background-activity" },
   providerInstanceFailoverOrder: "accounts",

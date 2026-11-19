@@ -65,8 +65,10 @@ import { PullRequestMergeMethod } from "./pullRequest.ts";
 import { ScheduledTaskPlacement } from "./scheduledTask.ts";
 import { StoredSavedThreadFolders } from "./threadFolders.ts";
 
-export const AUTOMATIC_UPDATE_INTERVAL_HOURS = [0, 2, 4, 8, 12, 24] as const;
-export const AutomaticUpdateIntervalHours = Schema.Literals(AUTOMATIC_UPDATE_INTERVAL_HOURS);
+export const AutomaticUpdateTime = Schema.String.check(
+  Schema.isPattern(/^([01]\d|2[0-3]):[0-5]\d$/),
+);
+export const isAutomaticUpdateTime = Schema.is(AutomaticUpdateTime);
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
@@ -1454,13 +1456,13 @@ export const ServerSettings = Schema.Struct({
   ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  /** Fork-only. Installs a new CodeShip release once no chat waits on work a restart would stop. */
+  /** Fork-only. Installs CodeShip releases on a daily schedule. */
   installUpdatesAutomatically: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
-  /** Fork-only. Hours after a boot before an automatic update installs the next release. */
-  minHoursBetweenAutomaticUpdates: AutomaticUpdateIntervalHours.pipe(
-    Schema.withDecodingDefault(Effect.succeed(4 as const)),
+  /** Fork-only. Local wall-clock time used to decide which CodeShip releases are due. */
+  automaticUpdateTime: AutomaticUpdateTime.pipe(
+    Schema.withDecodingDefault(Effect.succeed("03:00")),
   ),
   continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
@@ -1977,7 +1979,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   autoUpdateProviders: Schema.optionalKey(Schema.Boolean),
   installUpdatesAutomatically: Schema.optionalKey(Schema.Boolean),
-  minHoursBetweenAutomaticUpdates: Schema.optionalKey(AutomaticUpdateIntervalHours),
+  automaticUpdateTime: Schema.optionalKey(AutomaticUpdateTime),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   importAgentConversations: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),

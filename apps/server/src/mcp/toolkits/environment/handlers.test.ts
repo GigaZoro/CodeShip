@@ -269,7 +269,7 @@ it.effect.each([
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
           installUpdatesAutomatically: true,
-          minHoursBetweenAutomaticUpdates: 12,
+          automaticUpdateTime: "04:30",
           usageLimitRecovery: "switch-and-resume",
           snoozeLimitedThreads: true,
         })
@@ -284,13 +284,13 @@ it.effect.each([
           autoModeModels: { [driver]: auto },
           providerUpdates: "automatic",
           installUpdatesAutomatically: true,
-          minHoursBetweenAutomaticUpdates: 12,
+          automaticUpdateTime: "04:30",
           usageLimitRecovery: "switch-and-resume",
           snoozeLimitedThreads: true,
         });
         expect(yield* Ref.get(stored)).toMatchObject({
           installUpdatesAutomatically: true,
-          minHoursBetweenAutomaticUpdates: 12,
+          automaticUpdateTime: "04:30",
           enableProviderUpdateChecks: true,
           autoUpdateProviders: true,
           snoozeLimitedThreads: true,
@@ -306,7 +306,7 @@ it.effect.each([
             scheduledTaskModelSelection: selection,
             autoModeModels: { [driver]: auto },
             installUpdatesAutomatically: true,
-            minHoursBetweenAutomaticUpdates: 12,
+            automaticUpdateTime: "04:30",
             usageLimitRecovery: "switch-and-resume",
             snoozeLimitedThreads: true,
           },

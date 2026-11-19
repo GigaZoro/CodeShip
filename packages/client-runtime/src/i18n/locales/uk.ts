@@ -1362,7 +1362,6 @@ const catalog: MessageCatalog = {
   "{hostLabel} froze for {seconds}s": "{hostLabel} завис на {seconds} с",
   "{hour} today": "{hour} сьогодні",
   "{hour} yesterday": "{hour} учора",
-  "{hours} h": "{hours} год",
   "{hours}h": "{hours} год",
   "{hours}h {minutes}m": "{hours} год {minutes} хв",
   "{hours}h ago": "{hours} год тому",
@@ -2277,8 +2276,6 @@ const catalog: MessageCatalog = {
   "Advanced (one environment)": "Додатково (одне середовище)",
   "After a request changes files, each reviewer checks the changes and the agent fixes what they confirm, using turns on the reviewers' accounts.":
     "Після запиту, що змінює файли, кожен рев’юер перевіряє зміни, а агент виправляє підтверджене, витрачаючи ходи на акаунтах рев’юерів.",
-  "After a restart, automatic updates wait this long before installing the next release, so a busy machine restarts less often.":
-    "Після перезапуску автоматичні оновлення чекають стільки часу, перш ніж встановити наступний випуск, тож завантажена машина перезапускається рідше.",
   "After the last run ended, until the chat was settled.":
     "Після завершення останнього запуску, доки чат не завершили.",
   "After the turn": "Після ходу",
@@ -2801,6 +2798,7 @@ const catalog: MessageCatalog = {
     "Автоматичне встановлення недоступне. Вкажіть шлях до бінарного файлу або скористайтеся іншим середовищем.",
   "Automatic pricing after saving": "Автоматична ціна після збереження",
   "Automatic prompt": "Автоматичний запит",
+  "Automatic update time": "Час автоматичного оновлення",
   "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.":
     "Автоматичні оновлення вимкнено налаштуванням T3CODE_DISABLE_AUTO_UPDATE.",
   "Automatic updates are not available because no update feed is configured.":
@@ -5636,6 +5634,7 @@ const catalog: MessageCatalog = {
   "Enter a repository path and press Enter to look it up.":
     "Введіть шлях до репозиторію та натисніть Enter, щоб його знайти.",
   "Enter a single line of up to 64 characters.": "Введіть один рядок довжиною до 64 символів.",
+  "Enter a time in 24-hour HH:MM format.": "Введіть час у 24-годинному форматі HH:MM.",
   "Enter a URL": "Введіть URL",
   "Enter a valid environment variable name.": "Введіть дійсну назву змінної середовища.",
   "Enter a valid secret reference.": "Введіть дійсне посилання на секрет.",
@@ -6783,8 +6782,7 @@ const catalog: MessageCatalog = {
     "Установити оновлення {version} і перезапустити T3.CodeShip?\n\nУсі запущені завдання буде перервано. Переконайтеся, що ви готові, перш ніж продовжувати.",
   "Install update and restart T3.CodeShip?\n\nAny running tasks will be interrupted. Make sure you're ready before continuing.":
     "Установити оновлення й перезапустити T3.CodeShip?\n\nУсі запущені завдання буде перервано. Переконайтеся, що ви готові, перш ніж продовжувати.",
-  "Install updates automatically when idle":
-    "Встановлювати оновлення автоматично, коли немає роботи",
+  "Install updates automatically": "Встановлювати оновлення автоматично",
   Installed: "Встановлено",
   "Installed · Sign-in not checked": "Встановлено · Вхід не перевірено",
   "Installed {plugin}": "{plugin} встановлено",
@@ -6806,8 +6804,8 @@ const catalog: MessageCatalog = {
   "Installing update…": "Установлення оновлення…",
   "Installing...": "Встановлення...",
   "Installing…": "Встановлення…",
-  "Installs a new CodeShip release when no chat is working.":
-    "Встановлює новий випуск CodeShip, коли жоден чат не працює.",
+  "Installs new CodeShip releases on a daily schedule.":
+    "Встановлює нові випуски CodeShip за щоденним розкладом.",
   "Instance ID": "ID екземпляра",
   "Instance ID is required.": "Потрібен ID екземпляра.",
   "Instance ID must be 64 characters or fewer.": "ID екземпляра має містити не більше 64 символів.",
@@ -8276,7 +8274,6 @@ const catalog: MessageCatalog = {
   "No transcript yet.": "Запису ще немає.",
   "No video received from the device. Reconnect to try again.":
     "Від пристрою не надійшло відео. Перепідключіться й спробуйте ще раз.",
-  "No wait": "Без очікування",
   "No warnings or errors found.": "Попереджень чи помилок не знайдено.",
   "No weak points found.": "Слабких місць не знайдено.",
   "No window was selected.": "Вікно не вибрано.",
@@ -12754,8 +12751,6 @@ const catalog: MessageCatalog = {
     "Не вдалося встановити оновлення. Спробуйте «Перезапустити для оновлення» ще раз.",
   "The update installs once each of these chats has no tool call running, so none is cut halfway. Restarting now stops them.":
     "Оновлення встановиться, коли в жодному з цих чатів не виконуватиметься виклик інструмента, тож жоден не обірветься на півдорозі. Перезапуск зараз зупинить їх.",
-  "The update installs once no chat is answering or has background work, including any that starts meanwhile. Restarting now stops it.":
-    "Оновлення встановиться, коли жоден чат не відповідатиме і не матиме фонових завдань, зокрема тих, що почнуться тим часом. Перезапуск зараз зупинить їх.",
   "The update installs once nothing listed here is running. Restarting now stops it.":
     "Оновлення встановиться, коли ніщо з переліченого тут не виконуватиметься. Перезапуск зараз зупинить це.",
   "The update installs when this work finishes, even if chats have started more by then. Restarting now stops it.":
@@ -13563,7 +13558,6 @@ const catalog: MessageCatalog = {
   "Tighter thread rows on the home list.": "Щільніші рядки чатів у списку на головному екрані.",
   time: "час",
   Time: "Час",
-  "Time between automatic updates": "Час між автоматичними оновленнями",
   "time format": "формат часу",
   "Time format": "Формат часу",
   "Time limit": "Ліміт часу",
@@ -14381,6 +14375,8 @@ const catalog: MessageCatalog = {
     "Використовує власний шлях до бінарного файлу нижче. Встановлення зберігає цей шлях.",
   "Uses the latest commit of the base branch’s tracked remote branch, even if its name differs. Otherwise uses the same-named branch on origin. Uses your local branch if that remote branch is missing.":
     "Використовує останній коміт відстежуваної віддаленої гілки базової гілки, навіть якщо її назва відрізняється. Інакше використовує гілку з такою самою назвою на origin. Якщо такої віддаленої гілки немає, використовує вашу локальну гілку.",
+  "Uses the server's local time in 24-hour HH:MM format.":
+    "Використовує місцевий час сервера у 24-годинному форматі HH:MM.",
   "Using {model}": "Використовується {model}",
   "Using ChatGPT plan": "Використовується план ChatGPT",
   "Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in.":
@@ -14589,7 +14585,6 @@ const catalog: MessageCatalog = {
   "Waiting on approvals": "Очікування підтверджень",
   "Waiting on helpers": "Очікування помічників",
   "Waits for background work": "Очікує фонові завдання",
-  "Waits for chats to finish": "Очікує завершення чатів",
   "Waits for running tool calls": "Очікує виклики інструментів, що виконуються",
   Wake: "Повернути",
   "Wake {title} now": "Розбудити {title} зараз",

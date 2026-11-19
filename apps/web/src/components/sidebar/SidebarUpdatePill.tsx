@@ -19,7 +19,6 @@ import {
   resolveDesktopUpdatePendingAction,
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
-  waitToInstallAutomatically,
 } from "../desktopUpdate.logic";
 import {
   type DesktopUpdateButtonAction,
@@ -40,9 +39,7 @@ import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
 import { SafeUpdateDialog, useThisAppRunningThreads } from "./SafeUpdateDialog";
 import {
   pendingLocalInstallAtom,
-  readHostedBackgroundWork,
   usePendingLocalInstall,
-  usePendingLocalInstallTurns,
   usePendingLocalInstallWork,
   waitForHostedBackgroundWork,
 } from "./localInstallWait";
@@ -222,40 +219,6 @@ export async function installLocalUpdateWhenIdle(
   return installLocalUpdate(bridge, reportError, expectedVersion);
 }
 
-/**
- * "Install updates automatically when idle": installs once no chat on this app's servers is
- * answering or has background work, and only while the setting stays on (`isStillEnabled`, read
- * right before).
- */
-export async function installLocalUpdateAutomatically(
-  bridge: DesktopBridge,
-  version: string,
-  isStillEnabled: () => boolean,
-): Promise<boolean> {
-  if (appAtomRegistry.get(pendingLocalInstallAtom) !== null) return false;
-  appAtomRegistry.set(pendingLocalInstallAtom, { version, automatic: true });
-  try {
-    const readiness = await waitToInstallAutomatically({
-      waitUntilIdle: () => waitForHostedBackgroundWork({ untilIdle: true }),
-      readWorkNow: readHostedBackgroundWork,
-      isStillEnabled,
-    });
-    if (readiness.status === "stop") return false;
-    if (readiness.status === "failed") {
-      toastUpdateError(
-        t("Could not wait for background work"),
-        readiness.error instanceof Error
-          ? readiness.error.message
-          : t("An unexpected error occurred."),
-      );
-      return false;
-    }
-  } finally {
-    appAtomRegistry.set(pendingLocalInstallAtom, null);
-  }
-  return installLocalUpdate(bridge, toastUpdateError, version);
-}
-
 export function SidebarUpdatePill() {
   return <SidebarUpdateControl />;
 }
@@ -284,7 +247,6 @@ function SidebarUpdateControl() {
   const run = useUpdateEverythingRun();
   const pendingInstall = usePendingLocalInstall();
   const pendingWork = usePendingLocalInstallWork();
-  const pendingTurns = usePendingLocalInstallTurns();
   const isRunningEverything = run !== null;
   const { iconStatus, showUpdateDetails } = resolveSidebarUpdatePresentation({
     action: pendingAction,
@@ -294,7 +256,7 @@ function SidebarUpdateControl() {
   });
   const tooltip =
     pendingInstall !== null
-      ? restartHoldTooltip(pendingWork, pendingTurns)
+      ? restartHoldTooltip(pendingWork)
       : runsEverything && !isWaitingOnRecheck
         ? everything.summary
         : state &&

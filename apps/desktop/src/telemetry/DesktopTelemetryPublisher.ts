@@ -71,6 +71,8 @@ export class DesktopTelemetryPublisher extends Context.Service<
     ) => Effect.Effect<void>;
     readonly removeControlSource: (sourceId: string) => Effect.Effect<void>;
     readonly publishUpdateReport: (report: DesktopUpdateStatusReport) => Effect.Effect<void>;
+    readonly updateReports: Stream.Stream<DesktopUpdateStatusReport>;
+    readonly latestUpdateReport: Effect.Effect<Option.Option<DesktopUpdateStatusReport>>;
     readonly updateRequests: Stream.Stream<DesktopTelemetryRequestDesktopUpdate>;
     readonly updateCommits: Stream.Stream<DesktopTelemetryCommitDesktopUpdate>;
     readonly updateCancellations: Stream.Stream<DesktopTelemetryCancelDesktopUpdate>;
@@ -420,6 +422,8 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
     handleControlForSource,
     removeControlSource,
     publishUpdateReport,
+    updateReports,
+    latestUpdateReport: Ref.get(latestUpdateReport),
     updateRequests: Stream.fromQueue(updateRequestQueue),
     updateCommits: Stream.fromQueue(updateCommitQueue),
     updateCancellations: Stream.fromQueue(updateCancellationQueue),

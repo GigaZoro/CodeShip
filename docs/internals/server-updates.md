@@ -104,37 +104,32 @@ stopped backends and replays the failure for the same token.
 
 ## Automatic installs
 
-With `installUpdatesAutomatically` on, a launcher-managed server starts the same update a client
-would, but waits by a stricter rule than a user's "Update when it finishes": nobody chose to cut
-anything, so it waits until a restart hold lists no work and no running turn
-(`untilRestartHoldIsEmpty`, shared with the desktop app). A running turn would resume after the
-restart, so a manual update ignores `runningTurns` and waits only for its tool calls (below), but
-an automatic one must not cut a chat mid answer. A machine that always has a turn running (scheduled
-runs, autopilot) would then never idle, so after `AUTO_UPDATE_IDLE_PATIENCE` (2 hours) the update
-drains: `UpdateDrain` holds new scheduled starts ([`updateDrain.ts`](../../apps/server/src/cloud/updateDrain.ts)),
-so the running turns can end and the install follows them. Only turns still running after
-`AUTO_UPDATE_DRAIN_LIMIT` (3 hours) are cut: the wait then becomes the user's rule, background
-work and tool calls only, the last check before the handoff no longer holds off on chats, and the
-log line names the cut threads (`cutThreadIds`); those turns resume after the restart. Scheduled
-starts that came due while draining start right after the install. A fixed-time one is saved as held
-(`scheduled_task_drain_holds`), because the drain and restart can outlast the missed-run grace and
-the held run must not count as missed or depend on its task's catch-up choice. Since each install
-restarts the server, `minHoursBetweenAutomaticUpdates` (default 4) keeps the next one from installing until the
-server has run that long, so a machine that gets many releases a day drains a few times, not at
-every release. Preparing a release takes minutes, so `beforeHandoff` reads the setting, the policy and
-the hold once more right before the launcher takes over
-([`autoUpdate.ts`](../../apps/server/src/cloud/autoUpdate.ts)). A busy hold there puts the update
-off to the next check without counting as a failed attempt. A user's update keeps
-`untilListedRestartHoldWorkEnds`: it waits for the background work running when they chose it,
-and for each chat then running tool calls until it is first seen running none. Nothing
-else about the update is special: staging, preflight, trial and rollback all apply. The
-back-off for a release that rolled back reads the launcher's settled outcome, which survives the
-restart that the failed attempt's process did not. Failures before the handoff are remembered only
-in memory, because the process that made them is still running. The desktop app does not use this
-path: its renderer installs, because the app, not the server, owns the restart and the install. It
-waits by the same rule, reads each hosted server's hold again right before installing and goes back
-to waiting when work or a turn started, and ends its own wait when the setting is turned off.
-`runningTurns` is optional in the hold: a server that predates it reports none.
+The same [automatic update service](../../apps/server/src/cloud/autoUpdate.ts) runs in the
+launcher-managed server and the desktop app's bundled server. It checks at activation and every
+30 minutes while `installUpdatesAutomatically` is on. An update becomes due when a release
+newer than the running version was published by the most recent daily `automaticUpdateTime`
+(default `03:00`, in the server's local time). The GitHub release index supplies the publication
+times. Once due, the service offers the newest release on the running track. A local time
+skipped by a clock change moves forward by the gap. A repeated time uses the later occurrence
+once it has passed. The runtime records the local date and running version before handoff, so
+booting on a newer version on that date prevents a second automatic install.
+
+The service waits up to two hours for a restart hold with no running turns or work, then
+[`UpdateDrain`](../../apps/server/src/cloud/updateDrain.ts) holds new scheduled starts for up to
+three more hours while existing chats finish. After that, the wait follows **Update when it
+finishes** and waits only for the listed background work and tool calls. The log names the
+threads that may be cut. A fixed-time scheduled start held during the drain is recorded in
+`scheduled_task_drain_holds` so it can start after the restart, even outside its missed-run grace.
+
+The final check runs after preparation. It reads the setting and managed policy again, and
+checks that the restart hold is still empty if the wait ended before the cut phase. The drain
+covers preparation and handoff and ends when an attempt exits or the server shuts down.
+Turning automatic updates off or changing the time ends an active wait. The bundled server
+prepares and commits the update through the desktop shell's update channel. Desktop installs
+request thread continuation. The launcher stages and trials the release and applies the
+server's restart-continuation setting. Each host skips a release it rolled back or failed
+to apply. Preparation and handoff errors back off for that release between 15 minutes and
+six hours. Manual updates can be started at any time.
 
 ## Recovering interrupted threads
 

@@ -32,6 +32,25 @@ function makeState(overrides: Partial<DesktopUpdateState> = {}): DesktopUpdateSt
 }
 
 describe("nextRemoteDesktopUpdateStep", () => {
+  it("checks again before an automatic install of a stale download", () => {
+    const stale = makeState({ status: "downloaded", downloadedVersion: "1.2.4" });
+    assert.deepEqual(nextRemoteDesktopUpdateStep(stale, NO_ATTEMPTS, null, "1.2.5"), {
+      action: "check",
+    });
+    assert.equal(
+      nextRemoteDesktopUpdateStep(stale, { checks: 1, downloads: 0 }, null, "1.2.5").action,
+      "done",
+    );
+    assert.deepEqual(
+      nextRemoteDesktopUpdateStep(
+        { ...stale, downloadedVersion: "1.2.6" },
+        NO_ATTEMPTS,
+        null,
+        "1.2.5",
+      ),
+      { action: "install" },
+    );
+  });
   it("does not install again a version that did not apply on this machine", () => {
     const step = nextRemoteDesktopUpdateStep(
       makeState({ status: "available", availableVersion: "1.2.4", notAppliedVersion: "1.2.4" }),

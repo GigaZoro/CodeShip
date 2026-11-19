@@ -6,13 +6,8 @@ import {
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
   resolveDesktopUpdatePendingAction,
-  waitToInstallAutomatically,
 } from "./desktopUpdate.logic";
-import {
-  resolveAutoDesktopUpdateStep,
-  resolveDesktopUpdateButtonAction,
-} from "@t3tools/shared/desktopAutoUpdate";
-import type { HostedWorkNow, HostedWorkWait } from "./sidebar/localInstallWait";
+import { resolveDesktopUpdateButtonAction } from "@t3tools/shared/desktopAutoUpdate";
 
 const baseState: DesktopUpdateState = {
   enabled: true,
@@ -91,122 +86,4 @@ describe("desktop update UI helpers", () => {
       );
     },
   );
-});
-
-describe("resolveAutoDesktopUpdateStep", () => {
-  const noAttempts = { download: null, install: null };
-  const step = (
-    patch: Partial<DesktopUpdateState>,
-    options: {
-      readonly enabled?: boolean;
-      readonly waitingToInstall?: boolean;
-      readonly attempts?: { download: string | null; install: string | null };
-    } = {},
-  ) =>
-    resolveAutoDesktopUpdateStep({
-      enabled: options.enabled ?? true,
-      state: { ...baseState, ...patch },
-      waitingToInstall: options.waitingToInstall ?? false,
-      attempts: options.attempts ?? noAttempts,
-    });
-  const available = { status: "available", availableVersion: "1.1.0" } as const;
-  const downloaded = { status: "downloaded", downloadedVersion: "1.1.0" } as const;
-
-  it.each([
-    ["downloads a found update", available, {}, "download"],
-    ["installs a downloaded update", downloaded, {}, "install"],
-    [
-      "only waits while an install already waits for idle",
-      downloaded,
-      { waitingToInstall: true },
-      "wait",
-    ],
-    [
-      "does nothing while downloading",
-      { status: "downloading", availableVersion: "1.1.0" },
-      {},
-      "none",
-    ],
-    ["does nothing with the setting off", available, { enabled: false }, "none"],
-    ["does nothing with nothing to update", {}, {}, "none"],
-    ["does nothing when the updater is disabled", { ...available, enabled: false }, {}, "none"],
-    [
-      "does not download a version it already tried",
-      available,
-      { attempts: { download: "1.1.0", install: null } },
-      "none",
-    ],
-    [
-      "does not install a version it already tried",
-      downloaded,
-      { attempts: { download: null, install: "1.1.0" } },
-      "none",
-    ],
-    [
-      "downloads a newer version after a failed one",
-      { ...available, availableVersion: "1.2.0" },
-      { attempts: { download: "1.1.0", install: null } },
-      "download",
-    ],
-    [
-      "leaves a version that did not apply to the update button",
-      { ...downloaded, notAppliedVersion: "1.1.0" },
-      {},
-      "none",
-    ],
-  ] as const)("%s", (_name, patch, options, expected) => {
-    expect(step(patch, options)).toBe(expected);
-  });
-});
-
-describe("waitToInstallAutomatically", () => {
-  const run = (
-    waits: ReadonlyArray<HostedWorkWait>,
-    nows: ReadonlyArray<HostedWorkNow>,
-    isStillEnabled: () => boolean = () => true,
-  ) => {
-    const calls: Array<string> = [];
-    const readiness = waitToInstallAutomatically({
-      waitUntilIdle: async () => {
-        calls.push("wait");
-        return waits[calls.filter((call) => call === "wait").length - 1]!;
-      },
-      readWorkNow: async () => {
-        calls.push("read");
-        return nows[calls.filter((call) => call === "read").length - 1]!;
-      },
-      isStillEnabled,
-    });
-    return readiness.then((result) => ({ result, calls }));
-  };
-
-  it("installs once idle and still idle right before installing", async () => {
-    expect(await run([{ status: "clear" }], [{ status: "idle" }])).toEqual({
-      result: { status: "install" },
-      calls: ["wait", "read"],
-    });
-  });
-
-  it("waits again when a chat started work right before the install", async () => {
-    expect(
-      await run(
-        [{ status: "clear" }, { status: "clear" }],
-        [{ status: "busy" }, { status: "idle" }],
-      ),
-    ).toEqual({ result: { status: "install" }, calls: ["wait", "read", "wait", "read"] });
-  });
-
-  it("stops when the setting was turned off, or the wait was cancelled", async () => {
-    expect((await run([{ status: "clear" }], [{ status: "idle" }], () => false)).result).toEqual({
-      status: "stop",
-    });
-    expect((await run([{ status: "cancelled" }], [])).result).toEqual({ status: "stop" });
-  });
-
-  it("installs at once when the user chose to update now", async () => {
-    expect(await run([{ status: "update-now" }], [])).toEqual({
-      result: { status: "install" },
-      calls: ["wait"],
-    });
-  });
 });

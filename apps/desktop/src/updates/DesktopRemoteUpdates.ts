@@ -252,7 +252,12 @@ export const listen: Effect.Effect<
         const step = Effect.fn("DesktopRemoteUpdates.step")(function* (
           state: DesktopUpdateState,
         ): Effect.fn.Return<boolean, never, Scope.Scope> {
-          const next = nextRemoteDesktopUpdateStep(state, attempts, disabledReason);
+          const next = nextRemoteDesktopUpdateStep(
+            state,
+            attempts,
+            disabledReason,
+            request.minimumVersion,
+          );
           switch (next.action) {
             case "wait":
               return false;

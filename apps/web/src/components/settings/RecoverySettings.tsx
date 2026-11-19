@@ -1,8 +1,7 @@
 import { useState } from "react";
 import * as Schema from "effect/Schema";
 import {
-  AUTOMATIC_UPDATE_INTERVAL_HOURS,
-  AutomaticUpdateIntervalHours,
+  isAutomaticUpdateTime,
   ProviderUpdatesChoice,
   MAX_PLAN_RESET_WAIT_HOURS,
   UsageLimitRecoveryChoice,
@@ -26,7 +25,6 @@ import { msg, t } from "~/i18n";
 
 const isUsageLimitRecoveryChoice = Schema.is(UsageLimitRecoveryChoice);
 const isProviderUpdatesChoice = Schema.is(ProviderUpdatesChoice);
-const isAutomaticUpdateIntervalHours = Schema.is(AutomaticUpdateIntervalHours);
 
 const recoveryLabels = {
   off: msg("Do nothing"),
@@ -152,56 +150,42 @@ export function InstallUpdatesAutomaticallySetting() {
       {...searchableSetting("install-updates-automatically")}
       serverScoped
       settingKeys={["installUpdatesAutomatically"]}
-      description={t("Installs a new CodeShip release when no chat is working.")}
+      description={t("Installs new CodeShip releases on a daily schedule.")}
       control={
         <ScopedSwitch
           settingKeys={["installUpdatesAutomatically"]}
           checked={settings.installUpdatesAutomatically}
           onCheckedChange={(checked) => update({ installUpdatesAutomatically: Boolean(checked) })}
-          aria-label={t("Install updates automatically when idle")}
+          aria-label={t("Install updates automatically")}
         />
       }
     />
   );
 }
 
-const automaticUpdateIntervalLabel = (hours: number) =>
-  hours === 0 ? t("No wait") : t("{hours} h", { hours });
-
-export function AutomaticUpdateIntervalSetting() {
+export function AutomaticUpdateTimeSetting() {
   const settings = useScopedSettings();
   const update = useUpdateScopedSettings();
-  const hours = settings.minHoursBetweenAutomaticUpdates;
+  const keys = ["automaticUpdateTime"] as const;
+  const mixed = useScopedSettingsMixed(keys);
   return (
     <SettingsRow
-      {...searchableSetting("min-hours-between-automatic-updates")}
+      {...searchableSetting("automatic-update-time")}
       serverScoped
-      settingKeys={["minHoursBetweenAutomaticUpdates"]}
-      description={t(
-        "After a restart, automatic updates wait this long before installing the next release, so a busy machine restarts less often.",
-      )}
+      settingKeys={keys}
+      description={t("Uses the server's local time in 24-hour HH:MM format.")}
       control={
         <div className="w-full sm:w-40">
-          <Select
-            value={String(hours)}
-            onValueChange={(value) => {
-              const next = Number(value);
-              if (isAutomaticUpdateIntervalHours(next)) {
-                update({ minHoursBetweenAutomaticUpdates: next });
-              }
+          <Input
+            type="time"
+            size="sm"
+            aria-label={t("Automatic update time")}
+            value={mixed ? "" : settings.automaticUpdateTime}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (isAutomaticUpdateTime(value)) update({ automaticUpdateTime: value });
             }}
-          >
-            <SelectTrigger size="sm" aria-label={t("Time between automatic updates")}>
-              <SelectValue>{automaticUpdateIntervalLabel(hours)}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {AUTOMATIC_UPDATE_INTERVAL_HOURS.map((value) => (
-                <SelectItem key={value} value={String(value)}>
-                  {automaticUpdateIntervalLabel(value)}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
+          />
         </div>
       }
     />

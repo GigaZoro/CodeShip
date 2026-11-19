@@ -1,4 +1,6 @@
 import type { DesktopUpdateRemoteOutcome, DesktopUpdateState } from "@t3tools/contracts";
+import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 
 export type RemoteDesktopUpdateStep =
   | { readonly action: "check" }
@@ -33,6 +35,7 @@ export function nextRemoteDesktopUpdateStep(
   state: DesktopUpdateState,
   attempts: RemoteDesktopUpdateAttempts,
   disabledReason: string | null,
+  minimumVersion?: string,
 ): RemoteDesktopUpdateStep {
   if (!state.enabled || state.status === "disabled") {
     return {
@@ -40,6 +43,27 @@ export function nextRemoteDesktopUpdateStep(
       outcome: "failed",
       reason: disabledReason ?? "Automatic updates are disabled on this machine.",
     };
+  }
+  if (minimumVersion !== undefined) {
+    if (state.channel !== desktopUpdateChannelOf(minimumVersion)) {
+      return { action: "done", outcome: "failed", reason: "The desktop update track changed." };
+    }
+    const candidate =
+      state.status === "available" ? state.availableVersion : state.downloadedVersion;
+    if (
+      state.status !== "checking" &&
+      state.status !== "downloading" &&
+      candidate !== null &&
+      compareSemverVersions(candidate, minimumVersion) < 0
+    ) {
+      return attempts.checks === 0
+        ? { action: "check" }
+        : {
+            action: "done",
+            outcome: "failed",
+            reason: `The desktop app found no build of ${minimumVersion} or later.`,
+          };
+    }
   }
   // Reinstalling a failed version disrupts threads without updating; retries require the local user.
   if (

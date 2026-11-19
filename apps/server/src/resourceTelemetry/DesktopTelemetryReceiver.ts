@@ -26,6 +26,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -156,11 +157,9 @@ export interface DesktopTelemetryReceiverHealth {
   readonly lastError: Option.Option<string>;
 }
 
-/** Moves the desktop app to `channel` and installs only `targetVersion`. */
-export interface DesktopTrackSwitch {
-  readonly channel: DesktopUpdateChannel;
-  readonly targetVersion: string;
-}
+export type DesktopUpdatePreparation =
+  | { readonly channel: DesktopUpdateChannel; readonly targetVersion: string }
+  | { readonly minimumVersion: string };
 
 export class DesktopTelemetryReceiver extends Context.Service<
   DesktopTelemetryReceiver,
@@ -189,7 +188,7 @@ export class DesktopTelemetryReceiver extends Context.Service<
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
     readonly requestDesktopUpdate: (
       requestId: string,
-      trackSwitch?: DesktopTrackSwitch,
+      options?: DesktopUpdatePreparation,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -197,6 +196,8 @@ export class DesktopTelemetryReceiver extends Context.Service<
     readonly cancelDesktopUpdate: (
       requestId: string,
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
+    readonly takeDesktopUpdateCommand: Effect.Effect<DesktopTelemetryControlMessage>;
+    readonly receiveDesktopUpdateReport: (report: DesktopUpdateStatusReport) => Effect.Effect<void>;
     readonly desktopUpdates: Effect.Effect<
       {
         readonly latest: Option.Option<DesktopUpdateStatusReport>;
@@ -420,6 +421,13 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
   const healthChanges = yield* PubSub.sliding<DesktopTelemetryReceiverHealth>(4);
   const latestUpdateReport = yield* Ref.make(Option.none<DesktopUpdateStatusReport>());
   const updateReportChanges = yield* PubSub.sliding<DesktopUpdateStatusReport>(16);
+  // A cancellation replaces any undelivered prepare or commit for the same attempt.
+  const httpUpdateCommands = yield* Queue.sliding<DesktopTelemetryControlMessage>(1);
+  const receiveDesktopUpdateReport = (report: DesktopUpdateStatusReport) =>
+    Ref.set(latestUpdateReport, Option.some(report)).pipe(
+      Effect.andThen(PubSub.publish(updateReportChanges, report)),
+      Effect.asVoid,
+    );
   const controlMutex = yield* Semaphore.make(1);
   const snapshotMutex = yield* Semaphore.make(1);
   const health = yield* Ref.make<DesktopTelemetryReceiverHealth>({
@@ -473,6 +481,11 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
         );
       }),
     );
+  const sendUpdateControlMessage = (message: DesktopTelemetryControlMessage) =>
+    config.desktopUpdateHttpControl === true
+      ? Queue.offer(httpUpdateCommands, message).pipe(Effect.asVoid)
+      : sendControlMessage(message);
+
   const setDiagnosticsDemand: DesktopTelemetryReceiver["Service"]["setDiagnosticsDemand"] = (
     enabled,
   ) =>
@@ -601,11 +614,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
         }
 
         if (message.type === "desktopUpdateStatus") {
-          return recordContact.pipe(
-            Effect.andThen(Ref.set(latestUpdateReport, Option.some(message))),
-            Effect.andThen(PubSub.publish(updateReportChanges, message)),
-            Effect.asVoid,
-          );
+          return recordContact.pipe(Effect.andThen(receiveDesktopUpdateReport(message)));
         }
 
         const sampledAt = DateTime.makeUnsafe(message.sampledAtUnixMs);
@@ -718,25 +727,27 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     subscribeHealth: subscribeBeforeSnapshotWithoutMutex(healthChanges, Ref.get(health)),
     setDiagnosticsDemand,
     requestDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.requestDesktopUpdate")(
-      function (requestId, trackSwitch) {
-        return sendControlMessage({
+      function (requestId, options) {
+        return sendUpdateControlMessage({
           version: 1,
           type: "requestDesktopUpdate",
           requestId,
-          ...trackSwitch,
+          ...options,
         });
       },
     ),
     commitDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.commitDesktopUpdate")(
       function (requestId) {
-        return sendControlMessage({ version: 1, type: "commitDesktopUpdate", requestId });
+        return sendUpdateControlMessage({ version: 1, type: "commitDesktopUpdate", requestId });
       },
     ),
     cancelDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.cancelDesktopUpdate")(
       function (requestId) {
-        return sendControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId });
+        return sendUpdateControlMessage({ version: 1, type: "cancelDesktopUpdate", requestId });
       },
     ),
+    takeDesktopUpdateCommand: Queue.take(httpUpdateCommands),
+    receiveDesktopUpdateReport,
     desktopUpdates: Effect.gen(function* () {
       const subscription = yield* PubSub.subscribe(updateReportChanges);
       const initial = yield* Ref.get(latestUpdateReport);
@@ -796,6 +807,8 @@ export const layerTest = (
       cancelDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.cancelDesktopUpdate")(function () {
         return Effect.void;
       }),
+      takeDesktopUpdateCommand: Effect.never,
+      receiveDesktopUpdateReport: () => Effect.void,
       desktopUpdates:
         overrides.desktopUpdates ??
         Effect.succeed({

@@ -5,7 +5,6 @@ import {
   type DesktopUpdateButtonAction,
 } from "@t3tools/shared/desktopAutoUpdate";
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
-import type { HostedWorkNow, HostedWorkWait } from "./sidebar/localInstallWait";
 
 const DEFAULT_DESKTOP_RELEASE_REPOSITORY = "pingdotgg/t3code";
 const GITHUB_REPOSITORY_SEGMENT = /^[A-Za-z0-9._-]+$/u;
@@ -52,34 +51,6 @@ export function resolveDesktopUpdatePendingAction(
   if (state.status !== "checking") return resolveDesktopUpdateButtonAction(state);
   if (state.downloadedVersion) return "install";
   return state.availableVersion ? "download" : "none";
-}
-
-export type AutoInstallReadiness =
-  | { readonly status: "install" }
-  | { readonly status: "stop" }
-  | { readonly status: "failed"; readonly error: unknown };
-
-/**
- * The wait before an automatic install: until no chat on this app's servers is answering or has
- * background work, work and turns that started meanwhile included, then one more look right
- * before installing. A chat that started in between sends it back to waiting. The setting turned off or a cancel stops it;
- * the user choosing "Update now" installs at once, as for any wait.
- */
-export async function waitToInstallAutomatically(input: {
-  readonly waitUntilIdle: () => Promise<HostedWorkWait>;
-  readonly readWorkNow: () => Promise<HostedWorkNow>;
-  readonly isStillEnabled: () => boolean;
-}): Promise<AutoInstallReadiness> {
-  for (;;) {
-    const wait = await input.waitUntilIdle();
-    if (wait.status === "failed") return wait;
-    if (wait.status === "cancelled") return { status: "stop" };
-    if (wait.status === "update-now") return { status: "install" };
-    const now = await input.readWorkNow();
-    if (now.status === "failed") return now;
-    if (!input.isStillEnabled()) return { status: "stop" };
-    if (now.status === "idle") return { status: "install" };
-  }
 }
 
 export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | null): boolean {

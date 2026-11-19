@@ -1012,6 +1012,11 @@
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
 
+## 2026-11-19 — Automatic updates run daily on desktop and background servers
+
+- Set **Automatic update time** in **Settings → Maintenance & about → Updates**. It defaults to 03:00 in the machine's time zone. If a newer release was published by that time, the machine installs the newest available release.
+- Desktop and background servers give active chats time to finish and pause new scheduled starts if needed. A desktop app with chats running all day can now update, and interrupted chats resume after it restarts.
+
 ## 2026-11-19 — The upstream sync checks against its own base
 
 - Maintainers: `node scripts/upstream-sync.ts check` runs the sync's `check:changed` against the base in the run's state file, with the 3600 s step timeout, so a held or hurried run no longer types a narrower range that skips files only the upstream merge changed. The scheduled task and the upstream-sync skill use it. No change to the app.

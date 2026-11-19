@@ -479,6 +479,33 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("reads settings with the former update interval and removes it on write", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig.ServerConfig;
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        config.settingsPath,
+        '{ "installUpdatesAutomatically": true, "minHoursBetweenAutomaticUpdates": 12 }',
+      );
+
+      const previous = yield* settings.getSettings;
+      assert.equal(previous.automaticUpdateTime, "03:00");
+      assert.equal(previous.installUpdatesAutomatically, true);
+      assert.notProperty(previous, "minHoursBetweenAutomaticUpdates");
+      assert.isFalse(Schema.is(ServerSettingsPatch)({ automaticUpdateTime: "24:00" }));
+      assert.isFalse(Schema.is(ServerSettingsPatch)({ automaticUpdateTime: "3:00" }));
+
+      yield* settings.updateSettings({ automaticUpdateTime: "00:00" });
+      const persisted = JSON.parse(yield* fileSystem.readFileString(config.settingsPath));
+      assert.notProperty(persisted, "minHoursBetweenAutomaticUpdates");
+      assert.include(persisted, {
+        automaticUpdateTime: "00:00",
+        installUpdatesAutomatically: true,
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("keeps an external settings edit that the watcher has not reloaded yet", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

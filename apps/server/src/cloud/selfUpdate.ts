@@ -62,8 +62,8 @@ export class ServerSelfUpdate extends Context.Service<
   ServerSelfUpdate,
   {
     /**
-     * `beforeHandoff` is the last check before the service launcher takes over, after the
-     * release is downloaded and prepared: when it fails, nothing is handed off.
+     * Automatic installs pass `beforeHandoff` to recheck after preparation and commit in the
+     * same request. A manual desktop update returns a token for the client's separate commit.
      */
     readonly update: (
       input: ServerSelfUpdateInput,
@@ -77,6 +77,7 @@ export class ServerSelfUpdate extends Context.Service<
       requestId: string,
       onHandoffAccepted?: () => Effect.Effect<void>,
     ) => Effect.Effect<never, ServerSelfUpdateError>;
+    readonly notAppliedDesktopVersion: Effect.Effect<string | undefined>;
   }
 >()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
 
@@ -191,7 +192,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     input,
     reportProgress = () => Effect.void,
     onHandoffAccepted = () => Effect.void,
-    beforeHandoff = () => Effect.void,
+    beforeHandoff,
   ) {
     const policyRefusal = managedUpdateRefusal(
       policy.document,
@@ -204,11 +205,21 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       const unsafeCrossing = input.channel === undefined ? null : crossesTrackUnsafely(input);
       if (unsafeCrossing !== null) return yield* failWith(unsafeCrossing);
       if (desktopAppUpdate.available) {
-        return yield* desktopAppUpdate.run(
+        const prepared = yield* desktopAppUpdate.run(
           reportProgress,
-          input.channel === undefined
-            ? undefined
-            : { channel: input.channel, targetVersion: input.targetVersion },
+          input.channel !== undefined
+            ? { channel: input.channel, targetVersion: input.targetVersion }
+            : beforeHandoff !== undefined
+              ? { minimumVersion: input.targetVersion }
+              : undefined,
+        );
+        if (beforeHandoff === undefined || prepared.desktopUpdateToken === undefined) {
+          return prepared;
+        }
+        const token = prepared.desktopUpdateToken;
+        return yield* beforeHandoff().pipe(
+          Effect.andThen(desktopAppUpdate.commit(token, onHandoffAccepted)),
+          Effect.onError(() => desktopAppUpdate.cancel(token)),
         );
       }
       return yield* failWith(
@@ -322,7 +333,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         ),
       );
 
-      yield* beforeHandoff();
+      if (beforeHandoff !== undefined) yield* beforeHandoff();
       yield* reportProgress("installing");
       const updateId = yield* Effect.uninterruptible(
         launcher
@@ -355,6 +366,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
   return ServerSelfUpdate.of({
     update,
+    notAppliedDesktopVersion: desktopAppUpdate.available
+      ? desktopAppUpdate.notAppliedVersion
+      : Effect.undefined,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
         return desktopAppUpdate.commit(requestId, onHandoffAccepted);

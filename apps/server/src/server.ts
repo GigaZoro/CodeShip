@@ -934,7 +934,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
-    ServerHttp.layerDesktopAutoInstallReadinessRoute,
+    ServerHttp.layerDesktopUpdateControlRoutes.pipe(Layer.provide(layerDesktopTelemetryReceiver)),
     GuestHttp.layer,
     ThreadPageCheckAccessHttp.layer,
     DeviceHubProxy.layer,
@@ -952,7 +952,7 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   // Watches t3_command_run commands to their end, including ones an earlier server started.
   Layer.effectDiscard(CommandRunner.CommandRunner.pipe(Effect.flatMap((runner) => runner.start()))),
-  // Installs new releases on a background service once nothing a restart would stop is running.
+  // Schedules releases for the launcher and desktop app.
   ServerAutoUpdate.layer,
 ).pipe(
   Layer.provide(
