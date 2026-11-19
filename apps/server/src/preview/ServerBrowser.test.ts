@@ -756,6 +756,80 @@ it.effect(
     ).pipe(Effect.provide(layer)),
 );
 
+it.effect("an agent closing a tab that waits for the desktop ends its open at once", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      desktopAttach = "waits";
+      const opening = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        })
+        .pipe(Effect.flip, Effect.forkChild);
+      const waiting = yield* Effect.promise(() => desktopAttachWaits.promise);
+      yield* broker.invoke<void>({
+        scope,
+        tabId: PreviewTabId.make(waiting),
+        operation: "close",
+        input: {},
+      });
+      const error = yield* Fiber.join(opening);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+
+      expect(error.message).toContain("does not exist");
+      expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
+      expect(contexts).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a user's tab that waits for the desktop does not hold up closing another tab", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, false));
+      desktopAttach = "waits";
+      const waiting = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      yield* Effect.promise(() => desktopAttachWaits.promise);
+      yield* manager.close({ threadId: scope.thread.threadId, tabId });
+      const end = yield* Queue.take(viewer.output).pipe(
+        Effect.repeat({ until: (output) => output._tag === "gone" }),
+      );
+      yield* manager.close({ threadId: scope.thread.threadId, tabId: waiting.tabId });
+
+      expect(end).toEqual({ _tag: "gone" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a user's tab the desktop never shows leaves the list after the deadline", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      desktopAttach = "waits";
+      const waiting = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      yield* Effect.promise(() => desktopAttachWaits.promise);
+      yield* TestClock.adjust("60 seconds");
+      yield* PubSub.take(events).pipe(
+        Effect.repeat({
+          until: (event) => event.type === "closed" && event.tabId === waiting.tabId,
+        }),
+      );
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+
+      expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
+      expect(contexts).toHaveLength(1);
+      expect(desktopConnections).toEqual([]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.effect("a desktop page that loaded before the server attached reports its loaded title", () =>
   Effect.scoped(
     Effect.gen(function* () {
