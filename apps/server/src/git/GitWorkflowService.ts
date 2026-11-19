@@ -225,6 +225,8 @@ export const make = Effect.gen(function* () {
       const turnCwd = yield* realPath(folder);
       if (contains(turnCwd, checkoutRoot)) return workspace.threadId;
       if (!contains(checkoutRoot, turnCwd)) continue;
+      // A removed worktree folder is no checkout, and git cannot run in it.
+      if (!(yield* fileSystem.exists(turnCwd))) continue;
       // A worktree inside the checkout's folder is a checkout of its own.
       const handle = yield* registry.detect({ cwd: turnCwd });
       if (handle !== null && (yield* realPath(handle.repository.rootPath)) === checkoutRoot) {

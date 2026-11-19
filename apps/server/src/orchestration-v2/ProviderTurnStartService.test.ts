@@ -2,6 +2,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
@@ -84,9 +85,10 @@ const normalize = (target: string) => {
 const layerWorktreeLocation = (
   worktreesDir = managedWorktreesDir,
   skillFailure?: ProviderSkills.ProviderSkillInvocationError,
+  pathLayer: Layer.Layer<Path.Path> = Path.layer,
 ) =>
   Layer.mergeAll(
-    Path.layer,
+    pathLayer,
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest({
       providerInstances: {
@@ -1012,7 +1014,7 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        layerWorktreeLocation(input.worktreesDir, input.skillFailure),
+        layerWorktreeLocation(input.worktreesDir, input.skillFailure, NodePath.layer),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed(
             input.otherAutoProvider
