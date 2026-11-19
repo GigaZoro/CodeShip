@@ -220,8 +220,8 @@ function mergeMain(worktree: string, state: SyncState, main: string, now: Date) 
 
 /**
  * Pushes the branch to main when that is a fast-forward of the commit it was verified against.
- * When main moved, merges it in once and asks for the checks again, holding instead when the
- * merge conflicts or the run is out of merges or time.
+ * When main moved, or the branch lacks it, merges it in once and asks for the checks again,
+ * holding instead when the merge conflicts or the run is out of merges or time.
  */
 export function land(worktree: string, now: Date): SyncResult {
   const state = readState(worktree);
@@ -236,7 +236,8 @@ export function land(worktree: string, now: Date): SyncResult {
   }
   gitOrThrow(worktree, "fetch", "-q", "origin");
   let main = gitOrThrow(worktree, "rev-parse", "origin/main");
-  if (main === state.base) {
+  // The base is recorded but not merged when a chat aborted the merge begin left it to resolve.
+  if (main === state.base && git(worktree, "merge-base", "--is-ancestor", main, "HEAD").ok) {
     // Main refuses a push from anyone who does not hold its landing turn (.github/scripts/landing-turn.cjs).
     const landed = NodeChildProcess.spawnSync(process.execPath, [LANDING_TURN, "push"], {
       cwd: worktree,

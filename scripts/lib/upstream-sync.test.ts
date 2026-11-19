@@ -195,7 +195,8 @@ describe("upstream sync", () => {
     expect(land(followUp, later(610))).toEqual({ status: "landed", commit: repo.head() });
   });
 
-  it("merges the main a held branch conflicted with when it resumes, leaving only the real conflicts", () => {
+  /** A sync whose land held on a conflict with main, and a worktree of its branch to resume it in. */
+  function heldOnMain() {
     const repo = fixture();
     begin(repo.sync, START);
     commitFiles(
@@ -208,9 +209,16 @@ describe("upstream sync", () => {
       "docs/release-notes.md": "## 2026-11-18 — Main\n\n- b\n\n## old\n",
     });
     expect(land(repo.sync, later(60))).toMatchObject({ status: "hold", reason: "conflicts" });
-    const main = repo.originMain();
     const followUp = NodePath.join(NodePath.dirname(repo.sync), "follow-up");
     git(repo.sync, "worktree", "add", "-q", followUp, "-b", "follow-up", "sync/upstream-x");
+    return { repo, followUp };
+  }
+
+  it("merges the main a held branch conflicted with when it resumes, leaving only the real conflicts", () => {
+    const { repo, followUp } = heldOnMain();
+    // Only begin's own fetch sees this commit; land's fetch before the hold did not.
+    repo.advanceMain({ "later.txt": "later\n" });
+    const main = repo.originMain();
     expect(begin(followUp, later(600))).toEqual({
       status: "resumed",
       base: main,
@@ -225,6 +233,18 @@ describe("upstream sync", () => {
     const resolved = git(followUp, "rev-parse", "HEAD");
     expect(land(followUp, later(610))).toEqual({ status: "landed", commit: resolved });
     expect(repo.originMain()).toBe(resolved);
+  });
+
+  it("merges main again instead of pushing when the chat aborted the merge begin left to resolve", () => {
+    const { repo, followUp } = heldOnMain();
+    const main = repo.originMain();
+    expect(begin(followUp, later(600))).toMatchObject({ base: main, conflicts: ["upstream.txt"] });
+    git(followUp, "merge", "--abort");
+    const aborted = git(followUp, "rev-parse", "HEAD");
+    expect(land(followUp, later(610))).toMatchObject({ status: "hold", reason: "conflicts" });
+    expect(git(followUp, "rev-parse", "HEAD")).toBe(aborted);
+    expect(repo.originMain()).toBe(main);
+    expect(status(followUp, later(610)).mergesLeft).toBe(1);
   });
 
   it("holds once three hours have passed, even when it could land", () => {
