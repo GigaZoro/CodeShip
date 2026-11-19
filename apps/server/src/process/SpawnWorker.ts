@@ -163,6 +163,8 @@ const toError = (serialized: SerializedError) =>
 
 const toBuffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 
+const brokenPipe = () => Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+
 class WorkerChild
   extends NodeEvents.EventEmitter
   implements NodeChildProcessSpawner.SpawnedChildProcess
@@ -211,7 +213,7 @@ class WorkerChild
       callback: (error?: Error | null) => void,
     ) => {
       if (this.worker.closed) {
-        callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+        callback(brokenPipe());
         return;
       }
       const pending = this.#writes.get(fd) ?? [];
@@ -291,13 +293,17 @@ class WorkerChild
     this.emit("exit", code, signal);
   }
 
-  /** The worker is gone: end output so readers finish, and let the exit report the kill. */
+  /** The worker sends nothing more for this child: end output so readers finish, and fail waiting writes. */
   abandon(): void {
     // Not destroy(error): Effect leaves an unread stderr's pipe without an error listener.
     for (const stream of this.stdio) {
       if (stream && "push" in stream && !stream.readableEnded) stream.push(null);
       else if (stream && !("push" in stream)) stream.destroy();
     }
+    const waiting = [...[...this.#writes.values()].flat(), ...this.#finals.values()];
+    this.#writes.clear();
+    this.#finals.clear();
+    for (const callback of waiting) callback(brokenPipe());
   }
 }
 
@@ -382,9 +388,10 @@ class SpawnWorker {
         if (!child.spawned) {
           this.launching--;
           child.exited = true;
-          this.release(child);
         }
+        // Node reports a failed launch before it fails the writes waiting on the child.
         child.emit("error", toError(message.error));
+        if (!child.spawned) this.release(child);
         break;
       case "data":
         child.onData(message.fd, message.data);
@@ -413,6 +420,8 @@ class SpawnWorker {
 
   release(child: WorkerChild): void {
     this.children.delete(child.id);
+    // Replies to requests it sent meanwhile, and a failed launch's output, would find no child.
+    child.abandon();
     this.syncRef();
     this.pool.release(this);
   }
@@ -428,6 +437,7 @@ class SpawnWorker {
       if (!child.spawned) {
         child.exited = true;
         child.emit("error", error);
+        child.abandon();
         continue;
       }
       // The worker owned the only handle, so try to end the whole tree before reporting the exit.

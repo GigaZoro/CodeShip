@@ -138,6 +138,34 @@ describe("SpawnWorker", () => {
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
+  it.live(
+    "fails waiting writes and ends output when a launch fails or its launcher dies first",
+    () =>
+      Effect.gen(function* () {
+        for (const launch of ["finds no command", "loses its launcher first"] as const) {
+          const child =
+            launch === "finds no command"
+              ? SpawnWorker.spawnPiped("t3-missing-command-25245", [], {})
+              : SpawnWorker.spawnPiped(process.execPath, ["-e", ""], {});
+          const events: Array<string | undefined> = [];
+          child.stdin.write("input", (error) => events.push(error?.message));
+          const failed = new Promise<void>((resolve) =>
+            child.once("error", () => {
+              events.push("error");
+              resolve();
+            }),
+          );
+          // The launcher reports the start by a message, which cannot have arrived yet.
+          if (launch === "loses its launcher first") child.worker.fail(new Error("lost"));
+          yield* Effect.promise(() => failed);
+          // As with Node, the launch error comes first.
+          expect([launch, events]).toEqual([launch, ["error", "write EPIPE"]]);
+          const ended = new Promise((resolve) => child.stdout.once("end", resolve).resume());
+          yield* Effect.promise(() => ended);
+        }
+      }),
+  );
+
   it.live("kills running commands, detached or not, and on scope interruption", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
