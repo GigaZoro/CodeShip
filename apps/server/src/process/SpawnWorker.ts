@@ -186,8 +186,10 @@ class WorkerChild
   readonly #finals = new Map<number, (error?: Error | null) => void>();
   readonly #paused = new Set<number>();
   #abandoned = false;
-  readonly #signal: AbortSignal | undefined;
-  readonly #abort = () => this.kill();
+  #signal: AbortSignal | undefined;
+  // Deferred, so an abort before or while the launch is sent kills after it.
+  // The worker ignores a kill for a launch that failed.
+  readonly #abort = () => queueMicrotask(() => this.kill());
 
   readonly worker: SpawnWorker;
   readonly id: number;
@@ -210,10 +212,19 @@ class WorkerChild
       else if (fd === 2) this.stderr = stream as NodeStream.Readable;
     });
     // An AbortSignal cannot cross to the worker, so this thread kills on abort as Node would.
-    if (signal !== undefined && !signal.aborted) {
-      signal.addEventListener("abort", this.#abort, { once: true });
-      this.#signal = signal;
+    // Its state is read once, here: nothing after the launch is sent may throw.
+    if (signal !== undefined) {
+      if (signal.aborted) this.#abort();
+      else {
+        signal.addEventListener("abort", this.#abort, { once: true });
+        this.#signal = signal;
+      }
     }
+  }
+
+  #detachSignal(): void {
+    this.#signal?.removeEventListener("abort", this.#abort);
+    this.#signal = undefined;
   }
 
   #relay(fd: number): NodeStream.Readable | NodeStream.Writable {
@@ -311,7 +322,7 @@ class WorkerChild
     this.exited = true;
     this.exitCode = code;
     this.signalCode = signal;
-    this.#signal?.removeEventListener("abort", this.#abort);
+    this.#detachSignal();
     // Node destroys stdin on exit; the Effect sink may already have removed its error listener.
     this.stdin?.on("error", () => {});
     this.stdin?.destroy();
@@ -323,7 +334,7 @@ class WorkerChild
     // First, so a write or end that a failure callback below makes is refused, not lost.
     this.#abandoned = true;
     // A launch that failed never exits, and a long-lived signal would keep this child.
-    this.#signal?.removeEventListener("abort", this.#abort);
+    this.#detachSignal();
     // Not destroy(error): Effect leaves an unread stderr's pipe without an error listener.
     for (const stream of this.stdio) {
       if (stream && "push" in stream && !stream.readableEnded) stream.push(null);
@@ -390,7 +401,6 @@ class SpawnWorker {
       this.pool.release(this);
       throw error;
     }
-    if (signal?.aborted) queueMicrotask(() => child.kill());
     this.children.set(id, child);
     this.launching++;
     this.syncRef();

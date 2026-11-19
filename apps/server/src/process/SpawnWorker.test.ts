@@ -334,10 +334,12 @@ describe("SpawnWorker", () => {
         );
         const port = yield* Effect.promise(
           () =>
-            new Promise<number>((resolve) =>
-              control.listen(0, "127.0.0.1", () =>
-                resolve((control.address() as NodeNet.AddressInfo).port),
-              ),
+            new Promise<number>((resolve, reject) =>
+              control
+                .once("error", reject)
+                .listen(0, "127.0.0.1", () =>
+                  resolve((control.address() as NodeNet.AddressInfo).port),
+                ),
             ),
         );
         const descendant = `require("node:net").connect(Number(process.argv[1]), "127.0.0.1").on("close", () => process.exit())`;
@@ -399,38 +401,78 @@ describe("SpawnWorker", () => {
       }),
   );
 
-  it.live("starts nothing and keeps no abort listener for a launch it refuses or that fails", () =>
-    Effect.gen(function* () {
-      const signal = yield* Effect.abortSignal;
-      const listeners = () => NodeEvents.EventEmitter.getEventListeners(signal, "abort").length;
-      using post = vi.spyOn(NodeWorkerThreads.Worker.prototype, "postMessage");
-      const sent = () =>
-        post.mock.calls.filter(
-          ([message], call) =>
-            message.type === "spawn" && post.mock.results[call]?.type === "return",
-        ).length;
-      const failed = SpawnWorker.spawnPiped("t3-missing-command-25245", [], { signal });
-      yield* Effect.promise(() => new Promise((resolve) => failed.once("error", resolve)));
-      expect([sent(), listeners()]).toEqual([1, 0]);
-      const pool = failed.worker.pool;
-      // Node's own spawn throws for each of these before it starts anything.
-      for (const [options, refusal] of [
-        [{ cwd: new URL("https://example.com/") }, { code: "ERR_INVALID_URL_SCHEME" }],
-        [{ signal: {} as AbortSignal }, { name: "TypeError" }],
-        [
-          { signal, env: { T3_UNSENDABLE: Symbol() as unknown as string } },
-          { name: "DataCloneError" },
-        ],
-      ] as const) {
-        expect(() => SpawnWorker.spawnPiped(process.execPath, ["-e", ""], options)).toThrow(
-          expect.objectContaining(refusal),
+  it.live(
+    "starts nothing and keeps no abort listener for a launch it refuses or that fails, and reads its signal once",
+    () =>
+      Effect.gen(function* () {
+        const signal = yield* Effect.abortSignal;
+        const listeners = () => NodeEvents.EventEmitter.getEventListeners(signal, "abort").length;
+        using post = vi.spyOn(NodeWorkerThreads.Worker.prototype, "postMessage");
+        const sent = () =>
+          post.mock.calls.filter(
+            ([message], call) =>
+              message.type === "spawn" && post.mock.results[call]?.type === "return",
+          ).length;
+        const failed = SpawnWorker.spawnPiped("t3-missing-command-25245", [], { signal });
+        yield* Effect.promise(() => new Promise((resolve) => failed.once("error", resolve)));
+        expect([sent(), listeners()]).toEqual([1, 0]);
+        const pool = failed.worker.pool;
+        const unreadable = yield* Effect.abortSignal;
+        Object.defineProperty(unreadable, "aborted", {
+          get: () => {
+            throw new Error("unreadable signal");
+          },
+        });
+        // Node's own spawn throws for each of these before it starts anything.
+        for (const [options, refusal] of [
+          [{ cwd: new URL("https://example.com/") }, { code: "ERR_INVALID_URL_SCHEME" }],
+          [{ signal: {} as AbortSignal }, { name: "TypeError" }],
+          [{ signal: unreadable }, { message: "unreadable signal" }],
+          [
+            { signal, env: { T3_UNSENDABLE: Symbol() as unknown as string } },
+            { name: "DataCloneError" },
+          ],
+        ] as const) {
+          expect(() => SpawnWorker.spawnPiped(process.execPath, ["-e", ""], options)).toThrow(
+            expect.objectContaining(refusal),
+          );
+          expect([
+            sent(),
+            listeners(),
+            [...pool.workers].map((worker) => [worker.launching, worker.children.size]),
+          ]).toEqual([1, 0, [...pool.workers].map(() => [0, 0])]);
+        }
+        // A signal is read before the launch is sent, once: a read after it could throw too late.
+        const readOnce = yield* Effect.abortSignal;
+        let reads = 0;
+        Object.defineProperty(readOnce, "aborted", {
+          get: () => {
+            if (reads++ > 0) throw new Error("read again");
+            return false;
+          },
+        });
+        const launched = SpawnWorker.spawnPiped(process.execPath, ["-e", ""], { signal: readOnce });
+        expect([reads, launched.worker.children.get(launched.id) === launched]).toEqual([1, true]);
+        yield* Effect.promise(() => new Promise((resolve) => launched.once("close", resolve)));
+        // An abort while the launch is being copied, here from a getter the copy reads, kills it once sent.
+        const copying = yield* Effect.abortSignal;
+        const env = { ...process.env };
+        Object.defineProperty(env, "T3_ABORTS", {
+          enumerable: true,
+          get: () => {
+            copying.dispatchEvent(new Event("abort"));
+            return "1";
+          },
+        });
+        const aborted = SpawnWorker.spawnPiped(
+          process.execPath,
+          ["-e", "setTimeout(() => {}, 5000)"],
+          { signal: copying, env },
         );
-        expect([
-          sent(),
-          listeners(),
-          [...pool.workers].map((worker) => [worker.launching, worker.children.size]),
-        ]).toEqual([1, 0, [...pool.workers].map(() => [0, 0])]);
-      }
-    }).pipe(Effect.scoped),
+        const ended = yield* Effect.promise(
+          () => new Promise((resolve) => aborted.once("exit", (...exit) => resolve(exit))),
+        );
+        expect(ended).toEqual([null, "SIGTERM"]);
+      }).pipe(Effect.scoped),
   );
 });
