@@ -13,10 +13,17 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
- * A child older than the parent it names belongs to an earlier holder of that pid, as does a root
- * created outside [from, to], give or take a second of clock skew. The root's children count from
- * its start and before another holder's. Later passes walk only from the processes the stop holds
- * open, whose pids nothing else can take, to stop what those started before they ended.
+ * How far the start the system stamps on a process may lie outside the times Node read around its
+ * spawn: Windows stamps at its clock's last tick, up to 16 ms early, and Node's clock may trail the
+ * system's by as much. More would let a process that took the root's pid soon after pass for it.
+ */
+const CLOCK_SKEW_MS = 100;
+
+/**
+ * A child older than the parent it names, or a child of the root created before from, belongs to an
+ * earlier holder of that pid. A holder of the root's pid created outside [from, to] is another
+ * process, and the root's children count only before its start. Each bound allows CLOCK_SKEW_MS.
+ * Later passes walk only from the processes the stop holds open, whose pids nothing else can take.
  */
 export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
@@ -40,7 +47,8 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  $targets",
   "}",
   "function Get-T3ProcessTree($all, $root, $since, $from, $to) {",
-  "  $after = [DateTimeOffset]::FromUnixTimeMilliseconds($since).UtcTicks; $before = [long]::MaxValue; $mine = $null",
+  "  $earliest = if ($from -gt $since) { $from } else { $since }",
+  "  $after = [DateTimeOffset]::FromUnixTimeMilliseconds($earliest).UtcTicks; $before = [long]::MaxValue; $mine = $null",
   "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
   "  if ($holder) {",
   "    $made = Ticks $holder.CreationDate; $ms = Ms $holder.CreationDate",
@@ -67,26 +75,35 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  } finally { if (-not $mine) { $process.Dispose() } }",
   "  if ($mine) { $process }",
   "}",
-  // Kill only begins the end. A process that ended first is no error; one still running is.
-  "function Stop-T3Process($process) {",
-  "  try { $process.Kill() } catch { if (-not $process.HasExited) { throw } }",
-  "  if (-not $process.WaitForExit(5000)) { throw ('Process {0} still runs 5 s after its stop' -f $process.Id) }",
+  // Ends every process before it waits for any, so one slow to end holds up no other. A process
+  // that ended first is no error; one still running 5 s on is. Outputs the first failure.
+  "function Stop-T3Processes($processes) {",
+  "  $failed = $null",
+  "  foreach ($process in $processes) { try { $process.Kill() } catch { if (-not ($process.HasExited -or $failed)) { $failed = $_ } } }",
+  "  $wait = [Diagnostics.Stopwatch]::StartNew()",
+  "  foreach ($process in $processes) {",
+  "    $left = 5000 - $wait.ElapsedMilliseconds; if ($left -lt 0) { $left = 0 }",
+  "    if (-not ($process.WaitForExit($left) -or $failed)) { $failed = 'Process {0} still runs 5 s after its stop' -f $process.Id }",
+  "  }",
+  "  $failed",
   "}",
-  // Opens every target before it ends any, so a parent that ends with its child is still held and
-  // what it started meanwhile is found. A target it may not open or end fails the stop at the end.
+  // Opens every target of a pass before it ends any, so a parent that ends with its child is still
+  // held and what it started meanwhile is found. What the sixth pass finds was started after the
+  // fifth looked: the stop ends it but fails as unfinished, as on a target it may not open or end.
   "function Stop-T3ProcessTree($root, $since, $from = $since, $to = [double]::PositiveInfinity) {",
-  "  $since -= 1000; $from -= 1000; $to += 1000",
+  `  $since -= ${CLOCK_SKEW_MS}; $from -= ${CLOCK_SKEW_MS}; $to += ${CLOCK_SKEW_MS}`,
   "  $open = @{}; $starts = New-Object System.Collections.ArrayList; $failed = $null",
   "  try {",
-  "    for ($pass = 0; $pass -lt 5; $pass++) {",
+  "    for ($pass = 0; $pass -le 5; $pass++) {",
   "      $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)",
   "      $targets = if ($pass) { Get-T3Descendants $all $starts } else { Get-T3ProcessTree $all $root $since $from $to }",
   "      if ($targets.Count -eq 0) { break }",
-  "      foreach ($id in @($targets.Keys)) {",
+  "      $new = @(foreach ($id in @($targets.Keys)) {",
   "        try { $process = Open-T3Process $id $targets[$id] } catch { if (-not $failed) { $failed = $_ }; continue }",
-  "        if ($process) { $open[$id] = $process; [void]$starts.Add(@($id, (Ticks $targets[$id]), [long]::MaxValue)) }",
-  "      }",
-  "      foreach ($process in @($open.Values)) { try { Stop-T3Process $process } catch { if (-not $failed) { $failed = $_ } } }",
+  "        if ($process) { $open[$id] = $process; [void]$starts.Add(@($id, (Ticks $targets[$id]), [long]::MaxValue)); $process }",
+  "      })",
+  "      if ($new.Count -and $pass -eq 5 -and -not $failed) { $failed = 'The tree of {0} still started processes after 5 passes' -f $root }",
+  "      $stopped = Stop-T3Processes $new; if ($stopped -and -not $failed) { $failed = $stopped }",
   "    }",
   "    if ($failed) { throw $failed }",
   "  } finally { foreach ($process in $open.Values) { $process.Dispose() } }",

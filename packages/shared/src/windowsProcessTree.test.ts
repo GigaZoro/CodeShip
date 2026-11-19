@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the walk runs in a real PowerShell.
 import * as NodeChildProcess from "node:child_process";
-import * as NodeEvents from "node:events";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -18,7 +17,9 @@ import { isWindowsHost } from "./testing/hostPlatform.ts";
 import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   endingWindowsTrees,
+  type WindowsProcessTreeRoot,
   type WindowsTreeEnding,
+  windowsTreeRootFromNow,
   withoutWindowsTreeEnding,
 } from "./windowsProcessTree.ts";
 
@@ -216,6 +217,13 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       { encoding: "utf8" },
     );
 
+  /** Settles with the process's exit code, or null when a signal ended it. */
+  const exitCodeOf = (child: NodeChildProcess.ChildProcess) =>
+    new Promise<number | null>((resolve, reject) => {
+      child.once("exit", resolve);
+      child.once("error", reject);
+    });
+
   // Times are seconds from $t. The tree's root is 10, and nothing in it started before -2.
   it.each([
     [
@@ -258,16 +266,18 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     "function Get-CimInstance { $global:walks++; if ($global:walks -eq 1) { $first } else { $later } }",
   ];
 
-  // $real is when CIM shows the target was created and $near the microsecond after; no process holds
-  // $gone. A snapshot that lists the target at $near saw another process hold its pid.
-  it.each<[string, string, string, string, "stopped" | "spared"]>([
-    ["ends the target the walk saw", "$target 0", "(P $target 0 $real)", "", "stopped"],
+  // $real is when CIM shows the target was created and $near the microsecond after; $soon and $next
+  // stand for Node's clock half a second before and 300 ms after $real. No process holds $gone. A
+  // snapshot that lists the target at $near saw another process hold its pid.
+  it.each<[string, string, string, string, "stopped" | "spared", number]>([
+    ["ends the target the walk saw", "$target 0", "(P $target 0 $real)", "", "stopped", 2],
     [
       "spares a process created a microsecond from the one the walk saw",
       "$target 0",
       "(P $target 0 $near)",
       "",
       "spared",
+      2,
     ],
     [
       "spares a process that took the root's pid after the first pass",
@@ -275,6 +285,7 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "(P $target 0 $real.AddSeconds(-1))",
       "(P $target 0 $real)",
       "spared",
+      2,
     ],
     [
       "spares what a process that took the root's pid after the first pass started",
@@ -282,6 +293,7 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "(P $gone 0 $real.AddSeconds(-1))",
       "(P $target $gone $real)",
       "spared",
+      2,
     ],
     [
       "spares what an earlier holder of the root's pid started, after the root ended",
@@ -289,6 +301,7 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "(P $gone 0 $real.AddMilliseconds(100)), (P $target $gone $real)",
       "(P $target $gone $real)",
       "spared",
+      2,
     ],
     [
       "spares what a later holder of the root's pid started, after that holder ended",
@@ -296,15 +309,32 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "(P $gone 0 $real.AddMilliseconds(-100)), (P ($gone - 1) $gone $real.AddMilliseconds(-200)), (P $target $gone $real)",
       "(P $target $gone $real)",
       "spared",
+      2,
     ],
-  ])("%s", async (_, stop, first, later, expected) => {
+    [
+      "spares a process that took the root's pid half a second after the spawn",
+      "$target $soon $soon $soon",
+      "(P $target 0 $real)",
+      "",
+      "spared",
+      1,
+    ],
+    [
+      "spares what an earlier holder of the root's pid started before the root, after the root ended",
+      "$gone $early $next $next",
+      "(P $target $gone $real)",
+      "",
+      "spared",
+      1,
+    ],
+  ])("%s", async (_, stop, first, later, expected, walked) => {
     // Exits 7 once its input ends, so any other exit is the stop's.
     const target = NodeChildProcess.spawn(
       process.execPath,
       ["-e", "process.stdin.on('end', () => process.exit(7)).resume()"],
       { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
     );
-    const exited = NodeEvents.once(target, "exit");
+    const exited = exitCodeOf(target);
     let walks: string;
     try {
       walks = runPowerShell(
@@ -312,6 +342,8 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
         "$real = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $target)).CreationDate",
         "$near = $real.AddTicks(10)",
         "$early = Ms $real.AddSeconds(-10)",
+        "$soon = Ms $real.AddMilliseconds(-500)",
+        "$next = Ms $real.AddMilliseconds(300)",
         "$gone = [int]::MaxValue",
         ...snapshots(first, later),
         `Stop-T3ProcessTree ${stop}`,
@@ -320,10 +352,10 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     } finally {
       target.stdin.destroy();
     }
-    const [code] = await exited;
+    const code = await exited;
     assert.deepEqual(
       { outcome: code === 7 ? "spared" : "stopped", walks: walks.trim() },
-      { outcome: expected, walks: "2" },
+      { outcome: expected, walks: String(walked) },
     );
   });
 
@@ -358,6 +390,8 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
   });
 
   // Later passes walk from the processes the stop holds, so what one started as it ended is found.
+  // $held gathers the handles the stop opened: during the second walk it holds the ended root open,
+  // and once it returns it holds nothing.
   it("ends what a process it stopped started after the first pass", () => {
     const ended = runPowerShell(
       `$root, $child = 1, 2 | ForEach-Object { Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru }`,
@@ -365,20 +399,88 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "  $null = $root.get_Handle(); $null = $child.get_Handle()",
       "  $made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = $p.CreationDate }",
       ...snapshots("(P $root.Id 0 $made[$root.Id])", "(P $child.Id $root.Id $made[$child.Id])"),
+      "  $global:held = @(); $opener = ${function:Open-T3Process}; $walk = ${function:Get-CimInstance}",
+      "  function Open-T3Process($id, $created) { $p = & $opener $id $created; if ($p) { $global:held += $p.SafeHandle; $p } }",
+      "  function Get-CimInstance { if ($global:walks -eq 1) { $global:atWalk = '{0} {1}' -f $global:held.Count, $global:held[0].IsClosed }; & $walk }",
       "  Stop-T3ProcessTree $root.Id 0",
       "  $child.WaitForExit(5000)",
+      "  $global:atWalk",
+      "  '{0} {1}' -f $global:held.Count, @($global:held | Where-Object IsClosed).Count",
       "} finally { foreach ($p in $root, $child) { if (-not $p.HasExited) { $p.Kill() } } }",
     );
-    assert.equal(ended.trim(), "True");
+    assert.deepEqual(ended.trim().split(/\r?\n/), ["True", "1 False", "2 2"]);
+  });
+
+  // Each snapshot adds the next process of a chain, as a tree whose processes each start another as
+  // the stop ends them would. The sixth pass finds the last; the stop ends it and reports itself
+  // unfinished.
+  it("reports a tree still starting processes after its last pass", () => {
+    const report = runPowerShell(
+      `$chain = 1..6 | ForEach-Object { Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru }`,
+      "try {",
+      "  foreach ($p in $chain) { $null = $p.get_Handle() }",
+      "  $made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = $p.CreationDate }",
+      "  $parent = 0",
+      "  $rows = @(foreach ($p in $chain) { [pscustomobject]@{ ProcessId = $p.Id; ParentProcessId = $parent; CreationDate = $made[$p.Id] }; $parent = $p.Id })",
+      "  $global:walks = 0",
+      "  function Get-CimInstance { $global:walks++; $rows | Select-Object -First $global:walks }",
+      "  try { Stop-T3ProcessTree $chain[0].Id 0 } catch { $_.Exception.Message }",
+      "  @($chain | Where-Object { -not $_.WaitForExit(5000) }).Count",
+      "} finally { foreach ($p in $chain) { if (-not $p.HasExited) { $p.Kill() } } }",
+    );
+    const [message = "", running] = report.trim().split(/\r?\n/);
+    assert.deepEqual(
+      { unfinished: /still started processes after 5 passes/.test(message), running },
+      { unfinished: true, running: "0" },
+      report,
+    );
+  });
+
+  // Node reads its clock around a spawn and Windows stamps the start from its own, each at its last
+  // tick, so the stop allows each window a little slack. The message lists each window and stamp.
+  it("ends a running root whose start it knows only from the clock read around its spawn", async () => {
+    const spawned: Array<{ child: NodeChildProcess.ChildProcess; root: WindowsProcessTreeRoot }> =
+      [];
+    const exits: Array<Promise<number | null>> = [];
+    let stamps: string;
+    try {
+      for (let index = 0; index < 8; index++) {
+        const rootOf = windowsTreeRootFromNow();
+        // Exits 7 once its input ends, so any other exit is the stop's.
+        const child = NodeChildProcess.spawn(
+          process.execPath,
+          ["-e", "process.stdin.on('end', () => process.exit(7)).resume()"],
+          { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
+        );
+        exits.push(exitCodeOf(child));
+        if (child.pid === undefined) throw new Error("A root did not spawn");
+        spawned.push({ child, root: rootOf(child.pid) });
+      }
+      const roots = spawned.map(({ root }) => root);
+      stamps = runPowerShell(
+        `foreach ($id in ${roots.map(({ pid }) => pid).join(", ")}) { Ms (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $id)).CreationDate }`,
+        ...roots.map(({ pid, since, created }) =>
+          ["Stop-T3ProcessTree", pid, since, created?.from, created?.to].join(" "),
+        ),
+      );
+    } finally {
+      for (const { child } of spawned) child.stdin?.destroy();
+    }
+    const codes = await Promise.all(exits);
+    assert.deepEqual(
+      codes.map((code) => (code === 7 ? "spared" : "stopped")),
+      spawned.map(() => "stopped"),
+      `${JSON.stringify(spawned.map(({ root }) => root.created))} ${stamps.trim().split(/\r?\n/).join(" ")}`,
+    );
   });
 
   // The walk reads start times from CIM and the stop from a handle, which counts 100 ns ticks.
+  // Only processes it could open are compared, so no pid among them can change hands meanwhile.
   it("reads each start time from CIM cut to its microsecond", () => {
     const range = runPowerShell(
-      "$open = @(Get-Process | Where-Object { try { $null = $_.get_Handle(); $true } catch { $false } })",
-      "$made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = Ticks $p.CreationDate }",
-      "$skews = @(foreach ($p in $open) { if ($made.ContainsKey($p.Id)) { (Ticks $p.StartTime) - $made[$p.Id] } })",
-      "$open | ForEach-Object { $_.Dispose() }",
+      "$open = @{}; foreach ($p in Get-Process) { try { $null = $p.get_Handle(); $open[$p.Id] = $p } catch { $p.Dispose() } }",
+      "$skews = @(foreach ($c in Get-CimInstance Win32_Process) { $p = $open[[int]$c.ProcessId]; if ($p) { (Ticks $p.StartTime) - (Ticks $c.CreationDate) } })",
+      "$open.Values | ForEach-Object { $_.Dispose() }",
       "$range = $skews | Measure-Object -Minimum -Maximum",
       "'{0} {1} {2}' -f $range.Count, $range.Minimum, $range.Maximum",
     ).trim();
