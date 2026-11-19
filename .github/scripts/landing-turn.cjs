@@ -38,20 +38,28 @@ function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = 
   return { ok, stdout: result.stdout.trim(), stderr };
 }
 
+/** A git call to origin that failed. It may pass, so a wait tries again; a failure in the checkout ends it at once. */
+class RemoteFailure extends Error {}
+
+/** One read or write of origin's lease, bounded by `callMs`. */
+function remoteGit(cwd, args, callMs, { allowFailure = false } = {}) {
+  const result = git(cwd, args, { allowFailure: true, timeoutMs: callMs });
+  if (!result.ok && !allowFailure) {
+    throw new RemoteFailure(`git ${args[0]} failed: ${result.stderr}`);
+  }
+  return result;
+}
+
 /** The lease calls take `{ cwd, remote, callMs }`; `callMs` bounds each git call to origin. */
 function remoteLease({ cwd, remote, callMs = LEASE_CALL_MS }) {
-  const listing = git(cwd, ["ls-remote", "--refs", remote, LEASE_REF], {
-    timeoutMs: callMs,
-  }).stdout;
+  const listing = remoteGit(cwd, ["ls-remote", "--refs", remote, LEASE_REF], callMs).stdout;
   return listing ? listing.split(/\s+/)[0] : null;
 }
 
 function readHolder({ cwd, remote, callMs = LEASE_CALL_MS }, sha) {
   // A lease commit this lander could not fetch is unknown, not unreadable: it may be another lander's live turn. A poll
-  // leaves FETCH_HEAD to a landing in the same checkout.
-  git(cwd, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, sha], {
-    timeoutMs: callMs,
-  });
+  // every few seconds leaves FETCH_HEAD to the checkout's other fetches.
+  remoteGit(cwd, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, sha], callMs);
   const message = git(cwd, ["show", "-s", "--format=%B", sha]).stdout;
   try {
     return JSON.parse(message.split("\n")[0]);
@@ -67,15 +75,17 @@ function readHolder({ cwd, remote, callMs = LEASE_CALL_MS }, sha) {
 function moveLease(lease, from, to) {
   const { cwd, remote, callMs = LEASE_CALL_MS } = lease;
   const expected = from ? [`--force-with-lease=${LEASE_REF}:${from}`] : [];
-  const pushed = git(cwd, ["push", "--quiet", ...expected, remote, `${to ?? ""}:${LEASE_REF}`], {
-    allowFailure: true,
-    timeoutMs: callMs,
-  });
+  const pushed = remoteGit(
+    cwd,
+    ["push", "--quiet", ...expected, remote, `${to ?? ""}:${LEASE_REF}`],
+    callMs,
+    { allowFailure: true },
+  );
   if (pushed.ok) return true;
   const after = remoteLease(lease);
   if (after === to) return true;
   if (after !== from) return false;
-  throw new Error(`git push failed: ${pushed.stderr}`);
+  throw new RemoteFailure(`git push failed: ${pushed.stderr}`);
 }
 
 /**
@@ -147,6 +157,7 @@ function acquire({
       if (sha) return sha;
       failingSince = null;
     } catch (error) {
+      if (!(error instanceof RemoteFailure)) throw error;
       failure = error;
     }
     const now = clock();

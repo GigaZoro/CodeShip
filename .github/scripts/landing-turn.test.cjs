@@ -208,7 +208,7 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
   }
 });
 
-test("a waiting lander waits through failed reads of origin, and only failures that go on end its wait", () => {
+test("a waiting lander waits through failed reads of origin, and only failures that go on or come from its checkout end its wait", () => {
   const { root, origin, git, clone } = setup();
   try {
     const holder = clone("holder");
@@ -242,6 +242,22 @@ test("a waiting lander waits through failed reads of origin, and only failures t
     assert.throws(
       () => acquire({ cwd: holder, remote: origin, failingMs: 0 }),
       /git ls-remote failed/,
+    );
+    fs.renameSync(away, origin);
+    release({ cwd: waiter, remote: origin }, turn);
+
+    // Origin answers, but this checkout cannot write the lease commit: waiting does not change that.
+    const broken = clone("broken");
+    git(broken, "config", "core.repositoryformatversion", "1");
+    git(broken, "config", "extensions.landingTurnTest", "true");
+    assert.throws(
+      () =>
+        acquire({
+          cwd: broken,
+          remote: origin,
+          sleep: () => assert.fail("retried a local failure"),
+        }),
+      /git commit-tree failed: .*unknown repository extension/s,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
