@@ -5,7 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import type * as PlatformError from "effect/PlatformError";
+import * as PlatformError from "effect/PlatformError";
 import type * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -36,12 +36,17 @@ it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it can
   }),
 );
 
-/** A Windows spawner whose process has exited unless `running`; it records each kill and walk. */
+/**
+ * A Windows spawner whose process has exited unless `running`, and whose kill fails if `killFails`.
+ * It records each kill and walk, and whether each walk was told the process ended.
+ */
 const fakeWindowsSpawner = (options: {
   readonly running: boolean;
   readonly output: "ends" | "held";
+  readonly killFails?: boolean;
 }) => {
   const events: Array<"kill" | "walk"> = [];
+  const toldEnded: Array<boolean> = [];
   let running = options.running;
   const handle = (output: Stream.Stream<Uint8Array>) =>
     ChildProcessSpawner.makeHandle({
@@ -49,10 +54,19 @@ const fakeWindowsSpawner = (options: {
       exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
       isRunning: Effect.sync(() => running),
       kill: () =>
-        Effect.sync(() => {
-          running = false;
-          events.push("kill");
-        }),
+        options.killFails
+          ? Effect.fail(
+              PlatformError.systemError({
+                _tag: "Unknown",
+                module: "ChildProcess",
+                method: "kill",
+                description: "refused",
+              }),
+            )
+          : Effect.sync(() => {
+              running = false;
+              events.push("kill");
+            }),
       stdin: Sink.drain,
       stdout: output,
       stderr: Stream.empty,
@@ -66,13 +80,14 @@ const fakeWindowsSpawner = (options: {
     Effect.sync(() => {
       if (command._tag === "StandardCommand" && command.command === "powershell.exe") {
         events.push("walk");
+        toldEnded.push(/ -ended \d+$/.test(command.args.at(-1) ?? ""));
         return handle(Stream.empty);
       }
       // What a leader left running holds a pipe it inherited open.
       return handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never));
     }),
   );
-  return { events, spawner };
+  return { events, toldEnded, spawner };
 };
 
 type Use = (
@@ -161,8 +176,26 @@ describe("endingWindowsTrees stops a Windows tree", () => {
         ),
       );
 
-      assert.deepEqual(fake.events.filter((event) => event === "walk").length, walks);
+      assert.deepEqual(
+        fake.toldEnded,
+        Array.from({ length: walks }, () => true),
+      );
       if (process.running) assert.deepEqual(fake.events, ["kill", "walk"]);
+    }),
+  );
+
+  it.effect("once, not told the process ended, when its kill failed and it may still run", () =>
+    Effect.gen(function* () {
+      const fake = fakeWindowsSpawner({ running: true, output: "ends", killFails: true });
+
+      yield* Effect.scoped(
+        Effect.flatMap(
+          endingWindowsTrees(fake.spawner, "win32").spawn(ChildProcess.make("leader")),
+          readToEnd,
+        ),
+      );
+
+      assert.deepEqual(fake.toldEnded, [false]);
     }),
   );
 
@@ -266,9 +299,9 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     "function Get-CimInstance { $global:walks++; if ($global:walks -eq 1) { $first } else { $later } }",
   ];
 
-  // $real is when CIM shows the target was created and $near the microsecond after; $soon and $next
-  // stand for Node's clock half a second before and 300 ms after $real. No process holds $gone. A
-  // snapshot that lists the target at $near saw another process hold its pid.
+  // $real is when CIM shows the target was created and $near the microsecond after; $soon, $late and
+  // $next stand for Node's clock 500 and 50 ms before and 300 ms after $real. No process holds $gone.
+  // A snapshot that lists the target at $near saw another process hold its pid.
   it.each<[string, string, string, string, "stopped" | "spared", number]>([
     ["ends the target the walk saw", "$target 0", "(P $target 0 $real)", "", "stopped", 2],
     [
@@ -327,6 +360,30 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "spared",
       1,
     ],
+    [
+      "takes a holder of the root's pid 50 ms after the spawn for the root, which may still run",
+      "$target $late $late $late",
+      "(P $target 0 $real)",
+      "",
+      "stopped",
+      2,
+    ],
+    [
+      "spares a process that took the root's pid 50 ms after the spawn, once the root ended",
+      "$target $late $late $late -ended $late",
+      "(P $target 0 $real)",
+      "",
+      "spared",
+      1,
+    ],
+    [
+      "spares what a later holder of the root's pid started once the root ended, after it ended too",
+      "$gone $early $early $early -ended $soon",
+      "(P $target $gone $real)",
+      "",
+      "spared",
+      1,
+    ],
   ])("%s", async (_, stop, first, later, expected, walked) => {
     // Exits 7 once its input ends, so any other exit is the stop's.
     const target = NodeChildProcess.spawn(
@@ -343,6 +400,7 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
         "$near = $real.AddTicks(10)",
         "$early = Ms $real.AddSeconds(-10)",
         "$soon = Ms $real.AddMilliseconds(-500)",
+        "$late = Ms $real.AddMilliseconds(-50)",
         "$next = Ms $real.AddMilliseconds(300)",
         "$gone = [int]::MaxValue",
         ...snapshots(first, later),
@@ -390,8 +448,8 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
   });
 
   // Later passes walk from the processes the stop holds, so what one started as it ended is found.
-  // $held gathers the handles the stop opened: during the second walk it holds the ended root open,
-  // and once it returns it holds nothing.
+  // $held gathers the handle each process the stop opened keeps, read without opening one: during
+  // the second walk it holds the ended root open, and once it returns it holds nothing.
   it("ends what a process it stopped started after the first pass", () => {
     const ended = runPowerShell(
       `$root, $child = 1, 2 | ForEach-Object { Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru }`,
@@ -400,7 +458,8 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "  $made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = $p.CreationDate }",
       ...snapshots("(P $root.Id 0 $made[$root.Id])", "(P $child.Id $root.Id $made[$child.Id])"),
       "  $global:held = @(); $opener = ${function:Open-T3Process}; $walk = ${function:Get-CimInstance}",
-      "  function Open-T3Process($id, $created) { $p = & $opener $id $created; if ($p) { $global:held += $p.SafeHandle; $p } }",
+      "  $kept = [Diagnostics.Process].GetField('m_processHandle', [Reflection.BindingFlags]'NonPublic, Instance')",
+      "  function Open-T3Process($id, $created) { $p = & $opener $id $created; if ($p) { $global:held += $kept.GetValue($p); $p } }",
       "  function Get-CimInstance { if ($global:walks -eq 1) { $global:atWalk = '{0} {1}' -f $global:held.Count, $global:held[0].IsClosed }; & $walk }",
       "  Stop-T3ProcessTree $root.Id 0",
       "  $child.WaitForExit(5000)",
@@ -434,6 +493,54 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       { unfinished: true, running: "0" },
       report,
     );
+  });
+
+  // The wait for the root fails; the stop still walks from it and ends what it started, then reports
+  // that failure.
+  it("goes on past a wait that fails to end what the tree started", () => {
+    const report = runPowerShell(
+      `$leader, $child = 1, 2 | ForEach-Object { Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru }`,
+      "try {",
+      "  $null = $leader.get_Handle(); $null = $child.get_Handle()",
+      "  $made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = $p.CreationDate }",
+      ...snapshots(
+        "(P $leader.Id 0 $made[$leader.Id])",
+        "(P $child.Id $leader.Id $made[$child.Id])",
+      ),
+      "  $opener = ${function:Open-T3Process}",
+      "  function Open-T3Process($id, $created) { $p = & $opener $id $created; if ($p -and $id -eq $leader.Id) { $p | Add-Member ScriptMethod WaitForExit { throw 'the wait failed' } -Force }; $p }",
+      "  try { Stop-T3ProcessTree $leader.Id 0 } catch { $_.Exception.Message }",
+      "  $child.WaitForExit(5000)",
+      "} finally { foreach ($p in $leader, $child) { if (-not $p.HasExited) { $p.Kill() } } }",
+    );
+    const [message = "", childEnded] = report.trim().split(/\r?\n/);
+    assert.deepEqual(
+      { reported: /the wait failed/.test(message), childEnded },
+      { reported: true, childEnded: "True" },
+      report,
+    );
+  });
+
+  // Another process can hold an ended root open, so its pid stays the root's; the stop, told the
+  // root ended, still ends what the root started. The message says if the snapshot listed the root.
+  it("ends what an ended root started while another process still holds it open", () => {
+    const spawnsChild =
+      "require(''child_process'').spawn(process.execPath,[''-e'',''setTimeout(Object,600000)''],{stdio:''ignore''}).unref()";
+    const report = runPowerShell(
+      `$root = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', '${spawnsChild}' -WindowStyle Hidden -PassThru`,
+      "$child = $null",
+      "try {",
+      "  $null = $root.get_Handle(); if (-not $root.WaitForExit(30000)) { throw 'The root still runs' }",
+      "  $start = Ms $root.StartTime",
+      "  $made = Get-CimInstance Win32_Process -Filter ('ParentProcessId = {0}' -f $root.Id) | Where-Object { (Ms $_.CreationDate) -ge $start } | Select-Object -First 1",
+      "  $child = Get-Process -Id $made.ProcessId; $null = $child.get_Handle()",
+      "  $listed = [bool](Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $root.Id))",
+      "  Stop-T3ProcessTree $root.Id $start $start $start -ended (Ms ([DateTime]::Now))",
+      "  '{0} {1}' -f $listed, $child.WaitForExit(5000)",
+      "} finally { if ($child -and -not $child.HasExited) { $child.Kill() }; $root.Dispose() }",
+    );
+    const [listed, childEnded] = report.trim().split(" ");
+    assert.equal(childEnded, "True", `the snapshot listed the ended root: ${listed}`);
   });
 
   // Node reads its clock around a spawn and Windows stamps the start from its own, each at its last

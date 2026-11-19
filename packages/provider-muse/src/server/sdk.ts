@@ -13,6 +13,7 @@ import type { RuntimeMode } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import {
+  endedWindowsTreeRoot,
   type WindowsProcessTreeRoot,
   windowsTreeRootFromNow,
   windowsTreeStopper,
@@ -195,7 +196,7 @@ export async function createMuseSdkHost(
     ...(onProcessExit || stopTree
       ? {
           onProcessExit: (exit: ProcessExit) => {
-            const tree = root;
+            const tree = root === undefined ? undefined : endedWindowsTreeRoot(root);
             if (tree !== undefined && stopTree) {
               const stop = options.readOnly
                 ? leftSomethingBehind(exit, handshake.exited)

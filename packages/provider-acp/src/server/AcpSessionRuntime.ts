@@ -39,7 +39,7 @@ import { isProcessAlive as isProcessAliveByProbe } from "@t3tools/shared/process
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import {
   endingWindowsTrees,
-  stopWindowsProcessTree,
+  stopSpawnedWindowsTree,
   withWindowsTreeRoot,
   withoutWindowsTreeEnding,
   type WindowsProcessTreeRoot,
@@ -1023,8 +1023,11 @@ export function terminatePosixOwnedProcessTree(input: {
   }).pipe(withWallClock);
 }
 
-const stopAcpWindowsProcessTree = (root: WindowsProcessTreeRoot) =>
-  stopWindowsProcessTree(root).pipe(
+const stopAcpWindowsProcessTree = (
+  child: ChildProcessSpawner.ChildProcessHandle,
+  root: WindowsProcessTreeRoot,
+) =>
+  stopSpawnedWindowsTree(child, root).pipe(
     Effect.mapError(
       (cause) =>
         new AcpProcessGroupTerminationError({
@@ -1525,7 +1528,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     );
   // Each walk starts PowerShell, so terminating the group and the scope's finalizer share one.
   const stopChildTree = yield* Effect.cached(
-    stopAcpWindowsProcessTree(childTreeRoot).pipe(
+    stopAcpWindowsProcessTree(child, childTreeRoot).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     ),
   );

@@ -16,7 +16,7 @@ import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import {
-  stopWindowsProcessTree,
+  stopSpawnedWindowsTree,
   withWindowsTreeRoot,
   withoutWindowsTreeEnding,
 } from "@t3tools/shared/windowsProcessTree";
@@ -234,7 +234,7 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
   const terminateProcess =
     platform === "win32"
       ? yield* Effect.cached(
-          stopWindowsProcessTree(root).pipe(
+          stopSpawnedWindowsTree(child, root).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.ignore({ log: "Error" }),
           ),
