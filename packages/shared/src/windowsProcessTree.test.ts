@@ -241,7 +241,7 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "$t = [DateTime]::UtcNow",
       "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
       `$all = @(${rows})`,
-      "(Get-T3ProcessTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t) (Ms $t)).Targets.Keys | Sort-Object",
+      "(Get-T3ProcessTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t) (Ms $t)).Keys | Sort-Object",
     );
     assert.deepEqual(tree.trim().split(/\r?\n/), expected);
   });
@@ -258,22 +258,29 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     "function Get-CimInstance { $global:walks++; if ($global:walks -eq 1) { $first } else { $later } }",
   ];
 
-  // $real is when the target was created and $near another time in its millisecond; no process holds
+  // $real is when CIM shows the target was created and $near the microsecond after; no process holds
   // $gone. A snapshot that lists the target at $near saw another process hold its pid.
   it.each<[string, string, string, string, "stopped" | "spared"]>([
     ["ends the target the walk saw", "$target 0", "(P $target 0 $real)", "", "stopped"],
     [
-      "spares a process that took the pid within the millisecond of the one the walk saw",
+      "spares a process created a microsecond from the one the walk saw",
       "$target 0",
       "(P $target 0 $near)",
       "",
       "spared",
     ],
     [
-      "spares a process that took the root's pid after the first pass, in the same millisecond",
+      "spares a process that took the root's pid after the first pass",
       "$target 0",
-      "(P $target 0 $near)",
+      "(P $target 0 $real.AddSeconds(-1))",
       "(P $target 0 $real)",
+      "spared",
+    ],
+    [
+      "spares what a process that took the root's pid after the first pass started",
+      "$gone 0",
+      "(P $gone 0 $real.AddSeconds(-1))",
+      "(P $target $gone $real)",
       "spared",
     ],
     [
@@ -303,7 +310,7 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       walks = runPowerShell(
         `$target = ${target.pid}`,
         "$real = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $target)).CreationDate",
-        "$near = $real.AddTicks($(if ($real.Ticks % 10000 -lt 20) { 20 } else { -20 }))",
+        "$near = $real.AddTicks(10)",
         "$early = Ms $real.AddSeconds(-10)",
         "$gone = [int]::MaxValue",
         ...snapshots(first, later),
@@ -322,12 +329,17 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
 
   // The target ends after the walk read it. $seen was looked up while it ran, without opening it,
   // and $started holds it open. Once $started lets go, the pid is free; $seen.HasExited opens it
-  // again, so answering false stands in for a process that took it.
+  // again, so answering false stands in for a process that took it. Opening fails with error 87
+  // when the pid was free as it opened and another process had it as it looked again.
   it.each([
     ["before the stop looks it up", "function Get-Process { }"],
     [
       "before the stop opens it and its pid goes to a running process",
       "$started.Dispose(); $seen | Add-Member NoteProperty HasExited $false -Force; function Get-Process { $seen }",
+    ],
+    [
+      "while the stop opens it and another process takes its pid",
+      "function Get-Process { [pscustomobject]@{} | Add-Member ScriptMethod get_Handle { throw [ComponentModel.Win32Exception]::new(87) } -PassThru | Add-Member ScriptMethod Dispose { } -PassThru }",
     ],
     ["before the stop ends it", "function Get-Process { $started }"],
   ])("reports no error for a target that ended %s", (_, lookUp) => {
@@ -336,11 +348,45 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "$target = $started.Id",
       "$null = $started.get_Handle()",
       "$seen = Get-Process -Id $target",
-      ...snapshots("(P $target 0 $started.StartTime)"),
+      "$real = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $target)).CreationDate",
+      ...snapshots("(P $target 0 $real)"),
       "$started.Kill()",
       "$started.WaitForExit()",
       lookUp,
       "Stop-T3ProcessTree $target 0",
+    );
+  });
+
+  // Later passes walk from the processes the stop holds, so what one started as it ended is found.
+  it("ends what a process it stopped started after the first pass", () => {
+    const ended = runPowerShell(
+      `$root, $child = 1, 2 | ForEach-Object { Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru }`,
+      "try {",
+      "  $null = $root.get_Handle(); $null = $child.get_Handle()",
+      "  $made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = $p.CreationDate }",
+      ...snapshots("(P $root.Id 0 $made[$root.Id])", "(P $child.Id $root.Id $made[$child.Id])"),
+      "  Stop-T3ProcessTree $root.Id 0",
+      "  $child.WaitForExit(5000)",
+      "} finally { foreach ($p in $root, $child) { if (-not $p.HasExited) { $p.Kill() } } }",
+    );
+    assert.equal(ended.trim(), "True");
+  });
+
+  // The walk reads start times from CIM and the stop from a handle, which counts 100 ns ticks.
+  it("reads each start time from CIM cut to its microsecond", () => {
+    const range = runPowerShell(
+      "$open = @(Get-Process | Where-Object { try { $null = $_.get_Handle(); $true } catch { $false } })",
+      "$made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = Ticks $p.CreationDate }",
+      "$skews = @(foreach ($p in $open) { if ($made.ContainsKey($p.Id)) { (Ticks $p.StartTime) - $made[$p.Id] } })",
+      "$open | ForEach-Object { $_.Dispose() }",
+      "$range = $skews | Measure-Object -Minimum -Maximum",
+      "'{0} {1} {2}' -f $range.Count, $range.Minimum, $range.Maximum",
+    ).trim();
+    const [count = 0, least = Number.NaN, most = Number.NaN] = range.split(" ").map(Number);
+    assert.deepEqual(
+      { compared: count > 0, cut: least >= 0 && most <= 9 },
+      { compared: true, cut: true },
+      `processes, least and most ticks past CIM's time: ${range}`,
     );
   });
 
