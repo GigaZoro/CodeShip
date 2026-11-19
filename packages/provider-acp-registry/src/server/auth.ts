@@ -4,6 +4,10 @@ import {
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 import type { AcpRegistrySettings } from "../settings.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import * as Hex from "effect/encoding/Hex";
+import * as FileSystem from "effect/FileSystem";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -11,6 +15,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -25,6 +30,8 @@ import {
 import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "./AcpRegistryRuntimeCoordinator.ts";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+
+const encodeCommand = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 type Runtime = Pick<
   AcpSessionRuntime.AcpSessionRuntime["Service"],
@@ -50,6 +57,25 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
   );
   const agentKey =
     options.settings.source === "local" ? `local:${options.instanceId}` : options.settings.agentId;
+  let credentialKey = `acp:${agentKey}`;
+  if (options.settings.source === "local" && options.settings.commandPath) {
+    const platform = yield* HostProcess.Platform;
+    const resolveExecutable = yield* SpawnExecutableResolution;
+    const executable =
+      resolveExecutable(options.settings.commandPath, platform, options.environment) ??
+      options.settings.commandPath;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* fs.realPath(executable).pipe(Effect.orElseSucceed(() => executable));
+    // Local launcher arguments can identify different agents and can contain secrets.
+    const command = encodeCommand([
+      platform === "win32" ? path.toLowerCase() : path,
+      ...options.settings.commandArgs,
+    ]);
+    const digest = yield* crypto
+      .digest("SHA-256", new TextEncoder().encode(command))
+      .pipe(Effect.map(Hex.encode), Effect.orDie);
+    credentialKey = `acp:local-command:${digest}`;
+  }
   const failure = (operation: string, detail: string, cause?: unknown) =>
     new ProviderSetupError({ instanceId: options.instanceId, operation, detail, cause });
   const resolve = catalog
@@ -354,7 +380,7 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
   return yield* ProviderAuthFlow.make({
     instanceId: options.instanceId,
     // ACP omits credential scope; assume an agent's instances share credentials in this environment.
-    credentialBinding: { owner: "provider", key: `acp:${agentKey}` },
+    credentialBinding: { owner: "provider", key: credentialKey },
     methods,
     ...(options.settings.authMethodId ? { defaultMethodId: options.settings.authMethodId } : {}),
     authenticate,

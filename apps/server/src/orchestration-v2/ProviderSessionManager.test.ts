@@ -898,6 +898,11 @@ it.effect("ProviderSessionManagerV2 opens independent sessions concurrently", ()
         })
         .pipe(Effect.forkScoped);
       yield* Deferred.await(firstOpenStarted);
+      assert.isFalse(
+        yield* manager
+          .reserveIdleCredentialBinding([modelSelection.instanceId])
+          .pipe(Effect.scoped),
+      );
       const secondFiber = yield* manager
         .open({
           threadId: secondThreadId,
@@ -1337,7 +1342,22 @@ it.effect(
             });
           });
 
+        const aliases = [ProviderInstanceId.make("other-binding-name"), modelSelection.instanceId];
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            assert.isTrue(yield* manager.reserveIdleCredentialBinding(aliases));
+            assert.isTrue(Exit.isFailure(yield* startTurn(threadB).pipe(Effect.exit)));
+            assert.isTrue(
+              Exit.isFailure(
+                yield* manager
+                  .open({ threadId: threadB, providerSessionId, modelSelection, runtimePolicy })
+                  .pipe(Effect.exit),
+              ),
+            );
+          }),
+        );
         yield* startTurn(threadB);
+        assert.isFalse(yield* manager.reserveIdleCredentialBinding(aliases).pipe(Effect.scoped));
 
         yield* Ref.set(holdStart, true);
         const startingA = yield* startTurn(threadA).pipe(Effect.forkChild);

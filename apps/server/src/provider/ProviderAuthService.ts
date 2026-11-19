@@ -300,6 +300,9 @@ export const makeProviderAuthService = Effect.gen(function* () {
             input.returnUrl,
             input.callbackMode,
             peers,
+            limitsLogin
+              ? undefined
+              : Effect.suspend(() => providerSessions.reserveIdleCredentialBinding(peers)),
           );
         }),
       );

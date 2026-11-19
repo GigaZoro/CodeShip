@@ -110,6 +110,7 @@ function layerExecutorFor(input: {
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
         get: () => Effect.succeedNone,
+        reserveIdleCredentialBinding: () => Effect.die("unused credential reservation"),
         isLive: () => Effect.succeed(false),
         close: () => Effect.void,
         closeInstance: () => Effect.void,

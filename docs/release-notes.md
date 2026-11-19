@@ -1,6 +1,8 @@
-## 2026-11-19 — Claude and Codex keep chats available during sign-in
+## 2026-11-19 — Chats keep running during provider sign-in
 
-- Chats can keep running and new turns can start on the current account while you sign in with Claude or Codex. The app retires sessions using the previous login once it saves the replacement. Cancelling, leaving the login unfinished, or a failed save keeps the previous sessions available.
+- Claude, Codex, Cursor, and Antigravity browser sign-in keep chats on their current account until the replacement login is saved. Canceling or a failed save leaves those chats running.
+- ACP agents that change credentials in place ask you to finish active work on the shared account before signing in.
+- A separate sign-in history preserves timing, outcome, and session counts when the general server trace rotates.
 - Codex uses the exact account folder set in `CODEX_HOME` for both chat continuation and usage history, including folder names that end in a space.
 
 ## 2026-11-19 — Environment tools can manage banked usage reset preferences

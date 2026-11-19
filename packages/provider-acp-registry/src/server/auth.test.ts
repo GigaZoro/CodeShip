@@ -4,6 +4,8 @@ import { ProviderInstanceId, type ProviderAuthState } from "@t3tools/contracts";
 import { AcpRegistrySettings } from "../settings.ts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -231,6 +233,38 @@ const makeHarness = (
     };
   }).pipe(Effect.provideService(AcpRegistrySupport.AcpRegistryCatalog, catalog));
 
+it.effect(
+  "refuses in-place login before touching an admitted startup and permits an idle retry",
+  () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness(terminalMethod);
+      const started = yield* Deferred.make<void>();
+      const session = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(session, Exit.void));
+      yield* h.controller.withAccess!(
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.forkIn(session));
+      yield* Deferred.await(started);
+      let stopped = false;
+      const result = yield* h.controller
+        .start(
+          "owner",
+          Effect.sync(() => {
+            stopped = true;
+          }),
+        )
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(result));
+      assert.isFalse(stopped);
+      assert.isUndefined(h.terminalSpawn());
+      yield* Scope.close(session, Exit.void);
+      yield* h.controller.start("owner");
+      yield* h.phase("waiting");
+      assert.isDefined(h.terminalSpawn());
+      assert.isTrue(Exit.isFailure(yield* h.controller.withAccess!(Effect.void).pipe(Effect.exit)));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("keeps local credentials separate from a matching registry agent ID", () =>
   Effect.gen(function* () {
     const registry = yield* makeHarness(browserMethod);
@@ -244,10 +278,14 @@ it.effect("keeps local credentials separate from a matching registry agent ID", 
       owner: "provider",
       key: "acp:test-agent",
     });
-    assert.deepEqual(local.controller.credentialBinding, {
-      owner: "provider",
-      key: "acp:local:test-agent",
-    });
+    const alias = yield* makeHarness(
+      browserMethod,
+      false,
+      decodeSettings({ source: "local", commandPath: "/different/agent" }),
+      ProviderInstanceId.make("local-alias"),
+    );
+    assert.deepEqual(local.controller.credentialBinding, alias.controller.credentialBinding);
+    assert.notDeepEqual(local.controller.credentialBinding, registry.controller.credentialBinding);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

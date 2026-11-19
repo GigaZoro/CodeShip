@@ -11,6 +11,8 @@ import {
   type OrchestrationV2ThreadShell,
   type ProviderAuthState,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -131,6 +133,7 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
     logoutError?: ProviderSetupError;
     sharedCredentials?: boolean;
     sharedBusy?: boolean;
+    busySessionInstance?: ProviderInstanceId;
     sharedBusyEffect?: Effect.Effect<boolean>;
     responds?: boolean;
     /** The instance also keeps a login only to read its limits. */
@@ -303,6 +306,8 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
             }),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          reserveIdleCredentialBinding: (ids) =>
+            Effect.succeed(!input.busySessionInstance || !ids.includes(input.busySessionInstance)),
           release: ({ providerSessionId, reason }) =>
             Effect.gen(function* () {
               assert.isTrue(gateClosed);
@@ -466,6 +471,29 @@ describe("ProviderAuthService", () => {
         assert.isBelow(actions.indexOf("invalidate-shared"), actions.indexOf("native-logout"));
       }),
   );
+  it.effect("refuses an in-place login through the service while a credential alias has work", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({
+        sharedCredentials: true,
+        busySessionInstance: otherInstanceId,
+      });
+      h.replaceAuth(
+        yield* ProviderAuthFlow.make({
+          instanceId,
+          credentialBinding: h.auth.credentialBinding!,
+          methods: Effect.succeed([
+            { id: "native", name: "Native", description: null, type: "agent" },
+          ]),
+          authenticate: () => Effect.die("started native login while a peer was working"),
+          logout: Effect.void,
+        }),
+      );
+      const error = yield* h.service.start({ instanceId }, owner).pipe(Effect.flip);
+      assert.include(error.detail, "Wait for turns");
+      assert.deepEqual(h.actions, []);
+    }).pipe(Effect.scoped, Effect.provide(NodeCrypto.layer)),
+  );
+
   it.effect("rejects overlapping changes to a shared sign-in", () =>
     Effect.gen(function* () {
       const { service, actions } = yield* makeHarness({

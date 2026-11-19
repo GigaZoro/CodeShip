@@ -110,6 +110,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (
       !(options.stage && (operation === "auth" || operation === "cancelling")),
   );
   const sessions = new Set<Scope.Closeable>();
+  const opening = new Set<Scope.Closeable>();
   const stopOwnedSessions = Effect.suspend(() =>
     Effect.forEach(Array.from(sessions), (session) => Scope.close(session, Exit.void), {
       discard: true,
@@ -231,10 +232,12 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (
                 });
               const child = yield* Scope.make();
               sessions.add(child);
+              opening.add(child);
               yield* Scope.addFinalizer(
                 child,
                 Effect.sync(() => {
                   sessions.delete(child);
+                  opening.delete(child);
                 }),
               );
               yield* Scope.addFinalizer(parent, Scope.close(child, Exit.void));
@@ -242,6 +245,11 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (
             }),
           );
           const fiber = yield* restore(task).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                opening.delete(child);
+              }),
+            ),
             Effect.provideService(Scope.Scope, child),
             Effect.forkIn(child),
           );
@@ -260,6 +268,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (
       returnUrl,
       callbackMode,
       bindingInstances = [options.instanceId],
+      reserveIdleBinding,
     ) =>
       lock.withPermit(
         Effect.gen(function* () {
@@ -280,6 +289,26 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (
                 }),
             ),
           );
+          const stagingScope = yield* Scope.make();
+          if (!options.stage) {
+            const idle =
+              opening.size === 0 &&
+              (reserveIdleBinding
+                ? yield* reserveIdleBinding.pipe(
+                    Scope.provide(stagingScope),
+                    Effect.onError((cause) => Scope.close(stagingScope, Exit.failCause(cause))),
+                  )
+                : sessions.size === 0);
+            if (!idle) {
+              yield* Scope.close(stagingScope, Exit.void);
+              return yield* new ProviderSetupError({
+                instanceId: options.instanceId,
+                operation: "start",
+                detail:
+                  "This agent changes its live sign-in. Wait for turns and session starts using this account to finish, then try again.",
+              });
+            }
+          }
           const flow: Flow = {
             id,
             owner,
@@ -297,7 +326,6 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (
             message: "Starting sign-in.",
           };
           yield* SubscriptionRef.set(snapshot, { owner, state });
-          const stagingScope = yield* Scope.make();
           flow.fiber = yield* Effect.gen(function* () {
             const methods = yield* options.methods;
             yield* publish(flow, { methods });

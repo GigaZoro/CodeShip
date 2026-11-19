@@ -38,6 +38,7 @@ export interface ProviderAuthController {
     returnUrl?: string,
     callbackMode?: "server" | "client",
     bindingInstances?: ReadonlyArray<ProviderInstanceId>,
+    reserveIdleBinding?: Effect.Effect<boolean, never, Scope.Scope>,
   ) => Effect.Effect<ProviderAuthState, ProviderSetupError>;
   readonly complete: (
     ownerSessionId: string,
