@@ -454,25 +454,28 @@ describe("SpawnWorker", () => {
         const launched = SpawnWorker.spawnPiped(process.execPath, ["-e", ""], { signal: readOnce });
         expect([reads, launched.worker.children.get(launched.id) === launched]).toEqual([1, true]);
         yield* Effect.promise(() => new Promise((resolve) => launched.once("close", resolve)));
-        // An abort while the launch is being copied, here from a getter the copy reads, kills it once sent.
-        const copying = yield* Effect.abortSignal;
-        const env = { ...process.env };
-        Object.defineProperty(env, "T3_ABORTS", {
-          enumerable: true,
-          get: () => {
-            copying.dispatchEvent(new Event("abort"));
-            return "1";
-          },
-        });
-        const aborted = SpawnWorker.spawnPiped(
-          process.execPath,
-          ["-e", "setTimeout(() => {}, 5000)"],
-          { signal: copying, env },
-        );
-        const ended = yield* Effect.promise(
-          () => new Promise((resolve) => aborted.once("exit", (...exit) => resolve(exit))),
-        );
-        expect(ended).toEqual([null, "SIGTERM"]);
       }).pipe(Effect.scoped),
   );
+
+  it("kills a launch aborted while it is sent, even when another listener stops the event", async () => {
+    const controller = new AbortController();
+    controller.signal.addEventListener("abort", (event) => event.stopImmediatePropagation());
+    // The launch is copied while it is sent, and the copy reads this getter.
+    const env = { ...process.env };
+    Object.defineProperty(env, "T3_ABORTS", {
+      enumerable: true,
+      get: () => {
+        controller.abort();
+        return "1";
+      },
+    });
+    // It ends at input EOF, sent only once the start is reported, so a lost kill ends it cleanly.
+    const aborted = SpawnWorker.spawnPiped(process.execPath, ["-e", "process.stdin.resume()"], {
+      signal: controller.signal,
+      env,
+    });
+    aborted.once("spawn", () => aborted.stdin.end());
+    const ended = await new Promise((resolve) => aborted.once("exit", (...exit) => resolve(exit)));
+    expect(ended).toEqual([null, "SIGTERM"]);
+  });
 });
