@@ -1,4 +1,4 @@
-// @effect-diagnostics globalDate:off globalConsole:off - A synchronous maintainer script over git.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalConsole:off - A synchronous maintainer script over git.
 // The weekly upstream sync's bounds; automations/upstream-sync.md says when to run each command.
 // Run inside the sync worktree: begin | status | land print one JSON line; check runs check:changed.
 import * as NodeChildProcess from "node:child_process";
