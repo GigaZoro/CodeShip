@@ -1,4 +1,4 @@
-import type { ESTree, SourceCode } from "@oxlint/plugins";
+import type { ESTree, Scope, SourceCode } from "@oxlint/plugins";
 import * as Option from "effect/Option";
 
 type ExpressionWrapper =
@@ -55,13 +55,17 @@ export function importBinding(
   sourceCode: SourceCode,
   identifier: AstNode,
 ): Option.Option<{ readonly source: string; readonly specifier: AstNode }> {
-  const reference = sourceCode
-    .getScope(identifier)
-    .references.find((candidate) => candidate.identifier === identifier);
-  const def = reference?.resolved?.defs[0];
-  return def?.type === "ImportBinding" && def.parent?.type === "ImportDeclaration"
-    ? Option.some({ source: def.parent.source.value, specifier: def.node })
-    : Option.none();
+  // getScope can return a scope nested in the reference's, as a switch's is for its discriminant.
+  for (let scope: Scope | null = sourceCode.getScope(identifier); scope; scope = scope.upper) {
+    const reference = scope.references.find((candidate) => candidate.identifier === identifier);
+    if (reference === undefined) continue;
+    // A type declared beside the import merges into its variable, so its definition can come first.
+    const def = reference.resolved?.defs.find((candidate) => candidate.type === "ImportBinding");
+    return def?.parent?.type === "ImportDeclaration"
+      ? Option.some({ source: def.parent.source.value, specifier: def.node })
+      : Option.none();
+  }
+  return Option.none();
 }
 
 export function isIdentifier(node: Option.Option<AstNode>, name?: string): boolean {

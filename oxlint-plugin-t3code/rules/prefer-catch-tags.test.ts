@@ -72,5 +72,17 @@ describe("t3code/prefer-catch-tags", () => {
     `,
   );
 
+  rule.invalid(
+    "reports Effect.catchTag in a switch discriminant",
+    `
+      import * as Effect from "effect/Effect";
+
+      switch (Effect.catchTag("A", () => Effect.void)) {
+        default:
+          break;
+      }
+    `,
+  );
+
   rule.invalid("reports a named catchTag import", `import { catchTag } from "effect/Effect";`);
 });

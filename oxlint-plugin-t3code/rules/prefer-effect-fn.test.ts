@@ -177,6 +177,15 @@ describe("t3code/prefer-effect-fn", () => {
   );
 
   rule.invalid(
+    "recognizes a direct gen import declared after a type of the same name",
+    `
+    type run = string;
+    import { gen as run } from "effect/Effect";
+    export const read = () => run(function* () {});
+  `,
+  );
+
+  rule.invalid(
     "recognizes bare-package Effect imports",
     `
     import { Effect } from "effect";
