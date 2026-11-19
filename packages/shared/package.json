@@ -379,6 +379,10 @@
       "types": "./src/windowsProcessTree.ts",
       "import": "./src/windowsProcessTree.ts"
     },
+    "./windowsJob": {
+      "types": "./src/windowsJob.ts",
+      "import": "./src/windowsJob.ts"
+    },
     "./testing/longTempDir": {
       "types": "./src/testing/longTempDir.ts",
       "import": "./src/testing/longTempDir.ts"

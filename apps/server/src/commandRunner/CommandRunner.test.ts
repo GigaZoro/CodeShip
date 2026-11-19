@@ -26,6 +26,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
+import { WindowsJobHost } from "@t3tools/shared/windowsJob";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -240,10 +241,18 @@ const commandRow = (taskId: string) =>
   });
 
 const observeDelivery =
-  (taskId: string, delivered: Deferred.Deferred<void>): Statement.Transformer =>
+  (
+    taskId: string,
+    delivered: Deferred.Deferred<void>,
+    field: "pid" | "delivered_at" = "delivered_at",
+  ): Statement.Transformer =>
   (statement, sql) => {
     const [query, params] = statement.compile();
-    if (!query.includes("UPDATE command_runs") || params.at(-1) !== taskId || params[6] === null)
+    if (
+      !query.includes("UPDATE command_runs") ||
+      params.at(-1) !== taskId ||
+      params[field === "pid" ? 0 : 6] === null
+    )
       return Effect.succeed(statement);
     return statement.pipe(
       Effect.provideService(Statement.CurrentTransformer, undefined),
@@ -1534,6 +1543,7 @@ const windowsFixture = Effect.gen(function* () {
     readonly identity: number | undefined;
   }>();
   const processes = new Map<number, { identity: number; alive: boolean; directory: string }>();
+  const jobs = new Map<string, { pid: number; identity: number }>();
   let nextPid = 2_147_483_000;
   const clock = yield* Clock.Clock;
   const fixture = {
@@ -1556,6 +1566,7 @@ const windowsFixture = Effect.gen(function* () {
         const pid = nextPid++;
         const identity = DateTime.toEpochMillis(yield* DateTime.now);
         processes.set(pid, { identity, alive: true, directory });
+        jobs.set(NodePath.basename(directory), { pid, identity });
         NodeFS.writeFileSync(NodePath.join(directory, "pid"), `${pid} ${identity}`);
         NodeFS.renameSync(
           NodePath.join(directory, "launch-pending"),
@@ -1592,6 +1603,7 @@ const windowsFixture = Effect.gen(function* () {
       sleep: (duration) => clock.sleep(duration),
     }),
     Layer.succeed(HostProcess.Platform, "win32"),
+    Layer.succeed(WindowsJobHost, Effect.succeed("job-host.exe")),
     Layer.succeed(FileSystem.FileSystem, {
       ...fs,
       readFileString: (file, ...args) =>
@@ -1612,6 +1624,26 @@ const windowsFixture = Effect.gen(function* () {
       run: (input) =>
         Effect.gen(function* () {
           const script = input.args.join(" ");
+          if (input.command === "job-host.exe" && input.args[0] === "stop") {
+            const member = jobs.get(input.args[1]!.split(".").at(-1)!);
+            if (member === undefined) return processOutput();
+            const entry = processes.get(member.pid)!;
+            const original = entry.identity === member.identity && entry.alive;
+            if (original && NodeFS.existsSync(NodePath.join(entry.directory, "exit-status")))
+              entry.alive = false;
+            if (entry.alive && original) fixture.kills++;
+            if (fixture.stopError !== "") {
+              yield* Queue.offer(stopped, member);
+              return {
+                ...processOutput(),
+                code: ChildProcessSpawner.ExitCode(1),
+                stderr: fixture.stopError,
+              };
+            }
+            if (original) entry.alive = false;
+            yield* Queue.offer(stopped, member);
+            return processOutput();
+          }
           if (script.includes("Win32_Process -MethodName Create")) {
             fixture.launches++;
             const wrapper = /-File "(.+run\.ps1)"/.exec(script)?.[1];
@@ -1648,7 +1680,9 @@ const windowsFixture = Effect.gen(function* () {
           const probe =
             input.command === "ps"
               ? /-p (\d+)/.exec(script)
-              : /(?:Get-Process -Id |ProcessId = )(\d+)/.exec(script);
+              : input.command === "job-host.exe"
+                ? /identity (\d+)/.exec(script)
+                : /(?:Get-Process -Id |ProcessId = )(\d+)/.exec(script);
           assert.isNotNull(probe, script);
           fixture.probeCalls++;
           yield* Queue.offer(probes, undefined);
@@ -1664,7 +1698,7 @@ const windowsFixture = Effect.gen(function* () {
               ? DateTime.toDateUtc(DateTime.makeUnsafe(processes.get(Number(probe![1]))!.identity))
                   .toUTCString()
                   .replace(" GMT", "")
-              : script.includes("Get-CimInstance")
+              : script.includes("Get-CimInstance") || input.command === "job-host.exe"
                 ? String(processes.get(Number(probe![1]))!.identity)
                 : DateTime.formatIso(
                     DateTime.makeUnsafe(processes.get(Number(probe![1]))!.identity),
@@ -2047,6 +2081,8 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       const sql = yield* SqlClient.SqlClient;
       const entered = yield* Deferred.make<string>();
       const release = yield* Deferred.make<void>();
+      const delivered = yield* Deferred.make<void>();
+      let taskId = "";
       let ran = false;
       fixture.state.launch = (_input, directory) =>
         Effect.gen(function* () {
@@ -2064,6 +2100,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
             .pipe(Effect.forkChild);
           yield* Deferred.await(entered);
           const retry = yield* runner.run(callerOf(chat.threadId), request);
+          taskId = retry.taskId;
           yield* Orchestrator.OrchestratorV2.pipe(
             Effect.flatMap((orchestrator) =>
               orchestrator.dispatch(cancellationOf(chat.threadId, retry.taskId)),
@@ -2075,11 +2112,15 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           yield* sql`DROP TRIGGER reject_stop`;
           yield* Deferred.succeed(release, undefined);
           yield* Fiber.join(pending);
+          yield* Deferred.await(delivered);
           assert.isFalse(ran);
           assert.equal((yield* commandRow(retry.taskId))?.status, "stopped");
           assert.isNotNull((yield* commandRow(retry.taskId))?.delivered_at);
         }),
       ).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (...args) =>
+          observeDelivery(taskId, delivered)(...args),
+        ),
         Effect.provide(fixture.layer),
         Effect.ensuring(Deferred.succeed(release, undefined)),
         Effect.ensuring(sql`DROP TRIGGER IF EXISTS reject_stop`.pipe(Effect.orDie)),
@@ -2507,6 +2548,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           }),
         ).pipe(
           Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(WindowsJobHost, Effect.succeed("job-host.exe")),
           Effect.provideService(FileSystem.FileSystem, {
             ...fs,
             readFileString: (file, ...args) =>
@@ -2521,6 +2563,8 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           Effect.provideService(ProcessRunner.ProcessRunner, {
             run: (input) =>
               Effect.gen(function* () {
+                if (input.command === "job-host.exe" && input.args[0] === "stop")
+                  return processOutput();
                 assert.isTrue(
                   input.args.some((arg) => arg.includes("Win32_Process -MethodName Create")),
                 );
@@ -2617,6 +2661,8 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             command: `& '${process.execPath}' command.cjs`,
             clientRequestId: `launch-adopt-${retry}`,
           };
+          const adopted = yield* Deferred.make<void>();
+          let taskId = "";
           let launches = 0;
           let launchedPid: number | undefined;
           let launchedAt = 0;
@@ -2643,7 +2689,9 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               const first = yield* runner.run(callerOf(chat.threadId), request).pipe(Effect.result);
               assert.equal(first._tag, "Success");
               if (first._tag === "Failure") return yield* first.failure;
-              const row = yield* commandRow(first.success.taskId);
+              taskId = first.success.taskId;
+              if ((yield* commandRow(taskId))?.pid === null) yield* Deferred.await(adopted);
+              const row = yield* commandRow(taskId);
               assert.equal(row?.status, "running");
               assert.isAbove(row?.pid ?? 0, 0);
               assert.isNumber(row?.process_started_at);
@@ -2662,6 +2710,9 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               return first.success;
             }),
           ).pipe(
+            Effect.provideService(Statement.CurrentTransformer, (...args) =>
+              observeDelivery(taskId, adopted, "pid")(...args),
+            ),
             Effect.provideService(ProcessRunner.ProcessRunner, {
               run: (input) => {
                 if (!input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))) {
