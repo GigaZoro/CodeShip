@@ -1,3 +1,9 @@
+## 2026-11-16 — Windows commands recover from launcher timeouts
+
+- Windows command launches allow two minutes for PowerShell and WMI. A slow launch does not hold up cancellation, other commands' deadlines or completion delivery. Cancellation closes the start gate when the command has not started.
+- A launcher failure returns a task ID. The task stays watched while startup evidence is unavailable, including across server restarts, and reports its result through normal completion delivery. A gate closed before execution produces a failed task with the launcher error. Missing legacy evidence remains unresolved.
+- Windows commands record their own process identity before starting. Stops check exact creation times and use the same process handle to verify and terminate each process, protecting unrelated processes that reuse a PID. Healthy commands use liveness checks without launching PowerShell on each watch pass.
+
 ## 2026-11-20 — Settling and cleanup see commits a rewound default branch no longer holds
 
 - The check for unmerged work trusted its last copy of the remote's default branch, and fetched a fresh one only after that copy showed commits ahead. When the remote's default branch had been rewound, the old copy still held a branch's commits, so the check counted none and settlement or cleanup could remove a worktree whose work was no longer on the default branch. It now fetches the default branch first, within the same 10-second limit, and counts against the result.
@@ -303,10 +309,6 @@
 
 - `t3_command_run` takes `shell: "bash"`, which runs the command as written in bash on every OS. On Windows that is Git Bash, started with the command in a file, so PowerShell 5.1 no longer strips the double quotes from a command such as `grep -E "^# (pass|fail)" results.txt`, which then lost its file argument and waited on its input until the time limit. Without the option a Windows command still runs in PowerShell.
 - A Windows command now reads its input from `NUL`, as a command elsewhere reads `/dev/null`, so one that reads input ends at once instead of waiting until its time limit.
-
-## 2026-11-16 — Windows commands recover from launcher timeouts
-
-- Commands have more time to start on a busy Windows machine. If the launcher fails after starting a command, CodeShip recovers and watches that command, and retrying the same request returns it. A late launcher cannot execute a command CodeShip reported as never started.
 
 ## 2026-11-16 — Server logs and traces no longer carry e-mail addresses or credentials
 
