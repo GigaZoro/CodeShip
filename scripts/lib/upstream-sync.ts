@@ -7,6 +7,8 @@ import * as NodePath from "node:path";
 // it by re-merging never ended. These limits make a run land or hold within a working morning.
 const MAX_MERGES = 3;
 export const RUN_LIMIT_MS = 3 * 60 * 60 * 1000;
+// A sync's check:changed covers the whole upstream merge, far past the 900 s default per step.
+const CHECK_TIMEOUT_SECONDS = "3600";
 
 const LANDING_TURN = NodePath.join(import.meta.dirname, "../../.github/scripts/landing-turn.cjs");
 const STATE_FILE = "upstream-sync.json";
@@ -143,6 +145,17 @@ export function status(worktree: string, now: Date): SyncStatus {
     mergesLeft: Math.max(0, MAX_MERGES - state.attempts.length),
     minutesLeft: Math.max(0, Math.floor(left / 60_000)),
     attempts: state.attempts,
+  };
+}
+
+/**
+ * The check:changed command for step 7a. The base comes from the run's state file, so no chat
+ * types a narrower range that skips files only the upstream merge changed.
+ */
+export function checkCommand(worktree: string, env: NodeJS.ProcessEnv) {
+  return {
+    args: ["run", "check:changed", readState(worktree).base],
+    env: { ...env, CHECK_CHANGED_TIMEOUT: env.CHECK_CHANGED_TIMEOUT ?? CHECK_TIMEOUT_SECONDS },
   };
 }
 

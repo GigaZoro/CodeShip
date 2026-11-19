@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
-import { begin, land, RUN_LIMIT_MS, status } from "./upstream-sync.ts";
+import { begin, checkCommand, land, RUN_LIMIT_MS, status } from "./upstream-sync.ts";
 
 const START = new Date("2026-11-16T07:00:00Z");
 const later = (minutes: number) => new Date(START.getTime() + minutes * 60_000);
@@ -167,6 +167,22 @@ describe("upstream sync", () => {
     });
     expect(status(followUp, later(600))).toMatchObject({ mergesLeft: 3, minutesLeft: 180 });
     expect(land(followUp, later(610))).toEqual({ status: "landed", commit: repo.head() });
+  });
+
+  it("checks against the base in the run's state, which moves with each merged main", () => {
+    const repo = fixture();
+    const frozen = repo.originMain();
+    begin(repo.sync, START);
+    expect(checkCommand(repo.sync, {})).toEqual({
+      args: ["run", "check:changed", frozen],
+      env: { CHECK_CHANGED_TIMEOUT: "3600" },
+    });
+    repo.advanceMain({ "other.txt": "other\n" });
+    land(repo.sync, later(60));
+    expect(checkCommand(repo.sync, { CHECK_CHANGED_TIMEOUT: "60" })).toEqual({
+      args: ["run", "check:changed", repo.originMain()],
+      env: { CHECK_CHANGED_TIMEOUT: "60" },
+    });
   });
 
   it("holds once three hours have passed, even when it could land", () => {

@@ -62,8 +62,7 @@ repair that touches it.
 
 1. Follow the [translate-ui](../translate-ui/SKILL.md) skill until
    `node scripts/i18n-catalog.ts check` passes.
-2. `vp run check:changed <base>`, with the `base` that `node scripts/upstream-sync.ts status`
-   prints, then run every touched package's full suite in one command,
+2. `node scripts/upstream-sync.ts check` (check:changed against the run's own base), then run every touched package's full suite in one command,
    `vp run check:changed --suites <package dir> [--suites <package dir>...]`: it runs each
    package's own script (packages/* use the root config, and a bare `vp test run` there uses a
    5 s timeout and reports false timeouts) on the machine-wide slot budget, so suites started

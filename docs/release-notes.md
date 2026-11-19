@@ -2,6 +2,10 @@
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
 
+## 2026-11-19 — The upstream sync checks against its own base
+
+- Maintainers: `node scripts/upstream-sync.ts check` runs the sync's `check:changed` against the base in the run's state file, with the 3600 s step timeout, so a held or hurried run no longer types a narrower range that skips files only the upstream merge changed. The scheduled task and the upstream-sync skill use it. No change to the app.
+
 ## 2026-11-19 — A helper in a linked environment can get its own worktree
 
 - `delegate_task` with `isolation: "worktree"` and a linked environment as target now starts the helper in a new worktree there, branched from the commit your thread's checkout is on, instead of refusing. The commit has to be pushed so the other machine can fetch it; an unpushed one is refused with a message naming it. The helper's worktree is cleaned up with its thread there, as for a helper on this machine.
