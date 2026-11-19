@@ -186,11 +186,18 @@ class WorkerChild
   readonly #finals = new Map<number, (error?: Error | null) => void>();
   readonly #paused = new Set<number>();
   #abandoned = false;
+  readonly #signal: AbortSignal | undefined;
+  readonly #abort = () => this.kill();
 
   readonly worker: SpawnWorker;
   readonly id: number;
 
-  constructor(worker: SpawnWorker, id: number, stdio: ReadonlyArray<unknown>) {
+  constructor(
+    worker: SpawnWorker,
+    id: number,
+    stdio: ReadonlyArray<unknown>,
+    signal: AbortSignal | undefined,
+  ) {
     super();
     this.worker = worker;
     this.id = id;
@@ -202,6 +209,11 @@ class WorkerChild
       else if (fd === 1) this.stdout = stream as NodeStream.Readable;
       else if (fd === 2) this.stderr = stream as NodeStream.Readable;
     });
+    // An AbortSignal cannot cross to the worker, so this thread kills on abort as Node would.
+    if (signal !== undefined && !signal.aborted) {
+      signal.addEventListener("abort", this.#abort, { once: true });
+      this.#signal = signal;
+    }
   }
 
   #relay(fd: number): NodeStream.Readable | NodeStream.Writable {
@@ -299,6 +311,7 @@ class WorkerChild
     this.exited = true;
     this.exitCode = code;
     this.signalCode = signal;
+    this.#signal?.removeEventListener("abort", this.#abort);
     // Node destroys stdin on exit; the Effect sink may already have removed its error listener.
     this.stdin?.on("error", () => {});
     this.stdin?.destroy();
@@ -309,6 +322,8 @@ class WorkerChild
   abandon(): void {
     // First, so a write or end that a failure callback below makes is refused, not lost.
     this.#abandoned = true;
+    // A launch that failed never exits, and a long-lived signal would keep this child.
+    this.#signal?.removeEventListener("abort", this.#abort);
     // Not destroy(error): Effect leaves an unread stderr's pipe without an error listener.
     for (const stream of this.stdio) {
       if (stream && "push" in stream && !stream.readableEnded) stream.push(null);
@@ -351,11 +366,11 @@ class SpawnWorker {
     const io = options.stdio;
     const stdio =
       typeof io === "string" || io === undefined ? [io ?? "pipe", io ?? "pipe", io ?? "pipe"] : io;
-    // An AbortSignal cannot cross to the worker, so this thread kills on abort as Node would.
     const { signal, ...rest } = options;
-    // Sent before the child is registered: an option the worker cannot receive throws here.
+    // The launch is sent last and the child registered after it, so a call that throws starts nothing.
+    let child: WorkerChild | undefined;
     try {
-      this.post({
+      const launch: ToWorker = {
         type: "spawn",
         id,
         command,
@@ -367,20 +382,15 @@ class SpawnWorker {
           // A worker's process.env is a copy from when it started; children get the server's current one.
           env: rest.env ?? { ...process.env },
         },
-      });
+      };
+      child = new WorkerChild(this, id, stdio, signal);
+      this.post(launch);
     } catch (error) {
+      child?.abandon();
       this.pool.release(this);
       throw error;
     }
-    const child = new WorkerChild(this, id, stdio);
-    if (signal !== undefined) {
-      const abort = () => child.kill();
-      if (signal.aborted) queueMicrotask(abort);
-      else {
-        signal.addEventListener("abort", abort, { once: true });
-        child.once("exit", () => signal.removeEventListener("abort", abort));
-      }
-    }
+    if (signal?.aborted) queueMicrotask(() => child.kill());
     this.children.set(id, child);
     this.launching++;
     this.syncRef();

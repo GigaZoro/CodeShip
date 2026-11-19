@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off processEnvInEffect:off - fixtures need real paths, the process resource list and the live environment.
+import * as NodeEvents from "node:events";
+import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import type * as NodeStream from "node:stream";
@@ -296,17 +298,11 @@ describe("SpawnWorker", () => {
         yield* Effect.gen(function* () {
           const child = yield* Effect.gen(function* () {
             const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-            return yield* spawner.spawn(
-              node(
-                "process.stdin.pipe(process.stdout)",
-                [],
-                finish === "ends its input"
-                  ? { stdin: Stream.encodeText(Stream.make("input")) }
-                  : {},
-              ),
-            );
+            return yield* spawner.spawn(node("process.stdin.pipe(process.stdout)"));
           }).pipe(Effect.provide(layer));
           if (finish === "ends its input") {
+            // Written only now, after the layer's release closed the pool.
+            yield* Stream.make("input").pipe(Stream.encodeText, Stream.run(child.stdin));
             expect(yield* text(child.stdout)).toBe("input");
             expect(yield* child.exitCode).toBe(0);
           } else {
@@ -323,25 +319,40 @@ describe("SpawnWorker", () => {
     "closes a child whose output the caller destroys after it exits, while a descendant holds it",
     () =>
       Effect.gen(function* () {
+        // The descendant lives only while connected here, so it ends with the test or its runner.
+        const connected = Promise.withResolvers<void>();
+        const connections = new Set<NodeNet.Socket>();
+        const control = NodeNet.createServer((connection) => {
+          connections.add(connection);
+          connected.resolve();
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            control.close();
+            for (const connection of connections) connection.destroy();
+          }),
+        );
+        const port = yield* Effect.promise(
+          () =>
+            new Promise<number>((resolve) =>
+              control.listen(0, "127.0.0.1", () =>
+                resolve((control.address() as NodeNet.AddressInfo).port),
+              ),
+            ),
+        );
+        const descendant = `require("node:net").connect(Number(process.argv[1]), "127.0.0.1").on("close", () => process.exit())`;
         const child = SpawnWorker.spawnPiped(
           process.execPath,
           [
             "-e",
-            `const descendant = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"] });
-           process.stderr.write(String(descendant.pid), () => process.exit(0));`,
+            `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}, process.argv[1]], { stdio: ["ignore", "inherit", "ignore"] });
+             process.exit(0);`,
+            String(port),
           ],
           {},
         );
-        let pid = "";
-        child.stderr.setEncoding("utf8").on("data", (chunk: string) => (pid += chunk));
         const exited = new Promise((resolve) => child.once("exit", resolve));
-        yield* Effect.promise(() =>
-          Promise.all([exited, NodeStreamPromises.finished(child.stderr)]),
-        );
-        const descendant = Number(pid);
-        // A pid of 0 would signal this whole process group.
-        expect(Number.isSafeInteger(descendant) && descendant > 0).toBe(true);
-        yield* Effect.addFinalizer(() => Effect.sync(() => process.kill(descendant)));
+        yield* Effect.promise(() => Promise.all([exited, connected.promise]));
         const closed = new Promise((resolve) => child.once("close", resolve));
         child.stdout.destroy();
         yield* Effect.promise(() => closed);
@@ -364,31 +375,62 @@ describe("SpawnWorker", () => {
         located.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
         yield* Effect.promise(() => new Promise((resolve) => located.once("close", resolve)));
         expect(output).toBe(NodePath.resolve(cwd));
-        const pool = located.worker.pool;
-        // Node refuses this URL before it starts anything, and so must the launch it never sends.
-        expect(() =>
-          SpawnWorker.spawnPiped(process.execPath, [], { cwd: new URL("https://example.com/") }),
-        ).toThrow(expect.objectContaining({ code: "ERR_INVALID_URL_SCHEME" }));
-        expect([...pool.workers].map((worker) => [worker.launching, worker.children.size])).toEqual(
-          [...pool.workers].map(() => [0, 0]),
-        );
-        // A referenced launcher shows as a MessagePort; an unref() made during the launch releases it.
-        const referenced = () =>
-          process.getActiveResourcesInfo().filter((resource) => resource === "MessagePort").length;
-        const idle = referenced();
         const quiet = SpawnWorker.spawnPiped(
           process.execPath,
           ["-e", "process.stdin.resume()"],
           {},
         );
+        const launcher = quiet.worker.worker;
+        using ref = vi.spyOn(launcher, "ref");
+        using unref = vi.spyOn(launcher, "unref");
+        const referenced = () =>
+          Math.max(0, ...ref.mock.invocationCallOrder) >
+          Math.max(0, ...unref.mock.invocationCallOrder);
         quiet.unref();
+        // The launch keeps its launcher referenced until the start is reported.
+        const launching = referenced();
         const started = yield* Effect.promise(
-          () => new Promise<number>((resolve) => quiet.once("spawn", () => resolve(referenced()))),
+          () => new Promise<boolean>((resolve) => quiet.once("spawn", () => resolve(referenced()))),
         );
         const closed = new Promise((resolve) => quiet.once("close", resolve));
         quiet.kill();
         yield* Effect.promise(() => closed);
-        expect(started).toBe(idle);
+        expect([launching, started]).toEqual([true, false]);
       }),
+  );
+
+  it.live("starts nothing and keeps no abort listener for a launch it refuses or that fails", () =>
+    Effect.gen(function* () {
+      const signal = yield* Effect.abortSignal;
+      const listeners = () => NodeEvents.EventEmitter.getEventListeners(signal, "abort").length;
+      using post = vi.spyOn(NodeWorkerThreads.Worker.prototype, "postMessage");
+      const sent = () =>
+        post.mock.calls.filter(
+          ([message], call) =>
+            message.type === "spawn" && post.mock.results[call]?.type === "return",
+        ).length;
+      const failed = SpawnWorker.spawnPiped("t3-missing-command-25245", [], { signal });
+      yield* Effect.promise(() => new Promise((resolve) => failed.once("error", resolve)));
+      expect([sent(), listeners()]).toEqual([1, 0]);
+      const pool = failed.worker.pool;
+      // Node's own spawn throws for each of these before it starts anything.
+      for (const [options, refusal] of [
+        [{ cwd: new URL("https://example.com/") }, { code: "ERR_INVALID_URL_SCHEME" }],
+        [{ signal: {} as AbortSignal }, { name: "TypeError" }],
+        [
+          { signal, env: { T3_UNSENDABLE: Symbol() as unknown as string } },
+          { name: "DataCloneError" },
+        ],
+      ] as const) {
+        expect(() => SpawnWorker.spawnPiped(process.execPath, ["-e", ""], options)).toThrow(
+          expect.objectContaining(refusal),
+        );
+        expect([
+          sent(),
+          listeners(),
+          [...pool.workers].map((worker) => [worker.launching, worker.children.size]),
+        ]).toEqual([1, 0, [...pool.workers].map(() => [0, 0])]);
+      }
+    }).pipe(Effect.scoped),
   );
 });
