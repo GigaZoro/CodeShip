@@ -457,25 +457,34 @@ describe("SpawnWorker", () => {
       }).pipe(Effect.scoped),
   );
 
-  it("kills a launch aborted while it is sent, even when another listener stops the event", async () => {
-    const controller = new AbortController();
-    controller.signal.addEventListener("abort", (event) => event.stopImmediatePropagation());
+  it("kills on abort while the launch is sent and after it, even when another listener stops the event", async () => {
+    const sending = new AbortController();
+    sending.signal.addEventListener("abort", (event) => event.stopImmediatePropagation());
     // The launch is copied while it is sent, and the copy reads this getter.
     const env = { ...process.env };
     Object.defineProperty(env, "T3_ABORTS", {
       enumerable: true,
       get: () => {
-        controller.abort();
+        sending.abort();
         return "1";
       },
     });
     // It ends at input EOF, sent only once the start is reported, so a lost kill ends it cleanly.
-    const aborted = SpawnWorker.spawnPiped(process.execPath, ["-e", "process.stdin.resume()"], {
-      signal: controller.signal,
+    const early = SpawnWorker.spawnPiped(process.execPath, ["-e", "process.stdin.resume()"], {
+      signal: sending.signal,
       env,
     });
-    aborted.once("spawn", () => aborted.stdin.end());
-    const ended = await new Promise((resolve) => aborted.once("exit", (...exit) => resolve(exit)));
-    expect(ended).toEqual([null, "SIGTERM"]);
+    early.once("spawn", () => early.stdin.end());
+    expect(await NodeEvents.EventEmitter.once(early, "exit")).toEqual([null, "SIGTERM"]);
+    // After the launch, the kill goes out before abort() returns, as with Node's own spawn.
+    const running = new AbortController();
+    const late = SpawnWorker.spawnPiped(process.execPath, ["-e", "process.stdin.resume()"], {
+      signal: running.signal,
+    });
+    await NodeEvents.EventEmitter.once(late, "spawn");
+    running.abort();
+    const killedByAbort = late.killed;
+    const exit = await NodeEvents.EventEmitter.once(late, "exit");
+    expect([killedByAbort, ...exit]).toEqual([true, null, "SIGTERM"]);
   });
 });

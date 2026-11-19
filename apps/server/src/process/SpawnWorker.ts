@@ -187,9 +187,14 @@ class WorkerChild
   readonly #paused = new Set<number>();
   #abandoned = false;
   #abortListener: Disposable | undefined;
-  // Deferred, so an abort before or while the launch is sent kills after it.
-  // The worker ignores a kill for a launch that failed.
-  readonly #abort = () => queueMicrotask(() => this.kill());
+  #launched = false;
+  /** An abort that came while the launch was being sent; its kill follows the launch. */
+  #abortedEarly = false;
+  // Once the launch is sent, the kill goes out before abort() returns, as with Node's own spawn.
+  readonly #abort = () => {
+    if (this.#launched) this.kill();
+    else this.#abortedEarly = true;
+  };
 
   readonly worker: SpawnWorker;
   readonly id: number;
@@ -216,6 +221,12 @@ class WorkerChild
     // runs even when another one stops the event.
     if (signal !== undefined)
       this.#abortListener = NodeEvents.EventEmitter.addAbortListener(signal, this.#abort);
+  }
+
+  /** The launch was sent, so an abort can now reach the worker as a kill. */
+  launched(): void {
+    this.#launched = true;
+    if (this.#abortedEarly) this.kill();
   }
 
   #detachSignal(): void {
@@ -397,6 +408,7 @@ class SpawnWorker {
       this.pool.release(this);
       throw error;
     }
+    child.launched();
     this.children.set(id, child);
     this.launching++;
     this.syncRef();
