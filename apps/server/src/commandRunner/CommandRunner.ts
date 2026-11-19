@@ -21,10 +21,6 @@ import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
 import { WindowsJobHost, windowsJobName } from "@t3tools/shared/windowsJob";
-import {
-  WINDOWS_PROCESS_TREE_FUNCTIONS,
-  windowsStopTreeArgs,
-} from "@t3tools/shared/windowsProcessTree";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -396,13 +392,14 @@ const noGitBash = (name: string) =>
 // for Windows, whose bash.exe sets up the PATH its own tools need.
 const FIND_GIT_BASH = [
   "$t3GitBash = & {",
-  WINDOWS_PROCESS_TREE_FUNCTIONS,
   "  $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1",
   "  if ($git) {",
   // --exec-path names the install behind a launcher or shim; GIT_EXEC_PATH would replace it. A git
   // that cannot answer leaves the standard folders, and the error below names where it looked.
+  "    $probeJob = 'Global\\CodeShip.Job.' + [Guid]::NewGuid().ToString('N')",
+  "    $run = $null",
   "    try {",
-  "      $start = [Diagnostics.ProcessStartInfo]::new($git.Path, '--exec-path')",
+  `      $start = [Diagnostics.ProcessStartInfo]::new($t3JobHost, 'git-path "' + $probeJob + '" "' + $git.Path + '"')`,
   "      $start.UseShellExecute = $false",
   "      $start.RedirectStandardOutput = $true",
   "      $start.StandardOutputEncoding = [Text.Encoding]::UTF8",
@@ -414,11 +411,9 @@ const FIND_GIT_BASH = [
   "        if ($run.ExitCode -eq 0 -and $out.Wait(1000) -and $out.Result.Trim()) { [IO.Path]::GetFullPath([IO.Path]::Combine($out.Result.Trim(), '..', '..', '..')) }",
   "      } else {",
   "        [Console]::Error.WriteLine(\"CodeShip stopped 'git --exec-path' ($($git.Path)), which did not answer within 10 s, and looks for Git Bash in the standard install folders.\")",
-  // A shim such as git.cmd runs git in a child process, which stopping the shim alone leaves running.
-  "        $made = Ms $run.StartTime",
-  "        Stop-T3ProcessTree $run.Id $made $made $made",
+  "        $run.Kill(); $run.WaitForExit()",
   "      }",
-  '    } catch { [Console]::Error.WriteLine("CodeShip could not ask git where Git Bash is: $_") }',
+  '    } catch { [Console]::Error.WriteLine("CodeShip could not ask git where Git Bash is: $_") } finally { & $t3JobHost stop $probeJob; if ($run) { $run.Dispose() } }',
   "  }",
   "  foreach ($folder in $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)}) { if ($folder) { [IO.Path]::Combine($folder, 'Git') } }",
   "  if ($env:LOCALAPPDATA) { [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Git') }",
@@ -604,12 +599,7 @@ const make = Effect.gen(function* () {
     if (Option.isNone(gone)) yield* signal("SIGKILL");
   });
 
-  /**
-   * Stops the command and everything it started: its process group, or on Windows what descends
-   * from its wrapper's pid (`windowsStopTreeArgs`), also after the wrapper ended. A group outlives
-   * its wrapper and its id is not reused while any member lives, so short of a reboot, only a live
-   * process reusing the wrapper's pid means nothing of the group is left.
-   */
+  /** Jobs retain Windows membership; legacy records prove only their root process identity. */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     if (windows && row.unit?.startsWith(jobUnitPrefix)) {
       const host = yield* yield* WindowsJobHost;
@@ -643,15 +633,8 @@ const make = Effect.gen(function* () {
         const stopped = yield* stopSlots
           .withPermits(1)(
             processRunner.run({
-              command: "powershell.exe",
-              args: windowsStopTreeArgs({
-                pid,
-                since: same,
-                created:
-                  row.process_started_at === null
-                    ? null
-                    : { from: row.process_started_at, to: row.process_started_at },
-              }),
+              command: yield* yield* WindowsJobHost,
+              args: ["stop-process", String(pid), String(same)],
               timeout: Duration.seconds(30),
               maxOutputBytes: 16_384,
             }),
@@ -659,7 +642,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError((cause) => new CommandStopError({ detail: cause.message, cause })));
         if (stopped.code !== 0) {
           return yield* new CommandStopError({
-            detail: `Could not stop the command tree (exit ${stopped.code}): ${stopped.stderr.trim()}`,
+            detail: `Could not stop the command process (exit ${stopped.code}): ${stopped.stderr.trim()}`,
           });
         }
       }
@@ -1389,6 +1372,7 @@ const make = Effect.gen(function* () {
     // Win32_Process.Create parents the wrapper under WMI, outside this server's job and tree. Its
     // startup block is the command's whole environment, which the launcher reads from stdin so no
     // value reaches the disk.
+    const host = yield* yield* WindowsJobHost;
     const scriptPath = path.join(directory, "command.ps1");
     const wrapperPath = path.join(directory, "run.ps1");
     const bashScriptPath = path.join(directory, "command.sh");
@@ -1397,6 +1381,7 @@ const make = Effect.gen(function* () {
       scriptPath,
       [
         "\uFEFF$ErrorActionPreference = 'Continue'",
+        `$t3JobHost = ${escapePowerShellStringLiteral(host)}`,
         ...(shell === "bash"
           ? runInGitBash(bashScriptPath)
           : [
@@ -1413,7 +1398,6 @@ const make = Effect.gen(function* () {
     );
     yield* fs.writeFileString(wrapperPath, WINDOWS_WRAPPER);
     yield* fs.writeFileString(logPath, "");
-    const host = yield* yield* WindowsJobHost;
     const created = yield* processRunner.run({
       command: "powershell.exe",
       args: [
