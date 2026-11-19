@@ -5,7 +5,6 @@ import {
   type EnvironmentId,
   type ThreadId,
   type EnvironmentStartup,
-  type OrchestrationV2RestartHold,
   type OrchestrationV2RestartHoldWork,
   type ProviderInstanceId,
   type ServerConfig,

@@ -224,7 +224,8 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
             onSome: (report) => Stream.concat(Stream.make(report), changes),
           });
           yield* Effect.uninterruptible(
-            markWslResume.pipe(Effect.andThen(receiver.commitDesktopUpdate(requestId))).pipe(
+            markWslResume.pipe(
+              Effect.andThen(receiver.commitDesktopUpdate(requestId)),
               Effect.mapError((error) =>
                 failWith("Could not reach the T3.CodeShip desktop app.", error),
               ),

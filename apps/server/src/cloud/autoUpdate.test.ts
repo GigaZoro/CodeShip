@@ -141,12 +141,15 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   const baseDir = yield* fs.makeTempDirectoryScoped();
   const path = yield* Path.Path;
   const recordPath = path.join(baseDir, "runtime", "automatic-update.json");
+  const serverConfig = yield* ServerConfig.ServerConfig.pipe(
+    Effect.provide(ServerConfig.layerTest(baseDir, baseDir)),
+  );
 
   const dependencies = Layer.mergeAll(
-    Layer.mock(ServerConfig.ServerConfig)({
+    ServerConfig.layer({
+      ...serverConfig,
       mode: options.desktop === true ? "desktop" : "web",
       desktopTelemetryControlFd: options.desktop === true ? 5 : undefined,
-      baseDir,
     }),
     Layer.succeed(
       ServiceLauncherClient.ServiceLauncherClient,

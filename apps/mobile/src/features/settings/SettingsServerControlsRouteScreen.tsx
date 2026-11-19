@@ -66,6 +66,7 @@ import { hasSharedSettingsGroup } from "@t3tools/client-runtime/state/shared-set
 import { useEnvironments } from "../../state/environments";
 
 type SettingsPage = "threads" | "source-control" | "maintenance";
+const AUTOMATIC_UPDATE_TIME_FORMAT = "HH:MM";
 
 function AutomaticUpdateTimeRow({
   value,
@@ -95,7 +96,7 @@ function AutomaticUpdateTimeRow({
           maxLength={5}
           returnKeyType="done"
           value={draft}
-          placeholder={value === null ? t("Mixed") : "HH:MM"}
+          placeholder={value === null ? t("Mixed") : AUTOMATIC_UPDATE_TIME_FORMAT}
           className="min-h-10 min-w-16 rounded-xl px-2 text-right text-base text-foreground"
           onChangeText={(text) => {
             setDraft(text);

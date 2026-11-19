@@ -51,6 +51,7 @@ const decodeClaudeSettings = Schema.decodeUnknownEffect(ClaudeSettings);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
+const isServerSettingsPatch = Schema.is(ServerSettingsPatch);
 
 const layerServerSettings = (policy?: ManagedPolicyDocument) =>
   ServerSettingsModule.layer.pipe(
@@ -493,8 +494,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.equal(previous.automaticUpdateTime, "03:00");
       assert.equal(previous.installUpdatesAutomatically, true);
       assert.notProperty(previous, "minHoursBetweenAutomaticUpdates");
-      assert.isFalse(Schema.is(ServerSettingsPatch)({ automaticUpdateTime: "24:00" }));
-      assert.isFalse(Schema.is(ServerSettingsPatch)({ automaticUpdateTime: "3:00" }));
+      assert.isFalse(isServerSettingsPatch({ automaticUpdateTime: "24:00" }));
+      assert.isFalse(isServerSettingsPatch({ automaticUpdateTime: "3:00" }));
 
       yield* settings.updateSettings({ automaticUpdateTime: "00:00" });
       const persisted = JSON.parse(yield* fileSystem.readFileString(config.settingsPath));

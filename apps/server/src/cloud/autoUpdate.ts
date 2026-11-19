@@ -130,7 +130,7 @@ export function automaticUpdateTarget<E, R>(
   return releases.pipe(
     Stream.takeWhile(({ version }) => compareExactServiceVersions(version, currentVersion) > 0),
     Stream.scan(
-      { newest: undefined, due: false } as { newest: string | undefined; due: boolean },
+      (): { newest: string | undefined; due: boolean } => ({ newest: undefined, due: false }),
       (state, release) => ({
         newest: state.newest ?? release.version,
         due: release.publishedAtMillis !== undefined && release.publishedAtMillis <= cutoff,
@@ -202,6 +202,8 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       }),
     ),
     Effect.flatMap((contents) => writeFileStringAtomically({ filePath: recordPath, contents })),
+    Effect.provideService(FileSystem.FileSystem, fs),
+    Effect.provideService(Path.Path, path),
     Effect.mapError(
       (cause) =>
         new ServerSelfUpdateError({

@@ -808,7 +808,9 @@ export const layerTest = (
         return Effect.void;
       }),
       takeDesktopUpdateCommand: Effect.never,
-      receiveDesktopUpdateReport: () => Effect.void,
+      receiveDesktopUpdateReport: Effect.fn("DesktopTelemetryReceiver.receiveDesktopUpdateReport")(
+        () => Effect.void,
+      ),
       desktopUpdates:
         overrides.desktopUpdates ??
         Effect.succeed({

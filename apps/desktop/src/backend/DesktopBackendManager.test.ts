@@ -172,6 +172,8 @@ function makeTestInstance(input: MakeInstanceInput) {
       updateRequests: Stream.empty,
       updateCommits: Stream.empty,
       updateCancellations: Stream.empty,
+      updateReports: Stream.empty,
+      latestUpdateReport: Effect.succeedNone,
       ...input.desktopTelemetryPublisher,
     }),
     DesktopBrowserHost.layer,
