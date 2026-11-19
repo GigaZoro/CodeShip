@@ -101,6 +101,14 @@ test("a second lander cannot push to main while the first holds the turn, and th
     assert.equal(git(origin, "rev-parse", "main"), git(first, "rev-parse", "HEAD"));
     assert.equal(git(first, "merge-base", "--is-ancestor", "origin/main", "HEAD") === "", true);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    // Main came through the turn's own ref, which is gone; FETCH_HEAD is left to the checkout's other fetches.
+    assert.deepEqual(
+      [
+        fs.existsSync(path.join(first, ".git/FETCH_HEAD")),
+        git(first, "for-each-ref", "refs/worktree"),
+      ],
+      [false, ""],
+    );
     assert.ok(tryAcquire({ cwd: second, remote: origin, runId: "second" }));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -197,7 +205,7 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
     assert.ok(tryAcquire({ cwd: holder, remote: origin, runId: "holder", now: () => past }));
 
     assert.ok(acquire({ cwd: waiter, remote: origin, maxWaitMs: 0 }));
-    // A landing in the same checkout rebases onto what it fetched; reading a lease must not replace that.
+    // A poll every few seconds leaves FETCH_HEAD to the checkout's other fetches.
     assert.equal(fs.existsSync(path.join(waiter, ".git/FETCH_HEAD")), false);
     assert.throws(
       () => acquire({ cwd: holder, remote: origin, maxWaitMs: 0, sleep: () => {} }),

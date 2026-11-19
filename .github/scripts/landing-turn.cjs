@@ -209,8 +209,18 @@ function land({ cwd, remote, check, branch = "main", ...rest }) {
   const problem = notesMergeProblem(cwd);
   if (problem) throw new Error(problem);
   return withTurn({ cwd, remote, ...rest }, (turn) => {
-    git(cwd, ["fetch", "--quiet", "--no-tags", remote, branch]);
-    const base = git(cwd, ["rev-parse", "FETCH_HEAD"]).stdout;
+    // Into this turn's own ref: any other fetch in this checkout can rewrite FETCH_HEAD before it is read.
+    const fetched = `refs/worktree/landing-turn/${turn}`;
+    git(cwd, [
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--no-write-fetch-head",
+      remote,
+      `+refs/heads/${branch}:${fetched}`,
+    ]);
+    const base = git(cwd, ["rev-parse", fetched]).stdout;
+    git(cwd, ["update-ref", "-d", fetched]);
     const contained = git(cwd, ["merge-base", "--is-ancestor", base, "HEAD"], {
       allowFailure: true,
     }).ok;
