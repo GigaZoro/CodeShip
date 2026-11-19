@@ -600,6 +600,9 @@ export const layerExecutor: Layer.Layer<
               .stopDelegatedTasks({
                 threadId: effect.threadId,
                 commandId: effect.commandId,
+                ...(effect.request.parentRunId === undefined
+                  ? {}
+                  : { parentRunId: effect.request.parentRunId }),
                 reason: effect.request.reason,
               })
               .pipe(
