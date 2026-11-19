@@ -44,14 +44,17 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  }",
   "  return $targets",
   "}",
-  // Kills through the handle it checked the walk's start time on: Process.Handle opens it once and the
-  // object's later calls reuse it, so no process that took the pid since the walk is killed.
+  // Holds the process open from its start-time check to its end, so the pid cannot change hands in
+  // between. The walk and the check read the same kernel start time, so any difference to the
+  // millisecond means another process took the pid since the walk. Kill only begins the end.
   "function Stop-T3Process($id, $made) {",
   "  $process = Get-Process -Id $id -ErrorAction SilentlyContinue",
   "  if (-not $process) { return }",
   "  try {",
-  "    $null = $process.Handle",
-  "    if ([math]::Abs((Ms $process.StartTime) - $made) -le 1000) { $process.Kill() }",
+  "    $null = $process.get_Handle()",
+  "    if ((Ms $process.get_StartTime()) -ne $made) { return }",
+  "    $process.Kill()",
+  "    if (-not $process.WaitForExit(5000)) { throw ('Process {0} still runs 5 s after its stop' -f $id) }",
   "  } catch {",
   "    if (-not $process.HasExited) { throw }",
   "  } finally { $process.Dispose() }",

@@ -246,12 +246,17 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     assert.deepEqual(tree.trim().split(/\r?\n/), expected);
   });
 
-  // The walk read the target's start time `skew` ms from when it really started; a skew over a
-  // second means another process held the pid when the walk read it.
+  /** Lines that make the walk's snapshot hold only `pid`, created when `created` says. */
+  const snapshotOf = (pid: string, created: string) => [
+    `$created = ${created}`,
+    `function Get-CimInstance { [pscustomobject]@{ ProcessId = ${pid}; ParentProcessId = 0; CreationDate = $created } }`,
+  ];
+
+  // The snapshot shows the target created `skew` ms from when it really was; any difference means
+  // another process held the pid when the walk read it.
   it.each<[string, number, "stopped" | "spared"]>([
-    ["ends the target when it started when the walk read", 0, "stopped"],
-    ["ends the target within the second of skew the walk allows", 500, "stopped"],
-    ["leaves a process that took the pid over a second after the walk's", -1500, "spared"],
+    ["ends the target the walk saw", 0, "stopped"],
+    ["spares a process that took the target's pid after the walk", -1, "spared"],
   ])("%s", async (_, skew, expected) => {
     // Exits 7 once its input ends, so any other exit is the stop's.
     const target = NodeChildProcess.spawn(
@@ -262,8 +267,11 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     const exited = NodeEvents.once(target, "exit");
     try {
       runPowerShell(
-        `$made = Ms (Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}').CreationDate`,
-        `Stop-T3Process ${target.pid} ($made + ${skew})`,
+        ...snapshotOf(
+          `${target.pid}`,
+          `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}').CreationDate.AddMilliseconds(${skew})`,
+        ),
+        `Stop-T3ProcessTree ${target.pid} 0`,
       );
     } finally {
       target.stdin.destroy();
@@ -272,14 +280,20 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     assert.equal(code === 7 ? "spared" : "stopped", expected);
   });
 
-  it("reports no error for a target that ended before its stop", async () => {
-    const target = NodeChildProcess.spawn(process.execPath, ["-e", ""], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    await NodeEvents.once(target, "exit");
+  it("reports no error for a target that ended before its stop", () => {
+    runPowerShell(
+      `$ended = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', '0' -WindowStyle Hidden -PassThru`,
+      "$ended.WaitForExit()",
+      ...snapshotOf("$ended.Id", "$ended.StartTime"),
+      "Stop-T3ProcessTree $ended.Id 0",
+    );
+  });
 
-    runPowerShell(`Stop-T3Process ${target.pid} 0`);
+  // The protected System process refuses to be opened, as any process the stop may not end does.
+  it("reports an error for a target it cannot end", () => {
+    assert.throws(() =>
+      runPowerShell(...snapshotOf("4", "[DateTime]::Now"), "Stop-T3ProcessTree 4 0"),
+    );
   });
 
   const spawnEndingTree = (command: ChildProcess.Command, ending?: WindowsTreeEnding) =>
