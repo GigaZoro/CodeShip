@@ -15,6 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "./HostProcess.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import { processPipe } from "./testing/leftoverChild.ts";
+import { windowsJobSpawn } from "./windowsJobNode.ts";
 import { prepareWindowsJobHost, windowsJobName } from "./windowsJob.ts";
 
 const exited = (child: NodeChildProcess.ChildProcess) =>
@@ -99,46 +100,75 @@ describe.runIf(isWindowsHost)("a Windows job", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.live("preserves binary streams, extra descriptors, arguments, environment and exit code", () =>
+  it.live.each(["native", "SDK"] as const)(
+    "preserves binary streams, extra descriptors, arguments, environment and exit code through %s",
+    (mode) =>
+      Effect.gen(function* () {
+        const { host, home, name } = yield* fixture;
+        const args = ["space here", 'a"quote', "trailing\\", "", "日本語"];
+        const source = [
+          "process.stdin.pipe(process.stdout);",
+          "process.stdin.on('end', () => {",
+          " require('node:fs').writeSync(3, Buffer.from([9,0,255]));",
+          " process.stderr.write(JSON.stringify({args:process.argv.slice(1),env:process.env.T3_JOB_TEST,cwd:process.cwd()}));",
+          " process.exitCode=23;",
+          "});",
+        ].join("\n");
+        const result = yield* Effect.tryPromise(async () => {
+          const child = (mode === "SDK" ? windowsJobSpawn(host) : NodeChildProcess.spawn)(
+            mode === "SDK" ? process.execPath : host,
+            [...(mode === "SDK" ? [] : ["run", name, "", process.execPath]), "-e", source, ...args],
+            {
+              cwd: home,
+              env: { ...process.env, T3_JOB_TEST: "inherited" },
+              windowsHide: true,
+              stdio: ["pipe", "pipe", "pipe", "pipe"],
+            },
+          );
+          try {
+            const pending = Promise.all([
+              exited(child),
+              NodeStreamConsumers.buffer(child.stdout!),
+              NodeStreamConsumers.buffer(child.stderr!),
+              NodeStreamConsumers.buffer(child.stdio[3] as import("node:stream").Readable),
+            ]);
+            child.stdin!.end(Buffer.from([0, 1, 2, 255, 10]));
+            return await pending;
+          } finally {
+            child.kill();
+          }
+        });
+        assert.equal(result[0][0], 23);
+        assert.deepEqual([...result[1]], [0, 1, 2, 255, 10]);
+        assert.deepEqual([...result[3]], [9, 0, 255]);
+        assert.deepEqual(JSON.parse(result[2].toString()), { args, env: "inherited", cwd: home });
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("owns an orphaned grandchild through the SDK spawn callback", () =>
     Effect.gen(function* () {
-      const { host, home, name } = yield* fixture;
-      const args = ["space here", 'a"quote', "trailing\\", "", "日本語"];
-      const source = [
-        "process.stdin.pipe(process.stdout);",
-        "process.stdin.on('end', () => {",
-        " require('node:fs').writeSync(3, Buffer.from([9,0,255]));",
-        " process.stderr.write(JSON.stringify({args:process.argv.slice(1),env:process.env.T3_JOB_TEST,cwd:process.cwd()}));",
-        " process.exitCode=23;",
-        "});",
-      ].join("\n");
-      const result = yield* Effect.tryPromise(async () => {
-        const child = NodeChildProcess.spawn(
-          host,
-          ["run", name, "", process.execPath, "-e", source, ...args],
-          {
-            cwd: home,
-            env: { ...process.env, T3_JOB_TEST: "inherited" },
-            windowsHide: true,
-            stdio: ["pipe", "pipe", "pipe", "pipe"],
-          },
-        );
-        try {
-          const pending = Promise.all([
-            exited(child),
-            NodeStreamConsumers.buffer(child.stdout!),
-            NodeStreamConsumers.buffer(child.stderr!),
-            NodeStreamConsumers.buffer(child.stdio[3] as import("node:stream").Readable),
-          ]);
-          child.stdin!.end(Buffer.from([0, 1, 2, 255, 10]));
-          return await pending;
-        } finally {
-          child.kill();
-        }
+      const { host } = yield* fixture;
+      const member = yield* processPipe;
+      const source = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
+      const intermediate = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(source)}],{stdio:'ignore',detached:true,windowsHide:true}).unref();`;
+      const root = `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(intermediate)}],{stdio:'ignore',windowsHide:true}); c.on('exit',()=>process.stdout.write('ready')); process.stdin.resume();`;
+      const child = yield* Effect.acquireRelease(
+        Effect.sync(() => windowsJobSpawn(host)(process.execPath, ["-e", root])),
+        (child) =>
+          Effect.sync(() => {
+            child.kill();
+          }),
+      );
+      const exit = exited(child);
+      const ready = new Promise<void>((resolve, reject) => {
+        child.stdout.once("data", () => resolve());
+        child.once("error", reject);
       });
-      assert.equal(result[0][0], 23);
-      assert.deepEqual([...result[1]], [0, 1, 2, 255, 10]);
-      assert.deepEqual([...result[3]], [9, 0, 255]);
-      assert.deepEqual(JSON.parse(result[2].toString()), { args, env: "inherited", cwd: home });
+      yield* member.started;
+      yield* Effect.promise(() => ready);
+      child.kill();
+      yield* Effect.promise(() => exit);
+      yield* member.ended;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
