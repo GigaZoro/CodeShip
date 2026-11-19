@@ -30,34 +30,53 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
-  it.effect.each([96, 97, 98, 99])("adds launch evidence after migration %s already ran", (id) =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: id });
-      assert.deepEqual(
-        (yield* history).at(-1),
-        id === 96
-          ? [96, "MonitoringThreadAnalyses"]
-          : id === 97
-            ? [97, "NodePayloadWithoutColumnKeys"]
-            : id === 98
-              ? [98, "CommandRunProcessIdentity"]
-              : [99, "ScheduledTaskDescriptions"],
-      );
-      const before = yield* sql<{ name: string }>`PRAGMA table_info(command_runs)`;
-      assert.isFalse(before.some((column) => column.name === "launch_error"));
-      yield* runMigrations();
-      const after = yield* sql<{ name: string; notnull: number }>`PRAGMA table_info(command_runs)`;
-      assert.equal(after.find((column) => column.name === "launch_error")?.notnull, 0);
-      assert.deepEqual((yield* history).slice(-5), [
-        [96, "MonitoringThreadAnalyses"],
-        [97, "NodePayloadWithoutColumnKeys"],
-        [98, "CommandRunProcessIdentity"],
-        [99, "ScheduledTaskDescriptions"],
-        [100, "CommandLaunchError"],
-      ]);
-      assert.deepEqual(yield* runMigrations(), []);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  it.effect.each([96, 97, 98, 99, 100])(
+    "adds launch evidence after migration %s already ran",
+    (id) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: id });
+        assert.deepEqual(
+          (yield* history).at(-1),
+          id === 96
+            ? [96, "MonitoringThreadAnalyses"]
+            : id === 97
+              ? [97, "NodePayloadWithoutColumnKeys"]
+              : id === 98
+                ? [98, "CommandRunProcessIdentity"]
+                : id === 99
+                  ? [99, "ScheduledTaskDescriptions"]
+                  : [100, "CommandLaunchError"],
+        );
+        const before = yield* sql<{ name: string }>`PRAGMA table_info(command_runs)`;
+        assert.equal(
+          before.some((column) => column.name === "launch_error"),
+          id === 100,
+        );
+        assert.isFalse(before.some((column) => column.name === "reported_at"));
+        yield* sql`INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status, started_at, deadline_at, delivered_at)
+          VALUES ('old-delivered', 'thread', 'run', 'true', '/tmp', '/tmp/old', 'exited', '2026-11-19T00:00:00Z', '2026-11-19T01:00:00Z', '2026-11-19T00:01:00Z')`;
+        yield* runMigrations();
+        const after = yield* sql<{
+          name: string;
+          notnull: number;
+        }>`PRAGMA table_info(command_runs)`;
+        assert.equal(after.find((column) => column.name === "launch_error")?.notnull, 0);
+        assert.equal(after.find((column) => column.name === "reported_at")?.notnull, 0);
+        assert.deepEqual(
+          yield* sql`SELECT reported_at, delivered_at FROM command_runs WHERE task_id = 'old-delivered'`,
+          [{ reported_at: "2026-11-19T00:01:00Z", delivered_at: "2026-11-19T00:01:00Z" }],
+        );
+        assert.deepEqual((yield* history).slice(-6), [
+          [96, "MonitoringThreadAnalyses"],
+          [97, "NodePayloadWithoutColumnKeys"],
+          [98, "CommandRunProcessIdentity"],
+          [99, "ScheduledTaskDescriptions"],
+          [100, "CommandLaunchError"],
+          [101, "CommandResultReported"],
+        ]);
+        assert.deepEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("keeps scheduler-owned occurrence history when migrating it into startup", () =>
