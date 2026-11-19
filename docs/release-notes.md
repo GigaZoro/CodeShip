@@ -1,3 +1,9 @@
+## 2026-11-19 — Follow-ups to the T3 Code update
+
+- On Windows, when a spawn helper fails, stopping the commands it started now times each command from its own start rather than from when it was queued. This narrows the chance that a process started meanwhile by a reused process id is stopped with them.
+- Maintainers: the lint rule against two tests with one title now recognizes `@effect/vitest`'s `layer` and `it` by their import, aliases included. It no longer treats a local helper named `layer` as a describe block, and it counts tests written with an aliased `it`.
+- Maintainers: when `node scripts/upstream-sync.ts begin` resumes a held sync branch that lacks the current main, it now merges main in as one of the run's merges, dating the sync's release-notes entries as `land` does, and prints the files left to resolve. Before, a branch held on a conflict with main had to be merged by hand, which skipped that dating and failed the release-notes check.
+
 ## 2026-11-19 — Updates from T3 Code
 
 - A first run now opens one Welcome page instead of a three-step wizard.
