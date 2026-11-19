@@ -239,6 +239,20 @@ const commandRow = (taskId: string) =>
     return rows[0];
   });
 
+const observeDelivery =
+  (taskId: string, delivered: Deferred.Deferred<void>): Statement.Transformer =>
+  (statement, sql) => {
+    const [query, params] = statement.compile();
+    if (!query.includes("UPDATE command_runs") || params.at(-1) !== taskId || params[6] === null)
+      return Effect.succeed(statement);
+    return statement.pipe(
+      Effect.provideService(Statement.CurrentTransformer, undefined),
+      Effect.orDie,
+      Effect.andThen(Deferred.succeed(delivered, undefined)),
+      Effect.as(sql`SELECT 1 WHERE 0`),
+    );
+  };
+
 /** What the record holds when its server stops between starting it and recording the pid. */
 const forgetPid = (taskId: string) =>
   Effect.flatMap(
@@ -1000,21 +1014,10 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         }
         const delivered = yield* Deferred.make<void>();
         yield* withServer(() => Deferred.await(delivered)).pipe(
-          Effect.provideService(Statement.CurrentTransformer, (statement, sql) => {
-            const [query, params] = statement.compile();
-            if (
-              !query.includes("UPDATE command_runs") ||
-              params.at(-1) !== started.taskId ||
-              params[6] === null
-            )
-              return Effect.succeed(statement);
-            return statement.pipe(
-              Effect.provideService(Statement.CurrentTransformer, undefined),
-              Effect.orDie,
-              Effect.andThen(Deferred.succeed(delivered, undefined)),
-              Effect.as(sql`SELECT 1 WHERE 0`),
-            );
-          }),
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(started.taskId, delivered),
+          ),
         );
         assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         const row = yield* commandRow(started.taskId);
@@ -1526,7 +1529,10 @@ const windowsFixture = Effect.gen(function* () {
   const probes = yield* Queue.unbounded<void>();
   const reads = yield* Queue.unbounded<string>();
   const renamed = yield* Queue.unbounded<string>();
-  const stopped = yield* Queue.unbounded<number>();
+  const stopped = yield* Queue.unbounded<{
+    readonly pid: number;
+    readonly identity: number | undefined;
+  }>();
   const processes = new Map<number, { identity: number; alive: boolean; directory: string }>();
   let nextPid = 2_147_483_000;
   const clock = yield* Clock.Clock;
@@ -1615,8 +1621,13 @@ const windowsFixture = Effect.gen(function* () {
           const stop = /Stop-T3ProcessTree (\d+) /.exec(script);
           if (stop !== null) {
             fixture.kills++;
+            const identity = /Stop-T3ProcessTree \d+ \d+ (\d+) (\d+)/.exec(script);
+            const stopEvidence = {
+              pid: Number(stop[1]),
+              identity: identity === null ? undefined : Number(identity[1]),
+            };
             if (fixture.stopError !== "") {
-              yield* Queue.offer(stopped, Number(stop[1]));
+              yield* Queue.offer(stopped, stopEvidence);
               return {
                 ...processOutput(),
                 code: ChildProcessSpawner.ExitCode(1),
@@ -1625,14 +1636,13 @@ const windowsFixture = Effect.gen(function* () {
             }
             const pid = Number(stop[1]);
             const entry = processes.get(pid)!;
-            const identity = /Stop-T3ProcessTree \d+ \d+ (\d+) (\d+)/.exec(script);
             if (
               identity !== null &&
               entry.identity >= Number(identity[1]) &&
               entry.identity <= Number(identity[2])
             )
               entry.alive = false;
-            yield* Queue.offer(stopped, pid);
+            yield* Queue.offer(stopped, stopEvidence);
             return processOutput();
           }
           const probe =
@@ -1667,6 +1677,141 @@ const windowsFixture = Effect.gen(function* () {
 });
 
 it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
+  it.effect.each(["deadline", "cancellation"] as const)(
+    "enforces %s after the same task's identity probe is held",
+    (reason) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-held-probe-${reason}`);
+        const fixture = yield* windowsFixture;
+        const result = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), {
+            command: "echo held identity",
+            timeoutMinutes: 1,
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+        const release = yield* Deferred.make<void>();
+        const delivered = yield* Deferred.make<void>();
+        fixture.state.beforeProbe = Deferred.await(release);
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* Queue.take(fixture.probes);
+            if (reason === "deadline") fixture.state.now += 60_000;
+            else
+              yield* Orchestrator.OrchestratorV2.pipe(
+                Effect.flatMap((orchestrator) =>
+                  orchestrator.dispatch(cancellationOf(chat.threadId, result.taskId)),
+                ),
+              );
+            yield* Queue.take(fixture.stopped).pipe(
+              Effect.repeat({
+                until: (stop) => stop.identity === fixture.processes.get(2147483000)!.identity,
+              }),
+            );
+            assert.isFalse(fixture.processes.get(2147483000)!.alive);
+            assert.equal(
+              (yield* commandRow(result.taskId))?.status,
+              reason === "deadline" ? "timed_out" : "stopped",
+            );
+            yield* Deferred.succeed(release, undefined);
+            yield* Deferred.await(delivered);
+          }),
+        ).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(result.taskId, delivered),
+          ),
+          Effect.provide(fixture.layer),
+          Effect.ensuring(Deferred.succeed(release, undefined)),
+        );
+      }),
+  );
+
+  it.effect("closes the pending gate at the deadline while its launcher is held", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-held-deadline");
+      const fixture = yield* windowsFixture;
+      const entered = yield* Deferred.make<string>();
+      const release = yield* Deferred.make<void>();
+      const create = fixture.state.launch;
+      let ran = false;
+      fixture.state.launch = (input, directory) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(entered, directory);
+          yield* Deferred.await(release);
+          if (NodeFS.existsSync(NodePath.join(directory, "launch-pending"))) {
+            ran = true;
+            return yield* create(input, directory);
+          }
+          return processOutput();
+        });
+      yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const request = {
+            command: "echo held",
+            timeoutMinutes: 1,
+            clientRequestId: "held-deadline",
+          };
+          const pending = yield* runner
+            .run(callerOf(chat.threadId), request)
+            .pipe(Effect.forkChild);
+          const directory = yield* Deferred.await(entered);
+          const task = yield* runner.run(callerOf(chat.threadId), request);
+          fixture.state.now += 60_000;
+          yield* Queue.take(fixture.renamed);
+          assert.isTrue(NodeFS.existsSync(NodePath.join(directory, "launch-cancelled")));
+          yield* nextWake(chat.threadId);
+          assert.equal((yield* commandRow(task.taskId))?.status, "timed_out");
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(pending);
+          assert.isFalse(ran);
+        }),
+      ).pipe(Effect.provide(fixture.layer), Effect.ensuring(Deferred.succeed(release, undefined)));
+    }),
+  );
+
+  it.effect("revalidates cached identity when a pid is replaced between live observations", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-cache-reused");
+      const fixture = yield* windowsFixture;
+      yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const result = yield* runner.run(callerOf(chat.threadId), { command: "echo original" });
+          fixture.processes.get(2147483000)!.identity += 500;
+          fixture.state.now += 60_000;
+          yield* nextWake(chat.threadId);
+          const row = yield* commandRow(result.taskId);
+          assert.equal(row?.lost_reason, "pid-reused");
+          assert.isTrue(fixture.processes.get(2147483000)!.alive);
+        }),
+      ).pipe(Effect.provide(fixture.layer));
+    }),
+  );
+
+  it.effect.each(["linux", "win32"] as const)(
+    "recovers the pid from a legacy file with an already-published exit on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-legacy-exit-${platform}`);
+        const fixture = yield* windowsFixture;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), {
+            command: "echo legacy",
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+        yield* forgetPid(first.taskId);
+        const directory = NodePath.dirname(first.logPath);
+        NodeFS.writeFileSync(NodePath.join(directory, "pid"), "2147483000");
+        NodeFS.writeFileSync(NodePath.join(directory, "exit-status"), "0");
+        fixture.processes.get(2147483000)!.alive = false;
+        yield* withServer(() => nextWake(chat.threadId)).pipe(
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.provide(fixture.layer),
+        );
+        assert.equal((yield* commandRow(first.taskId))?.pid, 2147483000);
+        assert.equal((yield* taskOf(chat.threadId, first.taskId))?.status, "completed");
+      }),
+  );
+
   it.effect("continues watching after the first wave query fails", () =>
     Effect.gen(function* () {
       const chat = yield* liveChat("launch-first-watch-error");
