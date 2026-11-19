@@ -16,6 +16,10 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — The machine check compares each machine's Node with the project's pin
+
+- `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. It now reports the mismatch before anyone runs `check:changed`, which refuses to run on the wrong Node. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
+
 ## 2026-11-20 — Storage cleanup reports a failed unmerged-work check instead of "not integrated"
 
 - When Git could not count a worktree's unmerged commits (an unreadable branch, a damaged worktree, a timeout), storage cleanup treated it as one unmerged commit and kept the worktree with a misleading reason, logging nothing. The worktree is still kept, but the cleanup report now shows it as failed with Git's detail, and the failure is logged.
@@ -135,10 +139,6 @@
 ## 2026-11-20 — Thread creation retries survive a removed provider
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.
-
-## 2026-11-19 — The machine check compares each machine's Node with the project's pin
-
-- `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. Before, only `check:changed` found it, by refusing to run. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
 
 ## 2026-11-19 — The upstream sync checks against its own base
 
