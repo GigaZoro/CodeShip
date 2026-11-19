@@ -3212,6 +3212,29 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("counts unmerged work, and fails rather than reads 0 when a ref probe breaks", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const pathService = yield* Path.Path;
+        // A repository with no base to compare with may itself be on the default branch.
+        assert.equal(yield* driver.countUnmergedCommits({ cwd }), 0);
+
+        yield* git(cwd, ["checkout", "-b", "feature"]);
+        yield* writeTextFile(cwd, "feature.txt", "feature\n");
+        yield* git(cwd, ["add", "feature.txt"]);
+        yield* git(cwd, ["commit", "-m", "feature work"]);
+        assert.equal(yield* driver.countUnmergedCommits({ cwd }), 1);
+
+        // Git exits 128 for the missing loose `main` once packed-refs is unreadable; that is not absence.
+        yield* git(cwd, ["pack-refs", "--all"]);
+        yield* writeTextFile(pathService.join(cwd, ".git"), "packed-refs", "garbage line\n");
+        const exit = yield* Effect.exit(driver.countUnmergedCommits({ cwd }));
+        assert.isTrue(Exit.isFailure(exit));
+      }),
+    );
+
     it.effect("does not open a project folder laid out as a bare repository", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

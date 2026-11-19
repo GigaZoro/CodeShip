@@ -1331,6 +1331,40 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }),
     );
 
+  const unexpectedExit = (
+    operation: string,
+    cwd: string,
+    args: readonly string[],
+    result: GitVcsDriver.ExecuteGitResult,
+  ) => {
+    const reason = classifyGitFailure(result.stderr);
+    return new GitCommandError({
+      ...gitCommandContext({ operation, cwd, args }),
+      ...(reason === null ? {} : { reason }),
+      detail: gitFailureDetail(reason),
+      ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+      stdoutLength: result.stdout.length,
+      stderrLength: result.stderr.length,
+    });
+  };
+
+  // Exit 1 is how these probes say "absent"; any other failure (128 on an unreadable ref store)
+  // must not read as absence, or a broken repository looks like one without the ref.
+  const probeGit = (
+    operation: string,
+    cwd: string,
+    args: readonly string[],
+    absentExitCode: number,
+    options: ExecuteGitOptions = {},
+  ): Effect.Effect<boolean, GitCommandError> =>
+    executeGit(operation, cwd, args, { ...options, allowNonZeroExit: true }).pipe(
+      Effect.flatMap((result) => {
+        if (result.exitCode === 0) return Effect.succeed(true);
+        if (result.exitCode === absentExitCode) return Effect.succeed(false);
+        return Effect.fail(unexpectedExit(operation, cwd, args, result));
+      }),
+    );
+
   const executeGitWithStableDiagnostics = (
     operation: string,
     cwd: string,
@@ -1440,15 +1474,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
 
   const branchExists = (cwd: string, refName: string): Effect.Effect<boolean, GitCommandError> =>
-    executeGit(
+    probeGit(
       "GitVcsDriver.branchExists",
       cwd,
       ["show-ref", "--verify", "--quiet", `refs/heads/${refName}`],
-      {
-        allowNonZeroExit: true,
-        timeoutMs: 5_000,
-      },
-    ).pipe(Effect.map((result) => result.exitCode === 0));
+      1,
+      { timeoutMs: 5_000 },
+    );
 
   const resolveAvailableBranchName = Effect.fn("resolveAvailableBranchName")(function* (
     cwd: string,
@@ -1879,24 +1911,20 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
 
   const remoteBranchExists: GitVcsDriver.GitVcsDriver["Service"]["remoteBranchExists"] = (input) =>
-    executeGit(
+    probeGit(
       "GitVcsDriver.remoteBranchExists",
       input.cwd,
       ["show-ref", "--verify", "--quiet", `refs/remotes/${input.remoteName}/${input.refName}`],
-      {
-        allowNonZeroExit: true,
-      },
-    ).pipe(Effect.map((result) => result.exitCode === 0));
+      1,
+    );
 
   const remoteExists: GitVcsDriver.GitVcsDriver["Service"]["remoteExists"] = (input) =>
-    executeGit(
+    probeGit(
       "GitVcsDriver.remoteExists",
       input.cwd,
       ["remote", "get-url", "--", input.remoteName],
-      {
-        allowNonZeroExit: true,
-      },
-    ).pipe(Effect.map((result) => result.exitCode === 0));
+      2,
+    );
 
   const originRemoteExists = (cwd: string): Effect.Effect<boolean, GitCommandError> =>
     remoteExists({ cwd, remoteName: "origin" });
@@ -1915,15 +1943,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return parsedRemoteRef?.branchName ?? branchName;
   });
 
-  const resolvePrimaryRemoteName = Effect.fn("resolvePrimaryRemoteName")(function* (cwd: string) {
+  const findPrimaryRemoteName = Effect.fn("findPrimaryRemoteName")(function* (cwd: string) {
     if (yield* originRemoteExists(cwd)) {
       return "origin";
     }
-    const remotes = yield* listRemoteNames(cwd);
-    const [firstRemote] = remotes;
-    if (firstRemote) {
-      return firstRemote;
-    }
+    const [firstRemote] = yield* listRemoteNames(cwd);
+    return firstRemote ?? null;
+  });
+
+  const resolvePrimaryRemoteName = Effect.fn("resolvePrimaryRemoteName")(function* (cwd: string) {
+    const remoteName = yield* findPrimaryRemoteName(cwd);
+    if (remoteName !== null) return remoteName;
     return yield* new GitCommandError({
       ...gitCommandContext({
         operation: "GitVcsDriver.resolvePrimaryRemoteName",
@@ -2019,13 +2049,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ? `refs/remotes/${baseRef}`
           : null;
     if (comparisonRef === null) return null;
-    const resolved = yield* executeGit(
+    const exists = yield* probeGit(
       "GitVcsDriver.resolveComparisonBaseRef",
       cwd,
       ["show-ref", "--verify", "--quiet", comparisonRef],
-      { allowNonZeroExit: true },
+      1,
     );
-    return resolved.exitCode === 0 ? { baseRef, comparisonRef } : null;
+    return exists ? { baseRef, comparisonRef } : null;
   });
 
   // Tracking may point to a different remote than the primary one. Resolve its
@@ -2081,9 +2111,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
     if (configuredBase !== null) return configuredBase;
 
-    const primaryRemoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
-      Effect.orElseSucceed(() => null),
-    );
+    const primaryRemoteName = yield* findPrimaryRemoteName(cwd);
     const candidates = [
       Effect.succeed(configuredBaseBranch),
       primaryRemoteName === null
@@ -4558,12 +4586,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const { cwd } = input;
       let base = input.baseRef ?? null;
       if (base === null) {
-        const refName = (yield* runGitStdout("GitVcsDriver.countUnmergedCommits.branch", cwd, [
-          "symbolic-ref",
-          "--quiet",
-          "--short",
-          "HEAD",
-        ]).pipe(Effect.orElseSucceed(() => ""))).trim();
+        // Exit 1 is a detached HEAD, which has no branch to compare; other failures are not that.
+        const headArgs = ["symbolic-ref", "--quiet", "HEAD"];
+        const head = yield* executeGit("GitVcsDriver.countUnmergedCommits.branch", cwd, headArgs, {
+          allowNonZeroExit: true,
+        });
+        if (head.exitCode === 1) return 0;
+        if (head.exitCode !== 0) {
+          return yield* unexpectedExit(
+            "GitVcsDriver.countUnmergedCommits.branch",
+            cwd,
+            headArgs,
+            head,
+          );
+        }
+        const refName = head.stdout.trim().replace(/^refs\/heads\//, "");
         if (refName === "") return 0;
         base = (yield* resolveBaseBranchForNoUpstream(cwd, refName))?.comparisonRef ?? null;
         if (base === null) return 0;

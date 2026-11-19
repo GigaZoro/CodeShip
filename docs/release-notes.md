@@ -1,3 +1,7 @@
+## 2026-11-19 — A Git failure no longer makes unmerged work read as none
+
+- Settling a chat checks whether its branch has work the default branch lacks. Before, a Git failure while looking up refs (an unreadable ref store, a timed-out command) looked like "no default branch", so the check counted 0 and the chat settled or the settle dialog stayed quiet. Now the check fails and reports that it could not be checked, as it already does for other errors. A repository with no base to compare with still counts 0, and the branch status display is unchanged.
+
 ## 2026-11-19 — Main takes only changes whose checks passed, on Windows too
 
 - Maintenance only, with no change in the app. A push to the fork's `main` is refused unless the lander holds the landing turn and `vp run check:changed` passed for exactly the files pushed, compared with the commit `main` is at. Each passing run records what it checked, and the tracked pre-push hook, which a checkout runs once the machine check sets `core.hooksPath`, refuses a push without that record. `landing-turn.cjs land` refuses to start in a worktree with uncommitted or untracked files, whose pass could not cover the commit it pushes.
