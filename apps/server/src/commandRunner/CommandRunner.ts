@@ -466,6 +466,7 @@ const decodeTail = (bytes: Uint8Array, cut: boolean) => {
 };
 
 const make = Effect.gen(function* () {
+  const serviceScope = yield* Effect.scope;
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -1599,9 +1600,22 @@ const make = Effect.gen(function* () {
           if (prepared === undefined) return result(taskId);
           const started = yield* Effect.gen(function* () {
             const launched = yield* launch(directory, input, cwd, commandEnv).pipe(
-              Effect.catchCause((cause) =>
-                Effect.fail(new CommandLaunchError({ detail: Cause.pretty(cause), cause })),
-              ),
+              Effect.catchCause((cause) => {
+                const error = Cause.squash(cause);
+                return Effect.logWarning("command-runner.launch-failed", { taskId, cause }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new CommandLaunchError({
+                        detail:
+                          error instanceof Error
+                            ? error.message
+                            : "The launcher failed unexpectedly.",
+                        cause,
+                      }),
+                    ),
+                  ),
+                );
+              }),
               Effect.result,
             );
             yield* lock
@@ -1628,7 +1642,7 @@ const make = Effect.gen(function* () {
             return launched;
           }).pipe(Effect.ensuring(Effect.sync(() => launching.delete(taskId))));
           if (started._tag === "Failure" || watched.get(taskId)?.status === "stopped") {
-            yield* checkTask(taskId);
+            yield* Effect.forkIn(checkTask(taskId), serviceScope, { startImmediately: true });
           }
           return result(taskId);
         }),
@@ -1825,14 +1839,12 @@ const make = Effect.gen(function* () {
             Effect.ensuring(Deferred.succeed(adopted, undefined)),
             Effect.ignoreCause({ log: true }),
           );
-        yield* watchOnce;
+        const watchedOnce = watchOnce.pipe(Effect.ignoreCause({ log: true }));
+        yield* watchedOnce;
         const pruned = prune.pipe(Effect.ignoreCause({ log: true }));
         yield* pruned;
         yield* Effect.forkScoped(pruned.pipe(Effect.delay(RETENTION_INTERVAL), Effect.forever));
-        yield* watchOnce.pipe(
-          Effect.ignoreCause({ log: true }),
-          Effect.repeat(Schedule.spaced(watchInterval)),
-        );
+        yield* watchedOnce.pipe(Effect.repeat(Schedule.spaced(watchInterval)));
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
