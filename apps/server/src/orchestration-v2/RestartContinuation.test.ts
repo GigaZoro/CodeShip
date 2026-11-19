@@ -18,8 +18,11 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   CONTINUE_PROMPT,
@@ -1366,45 +1369,70 @@ it.effect(
     }),
 );
 
-it.effect("prepares later threads' continuations when one thread fails", () =>
-  Effect.gen(function* () {
-    const brokenThreadId = ThreadId.make("thread:broken");
-    const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
-    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          ThreadCommandExecutor.layer,
-          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-          Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getRecoveryThreadIds: () => Effect.succeed([brokenThreadId, threadId]),
-            getThreadRecords: () => Effect.succeed(makeProjection()),
-            getRuntimeRecoveryProjection: (id) =>
-              id === brokenThreadId
-                ? Effect.fail(
-                    new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
-                  )
-                : Effect.succeed(makeProjection()),
-          }),
-          Layer.mock(EventSink.EventSinkV2)({
-            lastCommittedAt: Effect.succeed(null),
-            writeWithEffects: (input) =>
-              Effect.sync(() => {
-                writes.push(input);
-                return [];
-              }),
-          }),
-          IdAllocator.layer,
-          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
-          Layer.mock(EffectOutbox.EffectOutboxV2)({}),
+it.effect.each(["projection fails", "lock stays busy"] as const)(
+  "prepares later threads' continuations when one %s",
+  (failure) =>
+    Effect.gen(function* () {
+      const brokenThreadId = ThreadId.make("thread:broken");
+      const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
+      const waiting = yield* Deferred.make<void>();
+      const locked = yield* Deferred.make<void>();
+      const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor.pipe(
+        Effect.provide(ThreadCommandExecutor.layer),
+      );
+      if (failure === "lock stays busy") {
+        yield* locks
+          .withLock(
+            brokenThreadId,
+            Deferred.succeed(locked, undefined).pipe(Effect.andThen(Effect.never)),
+          )
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(locked);
+      }
+      const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, {
+              ...locks,
+              withLock: (id, effect) =>
+                Deferred.succeed(waiting, undefined).pipe(
+                  Effect.andThen(locks.withLock(id, effect)),
+                ),
+            }),
+            ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getRecoveryThreadIds: () => Effect.succeed([brokenThreadId, threadId]),
+              getThreadRecords: () => Effect.succeed(makeProjection()),
+              getRuntimeRecoveryProjection: (id) =>
+                id === brokenThreadId
+                  ? Effect.fail(
+                      new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
+                    )
+                  : Effect.succeed(makeProjection()),
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              lastCommittedAt: Effect.succeed(null),
+              writeWithEffects: (input) =>
+                Effect.sync(() => {
+                  writes.push(input);
+                  return [];
+                }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
+            Layer.mock(EffectOutbox.EffectOutboxV2)({}),
+          ),
         ),
-      ),
-    );
-    yield* recovery.prepareForShutdown;
-    assert.deepEqual(
-      writes.map((write) => write.effects[0]?.request),
-      [{ type: "provider-runtime.continue", sourceRunId: runId }],
-    );
-  }),
+      );
+      const preparation = yield* recovery.prepareForShutdown.pipe(Effect.forkScoped);
+      yield* Deferred.await(waiting);
+      yield* TestClock.adjust("10 seconds");
+      assert.deepEqual(
+        writes.map((write) => write.effects[0]?.request),
+        [{ type: "provider-runtime.continue", sourceRunId: runId }],
+      );
+      yield* Fiber.join(preparation);
+    }).pipe(Effect.provide(TestClock.layer())),
 );
 
 // The restart keeps a question answerable by message, and the answer continues the thread. Every
