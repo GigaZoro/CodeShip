@@ -78,8 +78,8 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  if ($mine) { $process }",
   "}",
   // Ends every process before it waits for any, so one slow to end holds up no other, and goes on
-  // past a failure. A process that ended first is no error; one still running 5 s on is. Outputs
-  // the first failure.
+  // past a failure. A process that ended first is no error; one still running 5 s after the last
+  // kill is. Outputs the first failure.
   "function Stop-T3Processes($processes) {",
   "  $failed = $null",
   "  foreach ($process in $processes) {",
@@ -127,8 +127,8 @@ export interface WindowsProcessTreeRoot {
   /** When the root started; a process holding its pid outside this window is another process. */
   readonly created?: { readonly from: number; readonly to: number };
   /**
-   * When the root's spawner saw it end, which Node reports only once it let go of the root's pid:
-   * a process holding that pid then is another one, and the root started nothing after this.
+   * When the root's spawner first reported its exit. A process the walk then finds holding the
+   * root's pid is another one, and the root started nothing after this.
    */
   readonly ended?: number;
 }
@@ -170,15 +170,6 @@ export const endedWindowsTreeRoot = (root: WindowsProcessTreeRoot): WindowsProce
   ...root,
   ended: Date.now(),
 });
-
-/** Runs a spawn and pairs its handle with the root a stop of its tree needs. */
-export const withWindowsTreeRoot = <A extends { readonly pid: number }, E, R>(
-  spawn: Effect.Effect<A, E, R>,
-): Effect.Effect<{ readonly handle: A; readonly root: WindowsProcessTreeRoot }, E, R> =>
-  Effect.suspend(() => {
-    const rootOf = windowsTreeRootFromNow();
-    return Effect.map(spawn, (handle) => ({ handle, root: rootOf(handle.pid) }));
-  });
 
 const STOP_TIMEOUT = Duration.seconds(30);
 const STDERR_TAIL_CHARS = 4_096;
@@ -238,14 +229,36 @@ const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
     ),
 );
 
-/** Stops the tree of the process behind `handle`, which tells the walk whether that process ended. */
-export const stopSpawnedWindowsTree = (
-  handle: Pick<ChildProcessSpawner.ChildProcessHandle, "isRunning">,
-  root: WindowsProcessTreeRoot,
+/**
+ * Runs a spawn and pairs its handle with a stop of its tree. A watch in the spawn's scope notes when
+ * the handle reports the exit, so a stop long after it still bounds the root's children by that time.
+ */
+export const withWindowsTreeStop = <
+  A extends Pick<ChildProcessSpawner.ChildProcessHandle, "pid" | "exitCode" | "isRunning">,
+  E,
+  R,
+>(
+  spawn: Effect.Effect<A, E, R>,
 ) =>
-  Effect.flatMap(handle.isRunning, (running) =>
-    stopWindowsProcessTree(running ? root : endedWindowsTreeRoot(root)),
-  );
+  Effect.suspend(() => {
+    const rootOf = windowsTreeRootFromNow();
+    return Effect.flatMap(spawn, (handle) => {
+      const root = rootOf(handle.pid);
+      let ended: number | undefined;
+      const noteEnd = Effect.sync(() => (ended ??= Date.now()));
+      const stopTree = Effect.flatMap(handle.isRunning, (running) =>
+        running
+          ? stopWindowsProcessTree(root)
+          : Effect.flatMap(noteEnd, (at) => stopWindowsProcessTree({ ...root, ended: at })),
+      );
+      return Effect.as(
+        Effect.forkScoped(Effect.andThen(Effect.exit(handle.exitCode), noteEnd), {
+          startImmediately: true,
+        }),
+        { handle, stopTree },
+      );
+    });
+  });
 
 /**
  * A function that starts a stop of a tree at once, for a Node callback such as a child's `exit`, and
@@ -292,12 +305,13 @@ export const endingWindowsTrees = (
             "endingWindowsTrees ends one process's tree; spawn a pipeline's stages one by one",
         });
       }
-      const { handle, root } = yield* withWindowsTreeRoot(inner.spawn(command));
+      const spawned = yield* withWindowsTreeStop(inner.spawn(command));
+      const { handle } = spawned;
       let referenced = true;
       let unendedReads = 0;
       // A kill and the scope's close share one walk.
       const stopTree = yield* Effect.cached(
-        stopSpawnedWindowsTree(handle, root).pipe(
+        spawned.stopTree.pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, inner),
         ),
       );

@@ -39,10 +39,8 @@ import { isProcessAlive as isProcessAliveByProbe } from "@t3tools/shared/process
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import {
   endingWindowsTrees,
-  stopSpawnedWindowsTree,
-  withWindowsTreeRoot,
+  withWindowsTreeStop,
   withoutWindowsTreeEnding,
-  type WindowsProcessTreeRoot,
 } from "@t3tools/shared/windowsProcessTree";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -1023,21 +1021,6 @@ export function terminatePosixOwnedProcessTree(input: {
   }).pipe(withWallClock);
 }
 
-const stopAcpWindowsProcessTree = (
-  child: ChildProcessSpawner.ChildProcessHandle,
-  root: WindowsProcessTreeRoot,
-) =>
-  stopSpawnedWindowsTree(child, root).pipe(
-    Effect.mapError(
-      (cause) =>
-        new AcpProcessGroupTerminationError({
-          cause,
-          detail: `Failed to stop ACP process tree ${root.pid}`,
-          pid: root.pid,
-        }),
-    ),
-  );
-
 export function selectAcpAgentAuthMethod(
   authMethods: ReadonlyArray<EffectAcpSchema.AuthMethod> | undefined,
   preferredMethodId?: string,
@@ -1427,7 +1410,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ELECTRON_RUN_AS_NODE: "1",
           T3_ACP_CGROUP_WRAPPER: "1",
         };
-  const { handle: child, root: childTreeRoot } = yield* spawner
+  const { handle: child, stopTree: stopWindowsTree } = yield* spawner
     .spawn(
       ChildProcess.make(containedSpawnCommand.command, containedSpawnCommand.args, {
         ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
@@ -1440,8 +1423,8 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       }),
     )
     .pipe(
+      withWindowsTreeStop,
       Effect.provideService(Scope.Scope, runtimeScope),
-      withWindowsTreeRoot,
       Effect.mapError(
         (cause) =>
           new EffectAcpErrors.AcpSpawnError({
@@ -1528,7 +1511,15 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     );
   // Each walk starts PowerShell, so terminating the group and the scope's finalizer share one.
   const stopChildTree = yield* Effect.cached(
-    stopAcpWindowsProcessTree(child, childTreeRoot).pipe(
+    stopWindowsTree.pipe(
+      Effect.mapError(
+        (cause) =>
+          new AcpProcessGroupTerminationError({
+            cause,
+            detail: `Failed to stop ACP process tree ${child.pid}`,
+            pid: Number(child.pid),
+          }),
+      ),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     ),
   );

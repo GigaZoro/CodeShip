@@ -10,6 +10,7 @@ import type * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
 import { isProcessAlive } from "./processProbe.ts";
 import { leaderLeavingChild } from "./testing/leftoverChild.ts";
@@ -38,7 +39,7 @@ it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it can
 
 /**
  * A Windows spawner whose process has exited unless `running`, and whose kill fails if `killFails`.
- * It records each kill and walk, and whether each walk was told the process ended.
+ * It records each kill and walk, and the end each walk was told of.
  */
 const fakeWindowsSpawner = (options: {
   readonly running: boolean;
@@ -46,7 +47,7 @@ const fakeWindowsSpawner = (options: {
   readonly killFails?: boolean;
 }) => {
   const events: Array<"kill" | "walk"> = [];
-  const toldEnded: Array<boolean> = [];
+  const ended: Array<number | undefined> = [];
   let running = options.running;
   const handle = (output: Stream.Stream<Uint8Array>) =>
     ChildProcessSpawner.makeHandle({
@@ -80,14 +81,15 @@ const fakeWindowsSpawner = (options: {
     Effect.sync(() => {
       if (command._tag === "StandardCommand" && command.command === "powershell.exe") {
         events.push("walk");
-        toldEnded.push(/ -ended \d+$/.test(command.args.at(-1) ?? ""));
+        const told = / -ended (\d+)$/.exec(command.args.at(-1) ?? "");
+        ended.push(told === null ? undefined : Number(told[1]));
         return handle(Stream.empty);
       }
       // What a leader left running holds a pipe it inherited open.
       return handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never));
     }),
   );
-  return { events, toldEnded, spawner };
+  return { events, ended, spawner };
 };
 
 type Use = (
@@ -177,7 +179,7 @@ describe("endingWindowsTrees stops a Windows tree", () => {
       );
 
       assert.deepEqual(
-        fake.toldEnded,
+        fake.ended.map((at) => at !== undefined),
         Array.from({ length: walks }, () => true),
       );
       if (process.running) assert.deepEqual(fake.events, ["kill", "walk"]);
@@ -195,7 +197,27 @@ describe("endingWindowsTrees stops a Windows tree", () => {
         ),
       );
 
-      assert.deepEqual(fake.toldEnded, [false]);
+      assert.deepEqual(fake.ended, [undefined]);
+    }),
+  );
+
+  it.effect("telling the walk when the process exited, not when its scope closed", () =>
+    Effect.gen(function* () {
+      let now = 1_000;
+      using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const fake = fakeWindowsSpawner({ running: false, output: "ends" });
+
+      yield* Effect.scoped(
+        Effect.flatMap(
+          endingWindowsTrees(fake.spawner, "win32").spawn(ChildProcess.make("leader")),
+          () =>
+            Effect.sync(() => {
+              now = 61_000;
+            }),
+        ),
+      );
+
+      assert.deepEqual(fake.ended, [1_000]);
     }),
   );
 
