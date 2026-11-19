@@ -471,6 +471,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<OrchestrationV2ForceStopThreadResult, OrchestrationV2ForceStopThreadError>;
   readonly stopDelegatedTasks: (input: {
     readonly threadId: ThreadId;
+    readonly parentRunId?: RunId | undefined;
     readonly commandId: CommandId;
     readonly reason?: string | undefined;
   }) => Effect.Effect<
@@ -1593,6 +1594,12 @@ const make = Effect.gen(function* () {
     const stoppedChildThreadIds = new Set<ThreadId>();
     for (const task of subagents) {
       if (task.origin !== "app_owned") continue;
+      // A scoped Stop owns only this run's outstanding tasks. A finished child's thread can be reused.
+      if (
+        input.parentRunId !== undefined &&
+        (task.runId !== input.parentRunId || task.result !== null)
+      )
+        continue;
       // A command ends with its result here; the command runner then stops its processes.
       if (task.command !== undefined) {
         if (task.result !== null) continue;
@@ -1663,7 +1670,9 @@ const make = Effect.gen(function* () {
         stopDelegatedTasks: false,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
       }).pipe(
-        Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
+        Effect.andThen(
+          stopDelegatedTasks({ commandId: input.commandId, reason: input.reason, threadId }),
+        ),
         Effect.catch((error) =>
           Effect.logWarning("Unable to stop a delegated task", {
             parentThreadId: input.threadId,

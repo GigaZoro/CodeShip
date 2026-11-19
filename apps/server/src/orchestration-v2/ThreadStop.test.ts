@@ -534,7 +534,7 @@ it.effect("Stop still stops the thread when a delegated child cannot be read", (
 );
 
 it.effect.each(["run.interrupt", "thread.stop"] as const)(
-  "%s Stop ends watches, holds queues, and stops the delegated tasks under the thread",
+  "%s Stop ends watches and respects the owning run when walking delegated tasks",
   (type) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -580,24 +580,26 @@ it.effect.each(["run.interrupt", "thread.stop"] as const)(
         watched: [],
       });
       const parent = yield* orchestrator.getThreadProjection(parentThreadId);
-      assert.equal(parent.subagents[0]?.completionDelivery?.state, "disposed");
-      const effects = yield* sql<{ readonly effect_type: string }>`
-      SELECT effect_type FROM orchestration_v2_effect_outbox WHERE command_id = ${stopCommandId}
-    `;
-      assert.include(
-        effects.map((row) => row.effect_type),
-        "delegated-tasks.stop",
+      const threadWide = type === "thread.stop";
+      assert.equal(
+        parent.subagents[0]?.completionDelivery?.state,
+        threadWide ? "disposed" : undefined,
       );
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${stopCommandId}`;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* worker.drain();
+      const childRuns = threadWide ? ["interrupted", "queued:held"] : ["starting", "queued"];
+      assert.deepEqual((yield* threadState(childThreadId)).runs, childRuns);
+      assert.deepEqual((yield* threadState(grandchildThreadId)).runs, [
+        threadWide ? "interrupted" : "starting",
+      ]);
 
-      yield* threads.stopDelegatedTasks({ threadId: parentThreadId, commandId: stopCommandId });
-      assert.deepEqual(yield* threadState(childThreadId), {
-        runs: ["interrupted", "queued:held"],
-        watched: [],
+      yield* threads.stopDelegatedTasks({
+        threadId: parentThreadId,
+        commandId: stopCommandId,
+        parentRunId: threadWide ? undefined : secondRun.id,
       });
-      assert.deepEqual((yield* threadState(grandchildThreadId)).runs, ["interrupted"]);
-
-      yield* threads.stopDelegatedTasks({ threadId: parentThreadId, commandId: stopCommandId });
-      assert.deepEqual((yield* threadState(childThreadId)).runs, ["interrupted", "queued:held"]);
+      assert.deepEqual((yield* threadState(childThreadId)).runs, childRuns);
       // The walk stops each level itself, so the child stops it sends queue no walk of their own.
       const walks = yield* sql<{ readonly command_id: string }>`
       SELECT command_id FROM orchestration_v2_effect_outbox
@@ -605,7 +607,7 @@ it.effect.each(["run.interrupt", "thread.stop"] as const)(
     `;
       assert.deepEqual(
         walks.map((row) => row.command_id),
-        [stopCommandId],
+        threadWide ? [stopCommandId] : [],
       );
     }).pipe(Effect.provide(layerTest)),
 );
@@ -1194,12 +1196,23 @@ it.effect.each([
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const threadId = ThreadId.make("thread:queued-restart-background");
       yield* createWatchingThread(threadId, 7);
+      yield* send(threadId, "unrelated", "start_immediately");
+      const unrelatedChild = yield* delegate(threadId, "unrelated child");
+      const unrelated = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const completedAt = yield* DateTime.now;
+      yield* projections.apply({
+        id: EventId.make("unrelated-completed"),
+        type: "run.updated",
+        threadId,
+        occurredAt: completedAt,
+        payload: { ...unrelated, status: "completed", completedAt },
+      });
       yield* send(threadId, "source", "start_immediately");
-      yield* delegate(threadId, "awaited task");
+      const sourceChild = yield* delegate(threadId, "awaited task");
       yield* send(threadId, "continuation", "queue_after_active");
       yield* send(threadId, "later", "queue_after_active");
       const before = yield* orchestrator.getThreadProjection(threadId);
-      const [source, queued, later] = before.runs;
+      const [, source, queued, later] = before.runs;
       assert.isDefined(source);
       assert.isDefined(queued);
       assert.isDefined(later);
@@ -1406,14 +1419,12 @@ it.effect.each([
             }))
           : [],
       );
-      if (live) {
-        // The fixture seeded completed turns directly. Only the Stop effects need execution.
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${commandId}`;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        yield* worker.drain();
-        assert.sameMembers(interruptedTurns, [turn.id, otherTurnId]);
-      }
+      // These turns were seeded directly. Run only the effects produced by Stop.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${commandId}`;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      yield* worker.drain();
+      assert.sameMembers(interruptedTurns, live ? [turn.id, otherTurnId] : []);
       const stopped = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(
         stopped.providerThreads.find((p) => p.id === owner.id)!.pendingBackgroundTasks,
@@ -1451,7 +1462,31 @@ it.effect.each([
         ),
         holdQueue && !cancelledLater ? 1 : 0,
       );
-      if (!onlyIfActive) assert.equal(stopped.subagents[0]?.completionDelivery?.state, "disposed");
+      if (cancelledLater)
+        assert.equal(stopped.runs.find((run) => run.id === later.id)?.status, "cancelled");
+      if (!onlyIfActive) {
+        assert.equal(
+          stopped.subagents.find((task) => task.childThreadId === sourceChild)?.completionDelivery
+            ?.state,
+          "disposed",
+        );
+      }
+      assert.deepEqual((yield* threadState(sourceChild)).runs, [
+        onlyIfActive ? "starting" : "interrupted",
+      ]);
+      assert.deepEqual((yield* threadState(unrelatedChild)).runs, ["starting"]);
+      const unrelatedTask = before.subagents.find((task) => task.childThreadId === unrelatedChild)!;
+      assert.deepEqual(
+        stopped.subagents.find((task) => task.id === unrelatedTask.id),
+        unrelatedTask,
+      );
+      const unrelatedItem = before.turnItems.find(
+        (item) => item.type === "subagent" && item.subagentId === unrelatedTask.id,
+      )!;
+      assert.equal(
+        stopped.turnItems.find((item) => item.id === unrelatedItem.id)?.status,
+        unrelatedItem.status,
+      );
     }).pipe(Effect.provide(layerTest)),
 );
 
