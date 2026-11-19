@@ -244,11 +244,19 @@ export interface EffectOutboxV2Shape {
   readonly listByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
-  readonly cancelUnsettled: (input: {
-    readonly threadId: ThreadId;
-    readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
-    readonly reason: string;
-  }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
+  readonly cancelUnsettled: (
+    input: {
+      readonly reason: string;
+    } & (
+      | {
+          readonly threadId: ThreadId;
+          readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+        }
+      | {
+          readonly effectIds: ReadonlyArray<string>;
+        }
+    ),
+  ) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
@@ -524,8 +532,12 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           ),
         ),
       cancelUnsettled: Effect.fn("EffectOutbox.cancelUnsettled")(
-        function* ({ threadId, effectTypes, reason }) {
-          if (effectTypes.length === 0) return [];
+        function* (input) {
+          const ids = "effectIds" in input;
+          if ((ids ? input.effectIds : input.effectTypes).length === 0) return [];
+          const selection = ids
+            ? sql`effect_id IN ${sql.in(input.effectIds)}`
+            : sql`thread_id = ${input.threadId} AND effect_type IN ${sql.in(input.effectTypes)}`;
           const now = DateTime.formatIso(yield* DateTime.now);
           const rows = yield* sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
@@ -534,10 +546,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               lease_owner = NULL,
               completed_at = ${now},
               updated_at = ${now},
-              last_error = ${reason}
-            WHERE thread_id = ${threadId}
-              AND status IN ('pending', 'running')
-              AND effect_type IN ${sql.in(effectTypes)}
+              last_error = ${input.reason},
+              lease_expires_at = NULL
+            WHERE status IN ('pending', 'running') AND ${selection}
             RETURNING effect_id
           `;
           return rows.map(({ effect_id }) => effect_id);
