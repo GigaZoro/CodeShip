@@ -1,4 +1,4 @@
-## 2026-11-18 — Updates from T3 Code
+## 2026-11-19 — Updates from T3 Code
 
 - A first run now opens one Welcome page instead of a three-step wizard.
 - Kiro joins the providers, and Claude Fable 5.2 is in the model picker. The picker checks for new models when it opens, and you can @-mention a model in the composer to name it for the agent.
@@ -11,7 +11,7 @@
 - A subagent's thread settles when its parent thread settles, is archived or is deleted, even with automatic settlement turned off, and never opens a pull request for its work.
 - Maintainers: `vp run typecheck` and `vp run check:changed` print only Effect's errors and warnings. Its suggestions, which numbered several hundred after this update's Effect upgrade, stay in the editor.
 
-## 2026-11-18 — A held upstream sync resumes after upstream moves on
+## 2026-11-19 — A held upstream sync resumes after upstream moves on
 
 - Maintainers: `node scripts/upstream-sync.ts begin` on a sync branch a held run pushed now reports `resumed` and keeps the upstream that branch merged, also when upstream has new commits since. It used to start a second upstream merge on top of the resolved one.
 - Maintainers: when `node scripts/upstream-sync.ts land` merges a main whose newest release-notes entry is newer than the sync's entries, the sync's entries now take that date, so the notes it puts on top stay newest first. Before, the release-notes check rejected them. When the new date would repeat a heading, `land` holds on the release-notes conflict instead.
