@@ -5,6 +5,7 @@ import {
   FILL_PREVIEW_VIEWPORT,
   INCOGNITO_BROWSER_PROFILE_ID,
   PREVIEW_AUTOMATION_SERVER_OPERATIONS,
+  PREVIEW_HEADLESS_NOTE,
   PreviewViewportSetting as PreviewViewportSettingSchema,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type PreviewAutomationActionEvent,
@@ -91,7 +92,8 @@ const SCREENCAST_MOTION_FRAMES = 4;
 const SCREENCAST_MOTION_WINDOW_MS = 300;
 const SCREENCAST_MOTION_QUALITY = 50;
 const HOST_RECONNECT_DELAY = "1 second";
-const DESKTOP_ATTACH_TIMEOUT = "10 seconds";
+// The desktop keeps its window rendering meanwhile; a renderer still loading after a restart needs the margin.
+const DESKTOP_ATTACH_TIMEOUT = "60 seconds";
 const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
@@ -753,7 +755,7 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
+  const awaitDesktop = (snapshot: PreviewSessionSnapshot) =>
     desktopChannel.available && !snapshot.headless
       ? runPromise(
           desktopChannel.awaitAttached(
@@ -761,7 +763,7 @@ const make = Effect.gen(function* () {
             DESKTOP_ATTACH_TIMEOUT,
           ),
         )
-      : Promise.resolve(false);
+      : Promise.resolve("declined" as const);
 
   const connectDesktop = async (snapshot: PreviewSessionSnapshot) => {
     const scope = await runPromise(Scope.make());
@@ -788,10 +790,15 @@ const make = Effect.gen(function* () {
   const createTab = async (snapshot: PreviewSessionSnapshot): Promise<ServerTab> => {
     const adopted = adoptedPages.get(tabKey(snapshot.threadId, snapshot.tabId));
     adoptedPages.delete(tabKey(snapshot.threadId, snapshot.tabId));
-    const desktop =
-      adopted === undefined && (await desktopRenders(snapshot))
-        ? await connectDesktop(snapshot)
-        : null;
+    const attach = adopted === undefined ? await awaitDesktop(snapshot) : "declined";
+    // A headless page would lack the desktop profile's sign-ins while the desktop shows its own page.
+    // An execution error carries this reason to the agent, where a timeout error would drop it.
+    if (attach === "timedOut")
+      throw new ServerBrowserPage.ServerBrowserOperationError(
+        "PreviewAutomationExecutionError",
+        `The desktop app did not show this tab within ${DESKTOP_ATTACH_TIMEOUT}. It did not fall back to the server's headless browser, which lacks the desktop profile's sign-ins. Call preview_open again.`,
+      );
+    const desktop = attach === "attached" ? await connectDesktop(snapshot) : null;
     // Otherwise a desktop that attaches late shows its own page, and the agent drives another.
     if (!desktop && desktopChannel.available) {
       await runPromise(
@@ -1542,6 +1549,7 @@ const make = Effect.gen(function* () {
         url,
         completedAt,
       })),
+      ...(tab.desktop ? {} : { headless: true as const, headlessNote: PREVIEW_HEADLESS_NOTE }),
     };
     if (status.url === null || tab.dialog) return status;
     return { ...status, title: (await tab.page.title().catch(() => "")) || null };
@@ -1865,6 +1873,7 @@ const make = Effect.gen(function* () {
   const runOperation = async (
     request: PreviewAutomationRequest,
     deadlineMs: number,
+    ran: { headless?: true },
   ): Promise<unknown> => {
     const input = request.input;
     switch (request.operation) {
@@ -2016,6 +2025,7 @@ const make = Effect.gen(function* () {
       }
     }
     const tab = await requireTab(request);
+    if (!tab.desktop) ran.headless = true;
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
       if (tab.control.agentId === null)
@@ -2169,16 +2179,17 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
-    Effect.tryPromise({
+  const handleRequest = (connectionId: string, request: PreviewAutomationRequest) => {
+    const ran: { headless?: true } = {};
+    return Effect.tryPromise({
       try: () =>
-        runOperation(request, performance.now() + request.timeoutMs).finally(() =>
+        runOperation(request, performance.now() + request.timeoutMs, ran).finally(() =>
           markUsed(request),
         ),
       catch: ServerBrowserPage.toOperationError,
     }).pipe(
       Effect.match({
-        onSuccess: (result) => ({ ok: true as const, result }),
+        onSuccess: (result) => ({ ok: true as const, result, ...ran }),
         onFailure: (error) => ({
           ok: false as const,
           error: {
@@ -2198,6 +2209,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.ignore,
     );
+  };
 
   const mirrorManagerEvent = (event: PreviewEvent) =>
     Effect.promise(async () => {

@@ -143,7 +143,58 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
     return painting;
   });
 
+const awaiting = (
+  host: DesktopBrowserHost.DesktopBrowserHost["Service"],
+  tabKey: DesktopBrowserHost.DesktopBrowserTabKey,
+  active: boolean,
+) => host.handleCommandLine(encodeJson({ type: "awaiting", ...tabKey, active }));
+
 describe("DesktopBrowserHost", () => {
+  it.effect("keeps the main window rendering while the server waits for a tab to show", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      const other = { threadId: "thread-1", tabId: "tab-2" };
+      yield* awaiting(host, key, true);
+      host.setMainWindow(window.tab.webContents);
+      expect(window.backgroundThrottling).toEqual([false]);
+
+      yield* awaiting(host, other, true);
+      host.attach(key, makeDebuggee().tab);
+      expect(window.backgroundThrottling).toEqual([false]);
+
+      yield* awaiting(host, other, false);
+      expect(window.backgroundThrottling).toEqual([false, true]);
+    }),
+  );
+
+  it.effect("tells the server no window can show a tab it waits for", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      const other = { threadId: "thread-1", tabId: "tab-2" };
+      const events = yield* Queue.unbounded<DesktopBrowserEvent>();
+      yield* host.events.pipe(
+        Stream.runForEach((line) =>
+          Queue.offer(events, decodeEvent(new TextDecoder().decode(line))),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+      host.setMainWindow(window.tab.webContents);
+      yield* awaiting(host, key, true);
+
+      host.setMainWindow(null);
+      yield* awaiting(host, other, true);
+
+      expect(yield* Queue.takeN(events, 2)).toEqual([
+        { type: "declined", ...key },
+        { type: "declined", ...other },
+      ]);
+      expect(window.backgroundThrottling).toEqual([false, true]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;

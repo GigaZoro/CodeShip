@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  PREVIEW_HEADLESS_NOTE,
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
@@ -25,6 +26,27 @@ import { liveThreadsLayer } from "../../McpToolAccess.testkit.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { claimPreviewRecording, layerStandard } from "./handlers.ts";
 import { PreviewStandardToolkit } from "./tools.ts";
+
+const provideToolScope = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, {
+      environmentId: EnvironmentId.make("environment-1"),
+      requestNamespace: "provider-session-1",
+      thread: {
+        threadId: ThreadId.make("thread-1"),
+        providerSessionId: "provider-session-1",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      },
+      client: undefined,
+      capabilities: new Set(["preview"] as const),
+      issuedAt: 1,
+    }),
+    Effect.provide(
+      Layer.mergeAll(PreviewAutomationBroker.layer, liveThreadsLayer).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  );
 
 it.effect("preview_open navigates the opened tab to a dev server in one tool call", () =>
   Effect.scoped(
@@ -81,25 +103,52 @@ it.effect("preview_open navigates the opened tab to a dev server in one tool cal
       ]);
       expect(requests[1]?.tabId).toBe(tabId);
       expect(requests[1]?.tabIdExplicit).toBe(true);
-    }).pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, {
-        environmentId: EnvironmentId.make("environment-1"),
-        requestNamespace: "provider-session-1",
-        thread: {
-          threadId: ThreadId.make("thread-1"),
-          providerSessionId: "provider-session-1",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-        },
-        client: undefined,
-        capabilities: new Set(["preview"] as const),
-        issuedAt: 1,
-      }),
-      Effect.provide(
-        Layer.mergeAll(PreviewAutomationBroker.layer, liveThreadsLayer).pipe(
-          Layer.provide(NodeServices.layer),
-        ),
-      ),
-    ),
+    }).pipe(provideToolScope),
+  ),
+);
+
+it.effect("preview_evaluate says when it ran in the server's headless browser", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const connected = yield* Deferred.make<void>();
+      const headlessTab = PreviewTabId.make("headless-tab");
+      const events = yield* broker.connect({
+        clientId: "client-1",
+        environmentId: scope.environmentId,
+      });
+      yield* Stream.runForEach(events, (event) => {
+        if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        const { operation, requestId, tabId } = event.request;
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: event.connectionId,
+          requestId,
+          ok: true,
+          result:
+            operation === "evaluate"
+              ? 42
+              : { available: true, visible: false, tabId, url: null, title: null, loading: false },
+          ...(operation === "evaluate" && tabId === headlessTab ? { headless: true } : {}),
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(connected);
+      const toolkit = yield* PreviewStandardToolkit.pipe(
+        Effect.provide(McpToolAccess.HandlersLayer.layer(layerStandard)),
+      );
+      const evaluate = (tabId: string) =>
+        toolkit
+          .handle("preview_evaluate", { tabId: PreviewTabId.make(tabId), expression: "6 * 7" })
+          .pipe(Stream.unwrap, Stream.runCollect);
+
+      expect((yield* evaluate(headlessTab)).at(-1)?.result).toEqual({
+        value: 42,
+        headless: true,
+        headlessNote: PREVIEW_HEADLESS_NOTE,
+      });
+      expect((yield* evaluate("desktop-tab")).at(-1)?.result).toEqual({ value: 42 });
+    }).pipe(provideToolScope),
   ),
 );
 

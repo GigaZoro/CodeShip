@@ -4,6 +4,7 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  PREVIEW_HEADLESS_NOTE,
   PREVIEW_RECORDING_STOP_TIMEOUT_MS,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
@@ -55,16 +56,20 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   timeoutMs?: number,
   tabId?: PreviewTabId,
 ): Effect.fn.Return<
-  { result: A; toolIcon?: ToolActivityIcon },
+  { result: A; headless: boolean; toolIcon?: ToolActivityIcon },
   import("@t3tools/contracts").PreviewAutomationError,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
   const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   let targetTabId = tabId;
+  let headless = false;
   const result = yield* broker.invoke<A>({
     onTargetTab: (resolvedTabId) => {
       targetTabId = resolvedTabId;
+    },
+    onHeadless: () => {
+      headless = true;
     },
     scope,
     operation,
@@ -72,7 +77,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(tabId === undefined ? {} : { tabId }),
   });
-  if (["status", "open", "navigate", "snapshot"].includes(operation)) return { result };
+  if (["status", "open", "navigate", "snapshot"].includes(operation)) return { result, headless };
   const statusTabId =
     (operation !== "evaluate" && typeof result === "object" && result !== null
       ? (result as { tabId?: PreviewTabId }).tabId
@@ -89,6 +94,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
     .pipe(Effect.orElseSucceed(() => null));
   return {
     result,
+    headless,
     ...(page?.url && /^https?:\/\//i.test(page.url) && page.url.length <= 4096
       ? { toolIcon: { _tag: "website" as const, pageUrl: page.url } }
       : {}),
@@ -240,8 +246,9 @@ const handlers = {
   ),
   preview_evaluate: McpToolAccess.actsAsCaller(({ tabId, ...input }) =>
     invoke<unknown>("evaluate", input, undefined, tabId).pipe(
-      Effect.map(({ result, toolIcon }) => ({
+      Effect.map(({ result, headless, toolIcon }) => ({
         value: result ?? null,
+        ...(headless ? { headless: true as const, headlessNote: PREVIEW_HEADLESS_NOTE } : {}),
         ...(toolIcon ? { toolIcon } : {}),
       })),
     ),

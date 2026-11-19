@@ -1,3 +1,9 @@
+## 2026-11-19 — Agent browser tabs no longer run without their profile's sign-ins unnoticed
+
+- When the desktop app was slow to show an agent's browser tab, the tab ran in the host's headless browser for good, without the sign-ins of the desktop app's browser profile, and nothing told the agent. Now the server waits up to a minute while the desktop app keeps its window rendering, and if the tab still does not show, opening it fails so the agent can try again.
+- A tab that runs headless because no desktop window is open says so: `preview_open`, `preview_status` and `preview_evaluate` results carry `headless: true` and a short note, as `t3_preview_list` already did.
+- One tab still loading no longer holds up the setup of every other tab in the desktop app.
+
 ## 2026-11-19 — Windows Git driver checks
 
 - The Git driver tests use local repositories to check SSH errors, nested paths and submodule checkouts on Windows. Related tests run in separate files within the existing time budget.

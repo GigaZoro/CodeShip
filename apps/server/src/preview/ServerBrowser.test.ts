@@ -12,10 +12,12 @@ import {
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
+  PREVIEW_HEADLESS_NOTE,
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -351,6 +353,22 @@ const desktopRenders = (tabId: string) => {
   }
   return desktopTabs.has(tabId);
 };
+/** How the desktop answers for a tab it does not draw yet: an outcome, or an attach after a delay. */
+let desktopAttach: DesktopChannel.DesktopAttachOutcome | { readonly after: Duration.Input } =
+  "declined";
+let desktopAttachWaits = Promise.withResolvers<void>();
+const awaitDesktopAttach = (tabId: string, timeout: Duration.Input) => {
+  if (desktopRenders(tabId)) return Effect.succeed("attached" as const);
+  const answer = desktopAttach;
+  if (typeof answer === "string") return Effect.succeed(answer);
+  return Effect.sync(() => desktopAttachWaits.resolve()).pipe(
+    Effect.andThen(Effect.sleep(answer.after)),
+    Effect.andThen(Effect.sync(() => desktopTabs.add(tabId))),
+    Effect.as("attached" as const),
+    Effect.timeoutOption(timeout),
+    Effect.map(Option.getOrElse(() => "timedOut" as const)),
+  );
+};
 const releasedDesktopTabs: Array<string> = [];
 const desktopTurns = new NodeEvents.EventEmitter();
 const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
@@ -384,7 +402,7 @@ const dependencies = Layer.mergeAll(
   }),
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
     available: true,
-    awaitAttached: (key) => Effect.sync(() => desktopRenders(key.tabId)),
+    awaitAttached: (key, timeout) => awaitDesktopAttach(key.tabId, timeout),
     detached: Stream.callback<{ threadId: string; tabId: string }>((queue) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -489,6 +507,8 @@ beforeEach(() => {
   focusedFrame = null;
   desktopTabs.clear();
   desktopRendersNext = false;
+  desktopAttach = "declined";
+  desktopAttachWaits = Promise.withResolvers<void>();
   desktopPageUrl = "about:blank";
   desktopSizeAnswer = null;
   desktopDetachReady = Promise.withResolvers<void>();
@@ -600,9 +620,87 @@ it.effect("a tab the desktop does not draw is marked headless, so the desktop st
       const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
       const headlessOf = (id: string | null) =>
         sessions.find((session) => session.tabId === id)?.headless;
+      const statusOf = (id: string) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId: PreviewTabId.make(id),
+          operation: "status",
+          input: {},
+        });
+      const ranHeadless = (id: string) => {
+        let headless = false;
+        return broker
+          .invoke({
+            scope,
+            tabId: PreviewTabId.make(id),
+            operation: "evaluate",
+            input: { expression: "1" },
+            onHeadless: () => {
+              headless = true;
+            },
+          })
+          .pipe(Effect.map(() => headless));
+      };
 
       expect(headlessOf(tabId)).toBe(true);
       expect(headlessOf(desktopTab.tabId)).toBeUndefined();
+      expect(yield* statusOf(tabId)).toMatchObject({
+        headless: true,
+        headlessNote: PREVIEW_HEADLESS_NOTE,
+      });
+      expect(yield* statusOf(desktopTab.tabId!)).not.toHaveProperty("headless");
+      expect(yield* ranHeadless(tabId)).toBe(true);
+      expect(yield* ranHeadless(desktopTab.tabId!)).toBe(false);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a desktop that shows a tab after a slow start still renders it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      desktopAttach = { after: "15 seconds" };
+      const opening = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => desktopAttachWaits.promise);
+      yield* TestClock.adjust("15 seconds");
+      const opened = yield* Fiber.join(opening);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+
+      expect(sessions.find((session) => session.tabId === opened.tabId)?.headless).toBeUndefined();
+      expect(opened).not.toHaveProperty("headless");
+      expect(desktopConnections.map(({ endpoint }) => endpoint)).toEqual([
+        `ws://desktop/${opened.tabId}`,
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a desktop that never shows a tab fails the open instead of running it headless", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      desktopAttach = "timedOut";
+      const error = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        })
+        .pipe(Effect.flip);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+
+      expect(error).toMatchObject({ _tag: "PreviewAutomationExecutionError" });
+      expect(error.message).toContain("did not show this tab");
+      expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
+      expect(contexts).toHaveLength(1);
     }),
   ).pipe(Effect.provide(layer)),
 );

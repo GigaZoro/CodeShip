@@ -104,6 +104,8 @@ export class DesktopBrowserHost extends Context.Service<
     }>;
     /** Keeps a guest drawing frames while hidden, until the returned release runs. */
     readonly keepRendering: (webContents: Electron.WebContents) => () => void;
+    /** The window whose renderer shows server tabs; null once it closed. */
+    readonly setMainWindow: (webContents: Electron.WebContents | null) => void;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -125,6 +127,12 @@ export const make = Effect.gen(function* () {
   const agentTurns = new Set<string>();
   /** `keepRendering` holds, by webContents id. */
   const renderingHolds = new Map<number, number>();
+  /** Undefined until the first window opens: tabs awaited before then wait for it. */
+  let mainWindow: Electron.WebContents | null | undefined;
+  /** Tabs the server waits on to attach, by key. */
+  const awaited = new Map<string, DesktopBrowserTabKey>();
+  let awaitedHold: { readonly window: Electron.WebContents; readonly release: () => void } | null =
+    null;
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
 
   const nextScreenshot = (tab: AttachedTab) => {
@@ -197,6 +205,26 @@ export const make = Effect.gen(function* () {
       if (remaining === 0) renderingHolds.delete(id);
       else renderingHolds.set(id, remaining);
     };
+  };
+
+  /**
+   * The main window's renderer mounts the webview that attaches an awaited tab; hidden and
+   * throttled, its timers can stall for minutes, long past the server's wait.
+   */
+  const syncAwaitedRendering = () => {
+    const target = awaited.size > 0 ? (mainWindow ?? null) : null;
+    if ((awaitedHold?.window ?? null) === target) return;
+    try {
+      if (awaitedHold !== null) {
+        awaitedHold.release();
+        awaitedHold = null;
+      }
+      if (target !== null) awaitedHold = { window: target, release: keepRendering(target) };
+    } catch (cause) {
+      runFork(
+        Effect.logWarning("Preview main window background throttling did not change.", { cause }),
+      );
+    }
   };
 
   const syncRendering = (tab: AttachedTab) => {
@@ -503,6 +531,25 @@ export const make = Effect.gen(function* () {
     debuggee.debugger.on("message", tab.onMessage);
     debuggee.webContents.on("did-navigate", tab.onNewDocument);
     emit({ type: "attached", ...key });
+    if (awaited.delete(id)) syncAwaitedRendering();
+  };
+
+  const awaitTab = (key: DesktopBrowserTabKey, active: boolean) => {
+    const id = keyOf(key);
+    if (!active) awaited.delete(id);
+    // The server then runs the tab headless rather than wait out its timeout.
+    else if (mainWindow === null) emit({ type: "declined", ...key });
+    else if (!tabs.has(id)) awaited.set(id, key);
+    syncAwaitedRendering();
+  };
+
+  const setMainWindow = (webContents: Electron.WebContents | null) => {
+    mainWindow = webContents;
+    if (webContents === null) {
+      for (const key of awaited.values()) emit({ type: "declined", ...key });
+      awaited.clear();
+    }
+    syncAwaitedRendering();
   };
 
   const handleCommandLine = (line: string) =>
@@ -512,6 +559,11 @@ export const make = Effect.gen(function* () {
       if (command.value.type === "turn") {
         if (command.value.active) agentTurns.add(command.value.threadId);
         else endAgentTurn(command.value.threadId);
+        return;
+      }
+      if (command.value.type === "awaiting") {
+        const { threadId, tabId, active } = command.value;
+        awaitTab({ threadId, tabId }, active);
         return;
       }
       const tab = tabs.get(keyOf(command.value));
@@ -535,8 +587,10 @@ export const make = Effect.gen(function* () {
   };
 
   const announceAll = Effect.suspend(() => {
-    // A new backend: the old one's turns ended without telling us.
+    // A new backend: the old one's turns and waits ended without telling us.
     agentTurns.clear();
+    awaited.clear();
+    syncAwaitedRendering();
     return Effect.forEach(
       [...tabs.values()],
       (tab) => {
@@ -564,6 +618,7 @@ export const make = Effect.gen(function* () {
     placeDownload,
     humanStartedDownload,
     keepRendering,
+    setMainWindow,
   });
 });
 

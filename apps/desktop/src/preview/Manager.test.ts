@@ -1467,7 +1467,7 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling },
+          webContents: { id: 901, isDestroyed: () => false, setBackgroundThrottling },
         } as never);
 
         yield* manager.startRecording("tab_capture_throttling_1");
@@ -1504,7 +1504,7 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling },
+          webContents: { id: 902, isDestroyed: () => false, setBackgroundThrottling },
         } as never);
 
         setBackgroundThrottling.mockImplementationOnce(() => {
@@ -1554,7 +1554,7 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: (event: string, listener: () => void) => windowEvents.set(event, listener),
-          webContents: { setBackgroundThrottling: vi.fn() },
+          webContents: { id: 903, isDestroyed: () => false, setBackgroundThrottling: vi.fn() },
         } as never);
         yield* manager.startRecording("tab_shutdown");
         const pip = makeTestPictureInPictureWindow();
@@ -1580,7 +1580,7 @@ describe("PreviewManager", () => {
           .setMainWindow({
             isDestroyed: () => destroyed,
             once: vi.fn(),
-            webContents: { setBackgroundThrottling: vi.fn() },
+            webContents: { id: 904, isDestroyed: () => false, setBackgroundThrottling: vi.fn() },
           } as never)
           .pipe(Effect.forkChild({ startImmediately: true }));
         try {
@@ -1628,12 +1628,20 @@ describe("PreviewManager", () => {
           once: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") closeFirstWindow = listener;
           }),
-          webContents: { setBackgroundThrottling: firstWindowThrottling },
+          webContents: {
+            id: 905,
+            isDestroyed: () => false,
+            setBackgroundThrottling: firstWindowThrottling,
+          },
         } as never);
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling: replacementWindowThrottling },
+          webContents: {
+            id: 906,
+            isDestroyed: () => false,
+            setBackgroundThrottling: replacementWindowThrottling,
+          },
         } as never);
 
         closeFirstWindow?.();
@@ -1674,7 +1682,11 @@ describe("PreviewManager", () => {
           once: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") closeMainWindow = listener;
           }),
-          webContents: { setBackgroundThrottling: firstWindowThrottling },
+          webContents: {
+            id: 907,
+            isDestroyed: () => false,
+            setBackgroundThrottling: firstWindowThrottling,
+          },
         } as never);
         yield* manager.startRecording("tab_window_close_recording");
         expect(firstWindowThrottling.mock.calls).toEqual([[false]]);
@@ -1698,7 +1710,11 @@ describe("PreviewManager", () => {
         yield* manager.setMainWindow({
           isDestroyed: () => false,
           once: vi.fn(),
-          webContents: { setBackgroundThrottling: replacementWindowThrottling },
+          webContents: {
+            id: 908,
+            isDestroyed: () => false,
+            setBackgroundThrottling: replacementWindowThrottling,
+          },
         } as never);
         expect(replacementWindowThrottling).not.toHaveBeenCalled();
       }),
@@ -1735,7 +1751,7 @@ describe("PreviewManager", () => {
           once: vi.fn((event: string, listener: () => void) => {
             if (event === "closed") closeMainWindow = listener;
           }),
-          webContents: { setBackgroundThrottling: vi.fn() },
+          webContents: { id: 909, isDestroyed: () => false, setBackgroundThrottling: vi.fn() },
         } as never);
 
         const start = yield* manager

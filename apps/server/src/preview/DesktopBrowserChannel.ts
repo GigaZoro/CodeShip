@@ -35,12 +35,18 @@ export interface DesktopTabKey {
 
 const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}`;
 
+/** `declined`: no desktop window can show the tab. `timedOut`: a window can, but did not in time. */
+export type DesktopAttachOutcome = "attached" | "declined" | "timedOut";
+
 export class DesktopBrowserChannel extends Context.Service<
   DesktopBrowserChannel,
   {
     readonly available: boolean;
-    /** Subscribe before checking so concurrent attaches cannot be missed. */
-    readonly awaitAttached: (key: DesktopTabKey, timeout: Duration.Input) => Effect.Effect<boolean>;
+    /** While it waits, the desktop keeps the window that mounts the tab rendering. */
+    readonly awaitAttached: (
+      key: DesktopTabKey,
+      timeout: Duration.Input,
+    ) => Effect.Effect<DesktopAttachOutcome>;
     readonly detached: Stream.Stream<DesktopTabKey>;
     readonly attached: Stream.Stream<DesktopTabKey>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
@@ -58,7 +64,10 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const inputFd = config.desktopBrowserFd;
   const controlFd = config.desktopBrowserControlFd;
-  const changes = yield* PubSub.unbounded<{ key: DesktopTabKey; attached: boolean }>();
+  const changes = yield* PubSub.unbounded<{
+    key: DesktopTabKey;
+    change: "attached" | "detached" | "declined";
+  }>();
   const attachedTabs = new Set<string>();
   const inbound = new Map<string, Queue.Queue<string>>();
   const writeLock = yield* Semaphore.make(1);
@@ -67,7 +76,7 @@ const make = Effect.gen(function* () {
     return DesktopBrowserChannel.of({
       available: false,
       awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function () {
-        return Effect.succeed(false);
+        return Effect.succeed("declined" as const);
       }),
       detached: Stream.empty,
       attached: Stream.empty,
@@ -120,14 +129,16 @@ const make = Effect.gen(function* () {
         }
         case "attached":
           attachedTabs.add(id);
-          return PubSub.publish(changes, { key, attached: true });
+          return PubSub.publish(changes, { key, change: event.type });
         case "detached": {
           attachedTabs.delete(id);
           const queue = inbound.get(id);
           return (queue ? Queue.shutdown(queue) : Effect.void).pipe(
-            Effect.andThen(PubSub.publish(changes, { key, attached: false })),
+            Effect.andThen(PubSub.publish(changes, { key, change: event.type })),
           );
         }
+        case "declined":
+          return PubSub.publish(changes, { key, change: event.type });
       }
     }),
     Effect.catchCause((cause) => Effect.logWarning("desktop browser channel stopped", { cause })),
@@ -198,24 +209,33 @@ const make = Effect.gen(function* () {
     awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function (key, timeout) {
       return Effect.scoped(
         Effect.gen(function* () {
+          // Subscribe before checking so a concurrent attach cannot be missed.
           const subscription = yield* PubSub.subscribe(changes);
-          if (attachedTabs.has(keyOf(key))) return true;
+          if (attachedTabs.has(keyOf(key))) return "attached" as const;
+          yield* command({ type: "awaiting", ...key, active: true });
           return yield* Stream.fromSubscription(subscription).pipe(
-            Stream.filter((change) => change.attached && keyOf(change.key) === keyOf(key)),
+            Stream.filter(
+              (change) => change.change !== "detached" && keyOf(change.key) === keyOf(key),
+            ),
             Stream.runHead,
-            Effect.map(Option.isSome),
             Effect.timeoutOption(timeout),
-            Effect.map((result) => Option.getOrElse(result, () => false)),
+            Effect.map((found) =>
+              Option.match(Option.flatten(found), {
+                onNone: () => "timedOut" as const,
+                onSome: ({ change }) => (change === "declined" ? "declined" : "attached"),
+              }),
+            ),
+            Effect.ensuring(command({ type: "awaiting", ...key, active: false })),
           );
         }),
       );
     }),
     detached: Stream.fromPubSub(changes).pipe(
-      Stream.filter((change) => !change.attached),
+      Stream.filter((change) => change.change === "detached"),
       Stream.map((change) => change.key),
     ),
     attached: Stream.fromPubSub(changes).pipe(
-      Stream.filter((change) => change.attached),
+      Stream.filter((change) => change.change === "attached"),
       Stream.map((change) => change.key),
     ),
     isAttached: Effect.fn("DesktopBrowserChannel.isAttached")(function (key) {

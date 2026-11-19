@@ -253,6 +253,13 @@ Agent tabs have separate storage and share a Chromium process. Take control befo
 typing into an agent's tab, then release control when you want the agent to
 continue. Read-only connections can watch without changing the page.
 
+On a host running the desktop app, an agent's tab opens in the desktop app,
+with the sign-ins of its browser profile. When no desktop window is open to
+show it, the tab runs in the host's headless browser, which does not have those
+sign-ins, and the agent's results say `headless`. If the desktop app is open but
+does not show the tab within a minute, opening the tab fails instead of running
+it without those sign-ins.
+
 While you have control, the tab works with your device: text the page copies or
 cuts goes to your clipboard, a file picker on the page opens your device's
 picker, and a finished download is offered for you to save. Popups such as
