@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the walk runs in a real PowerShell.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -202,6 +203,19 @@ describe("endingWindowsTrees stops a Windows tree", () => {
 
 // A process that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("a Windows process tree", () => {
+  /** Runs `lines` after the tree's functions in Windows PowerShell; returns what they printed. */
+  const runPowerShell = (...lines: ReadonlyArray<string>) =>
+    NodeChildProcess.execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        ["$ErrorActionPreference = 'Stop'", WINDOWS_PROCESS_TREE_FUNCTIONS, ...lines].join("\n"),
+      ],
+      { encoding: "utf8" },
+    );
+
   // Times are seconds from $t. The tree's root is 10, and nothing in it started before -2.
   it.each([
     [
@@ -223,19 +237,49 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       ["20"],
     ],
   ])("holds %s", (_, rows, expected) => {
-    const script = [
-      WINDOWS_PROCESS_TREE_FUNCTIONS,
+    const tree = runPowerShell(
       "$t = [DateTime]::UtcNow",
       "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
       `$all = @(${rows})`,
       "(Get-T3ProcessTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t) (Ms $t)).Keys | Sort-Object",
-    ].join("\n");
-    const tree = NodeChildProcess.execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8" },
     );
     assert.deepEqual(tree.trim().split(/\r?\n/), expected);
+  });
+
+  // The walk read the target's start time `skew` ms from when it really started; a skew over a
+  // second means another process held the pid when the walk read it.
+  it.each<[string, number, "stopped" | "spared"]>([
+    ["ends the target when it started when the walk read", 0, "stopped"],
+    ["ends the target within the second of skew the walk allows", 500, "stopped"],
+    ["leaves a process that took the pid over a second after the walk's", -1500, "spared"],
+  ])("%s", async (_, skew, expected) => {
+    // Exits 7 once its input ends, so any other exit is the stop's.
+    const target = NodeChildProcess.spawn(
+      process.execPath,
+      ["-e", "process.stdin.on('end', () => process.exit(7)).resume()"],
+      { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
+    );
+    const exited = NodeEvents.once(target, "exit");
+    try {
+      runPowerShell(
+        `$made = Ms (Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}').CreationDate`,
+        `Stop-T3Process ${target.pid} ($made + ${skew})`,
+      );
+    } finally {
+      target.stdin.destroy();
+    }
+    const [code] = await exited;
+    assert.equal(code === 7 ? "spared" : "stopped", expected);
+  });
+
+  it("reports no error for a target that ended before its stop", async () => {
+    const target = NodeChildProcess.spawn(process.execPath, ["-e", ""], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    await NodeEvents.once(target, "exit");
+
+    runPowerShell(`Stop-T3Process ${target.pid} 0`);
   });
 
   const spawnEndingTree = (command: ChildProcess.Command, ending?: WindowsTreeEnding) =>
