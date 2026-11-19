@@ -521,24 +521,43 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     );
   });
 
-  // Another process can hold an ended root open, so its pid stays the root's; the stop, told the
-  // root ended, still ends what the root started. The message says if the snapshot listed the root.
-  it("ends what an ended root started while another process still holds it open", () => {
-    const spawnsChild =
-      "require(''child_process'').spawn(process.execPath,[''-e'',''setTimeout(Object,600000)''],{stdio:''ignore''}).unref()";
-    const report = runPowerShell(
-      `$root = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', '${spawnsChild}' -WindowStyle Hidden -PassThru`,
-      "$child = $null",
-      "try {",
-      "  $null = $root.get_Handle(); if (-not $root.WaitForExit(30000)) { throw 'The root still runs' }",
-      "  $start = Ms $root.StartTime",
-      "  $made = Get-CimInstance Win32_Process -Filter ('ParentProcessId = {0}' -f $root.Id) | Where-Object { (Ms $_.CreationDate) -ge $start } | Select-Object -First 1",
-      "  $child = Get-Process -Id $made.ProcessId; $null = $child.get_Handle()",
-      "  $listed = [bool](Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $root.Id))",
-      "  Stop-T3ProcessTree $root.Id $start $start $start -ended (Ms ([DateTime]::Now))",
-      "  '{0} {1}' -f $listed, $child.WaitForExit(5000)",
-      "} finally { if ($child -and -not $child.HasExited) { $child.Kill() }; $root.Dispose() }",
+  // A process ended while others hold it open keeps its pid: here Node, whose event loop waits on
+  // PowerShell, and PowerShell, which ends it. The stop, told the root ended, still ends what the
+  // root started. The message says if the snapshot listed the ended root.
+  it("ends what an ended root started while another process still holds it open", async () => {
+    // Prints the pid of a child it starts, and both wait ten minutes.
+    const root = NodeChildProcess.spawn(
+      process.execPath,
+      [
+        "-e",
+        "console.log(require('child_process').spawn(process.execPath, ['-e', 'setTimeout(Object, 600000)'], { stdio: 'ignore' }).pid); setTimeout(Object, 600000)",
+      ],
+      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
     );
+    let report: string;
+    try {
+      const child = await new Promise<string>((resolve, reject) => {
+        let printed = "";
+        root.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+          printed += chunk;
+          if (printed.includes("\n")) resolve(printed.trim());
+        });
+        root.once("error", reject);
+        root.once("exit", () => reject(new Error(`The root exited first, printing ${printed}`)));
+      });
+      report = runPowerShell(
+        `$root = Get-Process -Id ${root.pid}; $child = Get-Process -Id ${child}`,
+        "try {",
+        "  $null = $root.get_Handle(); $null = $child.get_Handle(); $start = Ms $root.StartTime",
+        "  $root.Kill(); $null = $root.WaitForExit(5000)",
+        "  $listed = [bool](Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $root.Id))",
+        "  Stop-T3ProcessTree $root.Id $start $start $start -ended (Ms ([DateTime]::Now))",
+        "  '{0} {1}' -f $listed, $child.WaitForExit(5000)",
+        "} finally { if (-not $child.HasExited) { $child.Kill() } }",
+      );
+    } finally {
+      root.kill();
+    }
     const [listed, childEnded] = report.trim().split(" ");
     assert.equal(childEnded, "True", `the snapshot listed the ended root: ${listed}`);
   });
