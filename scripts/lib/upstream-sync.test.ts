@@ -195,6 +195,38 @@ describe("upstream sync", () => {
     expect(land(followUp, later(610))).toEqual({ status: "landed", commit: repo.head() });
   });
 
+  it("merges the main a held branch conflicted with when it resumes, leaving only the real conflicts", () => {
+    const repo = fixture();
+    begin(repo.sync, START);
+    commitFiles(
+      repo.sync,
+      { "docs/release-notes.md": "## 2026-11-16 — Sync\n\n- a\n\n## old\n" },
+      "notes",
+    );
+    repo.advanceMain({
+      "upstream.txt": "ours\n",
+      "docs/release-notes.md": "## 2026-11-18 — Main\n\n- b\n\n## old\n",
+    });
+    expect(land(repo.sync, later(60))).toMatchObject({ status: "hold", reason: "conflicts" });
+    const main = repo.originMain();
+    const followUp = NodePath.join(NodePath.dirname(repo.sync), "follow-up");
+    git(repo.sync, "worktree", "add", "-q", followUp, "-b", "follow-up", "sync/upstream-x");
+    expect(begin(followUp, later(600))).toEqual({
+      status: "resumed",
+      base: main,
+      upstream: git(followUp, "rev-parse", "upstream/main"),
+      conflicts: ["upstream.txt"],
+    });
+    expect(NodeFS.readFileSync(NodePath.join(followUp, "docs/release-notes.md"), "utf8")).toBe(
+      "## 2026-11-18 — Sync\n\n- a\n\n## 2026-11-18 — Main\n\n- b\n\n## old\n",
+    );
+    commitFiles(followUp, { "upstream.txt": "resolved\n" }, "resolve");
+    expect(status(followUp, later(600)).mergesLeft).toBe(2);
+    const resolved = git(followUp, "rev-parse", "HEAD");
+    expect(land(followUp, later(610))).toEqual({ status: "landed", commit: resolved });
+    expect(repo.originMain()).toBe(resolved);
+  });
+
   it("holds once three hours have passed, even when it could land", () => {
     const repo = fixture();
     const frozen = repo.originMain();

@@ -97,7 +97,7 @@ function allConflicts(state: SyncState): ReadonlyArray<string> {
 
 /**
  * Merges upstream into the sync branch made from origin/main, freezing that commit as the base, or
- * starts a new run's bounds on a branch that has it merged already.
+ * starts a new run's bounds on a branch that has it merged already, merging the main it lacks.
  */
 export function begin(worktree: string, now: Date): SyncResult {
   if (!git(worktree, "remote", "get-url", "upstream").ok) {
@@ -105,6 +105,7 @@ export function begin(worktree: string, now: Date): SyncResult {
     gitOrThrow(worktree, "remote", "set-url", "--push", "upstream", "no-push");
   }
   if (NodeFS.existsSync(statePath(worktree))) throw new Error("This sync has begun already.");
+  gitOrThrow(worktree, "fetch", "-q", "origin");
   gitOrThrow(worktree, "fetch", "-q", "upstream");
   // HEAD itself on a new branch; on a held one, the last main merged into it.
   const base = gitOrThrow(worktree, "merge-base", "HEAD", "origin/main");
@@ -115,8 +116,21 @@ export function begin(worktree: string, now: Date): SyncResult {
   // A held branch carries upstream that main lacks; it lands what it merged, even if upstream moved on.
   const synced = gitOrThrow(worktree, "merge-base", "HEAD", upstream);
   if (!git(worktree, "merge-base", "--is-ancestor", synced, base).ok) {
-    writeState(worktree, { startedAt: now.toISOString(), base, upstream: synced, attempts: [] });
-    return { status: "resumed", base, upstream: synced, conflicts: [] };
+    const resumed: SyncState = {
+      startedAt: now.toISOString(),
+      base,
+      upstream: synced,
+      attempts: [],
+    };
+    const main = gitOrThrow(worktree, "rev-parse", "origin/main");
+    if (main === base) {
+      writeState(worktree, resumed);
+      return { status: "resumed", base, upstream: synced, conflicts: [] };
+    }
+    // Land held on this merge or main moved on; merging it here keeps chats from merging it by hand.
+    const { next, unresolved } = mergeMain(worktree, resumed, main, now);
+    writeState(worktree, { ...next, base: main });
+    return { status: "resumed", base: main, upstream: synced, conflicts: unresolved };
   }
   const short = gitOrThrow(worktree, "rev-parse", "--short", upstream);
   const merged = git(
@@ -177,6 +191,34 @@ function resolveReleaseNotes(worktree: string): boolean {
 }
 
 /**
+ * Merges main into the branch as one of the run's merges. docs/release-notes.md resolves itself;
+ * any other conflicted file is returned with the merge left in progress.
+ */
+function mergeMain(worktree: string, state: SyncState, main: string, now: Date) {
+  const merged = git(
+    worktree,
+    "merge",
+    "--no-ff",
+    main,
+    "-m",
+    "chore: merge main into upstream sync",
+  );
+  const conflicts = merged.ok ? [] : conflictedFiles(worktree);
+  if (!merged.ok && conflicts.length === 0) throw new Error(`git merge failed: ${merged.stderr}`);
+  const unresolved = conflicts.filter(
+    (file) => file !== RELEASE_NOTES || !resolveReleaseNotes(worktree),
+  );
+  if (conflicts.length > 0 && unresolved.length === 0) {
+    gitOrThrow(worktree, "commit", "-q", "--no-edit");
+  }
+  const next: SyncState = {
+    ...state,
+    attempts: [...state.attempts, { kind: "main", commit: main, at: now.toISOString(), conflicts }],
+  };
+  return { next, unresolved };
+}
+
+/**
  * Pushes the branch to main when that is a fast-forward of the commit it was verified against.
  * When main moved, merges it in once and asks for the checks again, holding instead when the
  * merge conflicts or the run is out of merges or time.
@@ -207,29 +249,12 @@ export function land(worktree: string, now: Date): SyncResult {
     if (main === state.base) return { status: "push-failed", detail: pushed.stderr };
   }
   if (state.attempts.length >= MAX_MERGES) return hold("merge-limit");
-  const merged = git(
-    worktree,
-    "merge",
-    "--no-ff",
-    main,
-    "-m",
-    "chore: merge main into upstream sync",
-  );
-  const conflicts = merged.ok ? [] : conflictedFiles(worktree);
-  if (!merged.ok && conflicts.length === 0) throw new Error(`git merge failed: ${merged.stderr}`);
-  const next: SyncState = {
-    ...state,
-    attempts: [...state.attempts, { kind: "main", commit: main, at: now.toISOString(), conflicts }],
-  };
-  const unresolved = conflicts.filter(
-    (file) => file !== RELEASE_NOTES || !resolveReleaseNotes(worktree),
-  );
+  const { next, unresolved } = mergeMain(worktree, state, main, now);
   if (unresolved.length > 0) {
     gitOrThrow(worktree, "merge", "--abort");
     writeState(worktree, next);
     return hold("conflicts", next);
   }
-  if (conflicts.length > 0) gitOrThrow(worktree, "commit", "-q", "--no-edit");
   writeState(worktree, { ...next, base: main });
   return { status: "verify", base: main };
 }
