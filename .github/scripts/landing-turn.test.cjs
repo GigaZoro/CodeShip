@@ -157,7 +157,8 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
     release({ cwd: mover, remote: origin }, held);
     fs.rmSync(local);
 
-    const result = land({ cwd: lander, remote: origin, check: () => true });
+    // From a subdirectory too: the attribute is the notes' own, not one of a path below it.
+    const result = land({ cwd: path.join(lander, "docs"), remote: origin, check: () => true });
 
     assert.equal(result.status, "landed");
     assert.equal(

@@ -129,18 +129,21 @@ function mergeFiles(basePath, oursPath, theirsPath) {
  * a tree whose .gitattributes names the driver, so any other value, unspecified included, is a local override.
  */
 function notesMergeProblem(cwd, env = process.env) {
-  const git = (...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8", env });
+  const git = (dir, ...args) => {
+    const result = spawnSync("git", args, { cwd: dir, encoding: "utf8", env });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
-    return result.stdout;
+    // A path can end in a space, so only the line break goes.
+    return result.stdout.replace(/\n$/, "");
   };
-  const value = git("check-attr", "-z", "merge", "--", NOTES_PATH).split("\0")[2];
+  // check-attr reads the path from the directory it runs in.
+  const top = git(cwd, "rev-parse", "--show-toplevel");
+  const value = git(top, "check-attr", "-z", "merge", "--", NOTES_PATH).split("\0")[2];
   if (value === MERGE_DRIVER) return null;
-  // It outranks .gitattributes, and no `-c` option overrides it.
-  const local = path.resolve(cwd, git("rev-parse", "--git-path", "info/attributes").trim());
+  // No `-c` option overrides this file, the usual source of such a rule.
+  const local = path.resolve(top, git(top, "rev-parse", "--git-path", "info/attributes"));
   const merge = value === "unspecified" ? "no merge attribute" : `the merge attribute \`${value}\``;
-  return `release-notes: rebases and merges here merge ${NOTES_PATH} with ${merge} instead of its driver, which can break its entries. Remove the line for it from ${local}, and keep the one in .gitattributes.`;
+  return `release-notes: rebases and merges here merge ${NOTES_PATH} with ${merge} instead of its driver, which can break its entries. Keep its line in .gitattributes, and remove any line for it from ${local}, which outranks .gitattributes.`;
 }
 
 function configureMergeDriver(root) {
