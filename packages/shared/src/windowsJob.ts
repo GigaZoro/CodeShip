@@ -50,6 +50,38 @@ public static class CodeShipJobHost {
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr process, uint code);
  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadFile(IntPtr handle, byte[] bytes, uint size, out uint read, IntPtr overlapped);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool WriteFile(IntPtr handle, byte[] bytes, uint size, out uint written, IntPtr overlapped);
+ static readonly object controlWrite = new object();
+ static int ReadControl(IntPtr control) {
+  var bytes = new byte[1]; uint read;
+  if(!ReadFile(control,bytes,1,out read,IntPtr.Zero)) {
+   int error = Marshal.GetLastWin32Error();
+   if(error==109 || error==232) return -1;
+   throw new Win32Exception(error);
+  }
+  return read==0 ? -1 : bytes[0];
+ }
+ static void SendControl(IntPtr control, string line) {
+  lock(controlWrite) {
+   var bytes=Encoding.UTF8.GetBytes(line+"\n"); uint written;
+   Check(WriteFile(control,bytes,(uint)bytes.Length,out written,IntPtr.Zero));
+   if(written!=bytes.Length) throw new IOException("Incomplete ownership reply.");
+  }
+ }
+ // Synchronous reads and writes on one inherited pipe can block one another's completion.
+ static void WatchOwner(IntPtr control, IntPtr reply, bool referenced) {
+  try {
+   for(;;) {
+    int next=ReadControl(control);
+    if(next==-1) { if(referenced) Environment.Exit(125); return; }
+    if(next!='R' && next!='U') throw new IOException("Invalid ownership message.");
+    referenced=next=='R';
+    SendControl(reply, referenced ? "R" : "U");
+   }
+  } catch { Environment.Exit(125); }
+ }
  static long Created(IntPtr process) {
   long made, exited, kernel, user;
   Check(GetProcessTimes(process, out made, out exited, out kernel, out user));
@@ -86,7 +118,7 @@ public static class CodeShipJobHost {
  }
  public static int Main(string[] args) {
   IntPtr job=IntPtr.Zero;
-  IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero;
+  IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero, descriptors=IntPtr.Zero, control=IntPtr.Zero, reply=IntPtr.Zero;
   bool initialized=false;
   ProcessInfo child=new ProcessInfo();
   string record = args.Length > 2 && args[0] == "run" ? args[2] : "";
@@ -104,13 +136,40 @@ public static class CodeShipJobHost {
     if(args[0]=="stop") Stop(job); else Console.WriteLine(Count(job));
     return 0;
    }
-   if(args[0]!="run" || args.Length < 4) throw new ArgumentException("Expected run, job name, pid file and command.");
+   bool owned=args[0]=="owned";
+   if((args[0]!="run" && !owned) || args.Length < 4) throw new ArgumentException("Expected run or owned, job name, pid file or control descriptor and command.");
+   Startup startup;
+   GetStartupInfo(out startup);
+   if(owned) {
+    int fd=int.Parse(args[2]);
+    if(startup.reservedData==IntPtr.Zero || startup.reservedSize<4) throw new IOException("Ownership descriptors are missing.");
+    int count=Marshal.ReadInt32(startup.reservedData);
+    if(fd<3 || fd+1>=count || startup.reservedSize<4+count*(1+IntPtr.Size)) throw new IOException("Invalid ownership descriptors.");
+    control=Marshal.ReadIntPtr(startup.reservedData,4+count+fd*IntPtr.Size);
+    reply=Marshal.ReadIntPtr(startup.reservedData,4+count+(fd+1)*IntPtr.Size);
+    Check(SetHandleInformation(control,1,0));
+    Check(SetHandleInformation(reply,1,0));
+    descriptors=Marshal.AllocHGlobal(startup.reservedSize);
+    var bytes=new byte[startup.reservedSize];
+    Marshal.Copy(startup.reservedData,bytes,0,bytes.Length);
+    Marshal.Copy(bytes,0,descriptors,bytes.Length);
+    for(int i=fd;i<=fd+1;i++) {
+     Marshal.WriteByte(descriptors,4+i,0);
+     Marshal.WriteIntPtr(descriptors,4+count+i*IntPtr.Size,new IntPtr(-1));
+    }
+    startup.reservedData=descriptors;
+    SendControl(reply,"W");
+    int first=ReadControl(control);
+    if(first==-1) return 125;
+    if(first!='R' && first!='U') throw new IOException("Expected startup ownership.");
+    var owner=new Thread(()=>WatchOwner(control, reply, first=='R'));
+    owner.IsBackground=true;
+    owner.Start();
+   }
    job=CreateJobObject(IntPtr.Zero,args[1]);
    Check(job!=IntPtr.Zero);
    if(Marshal.GetLastWin32Error()==183) throw new InvalidOperationException("Job name already exists");
    Limits(job,false);
-   Startup startup;
-   GetStartupInfo(out startup);
    startup.cb=Marshal.SizeOf(typeof(StartupEx));
    startup.flags|=0x100;
    startup.input=GetStdHandle(-10); startup.output=GetStdHandle(-11); startup.error=GetStdHandle(-12);
@@ -127,6 +186,7 @@ public static class CodeShipJobHost {
    var extended=new StartupEx { startup=startup, attributes=attributes };
    Check(CreateProcess(null,command,IntPtr.Zero,IntPtr.Zero,true,0x80004,IntPtr.Zero,null,ref extended,out child));
    if(record.Length != 0) Publish(record, child.pid + " " + Created(child.process));
+   if(owned) SendControl(reply,"S " + child.pid + " " + Created(child.process));
    Check(ResumeThread(child.thread)!=0xffffffff);
    Check(WaitForSingleObject(child.process,0xffffffff)!=0xffffffff);
    uint code;
@@ -135,6 +195,9 @@ public static class CodeShipJobHost {
    return unchecked((int)code);
   } catch(Exception error) {
    Console.Error.WriteLine(error.Message);
+   if(reply!=IntPtr.Zero) {
+    try { SendControl(reply,"E " + (error is Win32Exception ? ((Win32Exception)error).NativeErrorCode : 0) + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes(error.Message))); } catch {}
+   }
    if(record.Length != 0) {
     try {
      string folder = Path.GetDirectoryName(record);
@@ -150,6 +213,7 @@ public static class CodeShipJobHost {
    if(initialized)DeleteProcThreadAttributeList(attributes);
    if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);
    if(jobList!=IntPtr.Zero)Marshal.FreeHGlobal(jobList);
+   if(descriptors!=IntPtr.Zero)Marshal.FreeHGlobal(descriptors);
    if(job!=IntPtr.Zero)CloseHandle(job);
   }
  }
