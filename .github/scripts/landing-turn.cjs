@@ -4,6 +4,7 @@
 // cannot move under the checked tree and one verification covers the landed tree.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
+const { MERGE_DRIVER_CONFIG } = require("./release-notes.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
 const TURN_ENV = "T3_LANDING_TURN";
@@ -13,8 +14,9 @@ const LEASE_TTL_MS = 3 * 60 * 60 * 1000;
 const POLL_MS = 5000;
 const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 
-function git(cwd, args, { env, allowFailure = false } = {}) {
-  const result = spawnSync("git", ["-C", cwd, ...args], {
+function git(cwd, args, { env, config = [], allowFailure = false } = {}) {
+  const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
+  const result = spawnSync("git", ["-C", cwd, ...flags, ...args], {
     encoding: "utf8",
     env: { ...process.env, ...env },
     windowsHide: true,
@@ -132,7 +134,8 @@ function land({ cwd, remote, check, branch = "main", runId = randomUUID(), ...re
     const contained = git(cwd, ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], {
       allowFailure: true,
     }).ok;
-    if (!contained) git(cwd, ["rebase", "FETCH_HEAD"]);
+    // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
+    if (!contained) git(cwd, ["rebase", "FETCH_HEAD"], { config: MERGE_DRIVER_CONFIG });
     if (!check(turn)) return { status: "check-failed" };
     git(cwd, ["push", "--quiet", remote, `HEAD:refs/heads/${branch}`], {
       env: { [TURN_ENV]: turn },

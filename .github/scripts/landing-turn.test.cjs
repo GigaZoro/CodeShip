@@ -88,6 +88,45 @@ test("a second lander cannot push to main while the first holds the turn, and th
   }
 });
 
+test("a lander's release notes go among the ones main gained meanwhile by date, with no merge config set up", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const entry = (date, title) => `## ${date} — ${title}\n\n- ${title}.`;
+    const shipped = entry("2026-11-18", "Shipped");
+    const mine = entry("2026-11-18", "Mine");
+    const newer = entry("2026-11-19", "Newer");
+    const notesOf = (dir) => path.join(dir, "docs/release-notes.md");
+    const ship = (dir, ...entries) => {
+      fs.writeFileSync(notesOf(dir), `${entries.join("\n\n")}\n`);
+      git(dir, "add", ".");
+      git(dir, "commit", "-qm", "notes");
+    };
+    const seed = path.join(root, "seed");
+    fs.mkdirSync(path.join(seed, ".github/scripts"), { recursive: true });
+    fs.mkdirSync(path.join(seed, "docs"));
+    for (const file of [".github/scripts/release-notes.cjs", ".gitattributes"]) {
+      fs.copyFileSync(path.join(__dirname, "../..", file), path.join(seed, file));
+    }
+    ship(seed, shipped);
+    git(seed, "push", "-q", "origin", "HEAD:main");
+    const lander = clone("lander");
+    ship(lander, mine, shipped);
+    const mover = clone("mover");
+    ship(mover, newer, shipped);
+    git(mover, "push", "-q", "origin", "HEAD:main");
+
+    const result = land({ cwd: lander, remote: origin, runId: "lander", check: () => true });
+
+    assert.equal(result.status, "landed");
+    assert.equal(
+      fs.readFileSync(notesOf(lander), "utf8"),
+      `${[newer, mine, shipped].join("\n\n")}\n`,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a lander whose checks fail gives the turn back without pushing", () => {
   const { root, origin, git, clone, commit } = setup();
   try {

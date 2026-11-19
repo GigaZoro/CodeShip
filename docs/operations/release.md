@@ -148,8 +148,11 @@ Before shipping any change to `main`, prepend an entry to
 `## YYYY-MM-DD — Short title`, followed by concise bullets describing what changed
 for users. Include fixes, maintenance, and documentation-only shipments; use a new
 title when shipping several times on one day. Preserve previous entries unchanged. Entries
-stay newest first by date, so after a rebase put yours below a newer one, re-date it; the check
-matches earlier entries by content, so a shipment may also move one back into date order.
+stay newest first by date. A rebase or merge keeps that order by itself: `.gitattributes` gives
+the file a merge driver, which `vp i` configures and the landing turn passes to its rebase, that
+places the other side's new entries by date and leaves an edited, dropped or reordered entry to
+git's text merge. The check matches
+earlier entries by content, so a shipment may also move one back into date order.
 
 The web and desktop header's Release notes dialog bundles this history with the
 client, so an older install never presents newer changes as already installed.

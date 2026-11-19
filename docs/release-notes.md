@@ -1,3 +1,7 @@
+## 2026-11-19 — Release notes keep their order when a rebase meets another shipment's notes
+
+- Maintainers: when a rebase or merge meets new entries on both sides of `docs/release-notes.md`, a merge driver now places the other side's new entries by date. `vp i` sets it up, and the landing turn uses it on every machine. Before, git could splice an entry into the middle of another one's lines, or leave a conflict, so a landing failed its format check after waiting for its turn. An entry that was edited, dropped or reordered still merges as text. No change to the app.
+
 ## 2026-11-19 — Claude loads only the shared skills its own skills folder picks
 
 - When a Claude account's skills folder links skills from `~/.agents/skills` itself, as a machine setup does for the shared skills it switches on, T3.CodeShip no longer adds the whole shared folder to Claude sessions. Before, every Claude session also listed the shared skills that folder leaves out, which cost context and let them be invoked. The composer's skill list follows the same rule. Without such links, Claude still gets every skill in `~/.agents/skills`, as before.

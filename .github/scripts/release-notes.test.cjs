@@ -5,11 +5,22 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { addedReleaseNotes, requireNewReleaseNotes } = require("./release-notes.cjs");
+const {
+  MERGE_DRIVER_CONFIG,
+  addedReleaseNotes,
+  mergeReleaseNotes,
+  requireNewReleaseNotes,
+} = require("./release-notes.cjs");
 
 const old = "## 2026-11-04 — Earlier change\n\n- Existing behavior.\n";
 const latest = "## 2026-11-05 — New change\n\n- New behavior.\n";
 const combined = `${latest}\n${old}`;
+const entry = (date, title) => `## ${date} — ${title}\n\n- ${title}.`;
+const notes = (...entries) => `${entries.join("\n\n")}\n`;
+const shipped = entry("2026-11-18", "Shipped");
+const sameDay = entry("2026-11-18", "Main same day");
+const newer = entry("2026-11-19", "Main newer");
+const mine = entry("2026-11-18", "Mine");
 
 test("checks actual git history and fails closed when the base cannot be read", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "release-notes-"));
@@ -99,5 +110,163 @@ test("rejects missing summaries and invalid dates instead of counting a file tou
     latest.replace("11-05", "02-30"),
   ]) {
     assert.throws(() => requireNewReleaseNotes(invalid, null), /each entry needs|invalid date/);
+  }
+});
+
+test("a merge places the incoming side's new entries among the current side's by date", () => {
+  const base = notes(shipped);
+  assert.equal(
+    mergeReleaseNotes(base, notes(newer, sameDay, shipped), notes(mine, shipped)),
+    notes(newer, mine, sameDay, shipped),
+  );
+  const newest = entry("2026-11-20", "Newest");
+  assert.equal(
+    mergeReleaseNotes(base, notes(newer, shipped), notes(newest, mine, shipped)),
+    notes(newest, newer, mine, shipped),
+  );
+  // The same shipment reached both sides, as after a cherry-pick, and keeps its place above the incoming one's.
+  assert.equal(
+    mergeReleaseNotes(base, notes(mine, shipped), notes(mine, shipped)),
+    notes(mine, shipped),
+  );
+  assert.equal(
+    mergeReleaseNotes(base, notes(mine, shipped), notes(mine, sameDay, shipped)),
+    notes(mine, sameDay, shipped),
+  );
+  assert.equal(mergeReleaseNotes("", notes(newer), notes(mine)), notes(newer, mine));
+  // An edited, dropped or reordered entry, or a title both sides used, is left to git's text merge.
+  for (const theirs of [
+    notes(mine, sameDay, shipped.replace("- Shipped.", "- Edited.")),
+    notes(mine, sameDay),
+    notes(mine, shipped, sameDay),
+    notes(newer.replace("- Main newer.", "- Other."), sameDay, shipped),
+  ]) {
+    assert.equal(
+      mergeReleaseNotes(notes(sameDay, shipped), notes(newer, sameDay, shipped), theirs),
+      null,
+    );
+  }
+});
+
+test("git rebases a shipment over another one's notes through the configured merge driver", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "release-notes-merge-")));
+  try {
+    fs.mkdirSync(path.join(root, ".github/scripts"), { recursive: true });
+    fs.mkdirSync(path.join(root, "docs"));
+    fs.copyFileSync(__dirname + "/release-notes.cjs", root + "/.github/scripts/release-notes.cjs");
+    fs.copyFileSync(__dirname + "/../../.gitattributes", root + "/.gitattributes");
+    const notesFile = path.join(root, "docs/release-notes.md");
+    const git = (...args) =>
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "-c",
+          "commit.gpgsign=false",
+          "-c",
+          "core.hooksPath=",
+          ...args,
+        ],
+        { cwd: root, stdio: "pipe" },
+      );
+    const commit = (text) => {
+      fs.writeFileSync(notesFile, text);
+      git("add", ".");
+      git("commit", "-q", "-m", "fixture");
+    };
+    git("init", "-q", "-b", "main");
+    execFileSync(process.execPath, [".github/scripts/release-notes.cjs", "configure"], {
+      cwd: root,
+    });
+    commit(notes(shipped));
+    git("switch", "-q", "-c", "shipment");
+    commit(notes(mine, shipped));
+    git("switch", "-q", "main");
+    commit(notes(newer, sameDay, shipped));
+    git("switch", "-q", "shipment");
+    git("rebase", "-q", "main");
+    assert.equal(fs.readFileSync(notesFile, "utf8"), notes(newer, mine, sameDay, shipped));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const withScript = (dir) => {
+  fs.mkdirSync(path.join(dir, ".github/scripts"), { recursive: true });
+  fs.copyFileSync(__dirname + "/release-notes.cjs", dir + "/.github/scripts/release-notes.cjs");
+  return dir;
+};
+const configureIn = (dir, env = {}) =>
+  spawnSync(process.execPath, [".github/scripts/release-notes.cjs", "configure"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+const localDrivers = (dir) =>
+  spawnSync("git", ["config", "--local", "--get-all", "merge.release-notes.driver"], {
+    cwd: dir,
+    encoding: "utf8",
+  })
+    .stdout.split("\n")
+    .filter(Boolean);
+
+test("configure sets the driver in its own repository only", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "release-notes-configure-")));
+  try {
+    const outer = path.join(root, "outer");
+    execFileSync("git", ["init", "-q", "-b", "main", outer]);
+    // A source archive unpacked inside another checkout, set up by hand and from that checkout's hook.
+    const archive = withScript(path.join(outer, "archive"));
+    for (const env of [
+      {},
+      { GIT_DIR: path.join(outer, ".git") },
+      { Git_Dir: path.join(outer, ".git") },
+    ]) {
+      assert.equal(configureIn(archive, env).status, 0);
+    }
+    assert.deepEqual(localDrivers(outer), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("configure replaces stale values, and warns without failing the install when it cannot set one", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "release-notes-configure-")));
+  try {
+    // A path that only a byte-exact comparison handles.
+    const own = withScript(path.join(root, "checkout "));
+    const git = (...args) => execFileSync("git", args, { cwd: own, encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    git("config", "--add", "merge.release-notes.driver", "stale");
+    git("config", "--add", "merge.release-notes.driver", "stale");
+    const lock = path.join(own, ".git/config.lock");
+    fs.writeFileSync(lock, "");
+    const locked = configureIn(own);
+    assert.deepEqual([locked.status, /could not set/.test(locked.stderr)], [0, true]);
+    fs.rmSync(lock);
+    const [[key, value]] = MERGE_DRIVER_CONFIG;
+    assert.equal(configureIn(own).status, 0);
+    assert.deepEqual(localDrivers(own), [value]);
+    // Once set, configure only reads, so another setup holding the lock does not matter.
+    fs.writeFileSync(lock, "");
+    const again = configureIn(own);
+    assert.deepEqual([again.status, again.stderr], [0, ""]);
+    fs.rmSync(lock);
+    // A right value in this worktree's own config does not hide a wrong one its siblings use.
+    git("config", "extensions.worktreeConfig", "true");
+    git("config", "--worktree", key, value);
+    git("config", "--local", key, "false");
+    assert.deepEqual([configureIn(own).stderr, localDrivers(own)], ["", [value]]);
+    git("config", "--worktree", key, "true");
+    const overridden = configureIn(own);
+    assert.deepEqual(
+      [overridden.status, /with `true` from .*config\.worktree/.test(overridden.stderr)],
+      [0, true],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
