@@ -171,15 +171,15 @@ describe("SpawnWorker", () => {
   );
 
   it.live(
-    "ends a crashed launcher's child by pid only when its Windows tree stop never started",
+    "never ends a crashed launcher's child by its bare pid on Windows, and reports a failed tree stop",
     () =>
       Effect.gen(function* () {
-        // A stop that may have run could have ended the root first, so its pid can name another process.
-        for (const [stop, endedByPid] of [
-          ["exits 1", false],
-          ["loses its launcher before the start is reported", false],
+        // The root may have ended since its launcher died, so its pid can name another process.
+        for (const [stop, reported] of [
+          ["exits 0", false],
+          ["exits 1", true],
+          ["loses its launcher before the start is reported", true],
           ["cannot launch", true],
-          ["cannot launch while another launcher is idle", true],
         ] as const) {
           // It ends by itself once the dead launcher's end of its stdin closes.
           const root = SpawnWorker.spawnPiped(
@@ -193,27 +193,25 @@ describe("SpawnWorker", () => {
           const pool = root.worker.pool;
           const launch = pool.spawn;
           using _stop = vi.spyOn(pool, "spawn").mockImplementation((_command, _args, options) => {
-            if (stop.startsWith("cannot launch")) {
-              return launch("t3-missing-command-25245", [], options);
-            }
-            const child = launch(process.execPath, ["-e", "process.exit(1)"], options);
+            if (stop === "cannot launch") return launch("t3-missing-command-25245", [], options);
+            const code = stop === "exits 0" ? 0 : 1;
+            const child = launch(process.execPath, ["-e", `process.exit(${code})`], options);
             // A microtask runs before the launcher's reply can arrive.
-            if (stop !== "exits 1") queueMicrotask(() => child.worker.fail(new Error("lost")));
+            if (stop === "loses its launcher before the start is reported") {
+              queueMicrotask(() => child.worker.fail(new Error("lost")));
+            }
             return child;
           });
-          // With another launcher idle, the pool closes the failed stop's launcher as it releases it.
-          using _release =
-            stop === "cannot launch while another launcher is idle"
-              ? vi.spyOn(pool, "release").mockImplementation((worker) => worker.close())
-              : undefined;
+          using report = vi.spyOn(pool, "report").mockImplementation(() => {});
           using kill = vi.spyOn(process, "kill").mockImplementation(() => true);
           const exited = new Promise((resolve) => root.once("exit", resolve));
           void root.worker.worker.terminate();
           yield* Effect.promise(() => exited);
-          expect([stop, kill.mock.calls.some(([target]) => target === pid)]).toEqual([
+          expect([
             stop,
-            endedByPid,
-          ]);
+            kill.mock.calls.some(([target]) => target === pid),
+            report.mock.calls.length,
+          ]).toEqual([stop, false, reported ? 1 : 0]);
         }
       }),
   );

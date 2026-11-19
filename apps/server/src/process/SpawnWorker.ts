@@ -179,8 +179,6 @@ class WorkerChild
   killed = false;
   spawned = false;
   exited = false;
-  /** The launcher reported that the command never started. */
-  launchFailed = false;
   readonly #writes = new Map<number, Array<(error?: Error | null) => void>>();
   readonly #finals = new Map<number, (error?: Error | null) => void>();
   readonly #paused = new Set<number>();
@@ -384,7 +382,6 @@ class SpawnWorker {
         if (!child.spawned) {
           this.launching--;
           child.exited = true;
-          child.launchFailed = true;
           this.release(child);
         }
         child.emit("error", toError(message.error));
@@ -455,10 +452,20 @@ class SpawnWorker {
 class SpawnWorkerPool {
   readonly workers = new Set<SpawnWorker>();
   readonly platform: NodeJS.Platform;
+  readonly #runFork: (effect: Effect.Effect<void>) => unknown;
   #nextId = 0;
 
-  constructor(platform: NodeJS.Platform) {
+  constructor(
+    platform: NodeJS.Platform,
+    runFork: (effect: Effect.Effect<void>) => unknown = Effect.runFork,
+  ) {
     this.platform = platform;
+    this.#runFork = runFork;
+  }
+
+  /** A tree stop failed, so processes it was ending may still run. */
+  report(error: Error): void {
+    this.#runFork(Effect.logError("Could not end a child process tree", error));
   }
 
   readonly spawn = (
@@ -479,31 +486,32 @@ class SpawnWorkerPool {
   };
 
   killTree(root: WindowsProcessTreeRoot, done: () => void): void {
-    const killPid = () => {
+    if (this.platform !== "win32") {
       try {
         process.kill(root.pid, "SIGKILL");
       } catch {}
-    };
-    if (this.platform !== "win32") {
-      killPid();
       done();
       return;
     }
     let settled = false;
-    const finish = (mayHaveStarted: boolean) => {
+    // With the launcher's handle gone, a bare pid cannot be told from a process that reused it
+    // once the root ended, so only the stop, which checks the root's start time, ends anything.
+    const finish = (failure?: string) => {
       if (settled) return;
       settled = true;
-      // A stop that may have started could have ended the root and freed its pid for another
-      // process, so only a launch the launcher reported as failed leaves the child to end by pid.
-      if (!mayHaveStarted) killPid();
+      if (failure !== undefined) {
+        this.report(new Error(`Could not stop the process tree of ${root.pid}: ${failure}`));
+      }
       done();
     };
-    const stop = this.spawn("powershell.exe", windowsStopTreeArgs(root), {
+    this.spawn("powershell.exe", windowsStopTreeArgs(root), {
       stdio: "ignore",
       windowsHide: true,
     })
-      .on("error", () => finish(!stop.launchFailed))
-      .on("exit", () => finish(true));
+      .on("error", (error: Error) => finish(error.message))
+      .on("exit", (code: number | null, signal: NodeJS.Signals | null) =>
+        finish(code === 0 ? undefined : `PowerShell exited ${code ?? signal}`),
+      );
   }
 
   #add(): SpawnWorker {
@@ -545,8 +553,9 @@ export const spawnPiped = (
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const platform = yield* HostProcess.Platform;
+    const runFork = Effect.runForkWith(yield* Effect.context<never>());
     const pool = yield* Effect.acquireRelease(
-      Effect.sync(() => new SpawnWorkerPool(platform)),
+      Effect.sync(() => new SpawnWorkerPool(platform, runFork)),
       (pool) => Effect.sync(() => pool.close()),
     );
     return NodeChildProcessSpawner.layerWithSpawn(pool.spawn);
