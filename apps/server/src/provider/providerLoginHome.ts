@@ -60,14 +60,14 @@ export const codexBinding = Effect.fn("ProviderLoginHome.codexBinding")(function
 ) {
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
-  const envHome = environment.CODEX_HOME?.trim() ?? "";
+  const envHome = environment.CODEX_HOME ?? "";
   const privateHome = codexAccountShadowHomePath(path, stateDir, instanceId);
   const layout = yield* resolveCodexHomeLayout(
     config.homePath.trim() || config.shadowHomePath.trim()
       ? config
       : config.privateLogin
         ? { ...config, homePath: envHome, shadowHomePath: privateHome }
-        : envHome
+        : envHome.trim()
           ? { ...config, homePath: envHome }
           : instanceId !== "codex"
             ? { ...config, shadowHomePath: privateHome }

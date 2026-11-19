@@ -1,6 +1,7 @@
 ## 2026-11-19 — Claude and Codex keep chats available during sign-in
 
 - Chats can keep running and new turns can start on the current account while you sign in with Claude or Codex. The app retires sessions using the previous login once it saves the replacement. Cancelling, leaving the login unfinished, or a failed save keeps the previous sessions available.
+- Codex uses the exact account folder set in `CODEX_HOME` for both chat continuation and usage history, including folder names that end in a space.
 
 ## 2026-11-19 — Environment tools can manage banked usage reset preferences
 
