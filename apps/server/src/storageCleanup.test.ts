@@ -3448,7 +3448,9 @@ describe("storage cleanup reports and local file policies", () => {
           yield* fs.writeFileString(`${worktree}/tracked.txt`, "shipped work\n");
           yield* command(worktree, ["commit", "-am", "shipped work"]);
           const shipped = (yield* command(worktree, ["rev-parse", "HEAD"])).stdout.trim();
-          yield* command(repo, ["cherry-pick", shipped]);
+          // -x changes the message: a pick in the same second as its commit would get the same SHA.
+          yield* command(repo, ["cherry-pick", "-x", shipped]);
+          expect((yield* command(repo, ["rev-parse", "main"])).stdout.trim()).not.toBe(shipped);
           yield* command(repo, ["push", "origin", "main:main"]);
           yield* command(repo, ["fetch", "origin"]);
           yield* command(repo, ["remote", "set-head", "origin", "main"]);
