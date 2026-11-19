@@ -1,6 +1,6 @@
 ## 2026-11-19 — The machine check compares each machine's Node with the project's pin
 
-- `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. Before, only `check:changed` found it, by refusing to run. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
+- `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. It now reports the mismatch before anyone runs `check:changed`, which refuses to run on the wrong Node. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
 
 ## 2026-11-18 — Finished subagents and delegated chats settle once their parent has the result
 
