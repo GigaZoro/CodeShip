@@ -85,8 +85,8 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "}",
   // Ends every process before it waits for any, so one slow to end holds up no other, and goes on
   // past a failure. A process that ended first is no error; one still running 5 s after the last
-  // kill is. Outputs the first failure.
-  "function Stop-T3Processes($processes) {",
+  // kill is. Adds the pid of each it did not see end to $unended and outputs the first failure.
+  "function Stop-T3Processes($processes, $unended) {",
   "  $failed = $null",
   "  foreach ($process in $processes) {",
   "    try { $process.Kill() } catch {",
@@ -96,33 +96,48 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  }",
   "  $wait = [Diagnostics.Stopwatch]::StartNew()",
   "  foreach ($process in $processes) {",
-  "    $left = 5000 - $wait.ElapsedMilliseconds; if ($left -lt 0) { $left = 0 }",
-  "    try { $done = $process.WaitForExit($left) } catch { $done = $true; if (-not $failed) { $failed = $_ } }",
-  "    if (-not ($done -or $failed)) { $failed = 'Process {0} still runs 5 s after its stop' -f $process.Id }",
+  "    $ms = 5000 - $wait.ElapsedMilliseconds; if ($ms -lt 0) { $ms = 0 }",
+  "    try { $done = $process.WaitForExit($ms) } catch { $done = $false; if (-not $failed) { $failed = $_ } }",
+  "    if (-not $done) {",
+  "      [void]$unended.Add([long]$process.Id)",
+  "      if (-not $failed) { $failed = 'Process {0} still runs 5 s after its stop' -f $process.Id }",
+  "    }",
   "  }",
   "  $failed",
   "}",
   // Opens every target of a pass before it ends any, so a parent that ends with its child is still
   // held and what it started meanwhile is found. What the sixth pass finds was started after the
   // fifth looked: the stop ends it but fails as unfinished, as on a target it may not open or end.
-  // With -running, a first pass that cannot find and open the root ends nothing and outputs ended.
-  "function Stop-T3ProcessTree($root, $since, $from = $since, $to = [double]::PositiveInfinity, $ended = [double]::PositiveInfinity, [switch]$running) {",
+  // Outputs ended when -running and the root is gone, and left <pid> <ticks> for each it did not end.
+  "function Stop-T3ProcessTree($root, $since, $from = $since, $to = [double]::PositiveInfinity, $ended = [double]::PositiveInfinity, [long[]]$left = @(), [switch]$running) {",
   `  $since -= ${CLOCK_SKEW_MS}; $from -= ${CLOCK_SKEW_MS}; $to += ${CLOCK_SKEW_MS}; $ended += ${CLOCK_SKEW_MS}`,
-  "  $open = @{}; $starts = New-Object System.Collections.ArrayList; $failed = $null; $lost = $false",
+  "  $open = @{}; $ticksOf = @{}; $starts = New-Object System.Collections.ArrayList; $failed = $null",
   "  try {",
   "    for ($pass = 0; $pass -le 5; $pass++) {",
   "      $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)",
   "      $targets = if ($pass) { Get-T3Descendants $all $starts } else { Get-T3ProcessTree $all $root $since $from $to $ended $running.IsPresent }",
   "      if ($null -eq $targets) { 'ended'; break }",
+  // -left lists as pid and creation ticks what an earlier stop of the tree found but did not end,
+  // perhaps once it had ended their parents; CIM still listing one with that start makes it a target.
+  "      if (-not $pass) {",
+  "        for ($i = 0; $i + 1 -lt $left.Count; $i += 2) {",
+  "          foreach ($p in $all) { if ($p.ProcessId -eq $left[$i] -and (Ticks $p.CreationDate) -eq $left[$i + 1]) { $targets[$p.ProcessId] = $p.CreationDate } }",
+  "        }",
+  "      }",
   "      if ($targets.Count -eq 0) { break }",
+  "      $lost = $false; $unended = New-Object System.Collections.ArrayList",
   "      $new = @(foreach ($id in @($targets.Keys)) {",
-  "        try { $process = Open-T3Process $id $targets[$id] } catch { if (-not $failed) { $failed = $_ }; continue }",
-  "        if ($process) { $open[$id] = $process; [void]$starts.Add(@($id, (Ticks $targets[$id]), [long]::MaxValue)); $process }",
-  "        elseif ($running -and $id -eq $root) { $lost = $true }",
+  "        $ticksOf[[long]$id] = Ticks $targets[$id]",
+  "        try { $process = Open-T3Process $id $targets[$id] } catch { if (-not $failed) { $failed = $_ }; [void]$unended.Add([long]$id); continue }",
+  "        if ($process) { $open[$id] = $process; [void]$starts.Add(@($id, $ticksOf[[long]$id], [long]::MaxValue)); $process }",
+  "        elseif ($running -and -not $pass -and $id -eq $root) { $lost = $true }",
   "      })",
-  "      if ($lost) { $failed = $null; 'ended'; break }",
+  // What the first pass found while the root was listed is the root's, so a stop that then cannot
+  // open the root still ends it; the caller walks again from the root's exit for what came after.
+  "      if ($lost) { 'ended' }",
   "      if ($new.Count -and $pass -eq 5 -and -not $failed) { $failed = 'The tree of {0} still started processes after 5 passes' -f $root }",
-  "      $stopped = Stop-T3Processes $new; if ($stopped -and -not $failed) { $failed = $stopped }",
+  "      $stopped = Stop-T3Processes $new $unended; if ($stopped -and -not $failed) { $failed = $stopped }",
+  "      foreach ($id in $unended) { 'left {0} {1}' -f $id, $ticksOf[$id] }",
   "    }",
   "    if ($failed) { throw $failed }",
   "  } finally { foreach ($process in $open.Values) { $process.Dispose() } }",
@@ -220,23 +235,46 @@ const tailOf = <E>(output: Stream.Stream<Uint8Array, E>) =>
   );
 
 /**
- * Runs on the spawner beneath `endingWindowsTrees`, so a stop never stops a tree of its own.
- * Succeeds with what the walk output.
+ * Runs on the spawner beneath `endingWindowsTrees`, so a stop never stops a tree of its own. `left`
+ * holds, as `<pid>,<ticks>`, what earlier walks of the tree found but did not end; the walk ends
+ * those too and adds what it did not end as it reports it. Succeeds with whether the walk found a
+ * running root gone, and its failure once it ran.
  */
 const walkWindowsTree = Effect.fn("WindowsProcessTree.stop")(
-  function* (root: WindowsProcessTreeRoot, args: ReadonlyArray<string>) {
+  function* (
+    root: WindowsProcessTreeRoot,
+    call: ReadonlyArray<string | number>,
+    left: Set<string>,
+  ) {
     const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
+    const carried = [...left].join(",");
     const handle = yield* spawner.spawn(
-      ChildProcess.make("powershell.exe", args, { stdin: "ignore" }),
+      ChildProcess.make(
+        "powershell.exe",
+        stopTreeArgs(carried === "" ? call : [...call, "-left", carried]),
+        { stdin: "ignore" },
+      ),
     );
-    const [stdout, stderr, exitCode] = yield* Effect.all(
-      [tailOf(handle.stdout), tailOf(handle.stderr), handle.exitCode],
-      { concurrency: "unbounded" },
+    let gone = false;
+    const said = handle.stdout.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.runForEach((line) =>
+        Effect.sync(() => {
+          const unended = /^left (\d+) (\d+)$/.exec(line.trim());
+          if (unended !== null) left.add(`${unended[1]},${unended[2]}`);
+          else if (line.trim() === "ended") gone = true;
+        }),
+      ),
     );
-    if (exitCode !== 0) {
-      return yield* stopFailed(root, "Unknown", `PowerShell exited ${exitCode}: ${stderr.trim()}`);
-    }
-    return stdout.trim();
+    const [, stderr, exitCode] = yield* Effect.all([said, tailOf(handle.stderr), handle.exitCode], {
+      concurrency: "unbounded",
+    });
+    const failure =
+      exitCode === 0
+        ? undefined
+        : stopFailed(root, "Unknown", `PowerShell exited ${exitCode}: ${stderr.trim()}`);
+    return { gone, failure };
   },
   (effect, root) =>
     effect.pipe(
@@ -249,14 +287,9 @@ const walkWindowsTree = Effect.fn("WindowsProcessTree.stop")(
     ),
 );
 
-const stopWindowsProcessTree = (root: WindowsProcessTreeRoot) =>
-  Effect.asVoid(walkWindowsTree(root, windowsStopTreeArgs(root)));
-
-/** Succeeds with false, having ended nothing, when the walk could not find and open the root. */
-const stopRunningWindowsTree = (root: WindowsProcessTreeRoot) =>
-  Effect.map(
-    walkWindowsTree(root, stopTreeArgs([...stopTreeCall(root), "-running"])),
-    (output) => output.split(/\r?\n/).at(-1) !== "ended",
+const stopWindowsProcessTree = (root: WindowsProcessTreeRoot, left = new Set<string>()) =>
+  Effect.flatMap(walkWindowsTree(root, stopTreeCall(root), left), ({ failure }) =>
+    failure === undefined ? Effect.void : Effect.fail(failure),
   );
 
 /**
@@ -268,10 +301,9 @@ const reportsExit = (exit: Exit.Exit<unknown, PlatformError.PlatformError>) =>
   Exit.findErrorOption(exit).pipe(Option.exists((error) => error.reason.method === "exitCode"));
 
 /**
- * Runs a spawn and pairs its handle with a stop of its tree, which every caller shares while it runs
- * and once it succeeded. A watch that lasts as long as the process notes when the handle reports its
- * exit, which bounds the root's children in every later stop. A stop of a running root whose walk
- * finds it gone awaits that report and walks again.
+ * Pairs a spawn's handle with a stop of its tree, shared while it runs and once it succeeded; a stop
+ * after a failed one also ends what that one left. The handle's exit report bounds the root's children
+ * in every later stop. A walk that finds a running root gone awaits that report and walks again.
  */
 export const withWindowsTreeStop = <
   A extends Pick<ChildProcessSpawner.ChildProcessHandle, "pid" | "exitCode" | "isRunning">,
@@ -285,6 +317,7 @@ export const withWindowsTreeStop = <
     return Effect.flatMap(spawn, (handle) =>
       Effect.gen(function* () {
         const root = rootOf(handle.pid);
+        const left = new Set<string>();
         let ended: number | undefined;
         const noteEnd = Effect.flatMap(Effect.exit(handle.exitCode), (exit) =>
           Effect.sync(() => {
@@ -305,17 +338,21 @@ export const withWindowsTreeStop = <
               ),
           }),
           Effect.flatMap((at) =>
-            stopWindowsProcessTree(at === undefined ? root : { ...root, ended: at }),
+            stopWindowsProcessTree(at === undefined ? root : { ...root, ended: at }, left),
           ),
         );
+        const stopRunning = Effect.flatMap(
+          walkWindowsTree(root, [...stopTreeCall(root), "-running"], left),
+          ({ gone, failure }) => {
+            if (failure === undefined) return gone ? stopEnded : Effect.void;
+            const failed = Effect.fail(failure);
+            return gone
+              ? Effect.andThen(Effect.ignore(stopEnded, { log: "Error" }), failed)
+              : failed;
+          },
+        );
         const stopTree = yield* Effect.cachedWithTTL(
-          Effect.flatMap(handle.isRunning, (running) =>
-            running
-              ? Effect.flatMap(stopRunningWindowsTree(root), (stopped) =>
-                  stopped ? Effect.void : stopEnded,
-                )
-              : stopEnded,
-          ),
+          Effect.flatMap(handle.isRunning, (running) => (running ? stopRunning : stopEnded)),
           (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
         );
         yield* Effect.forkDetach(noteEnd, { startImmediately: true });

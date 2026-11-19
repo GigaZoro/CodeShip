@@ -41,18 +41,19 @@ it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it can
 
 /**
  * A Windows spawner whose process has exited unless `running`, whose kill fails if `killFails`, and
- * whose `exit` ends it, or fails its exit code with the method it names. It records each kill and
- * walk, and what each walk was told: when the process ended, or that it ran. A walk told it ran
- * finds it `gone` if set, as it `exits` then or `lingers`.
+ * whose `exit` ends it, or fails its exit code with the method it names. A walk told it ran finds it
+ * `gone` if set, as it `exits` then or `lingers`; the walk `walks` lists at its place says and exits so.
  */
 const fakeWindowsSpawner = (options: {
   readonly running: boolean;
   readonly output: "ends" | "held";
   readonly killFails?: boolean;
   readonly gone?: "exits" | "lingers";
+  readonly walks?: ReadonlyArray<{ readonly says: string; readonly code: number }>;
 }) => {
   const events: Array<"kill" | "walk"> = [];
   const told: Array<number | "running" | undefined> = [];
+  const carried: Array<string | undefined> = [];
   const exited = Deferred.makeUnsafe<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>();
   const refused = (method: string) =>
     PlatformError.systemError({
@@ -95,29 +96,38 @@ const fakeWindowsSpawner = (options: {
             events.push("kill");
           }),
   };
-  const walk = {
-    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
-    isRunning: Effect.succeed(false),
-    kill: () => Effect.void,
-  };
+  const walk = (says: string, code: number) =>
+    handle(Stream.make(new TextEncoder().encode(says)), {
+      exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(code)),
+      isRunning: Effect.succeed(false),
+      kill: () => Effect.void,
+    });
   const byte = Stream.make(new Uint8Array([1]));
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
       if (command._tag === "StandardCommand" && command.command === "powershell.exe") {
         events.push("walk");
-        const call = command.args.at(-1) ?? "";
-        const ended = / -ended (\d+)$/.exec(call);
-        const running = call.endsWith(" -running");
+        const call = (command.args.at(-1) ?? "").split("Stop-T3ProcessTree").at(-1) ?? "";
+        const ended = / -ended (\d+)/.exec(call);
+        const running = / -running\b/.test(call);
         told.push(ended === null ? (running ? "running" : undefined) : Number(ended[1]));
-        if (!running || options.gone === undefined) return handle(Stream.empty, walk);
-        if (options.gone === "exits") exit();
-        return handle(Stream.make(new TextEncoder().encode("ended\r\n")), walk);
+        carried.push(/ -left (\S+)/.exec(call)?.[1]);
+        if (running && options.gone === "exits") exit();
+        const scripted = options.walks?.[told.length - 1];
+        if (scripted !== undefined) return walk(scripted.says, scripted.code);
+        return walk(running && options.gone !== undefined ? "ended\r\n" : "", 0);
       }
       // What a leader left running holds a pipe it inherited open.
       return handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never), leader);
     }),
   );
-  return { events, told, spawner, exit: (failing?: string) => Effect.sync(() => exit(failing)) };
+  return {
+    events,
+    told,
+    carried,
+    spawner,
+    exit: (failing?: string) => Effect.sync(() => exit(failing)),
+  };
 };
 
 type Use = (
@@ -282,6 +292,56 @@ describe("endingWindowsTrees stops a Windows tree", () => {
 
         assert.deepEqual([error.reason._tag, fake.told], ["TimedOut", ["running", 1_000]]);
       }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "again, from what the walk told it ran found, when that walk failed finding it gone",
+    () =>
+      Effect.gen(function* () {
+        let now = 0;
+        using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
+        const fake = fakeWindowsSpawner({
+          running: true,
+          output: "ends",
+          killFails: true,
+          gone: "exits",
+          walks: [{ says: "ended\r\nleft 7 638\r\n", code: 1 }],
+        });
+        const leader = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
+          ChildProcess.make("leader"),
+        );
+        now = 1_000;
+
+        const error = yield* Effect.flip(leader.kill());
+
+        assert.deepEqual(
+          [
+            error.reason._tag,
+            error.message.includes("PowerShell exited 1"),
+            fake.told,
+            fake.carried,
+          ],
+          ["Unknown", true, ["running", 1_000], [undefined, "7,638"]],
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("ending in its next stop what a failed stop found but did not end", () =>
+    Effect.gen(function* () {
+      const fake = fakeWindowsSpawner({
+        running: false,
+        output: "ends",
+        walks: [{ says: "left 7 638\r\n", code: 1 }],
+      });
+      const leader = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
+        ChildProcess.make("leader"),
+      );
+
+      const first = yield* Effect.exit(leader.kill());
+      yield* leader.kill();
+
+      assert.deepEqual([first._tag, fake.carried], ["Failure", [undefined, "7,638"]]);
+    }).pipe(Effect.scoped),
   );
 
   // A spawner fails the exit code of a process a signal ended, and a lost worker's with its own method.
@@ -551,8 +611,33 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "(P $gone 0 $real)",
       "(P $target $gone $real)",
       "spared",
-      1,
+      2,
       "ended",
+    ],
+    [
+      "ends the rest of what it found, told the root runs, and says it ended when the root ends before the stop opens it",
+      "$gone $early $soon $next -running",
+      "(P $gone 0 $real), (P $target $gone $real)",
+      "",
+      "stopped",
+      2,
+      "ended",
+    ],
+    [
+      "ends a process an earlier stop left, listed with the start that stop saw",
+      "$gone $early $early $early -left $target,(Ticks $real)",
+      "(P $target 0 $real)",
+      "",
+      "stopped",
+      2,
+    ],
+    [
+      "spares a process holding the pid of one an earlier stop left, created a microsecond from it",
+      "$gone $early $early $early -left $target,(Ticks $real)",
+      "(P $target 0 $near)",
+      "",
+      "spared",
+      1,
     ],
   ])("%s", async (_, stop, first, later, expected, walked, said = "") => {
     // Exits 7 once its input ends, so any other exit is the stop's.
@@ -592,38 +677,42 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     );
   });
 
-  // The target ends after the walk read it. $seen was looked up while it ran, without opening it,
-  // and $started holds it open. Once $started lets go, the pid is free; $seen.HasExited opens it
-  // again, so answering false stands in for a process that took it. Opening fails with error 87
-  // when the pid was free as it opened and another process had it as it looked again.
+  // The target ends after the walk read it; $started holds it open until it lets go. $seen, looked up
+  // unopened, opens the free pid again for HasExited, so false stands in for a process that took it.
+  // Opening fails with error 87 when the pid was free as it opened and another process had it as it
+  // looked again. A later snapshot lists what holds the pid then.
   it.each([
-    ["before the stop looks it up", "function Get-Process { }"],
+    ["before the stop looks it up", "function Get-Process { }", ""],
     [
       "before the stop opens it and its pid goes to a running process",
       "$started.Dispose(); $seen | Add-Member NoteProperty HasExited $false -Force; function Get-Process { $seen }",
+      "",
     ],
     [
       "while the stop opens it and another process takes its pid",
       "function Get-Process { [pscustomobject]@{} | Add-Member ScriptMethod get_Handle { throw [ComponentModel.Win32Exception]::new(87) } -PassThru | Add-Member ScriptMethod Dispose { } -PassThru }",
+      "",
     ],
-    ["before the stop ends it", "function Get-Process { $started }"],
+    ["before the stop ends it", "function Get-Process { $started }", ""],
     [
       "before the stop opens it and its pid goes to a process the stop may not open",
       "function Get-Process { [pscustomobject]@{} | Add-Member ScriptMethod get_Handle { throw [ComponentModel.Win32Exception]::new(5) } -PassThru | Add-Member ScriptMethod Dispose { } -PassThru }",
+      "(P $target 0 $real.AddTicks(10))",
     ],
-  ])("reports no error for a target that ended %s", (_, lookUp) => {
-    runPowerShell(
+  ])("reports no error and leaves nothing for a target that ended %s", (_, lookUp, later) => {
+    const output = runPowerShell(
       `$started = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru`,
       "$target = $started.Id",
       "$null = $started.get_Handle()",
       "$seen = Get-Process -Id $target",
       "$real = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $target)).CreationDate",
-      ...snapshots("(P $target 0 $real)"),
+      ...snapshots("(P $target 0 $real)", later),
       "$started.Kill()",
       "$started.WaitForExit()",
       lookUp,
       "Stop-T3ProcessTree $target 0",
     );
+    assert.equal(output.trim(), "");
   });
 
   // Later passes walk from the processes the stop holds, so what one started as it ended is found.
@@ -674,14 +763,15 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     );
   });
 
-  // The wait for the root fails; the stop still walks from it and ends what it started, then reports
-  // that failure.
+  // The wait for the root fails; the stop still walks from it and ends what it started, says it left
+  // the root, and then reports that failure.
   it("goes on past a wait that fails to end what the tree started", () => {
     const report = runPowerShell(
       `$leader, $child = 1, 2 | ForEach-Object { Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru }`,
       "try {",
       "  $null = $leader.get_Handle(); $null = $child.get_Handle()",
       "  $made = @{}; foreach ($p in Get-CimInstance Win32_Process) { $made[[int]$p.ProcessId] = $p.CreationDate }",
+      "  '{0} {1}' -f $leader.Id, (Ticks $made[$leader.Id])",
       ...snapshots(
         "(P $leader.Id 0 $made[$leader.Id])",
         "(P $child.Id $leader.Id $made[$child.Id])",
@@ -692,10 +782,10 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "  $child.WaitForExit(5000)",
       "} finally { foreach ($p in $leader, $child) { if (-not $p.HasExited) { $p.Kill() } } }",
     );
-    const [message = "", childEnded] = report.trim().split(/\r?\n/);
+    const [leader, left, message = "", childEnded] = report.trim().split(/\r?\n/);
     assert.deepEqual(
-      { reported: /the wait failed/.test(message), childEnded },
-      { reported: true, childEnded: "True" },
+      { left, reported: /the wait failed/.test(message), childEnded },
+      { left: `left ${leader}`, reported: true, childEnded: "True" },
       report,
     );
   });
@@ -798,14 +888,17 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
   });
 
   // The protected System process refuses to be opened, as any process the stop may not end does,
-  // while CIM still lists it with the start the walk saw.
+  // while CIM still lists it with the start the walk saw. The stop says it left it.
   it("reports the refusal of a target it may not open", () => {
-    const code = runPowerShell(
+    const [ticks, ...report] = runPowerShell(
       "$made = (Get-CimInstance Win32_Process -Filter 'ProcessId = 4').CreationDate",
+      "Ticks $made",
       ...snapshots("(P 4 0 $made)", "(P 4 0 $made)"),
       "try { Stop-T3ProcessTree 4 0 } catch { $_.Exception.GetBaseException().NativeErrorCode }",
-    );
-    assert.equal(code.trim(), "5");
+    )
+      .trim()
+      .split(/\r?\n/);
+    assert.deepEqual(report, [`left 4 ${ticks}`, "5"]);
   });
 
   const spawnEndingTree = (command: ChildProcess.Command, ending?: WindowsTreeEnding) =>
