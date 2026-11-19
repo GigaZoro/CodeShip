@@ -74,7 +74,6 @@ import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   type WindowsProcessTreeRoot,
-  windowsTreeRootFromNow,
   windowsTreeStopper,
 } from "@t3tools/shared/windowsProcessTree";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
@@ -421,15 +420,13 @@ function spawnClaudeProcessTree(
   host: string,
   onStderr?: (text: string) => void,
 ) {
-  const rootOf = windowsTreeRootFromNow();
   const child = windowsJobSpawn(host)(options.command, options.args, {
     cwd: options.cwd,
     env: options.env,
     signal: options.signal,
     stdio: ["pipe", "pipe", "pipe"],
   });
-  const root =
-    child.pid === undefined ? undefined : { ...rootOf(child.pid), job: windowsJobOf(child)! };
+  const root = child.pid === undefined ? undefined : { pid: child.pid, job: windowsJobOf(child)! };
   child.stderr.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
   const exited = new Promise<void>((resolve) => {
     child.once("exit", () => resolve());

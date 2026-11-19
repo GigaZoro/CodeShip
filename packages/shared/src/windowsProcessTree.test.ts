@@ -1,6 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off -- the walk runs in a real PowerShell.
-import * as NodeChildProcess from "node:child_process";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -16,8 +13,7 @@ import { isWindowsHost } from "./testing/hostPlatform.ts";
 import { attachWindowsJob, type WindowsJob } from "./windowsJob.ts";
 import { markWindowsJobSpawner } from "./windowsJobSpawner.ts";
 import {
-  WINDOWS_PROCESS_TREE_FUNCTIONS,
-  windowsStopTreeArgs,
+  stopWindowsProcessTree,
   endingWindowsTrees,
   type WindowsTreeEnding,
   withoutWindowsTreeEnding,
@@ -94,6 +90,19 @@ const readToEnd: Use = (handle) => Stream.runDrain(handle.all);
 const readNothing: Use = () => Effect.void;
 
 describe("endingWindowsTrees stops a Windows tree", () => {
+  it.effect("refuses to infer membership from an unowned pid", () =>
+    Effect.gen(function* () {
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.die("an unowned family must not be probed or stopped"),
+      );
+      const error = yield* stopWindowsProcessTree({ pid: 10 }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.flip,
+      );
+      assert.equal(error.reason._tag, "BadResource");
+    }),
+  );
+
   it.effect("retains the owned job through wrappers and stops its members without a PID walk", () =>
     Effect.gen(function* () {
       const job = { host: "job-host.exe", name: "Global\\CodeShip.Job.test" };
@@ -253,83 +262,6 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       yield* member.ended;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
-
-  // Times are seconds from $t. The tree's root is 10, and nothing in it started before -2.
-  it.each([
-    [
-      // 40 and 50 name 20 and 10 as their parent but are older, so an earlier holder of that pid
-      // started them; 60 is older than the tree.
-      "the root and, at every level, what started after the parent it names",
-      "(P 10 1 0), (P 20 10 1), (P 30 20 2), (P 40 20 0.5), (P 50 10 -1), (P 60 10 -3)",
-      ["10", "20", "30"],
-    ],
-    [
-      "what the root started, after the root exited",
-      "(P 20 10 1), (P 30 20 2), (P 40 10 -3)",
-      ["20", "30"],
-    ],
-    [
-      // 10 now names another process, created at 5; 30 is what that process started.
-      "what the root started before another process took its pid",
-      "(P 10 1 5), (P 20 10 1), (P 30 10 6)",
-      ["20"],
-    ],
-  ])("holds %s", (_, rows, expected) => {
-    const script = [
-      WINDOWS_PROCESS_TREE_FUNCTIONS,
-      "$t = [DateTime]::UtcNow",
-      "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
-      `$all = @(${rows})`,
-      "(Get-T3ProcessTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t) (Ms $t)).Keys | Sort-Object",
-    ].join("\n");
-    const tree = NodeChildProcess.execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8" },
-    );
-    assert.deepEqual(tree.trim().split(/\r?\n/), expected);
-  });
-
-  it("refuses an unknown identity before selecting a live root or its descendants", () => {
-    const args = windowsStopTreeArgs({ pid: 10, since: 0, created: null });
-    const mock = [
-      "function Get-CimInstance { @([pscustomobject]@{ ProcessId = 10; ParentProcessId = 1; CreationDate = [DateTime]::UtcNow }, [pscustomobject]@{ ProcessId = 20; ParentProcessId = 10; CreationDate = [DateTime]::UtcNow.AddSeconds(-10) }) }",
-      "function Stop-Process { Write-Output 'unsafe stop' }",
-    ].join("\n");
-    const tree = NodeChildProcess.execFileSync(
-      "powershell.exe",
-      [...args.slice(0, -1), `${mock}\ntry { ${args.at(-1)} } catch { $_.Exception.Message }`],
-      { encoding: "utf8" },
-    );
-    assert.equal(tree.trim(), "Cannot stop a live process without its creation time.");
-  });
-
-  it("pins each selected process before checking its creation time and stopping it", () => {
-    const script = [
-      WINDOWS_PROCESS_TREE_FUNCTIONS,
-      "$t = [DateTime]::UtcNow; $script:passes = 0",
-      "function Get-CimInstance { if ($script:passes++ -eq 0) { @([pscustomobject]@{ ProcessId = 10; ParentProcessId = 1; CreationDate = $t }, [pscustomobject]@{ ProcessId = 20; ParentProcessId = 10; CreationDate = $t.AddSeconds(1) }) } }",
-      "function Get-Process($Id) {",
-      "  $p = [pscustomobject]@{ Id = $Id; Pinned = $false; StartTime = $(if ($Id -eq 10) { $t } else { $t.AddMilliseconds(1500) }); HasExited = $false }",
-      "  $p | Add-Member ScriptProperty Handle { $this.Pinned = $true; return 1 }",
-      "  $p | Add-Member ScriptMethod Kill { if (-not $this.Pinned) { throw 'unpinned stop' }; Write-Output $this.Id }",
-      "  $p | Add-Member ScriptMethod WaitForExit {}",
-      "  $p | Add-Member ScriptMethod Dispose {}",
-      "  return $p",
-      "}",
-      "function Stop-Process { Write-Output 'unsafe bare PID stop' }",
-      "Stop-T3ProcessTree 10 (Ms $t) (Ms $t) (Ms $t)",
-      "$script:passes = 0",
-      "function Get-CimInstance { if ($script:passes++ -eq 0) { [pscustomobject]@{ ProcessId = 10; ParentProcessId = 1; CreationDate = $t.AddMilliseconds(500) } } }",
-      "Stop-T3ProcessTree 10 (Ms $t) (Ms $t) (Ms $t)",
-    ].join("\n");
-    const stopped = NodeChildProcess.execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8" },
-    );
-    assert.equal(stopped.trim(), "10");
-  });
 
   const spawnEndingTree = (command: ChildProcess.Command, ending?: WindowsTreeEnding) =>
     Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>

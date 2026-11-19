@@ -124,6 +124,23 @@ public static class CodeShipJobHost {
   string record = args.Length > 2 && args[0] == "run" ? args[2] : "";
   try {
    if(args.Length < 2) throw new ArgumentException("Expected an operation and a job name or pid.");
+   if(args[0]=="stop-process") {
+    IntPtr process=OpenProcess(0x101001,false,int.Parse(args[1]));
+    if(process==IntPtr.Zero) { if(Marshal.GetLastWin32Error()==87) return 0; throw new Win32Exception(); }
+    try {
+     if(Created(process)==long.Parse(args[2])) {
+      Check(TerminateProcess(process,1));
+      Check(WaitForSingleObject(process,0xffffffff)!=0xffffffff);
+     }
+    } finally { CloseHandle(process); }
+    return 0;
+   }
+   if(args[0]=="git-path") {
+    string target=args[2];
+    bool script=target.EndsWith(".cmd",StringComparison.OrdinalIgnoreCase)||target.EndsWith(".bat",StringComparison.OrdinalIgnoreCase);
+    args=script ? new[] { "run-raw",args[1],"",Path.Combine(Environment.SystemDirectory,"cmd.exe"),"/d","/s","/c","\"\""+target+"\" --exec-path\"" }
+     : new[] { "run",args[1],"",target,"--exec-path" };
+   }
    if(args[0]=="identity") {
     IntPtr process = OpenProcess(0x1000, false, int.Parse(args[1]));
     if(process == IntPtr.Zero) { if(Marshal.GetLastWin32Error() == 87) return 0; throw new Win32Exception(); }
@@ -137,7 +154,7 @@ public static class CodeShipJobHost {
     return 0;
    }
    bool owned=args[0]=="owned" || args[0]=="owned-raw";
-   if((args[0]!="run" && !owned) || args.Length < 4) throw new ArgumentException("Expected run or owned, job name, pid file or control descriptor and command.");
+   if((args[0]!="run" && args[0]!="run-raw" && !owned) || args.Length < 4) throw new ArgumentException("Expected run or owned, job name, pid file or control descriptor and command.");
    Startup startup;
    GetStartupInfo(out startup);
    if(owned) {
@@ -174,7 +191,7 @@ public static class CodeShipJobHost {
    startup.flags|=0x100;
    startup.input=GetStdHandle(-10); startup.output=GetStdHandle(-11); startup.error=GetStdHandle(-12);
    var command=new StringBuilder();
-   for(int i=3;i<args.Length;i++) { if(i>3)command.Append(' '); command.Append(args[0]=="owned-raw" && i>3 ? args[i] : Quote(args[i])); }
+   for(int i=3;i<args.Length;i++) { if(i>3)command.Append(' '); command.Append((args[0]=="owned-raw" || args[0]=="run-raw") && i>3 ? args[i] : Quote(args[i])); }
    IntPtr size=IntPtr.Zero;
    InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size);
    attributes=Marshal.AllocHGlobal(size);
@@ -185,6 +202,7 @@ public static class CodeShipJobHost {
    Check(UpdateProcThreadAttribute(attributes,0,new IntPtr(0x2000D),jobList,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero));
    var extended=new StartupEx { startup=startup, attributes=attributes };
    Check(CreateProcess(null,command,IntPtr.Zero,IntPtr.Zero,true,0x80004,IntPtr.Zero,null,ref extended,out child));
+   Directory.SetCurrentDirectory(Environment.SystemDirectory);
    if(record.Length != 0) Publish(record, child.pid + " " + Created(child.process));
    if(owned) SendControl(reply,"S " + child.pid + " " + Created(child.process));
    Check(ResumeThread(child.thread)!=0xffffffff);

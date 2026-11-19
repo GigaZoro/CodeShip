@@ -1,10 +1,3 @@
-// @effect-diagnostics globalDate:off globalDateInEffect:off - The walk compares times with process creation times, which the system clock stamps.
-/**
- * Ends a process and what it started on Windows, also after the process exited. Windows has no
- * process groups, and `taskkill /T` finds descendants only through a running leader, so what a
- * leader left running outlives it. This walks `Win32_Process` by `ParentProcessId`, which outlives
- * the parent, in PowerShell.
- */
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -15,113 +8,20 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { attachWindowsJob, windowsJobOf, type WindowsJob } from "./windowsJob.ts";
 import { owningWindowsJobs } from "./windowsJobSpawner.ts";
 
-/**
- * A child older than the parent it names belongs to an earlier holder of that pid, as does a root
- * created outside [from, to]; another holder's children count only from before it. Each pass stops
- * what the last one's processes started as they ended.
- * A process that ends before its stop is no error; one still running is.
- */
-export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
-  "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
-  "function Get-T3ProcessTree($all, $root, $since, $from, $to) {",
-  "  $targets = @{}",
-  "  $before = [long]::MaxValue",
-  "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
-  "  if ($holder) {",
-  "    if ($null -eq $from -or $null -eq $to) { throw 'Cannot stop a live process without its creation time.' }",
-  "    $made = Ms $holder.CreationDate",
-  "    if ($made -ge $from -and $made -le $to) { $targets[$root] = $made; $since = [math]::Max($since, $made) } else { $before = $made }",
-  "  }",
-  "  $queue = New-Object System.Collections.Queue",
-  "  $queue.Enqueue(@($root, $since, $before))",
-  "  $seen = @{ $root = $true }",
-  "  while ($queue.Count -gt 0) {",
-  "    $id, $after, $limit = $queue.Dequeue()",
-  "    foreach ($child in $all) {",
-  "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
-  "      $made = Ms $child.CreationDate",
-  "      if ($made -ge $after -and $made -lt $limit) {",
-  "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $made",
-  "        $queue.Enqueue(@($child.ProcessId, $made, [long]::MaxValue))",
-  "      }",
-  "    }",
-  "  }",
-  "  return $targets",
-  "}",
-  "function Stop-T3SnapshotProcess($id, $made) {",
-  "  $process = Get-Process -Id $id -ErrorAction SilentlyContinue",
-  "  if (-not $process) { return }",
-  "  try {",
-  // Process.Handle pins the object; StartTime and Kill use that cached handle, never a later PID holder.
-  "    $null = $process.Handle",
-  "    if ((Ms $process.StartTime) -eq $made) { $process.Kill(); $process.WaitForExit() }",
-  "  } catch { if (-not $process.HasExited) { throw } } finally { $process.Dispose() }",
-  "}",
-  "function Stop-T3ProcessTree($root, $since, $from = [double]::NegativeInfinity, $to = [double]::PositiveInfinity) {",
-  "  for ($pass = 0; $pass -lt 5; $pass++) {",
-  "    $targets = Get-T3ProcessTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root $since $from $to",
-  "    if ($targets.Count -eq 0) { return }",
-  "    foreach ($id in $targets.Keys) { Stop-T3SnapshotProcess $id $targets[$id] }",
-  "  }",
-  "  $remaining = Get-T3ProcessTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root $since $from $to",
-  "  if ($remaining.Count -gt 0) { throw 'The process tree is still running after five stop passes.' }",
-  "}",
-].join("\n");
-
-/** Times are milliseconds since the epoch, read from the wall clock the system stamps processes with. */
+/** Process ids are diagnostic only; stopping requires retained OS membership. */
 export interface WindowsProcessTreeRoot {
   readonly pid: number;
   readonly job?: WindowsJob;
-  /** Nothing in the tree started before this. */
-  readonly since: number;
-  /** When the root started; outside this window is another process. Null refuses any live holder. */
-  readonly created?: { readonly from: number; readonly to: number } | null;
 }
-
-/**
- * PowerShell's arguments that stop a tree once its root is appended to the last one as
- * ` <pid> <since> [<from> <to>]`, for code that cannot import this module. They hold no double
- * quote, which Node would escape.
- */
-const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
-  "-NoProfile",
-  "-NonInteractive",
-  "-Command",
-  ["$ErrorActionPreference = 'Stop'", WINDOWS_PROCESS_TREE_FUNCTIONS, "Stop-T3ProcessTree"].join(
-    "\n",
-  ),
-];
-
-export const windowsStopTreeArgs = (root: WindowsProcessTreeRoot): Array<string> => {
-  const call = [
-    root.pid,
-    root.since,
-    ...(root.created === undefined
-      ? []
-      : root.created === null
-        ? ["$null", "$null"]
-        : [root.created.from, root.created.to]),
-  ].join(" ");
-  return WINDOWS_STOP_TREE_ARGS.map((arg, index) =>
-    index === WINDOWS_STOP_TREE_ARGS.length - 1 ? `${arg} ${call}` : arg,
-  );
-};
-
-/** Call just before a spawn; what it returns gives the process's root once its pid is known. */
-export const windowsTreeRootFromNow = (): ((pid: number) => WindowsProcessTreeRoot) => {
-  const since = Date.now();
-  return (pid) => ({ pid, since, created: { from: since, to: Date.now() } });
-};
 
 /** Runs a spawn and pairs its handle with the root a stop of its tree needs. */
 export const withWindowsTreeRoot = <A extends { readonly pid: number }, E, R>(
   spawn: Effect.Effect<A, E, R>,
 ): Effect.Effect<{ readonly handle: A; readonly root: WindowsProcessTreeRoot }, E, R> =>
   Effect.suspend(() => {
-    const rootOf = windowsTreeRootFromNow();
     return Effect.map(spawn, (handle) => {
       const job = windowsJobOf(handle);
-      return { handle, root: { ...rootOf(handle.pid), ...(job === undefined ? {} : { job }) } };
+      return { handle, root: { pid: handle.pid, ...(job === undefined ? {} : { job }) } };
     });
   });
 
@@ -149,15 +49,17 @@ export const withoutWindowsTreeEnding = (spawner: Spawner): Spawner =>
 export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
   function* (root: WindowsProcessTreeRoot) {
     const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
+    if (root.job === undefined)
+      return yield* stopFailed(
+        root,
+        "BadResource",
+        "No retained Windows job owns this process family",
+      );
     const handle = yield* spawner.spawn(
-      ChildProcess.make(
-        root.job?.host ?? "powershell.exe",
-        root.job === undefined ? windowsStopTreeArgs(root) : ["stop", root.job.name],
-        {
-          stdin: "ignore",
-          stdout: "ignore",
-        },
-      ),
+      ChildProcess.make(root.job.host, ["stop", root.job.name], {
+        stdin: "ignore",
+        stdout: "ignore",
+      }),
     );
     const [stderr, exitCode] = yield* Effect.all(
       [
@@ -202,17 +104,17 @@ export const windowsTreeStopper = Effect.map(
 );
 
 /**
- * When `endingWindowsTrees` stops a tree, which starts PowerShell. `always`: on a kill or the scope's
+ * When `endingWindowsTrees` stops a tree, through its retained job. `always`: on a kill or the scope's
  * close, for an agent's CLI. `leftBehind`: on a kill, a close while it runs or by interruption, or a
  * close with a begun read of its output unended, as when a leftover holds that pipe; a command that
- * exits and closes its output costs no walk.
+ * exits and closes its output needs no stop helper.
  */
 export type WindowsTreeEnding = "always" | "leftBehind";
 
 /**
  * Ends spawned processes with their trees on Windows, also after they exited, as a process group
  * does on POSIX, when `ending` says to. Wrapping a wrapped spawner replaces its policy, so one
- * process never costs two walks. An unreferenced process outlives its scope. A pipeline fails: its
+ * process never starts two stop helpers. An unreferenced process outlives its scope. A pipeline fails: its
  * handle reports only the last process, so what an earlier one left running would survive.
  */
 export const endingWindowsTrees = (
@@ -236,7 +138,7 @@ export const endingWindowsTrees = (
       const { handle, root } = yield* withWindowsTreeRoot(owner.spawn(command));
       let referenced = true;
       let unendedReads = 0;
-      // A kill and the scope's close share one walk.
+      // A kill and the scope's close share one stop.
       const stopTree = yield* Effect.cached(
         stopWindowsProcessTree(root).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, inner),
