@@ -241,39 +241,56 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "$t = [DateTime]::UtcNow",
       "function P($id, $parent, $seconds) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $t.AddSeconds($seconds) } }",
       `$all = @(${rows})`,
-      "(Get-T3ProcessTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t) (Ms $t)).Keys | Sort-Object",
+      "(Get-T3ProcessTree $all 10 (Ms $t.AddSeconds(-2)) (Ms $t) (Ms $t)).Targets.Keys | Sort-Object",
     );
     assert.deepEqual(tree.trim().split(/\r?\n/), expected);
   });
 
   /**
-   * Lines that make the walk's first snapshot hold only `pid`, created when `first` says, and each
-   * later one hold it created when `later` says, or nothing without it.
+   * Lines that make the walk's first snapshot hold the processes `first` lists and each later one
+   * those `later` lists, as `P` calls; `$global:walks` counts the snapshots taken.
    */
-  const snapshots = (pid: string, first: string, later = "$null") => [
-    `$first = ${first}`,
-    `$later = ${later}`,
+  const snapshots = (first: string, later = "") => [
+    "function P($id, $parent, $created) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; CreationDate = $created } }",
+    `$first = @(${first})`,
+    `$later = @(${later})`,
     "$global:walks = 0",
-    `function Get-CimInstance { $global:walks++; $created = if ($global:walks -eq 1) { $first } else { $later }; if ($created) { [pscustomobject]@{ ProcessId = ${pid}; ParentProcessId = 0; CreationDate = $created } } }`,
+    "function Get-CimInstance { $global:walks++; if ($global:walks -eq 1) { $first } else { $later } }",
   ];
 
-  // $real is when the target was created. A snapshot that shows another time saw another process
-  // hold its pid, and the target only took the pid after that walk.
-  it.each<[string, string, string | undefined, "stopped" | "spared"]>([
-    ["ends the target the walk saw", "$real", undefined, "stopped"],
+  // $real is when the target was created and $near another time in its millisecond; no process holds
+  // $gone. A snapshot that lists the target at $near saw another process hold its pid.
+  it.each<[string, string, string, string, "stopped" | "spared"]>([
+    ["ends the target the walk saw", "$target 0", "(P $target 0 $real)", "", "stopped"],
     [
       "spares a process that took the pid within the millisecond of the one the walk saw",
-      "$real.AddTicks($(if ($real.Ticks % 10000 -lt 20) { 20 } else { -20 }))",
-      undefined,
+      "$target 0",
+      "(P $target 0 $near)",
+      "",
       "spared",
     ],
     [
-      "spares a process that took the root's pid after the first pass",
-      "$real.AddMilliseconds(-5)",
-      "$real",
+      "spares a process that took the root's pid after the first pass, in the same millisecond",
+      "$target 0",
+      "(P $target 0 $near)",
+      "(P $target 0 $real)",
       "spared",
     ],
-  ])("%s", async (_, first, later, expected) => {
+    [
+      "spares what an earlier holder of the root's pid started, after the root ended",
+      "$gone 0",
+      "(P $gone 0 $real.AddMilliseconds(100)), (P $target $gone $real)",
+      "(P $target $gone $real)",
+      "spared",
+    ],
+    [
+      "spares what a later holder of the root's pid started, after that holder ended",
+      "$gone $early $early $early",
+      "(P $gone 0 $real.AddMilliseconds(-100)), (P ($gone - 1) $gone $real.AddMilliseconds(-200)), (P $target $gone $real)",
+      "(P $target $gone $real)",
+      "spared",
+    ],
+  ])("%s", async (_, stop, first, later, expected) => {
     // Exits 7 once its input ends, so any other exit is the stop's.
     const target = NodeChildProcess.spawn(
       process.execPath,
@@ -281,42 +298,56 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
     );
     const exited = NodeEvents.once(target, "exit");
+    let walks: string;
     try {
-      runPowerShell(
-        `$real = (Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}').CreationDate`,
-        ...snapshots(`${target.pid}`, first, later),
-        `Stop-T3ProcessTree ${target.pid} 0`,
+      walks = runPowerShell(
+        `$target = ${target.pid}`,
+        "$real = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $target)).CreationDate",
+        "$near = $real.AddTicks($(if ($real.Ticks % 10000 -lt 20) { 20 } else { -20 }))",
+        "$early = Ms $real.AddSeconds(-10)",
+        "$gone = [int]::MaxValue",
+        ...snapshots(first, later),
+        `Stop-T3ProcessTree ${stop}`,
+        "$global:walks",
       );
     } finally {
       target.stdin.destroy();
     }
     const [code] = await exited;
-    assert.equal(code === 7 ? "spared" : "stopped", expected);
+    assert.deepEqual(
+      { outcome: code === 7 ? "spared" : "stopped", walks: walks.trim() },
+      { outcome: expected, walks: "2" },
+    );
   });
 
-  // The target ends after the walk read it. $seen was looked up while it ran, without opening it;
-  // $started holds it open.
+  // The target ends after the walk read it. $seen was looked up while it ran, without opening it,
+  // and $started holds it open. Once $started lets go, the pid is free; $seen.HasExited opens it
+  // again, so answering false stands in for a process that took it.
   it.each([
-    ["before the stop looks it up", "$null"],
-    ["before the stop opens it", "$seen"],
-    ["before the stop ends it", "$started"],
-  ])("reports no error for a target that ended %s", (_, lookedUp) => {
+    ["before the stop looks it up", "function Get-Process { }"],
+    [
+      "before the stop opens it and its pid goes to a running process",
+      "$started.Dispose(); $seen | Add-Member NoteProperty HasExited $false -Force; function Get-Process { $seen }",
+    ],
+    ["before the stop ends it", "function Get-Process { $started }"],
+  ])("reports no error for a target that ended %s", (_, lookUp) => {
     runPowerShell(
       `$started = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru`,
+      "$target = $started.Id",
       "$null = $started.get_Handle()",
-      "$seen = Get-Process -Id $started.Id",
-      ...snapshots("$started.Id", "$started.StartTime"),
+      "$seen = Get-Process -Id $target",
+      ...snapshots("(P $target 0 $started.StartTime)"),
       "$started.Kill()",
       "$started.WaitForExit()",
-      `function Get-Process { ${lookedUp} }`,
-      "Stop-T3ProcessTree $started.Id 0",
+      lookUp,
+      "Stop-T3ProcessTree $target 0",
     );
   });
 
   // The protected System process refuses to be opened, as any process the stop may not end does.
   it("reports the refusal of a target it may not open", () => {
     const code = runPowerShell(
-      ...snapshots("4", "[DateTime]::Now"),
+      ...snapshots("(P 4 0 ([DateTime]::Now))"),
       "try { Stop-T3ProcessTree 4 0 } catch { $_.Exception.GetBaseException().NativeErrorCode }",
     );
     assert.equal(code.trim(), "5");
