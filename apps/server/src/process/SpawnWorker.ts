@@ -216,10 +216,12 @@ class WorkerChild
       else if (fd === 1) this.stdout = stream as NodeStream.Readable;
       else if (fd === 2) this.stderr = stream as NodeStream.Readable;
     });
-    // An AbortSignal cannot cross to the worker, so this thread kills on abort as Node would.
-    // Its state is read once, here, so nothing after the launch is sent may throw; this listener
-    // runs even when another one stops the event.
-    if (signal !== undefined)
+    // An AbortSignal cannot cross to the worker, so this thread kills on abort as Node's spawn
+    // does, on the next tick for an abort that came first. The signal is read only here, before
+    // the launch is sent, so nothing after the send can throw; the listener runs even when
+    // another one stops the event.
+    if (signal?.aborted) process.nextTick(this.#abort);
+    else if (signal !== undefined)
       this.#abortListener = NodeEvents.EventEmitter.addAbortListener(signal, this.#abort);
   }
 
@@ -358,7 +360,7 @@ class SpawnWorker {
   readonly worker: NodeWorkerThreads.Worker;
   readonly children = new Map<number, WorkerChild>();
   readonly pool: SpawnWorkerPool;
-  /** Launches sent but not yet answered; the worker is inside CreateProcess for one of them. */
+  /** Launches being sent or not yet answered; the worker is inside CreateProcess for one of them. */
   launching = 0;
   closed = false;
 
@@ -381,13 +383,17 @@ class SpawnWorker {
     args: ReadonlyArray<string>,
     options: NodeChildProcess.SpawnOptions,
   ): WorkerChild {
-    const io = options.stdio;
-    const stdio =
-      typeof io === "string" || io === undefined ? [io ?? "pipe", io ?? "pipe", io ?? "pipe"] : io;
-    const { signal, ...rest } = options;
-    // The launch is sent last and the child registered after it, so a call that throws starts nothing.
+    // Counted before any caller getter runs, so none can close this launcher under the launch. The
+    // launch is sent last and the child registered after it, so a call that throws starts nothing.
+    this.launching++;
     let child: WorkerChild | undefined;
     try {
+      const io = options.stdio;
+      const stdio =
+        typeof io === "string" || io === undefined
+          ? [io ?? "pipe", io ?? "pipe", io ?? "pipe"]
+          : io;
+      const { signal, ...rest } = options;
       const launch: ToWorker = {
         type: "spawn",
         id,
@@ -404,13 +410,14 @@ class SpawnWorker {
       child = new WorkerChild(this, id, stdio, signal);
       this.post(launch);
     } catch (error) {
+      this.launching--;
       child?.abandon();
+      this.syncRef();
       this.pool.release(this);
       throw error;
     }
     child.launched();
     this.children.set(id, child);
-    this.launching++;
     this.syncRef();
     return child;
   }
