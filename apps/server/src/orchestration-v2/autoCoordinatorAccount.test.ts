@@ -435,3 +435,49 @@ it.each([
     expect(result.models.some((model) => model.slug === "claude-opus-5-5")).toBe(listed);
   },
 );
+
+it("names the reviewer on the account whose login can run the model", () => {
+  const ownId = ProviderInstanceId.make("claude_own");
+  const slug = "gpt-6.2-astra";
+  const codexModels = [{ slug, name: "Astra", isCustom: false, capabilities: null }];
+  const result = autoCoordinatorBriefInput({
+    driver: ProviderDriverKind.make("claudeAgent"),
+    selection: { instanceId: ownId, model: "claude-opus-5-5" },
+    projectId: ProjectId.make("project:auto"),
+    settings: {
+      ...DEFAULT_SERVER_SETTINGS,
+      autoModeModels: {
+        [ProviderDriverKind.make("claudeAgent")]: { model: "claude-opus-5-5" },
+        [ProviderDriverKind.make("codex")]: { model: slug },
+      },
+      providerInstances: Object.fromEntries(
+        [ownId, first, second].map((id) => [
+          id,
+          {
+            driver: ProviderDriverKind.make(id.startsWith("claude") ? "claudeAgent" : "codex"),
+            enabled: true,
+          },
+        ]),
+      ),
+      providerInstanceFailoverOrder: [first, second],
+    },
+    nowMs: Date.parse("2026-11-08T12:00:00Z"),
+    // The first account's login refused the model, so its own model list no longer decides.
+    recordedLimits: new Map([
+      [first, [{ resetAt: null, refusedAt: "2026-11-08T11:00:00Z", modelScope: "gpt_6_2_astra" }]],
+    ]),
+    orchestrationCapableInstanceIds: new Set([first, second]),
+    providers: [
+      provider(ownId, {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        models: [{ slug: "claude-opus-5-5", name: "Opus", isCustom: false, capabilities: null }],
+      }),
+      provider(first, { models: codexModels }),
+      provider(second, { models: codexModels }),
+    ],
+  });
+  expect(result.otherPrimary?.providerInstanceId).toBe(second);
+  expect(
+    result.otherProviders?.map((account) => [account.providerInstanceId, account.models.length]),
+  ).toEqual([[second, 1]]);
+});

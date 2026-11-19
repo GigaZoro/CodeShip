@@ -1,3 +1,7 @@
+## 2026-11-19 — Auto stops offering a model its account's login refuses
+
+- When a Codex account's ChatGPT login refuses a model it lists (`The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account`), that model is now held on that account for a few hours, like a model-scoped usage limit. Auto's reviewer and the models it offers then come from another account that can run the model. Before, the refusal was recorded as a plain error, so Auto kept naming the same account and every review on it failed at once.
+
 ## 2026-11-19 — Codex installation tests cover native launchers again
 
 - The Codex installation tests tell a native `volta-shim`, `mise` or `aqua-proxy` launcher apart from a script launcher again, and check both sides of the rule for a native Codex: with its code-mode host beside it, it is used; without it, the managed download replaces it. Since every test fixture became a script, losing either rule would have gone unnoticed. No change to the app.

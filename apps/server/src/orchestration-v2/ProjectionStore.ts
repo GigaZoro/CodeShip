@@ -4,7 +4,10 @@ import {
   threadFolderKeyOf,
 } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
-import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
+import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
+  MODEL_NOT_SUPPORTED_FAILURE_CODE,
+} from "@t3tools/provider-core/server/failure";
 import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -4538,6 +4541,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 julianday(json_extract(failure.payload_json, '$.failure.resetAt')),
                 julianday(failure.updated_at, '+5 hours')
               ) > julianday(${nowIso})
+            UNION ALL
+            -- A model this account's login cannot run holds that model like a model-scoped limit
+            -- with no reset: the account's own model list still offers it.
+            SELECT refused.thread_id, refused.run_id, refused.node_id, refused.payload_json
+            FROM orchestration_v2_projection_turn_items refused
+            WHERE refused.type = 'error' AND refused.status = 'failed'
+              AND json_extract(refused.payload_json, '$.failure.code') = ${MODEL_NOT_SUPPORTED_FAILURE_CODE}
+              AND julianday(refused.updated_at, '+5 hours') > julianday(${nowIso})
             UNION ALL
             -- A turn the provider holds until the reset; the first status term matches the
             -- live-item partial index.

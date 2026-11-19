@@ -1,3 +1,4 @@
+import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { assert, it, vi } from "@effect/vitest";
 import {
   ChatAttachmentId,
@@ -5619,6 +5620,38 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       assert.deepEqual(
         [...(yield* store.getUsageLimitedProviderInstances(holdEnd, coversScope))],
         [],
+      );
+      yield* store.apply({
+        id: EventId.make("event:limit-shell:model-not-supported"),
+        type: "turn-item.updated",
+        threadId,
+        runId: original.id,
+        nodeId: original.rootNodeId!,
+        driver,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...limitItem,
+          failure: {
+            class: "provider_error",
+            message:
+              "The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account.",
+            code: MODEL_NOT_SUPPORTED_FAILURE_CODE,
+            retryable: null,
+            modelScope: "gpt_6_2_astra",
+          },
+        },
+      });
+      // A refused model holds that model on the account, though the failure is no usage limit.
+      assert.deepEqual(
+        (yield* store.getUsageLimitedProviderInstances(now, coversScope)).get(providerInstanceId),
+        [
+          {
+            resetAt: null,
+            refusedAt: DateTime.formatIso(limitItem.updatedAt),
+            modelScope: "gpt_6_2_astra",
+          },
+        ],
       );
       yield* store.apply({
         id: EventId.make("event:limit-shell:model-scoped"),

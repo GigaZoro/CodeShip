@@ -1,5 +1,6 @@
 import {
   AUTHENTICATION_FAILED_FAILURE_CODE,
+  MODEL_NOT_SUPPORTED_FAILURE_CODE,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
@@ -6046,6 +6047,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       expectedClass: "provider_error",
       expectedCode: AUTHENTICATION_FAILED_FAILURE_CODE,
       expectedMessage: "sign-in was rejected",
+    },
+    {
+      name: "model-not-supported",
+      code: "other",
+      message:
+        "The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account.",
+      notification: true,
+      expectedClass: "provider_error",
+      expectedCode: MODEL_NOT_SUPPORTED_FAILURE_CODE,
+      expectedMessage: "gpt-6.2-astra",
     },
     {
       name: "rejected-login-code",
