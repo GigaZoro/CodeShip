@@ -1177,6 +1177,8 @@ it.effect(
 );
 
 it.effect.each([
+  "cancelled later with missing session",
+  "cancelled later with live session",
   "unprepared restart with missing session",
   "unprepared restart with live session",
   "missing session",
@@ -1367,6 +1369,15 @@ it.effect.each([
         );
         yield* Effect.addFinalizer(() => Effect.sync(() => session.mockRestore()));
       }
+      const cancelledLater = scenario.startsWith("cancelled later");
+      if (cancelledLater) {
+        yield* orchestrator.dispatch({
+          type: "queued-run.cancel",
+          commandId: CommandId.make("cancel-later"),
+          threadId,
+          runId: later.id,
+        });
+      }
       const commandId = CommandId.make("stop-queued-restart");
       const holdQueue = scenario !== "without queue hold";
       const onlyIfActive = scenario === "only if active";
@@ -1438,7 +1449,7 @@ it.effect.each([
             event.payload.id === later.id &&
             event.payload.queueHeld,
         ),
-        holdQueue ? 1 : 0,
+        holdQueue && !cancelledLater ? 1 : 0,
       );
       if (!onlyIfActive) assert.equal(stopped.subagents[0]?.completionDelivery?.state, "disposed");
     }).pipe(Effect.provide(layerTest)),
