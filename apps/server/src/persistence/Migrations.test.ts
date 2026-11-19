@@ -30,6 +30,28 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect.each([96, 97])("adds launch evidence after main migration %s already ran", (id) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: id });
+      assert.deepEqual(
+        (yield* history).at(-1),
+        id === 96 ? [96, "MonitoringThreadAnalyses"] : [97, "NodePayloadWithoutColumnKeys"],
+      );
+      const before = yield* sql<{ name: string }>`PRAGMA table_info(command_runs)`;
+      assert.isFalse(before.some((column) => column.name === "launch_error"));
+      yield* runMigrations();
+      const after = yield* sql<{ name: string; notnull: number }>`PRAGMA table_info(command_runs)`;
+      assert.equal(after.find((column) => column.name === "launch_error")?.notnull, 0);
+      assert.deepEqual((yield* history).slice(-3), [
+        [96, "MonitoringThreadAnalyses"],
+        [97, "NodePayloadWithoutColumnKeys"],
+        [98, "CommandLaunchError"],
+      ]);
+      assert.deepEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("keeps scheduler-owned occurrence history when migrating it into startup", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

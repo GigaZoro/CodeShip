@@ -15,6 +15,7 @@ import { leaderLeavingChild } from "./testing/leftoverChild.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
+  windowsStopTreeArgs,
   endingWindowsTrees,
   type WindowsTreeEnding,
   withoutWindowsTreeEnding,
@@ -235,6 +236,47 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       { encoding: "utf8" },
     );
     assert.deepEqual(tree.trim().split(/\r?\n/), expected);
+  });
+
+  it("refuses an unknown identity before selecting a live root or its descendants", () => {
+    const args = windowsStopTreeArgs({ pid: 10, since: 0, created: null });
+    const mock = [
+      "function Get-CimInstance { @([pscustomobject]@{ ProcessId = 10; ParentProcessId = 1; CreationDate = [DateTime]::UtcNow }, [pscustomobject]@{ ProcessId = 20; ParentProcessId = 10; CreationDate = [DateTime]::UtcNow.AddSeconds(-10) }) }",
+      "function Stop-Process { Write-Output 'unsafe stop' }",
+    ].join("\n");
+    const tree = NodeChildProcess.execFileSync(
+      "powershell.exe",
+      [...args.slice(0, -1), `${mock}\ntry { ${args.at(-1)} } catch { $_.Exception.Message }`],
+      { encoding: "utf8" },
+    );
+    assert.equal(tree.trim(), "Cannot stop a live process without its creation time.");
+  });
+
+  it("pins each selected process before checking its creation time and stopping it", () => {
+    const script = [
+      WINDOWS_PROCESS_TREE_FUNCTIONS,
+      "$t = [DateTime]::UtcNow; $script:passes = 0",
+      "function Get-CimInstance { if ($script:passes++ -eq 0) { @([pscustomobject]@{ ProcessId = 10; ParentProcessId = 1; CreationDate = $t }, [pscustomobject]@{ ProcessId = 20; ParentProcessId = 10; CreationDate = $t.AddSeconds(1) }) } }",
+      "function Get-Process($Id) {",
+      "  $p = [pscustomobject]@{ Id = $Id; Pinned = $false; StartTime = $(if ($Id -eq 10) { $t } else { $t.AddMilliseconds(1500) }); HasExited = $false }",
+      "  $p | Add-Member ScriptProperty Handle { $this.Pinned = $true; return 1 }",
+      "  $p | Add-Member ScriptMethod Kill { if (-not $this.Pinned) { throw 'unpinned stop' }; Write-Output $this.Id }",
+      "  $p | Add-Member ScriptMethod WaitForExit {}",
+      "  $p | Add-Member ScriptMethod Dispose {}",
+      "  return $p",
+      "}",
+      "function Stop-Process { Write-Output 'unsafe bare PID stop' }",
+      "Stop-T3ProcessTree 10 (Ms $t) (Ms $t) (Ms $t)",
+      "$script:passes = 0",
+      "function Get-CimInstance { if ($script:passes++ -eq 0) { [pscustomobject]@{ ProcessId = 10; ParentProcessId = 1; CreationDate = $t.AddMilliseconds(500) } } }",
+      "Stop-T3ProcessTree 10 (Ms $t) (Ms $t) (Ms $t)",
+    ].join("\n");
+    const stopped = NodeChildProcess.execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8" },
+    );
+    assert.equal(stopped.trim(), "10");
   });
 
   const spawnEndingTree = (command: ChildProcess.Command, ending?: WindowsTreeEnding) =>

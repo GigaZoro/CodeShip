@@ -14,8 +14,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
  * A child older than the parent it names belongs to an earlier holder of that pid, as does a root
- * created outside [from, to]; another holder's children count only from before it. The stop allows
- * a second of clock skew, and each pass stops what the last one's processes started as they ended.
+ * created outside [from, to]; another holder's children count only from before it. Each pass stops
+ * what the last one's processes started as they ended.
  * A process that ends before its stop is no error; one still running is.
  */
 export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
@@ -25,8 +25,9 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  $before = [long]::MaxValue",
   "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
   "  if ($holder) {",
+  "    if ($null -eq $from -or $null -eq $to) { throw 'Cannot stop a live process without its creation time.' }",
   "    $made = Ms $holder.CreationDate",
-  "    if ($made -ge $from -and $made -le $to) { $targets[$root] = $true; $since = [math]::Max($since, $made) } else { $before = $made }",
+  "    if ($made -ge $from -and $made -le $to) { $targets[$root] = $made; $since = [math]::Max($since, $made) } else { $before = $made }",
   "  }",
   "  $queue = New-Object System.Collections.Queue",
   "  $queue.Enqueue(@($root, $since, $before))",
@@ -37,21 +38,30 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
   "      $made = Ms $child.CreationDate",
   "      if ($made -ge $after -and $made -lt $limit) {",
-  "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $true",
+  "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $made",
   "        $queue.Enqueue(@($child.ProcessId, $made, [long]::MaxValue))",
   "      }",
   "    }",
   "  }",
   "  return $targets",
   "}",
+  "function Stop-T3SnapshotProcess($id, $made) {",
+  "  $process = Get-Process -Id $id -ErrorAction SilentlyContinue",
+  "  if (-not $process) { return }",
+  "  try {",
+  // Process.Handle pins the object; StartTime and Kill use that cached handle, never a later PID holder.
+  "    $null = $process.Handle",
+  "    if ((Ms $process.StartTime) -eq $made) { $process.Kill(); $process.WaitForExit() }",
+  "  } catch { if (-not $process.HasExited) { throw } } finally { $process.Dispose() }",
+  "}",
   "function Stop-T3ProcessTree($root, $since, $from = [double]::NegativeInfinity, $to = [double]::PositiveInfinity) {",
   "  for ($pass = 0; $pass -lt 5; $pass++) {",
-  "    $targets = Get-T3ProcessTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root ($since - 1000) ($from - 1000) ($to + 1000)",
+  "    $targets = Get-T3ProcessTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root $since $from $to",
   "    if ($targets.Count -eq 0) { return }",
-  "    foreach ($id in $targets.Keys) {",
-  "      try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { if (Get-Process -Id $id -ErrorAction SilentlyContinue) { throw } }",
-  "    }",
+  "    foreach ($id in $targets.Keys) { Stop-T3SnapshotProcess $id $targets[$id] }",
   "  }",
+  "  $remaining = Get-T3ProcessTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root $since $from $to",
+  "  if ($remaining.Count -gt 0) { throw 'The process tree is still running after five stop passes.' }",
   "}",
 ].join("\n");
 
@@ -60,8 +70,8 @@ export interface WindowsProcessTreeRoot {
   readonly pid: number;
   /** Nothing in the tree started before this. */
   readonly since: number;
-  /** When the root started; a process holding its pid outside this window is another process. */
-  readonly created?: { readonly from: number; readonly to: number };
+  /** When the root started; outside this window is another process. Null refuses any live holder. */
+  readonly created?: { readonly from: number; readonly to: number } | null;
 }
 
 /**
@@ -82,7 +92,11 @@ export const windowsStopTreeArgs = (root: WindowsProcessTreeRoot): Array<string>
   const call = [
     root.pid,
     root.since,
-    ...(root.created === undefined ? [] : [root.created.from, root.created.to]),
+    ...(root.created === undefined
+      ? []
+      : root.created === null
+        ? ["$null", "$null"]
+        : [root.created.from, root.created.to]),
   ].join(" ");
   return WINDOWS_STOP_TREE_ARGS.map((arg, index) =>
     index === WINDOWS_STOP_TREE_ARGS.length - 1 ? `${arg} ${call}` : arg,

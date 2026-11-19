@@ -135,6 +135,32 @@ const startBesideBootService = Effect.fn("test.startBesideBootService")(function
 });
 
 describe("server ownership", () => {
+  it.effect("reads Windows creation time when Get-Process StartTime is inaccessible", () =>
+    Effect.gen(function* () {
+      const made = yield* ServerRuntimeState.readProcessStartedAt(42);
+      assert.equal(made, 1_794_960_000_123);
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(ProcessRunner.ProcessRunner, {
+        run: (input) =>
+          Effect.succeed({
+            stdout: input.args.some((arg) => arg.includes("Get-CimInstance Win32_Process"))
+              ? "1794960000123"
+              : "",
+            stderr: "Access denied to Get-Process.StartTime",
+            code: ChildProcessSpawner.ExitCode(
+              input.args.some((arg) => arg.includes("Get-CimInstance Win32_Process")) ? 0 : 1,
+            ),
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          }),
+      }),
+    ),
+  );
+
   // An empty home, so no boot service unit installed on this machine is read.
   const layerOwnership = Layer.mergeAll(
     ProcessRunner.layer,
