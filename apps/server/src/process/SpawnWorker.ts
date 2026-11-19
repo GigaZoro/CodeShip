@@ -184,6 +184,7 @@ class WorkerChild
   readonly #writes = new Map<number, Array<(error?: Error | null) => void>>();
   readonly #finals = new Map<number, (error?: Error | null) => void>();
   readonly #paused = new Set<number>();
+  #abandoned = false;
 
   readonly worker: SpawnWorker;
   readonly id: number;
@@ -212,7 +213,7 @@ class WorkerChild
       _encoding: BufferEncoding,
       callback: (error?: Error | null) => void,
     ) => {
-      if (this.worker.closed) {
+      if (this.#unreachable()) {
         callback(brokenPipe());
         return;
       }
@@ -223,6 +224,10 @@ class WorkerChild
       this.worker.post({ type: "write", id: this.id, fd, data }, [data.buffer]);
     };
     const final = (callback: (error?: Error | null) => void) => {
+      if (this.#unreachable()) {
+        callback(brokenPipe());
+        return;
+      }
       this.#finals.set(fd, callback);
       this.worker.post({ type: "end", id: this.id, fd });
     };
@@ -234,6 +239,11 @@ class WorkerChild
     if (fd === 0) return new NodeStream.Writable({ write, final, destroy });
     if (fd <= 2) return new NodeStream.Readable({ read, destroy });
     return new NodeStream.Duplex({ read, write, final, destroy, allowHalfOpen: true });
+  }
+
+  /** No reply for this child can arrive, so a request sent now would never settle. */
+  #unreachable(): boolean {
+    return this.#abandoned || this.worker.closed;
   }
 
   onData(fd: number, data: Uint8Array): void {
@@ -295,6 +305,8 @@ class WorkerChild
 
   /** The worker sends nothing more for this child: end output so readers finish, and fail waiting writes. */
   abandon(): void {
+    // First, so a write or end that a failure callback below makes is refused, not lost.
+    this.#abandoned = true;
     // Not destroy(error): Effect leaves an unread stderr's pipe without an error listener.
     for (const stream of this.stdio) {
       if (stream && "push" in stream && !stream.readableEnded) stream.push(null);

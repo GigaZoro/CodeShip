@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off processEnvInEffect:off - fixtures need real paths, the process resource list and the live environment.
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import type * as NodeStream from "node:stream";
+import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
@@ -139,29 +141,53 @@ describe("SpawnWorker", () => {
   );
 
   it.live(
-    "fails waiting writes and ends output when a launch fails or its launcher dies first",
+    "fails waiting and later writes and ends, and ends output, once a child leaves its launcher",
     () =>
       Effect.gen(function* () {
-        for (const launch of ["finds no command", "loses its launcher first"] as const) {
-          const child =
-            launch === "finds no command"
-              ? SpawnWorker.spawnPiped("t3-missing-command-25245", [], {})
-              : SpawnWorker.spawnPiped(process.execPath, ["-e", ""], {});
-          const events: Array<string | undefined> = [];
-          child.stdin.write("input", (error) => events.push(error?.message));
-          const failed = new Promise<void>((resolve) =>
-            child.once("error", () => {
-              events.push("error");
-              resolve();
-            }),
+        // spawnPiped gives no descriptor beyond stderr; the pool it uses does.
+        const pool = SpawnWorker.spawnPiped(process.execPath, ["-e", ""], {}).worker.pool;
+        for (const leave of ["finds no command", "loses its launcher first", "closes"] as const) {
+          const missing = leave === "finds no command";
+          const child = pool.spawn(
+            missing ? "t3-missing-command-25245" : process.execPath,
+            missing ? [] : ["-e", ""],
+            { stdio: ["pipe", "pipe", "pipe", "pipe"] },
           );
-          // The launcher reports the start by a message, which cannot have arrived yet.
-          if (launch === "loses its launcher first") child.worker.fail(new Error("lost"));
-          yield* Effect.promise(() => failed);
-          // As with Node, the launch error comes first.
-          expect([launch, events]).toEqual([launch, ["error", "write EPIPE"]]);
-          const ended = new Promise((resolve) => child.stdout.once("end", resolve).resume());
-          yield* Effect.promise(() => ended);
+          const output = NodeStreamPromises.finished(child.stdout!.resume());
+          const extra = child.stdio[3] as NodeStream.Duplex;
+          // A refused write or end errors the stream, as a broken pipe would.
+          const extraClosed = new Promise((resolve) =>
+            extra.on("error", () => {}).once("close", resolve),
+          );
+          const events: Array<string | undefined> = [];
+          const extraEnd = vi.fn();
+          if (leave === "closes") {
+            yield* Effect.promise(() => new Promise((resolve) => child.once("close", resolve)));
+            extra.write("late", (error) => events.push(error?.message));
+            extra.end(extraEnd);
+          } else {
+            // A caller may end another pipe from the callback of a write that failed.
+            child.stdin?.write("input", (error) => {
+              events.push(error?.message);
+              extra.end(extraEnd);
+            });
+            const failed = new Promise<void>((resolve) =>
+              child.once("error", () => {
+                events.push("error");
+                resolve();
+              }),
+            );
+            // The launcher reports the start by a message, which cannot have arrived yet.
+            if (leave === "loses its launcher first") child.worker.fail(new Error("lost"));
+            yield* Effect.promise(() => failed);
+          }
+          yield* Effect.promise(() => Promise.all([extraClosed, output]));
+          // As with Node, a failed launch reports its error before the writes waiting on it fail.
+          expect([leave, events, extraEnd.mock.calls]).toEqual([
+            leave,
+            leave === "closes" ? ["write EPIPE"] : ["error", "write EPIPE"],
+            [[expect.objectContaining({ code: "EPIPE" })]],
+          ]);
         }
       }),
   );
