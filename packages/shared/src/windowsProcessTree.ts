@@ -12,6 +12,8 @@ import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { attachWindowsJob, windowsJobOf, type WindowsJob } from "./windowsJob.ts";
+
 /**
  * A child older than the parent it names belongs to an earlier holder of that pid, as does a root
  * created outside [from, to]; another holder's children count only from before it. Each pass stops
@@ -68,6 +70,7 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
 /** Times are milliseconds since the epoch, read from the wall clock the system stamps processes with. */
 export interface WindowsProcessTreeRoot {
   readonly pid: number;
+  readonly job?: WindowsJob;
   /** Nothing in the tree started before this. */
   readonly since: number;
   /** When the root started; outside this window is another process. Null refuses any live holder. */
@@ -79,7 +82,7 @@ export interface WindowsProcessTreeRoot {
  * ` <pid> <since> [<from> <to>]`, for code that cannot import this module. They hold no double
  * quote, which Node would escape.
  */
-export const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
+const WINDOWS_STOP_TREE_ARGS: ReadonlyArray<string> = [
   "-NoProfile",
   "-NonInteractive",
   "-Command",
@@ -115,7 +118,10 @@ export const withWindowsTreeRoot = <A extends { readonly pid: number }, E, R>(
 ): Effect.Effect<{ readonly handle: A; readonly root: WindowsProcessTreeRoot }, E, R> =>
   Effect.suspend(() => {
     const rootOf = windowsTreeRootFromNow();
-    return Effect.map(spawn, (handle) => ({ handle, root: rootOf(handle.pid) }));
+    return Effect.map(spawn, (handle) => {
+      const job = windowsJobOf(handle);
+      return { handle, root: { ...rootOf(handle.pid), ...(job === undefined ? {} : { job }) } };
+    });
   });
 
 const STOP_TIMEOUT = Duration.seconds(30);
@@ -143,10 +149,14 @@ export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
   function* (root: WindowsProcessTreeRoot) {
     const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
     const handle = yield* spawner.spawn(
-      ChildProcess.make("powershell.exe", windowsStopTreeArgs(root), {
-        stdin: "ignore",
-        stdout: "ignore",
-      }),
+      ChildProcess.make(
+        root.job?.host ?? "powershell.exe",
+        root.job === undefined ? windowsStopTreeArgs(root) : ["stop", root.job.name],
+        {
+          stdin: "ignore",
+          stdout: "ignore",
+        },
+      ),
     );
     const [stderr, exitCode] = yield* Effect.all(
       [
@@ -162,7 +172,7 @@ export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
       { concurrency: "unbounded" },
     );
     if (exitCode !== 0) {
-      return yield* stopFailed(root, "Unknown", `PowerShell exited ${exitCode}: ${stderr.trim()}`);
+      return yield* stopFailed(root, "Unknown", `Stop helper exited ${exitCode}: ${stderr.trim()}`);
     }
   },
   (effect, root) =>
@@ -171,7 +181,7 @@ export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
       Effect.timeoutOrElse({
         duration: STOP_TIMEOUT,
         orElse: () =>
-          Effect.fail(stopFailed(root, "TimedOut", "PowerShell did not finish within 30 s")),
+          Effect.fail(stopFailed(root, "TimedOut", "The stop helper did not finish within 30 s")),
       }),
     ),
 );
@@ -254,7 +264,7 @@ export const endingWindowsTrees = (
             }),
           );
         });
-      return ChildProcessSpawner.makeHandle({
+      const wrappedHandle = ChildProcessSpawner.makeHandle({
         ...handle,
         stdout: read(handle.stdout),
         stderr: read(handle.stderr),
@@ -278,6 +288,8 @@ export const endingWindowsTrees = (
           ),
         ),
       });
+      if (root.job !== undefined) attachWindowsJob(wrappedHandle, root.job);
+      return wrappedHandle;
     }),
   );
   beneath.set(wrapped, inner);

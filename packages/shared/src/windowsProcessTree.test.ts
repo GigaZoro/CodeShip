@@ -13,12 +13,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { leaderLeavingChild } from "./testing/leftoverChild.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
+import { attachWindowsJob, type WindowsJob } from "./windowsJob.ts";
 import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   windowsStopTreeArgs,
   endingWindowsTrees,
   type WindowsTreeEnding,
   withoutWindowsTreeEnding,
+  withWindowsTreeRoot,
 } from "./windowsProcessTree.ts";
 
 it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it cannot reach", () =>
@@ -38,8 +40,10 @@ it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it can
 const fakeWindowsSpawner = (options: {
   readonly running: boolean;
   readonly output: "ends" | "held";
+  readonly job?: WindowsJob;
 }) => {
   const events: Array<"kill" | "walk"> = [];
+  const jobsStopped: Array<string> = [];
   let running = options.running;
   const handle = (output: Stream.Stream<Uint8Array>) =>
     ChildProcessSpawner.makeHandle({
@@ -62,15 +66,22 @@ const fakeWindowsSpawner = (options: {
   const byte = Stream.make(new Uint8Array([1]));
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
+      if (command._tag === "StandardCommand" && command.command === options.job?.host) {
+        assert.equal(command.args[0], "stop");
+        jobsStopped.push(command.args[1]!);
+        return handle(Stream.empty);
+      }
       if (command._tag === "StandardCommand" && command.command === "powershell.exe") {
         events.push("walk");
         return handle(Stream.empty);
       }
       // What a leader left running holds a pipe it inherited open.
-      return handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never));
+      const child = handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never));
+      if (options.job !== undefined) attachWindowsJob(child, options.job);
+      return child;
     }),
   );
-  return { events, spawner };
+  return { events, jobsStopped, spawner };
 };
 
 type Use = (
@@ -80,6 +91,25 @@ const readToEnd: Use = (handle) => Stream.runDrain(handle.all);
 const readNothing: Use = () => Effect.void;
 
 describe("endingWindowsTrees stops a Windows tree", () => {
+  it.effect("retains the owned job through wrappers and stops its members without a PID walk", () =>
+    Effect.gen(function* () {
+      const job = { host: "job-host.exe", name: "Global\\CodeShip.Job.test" };
+      const fake = fakeWindowsSpawner({ running: false, output: "ends", job });
+      const outer = endingWindowsTrees(endingWindowsTrees(fake.spawner, "win32"), "win32");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { handle, root } = yield* outer
+            .spawn(ChildProcess.make("leader"))
+            .pipe(withWindowsTreeRoot);
+          assert.deepEqual(root.job, job);
+          yield* handle.kill();
+        }),
+      );
+      assert.deepEqual(fake.jobsStopped, [job.name]);
+      assert.deepEqual(fake.events, ["kill"]);
+    }),
+  );
+
   it.effect.each<
     [string, WindowsTreeEnding, { running: boolean; output: "ends" | "held" }, Use, number]
   >([

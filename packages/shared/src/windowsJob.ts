@@ -136,7 +136,7 @@ public static class CodeShipJobHost {
     if(args[0]=="stop") Stop(job); else Console.WriteLine(Count(job));
     return 0;
    }
-   bool owned=args[0]=="owned";
+   bool owned=args[0]=="owned" || args[0]=="owned-raw";
    if((args[0]!="run" && !owned) || args.Length < 4) throw new ArgumentException("Expected run or owned, job name, pid file or control descriptor and command.");
    Startup startup;
    GetStartupInfo(out startup);
@@ -174,7 +174,7 @@ public static class CodeShipJobHost {
    startup.flags|=0x100;
    startup.input=GetStdHandle(-10); startup.output=GetStdHandle(-11); startup.error=GetStdHandle(-12);
    var command=new StringBuilder();
-   for(int i=3;i<args.Length;i++) { if(i>3)command.Append(' '); command.Append(Quote(args[i])); }
+   for(int i=3;i<args.Length;i++) { if(i>3)command.Append(' '); command.Append(args[0]=="owned-raw" && i>3 ? args[i] : Quote(args[i])); }
    IntPtr size=IntPtr.Zero;
    InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size);
    attributes=Marshal.AllocHGlobal(size);
@@ -297,3 +297,17 @@ export const WindowsJobHost = Context.Reference<ReturnType<typeof prepareWindows
   "@t3tools/shared/WindowsJobHost",
   { defaultValue: () => prepareWindowsJobHost() },
 );
+
+export interface WindowsJob {
+  readonly host: string;
+  readonly name: string;
+}
+
+const jobs = new WeakMap<object, WindowsJob>();
+
+/** Retain OS ownership when an adapter passes a handle through another spawner. */
+export const attachWindowsJob = (handle: object, job: WindowsJob): void => {
+  jobs.set(handle, job);
+};
+
+export const windowsJobOf = (handle: object): WindowsJob | undefined => jobs.get(handle);
