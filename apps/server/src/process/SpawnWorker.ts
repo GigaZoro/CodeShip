@@ -11,7 +11,6 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   type WindowsProcessTreeRoot,
   windowsStopTreeArgs,
-  windowsTreeRootFromNow,
 } from "@t3tools/shared/windowsProcessTree";
 
 // Windows runs CreateProcess synchronously on the calling thread, and antivirus or a busy disk can
@@ -40,7 +39,14 @@ interface SerializedError {
 }
 
 type FromWorker =
-  | { readonly type: "spawn"; readonly id: number; readonly pid: number | undefined }
+  | {
+      readonly type: "spawn";
+      readonly id: number;
+      readonly pid: number | undefined;
+      /** Wall-clock milliseconds around the worker's own spawn() call, which creates the process. */
+      readonly createdFrom: number;
+      readonly createdTo: number;
+    }
   | { readonly type: "error"; readonly id: number; readonly error: SerializedError }
   | { readonly type: "data"; readonly id: number; readonly fd: number; readonly data: Uint8Array }
   | {
@@ -82,14 +88,17 @@ parentPort.on("message", (request) => {
   const { id } = request;
   if (request.type === "spawn") {
     let child;
+    // Measured here, not when the request was queued: a pid's earlier holder may start processes meanwhile.
+    const createdFrom = Date.now();
     try {
       child = spawn(request.command, request.args, request.options);
     } catch (error) {
       post({ type: "error", id, error: serialize(error) });
       return;
     }
+    const createdTo = Date.now();
     children.set(id, child);
-    child.on("spawn", () => post({ type: "spawn", id, pid: child.pid }));
+    child.on("spawn", () => post({ type: "spawn", id, pid: child.pid, createdFrom, createdTo }));
     child.on("error", (error) => post({ type: "error", id, error: serialize(error) }));
     child.on("exit", (code, signal) => post({ type: "exit", id, code, signal }));
     // Output can still arrive after exit; close follows the last of it.
@@ -160,8 +169,6 @@ class WorkerChild
 {
   pid: number | undefined;
   treeRoot: WindowsProcessTreeRoot | undefined;
-  // Constructed just before its spawn is posted, so the tree's window starts before the process.
-  readonly rootOf = windowsTreeRootFromNow();
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   stdin: NodeStream.Writable | null = null;
@@ -365,7 +372,10 @@ class SpawnWorker {
         this.launching--;
         child.spawned = true;
         child.pid = message.pid;
-        if (message.pid !== undefined) child.treeRoot = child.rootOf(message.pid);
+        if (message.pid !== undefined) {
+          const created = { from: message.createdFrom, to: message.createdTo };
+          child.treeRoot = { pid: message.pid, since: created.from, created };
+        }
         child.emit("spawn");
         break;
       case "error":
