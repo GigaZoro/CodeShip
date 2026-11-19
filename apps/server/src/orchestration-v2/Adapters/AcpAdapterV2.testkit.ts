@@ -225,7 +225,8 @@ export function makeAcpReplayRuntime(input: {
           spawn: {
             command: process.execPath,
             args: acpReplayAgentArgs(input.scriptPath),
-            cwd: runtimeInput.cwd,
+            // A process whose cwd is the workspace keeps Windows from removing it until the kernel reaps it.
+            cwd: input.statusPath.replace(/[\\/][^\\/]*$/, ""),
             env: {
               ...process.env,
               T3_ACP_REPLAY_TRANSCRIPT_PATH: transcriptPath,

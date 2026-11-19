@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
@@ -593,7 +594,8 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
     }),
   );
 
-  it.effect("keeps executable bits and installs a readable folder", () =>
+  // Windows has no execute bits.
+  it.effect.skipIf(isWindowsHost)("keeps executable bits and installs a readable folder", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
       const skillPath = yield* h.writeSkill("run", {
@@ -639,7 +641,10 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
         "nested/keep.txt": "keep",
       });
       const badName = yield* h.writeSkill("bad name", { "SKILL.md": "body" });
-      const badPath = yield* h.writeSkill("odd", { "SKILL.md": "body", "a:b.txt": "x" });
+      // Windows reads "a:b.txt" as a data stream of "a", so the name cannot exist there.
+      const badPath = isWindowsHost
+        ? undefined
+        : yield* h.writeSkill("odd", { "SKILL.md": "body", "a:b.txt": "x" });
       const caseClash = yield* h.writeSkill("clash", {
         "SKILL.md": "body",
         "Notes.txt": "a",
@@ -659,12 +664,14 @@ it.layer(NodeServices.layer)("ProviderSkills", (it) => {
           "nested/keep.txt",
         ]);
         assert.equal(yield* exportReason(badName), "invalidName");
-        const oddName = yield* service
-          .exportSkill({ instanceId: sourceId, skillPath: badPath })
-          .pipe(Effect.flip);
-        assert.equal(oddName.reason, "invalidPath");
-        assert.equal(oddName.path, "a:b.txt");
-        assert.include(oddName.message, "a:b.txt");
+        if (badPath !== undefined) {
+          const oddName = yield* service
+            .exportSkill({ instanceId: sourceId, skillPath: badPath })
+            .pipe(Effect.flip);
+          assert.equal(oddName.reason, "invalidPath");
+          assert.equal(oddName.path, "a:b.txt");
+          assert.include(oddName.message, "a:b.txt");
+        }
         // A case-sensitive disk can hold both; the target may not, so export refuses early.
         const fsIsCaseSensitive =
           (yield* h.fs.readDirectory(h.path.join(h.sourceSkills, "clash"))).length === 3;

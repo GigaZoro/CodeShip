@@ -141,7 +141,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       return {
         stdout:
           input.args[0] === "--version"
-            ? `t3 v${/versions\/([^/]+)\//.exec(input.command)?.[1] ?? "1.2.3"}\n`
+            ? `t3 v${/versions[\\/]([^\\/]+)[\\/]/.exec(input.command)?.[1] ?? "1.2.3"}\n`
             : input.command === "loginctl" && input.args[0] === "show-user"
               ? `${control.linger}\n`
               : input.args[1] === "is-enabled"
@@ -326,7 +326,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       });
       expect(plan.program).toEqual([runtime.entryPath, "__service-launcher"]);
       const unit = yield* fs.readFileString(plan.unitPath);
-      expect(unit).toContain(`ExecStart=${runtime.entryPath} __service-launcher`);
+      expect(BootService.bootServiceProgramOf(unit)).toBe(runtime.entryPath);
       expect(unit).toContain("OOMPolicy=continue");
       expect(unit).toContain("CPUWeight=1000");
       expect(unit).toContain("IOWeight=1000");
@@ -491,7 +491,9 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           protocol: SERVICE_LAUNCHER_PROTOCOL,
           activeVersion: "1.2.4",
         });
-        expect(yield* fs.readFileString(plan.unitPath)).toContain("versions/1.2.4/t3");
+        expect(BootService.bootServiceProgramOf(yield* fs.readFileString(plan.unitPath))).toBe(
+          pinnedRuntimePaths(path, baseDir, "1.2.4", platform).entryPath,
+        );
         expect(
           commands.filter(
             (command) =>
