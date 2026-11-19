@@ -499,7 +499,8 @@ class SpawnWorkerPool {
       stdio: "ignore",
       windowsHide: true,
     })
-      .on("error", () => finish(stop.spawned))
+      // A launcher that died may have started the stop before it could report the start.
+      .on("error", () => finish(stop.spawned || stop.worker.closed))
       .on("exit", () => finish(true));
   }
 
