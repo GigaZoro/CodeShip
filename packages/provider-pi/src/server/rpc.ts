@@ -225,15 +225,12 @@ export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSp
   const hasExited = (): boolean =>
     childExited || !isProcessAlive(Number(child.pid), signalProcessGroup);
 
-  // Windows process.kill leaves extension children and pipes alive, also after Pi exited. Each
-  // walk starts PowerShell, so terminate and the scope's finalizer share one.
+  // Windows process.kill leaves extension children and pipes alive, also after Pi exited.
   const terminateProcess =
     platform === "win32"
-      ? yield* Effect.cached(
-          stopTree.pipe(
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.ignore({ log: "Error" }),
-          ),
+      ? stopTree.pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.ignore({ log: "Error" }),
         )
       : terminatePiProcess(killProcessGroup, hasExited);
 

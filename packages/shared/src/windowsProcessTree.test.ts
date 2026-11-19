@@ -41,8 +41,9 @@ it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it can
 
 /**
  * A Windows spawner whose process has exited unless `running`, whose kill fails if `killFails`, and
- * whose `exit` ends it. It records each kill and walk, and what each walk was told: when the process
- * ended, or that it ran. A walk told it ran finds it `gone` if set, as it `exits` then or `lingers`.
+ * whose `exit` ends it, or fails its exit code with the method it names. It records each kill and
+ * walk, and what each walk was told: when the process ended, or that it ran. A walk told it ran
+ * finds it `gone` if set, as it `exits` then or `lingers`.
  */
 const fakeWindowsSpawner = (options: {
   readonly running: boolean;
@@ -52,8 +53,21 @@ const fakeWindowsSpawner = (options: {
 }) => {
   const events: Array<"kill" | "walk"> = [];
   const told: Array<number | "running" | undefined> = [];
-  const exited = Deferred.makeUnsafe<ChildProcessSpawner.ExitCode>();
-  const exit = () => Deferred.doneUnsafe(exited, Effect.succeed(ChildProcessSpawner.ExitCode(0)));
+  const exited = Deferred.makeUnsafe<ChildProcessSpawner.ExitCode, PlatformError.PlatformError>();
+  const refused = (method: string) =>
+    PlatformError.systemError({
+      _tag: "Unknown",
+      module: "ChildProcess",
+      method,
+      description: "refused",
+    });
+  const exit = (failing?: string) =>
+    Deferred.doneUnsafe(
+      exited,
+      failing === undefined
+        ? Effect.succeed(ChildProcessSpawner.ExitCode(0))
+        : Effect.fail(refused(failing)),
+    );
   if (!options.running) exit();
   const handle = (
     output: Stream.Stream<Uint8Array>,
@@ -75,14 +89,7 @@ const fakeWindowsSpawner = (options: {
     isRunning: Effect.sync(() => !Deferred.isDoneUnsafe(exited)),
     kill: () =>
       options.killFails
-        ? Effect.fail(
-            PlatformError.systemError({
-              _tag: "Unknown",
-              module: "ChildProcess",
-              method: "kill",
-              description: "refused",
-            }),
-          )
+        ? Effect.fail(refused("kill"))
         : Effect.sync(() => {
             exit();
             events.push("kill");
@@ -110,7 +117,7 @@ const fakeWindowsSpawner = (options: {
       return handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never), leader);
     }),
   );
-  return { events, told, spawner, exit: Effect.sync(exit) };
+  return { events, told, spawner, exit: (failing?: string) => Effect.sync(() => exit(failing)) };
 };
 
 type Use = (
@@ -247,29 +254,46 @@ describe("endingWindowsTrees stops a Windows tree", () => {
     }),
   );
 
-  it.effect("failing when a walk told it ran finds it gone and its exit is not reported", () =>
-    Effect.gen(function* () {
-      const fake = fakeWindowsSpawner({
-        running: true,
-        output: "ends",
-        killFails: true,
-        gone: "lingers",
-      });
-      const leader = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
-        ChildProcess.make("leader"),
-      );
-      const killing = yield* Effect.forkChild(Effect.flip(leader.kill()), {
-        startImmediately: true,
-      });
+  it.effect(
+    "failing when a walk told it ran finds it gone and its exit is not reported, then again",
+    () =>
+      Effect.gen(function* () {
+        let now = 0;
+        using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
+        const fake = fakeWindowsSpawner({
+          running: true,
+          output: "ends",
+          killFails: true,
+          gone: "lingers",
+        });
+        const leader = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
+          ChildProcess.make("leader"),
+        );
+        const killing = yield* Effect.forkChild(Effect.flip(leader.kill()), {
+          startImmediately: true,
+        });
 
-      yield* TestClock.adjust("5 seconds");
+        yield* TestClock.adjust("5 seconds");
 
-      const error = yield* Fiber.join(killing);
-      assert.deepEqual([error.reason._tag, fake.told], ["TimedOut", ["running"]]);
-    }).pipe(Effect.scoped),
+        const error = yield* Fiber.join(killing);
+        now = 1_000;
+        yield* fake.exit();
+        yield* Effect.exit(leader.kill());
+
+        assert.deepEqual([error.reason._tag, fake.told], ["TimedOut", ["running", 1_000]]);
+      }).pipe(Effect.scoped),
   );
 
-  it.effect("telling the walk when the process exited, not when its scope closed", () =>
+  // A spawner fails the exit code of a process a signal ended, and a lost worker's with its own method.
+  it.effect.each<[string, string | undefined, number | undefined]>([
+    ["when the process exited, not when its scope closed", undefined, 1_000],
+    ["when the process exited by a signal", "exitCode", 1_000],
+    [
+      "no end when the handle's exit fails without saying how the process ended",
+      "worker",
+      undefined,
+    ],
+  ])("telling the walk %s", ([, failing, told]) =>
     Effect.gen(function* () {
       let now = 0;
       using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -279,12 +303,12 @@ describe("endingWindowsTrees stops a Windows tree", () => {
         Effect.gen(function* () {
           yield* endingWindowsTrees(fake.spawner, "win32").spawn(ChildProcess.make("leader"));
           now = 1_000;
-          yield* fake.exit;
+          yield* fake.exit(failing);
           now = 61_000;
         }),
       );
 
-      assert.deepEqual(fake.told, [1_000]);
+      assert.deepEqual(fake.told, [told]);
     }),
   );
 
@@ -300,7 +324,7 @@ describe("endingWindowsTrees stops a Windows tree", () => {
         ),
       );
       now = 1_000;
-      yield* fake.exit;
+      yield* fake.exit();
       now = 61_000;
 
       yield* leader.kill();
@@ -521,6 +545,15 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       1,
       "ended",
     ],
+    [
+      "ends nothing, told the root runs, and says it ended when the root ends before the stop opens it",
+      "$gone $early $soon $next -running",
+      "(P $gone 0 $real)",
+      "(P $target $gone $real)",
+      "spared",
+      1,
+      "ended",
+    ],
   ])("%s", async (_, stop, first, later, expected, walked, said = "") => {
     // Exits 7 once its input ends, so any other exit is the stop's.
     const target = NodeChildProcess.spawn(
@@ -574,6 +607,10 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       "function Get-Process { [pscustomobject]@{} | Add-Member ScriptMethod get_Handle { throw [ComponentModel.Win32Exception]::new(87) } -PassThru | Add-Member ScriptMethod Dispose { } -PassThru }",
     ],
     ["before the stop ends it", "function Get-Process { $started }"],
+    [
+      "before the stop opens it and its pid goes to a process the stop may not open",
+      "function Get-Process { [pscustomobject]@{} | Add-Member ScriptMethod get_Handle { throw [ComponentModel.Win32Exception]::new(5) } -PassThru | Add-Member ScriptMethod Dispose { } -PassThru }",
+    ],
   ])("reports no error for a target that ended %s", (_, lookUp) => {
     runPowerShell(
       `$started = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru`,

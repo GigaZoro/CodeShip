@@ -8,6 +8,7 @@
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -63,9 +64,9 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  $targets",
   "}",
   // Holds the process open until the stop returns, so its pid cannot change hands. CIM cuts start
-  // times to the microsecond, so the walk saw this process only if its own start time cuts to the
-  // same one. Until it is open, only the failure to open it tells that it ended: its pid may
-  // already name another process, which HasExited would ask about.
+  // times to the microsecond, so the walk saw this process only if its own start cuts to the same
+  // one. Until it is open, its pid may name another process, which HasExited would ask about, so a
+  // failure to open it means it ended, unless CIM still lists its pid with the start the walk saw.
   "function Open-T3Process($id, $created) {",
   "  $process = Get-Process -Id $id -ErrorAction SilentlyContinue",
   "  if (-not $process) { return }",
@@ -74,8 +75,11 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "    $null = $process.get_Handle(); $made = Ticks $process.get_StartTime()",
   "    $mine = $made - $made % 10 -eq (Ticks $created)",
   "  } catch {",
-  "    $e = $_.Exception.GetBaseException()",
-  "    if (-not ($e -is [InvalidOperationException] -or ($e -is [ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 87))) { throw }",
+  "    $why = $_; $e = $why.Exception.GetBaseException()",
+  "    if (-not ($e -is [InvalidOperationException] -or ($e -is [ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq 87))) {",
+  "      $still = Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $id) -ErrorAction Stop | Where-Object { $_.ProcessId -eq $id -and (Ticks $_.CreationDate) -eq (Ticks $created) }",
+  "      if ($still) { throw $why }",
+  "    }",
   "  } finally { if (-not $mine) { $process.Dispose() } }",
   "  if ($mine) { $process }",
   "}",
@@ -101,10 +105,10 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   // Opens every target of a pass before it ends any, so a parent that ends with its child is still
   // held and what it started meanwhile is found. What the sixth pass finds was started after the
   // fifth looked: the stop ends it but fails as unfinished, as on a target it may not open or end.
-  // With -running, a first pass that finds no process that is the root ends nothing and outputs ended.
+  // With -running, a first pass that cannot find and open the root ends nothing and outputs ended.
   "function Stop-T3ProcessTree($root, $since, $from = $since, $to = [double]::PositiveInfinity, $ended = [double]::PositiveInfinity, [switch]$running) {",
   `  $since -= ${CLOCK_SKEW_MS}; $from -= ${CLOCK_SKEW_MS}; $to += ${CLOCK_SKEW_MS}; $ended += ${CLOCK_SKEW_MS}`,
-  "  $open = @{}; $starts = New-Object System.Collections.ArrayList; $failed = $null",
+  "  $open = @{}; $starts = New-Object System.Collections.ArrayList; $failed = $null; $lost = $false",
   "  try {",
   "    for ($pass = 0; $pass -le 5; $pass++) {",
   "      $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)",
@@ -114,7 +118,9 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "      $new = @(foreach ($id in @($targets.Keys)) {",
   "        try { $process = Open-T3Process $id $targets[$id] } catch { if (-not $failed) { $failed = $_ }; continue }",
   "        if ($process) { $open[$id] = $process; [void]$starts.Add(@($id, (Ticks $targets[$id]), [long]::MaxValue)); $process }",
+  "        elseif ($running -and $id -eq $root) { $lost = $true }",
   "      })",
+  "      if ($lost) { $failed = $null; 'ended'; break }",
   "      if ($new.Count -and $pass -eq 5 -and -not $failed) { $failed = 'The tree of {0} still started processes after 5 passes' -f $root }",
   "      $stopped = Stop-T3Processes $new; if ($stopped -and -not $failed) { $failed = $stopped }",
   "    }",
@@ -166,7 +172,11 @@ const stopTreeArgs = (call: ReadonlyArray<string | number>): Array<string> =>
 export const windowsStopTreeArgs = (root: WindowsProcessTreeRoot): Array<string> =>
   stopTreeArgs(stopTreeCall(root));
 
-/** Call just before a spawn; what it returns gives the process's root once its pid is known. */
+/**
+ * Call just before a spawn; what it returns gives the process's root once its pid is known. What the
+ * spawner does before the process starts, such as checking its cwd, widens by its length the time in
+ * which a child the pid's last holder started counts for an ended root's.
+ */
 export const windowsTreeRootFromNow = (): ((pid: number) => WindowsProcessTreeRoot) => {
   const since = Date.now();
   return (pid) => ({ pid, since, created: { from: since, to: Date.now() } });
@@ -242,7 +252,7 @@ const walkWindowsTree = Effect.fn("WindowsProcessTree.stop")(
 const stopWindowsProcessTree = (root: WindowsProcessTreeRoot) =>
   Effect.asVoid(walkWindowsTree(root, windowsStopTreeArgs(root)));
 
-/** Succeeds with false, having ended nothing, when no process is the root any more. */
+/** Succeeds with false, having ended nothing, when the walk could not find and open the root. */
 const stopRunningWindowsTree = (root: WindowsProcessTreeRoot) =>
   Effect.map(
     walkWindowsTree(root, stopTreeArgs([...stopTreeCall(root), "-running"])),
@@ -250,9 +260,18 @@ const stopRunningWindowsTree = (root: WindowsProcessTreeRoot) =>
   );
 
 /**
- * Runs a spawn and pairs its handle with a stop of its tree. A watch that lasts as long as the
- * process notes when the handle reports its exit, which bounds the root's children in every later
- * stop. A stop of a running root whose walk finds it gone awaits that report and walks again.
+ * Whether a handle's exit report says the process exited. A spawner fails `exitCode` with method
+ * `exitCode` for an exit by a signal; another failure, such as a lost worker's, says nothing of it.
+ */
+const reportsExit = (exit: Exit.Exit<unknown, PlatformError.PlatformError>) =>
+  Exit.isSuccess(exit) ||
+  Exit.findErrorOption(exit).pipe(Option.exists((error) => error.reason.method === "exitCode"));
+
+/**
+ * Runs a spawn and pairs its handle with a stop of its tree, which every caller shares while it runs
+ * and once it succeeded. A watch that lasts as long as the process notes when the handle reports its
+ * exit, which bounds the root's children in every later stop. A stop of a running root whose walk
+ * finds it gone awaits that report and walks again.
  */
 export const withWindowsTreeStop = <
   A extends Pick<ChildProcessSpawner.ChildProcessHandle, "pid" | "exitCode" | "isRunning">,
@@ -263,39 +282,46 @@ export const withWindowsTreeStop = <
 ) =>
   Effect.suspend(() => {
     const rootOf = windowsTreeRootFromNow();
-    return Effect.flatMap(spawn, (handle) => {
-      const root = rootOf(handle.pid);
-      let ended: number | undefined;
-      const noteEnd = Effect.andThen(
-        Effect.exit(handle.exitCode),
-        Effect.sync(() => (ended ??= Date.now())),
-      );
-      const stopEnded = noteEnd.pipe(
-        Effect.timeoutOrElse({
-          duration: EXIT_REPORT_TIMEOUT,
-          orElse: () =>
-            Effect.fail(
-              stopFailed(
-                root,
-                "TimedOut",
-                "the walk found it gone, yet it reported no exit in 5 s",
+    return Effect.flatMap(spawn, (handle) =>
+      Effect.gen(function* () {
+        const root = rootOf(handle.pid);
+        let ended: number | undefined;
+        const noteEnd = Effect.flatMap(Effect.exit(handle.exitCode), (exit) =>
+          Effect.sync(() => {
+            if (reportsExit(exit)) ended ??= Date.now();
+            return ended;
+          }),
+        );
+        const stopEnded = noteEnd.pipe(
+          Effect.timeoutOrElse({
+            duration: EXIT_REPORT_TIMEOUT,
+            orElse: () =>
+              Effect.fail(
+                stopFailed(
+                  root,
+                  "TimedOut",
+                  "the walk found it gone, yet it reported no exit in 5 s",
+                ),
               ),
-            ),
-        }),
-        Effect.flatMap((at) => stopWindowsProcessTree({ ...root, ended: at })),
-      );
-      const stopTree = Effect.flatMap(handle.isRunning, (running) =>
-        running
-          ? Effect.flatMap(stopRunningWindowsTree(root), (stopped) =>
-              stopped ? Effect.void : stopEnded,
-            )
-          : stopEnded,
-      );
-      return Effect.as(Effect.forkDetach(noteEnd, { startImmediately: true }), {
-        handle,
-        stopTree,
-      });
-    });
+          }),
+          Effect.flatMap((at) =>
+            stopWindowsProcessTree(at === undefined ? root : { ...root, ended: at }),
+          ),
+        );
+        const stopTree = yield* Effect.cachedWithTTL(
+          Effect.flatMap(handle.isRunning, (running) =>
+            running
+              ? Effect.flatMap(stopRunningWindowsTree(root), (stopped) =>
+                  stopped ? Effect.void : stopEnded,
+                )
+              : stopEnded,
+          ),
+          (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
+        );
+        yield* Effect.forkDetach(noteEnd, { startImmediately: true });
+        return { handle, stopTree };
+      }),
+    );
   });
 
 /**
@@ -347,11 +373,8 @@ export const endingWindowsTrees = (
       const { handle } = spawned;
       let referenced = true;
       let unendedReads = 0;
-      // A kill and the scope's close share one walk.
-      const stopTree = yield* Effect.cached(
-        spawned.stopTree.pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, inner),
-        ),
+      const stopTree = spawned.stopTree.pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, inner),
       );
       // The leader ends first, so its exit is known before the inner spawner's release looks.
       const kill = (options?: ChildProcess.KillOptions) =>
