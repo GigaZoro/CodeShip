@@ -40,6 +40,7 @@ import * as Logger from "effect/Logger";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 
 import * as ServerConfig from "../config.ts";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
@@ -997,8 +998,24 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             WHERE task_id = ${started.taskId}
           `;
         }
-        // A run waits until the server has adopted what the earlier one left.
-        yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+        const delivered = yield* Deferred.make<void>();
+        yield* withServer(() => Deferred.await(delivered)).pipe(
+          Effect.provideService(Statement.CurrentTransformer, (statement, sql) => {
+            const [query, params] = statement.compile();
+            if (
+              !query.includes("UPDATE command_runs") ||
+              params.at(-1) !== started.taskId ||
+              params[6] === null
+            )
+              return Effect.succeed(statement);
+            return statement.pipe(
+              Effect.provideService(Statement.CurrentTransformer, undefined),
+              Effect.orDie,
+              Effect.andThen(Deferred.succeed(delivered, undefined)),
+              Effect.as(sql`SELECT 1 WHERE 0`),
+            );
+          }),
+        );
         assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         const row = yield* commandRow(started.taskId);
         assert.equal(row?.status, "stopped");
@@ -1650,6 +1667,66 @@ const windowsFixture = Effect.gen(function* () {
 });
 
 it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
+  it.effect("continues watching after the first wave query fails", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-first-watch-error");
+      const fixture = yield* windowsFixture;
+      const failed = yield* Deferred.make<void>();
+      let injected = false;
+      yield* withServer((runner) =>
+        Effect.gen(function* () {
+          yield* Deferred.await(failed);
+          const result = yield* runner.run(callerOf(chat.threadId), { command: "echo survives" });
+          NodeFS.writeFileSync(NodePath.join(NodePath.dirname(result.logPath), "exit-status"), "0");
+          yield* nextWake(chat.threadId);
+          assert.equal((yield* taskOf(chat.threadId, result.taskId))?.status, "completed");
+        }),
+      ).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement, sql) => {
+          if (injected || !statement.compile()[0].includes("WHERE loss_unplaced = 1"))
+            return Effect.succeed(statement);
+          injected = true;
+          return Deferred.succeed(failed, undefined).pipe(
+            Effect.as(sql`SELECT * FROM injected_missing_wave_table`),
+          );
+        }),
+        Effect.provide(fixture.layer),
+      );
+    }),
+  );
+
+  it.effect("returns a failed launch task while its recovery probe is held", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-return-before-recovery");
+      const fixture = yield* windowsFixture;
+      const release = yield* Deferred.make<void>();
+      const create = fixture.state.launch;
+      fixture.state.beforeProbe = Deferred.await(release);
+      fixture.state.launch = (input, directory) =>
+        create(input, directory).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProcessRunner.ProcessTimeoutError({
+                command: input.command,
+                argumentCount: input.args.length,
+                timeoutMs: 120_000,
+              }),
+            ),
+          ),
+        );
+      yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const result = yield* runner.run(callerOf(chat.threadId), { command: "echo started" });
+          yield* Queue.take(fixture.probes);
+          NodeFS.writeFileSync(NodePath.join(NodePath.dirname(result.logPath), "exit-status"), "0");
+          yield* Deferred.succeed(release, undefined);
+          yield* nextWake(chat.threadId);
+          assert.equal((yield* taskOf(chat.threadId, result.taskId))?.status, "completed");
+        }),
+      ).pipe(Effect.provide(fixture.layer), Effect.ensuring(Deferred.succeed(release, undefined)));
+    }),
+  );
+
   it.effect("refuses a later POSIX holder when launch identity was not recorded", () =>
     Effect.gen(function* () {
       const chat = yield* liveChat("launch-posix-reused");
@@ -1812,8 +1889,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
               "0",
             );
           yield* Deferred.succeed(release, undefined);
-          yield* nextWake(prior.threadId);
-          yield* nextWake(next.threadId);
+          yield* wakesOf([prior.threadId, next.threadId]);
         }),
       ).pipe(Effect.provide(fixture.layer), Effect.ensuring(Deferred.succeed(release, undefined)));
     }),
@@ -1945,9 +2021,9 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           const result = yield* runner.run(callerOf(chat.threadId), { command: "echo failure" });
           yield* nextWake(chat.threadId);
           assert.equal((yield* commandRow(result.taskId))?.status, "unstarted");
-          assert.include(
-            (yield* taskOf(chat.threadId, result.taskId))?.result ?? "",
-            "injected spawn defect",
+          assert.equal(
+            (yield* taskOf(chat.threadId, result.taskId))?.result,
+            `Could not start the command: injected spawn defect\nNo output.\nFull output: ${result.logPath}`,
           );
         }),
       ).pipe(Effect.provide(fixture.layer));
