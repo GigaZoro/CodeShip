@@ -379,6 +379,10 @@
       "types": "./src/windowsProcessTree.ts",
       "import": "./src/windowsProcessTree.ts"
     },
+    "./windowsJobSpawner": {
+      "types": "./src/windowsJobSpawner.ts",
+      "import": "./src/windowsJobSpawner.ts"
+    },
     "./windowsJob": {
       "types": "./src/windowsJob.ts",
       "import": "./src/windowsJob.ts"

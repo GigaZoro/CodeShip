@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { owningWindowsJobs } from "@t3tools/shared/windowsJobSpawner";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -188,8 +189,11 @@ const terminatePiProcess = Effect.fn("PiRpc.terminatePiProcess")(function* (
 
 export const makePiRpcConnection = Effect.fnUntraced(function* (options: PiRpcSpawnOptions) {
   // Pi stops its own tree below.
-  const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
   const platform = yield* HostProcess.Platform;
+  const spawner = owningWindowsJobs(
+    withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner),
+    platform,
+  );
   const scope = yield* Effect.scope;
 
   const spawnCommand = yield* resolveSpawnCommand(options.command, [...options.args], {
