@@ -167,6 +167,8 @@ interface CommandRunRow {
   readonly deadline_at: string;
   readonly ended_at: string | null;
   readonly delivered_at: string | null;
+  /** The caller can receive a deadline failure while uncertain legacy ownership still needs checking. */
+  readonly reported_at: string | null;
   /** The last check that found its process alive, written about once a minute while it runs. */
   readonly last_alive_at: string | null;
   /** What the last probe of its pid that did not find it alive reported. */
@@ -180,6 +182,8 @@ interface CommandRunRow {
 type LaunchResolution =
   | { readonly outcome: "cancelled" }
   | { readonly outcome: "started"; readonly row: CommandRunRow }
+  | { readonly outcome: "ended"; readonly row: CommandRunRow; readonly loss: Loss }
+  | { readonly outcome: "unstarted" }
   | { readonly outcome: "unresolved" };
 
 /**
@@ -555,7 +559,7 @@ const make = Effect.gen(function* () {
 
   const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (
     row: CommandRunRow,
-  ): Effect.fn.Return<number | "unknown" | Loss> {
+  ): Effect.fn.Return<number | "unknown" | Loss, import("effect/PlatformError").PlatformError> {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
     if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
@@ -566,11 +570,15 @@ const make = Effect.gen(function* () {
     // ps reports whole seconds; a failed probe proves neither ownership nor loss.
     if (startedAt === undefined) return "unknown";
     if (row.process_started_at === null) {
-      if (windows) return "unknown";
-      return startedAt >= Date.parse(row.started_at) - 1_000 &&
-        startedAt <= Date.parse(row.last_alive_at ?? row.started_at) + 1_000
-        ? startedAt
-        : { lost_reason: "pid-reused", probe_error };
+      const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
+      const exit = yield* readExitStatus(row);
+      const upper =
+        exit?.endedAt === undefined ? named?.writtenAt?.getTime() : Date.parse(exit.endedAt);
+      if (upper === undefined) return "unknown";
+      const precision = windows ? 0 : 1_000;
+      if (startedAt < Date.parse(row.started_at) - precision || startedAt > upper + precision)
+        return { lost_reason: "pid-reused", probe_error };
+      return windows ? "unknown" : startedAt;
     }
     return Math.abs(startedAt - row.process_started_at) <= (windows ? 0 : 1_000)
       ? startedAt
@@ -628,14 +636,17 @@ const make = Effect.gen(function* () {
         if (same === "unknown") return false;
         if (typeof same === "number" || same.lost_reason === "gone") yield* killGroup(pid);
       } else {
-        if (row.process_started_at === null && isProcessAlive(pid)) return false;
+        const same = yield* isSameProcess(row);
+        if (same === "unknown") return false;
+        // A legacy row has no retained membership after its root ends; never infer another holder's family.
+        if (typeof same !== "number") return true;
         const stopped = yield* stopSlots
           .withPermits(1)(
             processRunner.run({
               command: "powershell.exe",
               args: windowsStopTreeArgs({
                 pid,
-                since: Date.parse(row.started_at),
+                since: same,
                 created:
                   row.process_started_at === null
                     ? null
@@ -664,7 +675,7 @@ const make = Effect.gen(function* () {
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
         probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
-        lost_output = ${row.lost_output}, launch_error = ${row.launch_error}
+        lost_output = ${row.lost_output}, launch_error = ${row.launch_error}, reported_at = ${row.reported_at}
       WHERE task_id = ${row.task_id}
     `;
 
@@ -703,7 +714,10 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => ""),
     );
 
-  const resultText = Effect.fn("CommandRunner.resultText")(function* (row: CommandRunRow) {
+  const resultText = Effect.fn("CommandRunner.resultText")(function* (
+    row: CommandRunRow,
+    cleanupPending = false,
+  ) {
     const elapsed = formatDuration(
       Date.parse(row.ended_at ?? row.started_at) - Date.parse(row.started_at),
     );
@@ -711,7 +725,9 @@ const make = Effect.gen(function* () {
       row.status === "unstarted"
         ? `Could not start the command: ${row.launch_error ?? "the server stopped before launch completed."}`
         : row.status === "timed_out"
-          ? `Timed out and was stopped after ${elapsed}.`
+          ? cleanupPending
+            ? `Timed out after ${elapsed}. CodeShip cannot verify ownership yet and keeps checking before stopping it.`
+            : `Timed out and was stopped after ${elapsed}.`
           : row.status === "lost"
             ? `Ended after at most ${elapsed} without an exit status: it was killed, or this machine restarted.`
             : row.exit_code === null
@@ -730,7 +746,14 @@ const make = Effect.gen(function* () {
    * Hands a command's end to its task, which wakes the thread. A task that already has its result
    * (a cancel or Stop landed first) or no longer exists keeps nothing waiting, so it is delivered.
    */
-  const deliver = Effect.fn("CommandRunner.deliver")(function* (row: CommandRunRow) {
+  const deliver = Effect.fn("CommandRunner.deliver")(function* (
+    row: CommandRunRow,
+    cleanupPending = false,
+  ) {
+    if (row.reported_at !== null) {
+      if (!cleanupPending) yield* settle({ ...row, delivered_at: yield* nowIso });
+      return;
+    }
     const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
     const parentThreadId = ThreadId.make(row.thread_id);
     const taskId = NodeId.make(row.task_id);
@@ -741,7 +764,7 @@ const make = Effect.gen(function* () {
         parentThreadId,
         taskId,
         status: row.status === "exited" && row.exit_code === 0 ? "completed" : "failed",
-        result: yield* resultText(row),
+        result: yield* resultText(row, cleanupPending),
       })
       .pipe(
         Effect.as(true),
@@ -757,7 +780,10 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
-    if (delivered) yield* settle({ ...row, delivered_at: yield* nowIso });
+    if (delivered) {
+      const now = yield* nowIso;
+      yield* settle({ ...row, reported_at: now, delivered_at: cleanupPending ? null : now });
+    }
   });
 
   /**
@@ -1016,14 +1042,29 @@ const make = Effect.gen(function* () {
   /** Slow evidence and process operations belong to one row, never to the shared lock. */
   const check = Effect.fn("CommandRunner.check")(function* (snapshot: CommandRunRow) {
     let row = snapshot;
+    let loss: Loss | undefined;
     if (
       (row.pid === null || (windows && row.process_started_at === null)) &&
       row.status !== "exited" &&
-      row.status !== "unstarted" &&
+      (row.status !== "unstarted" || row.reported_at !== null) &&
       !(row.status !== "running" && windows && row.unit?.startsWith(jobUnitPrefix))
     ) {
       const resolution = yield* recoverPid(row);
-      if (resolution.outcome === "unresolved") return;
+      if (resolution.outcome === "unresolved" || resolution.outcome === "unstarted") {
+        return yield* lock.withPermits(1)(
+          Effect.gen(function* () {
+            if (watched.get(row.task_id) !== snapshot) return;
+            if (
+              resolution.outcome === "unstarted" &&
+              (row.status === "running" || row.status === "timed_out")
+            ) {
+              row = { ...row, status: "unstarted", ended_at: row.ended_at ?? (yield* nowIso) };
+              yield* settle(row);
+            }
+            if (row.status !== "running") yield* deliver(row, true);
+          }),
+        );
+      }
       if (resolution.outcome === "cancelled") {
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
@@ -1041,12 +1082,15 @@ const make = Effect.gen(function* () {
         );
       }
       row = resolution.row;
+      if (resolution.outcome === "ended") {
+        loss = resolution.loss;
+        row = { ...row, ...loss };
+      }
     }
     const exit = row.status === "running" ? yield* readExitStatus(row) : undefined;
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const overdue = Date.parse(row.deadline_at) <= now;
-    let loss: Loss | undefined;
-    if (row.status === "running" && exit === undefined && !overdue) {
+    if (row.status === "running" && exit === undefined && !overdue && loss === undefined) {
       const probe = row.pid === null ? undefined : probeProcess(row.pid);
       const cached = verified.get(row.task_id);
       const mustVerify =
@@ -1132,10 +1176,16 @@ const make = Effect.gen(function* () {
       (next.status === "stopped" ||
         next.status === "timed_out" ||
         next.status === "lost" ||
+        (next.status === "unstarted" && next.pid !== null) ||
         (windows && next.status === "exited" && next.unit?.startsWith(jobUnitPrefix))) &&
       !(yield* killTree(next))
-    )
-      return;
+    ) {
+      return yield* lock.withPermits(1)(
+        Effect.gen(function* () {
+          if (watched.get(next.task_id) === next) yield* deliver(next, true);
+        }),
+      );
+    }
     if (windows) yield* trimLog(next);
     yield* lock.withPermits(1)(
       Effect.gen(function* () {
@@ -1614,6 +1664,7 @@ const make = Effect.gen(function* () {
                   deadline_at: DateTime.formatIso(DateTime.add(now, { minutes: timeoutMinutes })),
                   ended_at: null,
                   delivered_at: null,
+                  reported_at: null,
                   last_alive_at: null,
                   probe_error: null,
                   lost_reason: null,
@@ -1726,9 +1777,27 @@ const make = Effect.gen(function* () {
       const gate = yield* closeLaunchGate(row);
       if (gate === "cancelled") return { outcome: "cancelled" };
       const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
+      const ended = (reason: LostReason, pid = row.pid): LaunchResolution => ({
+        outcome: "ended",
+        row: { ...row, pid },
+        loss: { lost_reason: reason, probe_error: row.probe_error },
+      });
+      if (yield* rebootedSince(row))
+        return ended(
+          "rebooted",
+          named !== undefined && Number.isSafeInteger(named.value) && named.value > 0
+            ? named.value
+            : row.pid,
+        );
       if (named === undefined || !Number.isSafeInteger(named.value) || named.value <= 0) {
         if ((yield* readExitStatus(row)) !== undefined) return { outcome: "started", row };
-        return { outcome: !windows && row.launch_error !== null ? "cancelled" : "unresolved" };
+        if (!windows && row.launch_error !== null) return { outcome: "cancelled" };
+        if (
+          !windows &&
+          DateTime.toEpochMillis(yield* DateTime.now) - Date.parse(row.started_at) >= 5_000
+        )
+          return { outcome: "unstarted" };
+        return { outcome: "unresolved" };
       }
       const pid = named.value;
       let identity = named.identity;
@@ -1744,12 +1813,11 @@ const make = Effect.gen(function* () {
           if (
             startedAt < Date.parse(row.started_at) - precision ||
             startedAt > writtenAt + precision
-          ) {
-            return { outcome: "unresolved" };
-          }
+          )
+            return ended("pid-reused", pid);
+          if (windows) return { outcome: "unresolved" };
           identity = startedAt;
-        } else if (windows) return { outcome: "unresolved" };
-        else identity = writtenAt;
+        } else return ended("gone", pid);
       }
       return { outcome: "started", row: { ...row, pid, process_started_at: identity } };
     },

@@ -1711,6 +1711,139 @@ const windowsFixture = Effect.gen(function* () {
 });
 
 it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
+  it.effect("ends a POSIX launch interrupted before spawn", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-posix-no-spawn");
+      const fixture = yield* windowsFixture;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), {
+          command: "echo never started",
+          timeoutMinutes: 1,
+        }),
+      ).pipe(Effect.provide(fixture.layer));
+      const sql = yield* SqlClient.SqlClient;
+      yield* forgetPid(first.taskId);
+      yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
+      NodeFS.unlinkSync(NodePath.join(NodePath.dirname(first.logPath), "pid"));
+      fixture.processes.get(2147483000)!.alive = false;
+      fixture.state.now += 60_000;
+      yield* withServer(() => nextWake(chat.threadId)).pipe(
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provide(fixture.layer),
+      );
+      assert.equal((yield* commandRow(first.taskId))?.status, "unstarted");
+      assert.equal((yield* taskOf(chat.threadId, first.taskId))?.status, "failed");
+    }),
+  );
+
+  it.effect("reports an unresolved legacy launch at its deadline and reconciles a later pid", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-legacy-deadline");
+      const fixture = yield* windowsFixture;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), {
+          command: "echo late legacy",
+          timeoutMinutes: 1,
+        }),
+      ).pipe(Effect.provide(fixture.layer));
+      const sql = yield* SqlClient.SqlClient;
+      yield* forgetPid(first.taskId);
+      yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
+      const directory = NodePath.dirname(first.logPath);
+      NodeFS.unlinkSync(NodePath.join(directory, "pid"));
+      NodeFS.rmdirSync(NodePath.join(directory, "launch-started"));
+      const entry = fixture.processes.get(2147483000)!;
+      entry.alive = false;
+      const delivered = yield* Deferred.make<void>();
+      yield* withServer(() =>
+        Effect.gen(function* () {
+          fixture.state.now += 60_000;
+          yield* nextWake(chat.threadId);
+          assert.equal((yield* taskOf(chat.threadId, first.taskId))?.status, "failed");
+          assert.isNull((yield* commandRow(first.taskId))?.delivered_at);
+        }),
+      ).pipe(Effect.provide(fixture.layer));
+      yield* withServer(() =>
+        Effect.gen(function* () {
+          entry.alive = true;
+          NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${entry.identity}`);
+          yield* Deferred.await(delivered);
+          assert.isFalse(entry.alive);
+        }),
+      ).pipe(
+        Effect.provideService(
+          Statement.CurrentTransformer,
+          observeDelivery(first.taskId, delivered),
+        ),
+        Effect.provide(fixture.layer),
+      );
+    }),
+  );
+
+  it.effect.each(["gone", "pid-reused"] as const)(
+    "settles a legacy pid-only command proven %s",
+    (reason) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-legacy-${reason}`);
+        const fixture = yield* windowsFixture;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), {
+            command: "echo old wrapper",
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+        const sql = yield* SqlClient.SqlClient;
+        yield* forgetPid(first.taskId);
+        yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
+        const directory = NodePath.dirname(first.logPath);
+        const file = NodePath.join(directory, "pid");
+        NodeFS.writeFileSync(file, "2147483000");
+        NodeFS.utimesSync(file, fixture.state.now / 1_000, fixture.state.now / 1_000);
+        NodeFS.rmdirSync(NodePath.join(directory, "launch-started"));
+        const entry = fixture.processes.get(2147483000)!;
+        if (reason === "gone") entry.alive = false;
+        else entry.identity += 500;
+        yield* withServer(() => nextWake(chat.threadId)).pipe(Effect.provide(fixture.layer));
+        const row = yield* commandRow(first.taskId);
+        assert.equal(row?.lost_reason, reason);
+        assert.equal(row?.pid, 2147483000);
+        assert.equal(fixture.state.kills, 0);
+        assert.equal(entry.alive, reason === "pid-reused");
+      }),
+  );
+
+  it.effect("delivers a stopped legacy command whose pid was reused after its exit", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-legacy-stopped-exit");
+      const fixture = yield* windowsFixture;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), {
+          command: "echo old stopped wrapper",
+        }),
+      ).pipe(Effect.provide(fixture.layer));
+      const sql = yield* SqlClient.SqlClient;
+      yield* forgetPid(first.taskId);
+      yield* sql`UPDATE command_runs SET unit = NULL, status = 'stopped' WHERE task_id = ${first.taskId}`;
+      const directory = NodePath.dirname(first.logPath);
+      NodeFS.rmdirSync(NodePath.join(directory, "launch-started"));
+      NodeFS.writeFileSync(NodePath.join(directory, "pid"), "2147483000");
+      const exit = NodePath.join(directory, "exit-status");
+      NodeFS.writeFileSync(exit, "0");
+      NodeFS.utimesSync(exit, fixture.state.now / 1_000, fixture.state.now / 1_000);
+      fixture.processes.get(2147483000)!.identity += 500;
+      const delivered = yield* Deferred.make<void>();
+      yield* withServer(() => Deferred.await(delivered)).pipe(
+        Effect.provideService(
+          Statement.CurrentTransformer,
+          observeDelivery(first.taskId, delivered),
+        ),
+        Effect.provide(fixture.layer),
+      );
+      assert.isNotNull((yield* commandRow(first.taskId))?.delivered_at);
+      assert.isTrue(fixture.processes.get(2147483000)!.alive);
+      assert.equal(fixture.state.kills, 0);
+    }),
+  );
+
   it.effect.each(["deadline", "cancellation"] as const)(
     "enforces %s after the same task's identity probe is held",
     (reason) =>
@@ -1914,7 +2047,11 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         runner.run(callerOf(chat.threadId), { command: "echo original" }),
       ).pipe(Effect.provide(fixture.layer));
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE command_runs SET process_started_at = NULL WHERE task_id = ${result.taskId}`;
+      const laterAlive = DateTime.formatIso(DateTime.makeUnsafe(fixture.state.now + 300_000));
+      yield* sql`UPDATE command_runs SET process_started_at = NULL, unit = NULL, last_alive_at = ${laterAlive} WHERE task_id = ${result.taskId}`;
+      const pidFile = NodePath.join(NodePath.dirname(result.logPath), "pid");
+      NodeFS.writeFileSync(pidFile, "2147483000");
+      NodeFS.utimesSync(pidFile, fixture.state.now / 1_000, fixture.state.now / 1_000);
       const entry = fixture.processes.get(2147483000)!;
       entry.identity += 10_000;
       yield* withServer(() =>
