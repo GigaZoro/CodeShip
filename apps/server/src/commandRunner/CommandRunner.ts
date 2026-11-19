@@ -493,7 +493,9 @@ const make = Effect.gen(function* () {
   const watched = new Map<string, CommandRunRow>();
   const launching = new Set<string>();
   const checking = new Set<string>();
-  const verified = new Map<string, string>();
+  const stopping = new Set<string>();
+  const pendingStops = new Set<string>();
+  const verified = new Map<string, { readonly key: string; readonly at: number }>();
   const checkFailures = new Map<string, string>();
   // Slow probes and stops have separate limits so an unavailable probe cannot starve a deadline.
   const identitySlots = yield* Semaphore.make(2);
@@ -652,6 +654,7 @@ const make = Effect.gen(function* () {
     if (row.delivered_at === null) watched.set(row.task_id, row);
     else {
       watched.delete(row.task_id);
+      pendingStops.delete(row.task_id);
       verified.delete(row.task_id);
       checkFailures.delete(row.task_id);
     }
@@ -1020,16 +1023,20 @@ const make = Effect.gen(function* () {
       row = resolution.row;
     }
     const exit = row.status === "running" ? yield* readExitStatus(row) : undefined;
-    const overdue = Date.parse(row.deadline_at) <= DateTime.toEpochMillis(yield* DateTime.now);
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const overdue = Date.parse(row.deadline_at) <= now;
     let loss: Loss | undefined;
     if (row.status === "running" && exit === undefined && !overdue) {
       const probe = row.pid === null ? undefined : probeProcess(row.pid);
+      const cached = verified.get(row.task_id);
       const mustVerify =
-        verified.get(row.task_id) !== identityKey(row) ||
+        cached?.key !== identityKey(row) ||
+        now - cached.at >= 60_000 ||
         row.process_started_at === null ||
         probe?.state !== "alive" ||
         (yield* rebootedSince(row));
       const identity = mustVerify ? yield* isSameProcess(row) : row.process_started_at!;
+      if (watched.get(row.task_id) !== snapshot) return;
       if (identity === "unknown") {
         const code = probe?.state === "unknown" ? probe.code : "identity-unavailable";
         yield* lock.withPermits(1)(
@@ -1047,7 +1054,7 @@ const make = Effect.gen(function* () {
       }
       if (typeof identity === "number") {
         if (row.process_started_at === null) row = { ...row, process_started_at: identity };
-        verified.set(row.task_id, identityKey(row));
+        if (mustVerify) verified.set(row.task_id, { key: identityKey(row), at: now });
       } else loss = identity;
     }
     const next = yield* lock.withPermits(1)(
@@ -1118,8 +1125,11 @@ const make = Effect.gen(function* () {
 
   const checkTask = Effect.fn("CommandRunner.checkTask")(function* (taskId: string) {
     const row = watched.get(taskId);
-    if (row === undefined || launching.has(taskId) || checking.has(taskId)) return;
-    checking.add(taskId);
+    if (row === undefined) return;
+    const active = row.status === "running";
+    const inFlight = active ? checking : stopping;
+    if ((active && launching.has(taskId)) || inFlight.has(taskId)) return;
+    inFlight.add(taskId);
     yield* check(row).pipe(
       Effect.ensuring(windows ? Effect.void : trimLog(row)),
       Effect.tap(() => Effect.sync(() => checkFailures.delete(taskId))),
@@ -1132,43 +1142,71 @@ const make = Effect.gen(function* () {
           yield* Effect.logWarning("command-runner.check-failed", { taskId, cause });
         }),
       ),
-      Effect.ensuring(Effect.sync(() => checking.delete(taskId))),
+      Effect.ensuring(Effect.sync(() => inFlight.delete(taskId))),
     );
   });
 
   const watchOnce = Effect.gen(function* () {
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
     for (const taskId of watched.keys()) {
-      if (launching.has(taskId)) {
-        if (watched.get(taskId)?.status === "stopped") yield* stopForTask(taskId);
-      } else if (!checking.has(taskId)) {
-        yield* Effect.forkScoped(checkTask(taskId), { startImmediately: true });
-      }
+      const row = watched.get(taskId)!;
+      const stop =
+        row.status === "running" && Date.parse(row.deadline_at) <= now
+          ? requestStop(taskId, "timed_out")
+          : pendingStops.has(taskId) && (row.status === "stopped" || row.status === "timed_out")
+            ? requestStop(taskId, row.status)
+            : Effect.void;
+      yield* stop.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("command-runner.stop-failed", { taskId, cause }),
+        ),
+      );
+      yield* Effect.forkScoped(checkTask(taskId), { startImmediately: true });
     }
     yield* lock.withPermits(1)(noteWave());
   });
 
   /** Cancellation closes the gate before waiting for any launcher or identity probe. */
-  const stopForTask = (taskId: string) =>
+  const requestStop = (taskId: string, status: "stopped" | "timed_out") =>
     lock.withPermits(1)(
       Effect.gen(function* () {
         const row = watched.get(taskId);
-        if (row === undefined || (row.status !== "running" && row.status !== "stopped")) return;
+        if (row === undefined || (row.status !== "running" && row.status !== status)) return;
+        if (row.status === status && !pendingStops.has(taskId)) return;
+        if (status === "timed_out" && row.status === "running") {
+          const exit = yield* readExitStatus(row);
+          if (exit !== undefined) {
+            const exited: CommandRunRow = {
+              ...row,
+              status: "exited",
+              exit_code: exit.code,
+              ended_at: exit.endedAt ?? (yield* nowIso),
+            };
+            yield* settle(exited);
+            return yield* deliver(exited);
+          }
+        }
         const stopped: CommandRunRow = {
           ...row,
-          status: "stopped",
+          status,
           ended_at: row.ended_at ?? (yield* nowIso),
         };
         // Keep the stop intent even if persistence or the gate is temporarily unavailable.
         watched.set(taskId, stopped);
+        pendingStops.add(taskId);
         const gate = yield* closeLaunchGate(stopped).pipe(Effect.result);
         const saved = yield* writeRow(stopped).pipe(Effect.result);
         if (gate._tag === "Success" && gate.success === "cancelled") {
-          yield* settle({ ...stopped, delivered_at: yield* nowIso });
+          if (status === "stopped") yield* settle({ ...stopped, delivered_at: yield* nowIso });
+          else yield* deliver(stopped);
         }
         if (gate._tag === "Failure") return yield* gate.failure;
         if (saved._tag === "Failure") return yield* saved.failure;
+        pendingStops.delete(taskId);
       }),
     );
+
+  const stopForTask = (taskId: string) => requestStop(taskId, "stopped");
 
   /**
    * A thread that is archived or deleted keeps nothing running. It looks under the lock, so a
@@ -1630,7 +1668,10 @@ const make = Effect.gen(function* () {
                       : { ...current, launch_error: launched.failure.message };
                   watched.set(taskId, next);
                   if (launched._tag === "Success" && next.process_started_at !== null)
-                    verified.set(taskId, identityKey(next));
+                    verified.set(taskId, {
+                      key: identityKey(next),
+                      at: DateTime.toEpochMillis(yield* DateTime.now),
+                    });
                   yield* writeRow(next);
                 }),
               )
@@ -1665,7 +1706,8 @@ const make = Effect.gen(function* () {
       const pid = named.value;
       let identity = named.identity;
       if (identity === undefined) {
-        if ((yield* readExitStatus(row)) !== undefined) return { outcome: "started", row };
+        if ((yield* readExitStatus(row)) !== undefined)
+          return { outcome: "started", row: { ...row, pid, process_started_at: null } };
         const writtenAt = named.writtenAt?.getTime();
         if (writtenAt === undefined) return { outcome: "unresolved" };
         if (isProcessAlive(pid)) {
