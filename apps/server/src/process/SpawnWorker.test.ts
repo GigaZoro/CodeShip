@@ -180,6 +180,7 @@ describe("SpawnWorker", () => {
           ["exits 1", true],
           ["loses its launcher before the start is reported", true],
           ["cannot launch", true],
+          ["cannot get a launcher", true],
         ] as const) {
           // It ends by itself once the dead launcher's end of its stdin closes.
           const root = SpawnWorker.spawnPiped(
@@ -194,6 +195,7 @@ describe("SpawnWorker", () => {
           const launch = pool.spawn;
           using _stop = vi.spyOn(pool, "spawn").mockImplementation((_command, _args, options) => {
             if (stop === "cannot launch") return launch("t3-missing-command-25245", [], options);
+            if (stop === "cannot get a launcher") throw new Error("No thread for a launcher.");
             const code = stop === "exits 0" ? 0 : 1;
             const child = launch(process.execPath, ["-e", `process.exit(${code})`], options);
             // A microtask runs before the launcher's reply can arrive.

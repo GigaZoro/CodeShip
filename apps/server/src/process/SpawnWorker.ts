@@ -504,10 +504,18 @@ class SpawnWorkerPool {
       }
       done();
     };
-    this.spawn("powershell.exe", windowsStopTreeArgs(root), {
-      stdio: "ignore",
-      windowsHide: true,
-    })
+    let stop: WorkerChild;
+    try {
+      stop = this.spawn("powershell.exe", windowsStopTreeArgs(root), {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch (error) {
+      // Starting a launcher thread throws when the system refuses one.
+      finish(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    stop
       .on("error", (error: Error) => finish(error.message))
       .on("exit", (code: number | null, signal: NodeJS.Signals | null) =>
         finish(code === 0 ? undefined : `PowerShell exited ${code ?? signal}`),
