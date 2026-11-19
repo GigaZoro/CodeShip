@@ -2,16 +2,17 @@ diff --git a/dist/src/connection/spawn.d.ts b/dist/src/connection/spawn.d.ts
 index b67e690eae07748e6aee2c8ee59bbfef13b2eea8..91d9680fbd08e03e2479f6acff1efc21d92eb164 100644
 --- a/dist/src/connection/spawn.d.ts
 +++ b/dist/src/connection/spawn.d.ts
-@@ -20,6 +20,8 @@ export interface SpawnMspConnectionOptions {
+@@ -20,6 +20,9 @@ export interface SpawnMspConnectionOptions {
      readonly onStderr?: (chunk: string) => void;
      /** See {@link MuseServeChildOptions.shutdownTimeoutMs}. */
      readonly shutdownTimeoutMs?: number;
 +    /** Raw process exit, before inherited stdio drains and `exited` settles. */
 +    readonly onProcessExit?: (exit: ProcessExit) => void;
++    readonly spawnFn?: typeof spawn;
  }
  /**
   * How the host process ended: its exit code, or the signal that ended it.
-@@ -74,6 +76,8 @@ export interface MuseServeChildOptions {
+@@ -74,6 +77,8 @@ export interface MuseServeChildOptions {
       * `0..2147483647`; anything else throws `RangeError` at spawn.
       */
      readonly shutdownTimeoutMs?: number;
@@ -20,7 +21,7 @@ index b67e690eae07748e6aee2c8ee59bbfef13b2eea8..91d9680fbd08e03e2479f6acff1efc21
      /**
       * Deterministic-test seam; production always uses `child_process.spawn`.
       * A stub here observes the exact options the call site passes, so a
-@@ -151,6 +155,8 @@ export declare function buildSpawnOptions(options: {
+@@ -151,6 +156,8 @@ export declare function buildSpawnOptions(options: {
  export declare class MuseServeChild {
      #private;
      readonly exit: Promise<ExitClassification>;
@@ -55,11 +56,12 @@ index 28aeb6246ba937c5321f1393dc120eface0707f3..a6820c4b7a2c27f26e5cf624954e02b7
      }
      get stderrTail() {
          return this.#tail.lines();
-@@ -414,6 +419,7 @@ export class MspHandshake {
+@@ -414,6 +419,8 @@ export class MspHandshake {
      constructor(options) {
          this.child = MuseServeChild.spawn({
              museBin: options.command,
 +            ...(options.onProcessExit === undefined ? {} : { onProcessExit: options.onProcessExit }),
++            ...(options.spawnFn === undefined ? {} : { spawnFn: options.spawnFn }),
              ...(options.args === undefined ? {} : { args: options.args }),
              ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
              ...(options.env === undefined ? {} : { env: options.env }),
