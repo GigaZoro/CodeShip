@@ -195,6 +195,42 @@ describe("DesktopBrowserHost", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("lets the main window throttle once the backend that waited for a tab leaves", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      host.setMainWindow(window.tab.webContents);
+      const backend = yield* Effect.forkChild(Stream.runDrain(host.events), {
+        startImmediately: true,
+      });
+      yield* awaiting(host, key, true);
+      const releaseRecording = host.keepRendering(window.tab.webContents);
+
+      yield* Fiber.interrupt(backend);
+      expect(window.backgroundThrottling).toEqual([false]);
+      releaseRecording();
+
+      expect(window.backgroundThrottling).toEqual([false, true]);
+    }),
+  );
+
+  it.effect("keeps a tab's wait when the backend before the one waiting leaves late", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      host.setMainWindow(window.tab.webContents);
+      const previous = yield* Effect.forkChild(Stream.runDrain(host.events), {
+        startImmediately: true,
+      });
+      yield* Effect.forkChild(Stream.runDrain(host.events), { startImmediately: true });
+      yield* awaiting(host, key, true);
+
+      yield* Fiber.interrupt(previous);
+
+      expect(window.backgroundThrottling).toEqual([false]);
+    }),
+  );
+
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;

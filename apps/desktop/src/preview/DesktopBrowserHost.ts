@@ -586,11 +586,17 @@ export const make = Effect.gen(function* () {
     return tab !== undefined && performance.now() - tab.agentInputAt > AGENT_DOWNLOAD_WINDOW_MS;
   };
 
-  const announceAll = Effect.suspend(() => {
-    // A new backend: the old one's turns and waits ended without telling us.
+  /** Counts backends that subscribed, so one that leaves after its successor came keeps out of its way. */
+  let backends = 0;
+  // A backend that leaves ends its turns and waits without telling us.
+  const forgetBackend = () => {
     agentTurns.clear();
     awaited.clear();
     syncAwaitedRendering();
+  };
+
+  const announceAll = Effect.suspend(() => {
+    forgetBackend();
     return Effect.forEach(
       [...tabs.values()],
       (tab) => {
@@ -608,8 +614,15 @@ export const make = Effect.gen(function* () {
     events: Stream.unwrap(
       Effect.gen(function* () {
         const subscription = yield* PubSub.subscribe(outbox);
+        const backend = ++backends;
         yield* announceAll;
-        return Stream.fromSubscription(subscription);
+        return Stream.fromSubscription(subscription).pipe(
+          Stream.ensuring(
+            Effect.sync(() => {
+              if (backend === backends) forgetBackend();
+            }),
+          ),
+        );
       }),
     ).pipe(Stream.map((event) => lineEncoder.encode(`${encodeEvent(event)}\n`))),
     handleCommandLine,
