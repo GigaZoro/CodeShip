@@ -149,7 +149,7 @@ export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessSta
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
+            `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop; if ($process) { ([DateTimeOffset]$process.CreationDate).ToUnixTimeMilliseconds() }`,
           ]
         : ["-p", String(pid), "-o", "lstart="],
       env: { LC_ALL: "C", TZ: "UTC" },
@@ -159,7 +159,7 @@ export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessSta
     .pipe(Effect.option);
   if (Option.isNone(result) || result.value.code !== 0) return undefined;
   const output = result.value.stdout.trim();
-  const startedAt = Date.parse(windows ? output : `${output} UTC`);
+  const startedAt = windows && output !== "" ? Number(output) : Date.parse(`${output} UTC`);
   return Number.isFinite(startedAt) ? startedAt : undefined;
 });
 

@@ -309,54 +309,41 @@ A command an agent starts with `t3_command_run` is not the provider's, so neithe
 a crash cuts it. The [command runner](../../apps/server/src/commandRunner/CommandRunner.ts)
 starts it outside the provider and the server: in its own session, which on Linux under systemd
 is also a scope outside the service's cgroup (`AgentScope` with `survivesRestart`), and on
-Windows through `Win32_Process.Create`, outside the server's job. The Windows wrapper and
-failure recovery atomically rename the same start gate, so a WMI request that outlives its
-launcher cannot execute a command reported as unstarted. A launcher failure recovers the
-wrapper's pid with the same identity checks as restart adoption. Neither the desktop app, the
-launcher nor the service manager reaches it. A wrapper writes its output to a capped log under
+Windows through `Win32_Process.Create`, outside the server's job. Launch and identity probes
+run outside the shared state lock, so a slow launcher does not delay cancellation, other
+commands' deadlines or completion delivery. Startup releases new requests once rows are
+registered, without waiting for identity probes. Identity and stop subprocesses have separate
+concurrency limits; healthy rows use signal-zero liveness checks. The Windows supervisor writes its pid and creation
+time before atomically taking the start gate; cancellation and recovery close that same gate.
+A closed gate proves the command cannot execute, even if WMI creates the supervisor later.
+An open command task stays watched when filesystem access, persistence or identity checks
+fail, and reconciliation retries on later passes and after a restart. A launcher failure returns
+the task ID; its failure or recovered completion arrives through normal task delivery. Missing
+legacy launch evidence does not prove non-execution. Windows identity comes from the wrapper's
+own file, not a lookup of the launcher's returned PID. Known Windows creation times compare at
+millisecond precision, and each stop checks an opened process handle before terminating through
+that handle. POSIX fills a missing identity only inside the recorded launch/liveness interval
+with the one-second precision of `ps`. An unavailable identity proves neither ownership nor loss;
+log maintenance and deadlines still run, while delivery waits for a safe stop. Neither the desktop app, the launcher nor the service manager reaches the command. A wrapper writes its output to a capped log under
 the state directory and its exit status to a file it renames into place, so a reader never sees
-half a status. On Windows the command runs in a console apart from its wrapper's, so a console
-event the command gets (Ctrl+C, or its console closing) cannot end the wrapper first. The
-command is an app-owned task on its thread, recorded like a delegated task, with a
-`command_runs` row holding its pid and an identity a wall clock step cannot move
-([processIdentity](../../apps/server/src/commandRunner/processIdentity.ts)): on Linux its start
-in ticks since boot with the boot id; on Windows and macOS the start time the system stored. On
-Windows, when the launch could not read it, the identity is the window the launch bounds it to.
-That window runs from the record to the launch's return, each end widened by how far the wall clock
-fell behind the monotonic clock in between: the net step back, since a step forward in the same
-launch hides as much of one back. A start read outside it is not pinned, since Windows soon gives
-an ended process's pid to another and the read may be that process's. macOS hands pids out in turn
-and keeps its read, which opposite clock steps can place outside the window. A Windows wrapper its
-launcher cannot find right after creating it has ended. It names itself in its pid file before it
-starts the command, so without that file it started nothing and the launch fails; a pid file that
-cannot be looked for may be there, so the record stays. With the file it is recorded as ended,
-since a later read could find a process that took its pid inside a window a clock step widened, and
-the first watch reports the command lost when another process holds that pid, without reading that
-process's start. The Windows tree stop takes as its root only a holder of the pid that started at
-the pinned start or inside the window, give or take its 100 ms of clock skew. Of what descends from
-the pid, the runner bounds what the stop's first walk takes by the pinned start or, with a window
-or an ended record, by the later of the record and when the wrapper named itself in its pid file
-(the record when that file cannot be read), since the window's earlier part may hold what the pid's
-last holder started; the walk allows that bound the same 100 ms. A clock set back before the
-command started can date the command's own processes earlier still, and that walk spares them
-rather than risk another program's. The stop's later passes take what a process it holds starts
-after its own start. A wrapper recorded as ended, or already gone when a later server recovers it
-from its pid file, is stopped with a start no process has, so a holder of its pid is never the root
-and bounds the wrapper's children by its own start, not by a clock reading. One recovered while
-running whose start cannot be read has no identity, and its stop takes any holder that started from
-the record on; that bound also places the root, which started before it named itself. Startup
-adopts every row not yet delivered: a status file means it ended; a live pid with the same identity
-is watched again, one whose identity cannot be read is watched and read again on each pass, and a
-pid whose check fails for a reason other than "no such process" is checked again on the next pass.
-Anything else is lost and reported once, and its row keeps why (its process ended, the machine
-restarted, or its pid names a later process), when it was last seen running, what the check
-reported and its last output. Its end completes the task through `delegated_task.command.complete`,
-which wakes the chat through the durable delivery a child's result uses and refuses a second
-result, so a restart between the end and its delivery cannot wake the chat twice. task_cancel,
-Stop, archiving and deleting the thread also give the task its result, and the runner then kills
-the command's process group (its tree on Windows). The hold leaves these tasks out like every
-app-owned task, and the continuation of a cut turn tells the agent the commands it started still
-run and will wake it.
+half a status. On Windows the command runs in a console apart from its wrapper's, so a console event the command
+gets (Ctrl+C, or its console closing) cannot end the wrapper first. The command is an app-owned task on its
+thread, recorded like a delegated task, with a `command_runs` row holding its pid and that process's start time. Startup adopts every
+row not yet delivered: a status file means it ended; a live pid with the same start time is
+watched again, and a pid whose check fails for a reason other than "no such process" is checked
+again on the next pass. A launch whose gate is closed ends as unstarted through normal task
+delivery. A process proven gone or replaced is lost and reported once, and its row keeps why (its
+process ended, the machine restarted, or its pid names a later process), when it was last seen
+running, what the check reported and its last output. Its end completes the task through
+`delegated_task.command.complete`, which wakes the chat through the durable delivery a child's
+result uses and refuses a second result, so a restart between the end and its delivery cannot
+wake the chat twice. task_cancel, Stop, archiving and deleting the thread also give the task
+its result. The runner closes a pending Windows launch gate even if storing the stop fails.
+Otherwise it waits for launch reconciliation and a successful guarded tree stop before recording
+delivery. POSIX has no start gate: cancellation waits for spawn reconciliation and process-group
+termination. A group can outlive its original leader, so stopping it does not require a live root. The
+hold leaves these tasks out like every app-owned task, and the continuation of a cut turn tells
+the agent the commands it started still run and will wake it.
 
 The hold also lists a running turn's in-flight tool calls and native subagents as `turnCall`
 entries. Claude creates a running item for every `tool_use` block of an assistant message at
