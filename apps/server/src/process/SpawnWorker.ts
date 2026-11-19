@@ -487,19 +487,20 @@ class SpawnWorkerPool {
       return;
     }
     let settled = false;
-    const finish = (killed: boolean) => {
+    const finish = (stopStarted: boolean) => {
       if (settled) return;
       settled = true;
-      // When the tree stop fails, end at least the direct child.
-      if (!killed) killPid();
+      // A stop that started may have ended the root and freed its pid for another process, so
+      // only one that never started leaves the direct child to end by pid.
+      if (!stopStarted) killPid();
       done();
     };
-    this.spawn("powershell.exe", windowsStopTreeArgs(root), {
+    const stop = this.spawn("powershell.exe", windowsStopTreeArgs(root), {
       stdio: "ignore",
       windowsHide: true,
     })
-      .on("error", () => finish(false))
-      .on("exit", (code) => finish(code === 0));
+      .on("error", () => finish(stop.spawned))
+      .on("exit", () => finish(true));
   }
 
   #add(): SpawnWorker {

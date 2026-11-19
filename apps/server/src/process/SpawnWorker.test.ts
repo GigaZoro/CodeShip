@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off processEnvInEffect:off - fixtures need real paths, the process resource list and the live environment.
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -168,5 +169,45 @@ describe("SpawnWorker", () => {
       const exited = new Promise((resolve) => direct.once("exit", () => resolve(direct.killed)));
       expect(yield* Effect.promise(() => exited)).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live(
+    "ends a crashed launcher's child by pid only when its Windows tree stop never started",
+    () =>
+      Effect.gen(function* () {
+        const bins = yield* Effect.acquireRelease(
+          Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-spawn-worker-"))),
+          (dir) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
+        const failing = NodePath.join(bins, "failing");
+        const missing = NodePath.join(bins, "missing");
+        NodeFS.mkdirSync(failing);
+        NodeFS.mkdirSync(missing);
+        NodeFS.writeFileSync(NodePath.join(failing, "powershell.exe"), "#!/bin/sh\nexit 1\n", {
+          mode: 0o755,
+        });
+        // A stop that ran and failed may have ended the root first, so its pid can name another process.
+        for (const [path, endedByPid] of [
+          [failing, false],
+          [missing, true],
+        ] as const) {
+          vi.stubEnv("PATH", path);
+          // It ends by itself once the dead launcher's end of its stdin closes.
+          const root = SpawnWorker.spawnPiped(
+            process.execPath,
+            ["-e", "process.stdin.resume()"],
+            {},
+          );
+          yield* Effect.promise(() => new Promise((resolve) => root.once("spawn", resolve)));
+          const pid = root.pid;
+          if (pid === undefined) throw new Error("The launcher reported no pid.");
+          using kill = vi.spyOn(process, "kill");
+          const exited = new Promise((resolve) => root.once("exit", resolve));
+          void root.worker.worker.terminate();
+          yield* Effect.promise(() => exited);
+          expect(kill.mock.calls.some(([target]) => target === pid)).toBe(endedByPid);
+        }
+      }).pipe(Effect.scoped),
   );
 });
