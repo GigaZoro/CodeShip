@@ -236,8 +236,12 @@ test("configure sets the driver in its own repository only", () => {
 test("configure replaces stale values, and warns without failing the install when it cannot set one", () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "release-notes-configure-")));
   try {
-    // A path that only a byte-exact comparison handles.
-    const own = withScript(path.join(root, "checkout "));
+    // A path whose text git does not print back as given, so configure must find its repository without comparing
+    // paths: one ending in a space. Windows cannot create such a folder, and git prints paths there with forward
+    // slashes anyway.
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- This node:test file has no Effect runtime.
+    const folder = process.platform === "win32" ? "checkout" : "checkout ";
+    const own = withScript(path.join(root, folder));
     const git = (...args) => execFileSync("git", args, { cwd: own, encoding: "utf8" });
     git("init", "-q", "-b", "main");
     git("config", "--add", "merge.release-notes.driver", "stale");

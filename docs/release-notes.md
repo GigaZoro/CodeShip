@@ -1,3 +1,7 @@
+## 2026-11-19 — The release-notes setup test runs on Windows
+
+- Maintainers: the test that `node .github/scripts/release-notes.cjs configure` replaces stale merge-driver settings now runs on Windows. It set its checkout up in a folder whose name ends in a space, which Windows cannot create, so it failed on every Windows run before it reached `configure`. No change to the app.
+
 ## 2026-11-19 — Auto stops offering a model its account's login refuses
 
 - When a Codex account's ChatGPT login refuses a model it lists (`The 'gpt-6.2-astra' model is not supported when using Codex with a ChatGPT account`), that model is now held on that account for a few hours, like a model-scoped usage limit. Auto's reviewer and the models it offers then come from another account that can run the model. Before, the refusal was recorded as a plain error, so Auto kept naming the same account and every review on it failed at once.
