@@ -13,29 +13,43 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const LEASE_TTL_MS = 3 * 60 * 60 * 1000;
 const POLL_MS = 5000;
 const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
+// A wait polls origin thousands of times, and one poll can meet a passing DNS or credential failure. Failures that go
+// on this long end the wait, so a remote that cannot be reached is not tried for hours.
+const FAILING_MS = 10 * 60 * 1000;
+// One read or write of the lease; a remote that stops answering must not hold a wait past its limits.
+const LEASE_CALL_MS = 60 * 1000;
 
-function git(cwd, args, { env, config = [], allowFailure = false } = {}) {
+function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = {}) {
   const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
   const result = spawnSync("git", ["-C", cwd, ...flags, ...args], {
     encoding: "utf8",
     env: { ...process.env, ...env },
+    timeout: timeoutMs,
     windowsHide: true,
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0 && !allowFailure) {
-    throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
-  }
-  return { ok: result.status === 0, stdout: result.stdout.trim(), stderr: result.stderr.trim() };
+  // A call that ran out of time is a failed one; like any failed push, it may still have changed origin.
+  const timedOut = result.error?.code === "ETIMEDOUT";
+  if (result.error && !timedOut) throw result.error;
+  const ok = !timedOut && result.status === 0;
+  const stderr = timedOut
+    ? `did not finish within ${timeoutMs / 1000} seconds.`
+    : result.stderr.trim();
+  if (!ok && !allowFailure) throw new Error(`git ${args[0]} failed: ${stderr}`);
+  return { ok, stdout: result.stdout.trim(), stderr };
 }
 
-function remoteLease(cwd, remote) {
-  const listing = git(cwd, ["ls-remote", "--refs", remote, LEASE_REF]).stdout;
+/** The lease calls take `{ cwd, remote, callMs }`; `callMs` bounds each git call to origin. */
+function remoteLease({ cwd, remote, callMs = LEASE_CALL_MS }) {
+  const listing = git(cwd, ["ls-remote", "--refs", remote, LEASE_REF], {
+    timeoutMs: callMs,
+  }).stdout;
   return listing ? listing.split(/\s+/)[0] : null;
 }
 
-function readHolder(cwd, remote, sha) {
-  git(cwd, ["fetch", "--quiet", "--no-tags", remote, sha], { allowFailure: true });
-  const message = git(cwd, ["show", "-s", "--format=%B", sha], { allowFailure: true }).stdout;
+function readHolder({ cwd, remote, callMs = LEASE_CALL_MS }, sha) {
+  // A lease commit this lander could not fetch is unknown, not unreadable: it may be another lander's live turn.
+  git(cwd, ["fetch", "--quiet", "--no-tags", remote, sha], { timeoutMs: callMs });
+  const message = git(cwd, ["show", "-s", "--format=%B", sha]).stdout;
   try {
     return JSON.parse(message.split("\n")[0]);
   } catch {
@@ -43,21 +57,37 @@ function readHolder(cwd, remote, sha) {
   }
 }
 
-/** Takes the lease when it is free or expired. Returns the lease commit, or null while another lander holds it. */
-function tryAcquire({ cwd, remote, runId, now = () => Date.now() }) {
-  const held = remoteLease(cwd, remote);
+/**
+ * Moves origin's lease from `from` to `to` (null: no lease). A push git reports failed may still have reached origin,
+ * or lost the race to another lander, so origin's lease afterwards decides. False when another lander moved it.
+ */
+function moveLease(lease, from, to) {
+  const { cwd, remote, callMs = LEASE_CALL_MS } = lease;
+  const expected = from ? [`--force-with-lease=${LEASE_REF}:${from}`] : [];
+  const pushed = git(cwd, ["push", "--quiet", ...expected, remote, `${to ?? ""}:${LEASE_REF}`], {
+    allowFailure: true,
+    timeoutMs: callMs,
+  });
+  if (pushed.ok) return true;
+  const after = remoteLease(lease);
+  if (after === to) return true;
+  if (after !== from) return false;
+  throw new Error(`git push failed: ${pushed.stderr}`);
+}
+
+/**
+ * Takes the lease when it is free or expired. Returns the lease commit, or null while another lander holds it.
+ * `runId` names one wait: a live lease that carries it is that wait's own, as when a take reached origin although its
+ * push reported a failure.
+ */
+function tryAcquire({ runId, now = () => Date.now(), ...lease }) {
+  const held = remoteLease(lease);
   if (held) {
-    const holder = readHolder(cwd, remote, held);
+    const holder = readHolder(lease, held);
     // A lease nobody can read is one nobody can release, so it expires like any other.
     const expired = !holder || !(Date.parse(holder.expires_at) > now());
-    if (!expired) return null;
-    git(
-      cwd,
-      ["push", "--quiet", `--force-with-lease=${LEASE_REF}:${held}`, remote, `:${LEASE_REF}`],
-      {
-        allowFailure: true,
-      },
-    );
+    if (!expired) return holder.run_id === runId ? held : null;
+    if (!moveLease(lease, held, null)) return null;
   }
   const acquiredAt = now();
   const message = JSON.stringify({
@@ -65,7 +95,7 @@ function tryAcquire({ cwd, remote, runId, now = () => Date.now() }) {
     acquired_at: new Date(acquiredAt).toISOString(),
     expires_at: new Date(acquiredAt + LEASE_TTL_MS).toISOString(),
   });
-  const sha = git(cwd, ["commit-tree", EMPTY_TREE, "-m", `${message}\n[skip ci]`], {
+  const sha = git(lease.cwd, ["commit-tree", EMPTY_TREE, "-m", `${message}\n[skip ci]`], {
     env: {
       GIT_AUTHOR_NAME: "landing-turn",
       GIT_AUTHOR_EMAIL: "landing-turn@localhost",
@@ -74,30 +104,57 @@ function tryAcquire({ cwd, remote, runId, now = () => Date.now() }) {
     },
   }).stdout;
   // A push that creates the ref is atomic: when two landers race, the remote takes one and refuses the other.
-  const pushed = git(cwd, ["push", "--quiet", remote, `${sha}:${LEASE_REF}`], {
-    allowFailure: true,
-  });
-  return pushed.ok ? sha : null;
+  return moveLease(lease, null, sha) ? sha : null;
 }
 
-function release({ cwd, remote }, sha) {
-  git(cwd, ["push", "--quiet", `--force-with-lease=${LEASE_REF}:${sha}`, remote, `:${LEASE_REF}`], {
-    allowFailure: true,
-  });
+function release(lease, sha) {
+  try {
+    moveLease(lease, sha, null);
+  } catch (error) {
+    // Thrown from withTurn's finally block, it would replace the landing's own result.
+    process.stderr.write(
+      `landing turn: the turn may stay held until its lease expires: ${error.message}\n`,
+    );
+  }
 }
 
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. */
-function acquire({ maxWaitMs = MAX_WAIT_MS, pollMs = POLL_MS, sleep = sleepSync, ...options }) {
-  const started = performance.now();
+/**
+ * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. The wait makes its
+ * own run id, so no other wait can carry it.
+ */
+function acquire({
+  maxWaitMs = MAX_WAIT_MS,
+  failingMs = FAILING_MS,
+  pollMs = POLL_MS,
+  sleep = sleepSync,
+  clock = () => performance.now(),
+  ...options
+}) {
+  const started = clock();
+  const runId = randomUUID();
+  let failingSince = null;
   for (;;) {
-    const sha = tryAcquire(options);
-    if (sha) return sha;
-    if (performance.now() - started >= maxWaitMs) {
-      throw new Error("landing turn: another lander still holds main's landing turn.");
+    let failure = null;
+    try {
+      const sha = tryAcquire({ ...options, runId });
+      if (sha) return sha;
+      failingSince = null;
+    } catch (error) {
+      failure = error;
+    }
+    const now = clock();
+    if (now - started >= maxWaitMs) {
+      throw failure ?? new Error("landing turn: another lander still holds main's landing turn.");
+    }
+    if (failure) {
+      const first = failingSince === null;
+      if (first) failingSince = now;
+      if (now - failingSince >= failingMs) throw failure;
+      if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
     }
     sleep(pollMs);
   }
@@ -117,7 +174,7 @@ function verifyPush({ cwd, remote, env = process.env, refs }) {
   const toMain = refs.some((ref) => ref === "refs/heads/main");
   if (!toMain) return;
   const turn = env[TURN_ENV];
-  if (!turn || remoteLease(cwd, remote) !== turn) {
+  if (!turn || remoteLease({ cwd, remote }) !== turn) {
     throw new Error(
       "A push to main needs the landing turn: land with `node .github/scripts/landing-turn.cjs land`.",
     );
@@ -129,12 +186,12 @@ function verifyPush({ cwd, remote, env = process.env, refs }) {
  * `check(turn, base)` returns true when the checks passed against `base`, the commit main is at, which the
  * push gate requires as their base.
  */
-function land({ cwd, remote, check, branch = "main", runId = randomUUID(), ...rest }) {
+function land({ cwd, remote, check, branch = "main", ...rest }) {
   // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
   // so the pre-push hook would refuse it only after the whole check.
   const uncommitted = git(cwd, ["status", "--porcelain"]).stdout;
   if (uncommitted) return { status: "uncommitted", files: uncommitted.split("\n") };
-  return withTurn({ cwd, remote, runId, ...rest }, (turn) => {
+  return withTurn({ cwd, remote, ...rest }, (turn) => {
     git(cwd, ["fetch", "--quiet", "--no-tags", remote, branch]);
     const base = git(cwd, ["rev-parse", "FETCH_HEAD"]).stdout;
     const contained = git(cwd, ["merge-base", "--is-ancestor", base, "HEAD"], {
@@ -181,7 +238,7 @@ function main(argv) {
   if (command === "push") {
     // For a tree that was verified against main's current commit elsewhere (the upstream sync): the push is
     // a fast-forward, so the push takes the turn alone and a main that moved makes git refuse it.
-    withTurn({ cwd, remote: "origin", runId: randomUUID() }, (turn) => {
+    withTurn({ cwd, remote: "origin" }, (turn) => {
       git(cwd, ["push", "--quiet", "origin", "HEAD:refs/heads/main"], {
         env: { [TURN_ENV]: turn },
       });

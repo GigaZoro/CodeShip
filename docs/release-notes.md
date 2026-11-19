@@ -1,3 +1,7 @@
+## 2026-11-20 — Landings wait through a passing network failure
+
+- A landing that waits its turn for `main` no longer ends when one look at the landing lease meets a passing network or sign-in failure. It says so and tries again, and gives up when the failures go on for ten minutes or its six-hour wait runs out. A failed step that does not reach GitHub, such as writing the lease commit, still ends it at once; a failed call to GitHub is tried again even when a local git setting causes it. A landing that could not fetch the current holder's lease no longer takes the turn from that holder. A take of the turn that reached GitHub although git reported it failed or ran out of time now counts as taken instead of leaving the landing waiting hours for its own turn to expire, and one GitHub refused is reported instead of waited out. Each lease check gives up after a minute instead of hanging, and a landing that cannot give its turn back says so.
+
 ## 2026-11-20 — Thread creation retries survive a removed provider
 
 - When an agent retries a thread creation that was already accepted, it gets back the thread it created even if that thread's provider instance has since been removed.

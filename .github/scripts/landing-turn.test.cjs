@@ -5,7 +5,15 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { TURN_ENV, acquire, land, tryAcquire, verifyPush } = require("./landing-turn.cjs");
+const {
+  LEASE_REF,
+  TURN_ENV,
+  acquire,
+  land,
+  release,
+  tryAcquire,
+  verifyPush,
+} = require("./landing-turn.cjs");
 
 // `land` runs git itself, so its rebase needs an identity on a runner without one. A hook exports GIT_DIR
 // and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
@@ -59,7 +67,6 @@ test("a second lander cannot push to main while the first holds the turn, and th
     const result = land({
       cwd: first,
       remote: origin,
-      runId: "first",
       check: (turn, base) => {
         checks += 1;
         assert.equal(base, git(mover, "rev-parse", "HEAD"));
@@ -126,7 +133,7 @@ test("a lander's release notes go among the ones main gained meanwhile by date, 
     ship(mover, newer, shipped);
     git(mover, "push", "-q", "origin", "HEAD:main");
 
-    const result = land({ cwd: lander, remote: origin, runId: "lander", check: () => true });
+    const result = land({ cwd: lander, remote: origin, check: () => true });
 
     assert.equal(result.status, "landed");
     assert.equal(
@@ -149,14 +156,13 @@ test("a lander with uncommitted files or failing checks does not push and holds 
     const uncommitted = land({
       cwd: dir,
       remote: origin,
-      runId: "lander",
       check: () => assert.fail("checked a tree it cannot push"),
     });
     assert.equal(uncommitted.status, "uncommitted");
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
     fs.rmSync(path.join(dir, "scratch.txt"));
 
-    const result = land({ cwd: dir, remote: origin, runId: "lander", check: () => false });
+    const result = land({ cwd: dir, remote: origin, check: () => false });
 
     assert.equal(result.status, "check-failed");
     assert.equal(git(origin, "rev-parse", "main"), before);
@@ -174,11 +180,118 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
     const past = Date.parse("2026-01-01T00:00:00Z");
     assert.ok(tryAcquire({ cwd: holder, remote: origin, runId: "holder", now: () => past }));
 
-    assert.ok(acquire({ cwd: waiter, remote: origin, runId: "waiter", maxWaitMs: 0 }));
+    assert.ok(acquire({ cwd: waiter, remote: origin, maxWaitMs: 0 }));
     assert.throws(
-      () =>
-        acquire({ cwd: holder, remote: origin, runId: "holder", maxWaitMs: 0, sleep: () => {} }),
+      () => acquire({ cwd: holder, remote: origin, maxWaitMs: 0, sleep: () => {} }),
       /still holds/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a waiting lander waits through failed reads of origin, and only failures that go on end its wait", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const away = `${origin}-away`;
+    // Each pause between polls takes 6 minutes. Origin cannot be reached for the second and the fourth poll: failures
+    // 12 minutes apart, with a poll between them that saw the holder. Then the holder gives the turn back.
+    let minutes = 0;
+    const pauses = [
+      () => fs.renameSync(origin, away),
+      () => fs.renameSync(away, origin),
+      () => fs.renameSync(origin, away),
+      () => {
+        fs.renameSync(away, origin);
+        release({ cwd: holder, remote: origin }, held);
+      },
+    ];
+    const turn = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => minutes * 60_000,
+      sleep: () => {
+        minutes += 6;
+        pauses.shift()();
+      },
+    });
+
+    assert.deepEqual([pauses.length, git(origin, "rev-parse", "landing-lease/main")], [0, turn]);
+    fs.renameSync(origin, away);
+    assert.throws(
+      () => acquire({ cwd: holder, remote: origin, failingMs: 0 }),
+      /git ls-remote failed/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a waiting lander that cannot fetch the holder's lease leaves it in place", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const waiter = clone("waiter");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    // Origin lists the lease but cannot send its commit, as when the fetch after the listing fails.
+    fs.rmSync(path.join(origin, "objects", held.slice(0, 2), held.slice(2)));
+
+    assert.throws(() => acquire({ cwd: waiter, remote: origin, maxWaitMs: 0 }), /git fetch failed/);
+    assert.equal(git(waiter, "ls-remote", "--refs", origin, LEASE_REF).split("\t")[0], held);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a take whose push fails or times out is the lander's when origin took it, and a failed poll when it did not", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const lander = clone("lander");
+    // Origin commits the take, then its receive-pack dies (drop-ack) or stalls (stall) before it acknowledges the push.
+    const hooks = path.join(origin, "hooks");
+    git(origin, "config", "core.hooksPath", hooks);
+    fs.writeFileSync(
+      path.join(hooks, "reference-transaction"),
+      '#!/bin/sh\n[ "$1" = committed ] || exit 0\n[ -e drop-ack ] && rm drop-ack && kill -9 "$PPID"\n[ -e stall ] && rm stall && sleep 6\nexit 0\n',
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(origin, "drop-ack"), "");
+
+    const turn = acquire({ cwd: lander, remote: origin, maxWaitMs: 0 });
+    assert.deepEqual(
+      [
+        fs.existsSync(path.join(origin, "drop-ack")),
+        git(origin, "rev-parse", "landing-lease/main"),
+      ],
+      [false, turn],
+    );
+    // The lease is its wait's by the run id that wait made: another wait that names the same id does not get it.
+    const { run_id: runId } = JSON.parse(
+      git(origin, "show", "-s", "--format=%B", turn).split("\n")[0],
+    );
+    assert.equal(tryAcquire({ cwd: lander, remote: origin, runId }), turn);
+    assert.throws(
+      () => acquire({ cwd: lander, remote: origin, runId, maxWaitMs: 0 }),
+      /still holds/,
+    );
+    release({ cwd: lander, remote: path.join(root, "missing.git") }, turn);
+    release({ cwd: lander, remote: origin }, turn);
+
+    fs.writeFileSync(path.join(origin, "stall"), "");
+    const stalled = acquire({ cwd: lander, remote: origin, maxWaitMs: 0, callMs: 2000 });
+    assert.deepEqual(
+      [fs.existsSync(path.join(origin, "stall")), git(origin, "rev-parse", "landing-lease/main")],
+      [false, stalled],
+    );
+    release({ cwd: lander, remote: origin }, stalled);
+
+    git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
+    assert.throws(
+      () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0 }),
+      /git push failed/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
