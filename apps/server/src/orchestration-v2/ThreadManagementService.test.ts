@@ -30,6 +30,7 @@ import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import { AgentScope } from "@t3tools/shared/AgentScope";
 
@@ -275,9 +276,27 @@ it.effect.each([
               commandId: CommandId.make("pending-restart"),
               threadId,
               sourceRunId: latest.id,
+              availableAt: DateTime.add(now, { minutes: 3 }),
             }),
           ]);
         }
+        const wait = () =>
+          service.waitForThread({ projectId, threadId, runId: source.id, timeoutMs: 60_000 });
+        const waiting = pending
+          ? yield* Effect.gen(function* () {
+              const subscribed = yield* Deferred.make<void>();
+              const awaitRetry = orchestrator.awaitRestartContinuation;
+              const subscription = vi
+                .spyOn(orchestrator, "awaitRestartContinuation")
+                .mockImplementation((run) =>
+                  Deferred.succeed(subscribed, undefined).pipe(Effect.andThen(awaitRetry(run))),
+                );
+              yield* Effect.addFinalizer(() => Effect.sync(() => subscription.mockRestore()));
+              const fiber = yield* wait().pipe(Effect.forkScoped);
+              yield* Deferred.await(subscribed);
+              return fiber;
+            })
+          : undefined;
         // Expose the read/dispatch race without clocks or polling.
         let reads = 0;
         const racedService =
@@ -377,6 +396,16 @@ it.effect.each([
               : "interrupt_requested",
           run: { id: latest.id },
         });
+        if (waiting !== undefined) {
+          // The retry worker is paused. Both waiters must finish on Stop's commit.
+          expect(yield* orchestrator.restartContinuationPending(latest)).toBe(false);
+          for (const settled of [yield* Fiber.join(waiting), yield* wait()]) {
+            expect(settled).toMatchObject({
+              timedOut: false,
+              run: { id: latest.id, status: "cancelled" },
+            });
+          }
+        }
         if (pending || queued || scenario === "failed-unprepared" || scenario === "lost-work") {
           expect(
             yield* service.interruptThread({

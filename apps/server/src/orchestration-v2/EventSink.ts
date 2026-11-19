@@ -763,7 +763,28 @@ const layerBase: Layer.Layer<
                   threadId: input.threadId,
                   ...input.cancelUnsettledEffects,
                 });
-          return { receipt, storedEvents, outcomes, committed: true as const, cancelledEffectIds };
+          // Stop and its delayed retries settle in one transaction. Notify their waiters only after commit.
+          const restartEffectIds = storedEvents.flatMap(({ event }) =>
+            event.type === "turn-item.updated" &&
+            event.payload.type === "run_interrupt_request" &&
+            event.payload.runId !== null
+              ? [EffectOutbox.restartContinuationEffectId(event.payload.runId)]
+              : [],
+          );
+          const cancelledRestarts =
+            restartEffectIds.length === 0
+              ? []
+              : yield* effectOutbox.cancelUnsettled({
+                  effectIds: restartEffectIds,
+                  reason: "Stop cancelled the pending restart continuation.",
+                });
+          return {
+            receipt,
+            storedEvents,
+            outcomes,
+            committed: true as const,
+            cancelledEffectIds: [...cancelledEffectIds, ...cancelledRestarts],
+          };
         }),
         (result) =>
           Effect.gen(function* () {
