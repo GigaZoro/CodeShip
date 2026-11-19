@@ -17,7 +17,6 @@ import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import {
   endedWindowsTreeRoot,
   type WindowsProcessTreeRoot,
-  windowsTreeRootFromNow,
   windowsTreeStopper,
 } from "@t3tools/shared/windowsProcessTree";
 import * as Effect from "effect/Effect";
@@ -187,7 +186,6 @@ export async function createMuseSdkHost(
   options.signal?.throwIfAborted();
   const launch = options.launch ?? { command: options.binaryPath, args: [] };
   const { onProcessExit, stopTree } = options;
-  const rootOf = windowsTreeRootFromNow();
   let root: WindowsProcessTreeRoot | undefined;
   let treeStopped = Promise.resolve();
   const ownedSpawn =
@@ -198,7 +196,7 @@ export async function createMuseSdkHost(
       : {
           spawnFn: ((...args: Parameters<typeof ownedSpawn>) => {
             const child = ownedSpawn(...args);
-            if (child.pid !== undefined) root = { ...rootOf(child.pid), job: windowsJobOf(child)! };
+            if (child.pid !== undefined) root = { pid: child.pid, job: windowsJobOf(child)! };
             return child;
           }) as typeof ownedSpawn,
         }),
@@ -223,7 +221,7 @@ export async function createMuseSdkHost(
       : {}),
   });
   if (root === undefined && stopTree && handshake.child.pid !== undefined)
-    root = rootOf(handshake.child.pid);
+    root = { pid: handshake.child.pid };
   let closePromise: Promise<void> | undefined;
   const close = () => {
     options.signal?.removeEventListener("abort", onAbort);

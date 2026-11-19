@@ -25,8 +25,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
-import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
-import { WindowsJobHost } from "@t3tools/shared/windowsJob";
+import { WindowsJobHost, windowsJobName } from "@t3tools/shared/windowsJob";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -299,31 +298,23 @@ const liveChat = (name: string) =>
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
             Effect.gen(function* () {
-              // A failed launch may leave only its wrapper's pid file.
-              const evidence = yield* Effect.try(() =>
-                NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8")
-                  .trim()
-                  .split(/\s+/),
-              ).pipe(Effect.orElseSucceed(() => []));
-              const pid = row.pid ?? Number(evidence[0]);
-              if (!Number.isSafeInteger(pid) || pid <= 1) return;
-              if (!isWindowsHost)
-                return yield* Effect.try(() => signalProcessGroup(pid, "SIGKILL"));
-              const identity = row.process_started_at ?? Number(evidence[1]);
-              const args = windowsStopTreeArgs({
-                pid,
-                since: Date.parse(row.started_at),
-                created: Number.isSafeInteger(identity) ? { from: identity, to: identity } : null,
-              });
-              // An exit-status file precedes supervisor exit; NTFS holds its cwd until that exit.
-              if (Number.isSafeInteger(identity))
-                args[args.length - 1] +=
-                  `; $wrapper = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($wrapper -and ([DateTimeOffset]$wrapper.StartTime).ToUnixTimeMilliseconds() -eq ${identity}) { $wrapper.WaitForExit() }`;
-              yield* processRunner.run({
-                command: "powershell.exe",
-                args,
-                timeout: Duration.minutes(2),
-              });
+              if (isWindowsHost) {
+                yield* processRunner.run({
+                  command: yield* yield* WindowsJobHost,
+                  args: ["stop", windowsJobName(NodePath.basename(row.directory))],
+                  timeout: Duration.minutes(2),
+                });
+                return;
+              }
+              const pid =
+                row.pid ??
+                Number(
+                  NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8")
+                    .trim()
+                    .split(/\s+/)[0],
+                );
+              if (Number.isSafeInteger(pid) && pid > 1)
+                yield* Effect.try(() => signalProcessGroup(pid, "SIGKILL"));
             }).pipe(Effect.ignore),
           ),
         ),
@@ -1650,31 +1641,15 @@ const windowsFixture = Effect.gen(function* () {
             assert.isDefined(wrapper);
             return yield* fixture.launch(input, NodePath.dirname(wrapper!));
           }
-          const stop = /Stop-T3ProcessTree (\d+) /.exec(script);
-          if (stop !== null) {
-            fixture.kills++;
-            const identity = /Stop-T3ProcessTree \d+ \d+ (\d+) (\d+)/.exec(script);
-            const stopEvidence = {
-              pid: Number(stop[1]),
-              identity: identity === null ? undefined : Number(identity[1]),
-            };
-            if (fixture.stopError !== "") {
-              yield* Queue.offer(stopped, stopEvidence);
-              return {
-                ...processOutput(),
-                code: ChildProcessSpawner.ExitCode(1),
-                stderr: fixture.stopError,
-              };
-            }
-            const pid = Number(stop[1]);
+          if (input.command === "job-host.exe" && input.args[0] === "stop-process") {
+            const pid = Number(input.args[1]);
+            const identity = Number(input.args[2]);
             const entry = processes.get(pid)!;
-            if (
-              identity !== null &&
-              entry.identity >= Number(identity[1]) &&
-              entry.identity <= Number(identity[2])
-            )
+            if (entry.identity === identity) {
+              fixture.kills++;
               entry.alive = false;
-            yield* Queue.offer(stopped, stopEvidence);
+            }
+            yield* Queue.offer(stopped, { pid, identity });
             return processOutput();
           }
           const probe =
@@ -2140,6 +2115,57 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         Effect.provide(
           Layer.merge(fixture.layer, Logger.layer([logger], { mergeWithExisting: false })),
         ),
+      );
+    }),
+  );
+
+  it.effect("persists cancellation once while a started launch response is held", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-stop-write-once");
+      const fixture = yield* windowsFixture;
+      const sql = yield* SqlClient.SqlClient;
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const delivered = yield* Deferred.make<void>();
+      const create = fixture.state.launch;
+      fixture.state.stopError = "hold cleanup";
+      fixture.state.launch = (input, directory) =>
+        create(input, directory).pipe(
+          Effect.tap(() => Deferred.succeed(entered, undefined)),
+          Effect.tap(() => Deferred.await(release)),
+        );
+      yield* sql`CREATE TEMP TABLE cancellation_writes (task_id TEXT)`;
+      yield* sql`CREATE TEMP TRIGGER count_cancellation_writes AFTER UPDATE ON command_runs
+        WHEN NEW.status = 'stopped' AND NEW.delivered_at IS NULL
+        BEGIN INSERT INTO cancellation_writes VALUES (NEW.task_id); END`;
+      let taskId = "";
+      yield* withServer((runner) =>
+        Effect.gen(function* () {
+          const request = { command: "echo held", clientRequestId: "stop-write-once" };
+          const launch = yield* runner.run(callerOf(chat.threadId), request).pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          const task = yield* runner.run(callerOf(chat.threadId), request);
+          taskId = task.taskId;
+          yield* Orchestrator.OrchestratorV2.pipe(
+            Effect.flatMap((orchestrator) =>
+              orchestrator.dispatch(cancellationOf(chat.threadId, taskId)),
+            ),
+          );
+          for (let pass = 0; pass < 4; pass++) yield* Queue.take(fixture.stopped);
+          const writes =
+            yield* sql`SELECT task_id FROM cancellation_writes WHERE task_id = ${taskId}`;
+          assert.lengthOf(writes, 1);
+          fixture.state.stopError = "";
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(launch);
+          yield* Deferred.await(delivered);
+        }),
+      ).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (...args) =>
+          observeDelivery(taskId, delivered)(...args),
+        ),
+        Effect.provide(fixture.layer),
+        Effect.ensuring(Deferred.succeed(release, undefined)),
       );
     }),
   );
@@ -2799,39 +2825,23 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             clientRequestId: `launch-adopt-${retry}`,
           };
           const adopted = yield* Deferred.make<void>();
+          const delivered = yield* Deferred.make<void>();
+
           let taskId = "";
           let launches = 0;
-          let launchedPid: number | undefined;
-          let launchedAt = 0;
-          yield* Effect.addFinalizer(() =>
-            Effect.try(() => {
-              if (launchedPid !== undefined) {
-                NodeChildProcess.execFileSync(
-                  "powershell.exe",
-                  windowsStopTreeArgs({
-                    pid: launchedPid,
-                    since: launchedAt,
-                    created: { from: launchedAt, to: launchedAt },
-                  }),
-                  {
-                    windowsHide: true,
-                    stdio: "ignore",
-                  },
-                );
-              }
-            }).pipe(Effect.ignore),
-          );
           const started = yield* withServer((runner) =>
             Effect.gen(function* () {
               const first = yield* runner.run(callerOf(chat.threadId), request).pipe(Effect.result);
               assert.equal(first._tag, "Success");
               if (first._tag === "Failure") return yield* first.failure;
               taskId = first.success.taskId;
+
               if ((yield* commandRow(taskId))?.pid === null) yield* Deferred.await(adopted);
               const row = yield* commandRow(taskId);
               assert.equal(row?.status, "running");
               assert.isAbove(row?.pid ?? 0, 0);
               assert.isNumber(row?.process_started_at);
+
               if (retry) {
                 const second = yield* runner.run(callerOf(chat.threadId), request);
                 assert.equal(second.taskId, first.success.taskId);
@@ -2842,14 +2852,20 @@ describe.runIf(isWindowsHost)("Windows only", () => {
                 NodeFS.readFileSync(NodePath.join(chat.workspace, "starts"), "utf8"),
                 "1",
               );
+
               NodeFS.writeFileSync(NodePath.join(chat.workspace, "go"), "");
               yield* nextWake(chat.threadId);
+
+              yield* Deferred.await(delivered);
               return first.success;
             }),
           ).pipe(
-            Effect.provideService(Statement.CurrentTransformer, (...args) =>
-              observeDelivery(taskId, adopted, "pid")(...args),
-            ),
+            Effect.provideService(Statement.CurrentTransformer, (...args) => {
+              const [, params] = args[0].compile();
+              return params[6] == null
+                ? observeDelivery(taskId, adopted, "pid")(...args)
+                : observeDelivery(taskId, delivered)(...args);
+            }),
             Effect.provideService(ProcessRunner.ProcessRunner, {
               run: (input) => {
                 if (!input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))) {
@@ -2857,12 +2873,6 @@ describe.runIf(isWindowsHost)("Windows only", () => {
                 }
                 launches++;
                 return processRunner.run(input).pipe(
-                  Effect.tap((created) =>
-                    Effect.sync(() => {
-                      launchedPid = Number.parseInt(created.stdout.trim(), 10);
-                      launchedAt = Number(created.stdout.trim().split(/\s+/)[1]);
-                    }),
-                  ),
                   Effect.andThen(awaitFile(NodePath.join(chat.workspace, "ready"))),
                   Effect.andThen(
                     Effect.fail(

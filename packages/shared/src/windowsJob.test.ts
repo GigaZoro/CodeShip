@@ -206,6 +206,22 @@ describe.runIf(isWindowsHost)("a Windows job", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live("stops a legacy root through its pinned handle only at the exact creation time", () =>
+    Effect.gen(function* () {
+      const { spawner, invoke } = yield* fixture;
+      const member = yield* processPipe;
+      const source = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
+      const child = yield* spawner.spawn(ChildProcess.make(process.execPath, ["-e", source]));
+      yield* member.started;
+      const made = Number(yield* invoke(["identity", String(child.pid)]));
+      yield* invoke(["stop-process", String(child.pid), String(made - 500)]);
+      assert.isTrue(yield* child.isRunning);
+      yield* invoke(["stop-process", String(child.pid), String(made)]);
+      yield* member.ended;
+      yield* child.exitCode;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("publishes an early start failure without waiting for a pid", () =>
     Effect.gen(function* () {
       const { host, home, path, fs, name, spawner } = yield* fixture;

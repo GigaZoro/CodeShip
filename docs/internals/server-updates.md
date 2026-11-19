@@ -305,45 +305,53 @@ restarting and lets the user update now or cancel. The wait happens outside the
 per-environment config queue so other settings for that server are not held. A
 crash still loses the work; the note reports it.
 
-A command an agent starts with `t3_command_run` is not the provider's, so neither a restart nor
-a crash cuts it. The [command runner](../../apps/server/src/commandRunner/CommandRunner.ts)
-starts it outside the provider and the server: in its own session, which on Linux under systemd
-is also a scope outside the service's cgroup (`AgentScope` with `survivesRestart`), and on
-Windows through `Win32_Process.Create`, outside the server's job. Launch and identity probes
-run outside the shared state lock, so a slow launcher does not delay cancellation, other
-commands' deadlines or completion delivery. Startup releases new requests once rows are
-registered, without waiting for identity probes. Identity and stop subprocesses have separate
-concurrency limits; healthy rows use signal-zero liveness checks. The Windows supervisor writes its pid and creation
-time before atomically taking the start gate; cancellation and recovery close that same gate.
-A closed gate proves the command cannot execute, even if WMI creates the supervisor later.
-An open command task stays watched when filesystem access, persistence or identity checks
-fail, and reconciliation retries on later passes and after a restart. A launcher failure returns
-the task ID; its failure or recovered completion arrives through normal task delivery. Missing
-legacy launch evidence does not prove non-execution. Windows identity comes from the wrapper's
-own file, not a lookup of the launcher's returned PID. Known Windows creation times compare at
-millisecond precision, and each stop checks an opened process handle before terminating through
-that handle. POSIX fills a missing identity only inside the recorded launch/liveness interval
-with the one-second precision of `ps`. An unavailable identity proves neither ownership nor loss;
-log maintenance and deadlines still run, while delivery waits for a safe stop. Neither the desktop app, the launcher nor the service manager reaches the command. A wrapper writes its output to a capped log under
-the state directory and its exit status to a file it renames into place, so a reader never sees
-half a status. On Windows the command runs in a console apart from its wrapper's, so a console event the command
-gets (Ctrl+C, or its console closing) cannot end the wrapper first. The command is an app-owned task on its
-thread, recorded like a delegated task, with a `command_runs` row holding its pid and that process's start time. Startup adopts every
-row not yet delivered: a status file means it ended; a live pid with the same start time is
-watched again, and a pid whose check fails for a reason other than "no such process" is checked
-again on the next pass. A launch whose gate is closed ends as unstarted through normal task
-delivery. A process proven gone or replaced is lost and reported once, and its row keeps why (its
-process ended, the machine restarted, or its pid names a later process), when it was last seen
-running, what the check reported and its last output. Its end completes the task through
-`delegated_task.command.complete`, which wakes the chat through the durable delivery a child's
-result uses and refuses a second result, so a restart between the end and its delivery cannot
-wake the chat twice. task_cancel, Stop, archiving and deleting the thread also give the task
-its result. The runner closes a pending Windows launch gate even if storing the stop fails.
-Otherwise it waits for launch reconciliation and a successful guarded tree stop before recording
-delivery. POSIX has no start gate: cancellation waits for spawn reconciliation and process-group
-termination. A group can outlive its original leader, so stopping it does not require a live root. The
-hold leaves these tasks out like every app-owned task, and the continuation of a cut turn tells
-the agent the commands it started still run and will wake it.
+A command an agent starts with `t3_command_run` belongs to the app, outside the
+provider and server lifetimes. The [command runner](../../apps/server/src/commandRunner/CommandRunner.ts)
+starts POSIX commands in their own session; Linux services also give them a systemd scope
+outside the service cgroup. Windows uses WMI to start a separate native host. The host
+creates the command inside a named Job Object before any command code executes, and
+holds the job until the command ends. A restarted server opens that job by name to stop
+or inspect it. Windows retains descendant membership even when an intermediate process
+exits; PID ancestry snapshots cannot establish that ownership. The host closes admission
+and terminates the job before reporting completion. A host crash also terminates the job.
+
+The [same native host](../../packages/shared/src/windowsJob.ts) owns provider subprocesses
+through the worker, standalone spawners and SDK callbacks. Their control pipe keeps them
+owned through startup: losing the owner ends the job unless an acknowledged unref permits
+it to outlive that owner. Command-runner hosts instead survive server restarts. Job handles
+and control descriptors are private to the host, so a child cannot retain ownership by
+inheriting them. The helper builds into a source-hashed cache using the Windows .NET Framework
+compiler; failure to prepare it fails startup before execution.
+
+Launch and identity work run outside the shared state lock. Startup registers every row
+before accepting new requests, without waiting for probes. Separate bounded probe and stop
+queues keep cancellation and deadlines independent of a held launcher or identity check.
+Healthy commands use cheap liveness checks with periodic identity verification. Before a
+Windows command takes its start gate, the native host records its PID and UTC creation time.
+Cancellation and recovery atomically close the same gate. A closed gate proves the command
+cannot execute, including a late WMI creation; a failed database write does not prevent gate
+closure. Gate failures are written to the command log.
+
+A launcher failure returns a task ID. The task remains watched while startup evidence is
+unreadable, and its result arrives through normal task delivery. Recovery retries filesystem
+and database failures after a restart too. Missing legacy evidence proves neither execution
+nor non-execution. A deadline reports the task's failure while unresolved cleanup stays
+watched, with result reporting recorded separately from cleanup completion. A status file
+preserves the wrapper-reported PID even when identity is unavailable. Proven absence,
+replacement or reboot ends a legacy task; an unknown identity alone does not prove loss.
+
+Commands started by older Windows versions have no job membership record. Cleanup may stop
+only a root with an exact creation time, through the same opened handle used to verify it;
+it cannot safely recover descendant ownership from reused PIDs. POSIX fills missing identity
+only within the recorded launch and PID-file bounds, allowing the one-second precision of
+`ps`. POSIX has no start gate: cancellation reconciles spawn and stops the process group,
+which can outlive its leader. Neither platform treats an I/O failure as a missing status file.
+
+Output goes to a capped log and exit status is published by atomic rename. The Windows
+command has a separate console so its Ctrl+C or console close cannot end the wrapper first.
+Completion uses the durable delegated-task delivery and refuses a second result. Cancellation,
+Stop, archiving and deletion also end the task. The restart hold excludes app-owned commands;
+continuation tells the agent that surviving commands still run and will wake it.
 
 The hold also lists a running turn's in-flight tool calls and native subagents as `turnCall`
 entries. Claude creates a running item for every `tool_use` block of an assistant message at

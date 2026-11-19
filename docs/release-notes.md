@@ -1,8 +1,8 @@
-## 2026-11-16 — Windows commands recover from launcher timeouts
+## 2026-11-16 ? Windows commands recover from launcher timeouts
 
-- Windows command launches allow two minutes for PowerShell and WMI. A slow launch does not hold up cancellation, other commands' deadlines or completion delivery. Cancellation closes the start gate when the command has not started.
-- A launcher failure returns a task ID. The task stays watched while startup evidence is unavailable, including across server restarts, and reports its result through normal completion delivery. A gate closed before execution produces a failed task with the launcher error. Missing legacy evidence remains unresolved.
-- Windows commands record their own process identity before starting. Stops check exact creation times and use the same process handle to verify and terminate each process, protecting unrelated processes that reuse a PID. Healthy commands use liveness checks without launching PowerShell on each watch pass.
+- Windows command launches allow two minutes for PowerShell and WMI. Slow startup and identity checks leave cancellation, deadlines and other commands' completion delivery responsive. Cancellation closes the start gate before an unstarted command can execute.
+- A launcher failure returns a task ID and reports the outcome through normal task completion. Unreadable evidence stays under reconciliation across server restarts. Deadlines still report failure while uncertain cleanup remains watched.
+- Windows keeps each new command and provider process family in an operating-system Job Object, including descendants whose parents exit. Commands survive server restarts; stopping their job ends the whole family without guessing ownership from reused process IDs. Commands started by older versions retain safe root-only cleanup when their exact identity is available.
 
 ## 2026-11-20 — Settling and cleanup see commits a rewound default branch no longer holds
 
