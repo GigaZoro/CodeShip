@@ -132,8 +132,11 @@ const browserTestProject = {
   test: {
     name: "browser",
     include: ["src/**/*.browser.test.{ts,tsx}"],
-    hookTimeout: 15_000,
-    testTimeout: 15_000,
+    // Rendering tests wait on real pdf.js, office workers and fonts. On a loaded machine (the
+    // dev box often runs dozens of agents) one cold worker outlasts the 1s default poll.
+    hookTimeout: 30_000,
+    testTimeout: 30_000,
+    expect: { poll: { timeout: 10_000 } },
     setupFiles: ["./test/browserSetup.ts"],
     api: { port: browserTestApiPort, strictPort: false },
     browser: {

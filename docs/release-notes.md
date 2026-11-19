@@ -1,3 +1,7 @@
+## 2026-11-19 — Attachment preview browser tests stop failing on a loaded machine
+
+- Maintainers: the browser tests wait up to 10 seconds, not 1, for rendered output, and each may run 30 seconds, not 15. `AttachmentFilePreview.browser.test.tsx` failed 1 to 4 cases on a busy machine because pdf.js and the office workers outlasted those limits, which kept any change that selects the file from landing. No change to the app.
+
 ## 2026-11-19 — A Git failure no longer makes unmerged work read as none
 
 - Settling a chat checks whether its branch has work the default branch lacks. Before, a Git failure while looking up refs (an unreadable ref store, a timed-out command) looked like "no default branch", so the check counted 0 and the chat settled or the settle dialog stayed quiet. Now the check fails and reports that it could not be checked, as it already does for other errors. A repository with no base to compare with still counts 0, and the branch status display is unchanged.

@@ -1845,7 +1845,7 @@ it.each([60, 100])("prepares all %i pages of a table-heavy Word report", async (
   );
   // The first Office preview in the file loads the lazy viewer chain and the preparation worker.
   await vi.waitFor(() => expect(screen.container.textContent).toContain("page " + pages), {
-    timeout: 10_000,
+    timeout: 20_000,
   });
   expect(screen.container.textContent).not.toContain("Preview limited");
   expect(screen.container.querySelector('[role="alert"]')).toBeNull();
@@ -2518,15 +2518,18 @@ function pdfScroll(screen: Screen) {
   return { region, canvas, offset, scrollTo };
 }
 
+// pdf.js renders pages on a worker; under load that outlasts waitFor's one-second default.
+const pdfWaitFor = <T,>(check: () => T) => vi.waitFor(check, { timeout: 10_000 });
+
 it("keeps workspace PDF scroll and zoom after reloads", async () => {
   using fixture = await workspacePdfPreview();
   const { preview, urls } = fixture;
   await using screen = await render(preview(urls.original, "one"));
   await expect.element(screen.getByText("1 / 3 pages", { exact: true })).toBeVisible();
   await screen.getByRole("button", { name: "Next page", exact: true }).click();
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("2 / 3 pages"));
+  await pdfWaitFor(() => expect(screen.container.textContent).toContain("2 / 3 pages"));
   await screen.getByRole("button", { name: "Next page", exact: true }).click();
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("3 / 3 pages"));
+  await pdfWaitFor(() => expect(screen.container.textContent).toContain("3 / 3 pages"));
   for (let index = 0; index < 4; index++) {
     await screen.getByRole("button", { name: "Zoom in", exact: true }).click();
   }
@@ -2534,14 +2537,14 @@ it("keeps workspace PDF scroll and zoom after reloads", async () => {
   const zoom = screen.container.textContent!.match(/\d+%/)![0];
   const top = region().scrollTop;
   await scrollTo({ top: top + 100, left: 80 });
-  await vi.waitFor(() => {
+  await pdfWaitFor(() => {
     expect(region().scrollTop).toBeCloseTo(top + 100, 0);
     expect(region().scrollLeft).toBe(80);
   });
   const savedOffset = offset(3);
   await screen.rerender(preview(urls.updated, "two"));
   await expect.element(screen.getByText("3 / 3 pages", { exact: true })).toBeVisible();
-  await vi.waitFor(() => {
+  await pdfWaitFor(() => {
     expect(screen.container.querySelector('[role="region"]')?.textContent).toContain(
       "Updated budget",
     );
@@ -2550,29 +2553,29 @@ it("keeps workspace PDF scroll and zoom after reloads", async () => {
     expect(offset(3)).toBeCloseTo(savedOffset, 0);
   });
   await screen.getByRole("button", { name: "Previous page", exact: true }).click();
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("2 / 3 pages"));
+  await pdfWaitFor(() => expect(screen.container.textContent).toContain("2 / 3 pages"));
   await screen.getByRole("button", { name: "Fit width", exact: true }).click();
   await scrollTo({ top: region().scrollTop + 30 });
   const fitOffset = offset(2);
   await screen.rerender(preview(urls.original, "fit-width"));
   await expect.element(screen.getByText("2 / 3 pages", { exact: true })).toBeVisible();
-  await vi.waitFor(() => {
+  await pdfWaitFor(() => {
     expect(screen.container.textContent).toContain("Fit width");
     expect(region().scrollLeft).toBe(0);
     expect(offset(2)).toBeCloseTo(fitOffset, 0);
   });
   await screen.getByRole("button", { name: "Previous page", exact: true }).click();
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("1 / 3 pages"));
+  await pdfWaitFor(() => expect(screen.container.textContent).toContain("1 / 3 pages"));
   await screen.getByRole("button", { name: "Zoom in", exact: true }).click();
   const firstPageZoom = screen.container.textContent!.match(/\d+%/)![0];
   await screen.rerender(preview(urls.original, "first-page"));
   await expect.element(screen.getByText("1 / 3 pages", { exact: true })).toBeVisible();
-  await vi.waitFor(() => expect(screen.container.textContent).toContain(firstPageZoom));
+  await pdfWaitFor(() => expect(screen.container.textContent).toContain(firstPageZoom));
   await screen.getByRole("button", { name: "Next page", exact: true }).click();
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("2 / 3 pages"));
+  await pdfWaitFor(() => expect(screen.container.textContent).toContain("2 / 3 pages"));
   await screen.rerender(preview(urls.original, "one", "/repo/another.pdf"));
   await expect.element(screen.getByText("1 / 3 pages", { exact: true })).toBeVisible();
-  await vi.waitFor(() => {
+  await pdfWaitFor(() => {
     expect(screen.container.textContent).toContain("Fit width");
     expect(region().scrollTop).toBe(0);
     expect(region().scrollLeft).toBe(0);
@@ -2593,10 +2596,10 @@ it("clamps workspace PDF scroll when pages shrink or disappear", async () => {
   const zoom = screen.container.textContent!.match(/\d+%/)![0];
   const secondPageTop = region().scrollTop;
   await scrollTo({ top: secondPageTop + 600, left: 80 });
-  await vi.waitFor(() => expect(region().scrollTop).toBeCloseTo(secondPageTop + 600, 0));
+  await pdfWaitFor(() => expect(region().scrollTop).toBeCloseTo(secondPageTop + 600, 0));
   await screen.rerender(preview(urls.shrunk, "smaller-page"));
   await expect.element(screen.getByText("2 / 3 pages", { exact: true })).toBeVisible();
-  await vi.waitFor(() => {
+  await pdfWaitFor(() => {
     expect(screen.container.textContent).toContain(zoom);
     expect(region().scrollLeft).toBe(80);
     expect(offset(2)).toBeGreaterThan(0);
@@ -2604,7 +2607,7 @@ it("clamps workspace PDF scroll when pages shrink or disappear", async () => {
   });
   await screen.rerender(preview(urls.shorter, "three"));
   await expect.element(screen.getByText("2 / 2 pages", { exact: true })).toBeVisible();
-  await vi.waitFor(() => {
+  await pdfWaitFor(() => {
     expect(screen.container.querySelector('[role="region"]')?.textContent).toContain(
       "Updated milestones",
     );
