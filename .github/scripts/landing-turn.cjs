@@ -38,7 +38,10 @@ function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = 
   return { ok, stdout: result.stdout.trim(), stderr };
 }
 
-/** A git call to origin that failed. It may pass, so a wait tries again; a failure in the checkout ends it at once. */
+/**
+ * A failed git call to origin. It may pass, so a wait tries again; only git's translated message would tell apart a
+ * local setting that fails every call. A failed step that does not reach origin ends the wait at once.
+ */
 class RemoteFailure extends Error {}
 
 /** One read or write of origin's lease, bounded by `callMs`. */

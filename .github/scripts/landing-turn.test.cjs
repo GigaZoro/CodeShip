@@ -284,7 +284,8 @@ test("a waiting lander waits through failed reads of origin, and only failures t
           remote: origin,
           sleep: () => assert.fail("retried a local failure"),
         }),
-      /git commit-tree failed: .*unknown repository extension/s,
+      // git translates its own message, but not the extension's name.
+      /git commit-tree failed: .*landingturntest/s,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
