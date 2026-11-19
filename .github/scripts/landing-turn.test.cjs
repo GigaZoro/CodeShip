@@ -64,10 +64,28 @@ test("a second lander cannot push to main while the first holds the turn, and th
     commit(mover, "mover.txt");
     git(mover, "push", "-q", "origin", "HEAD:main");
 
+    // Main from the named remote, as the CLI fetches it, also updates origin/main. A fetch that fails on that leaves
+    // no turn ref behind and gives the turn back.
+    const lock = path.join(first, ".git/refs/remotes/origin/main.lock");
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, "");
+    assert.throws(
+      () => land({ cwd: first, remote: "origin", check: () => assert.fail("checked") }),
+      /git fetch failed/,
+    );
+    assert.deepEqual(
+      [
+        git(first, "for-each-ref", "refs/worktree"),
+        git(origin, "for-each-ref", "refs/heads/landing-lease"),
+      ],
+      ["", ""],
+    );
+    fs.rmSync(lock);
+
     let checks = 0;
     const result = land({
       cwd: first,
-      remote: origin,
+      remote: "origin",
       check: (turn, base) => {
         checks += 1;
         assert.equal(base, git(mover, "rev-parse", "HEAD"));

@@ -209,13 +209,15 @@ function land({ cwd, remote, check, branch = "main", ...rest }) {
   const problem = notesMergeProblem(cwd);
   if (problem) throw new Error(problem);
   return withTurn({ cwd, remote, ...rest }, (turn) => {
-    // Into this turn's own ref: any other fetch in this checkout can rewrite FETCH_HEAD before it is read.
+    // Into this turn's own ref: any other fetch in this checkout can rewrite FETCH_HEAD before it is read. Atomic,
+    // because a named remote's fetch also updates its tracking ref, and a failure there must not leave this one behind.
     const fetched = `refs/worktree/landing-turn/${turn}`;
     git(cwd, [
       "fetch",
       "--quiet",
       "--no-tags",
       "--no-write-fetch-head",
+      "--atomic",
       remote,
       `+refs/heads/${branch}:${fetched}`,
     ]);
