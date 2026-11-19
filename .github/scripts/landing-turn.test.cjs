@@ -268,12 +268,12 @@ test("a take whose push fails or times out is the lander's when origin took it, 
   const { root, origin, git, clone } = setup();
   try {
     const lander = clone("lander");
-    // Origin commits the take, then its receive-pack dies (drop-ack) or stalls (stall) before it acknowledges the push.
+    // Origin commits the take, then its receive-pack dies before it acknowledges the push.
     const hooks = path.join(origin, "hooks");
     git(origin, "config", "core.hooksPath", hooks);
     fs.writeFileSync(
       path.join(hooks, "reference-transaction"),
-      '#!/bin/sh\n[ "$1" = committed ] || exit 0\n[ -e drop-ack ] && rm drop-ack && kill -9 "$PPID"\n[ -e stall ] && rm stall && sleep 6\nexit 0\n',
+      '#!/bin/sh\n[ "$1" = committed ] && [ -e drop-ack ] && rm drop-ack && kill -9 "$PPID"\nexit 0\n',
       { mode: 0o755 },
     );
     fs.writeFileSync(path.join(origin, "drop-ack"), "");
@@ -298,13 +298,14 @@ test("a take whose push fails or times out is the lander's when origin took it, 
     release({ cwd: lander, remote: path.join(root, "missing.git") }, turn);
     release({ cwd: lander, remote: origin }, turn);
 
-    fs.writeFileSync(path.join(origin, "stall"), "");
-    const stalled = acquire({ cwd: lander, remote: origin, maxWaitMs: 0, callMs: 2000 });
-    assert.deepEqual(
-      [fs.existsSync(path.join(origin, "stall")), git(origin, "rev-parse", "landing-lease/main")],
-      [false, stalled],
+    // Origin stops answering and never takes the lease: the push runs out of time, which is a failed poll.
+    const stall = path.join(hooks, "pre-receive");
+    fs.writeFileSync(stall, "#!/bin/sh\nsleep 6\nexit 1\n", { mode: 0o755 });
+    assert.throws(
+      () => acquire({ cwd: lander, remote: origin, maxWaitMs: 0, callMs: 2000 }),
+      /git push failed: did not finish within 2 seconds/,
     );
-    release({ cwd: lander, remote: origin }, stalled);
+    fs.rmSync(stall);
 
     git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
     assert.throws(
