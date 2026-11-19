@@ -12,6 +12,7 @@
 - A new Auto thread now starts on the first account in the provider's account order that can run in its project and has its coordinator model, under the model id that account lists. Before, it started on the first enabled account whether or not it had the model, was signed in or was turned on for the project, so with account switching off, such a thread failed to start.
 - The coordinator model list also offers the models of a provider whose accounts all report a warning, such as a Codex account whose model list did not load in time, since Auto still runs on them.
 - When a new thread's Auto default is out of usage on its account, another account of that provider now counts as able to take the thread only when it offers that model and its provider check did not fail, the same as for an Auto fallback model. When no other account can run it, the thread now switches to the fallback model, if that can run, instead of waiting for the reset. Manual-step chats and a default model inherited from another machine also skip accounts whose provider check failed.
+
 ## 2026-11-19 — A turn whose worktree folder is gone no longer breaks checkout moves
 
 - Moving a checkout while a turn names a worktree folder that has since been deleted failed with a git error. A folder that is gone now counts as no repository, so the move proceeds.
