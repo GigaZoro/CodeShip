@@ -1,10 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off - one test makes the main thread's execFile throw.
-import type * as NodeChildProcess from "node:child_process";
-import * as NodeModule from "node:module";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
 import * as Cause from "effect/Cause";
@@ -24,12 +19,6 @@ import { timeoutProcessOption } from "./processDeadline.ts";
 import * as WorkerProcessSpawner from "./WorkerProcessSpawner.ts";
 
 const layer = WorkerProcessSpawner.layer.pipe(Layer.provide(NodeServices.layer));
-// Takes the Windows paths on any host.
-const windowsLayer = WorkerProcessSpawner.layer.pipe(
-  Layer.provide(NodeServices.layer),
-  Layer.provide(Layer.succeed(HostProcess.Platform, "win32")),
-);
-
 const node = (script: string, options?: ChildProcess.CommandOptions) =>
   ChildProcess.make(process.execPath, ["-e", script], options);
 
@@ -46,37 +35,51 @@ const errorLogs = () => {
   return { messages, logged: Deferred.await(logged), layer: Logger.layer([logger]) };
 };
 
-// Within the scope, the main thread's execFile throws as Node's does for a spawn error like ENOMEM.
-const execFileThrows = (error: Error) =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      const childProcess = NodeModule.createRequire(import.meta.url)(
-        "node:child_process",
-      ) as typeof NodeChildProcess;
-      const spy = vi.spyOn(childProcess, "execFile").mockImplementation(() => {
-        throw error;
-      });
-      NodeModule.syncBuiltinESMExports();
-      return spy;
-    }),
-    (spy) =>
-      Effect.sync(() => {
-        spy.mockRestore();
-        NodeModule.syncBuiltinESMExports();
-      }),
+describe("WorkerProcessSpawner", () => {
+  it.live.runIf(isWindowsHost)(
+    "ends an orphaned grandchild when its worker stops after the intermediate exited",
+    () =>
+      Effect.gen(function* () {
+        const member = yield* processPipe;
+        const grandchild = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
+        const intermediate = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore',detached:true,windowsHide:true}).unref();`;
+        const root = yield* node(
+          `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(intermediate)}],{stdio:'ignore',windowsHide:true}); c.on('exit',()=>process.stdout.write('ready')); process.stdin.resume();`,
+        );
+        yield* member.started;
+        yield* root.stdout.pipe(Stream.take(1), Stream.runDrain);
+        yield* WorkerProcessSpawner.__testing.stopWorker;
+        yield* member.ended;
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
-describe("WorkerProcessSpawner", () => {
   it.live("relays stdin, output and the exit code", () =>
     Effect.gen(function* () {
       const handle = yield* node(
-        "process.stdin.pipe(process.stdout); process.stdin.on('end', () => { process.exitCode = 3; });",
-        { stdin: Stream.encodeText(Stream.make("hello ", "worker")) },
+        "process.stdin.pipe(process.stdout); process.stdin.on('end', () => { require('node:fs').writeSync(3, Buffer.from([0,255,9])); process.exitCode = 3; });",
+        {
+          stdin: Stream.encodeText(Stream.make("hello ", "worker")),
+          additionalFds: { fd3: { type: "output" } },
+        },
       );
       const stdout = yield* handle.stdout.pipe(Stream.decodeText(), Stream.mkString);
 
       assert.equal(stdout, "hello worker");
+      assert.deepEqual(
+        (yield* handle.getOutputFd(3).pipe(Stream.runCollect)).flatMap((chunk) => [...chunk]),
+        [0, 255, 9],
+      );
       assert.equal(yield* handle.exitCode, ChildProcessSpawner.ExitCode(3));
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.live.runIf(isWindowsHost)("preserves shell parsing inside the owned job", () =>
+    Effect.gen(function* () {
+      const child = yield* ChildProcess.make('echo "two words" & echo second', [], { shell: true });
+      const output = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
+      assert.include(output, '"two words"');
+      assert.include(output, "second");
+      assert.equal(yield* child.exitCode, 0);
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
@@ -163,13 +166,14 @@ describe("WorkerProcessSpawner", () => {
     Effect.gen(function* () {
       const leader = yield* leftover.command;
       yield* leftover.started;
+      yield* Stream.run(Stream.empty, leader.stdin);
       assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
       return leader;
     });
 
   it.live("kill ends what a child left running after it exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       const leader = yield* leaderThatLeftAChild(leftover);
 
       yield* leader.kill();
@@ -180,7 +184,7 @@ describe("WorkerProcessSpawner", () => {
 
   it.live("an interrupted command ends what its child left running after it exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       const exited = yield* Deferred.make<void>();
       const command = yield* Effect.forkScoped(
         Effect.gen(function* () {
@@ -207,54 +211,6 @@ describe("WorkerProcessSpawner", () => {
       assert.deepEqual(errors.messages, []);
     }).pipe(Effect.provide(Layer.merge(layer, errors.layer)));
   });
-
-  // It exits when the stopped worker closes its stdin, and no one hears of that exit. As in the
-  // server, the spawning fiber has the logger and the spawner's layer does not.
-  const leaderOfWorkerToStop = (errors: ReturnType<typeof errorLogs>) =>
-    node("process.stdin.resume();", { stdout: "ignore", stderr: "ignore" }).pipe(
-      Effect.provide(errors.layer),
-    );
-
-  // PowerShell is missing here, so the walk fails as a denied WMI query does on Windows.
-  it.live.skipIf(isWindowsHost)(
-    "a stopped worker that cannot start another walks the tree and logs to the spawning fiber",
-    () => {
-      const errors = errorLogs();
-      return Effect.gen(function* () {
-        const leader = yield* leaderOfWorkerToStop(errors);
-        const kill = yield* Effect.acquireRelease(
-          Effect.sync(() => vi.spyOn(process, "kill")),
-          (spy) => Effect.sync(() => spy.mockRestore()),
-        );
-        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
-
-        yield* WorkerProcessSpawner.__testing.stopWorker;
-
-        yield* errors.logged;
-        assert.notInclude(
-          kill.mock.calls.map(([pid]) => pid),
-          leader.pid,
-        );
-      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
-    },
-  );
-
-  it.live(
-    "a stopped worker whose tree walk cannot start PowerShell logs it and fails its children",
-    () => {
-      const errors = errorLogs();
-      return Effect.gen(function* () {
-        const leader = yield* leaderOfWorkerToStop(errors);
-        yield* execFileThrows(Object.assign(new Error("spawn ENOMEM"), { code: "ENOMEM" }));
-        yield* WorkerProcessSpawner.__testing.failWorkerStarts;
-
-        yield* WorkerProcessSpawner.__testing.stopWorker;
-
-        yield* errors.logged;
-        assert.isTrue(Exit.isFailure(yield* Effect.exit(leader.exitCode)));
-      }).pipe(Effect.scoped, Effect.provide(windowsLayer));
-    },
-  );
 
   // POSIX gives no process the pid of a group that still exists, so one holding it ended the group.
   it.live.skipIf(isWindowsHost)(
@@ -340,7 +296,7 @@ describe("WorkerProcessSpawner", () => {
     "a stopped worker kills what a child left running after it exited, through $through",
     ({ replacement }) =>
       Effect.gen(function* () {
-        const leftover = yield* leaderLeavingChild();
+        const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
         yield* leaderThatLeftAChild(leftover);
         yield* replacement;
 
