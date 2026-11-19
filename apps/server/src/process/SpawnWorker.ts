@@ -8,6 +8,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { supportsEnvChdir } from "@t3tools/shared/envTrampoline";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  type WindowsProcessTreeRoot,
+  windowsStopTreeArgs,
+  windowsTreeRootFromNow,
+} from "@t3tools/shared/windowsProcessTree";
 
 // Windows runs CreateProcess synchronously on the calling thread, and antivirus or a busy disk can
 // hold it for seconds; Linux's spawn waits for chdir and the PATH search, which a hung mount
@@ -154,6 +159,9 @@ class WorkerChild
   implements NodeChildProcessSpawner.SpawnedChildProcess
 {
   pid: number | undefined;
+  treeRoot: WindowsProcessTreeRoot | undefined;
+  // Constructed just before its spawn is posted, so the tree's window starts before the process.
+  readonly rootOf = windowsTreeRootFromNow();
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   stdin: NodeStream.Writable | null = null;
@@ -357,6 +365,7 @@ class SpawnWorker {
         this.launching--;
         child.spawned = true;
         child.pid = message.pid;
+        if (message.pid !== undefined) child.treeRoot = child.rootOf(message.pid);
         child.emit("spawn");
         break;
       case "error":
@@ -416,8 +425,8 @@ class SpawnWorker {
         child.exit(null, "SIGKILL");
         child.abandon();
       };
-      if (child.pid === undefined) finish();
-      else this.pool.killTree(child.pid, finish);
+      if (child.treeRoot === undefined) finish();
+      else this.pool.killTree(child.treeRoot, finish);
     }
     this.children.clear();
   }
@@ -456,10 +465,10 @@ class SpawnWorkerPool {
     return worker.spawn(++this.#nextId, command, args, options);
   };
 
-  killTree(pid: number, done: () => void): void {
+  killTree(root: WindowsProcessTreeRoot, done: () => void): void {
     const killPid = () => {
       try {
-        process.kill(pid, "SIGKILL");
+        process.kill(root.pid, "SIGKILL");
       } catch {}
     };
     if (this.platform !== "win32") {
@@ -471,11 +480,11 @@ class SpawnWorkerPool {
     const finish = (killed: boolean) => {
       if (settled) return;
       settled = true;
-      // As Effect's own kill does when taskkill fails, end at least the direct child.
+      // When the tree stop fails, end at least the direct child.
       if (!killed) killPid();
       done();
     };
-    this.spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+    this.spawn("powershell.exe", windowsStopTreeArgs(root), {
       stdio: "ignore",
       windowsHide: true,
     })
