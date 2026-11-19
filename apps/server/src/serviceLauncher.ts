@@ -7,6 +7,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { acquireServiceSelectionLock } from "./cloud/serviceSelectionLock.ts";
 import { isNoCopyOnWrite, markNoCopyOnWrite } from "./noCopyOnWrite.ts";
 
@@ -950,11 +951,7 @@ export async function stateDirOwned(baseDir: string): Promise<boolean> {
   if (typeof record !== "object" || record === null || "ownerId" in record) return false;
   const pid = "pid" in record ? record.pid : undefined;
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "EPERM")) return false;
-  }
+  if (!isProcessAlive(pid)) return false;
   const recordedAt = Date.parse(
     "startedAt" in record && typeof record.startedAt === "string" ? record.startedAt : "",
   );

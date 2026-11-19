@@ -4,21 +4,13 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import * as RelayClientLedger from "./RelayClientLedger.ts";
-
-const isAlive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const spawnSleep = Effect.acquireRelease(
   Effect.gen(function* () {
@@ -76,8 +68,8 @@ describe.each(observedPlatforms)("RelayClientLedger observing as %s", (platform)
         const restarted = yield* RelayClientLedger.make({ stateDir });
         yield* restarted.reapOrphans;
 
-        expect(isAlive(orphan.pid)).toBe(false);
-        expect(isAlive(adopted.pid)).toBe(true);
+        expect(isProcessAlive(orphan.pid)).toBe(false);
+        expect(isProcessAlive(adopted.pid)).toBe(true);
         expect(yield* entryNames(stateDir)).toEqual([`${adopted.pid}.json`]);
       }),
     ),
@@ -104,7 +96,7 @@ describe.each(observedPlatforms)("RelayClientLedger observing as %s", (platform)
         const restarted = yield* RelayClientLedger.make({ stateDir });
         yield* restarted.reapOrphans;
 
-        expect(isAlive(unrelated.pid)).toBe(true);
+        expect(isProcessAlive(unrelated.pid)).toBe(true);
         expect(yield* entryNames(stateDir)).toEqual([]);
       }),
     ),

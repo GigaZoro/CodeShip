@@ -6,6 +6,8 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { probeProcess } from "@t3tools/shared/processProbe";
+
 // Coarse boot time: a lease from an earlier boot is dead even when its PID is live again.
 const bootEpochSeconds = () => Math.round(Date.now() / 1000 - NodeOS.uptime());
 
@@ -58,13 +60,13 @@ export async function acquireServiceSelectionLock(selectionPath: string): Promis
           Number.isSafeInteger(ownerBoot) && Math.abs(ownerBoot - bootEpochSeconds()) > 60;
         let dead = fromEarlierBoot;
         if (!dead) {
-          try {
-            process.kill(pid, 0);
-          } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            if (code !== "ESRCH" && code !== "EPERM") throw error;
-            dead = code === "ESRCH";
+          const probe = probeProcess(pid);
+          if (probe.state === "unknown") {
+            throw new Error(
+              `Could not tell whether service selection lock owner ${pid} runs: ${probe.code}`,
+            );
           }
+          dead = probe.state === "gone";
         }
         if (dead) {
           // Remove only this dead owner's unique file, never a replacement owner's.

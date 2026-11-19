@@ -1,5 +1,6 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { isProcessAlive } from "@t3tools/shared/processProbe";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -50,15 +51,6 @@ interface ObservedProcess {
 
 // ps lstart needs C locale and UTC for stable parsing.
 const DARWIN_PS_LINE = /^\s*(\d+)\s+(\S+)\s+(\w{3} \w{3} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4})\s+(.*)$/;
-
-const processExists = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (cause) {
-    return (cause as NodeJS.ErrnoException | undefined)?.code !== "ESRCH";
-  }
-};
 
 const signal = (pid: number, name: NodeJS.Signals) => {
   try {
@@ -130,7 +122,7 @@ export const make = Effect.fn("RelayClientLedger.make")(function* (input: {
   const compare = (identity: ProcessIdentity) =>
     observe(identity.pid).pipe(
       Effect.map((observed): "same" | "gone" | "unknown" => {
-        if (observed === undefined) return processExists(identity.pid) ? "unknown" : "gone";
+        if (observed === undefined) return isProcessAlive(identity.pid) ? "unknown" : "gone";
         return !observed.zombie &&
           observed.startTime === identity.startTime &&
           (identity.command === undefined || observed.command === identity.command)
