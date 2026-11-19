@@ -24,7 +24,10 @@ interface MergeAttempt {
 
 interface SyncState {
   readonly startedAt: string;
-  /** The origin/main commit the branch was last verified against: frozen at begin, then each merged main. */
+  /**
+   * The origin/main commit the branch is verified against: frozen at begin, then each main merged
+   * into it, or being merged when begin leaves the merge to resolve.
+   */
   readonly base: string;
   readonly upstream: string;
   readonly attempts: ReadonlyArray<MergeAttempt>;
