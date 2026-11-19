@@ -71,6 +71,35 @@ describe("t3code/no-duplicate-test-title", () => {
     `,
   );
 
+  rule.valid(
+    "ignores a parameter that shadows an imported it alias",
+    `
+      import { it as effectIt } from "@effect/vitest";
+
+      const rows = (effectIt: (name: string) => void) => {
+        effectIt("row");
+        effectIt("row");
+      };
+    `,
+  );
+
+  rule.invalid(
+    "reports a title repeated across calls of a parameter that shadows the imported layer",
+    `
+      import { it, layer } from "@effect/vitest";
+      import * as Effect from "effect/Effect";
+
+      const run = (layer: (_layer: unknown) => (_name: string, body: () => void) => void) => {
+        layer(undefined)("on version 1", () => {
+          it.effect("lists models", () => Effect.void);
+        });
+        layer(undefined)("on version 2", () => {
+          it.effect("lists models", () => Effect.void);
+        });
+      };
+    `,
+  );
+
   rule.invalid(
     "reports a title an unnamed layer block repeats from the enclosing scope",
     `
