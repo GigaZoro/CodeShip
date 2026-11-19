@@ -13,6 +13,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { attachWindowsJob, windowsJobOf, type WindowsJob } from "./windowsJob.ts";
+import { owningWindowsJobs } from "./windowsJobSpawner.ts";
 
 /**
  * A child older than the parent it names belongs to an earlier holder of that pid, as does a root
@@ -221,6 +222,7 @@ export const endingWindowsTrees = (
 ): Spawner => {
   if (platform !== "win32") return spawner;
   const inner = withoutWindowsTreeEnding(spawner);
+  const owner = owningWindowsJobs(inner, platform);
   const wrapped = ChildProcessSpawner.make(
     Effect.fnUntraced(function* (command) {
       if (command._tag === "PipedCommand") {
@@ -231,7 +233,7 @@ export const endingWindowsTrees = (
             "endingWindowsTrees ends one process's tree; spawn a pipeline's stages one by one",
         });
       }
-      const { handle, root } = yield* withWindowsTreeRoot(inner.spawn(command));
+      const { handle, root } = yield* withWindowsTreeRoot(owner.spawn(command));
       let referenced = true;
       let unendedReads = 0;
       // A kill and the scope's close share one walk.

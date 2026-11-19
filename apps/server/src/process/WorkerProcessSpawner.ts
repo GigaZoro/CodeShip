@@ -4,6 +4,7 @@ import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpa
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { WindowsJobHost, attachWindowsJob, type WindowsJob } from "@t3tools/shared/windowsJob";
+import { markWindowsJobSpawner } from "@t3tools/shared/windowsJobSpawner";
 import type * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -1154,7 +1155,8 @@ const make = Effect.gen(function* () {
     });
   });
 
-  return ChildProcessSpawner.make(spawnCommand);
+  const spawner = ChildProcessSpawner.make(spawnCommand);
+  return platform === "win32" ? markWindowsJobSpawner(spawner) : spawner;
 });
 
 /** @internal Exported for tests. */
