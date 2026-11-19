@@ -88,6 +88,12 @@ interface FailedAttempt {
   readonly retryAtMillis: number;
 }
 
+/** Why the last check before the handoff put it off; `chats` when chats are what hold it. */
+interface HoldOff {
+  readonly reason: string;
+  readonly chats: boolean;
+}
+
 export type AutoUpdateDecision =
   | { readonly _tag: "rolled-back"; readonly version: string }
   | { readonly _tag: "backing-off"; readonly version: string; readonly retryAtMillis: number }
@@ -245,17 +251,24 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     channel: CliReleaseChannel,
     afterPatience: boolean,
     time: string,
-  ) {
+  ): Effect.fn.Return<HoldOff | undefined, never> {
     const current = yield* readSettings;
-    if (!current?.installUpdatesAutomatically) return "the setting was turned off";
-    if (current.automaticUpdateTime !== time) return "the automatic update time changed";
+    if (!current?.installUpdatesAutomatically) {
+      return { reason: "the setting was turned off", chats: false };
+    }
+    if (current.automaticUpdateTime !== time) {
+      return { reason: "the automatic update time changed", chats: false };
+    }
     const refusal = managedUpdateRefusal(policy.document, channel);
-    if (refusal !== undefined) return refusal;
+    if (refusal !== undefined) return { reason: refusal, chats: false };
     if (afterPatience) return undefined;
     const hold = yield* recovery.restartHold.pipe(Effect.option);
-    if (Option.isNone(hold)) return "background work could not be read";
+    if (Option.isNone(hold)) return { reason: "background work could not be read", chats: false };
     if (isRestartHoldEmpty(hold.value)) return undefined;
-    return hold.value.work.length > 0 ? "a chat started background work" : "a chat is answering";
+    return {
+      reason: hold.value.work.length > 0 ? "a chat started background work" : "a chat is answering",
+      chats: true,
+    };
   });
 
   const recordFailure = Effect.fn("cloud.auto_update.record_failure")(function* (
@@ -306,23 +319,37 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
         ),
         scheduleChanged.pipe(Effect.as(false)),
       );
-    const idleOrPatienceRanOut = yield* waitFor(waitUntilIdle).pipe(
-      Effect.timeoutOrElse({
-        duration: AUTO_UPDATE_IDLE_PATIENCE,
-        orElse: () => Effect.succeed("busy" as const),
-      }),
-    );
-    if (idleOrPatienceRanOut === false) return;
-    if (idleOrPatienceRanOut === "busy") {
-      yield* Effect.logInfo("Automatic update drains: new scheduled starts wait for it.", {
-        targetVersion: version,
-      });
-      // Held until the handoff or the put-off, so no scheduled start begins while it prepares.
-      return yield* whileDraining(
-        drainThenInstall(version, channel, time, waitFor, scheduleChanged),
+    /** `true` once idle, `"busy"` when `deadline` passes first, `false` when the wait ends. */
+    const idleBefore = (deadline: number) =>
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((now) =>
+          now >= deadline
+            ? Effect.succeed("busy" as const)
+            : waitFor(waitUntilIdle).pipe(
+                Effect.timeoutOrElse({
+                  duration: Duration.millis(deadline - now),
+                  orElse: () => Effect.succeed("busy" as const),
+                }),
+              ),
+        ),
       );
+    const patienceEnds =
+      (yield* Clock.currentTimeMillis) + Duration.toMillis(AUTO_UPDATE_IDLE_PATIENCE);
+    // A chat that starts while the release is prepared sends the update back to waiting with the
+    // same deadline: on a busy machine a fresh wait per such chat could put it off for good.
+    while (true) {
+      const idle = yield* idleBefore(patienceEnds);
+      if (idle === false) return;
+      if (idle === "busy") break;
+      if ((yield* handOff(channel, false, time, scheduleChanged)) !== "chats") return;
     }
-    return yield* handOff(channel, false, time, scheduleChanged);
+    yield* Effect.logInfo("Automatic update drains: new scheduled starts wait for it.", {
+      targetVersion: version,
+    });
+    // Held until the handoff or the put-off, so no scheduled start begins while it prepares.
+    return yield* whileDraining(
+      drainThenInstall(version, channel, time, waitFor, idleBefore, scheduleChanged),
+    );
   });
 
   /** Lets running turns finish with scheduled starts held, then cuts only what outlasts the limit. */
@@ -331,29 +358,29 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     channel: CliReleaseChannel,
     time: string,
     waitFor: (wait: typeof waitUntilIdle) => Effect.Effect<boolean>,
+    idleBefore: (deadline: number) => Effect.Effect<boolean | "busy">,
     scheduleChanged: Effect.Effect<void>,
   ) {
-    const drained = yield* waitFor(waitUntilIdle).pipe(
-      Effect.timeoutOrElse({
-        duration: AUTO_UPDATE_DRAIN_LIMIT,
-        orElse: () => Effect.succeed("busy" as const),
-      }),
-    );
-    if (drained === false) return;
-    if (drained === "busy") {
-      const hold = yield* recovery.restartHold.pipe(Effect.option);
-      yield* Effect.logWarning("Automatic update stops waiting for chats to be idle.", {
-        targetVersion: version,
-        cutThreadIds: Option.match(hold, {
-          onNone: () => [],
-          onSome: (current) => (current.runningTurns ?? []).map((turn) => turn.threadId),
-        }),
-      });
-      if (!(yield* waitFor(waitForListedWork))) return;
+    const drainEnds = (yield* Clock.currentTimeMillis) + Duration.toMillis(AUTO_UPDATE_DRAIN_LIMIT);
+    while (true) {
+      const drained = yield* idleBefore(drainEnds);
+      if (drained === false) return;
+      if (drained === "busy") break;
+      if ((yield* handOff(channel, false, time, scheduleChanged)) !== "chats") return;
     }
-    return yield* handOff(channel, drained === "busy", time, scheduleChanged);
+    const hold = yield* recovery.restartHold.pipe(Effect.option);
+    yield* Effect.logWarning("Automatic update stops waiting for chats to be idle.", {
+      targetVersion: version,
+      cutThreadIds: Option.match(hold, {
+        onNone: () => [],
+        onSome: (current) => (current.runningTurns ?? []).map((turn) => turn.threadId),
+      }),
+    });
+    if (!(yield* waitFor(waitForListedWork))) return;
+    return yield* handOff(channel, true, time, scheduleChanged);
   });
 
+  /** `"chats"` when a chat that started while the release was prepared put the handoff off. */
   const handOff = Effect.fn("cloud.auto_update.hand_off")(function* (
     channel: CliReleaseChannel,
     afterPatience: boolean,
@@ -364,16 +391,16 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     if (version === undefined) return;
     yield* Effect.logInfo("Automatic update starting.", { targetVersion: version });
     // Set when the last check puts the update off, which is not a failed attempt.
-    const heldOff = yield* Ref.make<string | undefined>(undefined);
+    const heldOff = yield* Ref.make<HoldOff | undefined>(undefined);
     const handingOff = yield* Deferred.make<void>();
     const beforeHandoff = () =>
       rememberInstall.pipe(
         Effect.andThen(reasonToHoldOff(channel, afterPatience, time)),
-        Effect.flatMap((reason) =>
-          reason === undefined
+        Effect.flatMap((holdOff) =>
+          holdOff === undefined
             ? Deferred.succeed(handingOff, undefined).pipe(Effect.asVoid)
-            : Ref.set(heldOff, reason).pipe(
-                Effect.andThen(Effect.fail(new ServerSelfUpdateError({ reason }))),
+            : Ref.set(heldOff, holdOff).pipe(
+                Effect.andThen(Effect.fail(new ServerSelfUpdateError({ reason: holdOff.reason }))),
               ),
         ),
       );
@@ -394,18 +421,21 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
         ),
         Effect.catch((error) =>
           Ref.get(heldOff).pipe(
-            Effect.flatMap((reason) =>
-              reason === undefined
+            Effect.flatMap((holdOff) =>
+              holdOff === undefined
                 ? recordFailure(version, error.reason)
-                : Effect.logInfo("Automatic update put off until the next check.", {
-                    targetVersion: version,
-                    reason,
-                  }),
+                : Effect.logInfo(
+                    holdOff.chats
+                      ? "Automatic update waits for chats again."
+                      : "Automatic update put off until the next check.",
+                    { targetVersion: version, reason: holdOff.reason },
+                  ),
             ),
           ),
         ),
       );
     yield* Effect.raceFirst(prepare, cancelPreparation);
+    return (yield* Ref.get(heldOff))?.chats === true ? ("chats" as const) : undefined;
   });
 
   const findTarget = Effect.fn("cloud.auto_update.find_target")(function* (

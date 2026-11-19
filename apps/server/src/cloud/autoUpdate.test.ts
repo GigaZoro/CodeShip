@@ -16,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -134,6 +135,8 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     runningTurns: options.answering === true ? answering : [],
   });
   const holdSeen = yield* Deferred.make<void>();
+  // One entry each time the update starts watching what chats hold.
+  const watchStarts = yield* Queue.unbounded<void>();
   // Runs while the release is prepared, between the wait for idle and the handoff.
   const whilePreparing = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const handedOff = yield* Deferred.make<void>();
@@ -184,8 +187,14 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     }),
     Layer.mock(ProviderRuntimeRecoveryService)({
       restartHold: SubscriptionRef.get(hold),
-      watchRestartHold: SubscriptionRef.changes(hold).pipe(
-        Stream.tap(() => Deferred.succeed(holdSeen, undefined)),
+      watchRestartHold: Stream.unwrap(
+        Queue.offer(watchStarts, undefined).pipe(
+          Effect.as(
+            SubscriptionRef.changes(hold).pipe(
+              Stream.tap(() => Deferred.succeed(holdSeen, undefined)),
+            ),
+          ),
+        ),
       ),
     }),
     Layer.succeed(
@@ -213,6 +222,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     settings,
     hold,
     holdSeen,
+    watchStarts,
     whilePreparing,
     handedOff,
     startDesktop,
@@ -273,39 +283,97 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
   it.effect.each([
     {
       name: "a chat starts background work",
-      change: (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
-        SubscriptionRef.set(harness.hold, { work: [work("started while preparing")] }),
+      busy: { work: [work("started while preparing")] },
     },
     {
       name: "a chat starts answering",
-      change: (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
-        SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering }),
+      busy: { work: [], runningTurns: answering },
     },
-    {
-      name: "the setting is turned off",
-      change: (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
-        SubscriptionRef.update(harness.settings, (current) => ({
-          ...current,
-          installUpdatesAutomatically: false,
-        })),
-    },
-  ])("puts the update off when $name while the release is prepared", ({ change }) =>
+  ])("waits again when $name while the release is prepared", ({ busy }) =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
-      yield* Ref.set(harness.whilePreparing, change(harness));
-      yield* harness.auto.check();
+      yield* Ref.set(
+        harness.whilePreparing,
+        SubscriptionRef.set(harness.hold, busy).pipe(
+          Effect.andThen(Ref.set(harness.whilePreparing, Effect.void)),
+        ),
+      );
+      const check = yield* Effect.forkChild(harness.auto.check());
+      yield* Queue.take(harness.watchStarts);
+      // Not a failed attempt: the same check watches the chats again.
+      yield* Queue.take(harness.watchStarts);
       expect(harness.events).toEqual([`update ${NEWER}`]);
 
-      // Not a failed attempt: the next check tries again at once, and goes when idle.
-      yield* Ref.set(harness.whilePreparing, Effect.void);
       yield* SubscriptionRef.set(harness.hold, { work: [] });
-      yield* SubscriptionRef.update(harness.settings, (current) => ({
-        ...current,
-        installUpdatesAutomatically: true,
-      }));
-      yield* harness.auto.check();
+      yield* Fiber.join(check);
       expect(harness.events).toEqual([`update ${NEWER}`, `update ${NEWER}`, `handoff ${NEWER}`]);
     }),
+  );
+
+  it.effect("keeps the patience and drain deadlines when chats put the handoff off", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      // Each time the release is prepared, a chat starts answering.
+      yield* Ref.set(
+        harness.whilePreparing,
+        SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering }),
+      );
+      const check = yield* Effect.forkChild(harness.auto.check());
+      yield* Queue.take(harness.watchStarts);
+      yield* Queue.take(harness.watchStarts);
+      expect(harness.events).toEqual([`update ${NEWER}`]);
+
+      // The patience counts from the first wait, not from the put-off.
+      yield* TestClock.adjust(
+        Duration.subtract(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
+      );
+      expect(yield* isDraining()).toBe(false);
+      yield* TestClock.adjust(Duration.minutes(2));
+      expect(yield* isDraining()).toBe(true);
+
+      // The drain empties the machine, and another chat starts while the release is prepared.
+      yield* Queue.take(harness.watchStarts);
+      yield* SubscriptionRef.set(harness.hold, { work: [] });
+      yield* Queue.take(harness.watchStarts);
+      expect(harness.events).toEqual([`update ${NEWER}`, `update ${NEWER}`]);
+
+      // The drain also counts from its start: then the answering chat is cut.
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT);
+      yield* Fiber.join(check);
+      expect(harness.events).toEqual([
+        `update ${NEWER}`,
+        `update ${NEWER}`,
+        `update ${NEWER}`,
+        `handoff ${NEWER}`,
+      ]);
+      expect(yield* isDraining()).toBe(false);
+    }),
+  );
+
+  it.effect(
+    "puts the update off when the setting is turned off while the release is prepared",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* Ref.set(
+          harness.whilePreparing,
+          SubscriptionRef.update(harness.settings, (current) => ({
+            ...current,
+            installUpdatesAutomatically: false,
+          })),
+        );
+        yield* harness.auto.check();
+        expect(harness.events).toEqual([`update ${NEWER}`]);
+
+        // Not a failed attempt: the next check tries again at once.
+        yield* Ref.set(harness.whilePreparing, Effect.void);
+        yield* SubscriptionRef.update(harness.settings, (current) => ({
+          ...current,
+          installUpdatesAutomatically: true,
+        }));
+        yield* harness.auto.check();
+        expect(harness.events).toEqual([`update ${NEWER}`, `update ${NEWER}`, `handoff ${NEWER}`]);
+      }),
   );
 
   it.effect(

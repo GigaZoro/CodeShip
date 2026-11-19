@@ -88,7 +88,8 @@ scheduled time are available, it waits for the next day. You can share the setti
 
 The machine first gives chats two hours to finish, then holds new scheduled starts and gives
 running chats another three hours. After that it waits for background work and running tool calls
-before installing. Held scheduled starts run after the restart. Turn automatic updates off to
+before installing. A chat that starts while the release downloads does not restart these waits.
+Held scheduled starts run after the restart. Turn automatic updates off to
 cancel the wait, or use the manual update controls to install at any time.
 
 On desktop, the app installs even when its window is closed if it is still running, and its

@@ -122,7 +122,9 @@ threads that may be cut. A fixed-time scheduled start held during the drain is r
 `scheduled_task_drain_holds` so it can start after the restart, even outside its missed-run grace.
 
 The final check runs after preparation. It reads the setting and managed policy again, and
-checks that the restart hold is still empty if the wait ended before the cut phase. The drain
+checks that the restart hold is still empty if the wait ended before the cut phase. When a chat
+started during preparation, the service waits again with the same two-hour or drain deadline, so
+a busy machine cannot restart those waits with each preparation. The drain
 covers preparation and handoff and ends when an attempt exits or the server shuts down.
 Turning automatic updates off or changing the time ends an active wait. The bundled server
 prepares and commits the update through the desktop shell's update channel. Desktop installs
