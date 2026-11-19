@@ -309,7 +309,9 @@ const liveChat = (name: string) =>
               const pid =
                 row.pid ??
                 Number(
-                  NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8")
+                  (yield* Effect.try(() =>
+                    NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8"),
+                  ))
                     .trim()
                     .split(/\s+/)[0],
                 );
@@ -547,6 +549,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             refuseWindowsLaunch(processRunner, launcher),
           ),
           Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(WindowsJobHost, Effect.succeed("job-host.exe")),
           Effect.provideService(HostProcess.Environment, {
             Path: "C:\\host",
             HOST_ONLY: "kept",
@@ -611,6 +614,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             refuseWindowsLaunch(processRunner, launcher),
           ),
           Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(WindowsJobHost, Effect.succeed("job-host.exe")),
           Effect.provideService(HostProcess.Environment, { SystemRoot: "C:\\Windows" }),
         );
         const launch = yield* Deferred.await(launcher);
