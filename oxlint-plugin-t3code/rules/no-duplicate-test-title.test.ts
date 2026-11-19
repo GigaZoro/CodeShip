@@ -26,7 +26,7 @@ describe("t3code/no-duplicate-test-title", () => {
   rule.valid(
     "allows the same title in different named layer blocks",
     `
-      import { it, layer } from "@effect/vitest";
+      import { it, it as effectIt, layer, layer as effectLayer } from "@effect/vitest";
       import * as Effect from "effect/Effect";
       import * as Layer from "effect/Layer";
 
@@ -36,6 +36,38 @@ describe("t3code/no-duplicate-test-title", () => {
       layer(Layer.empty)("on version 2", (it) => {
         it.effect("lists models", () => Effect.void);
       });
+      effectIt.layer(Layer.empty)("on version 3", (it) => {
+        it.effect("lists models", () => Effect.void);
+      });
+      effectLayer(Layer.empty)("on version 4", (it) => {
+        it.effect("lists models", () => Effect.void);
+      });
+    `,
+  );
+
+  rule.invalid(
+    "reports a title a local layer helper repeats, since it opens no describe block",
+    `
+      import { it } from "@effect/vitest";
+      import * as Effect from "effect/Effect";
+
+      const layer = (_layer: unknown) => (_name: string, body: (it: unknown) => void) => body(it);
+      it.effect("lists models", () => Effect.void);
+      layer(undefined)("on version 1", (it) => {
+        it.effect("lists models", () => Effect.void);
+      });
+    `,
+  );
+
+  rule.invalid(
+    "reports a title an aliased it repeats",
+    `
+      import { it as effectIt } from "@effect/vitest";
+      import { it } from "vitest";
+      import * as Effect from "effect/Effect";
+
+      it("lists models", () => {});
+      effectIt.effect("lists models", () => Effect.void);
     `,
   );
 
