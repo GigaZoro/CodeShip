@@ -756,14 +756,14 @@ const make = Effect.gen(function* () {
   };
 
   const awaitDesktop = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available && !snapshot.headless
-      ? runPromise(
+    snapshot.headless
+      ? Promise.resolve("declined" as const)
+      : runPromise(
           desktopChannel.awaitAttached(
             { threadId: snapshot.threadId, tabId: snapshot.tabId },
             DESKTOP_ATTACH_TIMEOUT,
           ),
-        )
-      : Promise.resolve("declined" as const);
+        );
 
   const connectDesktop = async (snapshot: PreviewSessionSnapshot) => {
     const scope = await runPromise(Scope.make());
