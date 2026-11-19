@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./windowsJobNode": {
+      "types": "./src/windowsJobNode.ts",
+      "import": "./src/windowsJobNode.ts"
+    },
     "./providerLoginExpiry": {
       "types": "./src/providerLoginExpiry.ts",
       "import": "./src/providerLoginExpiry.ts"
