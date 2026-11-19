@@ -797,10 +797,12 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     );
   });
 
-  // The protected System process refuses to be opened, as any process the stop may not end does.
+  // The protected System process refuses to be opened, as any process the stop may not end does,
+  // while CIM still lists it with the start the walk saw.
   it("reports the refusal of a target it may not open", () => {
     const code = runPowerShell(
-      ...snapshots("(P 4 0 ([DateTime]::Now))"),
+      "$made = (Get-CimInstance Win32_Process -Filter 'ProcessId = 4').CreationDate",
+      ...snapshots("(P 4 0 $made)", "(P 4 0 $made)"),
       "try { Stop-T3ProcessTree 4 0 } catch { $_.Exception.GetBaseException().NativeErrorCode }",
     );
     assert.equal(code.trim(), "5");
