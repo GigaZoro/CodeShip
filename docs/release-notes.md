@@ -1,3 +1,7 @@
+## 2026-11-20 — Checkouts clean up leftover git objects after a day
+
+- Every machine's CodeShip checkout now deletes unreachable git objects after one day instead of two weeks, so automatic git cleanup can keep up with the objects agent worktrees, rebases and checkpoints leave behind. Before, a checkout could collect over 200,000 of them (2 GB) while cleanup only warned.
+
 ## 2026-11-20 — The default branch comes from the repository's main remote, not only one named origin
 
 - In a repository whose only remote has another name (for example `github`), a branch named `main` that was not the remote's default branch was treated as the default branch, so the unmerged-work check counted 0 commits and its work could be cleaned up as merged, while the real default branch was not recognized. Status now reads the default branch from the same main remote the rest of the unmerged-work check uses.

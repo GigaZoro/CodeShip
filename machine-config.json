@@ -27,6 +27,10 @@
       "model": { "model": "claude-opus-5-5", "options": { "effort": "xhigh" }, "autoAccount": true }
     }
   },
+  "$git_config": "Git settings every checkout of this repository has. gc.pruneExpire lets `git gc --auto` delete unreachable objects after a day instead of two weeks: agent worktrees, rebases and checkpoint capture leave far more than gc.auto (6,700) loose objects within two weeks, and with the default window auto gc cannot delete them, only warns in gc.log, and that log keeps it from running again. A day is the safety window: objects a rebase or fetch has just written are never that old. machine-config check --fix sets it on every machine.",
+  "git_config": {
+    "gc.pruneExpire": "1.day.ago"
+  },
   "tools": {
     "git": {},
     "vp": {}
