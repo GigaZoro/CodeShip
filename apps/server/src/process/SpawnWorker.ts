@@ -94,7 +94,9 @@ parentPort.on("message", (request) => {
     try {
       child = spawn(request.command, request.args, request.options);
     } catch (error) {
+      // The caller hears this as a failed launch, which ends with a close like any other.
       post({ type: "error", id, error: serialize(error) });
+      post({ type: "close", id });
       return;
     }
     const createdTo = Date.now();
@@ -166,6 +168,13 @@ const toBuffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset,
 
 const brokenPipe = () => Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
 
+/** What Node's spawn reports for its kill on abort. */
+const abortError = (cause: unknown) =>
+  Object.assign(new Error("The operation was aborted", { cause }), {
+    name: "AbortError",
+    code: "ABORT_ERR",
+  });
+
 class WorkerChild
   extends NodeEvents.EventEmitter
   implements NodeChildProcessSpawner.SpawnedChildProcess
@@ -188,12 +197,24 @@ class WorkerChild
   #abandoned = false;
   #abortListener: Disposable | undefined;
   #launched = false;
-  /** An abort that came while the launch was being sent; its kill follows the launch. */
+  /** An abort that came before the launch was sent; its kill follows the send. */
   #abortedEarly = false;
+  /** An abort whose kill went out before the start was reported; Node reports it after the start. */
+  #abortedBeforeStart: { readonly reason: unknown } | undefined;
+  readonly #signal: AbortSignal | undefined;
+  readonly #killSignal: NodeJS.Signals | number;
   // Once the launch is sent, the kill goes out before abort() returns, as with Node's own spawn.
+  // Until the start is reported it acts as an abort that came before Node's spawn: the start is
+  // reported first, or a failed launch alone, as the worker cannot know the outcome sooner.
   readonly #abort = () => {
-    if (this.#launched) this.kill();
-    else this.#abortedEarly = true;
+    if (!this.#launched) {
+      this.#abortedEarly = true;
+      return;
+    }
+    const reason = this.#signal?.reason;
+    if (!this.kill(this.#killSignal)) return;
+    if (this.spawned) this.emit("error", abortError(reason));
+    else this.#abortedBeforeStart = { reason };
   };
 
   readonly worker: SpawnWorker;
@@ -204,10 +225,13 @@ class WorkerChild
     id: number,
     stdio: ReadonlyArray<unknown>,
     signal: AbortSignal | undefined,
+    killSignal: NodeJS.Signals | number,
   ) {
     super();
     this.worker = worker;
     this.id = id;
+    this.#signal = signal;
+    this.#killSignal = killSignal;
     stdio.forEach((option, fd) => {
       if (option !== "pipe" && option !== "overlapped") return;
       const stream = this.#relay(fd);
@@ -217,18 +241,33 @@ class WorkerChild
       else if (fd === 2) this.stderr = stream as NodeStream.Readable;
     });
     // An AbortSignal cannot cross to the worker, so this thread kills on abort as Node's spawn
-    // does, on the next tick for an abort that came first. The signal is read only here, before
-    // the launch is sent, so nothing after the send can throw; the listener runs even when
-    // another one stops the event.
-    if (signal?.aborted) process.nextTick(this.#abort);
+    // does. Its state is read only here, before the launch is sent, so nothing after the send can
+    // throw; the listener runs even when another one stops the event.
+    if (signal?.aborted) this.#abortedEarly = true;
     else if (signal !== undefined)
       this.#abortListener = NodeEvents.EventEmitter.addAbortListener(signal, this.#abort);
   }
 
-  /** The launch was sent, so an abort can now reach the worker as a kill. */
+  /** The launch was sent, so an abort can reach the worker; one that came first kills on the next tick, as Node's does. */
   launched(): void {
     this.#launched = true;
-    if (this.#abortedEarly) this.kill();
+    if (this.#abortedEarly) process.nextTick(this.#abort);
+  }
+
+  started(): void {
+    this.emit("spawn");
+    const aborted = this.#abortedBeforeStart;
+    this.#abortedBeforeStart = undefined;
+    if (aborted !== undefined) this.emit("error", abortError(aborted.reason));
+  }
+
+  /** Node reports a failed launch's errno as its exit code, and it was killed by nothing. */
+  failed(error: Error): void {
+    this.exited = true;
+    this.killed = false;
+    this.#abortedBeforeStart = undefined;
+    this.exitCode = "errno" in error && typeof error.errno === "number" ? error.errno : null;
+    this.emit("error", error);
   }
 
   #detachSignal(): void {
@@ -338,7 +377,7 @@ class WorkerChild
     this.emit("exit", code, signal);
   }
 
-  /** The worker sends nothing more for this child: end output so readers finish, and fail waiting writes. */
+  /** Nothing more reaches this child's process: end output so readers finish, and fail waiting writes. */
   abandon(): void {
     // First, so a write or end that a failure callback below makes is refused, not lost.
     this.#abandoned = true;
@@ -407,7 +446,7 @@ class SpawnWorker {
           env: rest.env ?? { ...process.env },
         },
       };
-      child = new WorkerChild(this, id, stdio, signal);
+      child = new WorkerChild(this, id, stdio, signal, rest.killSignal ?? "SIGTERM");
       this.post(launch);
     } catch (error) {
       this.launching--;
@@ -444,16 +483,19 @@ class SpawnWorker {
           const created = { from: message.createdFrom, to: message.createdTo };
           child.treeRoot = { pid: message.pid, since: created.from, created };
         }
-        child.emit("spawn");
+        child.started();
         break;
       case "error":
-        if (!child.spawned) {
-          this.launching--;
-          child.exited = true;
+        if (child.spawned) {
+          child.emit("error", toError(message.error));
+          break;
         }
-        // Node reports a failed launch before it fails the writes waiting on the child.
-        child.emit("error", toError(message.error));
-        if (!child.spawned) this.release(child);
+        this.launching--;
+        this.syncRef();
+        // Node reports a failed launch before it fails the writes waiting on the child, and its
+        // close after both; the worker's close releases the child.
+        child.failed(toError(message.error));
+        child.abandon();
         break;
       case "data":
         child.onData(message.fd, message.data);
@@ -482,7 +524,7 @@ class SpawnWorker {
 
   release(child: WorkerChild): void {
     this.children.delete(child.id);
-    // Replies to requests it sent meanwhile, and a failed launch's output, would find no child.
+    // Replies to requests it sent meanwhile would find no child.
     child.abandon();
     this.syncRef();
     this.pool.release(this);
@@ -492,20 +534,24 @@ class SpawnWorker {
     if (this.closed) return;
     this.close();
     for (const child of this.children.values()) {
-      if (child.exited) {
+      // Nothing more comes from the worker, so each child ends here with the close it would send.
+      const end = () => {
         child.abandon();
+        child.emit("close", child.exitCode, child.signalCode);
+      };
+      if (child.exited) {
+        end();
         continue;
       }
       if (!child.spawned) {
-        child.exited = true;
-        child.emit("error", error);
-        child.abandon();
+        child.failed(error);
+        end();
         continue;
       }
       // The worker owned the only handle, so try to end the whole tree before reporting the exit.
       const finish = () => {
         child.exit(null, "SIGKILL");
-        child.abandon();
+        end();
       };
       if (child.treeRoot === undefined) finish();
       else this.pool.killTree(child.treeRoot, finish);
@@ -657,3 +703,6 @@ export const layerServer = Layer.unwrap(
     return NodeChildProcessSpawner.layer;
   }),
 );
+
+/** @internal Exported for tests. */
+export const __testing = { SpawnWorkerPool };

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off processEnvInEffect:off - fixtures need real paths, the process resource list and the live environment.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeEvents from "node:events";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
@@ -29,6 +30,7 @@ vi.mock("@t3tools/shared/envTrampoline", async (importOriginal) => ({
 }));
 
 const layer = SpawnWorker.layer.pipe(Layer.provide(NodeServices.layer));
+const missingCommand = "t3-missing-command-25245";
 const text = <E>(stream: Stream.Stream<Uint8Array, E>) =>
   stream.pipe(Stream.decodeText(), Stream.mkString);
 const node = (script: string, args: ReadonlyArray<string> = [], options = {}) =>
@@ -131,9 +133,7 @@ describe("SpawnWorker", () => {
   it.live("reports launch errors and exit codes, and keeps launching after either", () =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const missing = yield* spawner
-        .spawn(ChildProcess.make("t3-missing-command-25245"))
-        .pipe(Effect.result);
+      const missing = yield* spawner.spawn(ChildProcess.make(missingCommand)).pipe(Effect.result);
       expect(Result.isFailure(missing)).toBe(true);
       if (Result.isFailure(missing)) expect(missing.failure.reason._tag).toBe("NotFound");
       const failed = yield* spawner.spawn(node("process.exit(23)"));
@@ -156,13 +156,14 @@ describe("SpawnWorker", () => {
             new Promise((resolve, reject) => first.once("close", resolve).once("error", reject)),
         );
         const pool = first.worker.pool;
-        for (const leave of ["finds no command", "loses its launcher first", "closes"] as const) {
-          const missing = leave === "finds no command";
-          const child = pool.spawn(
-            missing ? "t3-missing-command-25245" : process.execPath,
-            missing ? [] : ["-e", ""],
-            { stdio: ["pipe", "pipe", "pipe", "pipe"] },
-          );
+        for (const [leave, command, args, closedWith] of [
+          ["finds no command", missingCommand, [], "close -2 null"],
+          // Node's spawn throws for a null byte in an argument; the launcher's throws in its thread.
+          ["cannot be launched", process.execPath, ["-e", "\u0000"], "close null null"],
+          ["loses its launcher first", process.execPath, ["-e", ""], "close null null"],
+          ["closes", process.execPath, ["-e", ""], undefined],
+        ] as const) {
+          const child = pool.spawn(command, args, { stdio: ["pipe", "pipe", "pipe", "pipe"] });
           const output = NodeStreamPromises.finished(child.stdout!.resume());
           const extra = child.stdio[3] as NodeStream.Duplex;
           // A refused write or end errors the stream, as a broken pipe would.
@@ -181,21 +182,24 @@ describe("SpawnWorker", () => {
               events.push(error?.message);
               extra.end(extraEnd);
             });
-            const failed = new Promise<void>((resolve) =>
-              child.once("error", () => {
-                events.push("error");
-                resolve();
-              }),
+            const closed = new Promise<void>((resolve) =>
+              child
+                .once("error", () => events.push("error"))
+                .once("close", (code, signal) => {
+                  events.push(`close ${code} ${signal}`);
+                  resolve();
+                }),
             );
             // The launcher reports the start by a message, which cannot have arrived yet.
             if (leave === "loses its launcher first") child.worker.fail(new Error("lost"));
-            yield* Effect.promise(() => failed);
+            yield* Effect.promise(() => closed);
           }
           yield* Effect.promise(() => Promise.all([extraClosed, output]));
-          // As with Node, a failed launch reports its error before the writes waiting on it fail.
+          // As with Node, a failed launch reports its error before the writes waiting on it fail,
+          // and its close after both.
           expect([leave, events, extraEnd.mock.calls]).toEqual([
             leave,
-            leave === "closes" ? ["write EPIPE"] : ["error", "write EPIPE"],
+            closedWith === undefined ? ["write EPIPE"] : ["error", "write EPIPE", closedWith],
             [[expect.objectContaining({ code: "EPIPE" })]],
           ]);
         }
@@ -225,12 +229,6 @@ describe("SpawnWorker", () => {
       const scoped = yield* Deferred.await(started);
       yield* Fiber.interrupt(running);
       expect(yield* scoped.isRunning).toBe(false);
-      // Direct callers such as the Claude adapter pass an AbortSignal, which cannot cross to a worker.
-      const direct = SpawnWorker.spawnPiped(process.execPath, ["-e", "process.stdin.resume()"], {
-        signal: AbortSignal.abort(),
-      });
-      const exited = new Promise((resolve) => direct.once("exit", () => resolve(direct.killed)));
-      expect(yield* Effect.promise(() => exited)).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
@@ -258,7 +256,7 @@ describe("SpawnWorker", () => {
           const pool = root.worker.pool;
           const launch = pool.spawn;
           using _stop = vi.spyOn(pool, "spawn").mockImplementation((_command, _args, options) => {
-            if (stop === "cannot launch") return launch("t3-missing-command-25245", [], options);
+            if (stop === "cannot launch") return launch(missingCommand, [], options);
             if (stop === "cannot get a launcher") throw new Error("No thread for a launcher.");
             const code = stop === "exits 0" ? 0 : 1;
             const child = launch(process.execPath, ["-e", `process.exit(${code})`], options);
@@ -413,8 +411,10 @@ describe("SpawnWorker", () => {
             ([message], call) =>
               message.type === "spawn" && post.mock.results[call]?.type === "return",
           ).length;
-        const failed = SpawnWorker.spawnPiped("t3-missing-command-25245", [], { signal });
-        yield* Effect.promise(() => new Promise((resolve) => failed.once("error", resolve)));
+        const failed = SpawnWorker.spawnPiped(missingCommand, [], { signal });
+        yield* Effect.promise(
+          () => new Promise((resolve) => failed.on("error", () => {}).once("close", resolve)),
+        );
         expect([sent(), listeners()]).toEqual([1, 0]);
         const pool = failed.worker.pool;
         const unreadable = yield* Effect.abortSignal;
@@ -458,75 +458,127 @@ describe("SpawnWorker", () => {
       }).pipe(Effect.scoped),
   );
 
-  it("kills on abort before, while and after the launch is sent, even when another listener stops the event or closes the pool", async () => {
-    // Each child ends at input EOF, sent only once its start is reported, so a lost kill ends it
+  it("reports launches, aborts and exits as Node's spawn does", async () => {
+    // Each child ends at input EOF, sent once its start is reported, so a lost kill ends it
     // cleanly instead of hanging the test.
     const resident = ["-e", "process.stdin.resume()"];
-    // After a callback, Node runs its next-tick queue before microtasks; an abort that came first
-    // kills on the next tick, as with Node's own spawn, so the caller's next tick sees it killed.
-    const first = Promise.withResolvers<{
-      child: ReturnType<typeof SpawnWorker.spawnPiped>;
-      killed: boolean;
-    }>();
-    setImmediate(() => {
-      try {
-        const child = SpawnWorker.spawnPiped(process.execPath, resident, {
-          signal: AbortSignal.abort(),
+    type Abort = "never" | "before" | "while sent" | "once sent" | "once started";
+    type Observed = NodeEvents.EventEmitter & {
+      readonly killed: boolean;
+      readonly stdin: NodeStream.Writable | null;
+    };
+    // What a caller sees, in order, from Node's spawn or from a pool of the test's own, closed
+    // once the launch is sent so a child it drops ends its launcher instead of hanging the test.
+    const run = async (
+      command: string,
+      args: ReadonlyArray<string>,
+      abort: Abort,
+      pool?: InstanceType<typeof SpawnWorker.__testing.SpawnWorkerPool>,
+      killSignal: NodeJS.Signals = "SIGTERM",
+    ) => {
+      const controller = new AbortController();
+      if (abort === "before") controller.abort();
+      // Another listener stops the event, and closes the pool while the launch is sent.
+      controller.signal.addEventListener("abort", (event) => {
+        event.stopImmediatePropagation();
+        pool?.close();
+      });
+      // The launch is copied while it is sent, and the copy reads this getter.
+      const env = { ...process.env };
+      if (abort === "while sent") {
+        Object.defineProperty(env, "T3_ABORTS", {
+          enumerable: true,
+          get: () => {
+            controller.abort();
+            return "1";
+          },
         });
-        child.once("spawn", () => child.stdin.end());
-        process.nextTick(() => first.resolve({ child, killed: child.killed }));
-      } catch (error) {
-        first.reject(error);
       }
-    });
-    const before = await first.promise;
-    expect([before.killed, ...(await NodeEvents.EventEmitter.once(before.child, "exit"))]).toEqual([
-      true,
-      null,
-      "SIGTERM",
-    ]);
-    // A pool of its own, as the listener below closes it.
-    const shared = before.child.worker.pool;
-    const pool = new (shared.constructor as new (platform: NodeJS.Platform) => typeof shared)(
-      "win32",
-    );
-    const sending = new AbortController();
-    sending.signal.addEventListener("abort", (event) => {
-      event.stopImmediatePropagation();
-      pool.close();
-    });
-    // The launch is copied while it is sent, and the copy reads this getter.
-    const env = { ...process.env };
-    Object.defineProperty(env, "T3_ABORTS", {
-      enumerable: true,
-      get: () => {
-        sending.abort();
-        return "1";
-      },
-    });
-    const early = pool.spawn(process.execPath, resident, {
-      stdio: ["pipe", "pipe", "pipe"],
-      signal: sending.signal,
-      env,
-    });
-    early.once("spawn", () => early.stdin?.end());
-    const launcherEnded = NodeEvents.EventEmitter.once(early.worker.worker, "exit").then(
-      () => "launcher ended",
-    );
-    expect(
-      await Promise.race([NodeEvents.EventEmitter.once(early, "exit"), launcherEnded]),
-    ).toEqual([null, "SIGTERM"]);
-    // After the launch, the kill goes out before abort() returns, as with Node's own spawn.
-    const running = new AbortController();
-    const late = SpawnWorker.spawnPiped(process.execPath, resident, { signal: running.signal });
-    await NodeEvents.EventEmitter.once(late, "spawn");
-    running.abort();
-    const killedByAbort = late.killed;
-    late.stdin.end();
-    expect([killedByAbort, ...(await NodeEvents.EventEmitter.once(late, "exit"))]).toEqual([
-      true,
-      null,
-      "SIGTERM",
+      const options: NodeChildProcess.SpawnOptions = {
+        stdio: ["pipe", "pipe", "pipe"],
+        signal: controller.signal,
+        killSignal,
+        env,
+      };
+      let child: Observed;
+      let ended: Promise<string> | undefined;
+      if (pool === undefined) child = NodeChildProcess.spawn(command, args, options);
+      else {
+        const launched = pool.spawn(command, args, options);
+        pool.close();
+        ended = NodeEvents.EventEmitter.once(launched.worker.worker, "exit").then(
+          () => "launcher ended",
+        );
+        child = launched;
+      }
+      const seen: Array<unknown> = [];
+      if (abort === "once sent") {
+        controller.abort();
+        seen.push(["aborted", child.killed]);
+      }
+      let killedOnNextTick: boolean | undefined;
+      process.nextTick(() => {
+        killedOnNextTick = child.killed;
+      });
+      child.on("spawn", () => {
+        seen.push("spawn");
+        if (abort === "once started") {
+          controller.abort(new Error("stopped"));
+          seen.push(["aborted", child.killed]);
+        }
+        child.stdin?.end();
+      });
+      child.on("error", (error: NodeJS.ErrnoException) =>
+        seen.push(["error", error.name, error.code, error.cause === controller.signal.reason]),
+      );
+      child.on("exit", (code: number | null, signal: NodeJS.Signals | null) =>
+        seen.push(["exit", code, signal]),
+      );
+      const closed = new Promise((resolve) =>
+        child.on("close", (code: number | null, signal: NodeJS.Signals | null) =>
+          resolve(["close", code, signal, child.killed]),
+        ),
+      );
+      seen.push(await (ended === undefined ? closed : Promise.race([closed, ended])));
+      // An abort that came first kills on the next tick. Node also reports its start on that tick,
+      // which the worker cannot, so a failed launch and an abort at the start are not compared.
+      if (command !== missingCommand && abort !== "once started") {
+        seen.push(["killed on the next tick", killedOnNextTick]);
+      }
+      return seen;
+    };
+    const { SpawnWorkerPool } = SpawnWorker.__testing;
+    for (const [command, args, abort, killSignal] of [
+      [missingCommand, [], "never"],
+      [missingCommand, [], "before"],
+      [process.execPath, ["-e", "process.exit(3)"], "never"],
+      [process.execPath, resident, "before"],
+      [process.execPath, resident, "while sent"],
+      [process.execPath, resident, "once started", "SIGKILL"],
+    ] as const) {
+      const node = await run(command, args, abort, undefined, killSignal);
+      const worker = await run(command, args, abort, new SpawnWorkerPool("win32"), killSignal);
+      expect([command, abort, worker]).toEqual([command, abort, node]);
+    }
+    // Node knows at once whether its launch failed, so it reports this kill before the start; the
+    // worker knows only once it answers, so this acts as an abort that came before the spawn.
+    expect([
+      await run(process.execPath, resident, "once sent", new SpawnWorkerPool("win32")),
+      await run(missingCommand, [], "once sent", new SpawnWorkerPool("win32")),
+    ]).toEqual([
+      [
+        ["aborted", true],
+        "spawn",
+        ["error", "AbortError", "ABORT_ERR", true],
+        ["exit", null, "SIGTERM"],
+        ["close", null, "SIGTERM", true],
+        ["killed on the next tick", true],
+      ],
+      [
+        ["aborted", true],
+        ["error", "Error", "ENOENT", false],
+        ["close", -2, null, false],
+      ],
     ]);
   });
 });
