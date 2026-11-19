@@ -18,7 +18,7 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
+import { probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
 import { WindowsJobHost, windowsJobName } from "@t3tools/shared/windowsJob";
 import * as Cause from "effect/Cause";
@@ -1761,10 +1761,14 @@ const make = Effect.gen(function* () {
       const gate = yield* closeLaunchGate(row);
       if (gate === "cancelled") return { outcome: "cancelled" };
       const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
-      const ended = (reason: LostReason, pid = row.pid): LaunchResolution => ({
+      const ended = (
+        reason: LostReason,
+        pid = row.pid,
+        code = row.probe_error,
+      ): LaunchResolution => ({
         outcome: "ended",
         row: { ...row, pid },
-        loss: { lost_reason: reason, probe_error: row.probe_error },
+        loss: { lost_reason: reason, probe_error: code },
       });
       if (yield* rebootedSince(row))
         return ended(
@@ -1790,7 +1794,9 @@ const make = Effect.gen(function* () {
           return { outcome: "started", row: { ...row, pid, process_started_at: null } };
         const writtenAt = named.writtenAt?.getTime();
         if (writtenAt === undefined) return { outcome: "unresolved" };
-        if (isProcessAlive(pid)) {
+        const probe = probeProcess(pid);
+        if (probe.state === "unknown") return { outcome: "unresolved" };
+        if (probe.state === "alive") {
           const startedAt = yield* startedAtOf(pid);
           if (startedAt === undefined) return { outcome: "unresolved" };
           const precision = windows ? 0 : 1_000;
@@ -1801,7 +1807,7 @@ const make = Effect.gen(function* () {
             return ended("pid-reused", pid);
           if (windows) return { outcome: "unresolved" };
           identity = startedAt;
-        } else return ended("gone", pid);
+        } else return ended("gone", pid, probe.code);
       }
       return { outcome: "started", row: { ...row, pid, process_started_at: identity } };
     },
