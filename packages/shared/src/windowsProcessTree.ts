@@ -14,9 +14,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
  * A child older than the parent it names belongs to an earlier holder of that pid, as does a root
- * created outside [from, to]; another holder's children count only from before it. The stop allows
- * a second of clock skew, and each pass stops what the last one's processes started as they ended.
- * A process that ends before its stop is no error; one still running is.
+ * created outside [from, to], give or take a second of clock skew, or, after the first pass, any but
+ * the root that pass saw; another holder's children count only from before it. Each pass stops what
+ * the last one's processes started as they ended. Targets map each pid to its creation time.
  */
 export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "function Ms($d) { ([DateTimeOffset]$d).ToUnixTimeMilliseconds() }",
@@ -26,7 +26,7 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  $holder = $all | Where-Object { $_.ProcessId -eq $root } | Select-Object -First 1",
   "  if ($holder) {",
   "    $made = Ms $holder.CreationDate",
-  "    if ($made -ge $from -and $made -le $to) { $targets[$root] = $made; $since = [math]::Max($since, $made) } else { $before = $made }",
+  "    if ($made -ge $from -and $made -le $to) { $targets[$root] = $holder.CreationDate; if ($made -gt $since) { $since = $made } } else { $before = $made }",
   "  }",
   "  $queue = New-Object System.Collections.Queue",
   "  $queue.Enqueue(@($root, $since, $before))",
@@ -37,7 +37,7 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "      if ($child.ParentProcessId -ne $id -or $seen.ContainsKey($child.ProcessId)) { continue }",
   "      $made = Ms $child.CreationDate",
   "      if ($made -ge $after -and $made -lt $limit) {",
-  "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $made",
+  "        $seen[$child.ProcessId] = $true; $targets[$child.ProcessId] = $child.CreationDate",
   "        $queue.Enqueue(@($child.ProcessId, $made, [long]::MaxValue))",
   "      }",
   "    }",
@@ -45,14 +45,16 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  return $targets",
   "}",
   // Holds the process open from its start-time check to its end, so the pid cannot change hands in
-  // between. The walk and the check read the same kernel start time, so any difference to the
-  // millisecond means another process took the pid since the walk. Kill only begins the end.
-  "function Stop-T3Process($id, $made) {",
+  // between. The walk read the same kernel start time to the microsecond, so a difference of one
+  // means another process took the pid since. Kill only begins the end. A process that ends before
+  // its stop is no error; one still running is.
+  "function Stop-T3Process($id, $created) {",
   "  $process = Get-Process -Id $id -ErrorAction SilentlyContinue",
   "  if (-not $process) { return }",
   "  try {",
   "    $null = $process.get_Handle()",
-  "    if ((Ms $process.get_StartTime()) -ne $made) { return }",
+  "    $skew = ([DateTimeOffset]$process.get_StartTime()).UtcTicks - ([DateTimeOffset]$created).UtcTicks",
+  "    if ([math]::Abs($skew) -ge 10) { return }",
   "    $process.Kill()",
   "    if (-not $process.WaitForExit(5000)) { throw ('Process {0} still runs 5 s after its stop' -f $id) }",
   "  } catch {",
@@ -60,9 +62,11 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "  } finally { $process.Dispose() }",
   "}",
   "function Stop-T3ProcessTree($root, $since, $from = [double]::NegativeInfinity, $to = [double]::PositiveInfinity) {",
+  "  $since -= 1000; $from -= 1000; $to += 1000",
   "  for ($pass = 0; $pass -lt 5; $pass++) {",
-  "    $targets = Get-T3ProcessTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root ($since - 1000) ($from - 1000) ($to + 1000)",
+  "    $targets = Get-T3ProcessTree @(Get-CimInstance Win32_Process -ErrorAction Stop) $root $since $from $to",
   "    if ($targets.Count -eq 0) { return }",
+  "    if ($targets.ContainsKey($root)) { $from = $to = Ms $targets[$root] } else { $from = [double]::PositiveInfinity }",
   "    foreach ($id in $targets.Keys) { Stop-T3Process $id $targets[$id] }",
   "  }",
   "}",

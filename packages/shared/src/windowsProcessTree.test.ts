@@ -246,18 +246,34 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     assert.deepEqual(tree.trim().split(/\r?\n/), expected);
   });
 
-  /** Lines that make the walk's snapshot hold only `pid`, created when `created` says. */
-  const snapshotOf = (pid: string, created: string) => [
-    `$created = ${created}`,
-    `function Get-CimInstance { [pscustomobject]@{ ProcessId = ${pid}; ParentProcessId = 0; CreationDate = $created } }`,
+  /**
+   * Lines that make the walk's first snapshot hold only `pid`, created when `first` says, and each
+   * later one hold it created when `later` says, or nothing without it.
+   */
+  const snapshots = (pid: string, first: string, later = "$null") => [
+    `$first = ${first}`,
+    `$later = ${later}`,
+    "$global:walks = 0",
+    `function Get-CimInstance { $global:walks++; $created = if ($global:walks -eq 1) { $first } else { $later }; if ($created) { [pscustomobject]@{ ProcessId = ${pid}; ParentProcessId = 0; CreationDate = $created } } }`,
   ];
 
-  // The snapshot shows the target created `skew` ms from when it really was; any difference means
-  // another process held the pid when the walk read it.
-  it.each<[string, number, "stopped" | "spared"]>([
-    ["ends the target the walk saw", 0, "stopped"],
-    ["spares a process that took the target's pid after the walk", -1, "spared"],
-  ])("%s", async (_, skew, expected) => {
+  // $real is when the target was created. A snapshot that shows another time saw another process
+  // hold its pid, and the target only took the pid after that walk.
+  it.each<[string, string, string | undefined, "stopped" | "spared"]>([
+    ["ends the target the walk saw", "$real", undefined, "stopped"],
+    [
+      "spares a process that took the pid within the millisecond of the one the walk saw",
+      "$real.AddTicks($(if ($real.Ticks % 10000 -lt 20) { 20 } else { -20 }))",
+      undefined,
+      "spared",
+    ],
+    [
+      "spares a process that took the root's pid after the first pass",
+      "$real.AddMilliseconds(-5)",
+      "$real",
+      "spared",
+    ],
+  ])("%s", async (_, first, later, expected) => {
     // Exits 7 once its input ends, so any other exit is the stop's.
     const target = NodeChildProcess.spawn(
       process.execPath,
@@ -267,10 +283,8 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     const exited = NodeEvents.once(target, "exit");
     try {
       runPowerShell(
-        ...snapshotOf(
-          `${target.pid}`,
-          `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}').CreationDate.AddMilliseconds(${skew})`,
-        ),
+        `$real = (Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}').CreationDate`,
+        ...snapshots(`${target.pid}`, first, later),
         `Stop-T3ProcessTree ${target.pid} 0`,
       );
     } finally {
@@ -280,20 +294,32 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     assert.equal(code === 7 ? "spared" : "stopped", expected);
   });
 
-  it("reports no error for a target that ended before its stop", () => {
+  // The target ends after the walk read it. $seen was looked up while it ran, without opening it;
+  // $started holds it open.
+  it.each([
+    ["before the stop looks it up", "$null"],
+    ["before the stop opens it", "$seen"],
+    ["before the stop ends it", "$started"],
+  ])("reports no error for a target that ended %s", (_, lookedUp) => {
     runPowerShell(
-      `$ended = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', '0' -WindowStyle Hidden -PassThru`,
-      "$ended.WaitForExit()",
-      ...snapshotOf("$ended.Id", "$ended.StartTime"),
-      "Stop-T3ProcessTree $ended.Id 0",
+      `$started = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru`,
+      "$null = $started.get_Handle()",
+      "$seen = Get-Process -Id $started.Id",
+      ...snapshots("$started.Id", "$started.StartTime"),
+      "$started.Kill()",
+      "$started.WaitForExit()",
+      `function Get-Process { ${lookedUp} }`,
+      "Stop-T3ProcessTree $started.Id 0",
     );
   });
 
   // The protected System process refuses to be opened, as any process the stop may not end does.
-  it("reports an error for a target it cannot end", () => {
-    assert.throws(() =>
-      runPowerShell(...snapshotOf("4", "[DateTime]::Now"), "Stop-T3ProcessTree 4 0"),
+  it("reports the refusal of a target it may not open", () => {
+    const code = runPowerShell(
+      ...snapshots("4", "[DateTime]::Now"),
+      "try { Stop-T3ProcessTree 4 0 } catch { $_.Exception.GetBaseException().NativeErrorCode }",
     );
+    assert.equal(code.trim(), "5");
   });
 
   const spawnEndingTree = (command: ChildProcess.Command, ending?: WindowsTreeEnding) =>
