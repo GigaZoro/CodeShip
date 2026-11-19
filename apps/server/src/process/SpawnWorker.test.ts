@@ -179,6 +179,7 @@ describe("SpawnWorker", () => {
           ["exits 1", false],
           ["loses its launcher before the start is reported", false],
           ["cannot launch", true],
+          ["cannot launch while another launcher is idle", true],
         ] as const) {
           // It ends by itself once the dead launcher's end of its stdin closes.
           const root = SpawnWorker.spawnPiped(
@@ -192,12 +193,19 @@ describe("SpawnWorker", () => {
           const pool = root.worker.pool;
           const launch = pool.spawn;
           using _stop = vi.spyOn(pool, "spawn").mockImplementation((_command, _args, options) => {
-            if (stop === "cannot launch") return launch("t3-missing-command-25245", [], options);
+            if (stop.startsWith("cannot launch")) {
+              return launch("t3-missing-command-25245", [], options);
+            }
             const child = launch(process.execPath, ["-e", "process.exit(1)"], options);
             // A microtask runs before the launcher's reply can arrive.
             if (stop !== "exits 1") queueMicrotask(() => child.worker.fail(new Error("lost")));
             return child;
           });
+          // With another launcher idle, the pool closes the failed stop's launcher as it releases it.
+          using _release =
+            stop === "cannot launch while another launcher is idle"
+              ? vi.spyOn(pool, "release").mockImplementation((worker) => worker.close())
+              : undefined;
           using kill = vi.spyOn(process, "kill").mockImplementation(() => true);
           const exited = new Promise((resolve) => root.once("exit", resolve));
           void root.worker.worker.terminate();

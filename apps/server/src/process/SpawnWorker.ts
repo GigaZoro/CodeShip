@@ -179,6 +179,8 @@ class WorkerChild
   killed = false;
   spawned = false;
   exited = false;
+  /** The launcher reported that the command never started. */
+  launchFailed = false;
   readonly #writes = new Map<number, Array<(error?: Error | null) => void>>();
   readonly #finals = new Map<number, (error?: Error | null) => void>();
   readonly #paused = new Set<number>();
@@ -382,6 +384,7 @@ class SpawnWorker {
         if (!child.spawned) {
           this.launching--;
           child.exited = true;
+          child.launchFailed = true;
           this.release(child);
         }
         child.emit("error", toError(message.error));
@@ -487,20 +490,19 @@ class SpawnWorkerPool {
       return;
     }
     let settled = false;
-    const finish = (stopStarted: boolean) => {
+    const finish = (mayHaveStarted: boolean) => {
       if (settled) return;
       settled = true;
-      // A stop that started may have ended the root and freed its pid for another process, so
-      // only one that never started leaves the direct child to end by pid.
-      if (!stopStarted) killPid();
+      // A stop that may have started could have ended the root and freed its pid for another
+      // process, so only a launch the launcher reported as failed leaves the child to end by pid.
+      if (!mayHaveStarted) killPid();
       done();
     };
     const stop = this.spawn("powershell.exe", windowsStopTreeArgs(root), {
       stdio: "ignore",
       windowsHide: true,
     })
-      // A launcher that died may have started the stop before it could report the start.
-      .on("error", () => finish(stop.spawned || stop.worker.closed))
+      .on("error", () => finish(!stop.launchFailed))
       .on("exit", () => finish(true));
   }
 
