@@ -12672,26 +12672,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeProviderThreadId: projection.thread.activeProviderThreadId,
         runs: projection.runs,
       }).length > 0;
-    const backgroundTarget = run;
-    // Before preparation, a failed restart has no provider of its own. Its source still owns the work.
-    for (
-      let hops = 0;
-      (pendingContinuation || hasBackgroundWork) &&
-      run.status === "failed" &&
-      run.providerThreadId === null &&
-      run.restartContinuationOfRunId !== undefined &&
-      hops < projection.runs.length;
-      hops++
-    ) {
-      const source = projection.runs.find(
-        (candidate) => candidate.id === run.restartContinuationOfRunId,
-      );
-      if (source === undefined) break;
-      yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
-      run = source;
-    }
-    if (run !== backgroundTarget) {
-      projection = yield* getProjectionWithPendingEvents(command.threadId, events, workFilter);
+    if (pendingContinuation || hasBackgroundWork) {
+      const backgroundTarget = run;
+      // Before preparation, a failed restart has no provider of its own. Its source still owns the work.
+      for (
+        let hops = 0;
+        run.status === "failed" &&
+        run.providerThreadId === null &&
+        run.restartContinuationOfRunId !== undefined &&
+        hops < projection.runs.length;
+        hops++
+      ) {
+        const source = projection.runs.find(
+          (candidate) => candidate.id === run.restartContinuationOfRunId,
+        );
+        if (source === undefined) break;
+        yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
+        run = source;
+      }
+      if (run !== backgroundTarget) {
+        projection = yield* getProjectionWithPendingEvents(command.threadId, events, workFilter);
+      }
     }
     const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
     const providerThread = projection.providerThreads.find(
