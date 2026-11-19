@@ -47,8 +47,11 @@ function remoteLease({ cwd, remote, callMs = LEASE_CALL_MS }) {
 }
 
 function readHolder({ cwd, remote, callMs = LEASE_CALL_MS }, sha) {
-  // A lease commit this lander could not fetch is unknown, not unreadable: it may be another lander's live turn.
-  git(cwd, ["fetch", "--quiet", "--no-tags", remote, sha], { timeoutMs: callMs });
+  // A lease commit this lander could not fetch is unknown, not unreadable: it may be another lander's live turn. A poll
+  // leaves FETCH_HEAD to a landing in the same checkout.
+  git(cwd, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, sha], {
+    timeoutMs: callMs,
+  });
   const message = git(cwd, ["show", "-s", "--format=%B", sha]).stdout;
   try {
     return JSON.parse(message.split("\n")[0]);

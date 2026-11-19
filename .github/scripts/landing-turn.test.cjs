@@ -197,6 +197,8 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
     assert.ok(tryAcquire({ cwd: holder, remote: origin, runId: "holder", now: () => past }));
 
     assert.ok(acquire({ cwd: waiter, remote: origin, maxWaitMs: 0 }));
+    // A landing in the same checkout rebases onto what it fetched; reading a lease must not replace that.
+    assert.equal(fs.existsSync(path.join(waiter, ".git/FETCH_HEAD")), false);
     assert.throws(
       () => acquire({ cwd: holder, remote: origin, maxWaitMs: 0, sleep: () => {} }),
       /still holds/,
