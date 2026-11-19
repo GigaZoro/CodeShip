@@ -11,9 +11,10 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { leaderLeavingChild } from "./testing/leftoverChild.ts";
+import { leaderLeavingChild, processPipe } from "./testing/leftoverChild.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import { attachWindowsJob, type WindowsJob } from "./windowsJob.ts";
+import { markWindowsJobSpawner } from "./windowsJobSpawner.ts";
 import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   windowsStopTreeArgs,
@@ -42,6 +43,7 @@ const fakeWindowsSpawner = (options: {
   readonly output: "ends" | "held";
   readonly job?: WindowsJob;
 }) => {
+  const job = options.job ?? { host: "job-host.exe", name: "Global\\CodeShip.Job.fake" };
   const events: Array<"kill" | "walk"> = [];
   const jobsStopped: Array<string> = [];
   let running = options.running;
@@ -66,9 +68,10 @@ const fakeWindowsSpawner = (options: {
   const byte = Stream.make(new Uint8Array([1]));
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
-      if (command._tag === "StandardCommand" && command.command === options.job?.host) {
+      if (command._tag === "StandardCommand" && command.command === job.host) {
         assert.equal(command.args[0], "stop");
         jobsStopped.push(command.args[1]!);
+        if (options.job === undefined) events.push("walk");
         return handle(Stream.empty);
       }
       if (command._tag === "StandardCommand" && command.command === "powershell.exe") {
@@ -77,11 +80,11 @@ const fakeWindowsSpawner = (options: {
       }
       // What a leader left running holds a pipe it inherited open.
       const child = handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never));
-      if (options.job !== undefined) attachWindowsJob(child, options.job);
+      attachWindowsJob(child, job);
       return child;
     }),
   );
-  return { events, jobsStopped, spawner };
+  return { events, jobsStopped, spawner: markWindowsJobSpawner(spawner) };
 };
 
 type Use = (
@@ -232,6 +235,25 @@ describe("endingWindowsTrees stops a Windows tree", () => {
 
 // A process that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("a Windows process tree", () => {
+  it.live("ends an orphaned grandchild through a standalone spawner after its parent exited", () =>
+    Effect.gen(function* () {
+      const member = yield* processPipe;
+      const grandchild = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
+      const intermediate = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore',detached:true,windowsHide:true}).unref();`;
+      const spawner = endingWindowsTrees(yield* ChildProcessSpawner.ChildProcessSpawner, "win32");
+      const root = yield* spawner.spawn(
+        ChildProcess.make(process.execPath, [
+          "-e",
+          `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(intermediate)}],{stdio:'ignore',windowsHide:true}); c.on('exit',()=>process.stdout.write('ready')); process.stdin.resume();`,
+        ]),
+      );
+      yield* member.started;
+      yield* root.stdout.pipe(Stream.take(1), Stream.runDrain);
+      yield* root.kill();
+      yield* member.ended;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   // Times are seconds from $t. The tree's root is 10, and nothing in it started before -2.
   it.each([
     [
@@ -316,11 +338,12 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
 
   it.live("ends what its leader left running when its scope closes after the leader exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       yield* Effect.scoped(
         Effect.gen(function* () {
           const leader = yield* spawnEndingTree(leftover.command);
           yield* leftover.started;
+          yield* Stream.run(Stream.empty, leader.stdin);
           assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
         }),
       );
@@ -331,9 +354,10 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
 
   it.live("ends what its leader left running when killed after the leader exited", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       const leader = yield* spawnEndingTree(leftover.command);
       yield* leftover.started;
+      yield* Stream.run(Stream.empty, leader.stdin);
       assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
 
       yield* leader.kill();
@@ -344,12 +368,13 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
 
   it.live("leftBehind ends what its leader left holding its output when the scope closes", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild({ holdsOutput: true });
+      const leftover = yield* leaderLeavingChild({ holdsOutput: true, untilInputEnds: true });
       yield* Effect.scoped(
         Effect.gen(function* () {
           const leader = yield* spawnEndingTree(leftover.command, "leftBehind");
           yield* Effect.forkScoped(Stream.runDrain(leader.stdout));
           yield* leftover.started;
+          yield* Stream.run(Stream.empty, leader.stdin);
           assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
         }),
       );
@@ -360,12 +385,13 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
 
   it.live("leftBehind ends what its leader left running when the scope is interrupted", () =>
     Effect.gen(function* () {
-      const leftover = yield* leaderLeavingChild();
+      const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
       yield* Effect.exit(
         Effect.scoped(
           Effect.gen(function* () {
             const leader = yield* spawnEndingTree(leftover.command, "leftBehind");
             yield* leftover.started;
+            yield* Stream.run(Stream.empty, leader.stdin);
             assert.equal(yield* leader.exitCode, ChildProcessSpawner.ExitCode(0));
             return yield* Effect.interrupt;
           }),
