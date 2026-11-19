@@ -1,3 +1,7 @@
+## 2026-11-19 — A refused delegation on a machine short of memory points to a linked machine
+
+- When `delegate_task` is refused because this machine is short of memory and a reachable linked machine has full access, the message now names it and its `environmentId` and says to delegate there with `target.environmentId`. Before, it always said to do the work inline, which kept heavy work such as test runs on the machine that was out of memory. Without such a machine, the advice is unchanged.
+
 ## 2026-11-19 — Attachment preview browser tests stop failing on a loaded machine
 
 - Maintainers: the browser tests wait up to 10 seconds, not 1, for rendered output, and each may run 30 seconds, not 15. `AttachmentFilePreview.browser.test.tsx` failed 1 to 4 cases on a busy machine because pdf.js and the office workers outlasted those limits, which kept any change that selects the file from landing. No change to the app.

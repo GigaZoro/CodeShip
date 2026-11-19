@@ -598,12 +598,33 @@ export const requireAccountWithRoom = Effect.fn("OrchestratorMcpService.requireA
  */
 export const requireMemoryForDelegation = Effect.fn(
   "OrchestratorMcpService.requireMemoryForDelegation",
-)(function* (admission: MemoryAdmission.MemoryAdmission["Service"]) {
+)(function* (
+  admission: MemoryAdmission.MemoryAdmission["Service"],
+  peers?: PeerLinks.PeerLinks["Service"],
+) {
   const shortage = yield* admission.shortage;
   if (shortage === null) return;
+  // Heavy work left inline stays on the machine that is out of memory, so name a linked one with room.
+  const linked =
+    peers === undefined
+      ? []
+      : yield* peers.list.pipe(
+          Effect.map((links) =>
+            links.filter((link) => link.status === "reachable" && link.access === "full-access"),
+          ),
+          Effect.orElseSucceed(() => []),
+        );
+  const advice =
+    linked.length > 0
+      ? `Delegate it to a linked machine instead (${linked
+          .map((link) => `${link.label}, environmentId ${link.environmentId}`)
+          .join(
+            "; ",
+          )}): pass target.environmentId, no isolation, on a pushed branch. Another delegation here is refused the same way until memory frees up.`
+      : "Do the work inline in this thread instead; another delegation is refused the same way until memory frees up.";
   return yield* failure(
     "memory_short",
-    `Memory is short on the machine that would run the task: ${MemoryAdmission.describeMemoryShortage(shortage)}. The task was not started. Do the work inline in this thread instead; another delegation is refused the same way until memory frees up.`,
+    `Memory is short on the machine that would run the task: ${MemoryAdmission.describeMemoryShortage(shortage)}. The task was not started. ${advice}`,
   );
 });
 
@@ -3428,7 +3449,7 @@ const make = Effect.gen(function* () {
           },
           accountRouting,
         );
-        yield* requireMemoryForDelegation(memoryAdmission);
+        yield* requireMemoryForDelegation(memoryAdmission, peerLinks);
       }
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,

@@ -5,6 +5,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  type PeerLinkSummary,
   GitCommandError,
   MessageId,
   type ModelSelection,
@@ -106,11 +107,12 @@ const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 const layerOrchestratorServiceWithGit = (
   git: Partial<GitVcsDriver.GitVcsDriver["Service"]>,
   memory = MemoryAdmission.layerTest(),
+  links: ReadonlyArray<PeerLinkSummary> = [],
 ) =>
   OrchestratorMcpService.layer.pipe(
     Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(git)),
-    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({ list: Effect.succeed(links) })),
     Layer.provide(memory),
   );
 const layerOrchestratorService = layerOrchestratorServiceWithGit({});
@@ -2076,59 +2078,79 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
-  it.effect(
-    "refuses a delegated task before creating it while this machine's memory is short",
-    () =>
-      Effect.gen(function* () {
-        const layerDependencies = Layer.mergeAll(
-          NodeServices.layer,
-          Layer.mock(ThreadManagementService.ThreadManagementService)({
-            hasReceipt: () => Effect.succeed(false),
-            getThreadRecords: () => Effect.succeed(parentProjection([])),
-          }),
-          ServerSettings.layerTest(),
-          providerRegistryLayer([
-            providerSnapshot({
-              instanceId: codexInstanceId,
-              driver: ProviderDriverKind.make("codex"),
-              model: "gpt-5.4",
-            }),
-          ]),
-          adapterRegistryLayer([codexInstanceId]),
-          Layer.mock(ProjectService.ProjectService)({}),
-          Layer.mock(SecretRequests.SecretRequests)({}),
-          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        );
-        const shortage = {
-          kind: "available",
-          totalBytes: 8 * 1024 ** 3,
-          availableBytes: 1024 ** 3,
-          reserveBytes: 2 * 1024 ** 3,
-        } as const;
+  const peer = (status: PeerLinkSummary["status"], access: PeerLinkSummary["access"]) =>
+    ({
+      environmentId: EnvironmentId.make("env-vps"),
+      label: "Zoro-VPS",
+      status,
+      access,
+    }) as PeerLinkSummary;
 
-        yield* Effect.gen(function* () {
-          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          // Nothing that creates a thread is mocked, so a start past the check would die.
-          const refused = yield* service
-            .delegateTask(scope, {
-              task: "Summarize the diff.",
-              target: { providerInstanceId: codexInstanceId },
-              mode: "async",
-              clientRequestId: "delegate-memory-1",
-            })
-            .pipe(Effect.flip);
-          assert.equal(refused.code, "memory_short");
-          assert.include(refused.message, "1 GiB of 8 GiB is available, under the 2 GiB reserve");
-          assert.include(refused.message, "Do the work inline in this thread instead");
-        }).pipe(
-          Effect.provide(
-            layerOrchestratorServiceWithGit({}, MemoryAdmission.layerTest(shortage)).pipe(
-              Layer.provide(layerDependencies),
-            ),
+  it.effect.each([
+    {
+      name: "names a reachable full-access linked machine",
+      links: [peer("reachable", "full-access")],
+      includes: ["Zoro-VPS, environmentId env-vps", "target.environmentId"],
+      excludes: ["Do the work inline"],
+    },
+    {
+      name: "advises inline work when no linked machine can take it",
+      links: [peer("unreachable", "full-access"), peer("reachable", "read-only")],
+      includes: ["Do the work inline in this thread instead"],
+      excludes: ["env-vps"],
+    },
+  ])("refuses a delegated task while memory is short and $name", ({ links, includes, excludes }) =>
+    Effect.gen(function* () {
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: () => Effect.succeed(parentProjection([])),
+        }),
+        ServerSettings.layerTest(),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      const shortage = {
+        kind: "available",
+        totalBytes: 8 * 1024 ** 3,
+        availableBytes: 1024 ** 3,
+        reserveBytes: 2 * 1024 ** 3,
+      } as const;
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        // Nothing that creates a thread is mocked, so a start past the check would die.
+        const refused = yield* service
+          .delegateTask(scope, {
+            task: "Summarize the diff.",
+            target: { providerInstanceId: codexInstanceId },
+            mode: "async",
+            clientRequestId: "delegate-memory-1",
+          })
+          .pipe(Effect.flip);
+        assert.equal(refused.code, "memory_short");
+        assert.include(refused.message, "1 GiB of 8 GiB is available, under the 2 GiB reserve");
+        for (const text of includes) assert.include(refused.message, text);
+        for (const text of excludes) assert.notInclude(refused.message, text);
+      }).pipe(
+        Effect.provide(
+          layerOrchestratorServiceWithGit({}, MemoryAdmission.layerTest(shortage), links).pipe(
+            Layer.provide(layerDependencies),
           ),
-        );
-      }),
+        ),
+      );
+    }),
   );
 
   it.effect.each([
