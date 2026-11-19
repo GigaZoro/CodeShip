@@ -34,6 +34,7 @@
 ## 2026-11-18 — Script tests fit their time limit on a loaded machine
 
 - The `scripts` cache test and Knip schema test each ran several slow subprocess steps in one test, 50 to 70 s on a busy machine against a 60 s limit. Each behaviour is now its own test with its own budget. No change to the app.
+
 ## 2026-11-18 — Full test suites share check:changed's machine budget
 
 - `vp run check:changed --suites <package dir>` runs a package's full test suite on the same machine-wide slot budget as the fast checks, so suites started together no longer oversubscribe the cores and time out. Upstream syncs use it and, after landing merges main, recheck only what main added. No change to the app.
