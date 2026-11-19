@@ -21,6 +21,22 @@ const callKind = (callee: unknown): "suite" | "test" | undefined => {
   return TESTS.has(current.value.name) ? "test" : undefined;
 };
 
+// @effect/vitest's layer(L)("name", (it) => …) and it.layer(L)("name", (it) => …) open a describe
+// block; without a name they add their tests to the enclosing one.
+const isNamedLayerSuite = (call: ESTree.CallExpression): boolean => {
+  if (call.arguments.length < 2) return false;
+  const factory = unwrapExpression(call.callee);
+  if (Option.isNone(factory) || factory.value.type !== "CallExpression") return false;
+  const target = unwrapExpression(factory.value.callee);
+  if (Option.isNone(target)) return false;
+  if (target.value.type === "Identifier") return target.value.name === "layer";
+  return (
+    target.value.type === "MemberExpression" &&
+    Option.getOrUndefined(getPropertyName(target.value.property)) === "layer" &&
+    callKind(target.value.object) === "test"
+  );
+};
+
 const staticTitle = (node: ESTree.CallExpression): string | undefined => {
   const first = node.arguments[0];
   if (first?.type === "Literal" && typeof first.value === "string") return first.value;
@@ -36,7 +52,7 @@ const enclosingSuite = (node: ESTree.Node): ESTree.Node | undefined => {
     if (
       FUNCTIONS.has(current.type) &&
       current.parent?.type === "CallExpression" &&
-      callKind(current.parent.callee) === "suite"
+      (callKind(current.parent.callee) === "suite" || isNamedLayerSuite(current.parent))
     ) {
       return current;
     }

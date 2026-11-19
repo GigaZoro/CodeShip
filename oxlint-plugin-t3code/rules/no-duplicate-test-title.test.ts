@@ -24,6 +24,36 @@ describe("t3code/no-duplicate-test-title", () => {
   );
 
   rule.valid(
+    "allows the same title in different named layer blocks",
+    `
+      import { it, layer } from "@effect/vitest";
+      import * as Effect from "effect/Effect";
+      import * as Layer from "effect/Layer";
+
+      it.layer(Layer.empty)("on version 1", (it) => {
+        it.effect("lists models", () => Effect.void);
+      });
+      layer(Layer.empty)("on version 2", (it) => {
+        it.effect("lists models", () => Effect.void);
+      });
+    `,
+  );
+
+  rule.invalid(
+    "reports a title an unnamed layer block repeats from the enclosing scope",
+    `
+      import { it } from "@effect/vitest";
+      import * as Effect from "effect/Effect";
+      import * as Layer from "effect/Layer";
+
+      it.effect("lists models", () => Effect.void);
+      it.layer(Layer.empty)((it) => {
+        it.effect("lists models", () => Effect.void);
+      });
+    `,
+  );
+
+  rule.valid(
     "ignores dynamic titles and .each cases",
     `
       import { it } from "@effect/vitest";
