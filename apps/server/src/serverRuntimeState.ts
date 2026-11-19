@@ -1,4 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { WindowsJobHost } from "@t3tools/shared/windowsJob";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -141,17 +142,12 @@ export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessSta
 ) {
   const windows = (yield* HostProcess.Platform) === "win32";
   const runner = yield* ProcessRunner.ProcessRunner;
+  const host = windows ? yield* (yield* WindowsJobHost).pipe(Effect.option) : Option.none();
+  if (windows && Option.isNone(host)) return undefined;
   const result = yield* runner
     .run({
-      command: windows ? "powershell.exe" : "ps",
-      args: windows
-        ? [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop; if ($process) { ([DateTimeOffset]$process.CreationDate).ToUnixTimeMilliseconds() }`,
-          ]
-        : ["-p", String(pid), "-o", "lstart="],
+      command: Option.isSome(host) ? host.value : "ps",
+      args: windows ? ["identity", String(pid)] : ["-p", String(pid), "-o", "lstart="],
       env: { LC_ALL: "C", TZ: "UTC" },
       timeout,
       maxOutputBytes: 16_384,

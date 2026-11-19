@@ -20,6 +20,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { isProcessAlive, probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
+import { WindowsJobHost, windowsJobName } from "@t3tools/shared/windowsJob";
 import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   windowsStopTreeArgs,
@@ -106,8 +107,6 @@ const WINDOWS_WRAPPER = [
   `  Move-Item -Force -LiteralPath "$file.tmp" -Destination $file`,
   "}",
   "try {",
-  '  $made = ([DateTimeOffset](Get-CimInstance Win32_Process -Filter "ProcessId = $PID").CreationDate).ToUnixTimeMilliseconds()',
-  `  Write-T3File '${PID_FILE}' "$PID $made"`,
   `  try { [IO.Directory]::Move((Join-Path $PSScriptRoot '${LAUNCH_PENDING}'), (Join-Path $PSScriptRoot '${LAUNCH_STARTED}')) } catch {`,
   `    $why = if ([IO.Directory]::Exists((Join-Path $PSScriptRoot '${LAUNCH_CANCELLED}'))) { 'Command launch was cancelled before it started.' } else { "Could not take the command start gate: $_" }`,
   `    Add-Content -LiteralPath (Join-Path $PSScriptRoot '${LOG_FILE}') -Value $why`,
@@ -484,6 +483,8 @@ const make = Effect.gen(function* () {
   const watchInterval = yield* WatchInterval;
 
   const commandsDir = path.join(logsDir, "commands");
+  const jobFor = (directory: string) => windowsJobName(path.basename(directory));
+  const jobUnitPrefix = "windows-job:";
   const hostCommandEnv = Object.fromEntries(
     Object.entries(hostEnv).filter(
       (entry): entry is [string, string] => entry[1] !== undefined && !isServerOnlyEnvKey(entry[0]),
@@ -602,6 +603,24 @@ const make = Effect.gen(function* () {
    * process reusing the wrapper's pid means nothing of the group is left.
    */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
+    if (windows && row.unit?.startsWith(jobUnitPrefix)) {
+      const host = yield* yield* WindowsJobHost;
+      const stopped = yield* stopSlots
+        .withPermits(1)(
+          processRunner.run({
+            command: host,
+            args: ["stop", row.unit.slice(jobUnitPrefix.length)],
+            timeout: Duration.seconds(30),
+            maxOutputBytes: 16_384,
+          }),
+        )
+        .pipe(Effect.mapError((cause) => new CommandStopError({ detail: cause.message, cause })));
+      if (stopped.code !== 0)
+        return yield* new CommandStopError({
+          detail: `Could not stop the command job (exit ${stopped.code}): ${stopped.stderr.trim()}`,
+        });
+      return true;
+    }
     const pid = row.pid;
     if (pid !== null && !(yield* rebootedSince(row))) {
       if (!windows) {
@@ -1000,7 +1019,8 @@ const make = Effect.gen(function* () {
     if (
       (row.pid === null || (windows && row.process_started_at === null)) &&
       row.status !== "exited" &&
-      row.status !== "unstarted"
+      row.status !== "unstarted" &&
+      !(row.status !== "running" && windows && row.unit?.startsWith(jobUnitPrefix))
     ) {
       const resolution = yield* recoverPid(row);
       if (resolution.outcome === "unresolved") return;
@@ -1109,7 +1129,10 @@ const make = Effect.gen(function* () {
     );
     if (next === undefined) return;
     if (
-      (next.status === "stopped" || next.status === "timed_out" || next.status === "lost") &&
+      (next.status === "stopped" ||
+        next.status === "timed_out" ||
+        next.status === "lost" ||
+        (windows && next.status === "exited" && next.unit?.startsWith(jobUnitPrefix))) &&
       !(yield* killTree(next))
     )
       return;
@@ -1150,12 +1173,15 @@ const make = Effect.gen(function* () {
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     for (const taskId of watched.keys()) {
       const row = watched.get(taskId)!;
-      const stop =
-        row.status === "running" && Date.parse(row.deadline_at) <= now
-          ? requestStop(taskId, "timed_out")
-          : pendingStops.has(taskId) && (row.status === "stopped" || row.status === "timed_out")
-            ? requestStop(taskId, row.status)
-            : Effect.void;
+      const stop = Effect.gen(function* () {
+        if (row.status === "running" && Date.parse(row.deadline_at) <= now)
+          yield* requestStop(taskId, "timed_out");
+        else if (
+          pendingStops.has(taskId) &&
+          (row.status === "stopped" || row.status === "timed_out")
+        )
+          yield* requestStop(taskId, row.status);
+      });
       yield* stop.pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("command-runner.stop-failed", { taskId, cause }),
@@ -1183,7 +1209,7 @@ const make = Effect.gen(function* () {
               ended_at: exit.endedAt ?? (yield* nowIso),
             };
             yield* settle(exited);
-            return yield* deliver(exited);
+            return;
           }
         }
         const stopped: CommandRunRow = {
@@ -1337,6 +1363,7 @@ const make = Effect.gen(function* () {
     );
     yield* fs.writeFileString(wrapperPath, WINDOWS_WRAPPER);
     yield* fs.writeFileString(logPath, "");
+    const host = yield* yield* WindowsJobHost;
     const created = yield* processRunner.run({
       command: "powershell.exe",
       args: [
@@ -1346,7 +1373,7 @@ const make = Effect.gen(function* () {
         // Windows folds names by a case table only it has, so the launcher keeps the last of the
         // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
         // like a member (Values) hides that member in PowerShell.
-        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $pidFile = ${escapePowerShellStringLiteral(path.join(directory, PID_FILE))}; while (-not [IO.File]::Exists($pidFile)) { Start-Sleep -Milliseconds 50 }; Get-Content -LiteralPath $pidFile`,
+        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${escapePowerShellStringLiteral(`"${host}" run "${jobFor(directory)}" "${path.join(directory, PID_FILE)}" "`)} + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $pidFile = ${escapePowerShellStringLiteral(path.join(directory, PID_FILE))}; while (-not [IO.File]::Exists($pidFile)) { if ([IO.File]::Exists(${escapePowerShellStringLiteral(statusPath)}) -or -not (Get-Process -Id $r.ProcessId -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine('The command host ended before publishing its pid.'); exit 1 }; Start-Sleep -Milliseconds 50 }; Get-Content -LiteralPath $pidFile`,
       ],
       // Base64, since PowerShell decodes stdin with the console code page.
       stdin: Buffer.from(
@@ -1378,7 +1405,7 @@ const make = Effect.gen(function* () {
         detail: "The wrapper did not record its process creation time.",
       });
     }
-    return { pid, process_started_at: identity, unit: null };
+    return { pid, process_started_at: identity, unit: `${jobUnitPrefix}${jobFor(directory)}` };
   });
 
   const run: CommandRunner["Service"]["run"] = Effect.fn("CommandRunner.run")(
@@ -1580,7 +1607,7 @@ const make = Effect.gen(function* () {
                   directory,
                   pid: null,
                   process_started_at: null,
-                  unit: null,
+                  unit: windows ? `${jobUnitPrefix}${jobFor(directory)}` : null,
                   status: "running",
                   exit_code: null,
                   started_at: DateTime.formatIso(now),
