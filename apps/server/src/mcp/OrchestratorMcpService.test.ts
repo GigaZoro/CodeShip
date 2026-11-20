@@ -2575,11 +2575,6 @@ describe("OrchestratorMcpService provider resolution", () => {
           ]);
           const limit = yield* Ref.make<AccountRouting.LaunchLimit | null>(null);
           const layerDatabase = SqlitePersistence.layerMemory;
-          const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
-            { name: "mcp-create-retry", runtimePolicyOverride: { cwd } },
-            layerRegistry,
-            { databaseLayer: layerDatabase, runEffectWorker: false },
-          );
           const layerSettings = ServerSettings.layerTest({
             providerInstances: {
               [codexInstanceId]: { driver: "codex", enabled: true },
@@ -2589,6 +2584,15 @@ describe("OrchestratorMcpService provider resolution", () => {
               [projectId]: { providerInstances: { [codexInstanceId]: { enabled: parentEnabled } } },
             },
           });
+          const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
+            { name: "mcp-create-retry", runtimePolicyOverride: { cwd } },
+            layerRegistry,
+            {
+              databaseLayer: layerDatabase,
+              serverSettingsLayer: layerSettings,
+              runEffectWorker: false,
+            },
+          );
           const layerThreads = ThreadManagementService.layer.pipe(
             Layer.provideMerge(layerOrchestrator),
             Layer.provide(
