@@ -67,41 +67,77 @@ function requireNewReleaseNotes(current, previous) {
 const entriesOf = (text) => (text.trim() ? parseReleaseNotes(text) : []);
 const entryDate = (entry) => entry.slice(3, 13);
 const entryHeading = (entry) => entry.split("\n", 1)[0];
+const entryTitle = (entry) => entryHeading(entry).slice("## YYYY-MM-DD — ".length);
+const entryBody = (entry) => entry.slice(entryHeading(entry).length).trim();
 
 /**
- * The entries `theirs` added since `base`, placed among `ours` by date and after every entry that precedes them in
- * `theirs`, so a rebase or merge over another shipment's notes keeps both whole and newest first. Null when `theirs`
- * changed, dropped or reordered an existing entry or reuses a title `ours` has: git then merges the file as text.
+ * `side`'s entries with `additions`' new ones, each between the entries around it in `additions` and in date order, as
+ * high as that allows when `onTop`, else as low. Null when they leave no place, when a new entry shares a heading, title
+ * or text with one only `side` added or changed (one shipment under two dates), or when no entry would be left. An entry
+ * both add is one shipment picked twice only when `side` holds every base entry: else `side` may have rewritten one.
+ */
+function insertNewEntries(side, additions, known, sideHoldsBase, onTop) {
+  const merged = [...side];
+  const headings = merged.map(entryHeading);
+  const byHeading = new Map(merged.map((entry, index) => [headings[index], entry]));
+  const additionHeadings = additions.map(entryHeading);
+  const shared = new Set(additions);
+  const sideOnly = side.filter((entry) => !known.has(entry) && !shared.has(entry));
+  const sideTitles = new Set(sideOnly.map(entryTitle));
+  const sideBodies = new Set(sideOnly.map(entryBody));
+  for (const [position, entry] of additions.entries()) {
+    const heading = additionHeadings[position];
+    const present = byHeading.get(heading);
+    if (present !== undefined) {
+      if (!known.has(entry) && (present !== entry || !sideHoldsBase)) return null;
+      continue;
+    }
+    if (known.has(entry)) continue;
+    if (sideTitles.has(entryTitle(entry)) || sideBodies.has(entryBody(entry))) return null;
+    const indexes = new Map(headings.map((other, index) => [other, index]));
+    const placed = (from, to) =>
+      additionHeadings
+        .slice(from, to)
+        .map((other) => indexes.get(other))
+        .filter((index) => index !== undefined);
+    const after = Math.max(-1, ...placed(0, position));
+    const before = Math.min(merged.length, ...placed(position + 1));
+    if (after >= before) return null;
+    const date = entryDate(entry);
+    let top = after + 1;
+    while (top < before && entryDate(merged[top]) > date) top += 1;
+    let bottom = before;
+    while (bottom > top && entryDate(merged[bottom - 1]) < date) bottom -= 1;
+    const index = onTop ? top : bottom;
+    merged.splice(index, 0, entry);
+    headings.splice(index, 0, heading);
+    byHeading.set(heading, entry);
+  }
+  return merged.length > 0 ? `${merged.join("\n\n")}\n` : null;
+}
+
+/**
+ * Merges when only one side changed, dropped or reordered `base`'s entries: the other side's new entries go into its
+ * notes, `theirs`' above `ours`' of one date where the entries around them allow it. Landings on main keep entries word
+ * for word, so a branch that rewords its own entry later still rebases onto them unless one shares its title or text.
+ * Null, for git's text merge, when both sides changed `base`'s entries or a new entry cannot be placed.
  */
 function mergeReleaseNotes(base, ours, theirs) {
   const baseEntries = entriesOf(base);
   const known = new Set(baseEntries);
+  const kept = (entries) => entries.filter((entry) => known.has(entry));
+  const holdsBase = (entries) => kept(entries).length === baseEntries.length;
+  const keepsBase = (entries) =>
+    kept(entries).every((entry, index) => entry === baseEntries[index]);
+  const ourEntries = entriesOf(ours);
   const theirEntries = entriesOf(theirs);
-  const kept = theirEntries.filter((entry) => known.has(entry));
-  if (
-    kept.length !== baseEntries.length ||
-    kept.some((entry, index) => entry !== baseEntries[index])
-  ) {
-    return null;
+  if (holdsBase(theirEntries) && keepsBase(theirEntries)) {
+    return insertNewEntries(ourEntries, theirEntries, known, holdsBase(ourEntries), true);
   }
-  const merged = entriesOf(ours);
-  const headings = new Set(merged.map(entryHeading));
-  let floor = 0;
-  for (const entry of theirEntries) {
-    const at = merged.indexOf(entry);
-    if (at >= 0) {
-      floor = Math.max(floor, at + 1);
-    } else if (!known.has(entry)) {
-      if (headings.has(entryHeading(entry))) return null;
-      const next = merged.findIndex(
-        (other, index) => index >= floor && entryDate(other) <= entryDate(entry),
-      );
-      const index = next < 0 ? merged.length : next;
-      merged.splice(index, 0, entry);
-      floor = index + 1;
-    }
+  if (holdsBase(ourEntries) && keepsBase(ourEntries)) {
+    return insertNewEntries(theirEntries, ourEntries, known, holdsBase(theirEntries), false);
   }
-  return `${merged.join("\n\n")}\n`;
+  return null;
 }
 
 /** git's merge driver: writes the merge over `oursPath` and exits 0, or non-zero with conflict markers. */

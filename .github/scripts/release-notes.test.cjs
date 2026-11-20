@@ -113,7 +113,7 @@ test("rejects missing summaries and invalid dates instead of counting a file tou
   }
 });
 
-test("a merge places the incoming side's new entries among the current side's by date", () => {
+test("a merge places one side's new entries among the other side's by date", () => {
   const base = notes(shipped);
   assert.equal(
     mergeReleaseNotes(base, notes(newer, sameDay, shipped), notes(mine, shipped)),
@@ -134,18 +134,118 @@ test("a merge places the incoming side's new entries among the current side's by
     notes(mine, sameDay, shipped),
   );
   assert.equal(mergeReleaseNotes("", notes(newer), notes(mine)), notes(newer, mine));
-  // An edited, dropped or reordered entry, or a title both sides used, is left to git's text merge.
-  for (const theirs of [
-    notes(mine, sameDay, shipped.replace("- Shipped.", "- Edited.")),
-    notes(mine, sameDay),
-    notes(mine, shipped, sameDay),
-    notes(newer.replace("- Main newer.", "- Other."), sameDay, shipped),
+  // A later commit of a shipment rewords, retitles, redates, edits or drops its entry while main gained entries beside
+  // it, and stays above main's of the same date.
+  const added = entry("2026-11-18", "Added");
+  const retitled = entry("2026-11-18", "Retitled");
+  const sameDayEdited = sameDay.replace("- Main same day.", "- Edited.");
+  assert.equal(
+    mergeReleaseNotes(
+      notes(mine, shipped),
+      notes(mine, sameDay, shipped),
+      notes(retitled, shipped),
+    ),
+    notes(retitled, sameDay, shipped),
+  );
+  const reworded = entry("2026-11-19", "Mine reworded");
+  assert.equal(
+    mergeReleaseNotes(notes(mine, shipped), notes(newer, mine, shipped), notes(reworded, shipped)),
+    notes(reworded, newer, shipped),
+  );
+  const edited = shipped.replace("- Shipped.", "- Edited.");
+  assert.equal(
+    mergeReleaseNotes(notes(mine, shipped), notes(newer, mine, shipped), notes(mine, edited)),
+    notes(newer, mine, edited),
+  );
+  const mineEdited = mine.replace("- Mine.", "- Mine edited.");
+  assert.equal(
+    mergeReleaseNotes(
+      notes(mine, shipped),
+      notes(sameDay, mine, shipped),
+      notes(mineEdited, shipped),
+    ),
+    notes(sameDay, mineEdited, shipped),
+  );
+  assert.equal(
+    mergeReleaseNotes(notes(mine, shipped), notes(newer, mine, shipped), notes(shipped)),
+    notes(newer, shipped),
+  );
+  // One side moved entries the other side's new one sits between, possibly beside one entry both added, or both added
+  // one entry in different places.
+  const moved = notes(sameDay, shipped);
+  assert.equal(
+    mergeReleaseNotes(
+      moved,
+      notes(newer, mine, sameDay, shipped),
+      notes(newest, mine, shipped, sameDay),
+    ),
+    notes(newest, newer, mine, shipped, sameDay),
+  );
+  assert.equal(
+    mergeReleaseNotes(
+      moved,
+      notes(newest, mine, shipped, sameDay),
+      notes(newer, mine, sameDay, shipped),
+    ),
+    notes(newest, newer, mine, shipped, sameDay),
+  );
+  assert.equal(
+    mergeReleaseNotes(moved, notes(newer, sameDay, shipped), notes(mine, shipped, sameDay)),
+    notes(newer, mine, shipped, sameDay),
+  );
+  assert.equal(
+    mergeReleaseNotes(moved, notes(shipped, sameDay), notes(newer, sameDay, shipped)),
+    notes(newer, shipped, sameDay),
+  );
+  assert.equal(
+    mergeReleaseNotes(moved, notes(newer, sameDay, shipped), notes(shipped, sameDayEdited)),
+    notes(newer, shipped, sameDayEdited),
+  );
+  assert.equal(
+    mergeReleaseNotes(moved, notes(added, sameDay, shipped), notes(sameDay, added, shipped)),
+    notes(added, sameDay, shipped),
+  );
+  // One side already holds a title under two dates and shares one of them with the other, so nothing is published twice.
+  const menu = entry("2026-11-20", "Menu");
+  const menuBefore = entry("2026-11-19", "Menu");
+  assert.equal(
+    mergeReleaseNotes(base, notes(menu, menuBefore, shipped), notes(newest, menuBefore, shipped)),
+    notes(newest, menu, menuBefore, shipped),
+  );
+  assert.equal(
+    mergeReleaseNotes(base, notes(newest, menuBefore, shipped), notes(menu, menuBefore, shipped)),
+    notes(menu, newest, menuBefore, shipped),
+  );
+  // Changes to the base's entries on both sides, a new entry the entries around it leave no place for, one heading
+  // added with different text, one entry added on both sides while one of them rewrote or dropped a base entry (a
+  // retitle, or an edit that reuses a retitled entry's heading, can reproduce another shipment's entry), or a new entry
+  // whose title or text only the other side added or changed under another heading go to git's text merge.
+  for (const [ours, theirs] of [
+    [notes(newer, sameDay, shipped.replace("- Shipped.", "- Other.")), notes(sameDay, edited)],
+    [notes(newer, sameDayEdited, shipped), notes(sameDay, edited)],
+    [notes(newer, sameDayEdited), notes(shipped)],
+    [notes(newer, sameDay), notes(sameDay, edited)],
+    [notes(entry("2026-11-18", "Ours retitled"), shipped), notes(retitled, shipped)],
+    [notes(retitled, shipped), notes(sameDay, retitled)],
+    [notes(shipped, sameDay), notes(retitled, shipped)],
+    [notes(shipped, sameDay), notes(sameDay, added, shipped)],
+    [notes(menu, sameDay, shipped), notes(menuBefore, shipped)],
+    [notes(menuBefore, shipped), notes(menu, sameDay, shipped)],
+    [notes(menu, sameDay, shipped), notes(retitled.replace("- Retitled.", "- Menu."), shipped)],
+    [notes(menu, sameDay, shipped), notes(menuBefore.replace("- Menu.", "- Other."), shipped)],
+    [
+      notes(newer, sameDay, shipped),
+      notes(newer.replace("- Main newer.", "- Other."), sameDay, shipped),
+    ],
+    [notes(newer, added, sameDay, shipped), notes(added, shipped)],
+    [notes(added, shipped), notes(newer, added, sameDay, shipped)],
+    [notes(sameDay, added, shipped), notes(sameDayEdited, added, shipped)],
+    [notes(sameDayEdited, added, shipped), notes(sameDay, added, shipped)],
   ]) {
-    assert.equal(
-      mergeReleaseNotes(notes(sameDay, shipped), notes(newer, sameDay, shipped), theirs),
-      null,
-    );
+    assert.equal(mergeReleaseNotes(notes(sameDay, shipped), ours, theirs), null);
   }
+  // As does a merge that would leave no entry.
+  assert.equal(mergeReleaseNotes(notes(shipped), notes(shipped), ""), null);
 });
 
 test("git rebases a shipment over another one's notes through the configured merge driver", () => {

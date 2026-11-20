@@ -150,9 +150,17 @@ for users. Include fixes, maintenance, and documentation-only shipments; use a n
 title when shipping several times on one day. Preserve previous entries unchanged. Entries
 stay newest first by date. A rebase or merge keeps that order by itself: `.gitattributes` gives
 the file a merge driver, which `vp i` configures and the landing turn passes to its rebase, that
-places the other side's new entries by date and leaves an edited, dropped or reordered entry to
-git's text merge. The check matches
-earlier entries by content, so a shipment may also move one back into date order.
+puts one side's new entries into the other side's notes when only that other side edited,
+retitled, removed or reordered existing entries. Each entry the driver inserts goes between the
+entries around it on its own side, in date order, and the incoming side's entries go above the other side's of the
+same date where the entries around them allow either order. Landings on main keep every entry word
+for word, so a branch can still reword its own entry in a later commit. The driver leaves the file
+to git's text merge, which can conflict, when both sides changed existing entries, when the entries
+around a new entry leave it no place, when both sides added one heading with different text or one
+entry while one of them also rewrote or removed an existing entry, or when a new entry shares its
+title or text with an entry only the other side added or changed: that can be one shipment under
+two dates. The check matches earlier entries by content, so a shipment may also move one back into
+date order.
 
 The web and desktop header's Release notes dialog bundles this history with the
 client, so an older install never presents newer changes as already installed.
