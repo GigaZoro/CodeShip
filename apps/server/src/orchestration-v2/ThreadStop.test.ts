@@ -535,7 +535,7 @@ it.effect("Stop still stops the thread when a delegated child cannot be read", (
 );
 
 it.effect.each(["run.interrupt", "thread.stop"] as const)(
-  "%s Stop ends watches and respects the owning run when walking delegated tasks",
+  "%s holds the queue and ends watches; only thread Stop ends an independent child and its completions",
   (type) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1267,6 +1267,9 @@ it.effect(
 );
 
 it.effect.each([
+  "unrelated with missing session",
+  "unrelated with live session",
+  "thread Stop with unrelated live session",
   "cancelled later with missing session",
   "cancelled later with live session",
   "unprepared restart with missing session",
@@ -1375,6 +1378,9 @@ it.effect.each([
       });
       const otherThreadId = ProviderThreadId.make("provider-thread:background");
       const otherTurnId = ProviderTurnId.make("turn:background");
+      const threadWide = scenario.startsWith("thread Stop");
+      const separateOwner = scenario.includes("unrelated");
+      const backgroundOwner = separateOwner ? unrelated : source;
       const earlierAttemptId = RunAttemptId.make("attempt:background");
       yield* projections.apply({
         ...event,
@@ -1383,7 +1389,8 @@ it.effect.each([
         payload: {
           ...attempt,
           id: earlierAttemptId,
-          attemptOrdinal: 1,
+          runId: backgroundOwner.id,
+          attemptOrdinal: separateOwner ? 2 : 1,
           providerThreadId: otherThreadId,
           providerTurnId: otherTurnId,
           status: "completed",
@@ -1416,8 +1423,8 @@ it.effect.each([
         payload: {
           id: itemId,
           threadId,
-          runId: source.id,
-          nodeId: source.rootNodeId,
+          runId: backgroundOwner.id,
+          nodeId: backgroundOwner.rootNodeId,
           parentItemId: null,
           nativeItemRef: null,
           ordinal: before.turnItems.length + 1,
@@ -1482,29 +1489,40 @@ it.effect.each([
       const commandId = CommandId.make("stop-queued-restart");
       const holdQueue = scenario !== "without queue hold";
       const onlyIfActive = scenario === "only if active";
-      const { storedEvents } = yield* orchestrator.dispatch({
-        type: "run.interrupt",
-        threadId,
-        commandId,
-        runId: source.id,
-        holdQueue,
-        ...(onlyIfActive ? { onlyIfActive } : {}),
-      });
+      const { storedEvents } = yield* orchestrator.dispatch(
+        threadWide
+          ? { type: "thread.stop", threadId, commandId }
+          : {
+              type: "run.interrupt",
+              threadId,
+              commandId,
+              runId: source.id,
+              holdQueue,
+              ...(onlyIfActive ? { onlyIfActive } : {}),
+            },
+      );
       const interrupts = (yield* outbox.listByCommandId(commandId)).flatMap(({ request }) =>
         request.type === "provider-turn.interrupt" ? [request] : [],
       );
       assert.sameDeepMembers(
-        interrupts,
+        interrupts.map(({ providerSessionId, providerThreadId, providerTurnId }) => ({
+          providerSessionId,
+          providerThreadId,
+          providerTurnId,
+        })),
         live
           ? [
-              [owner.id, turn.id],
-              [otherThreadId, otherTurnId],
-            ].map(([providerThreadId, providerTurnId]) => ({
-              type: "provider-turn.interrupt",
-              providerSessionId: sessionId,
-              providerThreadId,
-              providerTurnId,
-            }))
+              { providerSessionId: sessionId, providerThreadId: owner.id, providerTurnId: turn.id },
+              ...(separateOwner && !threadWide
+                ? []
+                : [
+                    {
+                      providerSessionId: sessionId,
+                      providerThreadId: otherThreadId,
+                      providerTurnId: otherTurnId,
+                    },
+                  ]),
+            ]
           : [],
       );
       // These turns were seeded directly. Run only the effects produced by Stop.
@@ -1512,7 +1530,10 @@ it.effect.each([
       yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${commandId}`;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       yield* worker.drain();
-      assert.sameMembers(interruptedTurns, live ? [turn.id, otherTurnId] : []);
+      assert.sameMembers(
+        interruptedTurns,
+        live ? [turn.id, ...(separateOwner && !threadWide ? [] : [otherTurnId])] : [],
+      );
       const stopped = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(
         stopped.providerThreads.find((p) => p.id === owner.id)!.pendingBackgroundTasks,
@@ -1520,7 +1541,7 @@ it.effect.each([
       );
       assert.equal(
         stopped.turnItems.find((item) => item.id === itemId)?.status,
-        onlyIfActive ? "running" : "interrupted",
+        onlyIfActive || (separateOwner && !threadWide) ? "running" : "interrupted",
       );
       assert.equal(
         stopped.runs.find((run) => run.id === queued.id)?.status,
@@ -1562,7 +1583,10 @@ it.effect.each([
       assert.deepEqual((yield* threadState(sourceChild)).runs, [
         onlyIfActive ? "starting" : "interrupted",
       ]);
-      assert.deepEqual((yield* threadState(unrelatedChild)).runs, ["starting"]);
+      assert.deepEqual((yield* threadState(unrelatedChild)).runs, [
+        threadWide ? "interrupted" : "starting",
+      ]);
+      if (threadWide) return;
       const unrelatedTask = before.subagents.find((task) => task.childThreadId === unrelatedChild)!;
       assert.deepEqual(
         stopped.subagents.find((task) => task.id === unrelatedTask.id),
