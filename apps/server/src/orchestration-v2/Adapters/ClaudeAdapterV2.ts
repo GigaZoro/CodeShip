@@ -431,7 +431,9 @@ function spawnClaudeProcessTree(
   child.stderr.setEncoding("utf8").on("data", (text: string) => onStderr?.(text));
   const exited = new Promise<void>((resolve) => {
     child.once("exit", () => resolve());
-    child.once("error", () => resolve());
+    child.once("error", () => {
+      if (child.pid === undefined) resolve();
+    });
   });
   return {
     child,

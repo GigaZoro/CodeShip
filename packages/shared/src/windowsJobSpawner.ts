@@ -50,7 +50,10 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
             ...Object.keys(command.options.additionalFds ?? {}).map((key) => Number(key.slice(2))),
           ) + 1;
         const input = yield* Queue.unbounded<Uint8Array, Cause.Done>();
-        const started = yield* Deferred.make<number, PlatformError.PlatformError>();
+        const started = yield* Deferred.make<
+          NonNullable<WindowsJob["child"]>,
+          PlatformError.PlatformError
+        >();
         const references: Array<Deferred.Deferred<void, PlatformError.PlatformError>> = [];
         const env = yield* HostProcess.Environment;
         let target = command.command;
@@ -119,7 +122,7 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
                 Number(detail) > 0
               ) {
                 job.child = { pid: Number(value), created: Number(detail) };
-                yield* Deferred.succeed(started, Number(value));
+                yield* Deferred.succeed(started, job.child);
               } else if (kind === "E") {
                 return yield* failed(
                   Buffer.from(detail ?? "", "base64").toString(),
@@ -136,7 +139,7 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
           Effect.ensuring(failPending(failed("The Windows ownership channel closed."))),
           Effect.forkScoped,
         );
-        const pid = yield* Deferred.await(started);
+        const identity = yield* Deferred.await(started);
         const reference = Effect.fn("WindowsJobSpawner.reference")(function* (referenced: boolean) {
           if (!(yield* child.isRunning)) return;
           if (closed) return yield* failed("The Windows ownership scope is closed.", "BadResource");
@@ -147,16 +150,14 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
         });
         const handle = ChildProcessSpawner.makeHandle({
           ...child,
-          pid: ChildProcessSpawner.ProcessId(pid),
+          pid: ChildProcessSpawner.ProcessId(identity.pid),
           kill: () =>
             Effect.scoped(
               Effect.gen(function* () {
-                if (job.child === undefined)
-                  return yield* failed("Windows job child identity is not published.");
                 const stop = yield* spawner.spawn(
                   ChildProcess.make(
                     job.host,
-                    ["stop", job.name, String(job.child.pid), String(job.child.created)],
+                    ["stop", job.name, String(identity.pid), String(identity.created)],
                     { stdin: "ignore" },
                   ),
                 );

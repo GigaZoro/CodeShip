@@ -17,7 +17,8 @@ import * as HostProcess from "./HostProcess.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import { processPipe } from "./testing/leftoverChild.ts";
 import { windowsJobSpawn } from "./windowsJobNode.ts";
-import { prepareWindowsJobHost, windowsJobName } from "./windowsJob.ts";
+import { prepareWindowsJobHost, windowsJobName, windowsJobOf } from "./windowsJob.ts";
+import { stopWindowsProcessTree } from "./windowsProcessTree.ts";
 
 const exited = (child: NodeChildProcess.ChildProcess) =>
   new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {
@@ -65,6 +66,30 @@ const compileFixture = Effect.fn("WindowsJobTest.compile")(function* (
 });
 
 describe.runIf(isWindowsHost)("a Windows job", () => {
+  it.live("finishes SDK cleanup when the host exits before publishing child identity", () =>
+    Effect.gen(function* () {
+      const { host, home, path } = yield* fixture;
+      const child = yield* Effect.acquireRelease(
+        Effect.sync(() => windowsJobSpawn(host)(path.join(home, "missing-command.exe"), [])),
+        (handle) =>
+          Effect.sync(() => {
+            handle.kill();
+          }),
+      );
+      const errors: Error[] = [];
+      yield* Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            child.on("error", (error) => errors.push(error));
+            child.once("close", () => resolve());
+          }),
+      );
+      assert.equal(errors.length, 1);
+      assert.isUndefined(windowsJobOf(child)?.child);
+      yield* stopWindowsProcessTree({ pid: child.pid!, job: windowsJobOf(child)! });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("fails a stop when the job stays active beyond its termination budget", () =>
     Effect.gen(function* () {
       const { home, spawner } = yield* fixture;

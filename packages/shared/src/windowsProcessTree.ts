@@ -49,6 +49,8 @@ export const withoutWindowsTreeEnding = (spawner: Spawner): Spawner =>
 export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
   function* (root: WindowsProcessTreeRoot) {
     const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
+    // Without a published child, host exit closes its last job handle and ends any suspended child.
+    if (root.job?.hostExited && root.job.child === undefined) return;
     if (root.job?.child === undefined)
       return yield* stopFailed(
         root,
