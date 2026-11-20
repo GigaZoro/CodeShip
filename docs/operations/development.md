@@ -284,6 +284,8 @@ Windows investigation while that suite is not a required gate. A full `apps/serv
 splits into eight duration-balanced shards. In a fork,
 [windows-check-fork.yml](../../.github/workflows/windows-check-fork.yml) runs `check:changed` on
 Windows for every push to `main`, because the push gate runs it only on the machine that pushes.
+`landing-turn.cjs land` waits for that run and exits 3 with its failures when it does not pass;
+`node .github/scripts/windows-check.cjs <commit>` waits for one commit's run.
 
 ### Unused code
 

@@ -1,10 +1,12 @@
 // The landing turn for origin's main. `node .github/scripts/landing-turn.cjs land` takes a lease on the remote
 // (refs/heads/landing-lease/main), rebases onto main, runs the checks once and pushes while it holds the lease; every
 // other lander waits. The pre-push hook (`verify`) refuses a push to main from anyone who does not hold it, so main
-// cannot move under the checked tree and one verification covers the landed tree.
+// cannot move under the checked tree and one verification covers the landed tree. After the push, `land` waits for the
+// landed commit's Windows check (windows-check.cjs) and exits 3 when it did not pass.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const { MERGE_DRIVER_CONFIG } = require("./release-notes.cjs");
+const { NOT_PASSED_EXIT, passed, windowsCheck } = require("./windows-check.cjs");
 
 const LEASE_REF = "refs/heads/landing-lease/main";
 const TURN_ENV = "T3_LANDING_TURN";
@@ -150,7 +152,7 @@ function land({ cwd, remote, check, branch = "main", runId = randomUUID(), ...re
   });
 }
 
-function main(argv) {
+async function main(argv) {
   const [command, ...rest] = argv;
   const cwd = process.cwd();
   if (command === "verify") {
@@ -175,8 +177,14 @@ function main(argv) {
           env: { ...process.env, [TURN_ENV]: turn },
         }).status === 0,
     });
-    console.log(JSON.stringify(result));
-    return result.status === "landed" ? 0 : 1;
+    if (result.status !== "landed") {
+      console.log(JSON.stringify(result));
+      return 1;
+    }
+    console.error(`Landed ${result.commit} on main. Waiting for its Windows check.`);
+    const windows = await windowsCheck({ cwd, remote: "origin", commit: result.commit });
+    console.log(JSON.stringify({ ...result, windows }));
+    return passed(windows) ? 0 : NOT_PASSED_EXIT;
   }
   if (command === "push") {
     // For a tree that was verified against main's current commit elsewhere (the upstream sync): the push is
@@ -193,12 +201,15 @@ function main(argv) {
 }
 
 if (require.main === module) {
-  try {
-    process.exitCode = main(process.argv.slice(2));
-  } catch (error) {
-    console.error(error.message);
-    process.exitCode = 1;
-  }
+  main(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error) => {
+      console.error(error.message);
+      process.exitCode = 1;
+    },
+  );
 }
 
 module.exports = { LEASE_REF, TURN_ENV, tryAcquire, release, acquire, withTurn, verifyPush, land };

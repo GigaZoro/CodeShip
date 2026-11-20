@@ -1,3 +1,8 @@
+## 2026-11-20 — Landing waits for its Windows check
+
+- Maintainers: `landing-turn.cjs land` now waits for the landed commit's `check:changed` run on Windows and exits 3 with its failing steps and test lines when it does not pass, so a Windows-only failure reaches the chat that landed it. `node .github/scripts/windows-check.cjs <commit>` waits for one commit's run, which the upstream sync uses after it lands.
+- The Windows check may run for 6 hours, so a large push that selects every test file finishes instead of failing at 1 hour with no failing test.
+
 ## 2026-11-19 — Windows Git driver checks
 
 - The Git driver tests use local repositories to check SSH errors, nested paths and submodule checkouts on Windows. Related tests run in separate files within the existing time budget.
