@@ -16,37 +16,40 @@ const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 // A wait polls the remote thousands of times, so a dropped connection is a poll to repeat. A remote that stays
 // unreachable this long is down, not dropping a connection, and ends the wait with its error.
 const REMOTE_OUTAGE_MS = 10 * 60 * 1000;
-const REMOTE_COMMANDS = new Set(["ls-remote", "fetch", "push"]);
-// A connection that stalls without dropping never fails by itself.
-const REMOTE_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+// A lease command moves a few bytes, so one running this long has stalled, and a stalled connection never fails
+// by itself. The push of main is not bounded: it may run long on a slow link.
+const LEASE_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
 
-/** A git command that talks to the remote failed: the connection, or the remote, may answer on the next try. */
+/** A lease command on the remote failed: the connection, or the remote, may answer on the next try. */
 class RemoteGitError extends Error {}
 
-function git(cwd, args, { env, config = [], allowFailure = false } = {}) {
+function git(cwd, args, { env, config = [], allowFailure = false, timeout } = {}) {
   const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
-  const remote = REMOTE_COMMANDS.has(args[0]);
   const result = spawnSync("git", ["-C", cwd, ...flags, ...args], {
     encoding: "utf8",
     env: { ...process.env, ...env },
     windowsHide: true,
-    timeout: remote ? REMOTE_COMMAND_TIMEOUT_MS : undefined,
+    timeout,
   });
   const timedOut = result.error?.code === "ETIMEDOUT";
   if (result.error && !timedOut) throw result.error;
   const ok = result.status === 0;
-  const stderr = timedOut
-    ? `timed out after ${REMOTE_COMMAND_TIMEOUT_MS / 1000} s`
-    : result.stderr.trim();
-  if (!ok && !allowFailure) {
-    const message = `git ${args[0]} failed: ${stderr}`;
-    throw remote ? new RemoteGitError(message) : new Error(message);
-  }
+  const stderr = timedOut ? `timed out after ${timeout / 1000} s` : result.stderr.trim();
+  if (!ok && !allowFailure) throw new Error(`git ${args[0]} failed: ${stderr}`);
   return { ok, stdout: result.stdout?.trim() ?? "", stderr };
 }
 
+/** Runs a git command that reads or moves the lease on the remote. */
+function leaseGit(cwd, args, { allowFailure = false } = {}) {
+  const result = git(cwd, args, { allowFailure: true, timeout: LEASE_COMMAND_TIMEOUT_MS });
+  if (!result.ok && !allowFailure) {
+    throw new RemoteGitError(`git ${args[0]} failed: ${result.stderr}`);
+  }
+  return result;
+}
+
 function listLease(cwd, remote, options) {
-  return git(cwd, ["ls-remote", "--refs", remote, LEASE_REF], options);
+  return leaseGit(cwd, ["ls-remote", "--refs", remote, LEASE_REF], options);
 }
 
 function leaseOf(listing) {
@@ -60,7 +63,7 @@ function remoteLease(cwd, remote) {
 /** The lease commit's holder, or null when its message is not a lease. Throws when the commit cannot be fetched. */
 function readHolder(cwd, remote, sha) {
   // A fetch that fails says nothing about the holder; reading it as no holder would take a live lease over.
-  git(cwd, ["fetch", "--quiet", "--no-tags", remote, sha]);
+  leaseGit(cwd, ["fetch", "--quiet", "--no-tags", remote, sha]);
   const message = git(cwd, ["show", "-s", "--format=%B", sha]).stdout;
   try {
     return JSON.parse(message.split("\n")[0]);
@@ -79,12 +82,10 @@ function tryAcquire({ cwd, remote, runId, now = () => Date.now() }) {
     // A push that reached the remote but lost its answer left this run's own lease.
     if (live && holder.run_id === runId) return held;
     if (live) return null;
-    git(
+    leaseGit(
       cwd,
       ["push", "--quiet", `--force-with-lease=${LEASE_REF}:${held}`, remote, `:${LEASE_REF}`],
-      {
-        allowFailure: true,
-      },
+      { allowFailure: true },
     );
   }
   const acquiredAt = now();
@@ -102,13 +103,14 @@ function tryAcquire({ cwd, remote, runId, now = () => Date.now() }) {
     },
   }).stdout;
   // A push that creates the ref is atomic: when two landers race, the remote takes one and refuses the other.
-  const pushed = git(cwd, ["push", "--quiet", remote, `${sha}:${LEASE_REF}`], {
+  const pushed = leaseGit(cwd, ["push", "--quiet", remote, `${sha}:${LEASE_REF}`], {
     allowFailure: true,
   });
   if (pushed.ok) return sha;
-  // Losing the race leaves another lander's lease; finding the ref as it was means the push itself failed.
+  // A push that lost only its answer leaves this lease, and one that lost the race another lander's; finding the
+  // ref as it was means the push itself failed.
   const after = remoteLease(cwd, remote);
-  if (after === sha) return sha;
+  if (after === sha) return now() < acquiredAt + LEASE_TTL_MS ? sha : null;
   if (after === held) throw new RemoteGitError(`git push failed: ${pushed.stderr}`);
   return null;
 }
@@ -120,7 +122,7 @@ function release(
 ) {
   const started = performance.now();
   for (;;) {
-    const deleted = git(
+    const deleted = leaseGit(
       cwd,
       ["push", "--quiet", `--force-with-lease=${LEASE_REF}:${sha}`, remote, `:${LEASE_REF}`],
       { allowFailure: true },
@@ -149,25 +151,28 @@ function acquire({
   pollMs = POLL_MS,
   maxOutageMs = REMOTE_OUTAGE_MS,
   sleep = sleepSync,
+  monotonicNow = () => performance.now(),
   ...options
 }) {
-  const started = performance.now();
-  let outage = null;
+  const started = monotonicNow();
+  let outageStarted = null;
   for (;;) {
+    const polled = monotonicNow();
     try {
       const sha = tryAcquire(options);
       if (sha) return sha;
-      outage = null;
+      outageStarted = null;
     } catch (error) {
       if (!(error instanceof RemoteGitError)) throw error;
-      if (!outage) console.error(`landing turn: ${error.message}; polling again.`);
-      outage = { started: outage?.started ?? performance.now(), error };
-      if (performance.now() - outage.started >= maxOutageMs) throw error;
+      if (outageStarted === null) {
+        console.error(`landing turn: ${error.message}; polling again.`);
+        outageStarted = polled;
+      }
+      if (monotonicNow() - outageStarted >= maxOutageMs) throw error;
     }
-    if (performance.now() - started >= maxWaitMs) {
-      throw (
-        outage?.error ?? new Error("landing turn: another lander still holds main's landing turn.")
-      );
+    // In an outage the outage limit decides: a poll whose push lost its answer left this run's lease to find.
+    if (outageStarted === null && monotonicNow() - started >= maxWaitMs) {
+      throw new Error("landing turn: another lander still holds main's landing turn.");
     }
     sleep(pollMs);
   }

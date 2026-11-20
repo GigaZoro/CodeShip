@@ -42,7 +42,7 @@ It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebase
 
 - A check that fails ends the landing with exit status 1 and the turn released: fix the cause, commit, and land again.
 - A rebase that conflicts stops the landing with the turn released: resolve it, then land again.
-- A dropped connection does not end the wait. A remote that stays unreachable, or refuses the push that takes the turn, for 10 minutes ends it with git's error: land again once origin answers.
+- A dropped connection does not end the wait. A remote that stays unreachable, or keeps refusing the push that takes the turn, for about 10 minutes ends the landing with git's error: wait for origin to answer, or fix the refusal git names, then land again.
 - Branch protection that refuses the push: stop and offer a PR instead.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
 

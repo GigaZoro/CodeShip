@@ -185,7 +185,7 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
   }
 });
 
-test("a lander rides out a dropped connection while it waits and releases, and never takes over a lease it could not read", () => {
+test("a lander rides out a dropped connection or a lost answer while it waits and releases, never takes over a lease it could not read, and stops at once on a local failure", () => {
   const { root, origin, git, clone } = setup();
   try {
     const holder = clone("holder");
@@ -231,6 +231,36 @@ test("a lander rides out a dropped connection while it waits and releases, and n
     release({ cwd: reader, remote: "origin", sleep: plugIn }, turn);
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
 
+    // Each push loses only its answer: the hook makes the push itself, then fails the one git asked for.
+    const hooks = path.join(root, "hooks");
+    fs.mkdirSync(hooks);
+    fs.writeFileSync(
+      path.join(hooks, "pre-push"),
+      [
+        "#!/bin/sh",
+        "while read -r _ sha ref _; do",
+        "  case $sha in *[!0]*) ;; *) sha= ;; esac",
+        '  git -c core.hooksPath=/dev/null push -qf "$2" "$sha:$ref"',
+        "done",
+        "exit 1",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    git(reader, "config", "core.hooksPath", hooks);
+    // A lease found after it expired is no turn: here the push took it 4 hours before the run looked.
+    const pushedAt = Date.parse("2026-01-01T00:00:00Z");
+    const clock = [pushedAt, pushedAt + 4 * 60 * 60 * 1000];
+    assert.equal(
+      tryAcquire({ cwd: reader, remote: "origin", runId: "expired", now: () => clock.shift() }),
+      null,
+    );
+    const lost = tryAcquire({ cwd: reader, remote: "origin", runId: "lost" });
+    assert.equal(git(origin, "rev-parse", "refs/heads/landing-lease/main"), lost);
+    release({ cwd: reader, remote: "origin" }, lost);
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+    git(reader, "config", "--unset", "core.hooksPath");
+
     git(reader, "remote", "set-url", "--push", "origin", gone);
     assert.throws(
       () =>
@@ -244,18 +274,46 @@ test("a lander rides out a dropped connection while it waits and releases, and n
       /push failed/,
     );
 
+    // An outage counts from the first failed poll, and outlasts the wait it started in.
     unplug();
+    let elapsed = 0;
     assert.throws(
       () =>
         acquire({
           cwd: reader,
           remote: "origin",
           runId: "reader",
-          maxOutageMs: 0,
-          sleep: () => assert.fail("kept waiting on a remote that stayed down"),
+          pollMs: 1000,
+          maxOutageMs: 3000,
+          maxWaitMs: 0,
+          monotonicNow: () => elapsed,
+          sleep: (ms) => {
+            elapsed += ms;
+            if (elapsed > 3000) assert.fail("kept waiting on a remote that stayed down");
+          },
         }),
       /ls-remote failed/,
     );
+    assert.equal(elapsed, 3000);
+
+    // A failure that is not the remote's ends the wait at once: outside a repository, commit-tree fails.
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(outside);
+    process.env.GIT_CEILING_DIRECTORIES = root;
+    try {
+      assert.throws(
+        () =>
+          acquire({
+            cwd: outside,
+            remote: origin,
+            runId: "outside",
+            sleep: () => assert.fail("polled again after a local failure"),
+          }),
+        /commit-tree failed/,
+      );
+    } finally {
+      delete process.env.GIT_CEILING_DIRECTORIES;
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
