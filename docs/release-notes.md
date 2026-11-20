@@ -1,3 +1,7 @@
+## 2026-11-20 — A thread opened as a reply streams in stays at the end
+
+- Opening a running thread just as a new reply arrives no longer jumps the timeline to the top and stops following new replies, on web, desktop, mobile and the guest page.
+
 ## 2026-11-20 — Chats stopped by a rejected login continue once the account works
 
 - A chat that stopped because its account's login was rejected continues on the same account once that account reads signed in again (after a sign-in, another chat's answer on it, or a restart), when **Resume when the limit resets** is on, including when the login was only unreadable for a moment. It sends the message again when the agent did no work and asks it to continue otherwise. **Resume** in an empty composer now also continues such a chat by hand once its agent had started working.
