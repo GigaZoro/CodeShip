@@ -102,6 +102,11 @@ could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
 
+The native backend sends update commands over the telemetry control descriptor. For a primary
+backend in WSL, Electron polls authenticated HTTP for the oldest unacknowledged command and
+acknowledges it after handing it to the same command handler. A cancellation supersedes queued
+commands for its own request ID. Commands for other requests retain their order.
+
 ## Automatic installs
 
 The same [automatic update service](../../apps/server/src/cloud/autoUpdate.ts) runs in the
@@ -122,8 +127,11 @@ The service waits up to two hours for a restart hold with no running turns or wo
 three more hours while existing chats finish. After that, the wait follows **Update when it
 finishes** and waits only for the listed background work and tool calls, for at most one hour so
 work that never ends cannot hold every later day. The log names the threads that may be cut;
-they resume according to the server's restart-continuation setting. A fixed-time scheduled start held during the drain is recorded in
-`scheduled_task_drain_holds` so it can start after the restart, even outside its missed-run grace.
+they resume according to the server's restart-continuation setting. Timed and webhook runs share
+the drain admission check: accepted webhook deliveries stay in the persisted dispatch queue, and
+manual task starts remain available. A fixed-time occurrence held during the drain is recorded in
+`scheduled_task_drain_holds`. When the drain ends or the server restarts, it runs once if its
+scheduled time is closer than the next regular occurrence, regardless of its catch-up setting.
 
 The final check runs after preparation. It reads the setting and managed policy again, and
 checks that the restart hold is still empty if the wait ended before the cut phase. When a chat

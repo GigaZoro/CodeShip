@@ -172,8 +172,10 @@ A fixed-time task whose time passed while its machine was off or asleep runs
 once when the machine is back, if that is nearer the missed time than the next
 run. **Catch up a missed run** in the task's editor turns this off or on; it
 starts on for every fixed-time task, daily, weekly, or on chosen weekdays. A
-time that passes while an automatic update holds scheduled starts is not
-missed. The task runs after the update. Use **Automatic update time** under
+fixed-time occurrence held during an automatic update runs once when the drain ends or the
+machine restarts if its scheduled time is closer than the next regular occurrence. The
+catch-up switch does not affect update holds. Accepted webhooks stay queued through the drain.
+Use **Automatic update time** under
 **Settings → Maintenance & about → Updates** to set when each machine checks
 which releases are due. **Run history** in a task's menu lists each time it
 fired: runs that started a thread, runs that failed before one existed, and

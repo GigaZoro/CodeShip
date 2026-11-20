@@ -8,17 +8,73 @@ import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as FileSystem from "effect/FileSystem";
 import * as Logger from "effect/Logger";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { describe, expect } from "vite-plus/test";
 
+import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
+  make,
   makeApplyDesktopShellEnvironmentSnapshot,
   requireDesktopTelemetryWriteProgress,
 } from "./DesktopTelemetryReceiver.ts";
 
 describe("DesktopTelemetryReceiver", () => {
+  it.effect("delivers an earlier WSL commit before a later request", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const receiver = yield* make().pipe(
+        Effect.provideService(ServerConfig.ServerConfig, {
+          ...config,
+          mode: "desktop",
+          desktopUpdateHttpControl: true,
+        }),
+      );
+
+      yield* receiver.commitDesktopUpdate("first");
+      yield* receiver.requestDesktopUpdate("second");
+
+      const commit = yield* receiver.nextDesktopUpdateCommand;
+      expect(commit).toMatchObject({
+        type: "commitDesktopUpdate",
+        requestId: "first",
+      });
+      expect(yield* receiver.nextDesktopUpdateCommand).toEqual(commit);
+      yield* receiver.acknowledgeDesktopUpdateCommand({
+        version: 1,
+        type: "desktopUpdateControlAcknowledgement",
+        requestId: commit.requestId,
+        command: commit.type,
+      });
+      expect(yield* receiver.nextDesktopUpdateCommand).toMatchObject({
+        type: "requestDesktopUpdate",
+        requestId: "second",
+      });
+      yield* receiver.cancelDesktopUpdate("second");
+      yield* receiver.requestDesktopUpdate("third");
+      yield* receiver.acknowledgeDesktopUpdateCommand({
+        version: 1,
+        type: "desktopUpdateControlAcknowledgement",
+        requestId: "second",
+        command: "requestDesktopUpdate",
+      });
+      expect(yield* receiver.nextDesktopUpdateCommand).toMatchObject({
+        type: "cancelDesktopUpdate",
+        requestId: "second",
+      });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), process.cwd()),
+          ServerSettings.layerTest(),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+
   it.live(
     "preserves system and bundled roots when the first snapshot withdraws overlapping extras",
     () =>

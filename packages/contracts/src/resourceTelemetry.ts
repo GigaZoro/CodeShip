@@ -400,6 +400,26 @@ export const DesktopTelemetryCancelDesktopUpdate = Schema.Struct({
 });
 export type DesktopTelemetryCancelDesktopUpdate = typeof DesktopTelemetryCancelDesktopUpdate.Type;
 
+export const DesktopUpdateControlCommand = Schema.Union([
+  DesktopTelemetryRequestDesktopUpdate,
+  DesktopTelemetryCommitDesktopUpdate,
+  DesktopTelemetryCancelDesktopUpdate,
+]);
+export type DesktopUpdateControlCommand = typeof DesktopUpdateControlCommand.Type;
+
+const DesktopUpdateControlAcknowledgement = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("desktopUpdateControlAcknowledgement"),
+  requestId: TrimmedNonEmptyString,
+  command: Schema.Literals(["requestDesktopUpdate", "commitDesktopUpdate", "cancelDesktopUpdate"]),
+});
+export type DesktopUpdateControlAcknowledgement = typeof DesktopUpdateControlAcknowledgement.Type;
+
+export const DesktopUpdateControlPost = Schema.Union([
+  DesktopUpdateStatusReport,
+  DesktopUpdateControlAcknowledgement,
+]);
+
 export const DesktopTelemetryControlMessage = Schema.Union([
   DesktopTelemetrySetDiagnosticsDemand,
   DesktopTelemetrySetHostPowerIntervals,

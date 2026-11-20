@@ -3,7 +3,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   DESKTOP_UPDATE_CONTROL_PATH,
-  DesktopUpdateStatusReport,
+  DesktopUpdateControlPost,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import { isValidDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
@@ -356,7 +356,7 @@ export const layerDesktopUpdateControlRoutes = Layer.merge(
         return HttpServerResponse.empty({ status: 404 });
       }
       const receiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
-      const command = yield* receiver.takeDesktopUpdateCommand.pipe(
+      const command = yield* receiver.nextDesktopUpdateCommand.pipe(
         Effect.timeoutOption("20 seconds"),
       );
       return yield* HttpServerResponse.json(Option.getOrNull(command), {
@@ -372,8 +372,12 @@ export const layerDesktopUpdateControlRoutes = Layer.merge(
         return HttpServerResponse.empty({ status: 404 });
       }
       const receiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
-      const report = yield* HttpServerRequest.schemaBodyJson(DesktopUpdateStatusReport);
-      yield* receiver.receiveDesktopUpdateReport(report);
+      const message = yield* HttpServerRequest.schemaBodyJson(DesktopUpdateControlPost);
+      if (message.type === "desktopUpdateControlAcknowledgement") {
+        yield* receiver.acknowledgeDesktopUpdateCommand(message);
+      } else {
+        yield* receiver.receiveDesktopUpdateReport(message);
+      }
       return HttpServerResponse.empty({ status: 204 });
     }),
   ),

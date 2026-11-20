@@ -91,9 +91,11 @@ setting across machines.
 The machine first gives chats two hours to finish, then holds new scheduled starts and gives
 running chats another three hours. After that it waits up to one more hour for background work
 and running tool calls, then installs. A chat that starts while the release downloads does not
-restart these waits. Scheduled starts stay held while the release downloads and until the
-restart; they run after it. Turn automatic updates off to cancel the wait, or use the manual
-update controls to install at any time.
+restart these waits. Scheduled starts and accepted webhooks stay held while the release downloads
+and until the restart, and run after it (or when the wait ends without an install). A held
+fixed-time occurrence runs once if its scheduled time is closer than the next regular occurrence,
+even with **Catch up a missed run** off. You can still run tasks manually. Turn automatic updates
+off to cancel the wait, or use the manual update controls to install at any time.
 
 Chats the update interrupted resume after the restart according to **Continue threads after
 restarts**, which is on by default. On desktop, the app installs even when its window is closed

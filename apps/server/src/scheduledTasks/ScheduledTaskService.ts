@@ -1103,8 +1103,6 @@ export const layer = Layer.effect(
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
       new Map(),
     );
-    // Include creation time so late deliveries cannot decrement a recreated task's count.
-    const webhookQueued = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
     const webhookRateWindows = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RateWindow>>(new Map());
     const webhookRejectedRateWindows = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RateWindow>>(
       new Map(),
@@ -2519,12 +2517,51 @@ export const layer = Layer.effect(
         },
       );
 
+    const holdForUpdate = Effect.fn("ScheduledTaskService.holdForUpdate")(function* (
+      tasks: ReadonlyArray<ScheduledTask>,
+      now: DateTime.DateTime,
+      admitted = false,
+    ) {
+      yield* Effect.forEach(
+        tasks,
+        (task) => {
+          if (task.schedule.type !== "fixed_time" || task.nextRunAt === null) return Effect.void;
+          // A one-machine turn can leave next_run_at short of the next time, which then comes due.
+          const latest = latestMissedFixedTimeRun(task.schedule, now)?.at;
+          const heldAt = DateTime.makeUnsafe(
+            Math.max(
+              Date.parse(task.nextRunAt),
+              latest === undefined ? -Infinity : DateTime.toEpochMillis(latest),
+            ),
+          );
+          if (!admitted && isMissedFixedTimeRun(task.schedule, heldAt, now)) return Effect.void;
+          return sql`
+            INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
+            VALUES (${task.id}, ${iso(heldAt)}, ${task.nextRunAt})
+            ON CONFLICT (task_id) DO UPDATE SET
+              held_at = excluded.held_at,
+              next_run_at = excluded.next_run_at
+            WHERE held_at <> excluded.held_at OR next_run_at <> excluded.next_run_at
+          `.pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not hold the schedule task run for an update.", {
+                taskId: task.id,
+                cause,
+              }),
+            ),
+          );
+        },
+        { discard: true },
+      );
+    });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
       webhook?: {
         readonly deliveryId: string;
         readonly prompt: string;
+        readonly immediate: boolean;
         readonly dispatched: Ref.Ref<boolean>;
       },
       fire?: ScheduledFire,
@@ -2585,6 +2622,38 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
+        // A webhook prompt was rendered from the row when the request arrived. A prompt file is
+        // read for each run, and a failed read fails the run: it never runs an earlier read's text.
+        const readPrompt: Effect.Effect<
+          Result.Result<string, PromptFileReader.PromptFileReadError | ScheduledTaskError>
+        > =
+          webhook !== undefined
+            ? Effect.succeed(Result.succeed(webhook.prompt))
+            : active.promptFile == null
+              ? Effect.succeed(Result.succeed(active.prompt))
+              : Effect.result(
+                  (trigger === "scheduled"
+                    ? readScheduledPromptFile(active, active.promptFile.path)
+                    : readRunPromptFile(active, active.promptFile.path)
+                  ).pipe(Effect.map((read) => read.text)),
+                );
+        const holdAutomaticStart = Effect.gen(function* () {
+          if (trigger === "manual" || !(yield* isUpdateDraining())) return false;
+          if (trigger === "scheduled") yield* holdForUpdate([active], startedAt, true);
+          return true;
+        });
+        const held = { task: active, threadId: null, dispatchFailed: false, held: true } as const;
+        if (yield* holdAutomaticStart) return held;
+        const selectTarget = Effect.gen(function* () {
+          return active.threadId === null
+            ? { type: "launch" as const, ...(yield* launchSelectionFor(active)) }
+            : { type: "bound" as const, threadId: ThreadId.make(active.threadId) };
+        });
+        // A prompt fetch or account lookup can outlast the initial admission check.
+        const prefetched =
+          trigger === "scheduled" && active.promptFile != null ? yield* readPrompt : undefined;
+        const automaticTarget = trigger === "manual" ? undefined : yield* selectTarget;
+        if (automaticTarget !== undefined && (yield* holdAutomaticStart)) return held;
         const scheduledFor =
           trigger === "scheduled" ? (fire?.scheduledFor ?? active.nextRunAt) : null;
         const started = {
@@ -2602,8 +2671,12 @@ export const layer = Layer.effect(
                 .withTransaction(
                   Effect.gen(function* () {
                     yield* markRunning(started);
-                    // Recovery must distinguish this delivery from other windows waiting on the same task.
-                    yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
+                    if (webhook.immediate) {
+                      yield* sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = ${webhook.deliveryId}`;
+                    } else {
+                      // Recovery must distinguish this delivery from other windows waiting on the same task.
+                      yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
+                    }
                   }),
                 )
                 .pipe(
@@ -2701,24 +2774,8 @@ export const layer = Layer.effect(
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = promptMessageId(fireKey);
-        // A webhook prompt was rendered from the row when the request arrived. A prompt file is
-        // read for each run, and a failed read fails the run: it never runs an earlier read's text.
-        const read: Result.Result<
-          string,
-          PromptFileReader.PromptFileReadError | ScheduledTaskError
-        > =
-          webhook !== undefined
-            ? Result.succeed(webhook.prompt)
-            : active.promptFile == null
-              ? Result.succeed(active.prompt)
-              : yield* Effect.result(
-                  (trigger === "scheduled"
-                    ? readScheduledPromptFile(active, active.promptFile.path)
-                    : readRunPromptFile(active, active.promptFile.path)
-                  ).pipe(Effect.map((read) => read.text)),
-                );
-        // A scheduled read can wait minutes for the network while the run already shows as
-        // started, so memory that went short meanwhile fails the run, naming the reading.
+        const read = prefetched ?? (yield* readPrompt);
+        // A scheduled read can wait minutes for the network, so check memory again afterwards.
         const shortAfterRead =
           trigger === "scheduled" && active.promptFile != null && Result.isSuccess(read)
             ? yield* memoryAdmission.shortage
@@ -2775,10 +2832,7 @@ export const layer = Layer.effect(
               }),
             );
 
-        const target =
-          active.threadId === null
-            ? { type: "launch" as const, ...(yield* launchSelectionFor(active)) }
-            : { type: "bound" as const, threadId: ThreadId.make(active.threadId) };
+        const target = automaticTarget ?? (yield* selectTarget);
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result = Result.isFailure(prompt)
           ? Exit.fail(prompt.failure)
@@ -4480,43 +4534,6 @@ export const layer = Layer.effect(
         missedRunAt: missedAt,
       });
       yield* runDueOccurrence({ ...task, nextRunAt: missedAt, usageHold }, now, true);
-    });
-
-    const holdForUpdate = Effect.fn("ScheduledTaskService.holdForUpdate")(function* (
-      tasks: ReadonlyArray<ScheduledTask>,
-      now: DateTime.DateTime,
-    ) {
-      yield* Effect.forEach(
-        tasks,
-        (task) => {
-          if (task.schedule.type !== "fixed_time" || task.nextRunAt === null) return Effect.void;
-          // A one-machine turn can leave next_run_at short of the next time, which then comes due.
-          const latest = latestMissedFixedTimeRun(task.schedule, now)?.at;
-          const heldAt = DateTime.makeUnsafe(
-            Math.max(
-              Date.parse(task.nextRunAt),
-              latest === undefined ? -Infinity : DateTime.toEpochMillis(latest),
-            ),
-          );
-          if (isMissedFixedTimeRun(task.schedule, heldAt, now)) return Effect.void;
-          return sql`
-            INSERT INTO scheduled_task_drain_holds (task_id, held_at, next_run_at)
-            VALUES (${task.id}, ${iso(heldAt)}, ${task.nextRunAt})
-            ON CONFLICT (task_id) DO UPDATE SET
-              held_at = excluded.held_at,
-              next_run_at = excluded.next_run_at
-            WHERE held_at <> excluded.held_at OR next_run_at <> excluded.next_run_at
-          `.pipe(
-            Effect.mapError((cause) =>
-              taskError("Could not hold the schedule task run for an update.", {
-                taskId: task.id,
-                cause,
-              }),
-            ),
-          );
-        },
-        { discard: true },
-      );
     });
 
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
@@ -6551,30 +6568,40 @@ export const layer = Layer.effect(
       task: ScheduledTask,
       deliveryId: string,
       prompt: string,
+      immediate: boolean,
     ) {
+      const removeImmediate = immediate
+        ? sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = ${deliveryId}`.pipe(
+            Effect.mapError(dedupeError),
+          )
+        : Effect.void;
       const runOutcome = (outcome: "started" | "skipped" | "failed") =>
         Effect.all([
           Effect.annotateCurrentSpan({ "scheduled_task.webhook.run_outcome": outcome }),
           Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
         ]);
       const dispatched = yield* Ref.make(false);
-      return yield* runTask(task, "webhook", { deliveryId, prompt, dispatched }).pipe(
-        Effect.flatMap(({ dispatchFailed }) =>
-          dispatchFailed
-            ? runOutcome("failed").pipe(
-                Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
-                Effect.andThen(releaseFailedDelivery(deliveryId)),
-              )
-            : runOutcome("started"),
+      return yield* runTask(task, "webhook", { deliveryId, prompt, immediate, dispatched }).pipe(
+        Effect.flatMap((result) =>
+          "held" in result
+            ? Effect.succeed(false)
+            : (result.dispatchFailed
+                ? runOutcome("failed").pipe(
+                    Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
+                    Effect.andThen(releaseFailedDelivery(deliveryId)),
+                  )
+                : runOutcome("started")
+              ).pipe(Effect.as(true)),
         ),
         Effect.catchTags({
           WebhookDeliverySkipped: (skipped) =>
             runOutcome("skipped").pipe(
               Effect.andThen(markDeliveryFailed(deliveryId, skipped.reason)),
+              Effect.andThen(removeImmediate),
               Effect.andThen(releaseFailedDelivery(deliveryId)),
+              Effect.as(true),
             ),
         }),
-        Effect.as(true),
         // Dispatch success owns the replay key even if later bookkeeping fails.
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
@@ -6600,6 +6627,7 @@ export const layer = Layer.effect(
                   }),
                 )
                 .pipe(Effect.mapError(dedupeError));
+              yield* removeImmediate;
               yield* releaseFailedDelivery(deliveryId);
             }
             // Pending windows retry the same command id to finish bookkeeping.
@@ -6851,16 +6879,22 @@ export const layer = Layer.effect(
           const reserve = takeRateSlot(task.id, DateTime.toEpochMillis(now)).pipe(
             Effect.flatMap((slot) => (slot === "allowed" ? Effect.void : Effect.fail(slot))),
           );
-          const queueKey = `${task.id}\u0000${task.createdAt}`;
           const checkCapacity = Effect.gen(function* () {
             const [row] = yield* sql<{
               count: number;
-            }>`SELECT COUNT(*) AS count FROM scheduled_task_webhook_pending
-              WHERE task_id = ${task.id} AND state IN ('pending', 'dispatching', 'running')`;
-            if (
-              (row?.count ?? 0) + ((yield* Ref.get(webhookQueued)).get(queueKey) ?? 0) >=
-              WEBHOOK_MAX_QUEUED_PER_TASK
-            )
+            }>`SELECT (
+                SELECT COUNT(*) FROM scheduled_task_webhook_pending
+                WHERE task_id = ${task.id} AND state IN ('pending', 'dispatching', 'running')
+              ) + EXISTS (
+                SELECT 1 FROM scheduled_tasks t
+                WHERE t.task_id = ${task.id} AND t.last_run_status = 'running'
+                  AND t.last_run_webhook_delivery_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM scheduled_task_webhook_pending p
+                    WHERE p.delivery_id = t.last_run_webhook_delivery_id AND p.state = 'running'
+                  )
+              ) AS count`;
+            if ((row?.count ?? 0) >= WEBHOOK_MAX_QUEUED_PER_TASK)
               return yield* Effect.fail("queue_full" as const);
           }).pipe(
             Effect.mapError((cause) => (cause === "queue_full" ? cause : dedupeError(cause))),
@@ -6949,30 +6983,7 @@ export const layer = Layer.effect(
               outcome: "prompt_too_long" as const,
             });
           }
-          // Bound the deliveries one task holds, so steady traffic to a stuck
-          // task cannot pile up parked fibers.
           yield* refundRejectionSlot;
-          let queueReserved = false;
-          const release = Effect.suspend(() => {
-            if (!queueReserved) return Effect.void;
-            queueReserved = false;
-            return Ref.update(webhookQueued, (counts) => {
-              const next = new Map(counts);
-              const count = (next.get(queueKey) ?? 1) - 1;
-              if (count <= 0) next.delete(queueKey);
-              else next.set(queueKey, count);
-              return next;
-            });
-          });
-          // Serialize immediate reservations with persisted window admission.
-          const reserveImmediate = Effect.gen(function* () {
-            yield* checkCapacity;
-            yield* reserve;
-            yield* Ref.update(webhookQueued, (counts) =>
-              new Map(counts).set(queueKey, (counts.get(queueKey) ?? 0) + 1),
-            );
-            queueReserved = true;
-          });
           const admitted = yield* admit(
             Effect.gen(function* () {
               const outcome = yield* acceptImmediateWebhookDedupe(
@@ -6980,7 +6991,8 @@ export const layer = Layer.effect(
                 request,
                 deliveryId,
                 DateTime.toEpochMillis(now),
-                reserveImmediate,
+                rendered.prompt,
+                checkCapacity.pipe(Effect.andThen(reserve)),
               ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
               if (outcome === "duplicate") {
                 if (yield* takeDedupeLogSlot(task.id, DateTime.toEpochMillis(now)))
@@ -6993,9 +7005,8 @@ export const layer = Layer.effect(
                 });
               return outcome;
             }),
-          ).pipe(Effect.onError(() => release));
+          );
           if (typeof admitted !== "string") {
-            yield* release;
             if (admitted.log) yield* log("rate_limited");
             yield* observe(admitted.outcome);
             return yield* releaseClaim({
@@ -7004,7 +7015,6 @@ export const layer = Layer.effect(
             } as const);
           }
           if (admitted === "duplicate") {
-            yield* release;
             yield* observe("duplicate");
             return yield* releaseClaim({
               _tag: "accepted",
@@ -7013,14 +7023,23 @@ export const layer = Layer.effect(
             } as const);
           }
           yield* observe("accepted");
+          // The persisted delivery owns the replay claim before a worker can start it.
+          claimAcquired = false;
           const permit = yield* webhookPermit(task.id);
-          yield* runWebhookDelivery(task, deliveryId, rendered.prompt).pipe(
+          yield* Effect.gen(function* () {
+            if (yield* isUpdateDraining()) return;
+            const pending = yield* sql`SELECT 1 FROM scheduled_task_webhook_pending
+              WHERE delivery_id = ${deliveryId}`.pipe(NodeSqliteClient.readOnly);
+            if (pending.length > 0) {
+              yield* runWebhookDelivery(task, deliveryId, rendered.prompt, true);
+            }
+          }).pipe(
             permit.withPermits(1),
-            Effect.ensuring(release),
+            Effect.catch((cause) =>
+              Effect.logWarning("Immediate webhook dispatch failed", { taskId: task.id, cause }),
+            ),
             Effect.forkIn(serviceScope),
           );
-          // Dispatch owns the accepted delivery now; retries must keep its claim.
-          claimAcquired = false;
           return { _tag: "accepted" as const, deliveryId, outcome: "accepted" as const };
         }).pipe(
           Effect.onError(() =>
@@ -7038,7 +7057,7 @@ export const layer = Layer.effect(
 
     const dispatchPending = Effect.fn("ScheduledTaskService.dispatchPendingWebhooks")(function* () {
       const now = DateTime.toEpochMillis(yield* localNow);
-      if (yield* pendingWebhooks.isIdle(now)) return;
+      if ((yield* isUpdateDraining()) || (yield* pendingWebhooks.isIdle(now))) return;
       const readVersion = yield* pendingWebhooks.version;
       yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}`;
       const tasks = yield* sql<{ task_id: ScheduledTaskId }>`
@@ -7057,7 +7076,7 @@ export const layer = Layer.effect(
           // One worker per task waits on its permit, then drains persisted rows in order.
           // Other tasks remain independent and ticks never reload an active task's payloads.
           const dispatch = Effect.gen(function* () {
-            while (true) {
+            while (!(yield* isUpdateDraining())) {
               const [entry] = yield* sql<{
                 delivery_id: string;
                 task_json: string;
@@ -7080,8 +7099,10 @@ export const layer = Layer.effect(
               const prepared = yield* Effect.gen(function* () {
                 const task = yield* decodePendingTask(entry.task_json);
                 const request = yield* decodePendingRequest(entry.request_json);
+                if ("prompt" in request) return { task, prompt: request.prompt };
                 const frameId = Buffer.from(yield* crypto.randomBytes(6)).toString("hex");
-                return { task, rendered: renderWebhookPrompt(task.prompt, request, frameId) };
+                const rendered = renderWebhookPrompt(task.prompt, request, frameId);
+                return { task, prompt: rendered.prompt, rendered };
               }).pipe(Effect.exit);
               if (Exit.isFailure(prepared)) {
                 if (Cause.hasInterruptsOnly(prepared.cause))
@@ -7094,13 +7115,23 @@ export const layer = Layer.effect(
                 yield* remove;
                 continue;
               }
-              const { task, rendered } = prepared.value;
-              if (rendered.prompt.trim().length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+              const { task, prompt, rendered } = prepared.value;
+              if (prompt.trim().length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
                 yield* markDeliveryFailed(entry.delivery_id, PROMPT_TOO_LONG);
                 yield* releaseFailedDelivery(entry.delivery_id);
               } else {
-                yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${rendered.prompt.slice(0, WEBHOOK_DELIVERY_LOG_PROMPT_LIMIT)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
-                if (!(yield* runWebhookDelivery(task, entry.delivery_id, rendered.prompt))) return;
+                if (rendered !== undefined)
+                  yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${rendered.prompt.slice(0, WEBHOOK_DELIVERY_LOG_PROMPT_LIMIT)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
+                if (
+                  !(yield* runWebhookDelivery(
+                    task,
+                    entry.delivery_id,
+                    prompt,
+                    rendered === undefined,
+                  ))
+                )
+                  return;
+                if (rendered === undefined) continue;
               }
               yield* remove;
             }

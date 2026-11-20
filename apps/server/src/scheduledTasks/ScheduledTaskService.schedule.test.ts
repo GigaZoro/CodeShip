@@ -296,6 +296,7 @@ it.effect(
 
 it.effect.each([
   { drain: "90 minutes", launches: 1, run: { outcome: "succeeded" } },
+  { drain: "6 hours", launches: 1, run: { outcome: "succeeded" } },
   { drain: "14 hours", launches: 0, run: { outcome: "skipped", skipReason: "next_run_sooner" } },
 ] as const)(
   "never counts a fixed-time run an update's drain held for $drain as missed",

@@ -1,6 +1,7 @@
 import {
   DESKTOP_UPDATE_CONTROL_PATH,
-  DesktopTelemetryControlMessage,
+  DesktopUpdateControlCommand,
+  type DesktopUpdateControlAcknowledgement,
   type DesktopUpdateStatusReport,
 } from "@t3tools/contracts";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
@@ -28,25 +29,38 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
     return { url: new URL(DESKTOP_UPDATE_CONTROL_PATH, config.value.httpBaseUrl), token };
   });
 
+  const post = (
+    target: { readonly url: URL; readonly token: string },
+    message: DesktopUpdateStatusReport | DesktopUpdateControlAcknowledgement,
+  ) =>
+    HttpClientRequest.post(target.url).pipe(
+      HttpClientRequest.bearerToken(target.token),
+      HttpClientRequest.bodyJson(message),
+      Effect.flatMap(client.execute),
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.timeout("10 seconds"),
+    );
+
   const sendReport = Effect.fn("DesktopUpdateHttpControl.sendReport")(function* (
     report: DesktopUpdateStatusReport,
   ) {
     const target = yield* endpoint;
     if (target === null) return;
-    yield* HttpClientRequest.post(target.url).pipe(
-      HttpClientRequest.bearerToken(target.token),
-      HttpClientRequest.bodyJson(report),
-      Effect.flatMap(client.execute),
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.timeout("10 seconds"),
+    yield* post(target, report).pipe(
       Effect.catch((error) =>
         Effect.logDebug("Could not report the WSL desktop update.", { error }),
       ),
     );
   });
+  let acknowledgement: DesktopUpdateControlAcknowledgement | undefined;
   const readCommands = Effect.gen(function* () {
     const target = yield* endpoint;
     if (target === null) return yield* Effect.sleep("5 seconds");
+    // If the acknowledgement response is lost, resubmit it before accepting another command.
+    if (acknowledgement !== undefined) {
+      yield* post(target, acknowledgement);
+      acknowledgement = undefined;
+    }
     const latest = yield* publisher.latestUpdateReport;
     if (Option.isSome(latest)) yield* sendReport(latest.value);
     const command = yield* client
@@ -54,11 +68,19 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
       .pipe(
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.flatMap(
-          HttpClientResponse.schemaBodyJson(Schema.NullOr(DesktopTelemetryControlMessage)),
+          HttpClientResponse.schemaBodyJson(Schema.NullOr(DesktopUpdateControlCommand)),
         ),
         Effect.timeout("30 seconds"),
       );
-    if (command !== null) yield* publisher.handleControlForSource(backend.id, command);
+    if (command !== null) {
+      yield* publisher.handleControlForSource(backend.id, command);
+      acknowledgement = {
+        version: 1,
+        type: "desktopUpdateControlAcknowledgement",
+        requestId: command.requestId,
+        command: command.type,
+      };
+    }
   }).pipe(
     Effect.catch((error) =>
       Effect.logDebug("Could not receive WSL desktop update commands.", { error }).pipe(

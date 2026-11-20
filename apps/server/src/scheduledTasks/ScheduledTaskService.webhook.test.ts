@@ -28,6 +28,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import { UpdateDrain, whileDraining } from "../cloud/updateDrain.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -129,6 +130,57 @@ const waitForSpan = <A, E, R>(work: Effect.Effect<A, E, R>, name: string) =>
 
 const drainPendingDispatch = (workers: Map<string, Effect.Effect<void>>) =>
   waitForSpan(workers.get("webhook-coalescing")!, "ScheduledTaskService.dispatchPendingWebhook");
+
+it.effect("persists immediate and coalesced webhooks across a draining restart", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const workers = new Map<string, Effect.Effect<void>>();
+    yield* withService(
+      ({ service, launches }) =>
+        whileDraining(
+          Effect.gen(function* () {
+            const immediate = (yield* service.upsert(
+              yield* webhookTaskInput(),
+              ScheduledTaskService.CHANGED_IN_APP,
+            )).task;
+            const coalesced = (yield* service.upsert(
+              yield* webhookTaskInput({
+                id: "scheduled-task:coalesced",
+                schedule: {
+                  type: "webhook",
+                  dedupe: { coalesceKey: "{{body.pull_request.url}}", coalesceWindowSeconds: 10 },
+                },
+              }),
+              ScheduledTaskService.CHANGED_IN_APP,
+            )).task;
+            assert.include(yield* service.triggerWebhook(requestFor(immediate)), {
+              outcome: "accepted",
+            });
+            assert.include(yield* service.triggerWebhook(requestFor(coalesced)), {
+              outcome: "accepted",
+            });
+            yield* TestClock.adjust("10 seconds");
+            yield* workers.get("webhook-coalescing")!;
+            assert.equal(yield* Queue.size(launches), 0);
+            assert.lengthOf(yield* sql`SELECT 1 FROM scheduled_task_webhook_pending`, 2);
+          }),
+        ),
+      { sql, workers },
+    ).pipe(Effect.provideService(UpdateDrain, Ref.makeUnsafe(false)));
+
+    const restartedWorkers = new Map<string, Effect.Effect<void>>();
+    yield* withService(
+      ({ launches }) =>
+        Effect.gen(function* () {
+          yield* restartedWorkers.get("webhook-coalescing")!;
+          const first = yield* Queue.take(launches);
+          const second = yield* Queue.take(launches);
+          assert.notEqual(first.commandId, second.commandId);
+        }),
+      { sql, workers: restartedWorkers },
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
 
 type LaunchInput = ThreadLaunchService.ThreadLaunchInput;
 
