@@ -67,6 +67,8 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CommandRunner from "./CommandRunner.ts";
 
+vi.mock("node:os", { spy: true });
+
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.4" };
@@ -237,13 +239,14 @@ const commandRow = (taskId: string) =>
       readonly process_started_at: number | null;
       readonly started_at: string;
       readonly delivered_at: string | null;
+      readonly reported_at: string | null;
       readonly last_alive_at: string | null;
       readonly probe_error: string | null;
       readonly lost_reason: string | null;
       readonly lost_output: string | null;
     }>`
       SELECT status, exit_code, pid, process_started_at, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
-        lost_output
+        lost_output, reported_at
       FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
@@ -1720,6 +1723,11 @@ const windowsFixture = Effect.gen(function* () {
         return processOutput(`${pid} ${identity}`);
       }) as Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError>,
   };
+  const bootedAt = fixture.now - 86_400_000;
+  const uptime = vi
+    .spyOn(NodeOS, "uptime")
+    .mockImplementation(() => (fixture.now - bootedAt) / 1_000);
+  yield* Effect.addFinalizer(() => Effect.sync(() => uptime.mockRestore()));
   const originalKill = process.kill.bind(process);
   const spy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
     if (pid < 0 && processes.has(-pid)) {
@@ -2461,6 +2469,51 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         );
         assert.isFalse(fixture.groups.has(2147483000));
         assert.deepEqual(fixture.groupSignals, []);
+      }),
+  );
+
+  it.effect.each(["running", "timed_out"] as const)(
+    "retires a legacy POSIX launch with no ownership evidence at its deadline, %s",
+    (status) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`legacy-posix-unowned-${status}`);
+        const fixture = yield* windowsFixture;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), {
+            command: "echo legacy ownership",
+            timeoutMinutes: 1,
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+        yield* forgetPid(first.taskId);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE command_runs SET unit = NULL, status = ${status} WHERE task_id = ${first.taskId}`;
+        const directory = NodePath.dirname(first.logPath);
+        NodeFS.unlinkSync(NodePath.join(directory, "pid"));
+        NodeFS.rmdirSync(NodePath.join(directory, "launch-started"));
+        fixture.state.now += 60_000;
+        const delivered = yield* Deferred.make<void>();
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* nextWake(chat.threadId);
+            const task = yield* taskOf(chat.threadId, first.taskId);
+            assert.include(task?.result ?? "", "ownership could not be established");
+            assert.notInclude(task?.result ?? "", "cleanup is still pending");
+            yield* Deferred.await(delivered);
+            const row = yield* commandRow(first.taskId);
+            assert.equal(row?.lost_reason, "no-pid");
+            assert.isNotNull(row?.reported_at);
+            assert.isNotNull(row?.delivered_at);
+            assert.isTrue(fixture.processes.get(2147483000)!.alive);
+            assert.deepEqual(fixture.groupSignals, []);
+          }),
+        ).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(first.taskId, delivered),
+          ),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provide(fixture.layer),
+        );
       }),
   );
 
