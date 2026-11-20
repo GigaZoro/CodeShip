@@ -4,7 +4,6 @@ import {
   compareIdentity,
   identityTime,
   identityWindow,
-  launchIdentity,
   linuxIdentity,
   timeIdentity,
   windowIdentity,
@@ -32,10 +31,11 @@ describe("processIdentity", () => {
     ["boot:a:5", "boot:b:5", "other"],
     ["boot:a:5", undefined, "unknown"],
     ["boot:a:5", "time:5", "unknown"],
-    [timeIdentity(10_000), timeIdentity(10_900), "same"],
+    [timeIdentity(10_000), timeIdentity(10_000), "same"],
+    [timeIdentity(10_000), timeIdentity(11_000), "other"],
     [timeIdentity(10_000), timeIdentity(12_000), "other"],
-    [windowIdentity(10_000, 12_000), timeIdentity(9_100), "same"],
-    [windowIdentity(10_000, 12_000), timeIdentity(12_900), "same"],
+    [windowIdentity(10_000, 12_000), timeIdentity(10_000), "same"],
+    [windowIdentity(10_000, 12_000), timeIdentity(12_000), "same"],
     [windowIdentity(10_000, 12_000), timeIdentity(13_500), "other"],
     [windowIdentity(10_000, 12_000), timeIdentity(8_500), "other"],
     [windowIdentity(10_000, 12_000), "boot:a:5", "unknown"],
@@ -61,28 +61,5 @@ describe("processIdentity", () => {
       ],
       [{ from: 7, to: 7 }, { from: -5, to: 9 }, undefined, undefined, undefined],
     );
-  });
-
-  it.each([
-    ["no read", "win32", undefined, windowIdentity(10_000, 12_000)],
-    ["a Windows start inside the window", "win32", timeIdentity(12_000), timeIdentity(12_000)],
-    [
-      "a Windows start after the window",
-      "win32",
-      timeIdentity(12_001),
-      windowIdentity(10_000, 12_000),
-    ],
-    [
-      "a Windows start before the window",
-      "win32",
-      timeIdentity(9_999),
-      windowIdentity(10_000, 12_000),
-    ],
-    ["a macOS start after the window", "darwin", timeIdentity(70_000), timeIdentity(70_000)],
-    ["no macOS read", "darwin", undefined, null],
-    ["a Linux start", "linux", "boot:a:5", "boot:a:5"],
-    ["no Linux read", "linux", undefined, null],
-  ] as const)("records a launched wrapper from %s", (_, platform, read, identity) => {
-    assert.strictEqual(launchIdentity(read, { from: 10_000, to: 12_000 }, platform), identity);
   });
 });

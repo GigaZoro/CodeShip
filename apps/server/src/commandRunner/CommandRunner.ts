@@ -55,6 +55,14 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
 import { readProcessStartedAt, readWindowsProcessIdentity } from "../serverRuntimeState.ts";
+import {
+  ENDED_IDENTITY,
+  compareIdentity,
+  identityTime,
+  identityWindow,
+  linuxIdentity,
+  timeIdentity,
+} from "./processIdentity.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
 
 /** How often running commands are checked; tests shorten it. */
@@ -135,9 +143,16 @@ const WINDOWS_WRAPPER = [
 // makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
 const POSIX_WRAPPER = [
   'exec >>"$1" 2>&1 </dev/null',
-  // ps can round boot time and process age separately; persist its self-identity before execution.
-  'identity=$(LC_ALL=C TZ=UTC /bin/ps -p "$$" -o lstart=) && [ -n "$identity" ] || exit 125',
-  'printf "%s\\nps:%s\\n" "$$" "$identity" >"$3.tmp" && mv -f "$3.tmp" "$3" || exit 1',
+  // Linux publishes kernel start ticks; macOS publishes ps's own rounded creation time.
+  "if [ -r /proc/$$/stat ]; then",
+  "  stat=$(cat /proc/$$/stat) && boot=$(cat /proc/sys/kernel/random/boot_id) || exit 125",
+  '  ticks=$(printf "%s\\n" "${stat##*) }" | cut -d " " -f 20)',
+  '  identity="boot:$boot:$ticks"',
+  "else",
+  '  started=$(LC_ALL=C TZ=UTC /bin/ps -p "$$" -o lstart=) && [ -n "$started" ] || exit 125',
+  '  identity="ps:$started"',
+  "fi",
+  'printf "%s\\n%s\\n" "$$" "$identity" >"$3.tmp" && mv -f "$3.tmp" "$3" || exit 1',
   'run() { shift 3; "$@"; }',
   'if mv "${3%/*}/launch-pending" "${3%/*}/launch-started"; then',
   '  run "$@"',
@@ -169,7 +184,7 @@ interface CommandRunRow {
   readonly directory: string;
   /** Null from its record until its process starts. */
   readonly pid: number | null;
-  readonly process_started_at: number | null;
+  readonly process_identity: string | null;
   /** Full FILETIME; older millisecond-only rows cannot authorize a Windows stop. */
   readonly windows_created_at: string | null;
   readonly unit: string | null;
@@ -521,7 +536,7 @@ const make = Effect.gen(function* () {
   const identitySlots = yield* Semaphore.make(2);
   const stopSlots = yield* Semaphore.make(2);
   const identityKey = (row: CommandRunRow) =>
-    `${row.pid}:${row.process_started_at}:${row.windows_created_at}`;
+    `${row.pid}:${row.process_identity}:${row.windows_created_at}`;
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
   /** Open once start() has adopted the commands an earlier server left, so run() never races it. */
@@ -534,6 +549,17 @@ const make = Effect.gen(function* () {
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
       ),
     );
+  const identityOf = Effect.fn("CommandRunner.identityOf")(function* (pid: number) {
+    if (platform === "linux") {
+      const read = yield* Effect.all([
+        fs.readFileString(`/proc/${pid}/stat`),
+        fs.readFileString("/proc/sys/kernel/random/boot_id"),
+      ]).pipe(Effect.option);
+      return Option.isSome(read) ? linuxIdentity(read.value[0], read.value[1]) : undefined;
+    }
+    const startedAt = yield* startedAtOf(pid);
+    return startedAt === undefined ? undefined : timeIdentity(startedAt);
+  });
   const windowsIdentityOf = (pid: number) =>
     identitySlots.withPermits(1)(
       readWindowsProcessIdentity(pid, WINDOWS_LAUNCH_TIMEOUT).pipe(
@@ -562,6 +588,9 @@ const make = Effect.gen(function* () {
           value: Number.parseInt(raw, 10),
           identity: Number.isFinite(identity) ? identity : undefined,
           windowsIdentity,
+          processIdentity:
+            /^\d+\s+(boot:[^\s:]+:\d+)$/.exec(raw)?.[1] ??
+            (Number.isFinite(identity) ? timeIdentity(identity) : undefined),
           writtenAt: Option.getOrUndefined(info.mtime),
         };
       }),
@@ -585,18 +614,21 @@ const make = Effect.gen(function* () {
     );
 
   /** Nothing a command started outlives a reboot, after which its pid can name anything. */
-  const rebootedSince = (row: CommandRunRow) =>
-    DateTime.now.pipe(
-      Effect.map(
-        (now) => DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 > Date.parse(row.started_at),
-      ),
-    );
+  const rebootedSince = Effect.fn("CommandRunner.rebootedSince")(function* (row: CommandRunRow) {
+    if (row.process_identity?.startsWith("boot:")) {
+      const boot = yield* fs.readFileString("/proc/sys/kernel/random/boot_id").pipe(Effect.option);
+      return Option.isSome(boot) && row.process_identity.split(":")[1] !== boot.value.trim();
+    }
+    const now = yield* DateTime.now;
+    return DateTime.toEpochMillis(now) - NodeOS.uptime() * 1_000 > Date.parse(row.started_at);
+  });
 
   const readIdentity = Effect.fn("CommandRunner.readIdentity")(function* (
     row: CommandRunRow,
-  ): Effect.fn.Return<number | "unknown" | Loss, import("effect/PlatformError").PlatformError> {
+  ): Effect.fn.Return<string | Loss, import("effect/PlatformError").PlatformError> {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
+    if (row.process_identity === ENDED_IDENTITY) return { lost_reason: "pid-reused", probe_error };
     if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
@@ -612,13 +644,19 @@ const make = Effect.gen(function* () {
         row.windows_created_at ?? (named?.value === row.pid ? named.windowsIdentity : undefined);
       const observedMillis = windowsCreationTimeMillis(observed);
       if (expected !== undefined)
-        return observed === expected ? observedMillis : { lost_reason: "pid-reused", probe_error };
+        return observed === expected
+          ? timeIdentity(observedMillis)
+          : { lost_reason: "pid-reused", probe_error };
       const legacyMillis =
-        row.process_started_at ?? (named?.value === row.pid ? named.identity : undefined);
+        identityTime(row.process_identity) ??
+        (named?.value === row.pid ? named.identity : undefined);
       if (legacyMillis !== undefined)
         return observedMillis === legacyMillis
           ? "unknown"
           : { lost_reason: "pid-reused", probe_error };
+      const window = identityWindow(row.process_identity);
+      if (window !== undefined && (observedMillis < window.from || observedMillis > window.to))
+        return { lost_reason: "pid-reused", probe_error };
       if (
         named?.writtenAt !== undefined &&
         (observedMillis < Date.parse(row.started_at) || observedMillis > named.writtenAt.getTime())
@@ -626,27 +664,38 @@ const make = Effect.gen(function* () {
         return { lost_reason: "pid-reused", probe_error };
       return "unknown";
     }
-    const startedAt = yield* startedAtOf(row.pid);
-    // ps reports whole seconds; a failed probe proves neither ownership nor loss.
-    if (startedAt === undefined) return "unknown";
-    if (row.process_started_at === null) {
-      const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
-      if (named?.value === row.pid && named.identity !== undefined)
-        return startedAt === named.identity
-          ? startedAt
-          : { lost_reason: "pid-reused", probe_error };
-      const exit = yield* readExitStatus(row);
-      const upper =
-        exit?.endedAt === undefined ? named?.writtenAt?.getTime() : Date.parse(exit.endedAt);
-      if (upper === undefined) return "unknown";
-      const precision = 1_000;
-      if (startedAt < Date.parse(row.started_at) - precision || startedAt > upper + precision)
-        return { lost_reason: "pid-reused", probe_error };
-      return startedAt;
+    const named =
+      row.process_identity === null
+        ? yield* readWrapperFile(path.join(row.directory, PID_FILE))
+        : undefined;
+    const expected =
+      row.process_identity ?? (named?.value === row.pid ? named.processIdentity : undefined);
+    if (expected?.startsWith("boot:")) {
+      const observed = yield* identityOf(row.pid);
+      if (observed === undefined) return "unknown";
+      return compareIdentity(expected, observed) === "same"
+        ? observed
+        : { lost_reason: "pid-reused", probe_error };
     }
-    return startedAt === row.process_started_at
-      ? startedAt
-      : { lost_reason: "pid-reused", probe_error };
+    const startedAt = yield* startedAtOf(row.pid);
+    if (startedAt === undefined) return "unknown";
+    const observed = timeIdentity(startedAt);
+    if (expected !== undefined) {
+      const verdict = compareIdentity(expected, observed);
+      return verdict === "other"
+        ? { lost_reason: "pid-reused", probe_error }
+        : verdict === "same" && identityTime(expected) !== undefined
+          ? observed
+          : "unknown";
+    }
+    const exit = yield* readExitStatus(row);
+    const upper =
+      exit?.endedAt === undefined ? named?.writtenAt?.getTime() : Date.parse(exit.endedAt);
+    if (upper === undefined) return "unknown";
+    const precision = 1_000;
+    if (startedAt < Date.parse(row.started_at) - precision || startedAt > upper + precision)
+      return { lost_reason: "pid-reused", probe_error };
+    return observed;
   });
 
   const forbidsSignals = (row: Pick<CommandRunRow, "lost_reason">) =>
@@ -675,7 +724,7 @@ const make = Effect.gen(function* () {
     identityObservations.set(row.task_id, (identityObservations.get(row.task_id) ?? 0) + 1);
     return yield* readIdentity(row).pipe(
       Effect.tap((identity) =>
-        typeof identity !== "number" && identity !== "unknown" && forbidsSignals(identity)
+        typeof identity !== "string" && forbidsSignals(identity)
           ? retainOwnershipLoss(row, identity)
           : Effect.void,
       ),
@@ -728,9 +777,9 @@ const make = Effect.gen(function* () {
     if (forbidsSignals(latest)) return true;
     const identity = yield* isSameProcess(latest);
     if (identity === "unknown") return false;
-    if (typeof identity !== "number" && forbidsSignals(identity)) return true;
+    if (typeof identity !== "string" && forbidsSignals(identity)) return true;
     if (
-      typeof identity !== "number" &&
+      typeof identity !== "string" &&
       (row.unit !== null || identityObservations.has(row.task_id))
     )
       return false;
@@ -748,7 +797,7 @@ const make = Effect.gen(function* () {
       if (row.pid === null) return false;
       if (row.windows_created_at === null) {
         const identity = yield* isSameProcess(row);
-        return typeof identity !== "number" && identity !== "unknown";
+        return typeof identity !== "string";
       }
       const host = yield* yield* WindowsJobHost;
       const stopped = yield* stopSlots
@@ -778,23 +827,23 @@ const make = Effect.gen(function* () {
         const same = yield* isSameProcess(row);
         if (same === "unknown") return false;
         if (
-          typeof same !== "number" &&
+          typeof same !== "string" &&
           (same.lost_reason === "pid-reused" || same.lost_reason === "rebooted")
         ) {
           return !hasScope;
         }
         // An in-flight observation may still prove that this absent leader was a replacement.
-        if (typeof same !== "number" && identityObservations.has(row.task_id)) return false;
+        if (typeof same !== "string" && identityObservations.has(row.task_id)) return false;
         // Without a unit, a group can outlive its leader. Reuse followed by another leader's exit
         // between probes remains unobservable; a recorded replacement must never reach this signal.
-        if (typeof same === "number" || (!hasScope && same.lost_reason === "gone")) {
+        if (typeof same === "string" || (!hasScope && same.lost_reason === "gone")) {
           if (!(yield* killGroup(row))) return false;
         }
       } else {
         const same = yield* isSameProcess(row);
         if (same === "unknown") return false;
         // A legacy row has no retained membership after its root ends; never infer another holder's family.
-        if (typeof same !== "number") return true;
+        if (typeof same !== "string") return true;
         if (row.windows_created_at === null) return false;
         const stopped = yield* stopSlots
           .withPermits(1)(
@@ -819,7 +868,7 @@ const make = Effect.gen(function* () {
   const writeRow = (row: CommandRunRow) =>
     sql`
       UPDATE command_runs
-      SET pid = ${row.pid}, process_started_at = ${row.process_started_at}, unit = ${row.unit},
+      SET pid = ${row.pid}, process_identity = ${row.process_identity}, unit = ${row.unit},
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
         probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
@@ -1289,11 +1338,11 @@ const make = Effect.gen(function* () {
       const mustVerify =
         cached?.key !== identityKey(row) ||
         now - cached.at >= 60_000 ||
-        row.process_started_at === null ||
+        row.process_identity === null ||
         (windows && row.windows_created_at === null) ||
         probe?.state !== "alive" ||
         (yield* rebootedSince(row));
-      const identity = mustVerify ? yield* isSameProcess(row) : row.process_started_at!;
+      const identity = mustVerify ? yield* isSameProcess(row) : row.process_identity!;
       if (watched.get(row.task_id) !== snapshot) return;
       if (identity === "unknown") {
         const code = probe?.state === "unknown" ? probe.code : "identity-unavailable";
@@ -1310,8 +1359,8 @@ const make = Effect.gen(function* () {
         );
         return;
       }
-      if (typeof identity === "number") {
-        if (row.process_started_at === null) row = { ...row, process_started_at: identity };
+      if (typeof identity === "string") {
+        if (row.process_identity === null) row = { ...row, process_identity: identity };
         if (mustVerify) verified.set(row.task_id, { key: identityKey(row), at: now });
       } else loss = identity;
     }
@@ -1357,7 +1406,7 @@ const make = Effect.gen(function* () {
           at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
         if (
           row.pid !== snapshot.pid ||
-          row.process_started_at !== snapshot.process_started_at ||
+          row.process_identity !== snapshot.process_identity ||
           row.windows_created_at !== snapshot.windows_created_at ||
           minuteOf(row.last_alive_at) !== minuteOf(seen.last_alive_at)
         ) {
@@ -1590,7 +1639,7 @@ const make = Effect.gen(function* () {
       const pid = yield* spawnDetached(scoped.command, scoped.args, cwd, env);
       return {
         pid,
-        process_started_at: (yield* startedAtOf(pid)) ?? null,
+        process_identity: (yield* identityOf(pid)) ?? null,
         windows_created_at: null,
         unit: scoped.unit ?? null,
       };
@@ -1669,7 +1718,7 @@ const make = Effect.gen(function* () {
     }
     return {
       pid,
-      process_started_at: identity,
+      process_identity: timeIdentity(identity),
       windows_created_at: windowsIdentity,
       unit: `${jobUnitPrefix}${jobFor(directory)}`,
     };
@@ -1873,7 +1922,7 @@ const make = Effect.gen(function* () {
                   cwd,
                   directory,
                   pid: null,
-                  process_started_at: null,
+                  process_identity: null,
                   windows_created_at: null,
                   unit: windows ? `${jobUnitPrefix}${jobFor(directory)}` : null,
                   status: "running",
@@ -1897,11 +1946,11 @@ const make = Effect.gen(function* () {
                     sql`
                 INSERT INTO command_runs (
                   task_id, thread_id, run_id, label, command, cwd, directory, pid,
-                  process_started_at, unit, status, exit_code, started_at, deadline_at, ended_at,
+                  process_identity, unit, status, exit_code, started_at, deadline_at, ended_at,
                   delivered_at
                 ) VALUES (
                   ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
-                  ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_started_at}, ${row.unit},
+                  ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_identity}, ${row.unit},
                   ${row.status}, ${row.exit_code}, ${row.started_at}, ${row.deadline_at},
                   ${row.ended_at}, ${row.delivered_at}
                 )
@@ -1961,7 +2010,7 @@ const make = Effect.gen(function* () {
                       ? { ...current, ...launched.success, last_alive_at: yield* nowIso }
                       : { ...current, launch_error: launched.failure.message };
                   watched.set(taskId, next);
-                  if (launched._tag === "Success" && next.process_started_at !== null)
+                  if (launched._tag === "Success" && next.process_identity !== null)
                     verified.set(taskId, {
                       key: identityKey(next),
                       at: DateTime.toEpochMillis(yield* DateTime.now),
@@ -2002,7 +2051,14 @@ const make = Effect.gen(function* () {
         row: { ...row, pid },
         loss: { lost_reason: reason, probe_error: code },
       });
-      if (yield* rebootedSince(row))
+      const publishedIdentity =
+        named?.value === row.pid || row.pid === null ? named?.processIdentity : undefined;
+      if (
+        yield* rebootedSince({
+          ...row,
+          process_identity: row.process_identity ?? publishedIdentity ?? null,
+        })
+      )
         return ended(
           "rebooted",
           named !== undefined && Number.isSafeInteger(named.value) && named.value > 0
@@ -2015,10 +2071,10 @@ const make = Effect.gen(function* () {
         return { outcome: "unresolved" };
       }
       const pid = named.value;
-      let identity = named.identity;
+      let identity = named.processIdentity;
       if (identity === undefined) {
         if ((yield* readExitStatus(row)) !== undefined)
-          return { outcome: "started", row: { ...row, pid, process_started_at: null } };
+          return { outcome: "started", row: { ...row, pid, process_identity: null } };
         const writtenAt = named.writtenAt?.getTime();
         if (writtenAt === undefined) return { outcome: "unresolved" };
         const probe = probeProcess(pid);
@@ -2033,7 +2089,8 @@ const make = Effect.gen(function* () {
           )
             return ended("pid-reused", pid);
           if (windows) return { outcome: "unresolved" };
-          identity = startedAt;
+          identity = platform === "linux" ? yield* identityOf(pid) : timeIdentity(startedAt);
+          if (identity === undefined) return { outcome: "unresolved" };
         } else return ended("gone", pid, probe.code);
       }
       return {
@@ -2041,7 +2098,7 @@ const make = Effect.gen(function* () {
         row: {
           ...row,
           pid,
-          process_started_at: identity,
+          process_identity: identity,
           windows_created_at: windows ? (named.windowsIdentity ?? null) : null,
         },
       };
