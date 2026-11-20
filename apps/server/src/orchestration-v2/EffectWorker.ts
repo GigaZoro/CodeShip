@@ -239,6 +239,9 @@ export const layerExecutor: Layer.Layer<
                       ? Effect.void
                       : threads.dispatch({
                           type: "thread.background-work.settle",
+                          ...(request.stopRunIds === undefined
+                            ? {}
+                            : { stopRunIds: request.stopRunIds }),
                           commandId: CommandId.make(`${effect.id}:background-work-settled`),
                           ...(request.subagent === undefined || outcome === undefined
                             ? {}
