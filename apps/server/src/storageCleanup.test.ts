@@ -16,6 +16,7 @@ import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   DEFAULT_SERVER_SETTINGS,
+  GitCommandError,
   type WorktreeKeepWhen,
   type StorageCleanupSettings,
   type TerminalMetadataStreamEvent,
@@ -362,6 +363,7 @@ const cleanupFixture = (
     let outboxStatus: string | null = null;
     const sqlReads: Array<{ readonly query: string; readonly background: boolean }> = [];
     let fullStatusCalls = 0;
+    let failUnmergedCount = false;
     let snapshotReads = 0;
     let terminalListener: ((event: TerminalMetadataStreamEvent) => Effect.Effect<void>) | undefined;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
@@ -380,6 +382,17 @@ const cleanupFixture = (
               yield* fs.writeFileString(`${worktree}/tracked.txt`, "late edit\n");
             return yield* git.execute(input);
           }),
+        countUnmergedCommits: (input) =>
+          failUnmergedCount
+            ? Effect.fail(
+                new GitCommandError({
+                  operation: "test.countUnmergedCommits",
+                  command: "git",
+                  cwd: input.cwd,
+                  detail: "branch is unreadable",
+                }),
+              )
+            : git.countUnmergedCommits(input),
         statusDetailsLocal: (...args) => {
           fullStatusCalls++;
           return git.statusDetailsLocal(...args);
@@ -571,6 +584,9 @@ const cleanupFixture = (
           },
         }) ?? Effect.void,
       fullStatusCalls: () => fullStatusCalls,
+      failUnmergedCount: (fail: boolean) => {
+        failUnmergedCount = fail;
+      },
       snapshotReads: () => snapshotReads,
       activate: (domainEvents: Stream.Stream<OrchestrationV2DomainEvent>) => {
         events = domainEvents;
@@ -2430,6 +2446,31 @@ describe("storage cleanup reports and local file policies", () => {
           outcome: "kept",
           reason: "Default branch is unavailable",
         });
+        expect(yield* fs.exists(worktree)).toBe(true);
+      }),
+    ),
+  );
+  it.live("keeps the worktree and reports the failure when the unmerged-commit count fails", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const fixture = yield* cleanupFixture({
+          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+          worktreeUnchanged: true,
+        });
+        const { service, fs, repo, worktree, command } = fixture;
+        const remote = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-remote-" });
+        yield* command(remote, ["init", "--bare", "-b", "main"]);
+        yield* command(repo, ["remote", "add", "origin", remote]);
+        yield* fs.writeFileString(`${worktree}/tracked.txt`, "shipped work\n");
+        yield* command(worktree, ["commit", "-am", "shipped work"]);
+        yield* command(repo, ["push", "origin", "main:main"]);
+        yield* command(repo, ["fetch", "origin"]);
+        yield* command(repo, ["remote", "set-head", "origin", "main"]);
+        fixture.failUnmergedCount(true);
+
+        const report = yield* service.runNow;
+        expect(report.entries[0]).toMatchObject({ outcome: "failed" });
+        expect(report.entries[0]?.reason).toContain("branch is unreadable");
         expect(yield* fs.exists(worktree)).toBe(true);
       }),
     ),

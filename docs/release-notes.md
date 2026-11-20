@@ -16,6 +16,10 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — Storage cleanup reports a failed unmerged-work check instead of "not integrated"
+
+- When Git could not count a worktree's unmerged commits (an unreadable branch, a damaged worktree, a timeout), storage cleanup treated it as one unmerged commit and kept the worktree with a misleading reason, logging nothing. The worktree is still kept, but the cleanup report now shows it as failed with Git's detail, and the failure is logged.
+
 ## 2026-11-20 — Use 1Password credentials with agent providers
 
 - In **Settings → Secrets**, add a 1Password source and choose which fields to supply to Claude, Codex, or another provider. Linux hosts can use a read-only service account for unattended runs with an administrator grant for each field.

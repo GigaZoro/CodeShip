@@ -1029,9 +1029,7 @@ const make = Effect.gen(function* () {
           // from another worktree) counts as integrated too.
           const integrated =
             ancestor.exitCode === 0 ||
-            (yield* git
-              .countUnmergedCommits({ cwd: worktreePath, baseRef: base.commitSha })
-              .pipe(Effect.orElseSucceed(() => 1))) === 0;
+            (yield* git.countUnmergedCommits({ cwd: worktreePath, baseRef: base.commitSha })) === 0;
           eligible = integrated && settings.worktreeUnchanged;
           if (eligible)
             removalReason =
