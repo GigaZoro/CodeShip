@@ -334,8 +334,9 @@ Launch and identity work run outside the shared state lock. Startup registers ev
 before accepting new requests, without waiting for probes. Separate bounded probe and stop
 queues keep cancellation and deadlines independent of a held launcher or identity check.
 Healthy commands use cheap liveness checks with periodic identity verification. Before a
-command takes its start gate, its wrapper records its PID; on Windows the native host also records
-its full FILETIME creation identity. POSIX and Windows cancellation and recovery atomically close the same gate.
+command takes its start gate, its wrapper records its PID and identity: Linux uses boot ID and
+kernel start ticks so wall-clock corrections cannot change ownership, macOS uses the wrapper's
+creation time, and Windows uses full FILETIME. POSIX and Windows cancellation and recovery atomically close the same gate.
 A closed gate proves the command
 cannot execute, including a late WMI creation; a failed database write does not prevent gate
 closure. Gate failures are written to the command log.

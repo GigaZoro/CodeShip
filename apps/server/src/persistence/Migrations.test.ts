@@ -33,13 +33,13 @@ describe("runMigrations", () => {
   it.effect("keeps exact Windows identity separate from legacy millisecond evidence", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 101 });
+      yield* runMigrations({ toMigrationInclusive: 97 });
       yield* sql`INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status, started_at, deadline_at, process_started_at)
         VALUES ('legacy-ms', 'thread', 'run', 'true', '/tmp', '/tmp/old', 'running', '2026-11-19T00:00:00Z', '2026-11-19T01:00:00Z', 1795046400123)`;
       yield* runMigrations();
       assert.deepEqual(
-        yield* sql`SELECT process_started_at, windows_created_at FROM command_runs WHERE task_id = 'legacy-ms'`,
-        [{ process_started_at: 1795046400123, windows_created_at: null }],
+        yield* sql`SELECT process_identity, windows_created_at FROM command_runs WHERE task_id = 'legacy-ms'`,
+        [{ process_identity: "time:1795046400123", windows_created_at: null }],
       );
       const exact = "134395200001234567";
       yield* sql`UPDATE command_runs SET windows_created_at = ${exact} WHERE task_id = 'legacy-ms'`;

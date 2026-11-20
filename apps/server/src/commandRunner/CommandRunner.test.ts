@@ -24,7 +24,7 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { isWindowsHost, isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
 import { WindowsJobHost, windowsJobName } from "@t3tools/shared/windowsJob";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -66,6 +66,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CommandRunner from "./CommandRunner.ts";
+import { timeIdentity } from "./processIdentity.ts";
 
 vi.mock("node:os", { spy: true });
 
@@ -199,14 +200,13 @@ const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
  */
 const awaitFile = (file: string) =>
   Effect.callback<void>((resume) => {
-    const look = () => {
+    // @effect-diagnostics-next-line globalTimersInEffect:off - it.effect's TestClock never advances Effect.sleep, and the file comes from a real process.
+    const timer = setInterval(() => {
       if (!NodeFS.existsSync(file)) return;
-      NodeFS.unwatchFile(file, look);
+      clearInterval(timer);
       resume(Effect.void);
-    };
-    NodeFS.watchFile(file, { interval: 20 }, look);
-    look();
-    return Effect.sync(() => NodeFS.unwatchFile(file, look));
+    }, 20);
+    return Effect.sync(() => clearInterval(timer));
   });
 
 /** Resolves once each of `threadIds` has been offered a wake. */
@@ -229,6 +229,27 @@ const nextWake = (threadId: ThreadId) =>
     ),
   );
 
+describe("awaitFile", () => {
+  it.effect("sees a file made right after the wait began", () =>
+    Effect.gen(function* () {
+      const folder = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-await-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(folder, { recursive: true, force: true })),
+      );
+      // watchFile takes its baseline stat on another thread after it returns, so a file made
+      // just after can already be in that baseline, and no change is ever reported.
+      yield* Effect.forEach(
+        Array.from({ length: 300 }, (_, i) => NodePath.join(folder, String(i))),
+        (file) =>
+          Effect.all([awaitFile(file), Effect.sync(() => NodeFS.writeFileSync(file, ""))], {
+            concurrency: "unbounded",
+          }),
+        { concurrency: "unbounded" },
+      );
+    }),
+  );
+});
+
 const commandRow = (taskId: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -236,7 +257,7 @@ const commandRow = (taskId: string) =>
       readonly status: string;
       readonly exit_code: number | null;
       readonly pid: number | null;
-      readonly process_started_at: number | null;
+      readonly process_identity: string | null;
       readonly windows_created_at: string | null;
       readonly started_at: string;
       readonly delivered_at: string | null;
@@ -246,7 +267,7 @@ const commandRow = (taskId: string) =>
       readonly lost_reason: string | null;
       readonly lost_output: string | null;
     }>`
-      SELECT status, exit_code, pid, process_started_at, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
+      SELECT status, exit_code, pid, process_identity, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
         lost_output, reported_at, windows_created_at
       FROM command_runs WHERE task_id = ${taskId}
     `;
@@ -281,7 +302,7 @@ const forgetPid = (taskId: string) =>
   Effect.flatMap(
     SqlClient.SqlClient,
     (sql) => sql`
-      UPDATE command_runs SET pid = NULL, process_started_at = NULL, windows_created_at = NULL, last_alive_at = NULL
+      UPDATE command_runs SET pid = NULL, process_identity = NULL, windows_created_at = NULL, last_alive_at = NULL
       WHERE task_id = ${taskId}
     `,
   );
@@ -306,10 +327,10 @@ const liveChat = (name: string) =>
         readonly pid: number | null;
         readonly directory: string;
         readonly started_at: string;
-        readonly process_started_at: number | null;
+        readonly process_identity: string | null;
         readonly windows_created_at: string | null;
       }>`
-        SELECT pid, directory, started_at, process_started_at FROM command_runs WHERE thread_id = ${parent.threadId}
+        SELECT pid, directory, started_at, process_identity FROM command_runs WHERE thread_id = ${parent.threadId}
       `.pipe(
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
@@ -608,6 +629,83 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         assert.isBelow(log.length, 8 * 1024 * 1024);
       }),
   );
+
+  describe.runIf(isLinuxHost)("Linux process identity", () => {
+    it.effect("still stops a command after a step of the wall clock moved what ps reports", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-clock-step");
+        const started = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+        );
+        yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+        assert.match((yield* commandRow(started.taskId))!.process_identity!, /^boot:/);
+        yield* (yield* Orchestrator.OrchestratorV2).dispatch(
+          cancellationOf(chat.threadId, started.taskId),
+        );
+        const processRunner = yield* ProcessRunner.ProcessRunner;
+        const delivered = yield* Deferred.make<void>();
+        yield* withServer(() => Deferred.await(delivered)).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(started.taskId, delivered),
+          ),
+          Effect.provideService(ProcessRunner.ProcessRunner, {
+            run: (input) =>
+              input.command === "ps"
+                ? processRunner
+                    .run(input)
+                    .pipe(
+                      Effect.map((result) => ({ ...result, stdout: "Sat Jan  1 00:00:00 2000\n" })),
+                    )
+                : processRunner.run(input),
+          }),
+        );
+        assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
+      }),
+    );
+
+    it.effect(
+      "reports a command lost when a later kernel identity read finds another process under its pid",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-unconfirmed-identity");
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE command_runs SET process_identity = process_identity || '0' WHERE task_id = ${started.taskId}`;
+          const fs = yield* FileSystem.FileSystem;
+          const delivered = yield* Deferred.make<void>();
+          let reads = 0;
+          yield* withServer(() => Deferred.await(delivered)).pipe(
+            Effect.provideService(
+              Statement.CurrentTransformer,
+              observeDelivery(started.taskId, delivered),
+            ),
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: (file, encoding) => {
+                if (/^\/proc\/\d+\/stat$/.test(file) && ++reads === 1)
+                  return Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "readFileString",
+                      pathOrDescriptor: file,
+                    }),
+                  );
+                return fs.readFileString(file, encoding);
+              },
+            }),
+          );
+          assert.equal((yield* commandRow(started.taskId))?.lost_reason, "pid-reused");
+          assert.isAbove(reads, 1);
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        }),
+    );
+  });
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
     it.effect.each([
@@ -1031,10 +1129,15 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       const chat = yield* liveChat("command-chat-deleted-late");
       const agentScope = yield* AgentScope;
       const processRunner = yield* ProcessRunner.ProcessRunner;
+      const fs = yield* FileSystem.FileSystem;
       const starting = yield* Deferred.make<void>();
       const proceed = yield* Deferred.make<void>();
       // Its first process lookup is the one that names the command it just started.
       let spawning = false;
+      const holdRead = awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
+        Effect.andThen(Deferred.succeed(starting, undefined)),
+        Effect.andThen(Deferred.await(proceed)),
+      );
       const started = yield* withServer((runner) =>
         Effect.gen(function* () {
           const request = yield* runner
@@ -1061,11 +1164,16 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           run: (input) => {
             if (!spawning || input.command !== "ps") return processRunner.run(input);
             spawning = false;
-            return awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
-              Effect.andThen(Deferred.succeed(starting, undefined)),
-              Effect.andThen(Deferred.await(proceed)),
-              Effect.andThen(processRunner.run(input)),
-            );
+            return holdRead.pipe(Effect.andThen(processRunner.run(input)));
+          },
+        }),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFileString: (file, encoding) => {
+            if (!spawning || !/^\/proc\/\d+\/stat$/.test(file))
+              return fs.readFileString(file, encoding);
+            spawning = false;
+            return holdRead.pipe(Effect.andThen(fs.readFileString(file, encoding)));
           },
         }),
       );
@@ -1200,7 +1308,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const sql = yield* SqlClient.SqlClient;
           // Started before the machine last booted, so what its pid names now is someone else's.
           yield* sql`
-          UPDATE command_runs SET started_at = '2000-01-01T00:00:00.000Z', process_started_at = NULL
+          UPDATE command_runs SET started_at = '2000-01-01T00:00:00.000Z', process_identity = NULL
           WHERE task_id = ${started.taskId}
         `;
           yield* withServer(() => nextWake(chat.threadId));
@@ -2557,7 +2665,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           yield* Deferred.await(adopted);
           const row = yield* commandRow(first.taskId);
           assert.equal(row?.status, "running");
-          assert.equal(row?.process_started_at, entry.identity);
+          assert.equal(row?.process_identity, timeIdentity(entry.identity));
           assert.deepEqual(fixture.groupSignals, []);
           NodeFS.writeFileSync(NodePath.join(directory, "exit-status"), "0");
           yield* nextWake(chat.threadId);
@@ -2946,7 +3054,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       ).pipe(Effect.provide(fixture.layer));
       const sql = yield* SqlClient.SqlClient;
       const laterAlive = DateTime.formatIso(DateTime.makeUnsafe(fixture.state.now + 300_000));
-      yield* sql`UPDATE command_runs SET process_started_at = NULL, unit = NULL, last_alive_at = ${laterAlive} WHERE task_id = ${result.taskId}`;
+      yield* sql`UPDATE command_runs SET process_identity = NULL, unit = NULL, last_alive_at = ${laterAlive} WHERE task_id = ${result.taskId}`;
       const pidFile = NodePath.join(NodePath.dirname(result.logPath), "pid");
       NodeFS.writeFileSync(pidFile, "2147483000");
       NodeFS.utimesSync(pidFile, fixture.state.now / 1_000, fixture.state.now / 1_000);
@@ -2957,7 +3065,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           yield* nextWake(chat.threadId);
           const row = yield* commandRow(result.taskId);
           assert.equal(row?.lost_reason, "pid-reused");
-          assert.isNull(row?.process_started_at);
+          assert.isNull(row?.process_identity);
           assert.isTrue(entry.alive);
           assert.equal(fixture.state.kills, 0);
         }),
@@ -3249,7 +3357,10 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       yield* withServer((runner) =>
         Effect.gen(function* () {
           const result = yield* runner.run(callerOf(chat.threadId), { command: "echo original" });
-          assert.equal((yield* commandRow(result.taskId))?.process_started_at, fixture.state.now);
+          assert.equal(
+            (yield* commandRow(result.taskId))?.process_identity,
+            timeIdentity(fixture.state.now),
+          );
           yield* Orchestrator.OrchestratorV2.pipe(
             Effect.flatMap((orchestrator) =>
               orchestrator.dispatch(cancellationOf(chat.threadId, result.taskId)),
@@ -3788,7 +3899,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
               const row = yield* commandRow(taskId);
               assert.equal(row?.status, "running");
               assert.isAbove(row?.pid ?? 0, 0);
-              assert.isNumber(row?.process_started_at);
+              assert.isString(row?.process_identity);
 
               if (retry) {
                 const second = yield* runner.run(callerOf(chat.threadId), request);
