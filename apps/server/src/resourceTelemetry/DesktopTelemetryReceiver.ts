@@ -47,6 +47,9 @@ const STALE_GRACE_MS = 30_000;
 const DEFAULT_HOST_POWER_ACTIVE_INTERVAL_MS = 30_000;
 const DEFAULT_HOST_POWER_IDLE_INTERVAL_MS = 120_000;
 const STALE_CHECK_INTERVAL = Duration.seconds(30);
+// A closed desktop app stops reading while each daily attempt still queues and cancels a request;
+// only the newest commands can still matter.
+export const HTTP_UPDATE_COMMANDS_LIMIT = 16;
 
 export class DesktopTelemetryDescriptorUnavailable extends Schema.TaggedError<DesktopTelemetryDescriptorUnavailable>()(
   "DesktopTelemetryDescriptorUnavailable",
@@ -489,12 +492,14 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     );
   const sendUpdateControlMessage = (message: DesktopUpdateControlCommand) =>
     config.desktopUpdateHttpControl === true
-      ? SubscriptionRef.update(httpUpdateCommands, (pending) => [
-          ...(message.type === "cancelDesktopUpdate"
-            ? pending.filter((command) => command.requestId !== message.requestId)
-            : pending),
-          message,
-        ])
+      ? SubscriptionRef.update(httpUpdateCommands, (pending) =>
+          [
+            ...(message.type === "cancelDesktopUpdate"
+              ? pending.filter((command) => command.requestId !== message.requestId)
+              : pending),
+            message,
+          ].slice(-HTTP_UPDATE_COMMANDS_LIMIT),
+        )
       : sendControlMessage(message);
 
   const setDiagnosticsDemand: DesktopTelemetryReceiver["Service"]["setDiagnosticsDemand"] = (

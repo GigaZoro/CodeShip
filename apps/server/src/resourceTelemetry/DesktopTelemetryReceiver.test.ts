@@ -17,6 +17,7 @@ import { describe, expect } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
+  HTTP_UPDATE_COMMANDS_LIMIT,
   make,
   makeApplyDesktopShellEnvironmentSnapshot,
   requireDesktopTelemetryWriteProgress,
@@ -64,6 +65,37 @@ describe("DesktopTelemetryReceiver", () => {
       expect(yield* receiver.nextDesktopUpdateCommand).toMatchObject({
         type: "cancelDesktopUpdate",
         requestId: "second",
+      });
+
+      // A desktop app that stops reading keeps only the newest commands.
+      for (let attempt = 0; attempt < HTTP_UPDATE_COMMANDS_LIMIT * 2; attempt++) {
+        yield* receiver.requestDesktopUpdate(`unread-${attempt}`);
+        yield* receiver.cancelDesktopUpdate(`unread-${attempt}`);
+      }
+      const readAndAcknowledge = Effect.gen(function* () {
+        const next = yield* receiver.nextDesktopUpdateCommand;
+        yield* receiver.acknowledgeDesktopUpdateCommand({
+          version: 1,
+          type: "desktopUpdateControlAcknowledgement",
+          requestId: next.requestId,
+          command: next.type,
+        });
+        return next;
+      });
+      const kept: Array<string> = [];
+      for (let read = 0; read < HTTP_UPDATE_COMMANDS_LIMIT; read++) {
+        kept.push((yield* readAndAcknowledge).requestId);
+      }
+      expect(kept).toEqual(
+        Array.from(
+          { length: HTTP_UPDATE_COMMANDS_LIMIT },
+          (_, index) => `unread-${HTTP_UPDATE_COMMANDS_LIMIT + index}`,
+        ),
+      );
+      yield* receiver.requestDesktopUpdate("after");
+      expect(yield* readAndAcknowledge).toMatchObject({
+        type: "requestDesktopUpdate",
+        requestId: "after",
       });
     }).pipe(
       Effect.provide(
