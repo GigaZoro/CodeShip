@@ -216,6 +216,12 @@ class WorkerChild
     if (this.spawned) this.emit("error", abortError(reason));
     else this.#abortedBeforeStart = { reason };
   };
+  // Node reads the output nobody reads once a child exits, so its close can follow.
+  readonly #flushOutput = () => {
+    for (const stream of this.#outputs()) {
+      if (stream.readable && stream.listenerCount("readable") === 0) stream.resume();
+    }
+  };
 
   readonly worker: SpawnWorker;
   readonly id: number;
@@ -268,6 +274,25 @@ class WorkerChild
     this.#abortedBeforeStart = undefined;
     this.exitCode = "errno" in error && typeof error.errno === "number" ? error.errno : null;
     this.emit("error", error);
+    process.nextTick(this.#flushOutput);
+  }
+
+  /** Nothing more comes for this child; Node reports its close once every output has ended. */
+  closed(): void {
+    let open = 1;
+    const settle = () => {
+      open--;
+      if (open === 0) this.emit("close", this.exitCode, this.signalCode);
+    };
+    for (const stream of this.#outputs()) {
+      open++;
+      NodeStream.finished(stream, { writable: false }, settle);
+    }
+    settle();
+  }
+
+  #outputs(): Array<NodeStream.Readable> {
+    return this.stdio.filter((stream) => stream instanceof NodeStream.Readable);
   }
 
   #detachSignal(): void {
@@ -349,7 +374,8 @@ class WorkerChild
   }
 
   kill(signal: NodeJS.Signals | number = "SIGTERM"): boolean {
-    if (this.exited) return false;
+    // A closed launcher drops the request, so nothing would be signalled.
+    if (this.exited || this.#unreachable()) return false;
     this.killed = true;
     this.worker.post({ type: "kill", id: this.id, signal });
     return true;
@@ -375,6 +401,7 @@ class WorkerChild
     this.stdin?.on("error", () => {});
     this.stdin?.destroy();
     this.emit("exit", code, signal);
+    process.nextTick(this.#flushOutput);
   }
 
   /** Nothing more reaches this child's process: end output so readers finish, and fail waiting writes. */
@@ -516,7 +543,7 @@ class SpawnWorker {
         child.exit(message.code, message.signal);
         break;
       case "close":
-        child.emit("close", child.exitCode, child.signalCode);
+        child.closed();
         this.release(child);
         break;
     }
@@ -537,7 +564,7 @@ class SpawnWorker {
       // Nothing more comes from the worker, so each child ends here with the close it would send.
       const end = () => {
         child.abandon();
-        child.emit("close", child.exitCode, child.signalCode);
+        child.closed();
       };
       if (child.exited) {
         end();

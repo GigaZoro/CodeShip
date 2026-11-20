@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 import type * as NodeStream from "node:stream";
 import * as NodeStreamPromises from "node:stream/promises";
 import * as NodeURL from "node:url";
+import * as NodeUtil from "node:util";
 import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
@@ -31,6 +32,13 @@ vi.mock("@t3tools/shared/envTrampoline", async (importOriginal) => ({
 
 const layer = SpawnWorker.layer.pipe(Layer.provide(NodeServices.layer));
 const missingCommand = "t3-missing-command-25245";
+// libuv's ENOENT, which Node reports for a missing command: -2 on POSIX, -4058 on Windows.
+const missingCommandErrno = [...NodeUtil.getSystemErrorMap()].find(
+  ([, [name]]) => name === "ENOENT",
+)?.[0];
+/** Node's close comes once each output stream has ended or its reader destroyed it. */
+const outputDone = (...streams: ReadonlyArray<NodeStream.Readable | null>) =>
+  streams.every((stream) => stream === null || stream.readableEnded || stream.destroyed);
 const text = <E>(stream: Stream.Stream<Uint8Array, E>) =>
   stream.pipe(Stream.decodeText(), Stream.mkString);
 const node = (script: string, args: ReadonlyArray<string> = [], options = {}) =>
@@ -156,12 +164,29 @@ describe("SpawnWorker", () => {
             new Promise((resolve, reject) => first.once("close", resolve).once("error", reject)),
         );
         const pool = first.worker.pool;
-        for (const [leave, command, args, closedWith] of [
-          ["finds no command", missingCommand, [], "close -2 null"],
+        // As with Node, a failed launch reports its error before the writes waiting on it fail, and
+        // a close comes last, once every output is done, whether or not anyone reads it.
+        for (const [leave, command, args, expected] of [
+          [
+            "finds no command",
+            missingCommand,
+            [],
+            ["error", "write EPIPE", `close ${missingCommandErrno} null, output done`],
+          ],
           // Node's spawn throws for a null byte in an argument; the launcher's throws in its thread.
-          ["cannot be launched", process.execPath, ["-e", "\u0000"], "close null null"],
-          ["loses its launcher first", process.execPath, ["-e", ""], "close null null"],
-          ["closes", process.execPath, ["-e", ""], undefined],
+          [
+            "cannot be launched",
+            process.execPath,
+            ["-e", "\u0000"],
+            ["error", "write EPIPE", "close null null, output done"],
+          ],
+          [
+            "loses its launcher first",
+            process.execPath,
+            ["-e", ""],
+            ["error", "write EPIPE", "close null null, output done"],
+          ],
+          ["closes", process.execPath, ["-e", ""], ["close 0 null, output done", "write EPIPE"]],
         ] as const) {
           const child = pool.spawn(command, args, { stdio: ["pipe", "pipe", "pipe", "pipe"] });
           const output = NodeStreamPromises.finished(child.stdout!.resume());
@@ -172,8 +197,17 @@ describe("SpawnWorker", () => {
           );
           const events: Array<string | undefined> = [];
           const extraEnd = vi.fn();
+          const closed = new Promise<void>((resolve) =>
+            child
+              .once("error", () => events.push("error"))
+              .once("close", (code, signal) => {
+                const done = outputDone(child.stdout, child.stderr, extra);
+                events.push(`close ${code} ${signal}, output ${done ? "done" : "open"}`);
+                resolve();
+              }),
+          );
           if (leave === "closes") {
-            yield* Effect.promise(() => new Promise((resolve) => child.once("close", resolve)));
+            yield* Effect.promise(() => closed);
             extra.write("late", (error) => events.push(error?.message));
             extra.end(extraEnd);
           } else {
@@ -182,28 +216,39 @@ describe("SpawnWorker", () => {
               events.push(error?.message);
               extra.end(extraEnd);
             });
-            const closed = new Promise<void>((resolve) =>
-              child
-                .once("error", () => events.push("error"))
-                .once("close", (code, signal) => {
-                  events.push(`close ${code} ${signal}`);
-                  resolve();
-                }),
-            );
             // The launcher reports the start by a message, which cannot have arrived yet.
             if (leave === "loses its launcher first") child.worker.fail(new Error("lost"));
             yield* Effect.promise(() => closed);
           }
           yield* Effect.promise(() => Promise.all([extraClosed, output]));
-          // As with Node, a failed launch reports its error before the writes waiting on it fail,
-          // and its close after both.
           expect([leave, events, extraEnd.mock.calls]).toEqual([
             leave,
-            closedWith === undefined ? ["write EPIPE"] : ["error", "write EPIPE", closedWith],
+            expected,
             [[expect.objectContaining({ code: "EPIPE" })]],
           ]);
         }
       }),
+  );
+
+  it.live("closes a child once a reader holding its output reads it, not before", () =>
+    Effect.gen(function* () {
+      const pool = new SpawnWorker.__testing.SpawnWorkerPool("win32");
+      const child = pool.spawn(process.execPath, ["-e", "process.stdout.write('held')"], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      pool.close();
+      // Node reads no output that has a 'readable' listener, and reports no close until it ends.
+      child.stdout!.on("readable", () => {});
+      let closes = 0;
+      child.on("close", () => closes++);
+      // The launcher ends once it has sent the close, whether or not the output was read.
+      yield* Effect.promise(() => NodeEvents.EventEmitter.once(child.worker.worker, "exit"));
+      const closesBeforeRead = closes;
+      const closed = NodeEvents.EventEmitter.once(child, "close");
+      const read = String(child.stdout!.read());
+      yield* Effect.promise(() => closed);
+      expect([closesBeforeRead, read, closes]).toEqual([0, "held", 1]);
+    }),
   );
 
   it.live("kills running commands, detached or not, and on scope interruption", () =>
@@ -233,7 +278,7 @@ describe("SpawnWorker", () => {
   );
 
   it.live(
-    "never ends a crashed launcher's child by its bare pid on Windows, and reports a failed tree stop",
+    "never ends a crashed launcher's child by its bare pid on Windows, reports a failed tree stop, and kills nothing on abort meanwhile",
     () =>
       Effect.gen(function* () {
         // The root may have ended since its launcher died, so its pid can name another process.
@@ -244,18 +289,24 @@ describe("SpawnWorker", () => {
           ["cannot launch", true],
           ["cannot get a launcher", true],
         ] as const) {
+          // @effect-diagnostics-next-line abortControllerInEffect:off -- a Node caller's own signal, aborted mid-stop.
+          const aborts = new AbortController();
           // It ends by itself once the dead launcher's end of its stdin closes.
-          const root = SpawnWorker.spawnPiped(
-            process.execPath,
-            ["-e", "process.stdin.resume()"],
-            {},
-          );
+          const root = SpawnWorker.spawnPiped(process.execPath, ["-e", "process.stdin.resume()"], {
+            signal: aborts.signal,
+          });
+          const rootErrors: Array<string> = [];
+          root.on("error", (error: Error) => rootErrors.push(error.name));
           yield* Effect.promise(() => new Promise((resolve) => root.once("spawn", resolve)));
           const pid = root.pid;
           if (pid === undefined) throw new Error("The launcher reported no pid.");
           const pool = root.worker.pool;
           const launch = pool.spawn;
+          let killedWhileStopping: boolean | undefined;
           using _stop = vi.spyOn(pool, "spawn").mockImplementation((_command, _args, options) => {
+            // The tree stop starts once the launcher is gone, so an abort now can signal nothing.
+            aborts.abort();
+            killedWhileStopping = root.killed;
             if (stop === "cannot launch") return launch(missingCommand, [], options);
             if (stop === "cannot get a launcher") throw new Error("No thread for a launcher.");
             const code = stop === "exits 0" ? 0 : 1;
@@ -275,7 +326,9 @@ describe("SpawnWorker", () => {
             stop,
             kill.mock.calls.some(([target]) => target === pid),
             report.mock.calls.length,
-          ]).toEqual([stop, false, reported ? 1 : 0]);
+            killedWhileStopping,
+            rootErrors,
+          ]).toEqual([stop, false, reported ? 1 : 0, false, []]);
         }
       }),
   );
@@ -466,6 +519,8 @@ describe("SpawnWorker", () => {
     type Observed = NodeEvents.EventEmitter & {
       readonly killed: boolean;
       readonly stdin: NodeStream.Writable | null;
+      readonly stdout: NodeStream.Readable | null;
+      readonly stderr: NodeStream.Readable | null;
     };
     // What a caller sees, in order, from Node's spawn or from a pool of the test's own, closed
     // once the launch is sent so a child it drops ends its launcher instead of hanging the test.
@@ -511,7 +566,7 @@ describe("SpawnWorker", () => {
         );
         child = launched;
       }
-      const seen: Array<unknown> = [];
+      const seen: Array<unknown> = [["killed at return", child.killed]];
       if (abort === "once sent") {
         controller.abort();
         seen.push(["aborted", child.killed]);
@@ -534,12 +589,17 @@ describe("SpawnWorker", () => {
       child.on("exit", (code: number | null, signal: NodeJS.Signals | null) =>
         seen.push(["exit", code, signal]),
       );
+      let closes = 0;
       const closed = new Promise((resolve) =>
-        child.on("close", (code: number | null, signal: NodeJS.Signals | null) =>
-          resolve(["close", code, signal, child.killed]),
-        ),
+        child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+          closes++;
+          resolve(["close", code, signal, child.killed, outputDone(child.stdout, child.stderr)]);
+        }),
       );
       seen.push(await (ended === undefined ? closed : Promise.race([closed, ended])));
+      // The launcher ends once its last child closes, and its end closes no child again.
+      await ended;
+      seen.push(["closes", closes]);
       // An abort that came first kills on the next tick. Node also reports its start on that tick,
       // which the worker cannot, so a failed launch and an abort at the start are not compared.
       if (command !== missingCommand && abort !== "once started") {
@@ -567,17 +627,21 @@ describe("SpawnWorker", () => {
       await run(missingCommand, [], "once sent", new SpawnWorkerPool("win32")),
     ]).toEqual([
       [
+        ["killed at return", false],
         ["aborted", true],
         "spawn",
         ["error", "AbortError", "ABORT_ERR", true],
         ["exit", null, "SIGTERM"],
-        ["close", null, "SIGTERM", true],
+        ["close", null, "SIGTERM", true, true],
+        ["closes", 1],
         ["killed on the next tick", true],
       ],
       [
+        ["killed at return", false],
         ["aborted", true],
         ["error", "Error", "ENOENT", false],
-        ["close", -2, null, false],
+        ["close", missingCommandErrno, null, false, true],
+        ["closes", 1],
       ],
     ]);
   });
