@@ -432,6 +432,14 @@ export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
+  readonly stopOwnedDelegatedChild: (input: {
+    readonly commandId: CommandId;
+    readonly parentThreadId: ThreadId;
+    readonly parentRunId: RunId;
+    readonly childThreadId: ThreadId;
+    readonly taskId: NodeId;
+    readonly reason?: string | undefined;
+  }) => Effect.Effect<void, OrchestratorV2Error>;
   readonly delegatedTaskResultPending: (
     childThreadId: ThreadId,
     taskId?: NodeId,
@@ -15438,6 +15446,65 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       : threadDispatch.withLock(parentThreadId, dispatch);
   });
 
+  const stopOwnedDelegatedChild = Effect.fn("Orchestrator.stopOwnedDelegatedChild")(
+    function* (input: Parameters<OrchestratorV2Shape["stopOwnedDelegatedChild"]>[0]) {
+      const { parentThreadId, childThreadId, taskId, parentRunId } = input;
+      const parent = yield* projectionStore
+        .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: parentThreadId, cause }),
+          ),
+        );
+      const task = parent.subagents.find((candidate) => candidate.id === taskId);
+      if (
+        task?.origin !== "app_owned" ||
+        task.runId !== parentRunId ||
+        task.result !== null ||
+        task.childThreadId !== childThreadId
+      )
+        return;
+      const child = yield* projectionStore
+        .getThreadRecords(childThreadId, ["runs", "contextTransfers"])
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
+          ),
+        );
+      if (
+        child.thread.lineage.parentThreadId !== parentThreadId ||
+        child.thread.lineage.relationshipToParent !== "subagent"
+      )
+        return;
+      // Original spawns bind through a context transfer. Follow-ups bind on their new run.
+      const spawn =
+        child.thread.forkedFrom?.type === "node" && child.thread.forkedFrom.nodeId === taskId
+          ? child.contextTransfers.find(
+              (transfer) =>
+                transfer.type === "subagent_spawn" &&
+                transfer.sourceThreadId === parentThreadId &&
+                transfer.targetThreadId === childThreadId,
+            )
+          : undefined;
+      const source = child.runs.findLast(
+        (run) => run.delegatedTaskId === taskId || run.id === spawn?.targetRunId,
+      );
+      if (source === undefined) return;
+      const command = { commandId: input.commandId, threadId: childThreadId, runId: source.id };
+      yield* dispatchWithReceiptEffect(
+        source.status === "queued" && source.restartContinuationOfRunId === undefined
+          ? { ...command, type: "queued-run.cancel" }
+          : { ...command, type: "run.interrupt", reason: input.reason },
+      );
+    },
+    // Follow-up admission acquires the parent lock before the child lock.
+    (effect, input) =>
+      threadDispatch.withLock(
+        input.parentThreadId,
+        threadDispatch.withLock(input.childThreadId, effect),
+      ),
+  );
+
   const handleRunUpdate = Effect.fn("Orchestrator.handleRunUpdate")(
     function* (stored: OrchestrationV2StoredEvent) {
       if (stored.event.type !== "run.updated") return;
@@ -15720,6 +15787,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     recoverDelegatedTasks,
     recoverDelegatedTask,
     delegatedTaskResultPending,
+    stopOwnedDelegatedChild,
     restartContinuationPending: Effect.fn("OrchestratorV2.restartContinuationPending")(
       function (run) {
         return awaitsRestartContinuation(run).pipe(Effect.orElseSucceed(() => false));
