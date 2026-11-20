@@ -716,6 +716,11 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — A desktop preview tab's viewers and recordings no longer fight over its screencast
+
+- When a viewer and a recording streamed the same desktop browser tab, each one's screencast settings replaced the other's: a scrolling viewer shrank the recording's frames to half size and lower quality, and a settled viewer's size kept capping the recording. The tab now runs one screencast at the best quality and largest size any streaming session asked for, and re-merges when a session starts, stops or closes.
+- Frames now reach only the sessions that are streaming, so a viewer paused during a screenshot or a recording session no longer receives and acknowledges another session's frames.
+
 ## 2026-11-20 — Stopping a Windows command's process tree always says when its first process started and ended
 
 - When T3.CodeShip stops a command on Windows together with what it started, a process that took the first process's id after that process ended was in some cases still taken for it, and its children ended. This happened when the command's process had been seen to exit but the stop did not pass that moment on, and when the stop could not read when the first process had started. The command runner and the process worker now pass the moment they saw the first process exit, and every stop must state both when the first process started (or that this is unknown) and whether it ended, so a new caller can no longer leave either out.

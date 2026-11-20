@@ -9,6 +9,8 @@ export interface CdpRelayTarget {
     owner?: string,
   ) => Promise<unknown>;
   readonly sessionDetached?: (owner: string) => void;
+  /** Whether a session (the main connection's is `undefined`) streams; only those get screencast frames. */
+  readonly streamsScreencast?: (owner: string | undefined) => boolean;
   /** The page's own CDP target id; Playwright keys the main frame by it. */
   readonly targetId: () => Promise<string>;
   readonly url: () => string;
@@ -251,8 +253,15 @@ export function createCdpRelayConnection(
         send({ method, params, sessionId });
         return;
       }
-      for (const [id, kind] of sessions)
-        if (kind === "page") send({ method, params, sessionId: id });
+      for (const [id, kind] of sessions) {
+        if (kind !== "page") continue;
+        if (
+          method === "Page.screencastFrame" &&
+          target.streamsScreencast?.(id === PAGE_SESSION_ID ? undefined : id) === false
+        )
+          continue;
+        send({ method, params, sessionId: id });
+      }
     },
   };
 }
