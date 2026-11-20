@@ -2,6 +2,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import * as ProviderSkills from "../provider/ProviderSkills.ts";
+import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
@@ -84,9 +85,10 @@ const normalize = (target: string) => {
 const layerWorktreeLocation = (
   worktreesDir = managedWorktreesDir,
   skillFailure?: ProviderSkills.ProviderSkillInvocationError,
+  pathLayer: Layer.Layer<Path.Path> = Path.layer,
 ) =>
   Layer.mergeAll(
-    Path.layer,
+    pathLayer,
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
     ServerSettings.layerTest({
       providerInstances: {
@@ -1015,7 +1017,7 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        layerWorktreeLocation(input.worktreesDir, input.skillFailure),
+        layerWorktreeLocation(input.worktreesDir, input.skillFailure, NodePath.layer),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed(
             input.otherAutoProvider
@@ -1836,7 +1838,9 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     harness.getThreadRecords.mockImplementationOnce(() =>
       Deferred.succeed(readEntered, undefined).pipe(Effect.as(harness.projection())),
     );
-    const holder = yield* withWorkspaceLease(worktreePath, Deferred.await(release)).pipe(
+    // The service keys its lease by the resolved path, which gains a drive letter on Windows.
+    const resolvedPath = (yield* Path.Path).resolve(worktreePath);
+    const holder = yield* withWorkspaceLease(resolvedPath, Deferred.await(release)).pipe(
       Effect.forkChild({ startImmediately: true }),
     );
     const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
@@ -1852,7 +1856,7 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     yield* Fiber.join(startup);
     expect(harness.open).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
-  }),
+  }).pipe(Effect.provide(NodePath.layer)),
 );
 
 // regression: #15784 superseded provider startups kept running

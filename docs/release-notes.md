@@ -113,6 +113,12 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — The server test suite runs on Windows in CI
+
+- Every CI run that touches the server now also runs its tests on Windows, in eight shards beside the Linux ones. Maintainers: the manual Windows Tests workflow is gone; its lane is the `Test Server Windows` job in `ci.yml`.
+- Fixed on the way: a Grok or other ACP agent started through a `.cmd` launcher on Windows never received its input, because the session started it detached. Windows sessions now start it attached and still stop its whole process tree.
+- Tests that emulate a POSIX host or need an executable shebang script skip themselves on Windows instead of hanging for two minutes each.
+
 ## 2026-11-20 — A chat that cannot read Claude's settings says where and how
 
 - When a chat cannot start because Claude's settings could not be resolved, the failure now names the step (settings files, account worker, `--settings` check or organization policy) and the kind (timeout, could not start, non-zero exit, unreadable output or SDK error) instead of one generic sentence. It never includes settings, launch arguments, command output or other raw error text.

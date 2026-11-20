@@ -280,11 +280,10 @@ refactors built in. VS Code uses it through `js/ts.tsdk.path` in `.vscode/settin
 
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
-The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
-Windows investigation while that suite is not a required gate. A full `apps/server` run there
-splits into eight duration-balanced shards. In a fork,
-[windows-check-fork.yml](../../.github/workflows/windows-check-fork.yml) runs `check:changed` on
-Windows for every push to `main`, because the push gate runs it only on the machine that pushes.
+CI runs the `apps/server` suite on Windows too, as eight duration-balanced `Test Server Windows`
+shards. To reproduce one locally on Windows, run `vp test run --shard N/8` from `apps/server`. In a
+fork, [windows-check-fork.yml](../../.github/workflows/windows-check-fork.yml) runs `check:changed`
+on Windows for every push to `main`, because the push gate runs it only on the machine that pushes.
 
 ### Unused code
 

@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- fake systemd binaries live in a temp dir.
 import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -17,6 +16,9 @@ import * as ServerConfig from "../config.ts";
 import { makeCodexAppServerSpawnCommand } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { classifyScope, make, ownedAgentSlice, type ScopeState } from "./agentScope.ts";
+
+// A relative directory keeps PATH free of the drive colon its POSIX delimiter would split.
+const makeBinDirectory = () => NodeFS.mkdtempSync(".t3-agent-scope-");
 
 const running: ScopeState = {
   loadState: "loaded",
@@ -66,7 +68,7 @@ const withFakeSystemd = <A, E>(
   } = {},
 ) =>
   Effect.gen(function* () {
-    const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
+    const bin = makeBinDirectory();
     for (const name of ["systemd-run", "systemctl", "agent"]) {
       NodeFS.writeFileSync(NodePath.join(bin, name), "", { mode: 0o755 });
     }
@@ -119,6 +121,8 @@ const withFakeSystemd = <A, E>(
         }),
     });
     const fileSystem = yield* FileSystem.FileSystem;
+    const toFakeCgroup = (path: string) =>
+      path.replaceAll("\\", "/").replace("/sys/fs/cgroup", cgroupRoot);
     const scope = yield* make.pipe(
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
@@ -129,10 +133,9 @@ const withFakeSystemd = <A, E>(
       }),
       Effect.provideService(FileSystem.FileSystem, {
         ...fileSystem,
-        readFileString: (path, encoding) =>
-          fileSystem.readFileString(path.replace("/sys/fs/cgroup", cgroupRoot), encoding),
+        readFileString: (path, encoding) => fileSystem.readFileString(toFakeCgroup(path), encoding),
         writeFileString: (path, data, options) =>
-          fileSystem.writeFileString(path.replace("/sys/fs/cgroup", cgroupRoot), data, options),
+          fileSystem.writeFileString(toFakeCgroup(path), data, options),
       }),
     );
     const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -476,7 +479,7 @@ describe("AgentScope service", () => {
 
   it.effect("launches macOS agents through the launcher that runs them below the server", () =>
     Effect.gen(function* () {
-      const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
+      const bin = makeBinDirectory();
       const agentPath = NodePath.join(bin, "agent");
       NodeFS.writeFileSync(agentPath, "", { mode: 0o755 });
       yield* Effect.addFinalizer(() =>
