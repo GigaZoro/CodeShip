@@ -355,7 +355,7 @@ replacement or reboot ends a legacy task; an unknown identity alone does not pro
 Older Windows rows retain their millisecond evidence for proving loss, without converting it into
 exact ownership. A live rounded match leaves cleanup pending until a full wrapper identity appears
 or loss is proven. A root with a full identity can be stopped through the same opened handle used
-to verify it; PID ancestry cannot recover descendant ownership. POSIX wrappers publish their
+to verify it; PID ancestry cannot recover descendant ownership. macOS wrappers publish their
 own `ps` identity before taking the launch gate; legacy PID-only records require an identity
 within the recorded launch and PID-file bounds. Persisted PID replacement or reboot evidence
 forbids further PID or process-group signals.
