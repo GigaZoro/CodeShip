@@ -224,10 +224,11 @@ describe("MonitoringFixChats", () => {
 
   it.effect("starts in a worktree from the default branch when the project uses worktrees", () =>
     Effect.gen(function* () {
-      const { launches } = yield* start({
+      const { result, launches } = yield* start({
         existingProjects: [projectRecord(site, "Site")],
         settings: { defaultThreadEnvMode: "worktree" },
       });
+      expect(result).toMatchObject({ success: { workspaceStrategy: "worktree" } });
       expect(launches[0]?.workspaceStrategy).toEqual({
         type: "worktree",
         baseRef: "origin/main",

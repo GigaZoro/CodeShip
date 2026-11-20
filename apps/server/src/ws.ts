@@ -2254,7 +2254,10 @@ export const layerWsRpc = (
               result.resumed
                 ? Effect.void
                 : analytics
-                    .record("client.thread.started", { ...originProps, workspaceStrategy: "root" })
+                    .record("client.thread.started", {
+                      ...originProps,
+                      workspaceStrategy: result.workspaceStrategy,
+                    })
                     .pipe(
                       Effect.andThen(analytics.record("client.turn.requested", originProps)),
                       Effect.ignore,
@@ -2663,7 +2666,10 @@ export const layerWsRpc = (
               result.resumed
                 ? Effect.void
                 : analytics
-                    .record("client.thread.started", { ...originProps, workspaceStrategy: "root" })
+                    .record("client.thread.started", {
+                      ...originProps,
+                      workspaceStrategy: result.workspaceStrategy,
+                    })
                     .pipe(
                       Effect.andThen(analytics.record("client.turn.requested", originProps)),
                       Effect.ignore,

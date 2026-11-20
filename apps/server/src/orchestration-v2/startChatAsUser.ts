@@ -48,6 +48,15 @@ export interface StartChatAsUserInput {
   readonly workspace: "root" | "project-default";
 }
 
+/** `resumed` when this request repeats one that already started the chat. */
+export type StartChatAsUserResult =
+  | { readonly threadId: ThreadId; readonly resumed: true }
+  | {
+      readonly threadId: ThreadId;
+      readonly resumed: false;
+      readonly workspaceStrategy: ThreadLaunch.ThreadLaunchWorkspaceStrategy["type"];
+    };
+
 type Providers = ReadonlyArray<ServerProvider>;
 
 /**
@@ -115,7 +124,9 @@ export const makeStartChatAsUser = Effect.gen(function* () {
       }),
     );
 
-  return Effect.fn("startChatAsUser")(function* (input: StartChatAsUserInput) {
+  return Effect.fn("startChatAsUser")(function* (
+    input: StartChatAsUserInput,
+  ): Effect.fn.Return<StartChatAsUserResult, StartChatAsUserError> {
     const { projectId } = input;
     const settings = yield* settingsService.getSettings.pipe(
       Effect.mapError(() => failure("launch-failed", "Could not read the model settings.")),
@@ -183,7 +194,11 @@ export const makeStartChatAsUser = Effect.gen(function* () {
         creationSource: input.creationSource,
       })
       .pipe(
-        Effect.map(({ threadId, resumed }) => ({ threadId, resumed })),
+        Effect.map(({ threadId, resumed }): StartChatAsUserResult =>
+          resumed
+            ? { threadId, resumed }
+            : { threadId, resumed, workspaceStrategy: workspaceStrategy.type },
+        ),
         Effect.mapError((error) =>
           failure(
             error._tag === "ThreadManagementProviderInstanceDisabledError"

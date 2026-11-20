@@ -3,13 +3,15 @@ import {
   ManualStepStartChatError,
   type ManualStepStartChatFailure,
   type ManualStepStartChatInput,
-  type ManualStepStartChatResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { makeStartChatAsUser } from "../orchestration-v2/startChatAsUser.ts";
+import {
+  makeStartChatAsUser,
+  type StartChatAsUserResult,
+} from "../orchestration-v2/startChatAsUser.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 
 const MAX_TITLE_LENGTH = 120;
@@ -18,11 +20,9 @@ export class ManualStepChats extends Context.Service<
   ManualStepChats,
   {
     /** Starts a chat in No project whose first message is the step and the user's decision. */
-    readonly start: (input: ManualStepStartChatInput) => Effect.Effect<
-      /** `resumed` when this request repeats one that already started the chat. */
-      ManualStepStartChatResult & { readonly resumed: boolean },
-      ManualStepStartChatError
-    >;
+    readonly start: (
+      input: ManualStepStartChatInput,
+    ) => Effect.Effect<StartChatAsUserResult, ManualStepStartChatError>;
   }
 >()("t3/threadPage/ManualStepChats") {}
 

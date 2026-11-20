@@ -4,7 +4,7 @@ import {
   MonitoringFixChatError,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import { monitoringFixChatFailureMessage } from "./text.ts";
 

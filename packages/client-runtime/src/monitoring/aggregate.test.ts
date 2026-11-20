@@ -197,14 +197,18 @@ describe("fixChatTarget", () => {
     const target = fixChatTarget(
       [
         chat("a", { findings: [slow(100)] }, "env-a"),
-        chat("b", { projectId: "p2", findings: [slow(300)] }, "env-b"),
-        chat("c", { projectId: "p2", findings: [slow(150)] }, "env-b"),
+        chat("b", { projectId: ProjectId.make("p2"), findings: [slow(300)] }, "env-b"),
+        chat("c", { projectId: ProjectId.make("p2"), findings: [slow(150)] }, "env-b"),
         chat("d", { findings: [slow(400)] }, "env-b"),
-        chat("e", { projectId: "p3", findings: [] }, "env-b"),
+        chat("e", { projectId: ProjectId.make("p3"), findings: [] }, "env-b"),
       ],
       "slow_command",
     );
-    expect(target).toEqual({ environmentId: "env-b", projectId: "p2", threadIds: ["d", "b", "c"] });
+    expect(target).toEqual({
+      environmentId: "env-b",
+      projectId: ProjectId.make("p2"),
+      threadIds: ["d", "b", "c"],
+    });
   });
 
   it("caps the chats a fix chat reads", () => {
@@ -218,7 +222,7 @@ describe("fixChatTarget", () => {
 
   it("picks the project over every chat with the weak point, not only the chats it reads", () => {
     const worst = Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS }, (_, index) =>
-      chat(`w${index}`, { projectId: "p2", findings: [slow(100)] }),
+      chat(`w${index}`, { projectId: ProjectId.make("p2"), findings: [slow(100)] }),
     );
     const rest = Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS + 1 }, (_, index) =>
       chat(`r${index}`, { findings: [slow(99)] }),

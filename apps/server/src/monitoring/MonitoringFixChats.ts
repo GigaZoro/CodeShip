@@ -3,7 +3,6 @@ import {
   MonitoringFixChatError,
   type MonitoringFixChatFailure,
   type MonitoringFixChatInput,
-  type MonitoringFixChatResult,
   type MonitoringThreadSummary,
   type ProjectId,
   ThreadId,
@@ -15,7 +14,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
-import { makeStartChatAsUser } from "../orchestration-v2/startChatAsUser.ts";
+import {
+  makeStartChatAsUser,
+  type StartChatAsUserResult,
+} from "../orchestration-v2/startChatAsUser.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Project from "../project/ProjectService.ts";
@@ -41,11 +43,9 @@ export class MonitoringFixChats extends Context.Service<
      * Starts a chat that traces one weak point in the given chats to its root cause and fixes it,
      * in the given project, where a new chat there would start.
      */
-    readonly start: (input: MonitoringFixChatInput) => Effect.Effect<
-      /** `resumed` when this request repeats one that already started the chat. */
-      MonitoringFixChatResult & { readonly resumed: boolean },
-      MonitoringFixChatError
-    >;
+    readonly start: (
+      input: MonitoringFixChatInput,
+    ) => Effect.Effect<StartChatAsUserResult, MonitoringFixChatError>;
   }
 >()("t3/monitoring/MonitoringFixChats") {}
 
@@ -248,7 +248,7 @@ const make = Effect.gen(function* () {
         })
         .toSorted((left, right) => right.wastedMs - left.wastedMs);
       if (hits.length === 0) {
-        if (started !== null) return { threadId, resumed: true };
+        if (started !== null) return { threadId, resumed: true as const };
         return yield* failure(
           "no-chats",
           "None of these chats still shows this weak point. Monitoring may have analyzed them again.",
