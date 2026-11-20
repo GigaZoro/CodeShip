@@ -98,6 +98,19 @@ test("main refuses a push until check:changed passed for the exact tree it pushe
     assert.equal(checked.status, 0, checked.stderr);
   }));
 
+test("computing the working tree writes no objects to the repository", () =>
+  withRoot((root) => {
+    const { work, git, write } = fixture(root);
+    write("app.txt", "edited but never committed\n");
+    write("untracked.txt", "new\n");
+    const before = git("count-objects", "-v");
+    const tree = workingTree(work);
+    assert.equal(git("count-objects", "-v"), before);
+    // The id is what a commit of this tree would get.
+    git("add", "--all");
+    assert.equal(git("write-tree"), tree);
+  }));
+
 test("a pass covers the push only when it compared against the commit main is at", () =>
   withRoot((root) => {
     const { work, git, write, commit, base } = fixture(root);

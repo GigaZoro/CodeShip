@@ -26,16 +26,28 @@ const receiptDirectory = (cwd) =>
     "passed",
   );
 
-// The tree a commit of everything check:changed reads would get: tracked changes and the untracked
-// files .gitignore does not exclude, staged or not. A copy of the index keeps its stat cache, so
-// unchanged files are not hashed again.
+// The tree a commit of everything check:changed reads would get, staged or not. A copy of the index
+// keeps its stat cache. New objects go to a scratch directory: nothing references them, so in the
+// repository they would pile up as loose garbage.
 function workingTree(cwd) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "t3-check-changed-index-"));
   try {
     const index = path.join(temp, "index");
     const real = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
     if (fs.existsSync(real)) fs.copyFileSync(real, index);
-    const env = { ...process.env, GIT_INDEX_FILE: index };
+    const objects = path.join(temp, "objects");
+    fs.mkdirSync(objects);
+    const env = {
+      ...process.env,
+      GIT_INDEX_FILE: index,
+      GIT_OBJECT_DIRECTORY: objects,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: git(cwd, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "objects",
+      ]),
+    };
     git(cwd, ["add", "--all", "--", ":/"], env);
     return git(cwd, ["write-tree"], env);
   } finally {
