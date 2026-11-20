@@ -1,3 +1,7 @@
+## 2026-11-21 — Renew unattended provider credentials from 1Password
+
+- CodeShip rereads credentials from Linux 1Password service accounts and applies rotated tokens after the provider's live sessions close. If the vault read fails, the provider keeps its last working credential.
+
 ## 2026-11-21 — Use 1Password tokens for MCP servers
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.

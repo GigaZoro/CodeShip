@@ -126,6 +126,7 @@ const bounded = <A, E extends { readonly _tag: string }, R>(
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
   definition,
+  unattended: (config) => config.auth === "linux-service-account",
   read: Effect.fn("OnePasswordDriver.read")(function* (config, references) {
     if (config.auth === "linux-service-account") {
       if ((yield* HostProcess.Platform) !== "linux") {

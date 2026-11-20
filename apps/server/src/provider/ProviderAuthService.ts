@@ -13,16 +13,38 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Function from "effect/Function";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 import type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 
 export type { ProviderAuthController } from "@t3tools/provider-core/server/auth";
+
+function credentialBindingInstances(
+  instances: ReadonlyArray<ProviderInstance>,
+  instanceId: ProviderInstanceId,
+  binding: ProviderAuthController["credentialBinding"],
+) {
+  if (!binding) return [instanceId];
+  return [
+    instanceId,
+    ...instances
+      .filter(
+        (instance) =>
+          instance.instanceId !== instanceId &&
+          instance.auth?.credentialBinding?.key === binding.key &&
+          instance.auth.credentialBinding.owner === binding.owner,
+      )
+      .map((instance) => instance.instanceId),
+  ];
+}
 
 interface ProviderAuthTarget {
   readonly instanceId: ProviderInstanceId;
@@ -127,17 +149,7 @@ export const makeProviderAuthService = Effect.gen(function* () {
     binding: ProviderAuthController["credentialBinding"],
   ) {
     if (!binding) return [instanceId];
-    return [
-      instanceId,
-      ...(yield* registry.listInstances)
-        .filter(
-          (instance) =>
-            instance.instanceId !== instanceId &&
-            instance.auth?.credentialBinding?.key === binding.key &&
-            instance.auth.credentialBinding.owner === binding.owner,
-        )
-        .map((instance) => instance.instanceId),
-    ];
+    return credentialBindingInstances(yield* registry.listInstances, instanceId, binding);
   });
 
   // Invalidate credentials using session bindings; model selection may already point to another provider.
@@ -386,3 +398,30 @@ export const makeProviderAuthService = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(ProviderAuthService, makeProviderAuthService);
+
+export const layerUnattendedSecretRefresh = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const mutator = yield* ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator;
+    const refresh = mutator.refreshUnattendedSecrets((instanceId) =>
+      Effect.gen(function* () {
+        const instances = yield* registry.listInstances;
+        const auth = instances.find((instance) => instance.instanceId === instanceId)?.auth;
+        const isChanging = auth?.isAccessBlocked ?? auth?.isChangingCredentials;
+        if (isChanging !== undefined && (yield* isChanging)) return false;
+        const peers = credentialBindingInstances(instances, instanceId, auth?.credentialBinding);
+        const onSameHome = ProviderInstanceRegistry.instancesSharingHome(instances, instanceId);
+        return yield* providerSessions.reserveIdleCredentialBinding(
+          [...new Set([...peers, ...onSameHome])],
+          { requireDisconnected: true },
+        );
+      }),
+    );
+    yield* refresh.pipe(
+      Effect.repeat(Schedule.spaced("5 minutes")),
+      Effect.delay("5 minutes"),
+      Effect.forkScoped,
+    );
+  }),
+);

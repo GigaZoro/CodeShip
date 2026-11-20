@@ -22,6 +22,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
@@ -29,6 +30,7 @@ import { AcpProviderCapabilitiesV2 } from "@t3tools/provider-acp/server/adapter"
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderAuthService from "./ProviderAuthService.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import * as ProviderInstanceRegistrySync from "./ProviderInstanceRegistrySync.ts";
 
 const instanceId = ProviderInstanceId.make("antigravity-personal");
@@ -437,6 +439,38 @@ const observeAuth = Effect.fn("ProviderAuthService.test.observeAuth")(function* 
 });
 
 describe("ProviderAuthService", () => {
+  it.effect(
+    "periodically reserves a disconnected account before applying unattended credentials",
+    () =>
+      Effect.gen(function* () {
+        const refreshed = yield* Deferred.make<boolean>();
+        const instance = makeInstance({ instanceId, enabled: true });
+        const providers = Layer.mergeAll(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            listInstances: Effect.succeed([instance]),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            reserveIdleCredentialBinding: (ids, options) =>
+              Effect.succeed(ids.includes(instanceId) && options?.requireDisconnected === true),
+          }),
+          Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({
+            refreshUnattendedSecrets: (reserve) =>
+              Effect.scoped(reserve(instanceId)).pipe(
+                Effect.flatMap((reserved) => Deferred.succeed(refreshed, reserved)),
+                Effect.asVoid,
+              ),
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* TestClock.adjust("5 minutes");
+          assert.isTrue(yield* Deferred.await(refreshed));
+        }).pipe(
+          Effect.provide(
+            ProviderAuthService.layerUnattendedSecretRefresh.pipe(Layer.provide(providers)),
+          ),
+        );
+      }),
+  );
   it.effect("a limits sign-in and its sign-out leave the account's sessions running", () =>
     Effect.gen(function* () {
       const { service, actions, sessions } = yield* makeHarness({

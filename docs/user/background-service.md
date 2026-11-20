@@ -111,6 +111,10 @@ a 1Password service account with only `read_items` on that vault and install
 1Password CLI 2.18 or later at `/usr/bin/op` from the vendor's signed package.
 Keep the CLI executable and its parent directories root-owned and writable only
 by root. A 1Password desktop app and interactive unlock are unnecessary.
+CodeShip checks instances whose secret references all allow unattended reads
+about every five minutes. It applies changed values after the provider has no
+live sessions and keeps the last working value if the vault cannot be read.
+A running session keeps the credentials it started with.
 [Install 1Password CLI](https://www.1password.dev/cli/get-started),
 [set up a 1Password service account](https://www.1password.dev/service-accounts/get-started).
 

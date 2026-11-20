@@ -186,6 +186,7 @@ export interface ProviderSessionManagerV2Shape {
   >;
   readonly reserveIdleCredentialBinding: (
     instanceIds: ReadonlyArray<ProviderInstanceId>,
+    options?: { readonly requireDisconnected?: boolean },
   ) => Effect.Effect<boolean, never, Scope.Scope>;
   readonly isLive: (providerSessionId: ProviderSessionId) => Effect.Effect<boolean>;
   readonly close: (
@@ -437,12 +438,16 @@ export const layerWithOptions = (
       const openingSessions = new Set<{ readonly instanceId: ProviderInstanceId }>();
       const reserveIdleCredentialBinding = Effect.fn(
         "ProviderSessionManager.reserveIdleCredentialBinding",
-      )(function* (ids: ReadonlyArray<ProviderInstanceId>) {
+      )(function* (
+        ids: ReadonlyArray<ProviderInstanceId>,
+        options?: { readonly requireDisconnected?: boolean },
+      ) {
         const affected = new Set(ids);
         const entries = [...Ref.getUnsafe(sessions).values()].filter((entry) =>
           affected.has(entry.runtime.instanceId),
         );
         if (
+          (options?.requireDisconnected === true && entries.length > 0) ||
           entries.some((entry) => entry.busyTurns.size > 0) ||
           ids.some((id) => changingCredentials.has(id)) ||
           [...openingSessions].some((session) => affected.has(session.instanceId))

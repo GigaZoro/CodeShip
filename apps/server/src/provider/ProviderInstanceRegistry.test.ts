@@ -36,6 +36,7 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Option from "effect/Option";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
@@ -512,6 +513,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
               ),
             ),
           invalidate: () => Effect.void,
+          refreshUnattended: () => Effect.succeedNone,
         });
         const settingsLayer = ServerSettings.layerTest({
           providerInstances: {
@@ -1076,6 +1078,13 @@ describe("ProviderInstanceRegistry secret environment", () => {
         Effect.sync(() => {
           invalidated.push(references.map((reference) => reference.reference));
         }),
+      refreshUnattended: (references) =>
+        Effect.sync(() => {
+          const matches = references.map(({ reference }) => vault.get(reference));
+          return matches.every((value) => value !== undefined)
+            ? Option.some(matches)
+            : Option.none();
+        }),
     });
     const configMap: ProviderInstanceConfigMap = {
       [instanceId]: {
@@ -1201,6 +1210,30 @@ describe("ProviderInstanceRegistry secret environment", () => {
         { apiKey: "gw-live", model: "m" },
         { apiKey: "gw-rotated", model: "m" },
       ]);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("applies a rotated unattended secret after it can reserve the instance", () => {
+    const fixture = setup({ [secret.reference]: "sk-original" });
+    return Effect.gen(function* () {
+      const { registry, mutator } = yield* fixture.make;
+      const original = yield* registry.getInstance(instanceId);
+      fixture.vault.set(secret.reference, "sk-rotated");
+      yield* mutator.refreshUnattendedSecrets(() => Effect.succeed(false));
+      expect(yield* registry.getInstance(instanceId)).toBe(original);
+
+      yield* mutator.refreshUnattendedSecrets(() => Effect.succeed(true));
+      expect(fixture.created.map((environment) => environment[0]?.value)).toEqual([
+        "sk-original",
+        "sk-rotated",
+      ]);
+      const reloaded = yield* registry.getInstance(instanceId);
+      expect(reloaded).not.toBe(original);
+
+      fixture.vault.delete(secret.reference);
+      yield* mutator.refreshUnattendedSecrets(() => Effect.succeed(true));
+      expect(yield* registry.getInstance(instanceId)).toBe(reloaded);
+      expect(fixture.created).toHaveLength(2);
     }).pipe(Effect.scoped);
   });
 

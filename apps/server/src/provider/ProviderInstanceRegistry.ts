@@ -118,6 +118,14 @@ const readInstanceSecrets = Effect.fn("ProviderInstanceRegistry.readInstanceSecr
   ];
   const values =
     references.length === 0 ? [] : yield* (yield* SecretResolver.SecretResolver).read(references);
+  return materializeInstanceSecrets(variables, configFields, values);
+});
+
+function materializeInstanceSecrets(
+  variables: ProviderInstanceEnvironment,
+  configFields: ReadonlyArray<{ readonly field: string }>,
+  values: ReadonlyArray<string | undefined>,
+) {
   const unreadable: Array<string> = [];
   let index = 0;
   const environment: ResolvedProviderInstanceEnvironment = variables.flatMap((variable) => {
@@ -137,7 +145,7 @@ const readInstanceSecrets = Effect.fn("ProviderInstanceRegistry.readInstanceSecr
   }
   const secrets: InstanceSecrets = { environment, config };
   return { secrets, unreadable };
-});
+}
 
 /** Conflicting saved flags must preserve any explicit disable. */
 const resolveEntryEnabled = (entry: ProviderInstanceConfig, typedConfig: unknown): boolean => {
@@ -170,6 +178,7 @@ const buildEntry = Effect.fn("ProviderInstanceRegistry.buildEntry")(function* <R
   readonly rawInstanceId: string;
   readonly entry: ProviderInstanceConfig;
   readonly deferSecrets: boolean;
+  readonly preparedSecrets?: InstanceSecrets | undefined;
 }): Effect.fn.Return<
   | { readonly kind: "live"; readonly live: LiveEntry }
   | { readonly kind: "unavailable"; readonly snapshot: ServerProvider },
@@ -241,7 +250,9 @@ const buildEntry = Effect.fn("ProviderInstanceRegistry.buildEntry")(function* <R
     };
   }
   const { secrets, unreadable } = enabled
-    ? yield* readInstanceSecrets(driver, entry)
+    ? input.preparedSecrets === undefined
+      ? yield* readInstanceSecrets(driver, entry)
+      : { secrets: input.preparedSecrets, unreadable: [] }
     : {
         secrets: { environment: withoutSecretReferences(entry.environment ?? []), config: {} },
         unreadable: [],
@@ -325,9 +336,10 @@ const makeReconcile = <R>(input: {
   configMap: ProviderInstanceConfigMap,
   rebuild?: ReadonlySet<ProviderInstanceId>,
   deferSecrets?: boolean,
+  prepared?: ReadonlyMap<ProviderInstanceId, InstanceSecrets>,
 ) => Effect.Effect<void, never, R | SecretResolver.SecretResolver>) => {
   const { state, driversById, blockedReason, parentScope } = input;
-  return (configMap, rebuild = new Set(), deferSecrets = false) =>
+  return (configMap, rebuild = new Set(), deferSecrets = false, prepared) =>
     Effect.gen(function* () {
       const previousEntries = yield* Ref.get(state.entries);
       const previousUnavailable = yield* Ref.get(state.unavailable);
@@ -375,7 +387,7 @@ const makeReconcile = <R>(input: {
             : secretReferencesOf(driversById, entry);
         }),
       ).pipe(Effect.map((perEntry) => perEntry.flat()));
-      if (references.length > 0 && !deferSecrets) {
+      if (references.length > 0 && !deferSecrets && prepared === undefined) {
         yield* (yield* SecretResolver.SecretResolver).read(references);
       }
 
@@ -395,6 +407,12 @@ const makeReconcile = <R>(input: {
           continue;
         }
 
+        if (prepared !== undefined && !prepared.has(instanceId)) {
+          const prior = previousUnavailable.get(instanceId);
+          if (prior !== undefined) builtUnavailable.set(instanceId, prior);
+          continue;
+        }
+
         const result = yield* buildEntry({
           driversById,
           blockedReason,
@@ -403,6 +421,7 @@ const makeReconcile = <R>(input: {
           rawInstanceId,
           entry,
           deferSecrets,
+          preparedSecrets: prepared?.get(instanceId),
         });
         // Clients say which removals reach the other machines that follow shared settings.
         const sharesAddedAccounts =
@@ -549,6 +568,50 @@ export const makeProviderInstanceRegistry = Effect.fn(
       inRegistryScope,
     );
 
+  const refreshUnattendedSecrets: ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutatorShape["refreshUnattendedSecrets"] =
+    Effect.fn("ProviderInstanceRegistry.refreshUnattendedSecrets")(function* (reserve) {
+      const configured = yield* Ref.get(configMapRef);
+      yield* Effect.forEach(
+        Object.keys(configured),
+        (rawId) =>
+          Effect.gen(function* () {
+            const instanceId = ProviderInstanceId.make(rawId);
+            const entry = configured[instanceId];
+            if (entry === undefined || input.blockedReason?.(entry.driver) !== undefined) return;
+            const references = secretReferencesOf(driversById, entry);
+            if (references.length === 0 || !(yield* isEntryEnabled(driversById, entry))) return;
+            const before = (yield* Ref.get(entries)).get(instanceId);
+            const resolver = yield* SecretResolver.SecretResolver;
+            const values = yield* resolver.refreshUnattended(references);
+            if (Option.isNone(values)) return;
+            const { secrets } = materializeInstanceSecrets(
+              entry.environment ?? [],
+              configSecretReferences(driversById.get(entry.driver), entry),
+              values.value,
+            );
+            yield* semaphore.withPermits(1)(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  // A settings edit may have replaced the instance while the vault was being read.
+                  if ((yield* Ref.get(configMapRef)) !== configured) return;
+                  const current = (yield* Ref.get(entries)).get(instanceId);
+                  if (current !== before) return;
+                  if (current !== undefined && Equal.equals(current.secrets, secrets)) return;
+                  if (!(yield* reserve(instanceId))) return;
+                  yield* reconcileWithR(
+                    configured,
+                    new Set([instanceId]),
+                    false,
+                    new Map([[instanceId, secrets]]),
+                  );
+                }).pipe(Effect.uninterruptible),
+              ),
+            );
+          }).pipe(Effect.provideContext(driverContext)),
+        { discard: true },
+      );
+    });
+
   // Reading secrets can wait on a vault unlock, so the server does not wait for it to start.
   yield* semaphore.withPermits(1)(
     Ref.set(configMapRef, input.configMap).pipe(
@@ -599,6 +662,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
   const mutator: ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutatorShape = {
     reconcile,
     reloadSecrets,
+    refreshUnattendedSecrets,
   };
 
   return { registry, mutator };

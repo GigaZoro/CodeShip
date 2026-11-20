@@ -1343,6 +1343,11 @@ it.effect(
           });
 
         const aliases = [ProviderInstanceId.make("other-binding-name"), modelSelection.instanceId];
+        assert.isFalse(
+          yield* manager
+            .reserveIdleCredentialBinding(aliases, { requireDisconnected: true })
+            .pipe(Effect.scoped),
+        );
         yield* Effect.scoped(
           Effect.gen(function* () {
             assert.isTrue(yield* manager.reserveIdleCredentialBinding(aliases));

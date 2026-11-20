@@ -16,6 +16,8 @@ export type SecretProviderDriverServices =
 export interface SecretProviderDriver {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition;
+  /** Whether this configuration can be used without an unlock prompt. */
+  readonly unattended?: (config: unknown) => boolean;
   /**
    * Values in input order; `undefined` marks a reference that could not be read. `config` has
    * decoded with the definition's `configSchema` and every reference passed its `isReference`.
@@ -29,6 +31,7 @@ export interface SecretProviderDriver {
 export const defineSecretProviderDriver = <Config>(driver: {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition<Config>;
+  readonly unattended?: (config: Config) => boolean;
   readonly read: (
     config: Config,
     references: ReadonlyArray<string>,
@@ -38,6 +41,7 @@ export const defineSecretProviderDriver = <Config>(driver: {
   return {
     kind: driver.kind,
     definition: driver.definition,
+    unattended: (config) => isConfig(config) && driver.unattended?.(config) === true,
     read: (config, references) =>
       isConfig(config)
         ? driver.read(config, references)
