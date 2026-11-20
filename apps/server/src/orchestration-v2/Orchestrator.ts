@@ -12767,10 +12767,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const source = projection.runs.find(
         (candidate) => candidate.id === queuedContinuation.restartContinuationOfRunId,
       );
-      if (source === undefined || command.onlyIfActive === true) {
-        if (source !== undefined) {
-          yield* markStoppedRun({ command, events, thread: projection.thread, run: source, now });
-        }
+      if (source === undefined) {
         if (command.holdQueue === true) {
           yield* holdStoppedThread({
             command,
@@ -12792,15 +12789,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection.runs,
           command.onlyIfActive === true ? "pending-restart" : "shutdown-candidate",
         ).pipe(mapDispatchError(command))));
-    if (command.onlyIfActive === true && !isActiveRun(run)) {
-      if (pendingContinuation) {
-        yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
-        if (command.holdQueue === true) {
-          yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
-        }
-      }
-      return;
-    }
+    if (command.onlyIfActive === true && !isActiveRun(run) && !pendingContinuation) return;
     const stopRunIds = target === "thread" ? undefined : [...chainRunIds];
     const work = interruptWorkForRuns(projection, stopRunIds);
     const hasBackgroundWork =
