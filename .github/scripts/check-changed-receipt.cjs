@@ -28,10 +28,15 @@ const receiptDirectory = (cwd) =>
     "passed",
   );
 
-// The tree a commit of everything check:changed reads would get, staged or not. A copy of the index
-// keeps its stat cache. New objects go to a scratch directory: nothing references them, so in the
-// repository they would pile up as loose garbage.
-function workingTree(cwd) {
+// Git splits GIT_ALTERNATE_OBJECT_DIRECTORIES at the path delimiter, except in a C-quoted entry.
+const alternateObjectDirectory = (directory) =>
+  `"${directory.replace(/["\\]/g, (character) => `\\${character}`)}"`;
+
+// The tree a commit of everything check:changed reads would get, staged or not. The index copy
+// keeps its stat cache and its timestamp, without which Git trusts that cache for a same-size edit
+// made in the second the index was written. New objects go to `objects`, which the caller reads
+// through GIT_ALTERNATE_OBJECT_DIRECTORIES and removes: nothing would ever reference them.
+function workingTree(cwd, objects) {
   const marked = markedFiles(cwd);
   if (marked.length > 0) {
     throw new Error(
@@ -42,19 +47,20 @@ function workingTree(cwd) {
   try {
     const index = path.join(temp, "index");
     const real = git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
-    if (fs.existsSync(real)) fs.copyFileSync(real, index);
-    const objects = path.join(temp, "objects");
-    fs.mkdirSync(objects);
+    const stat = fs.statSync(real, { bigint: true, throwIfNoEntry: false });
+    if (stat) {
+      fs.copyFileSync(real, index);
+      // In nanoseconds, since a time in milliseconds can round up into the next second.
+      const seconds = Number(stat.mtimeNs / 1_000_000_000n);
+      fs.utimesSync(index, seconds, seconds);
+    }
     const env = {
       ...process.env,
       GIT_INDEX_FILE: index,
       GIT_OBJECT_DIRECTORY: objects,
-      GIT_ALTERNATE_OBJECT_DIRECTORIES: git(cwd, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-path",
-        "objects",
-      ]),
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectory(
+        git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]),
+      ),
     };
     git(cwd, ["add", "--all", "--", ":/"], env);
     return git(cwd, ["write-tree"], env);
@@ -103,7 +109,7 @@ function requirePass(cwd, localSha, remoteSha) {
   );
 }
 
-module.exports = { recordPass, requirePass, workingTree };
+module.exports = { alternateObjectDirectory, recordPass, requirePass, workingTree };
 
 if (require.main === module) {
   try {

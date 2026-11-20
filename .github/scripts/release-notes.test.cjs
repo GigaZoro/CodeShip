@@ -307,6 +307,33 @@ test("git rebases a shipment over another one's notes through the configured mer
   }
 });
 
+test("the merge driver leaves notes that are not UTF-8 to git's byte-for-byte text merge", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "release-notes-bytes-")));
+  try {
+    const older = entry("2026-11-10", "Older");
+    // Main's bullet ends in a Latin-1 é, a byte that is not UTF-8.
+    const edited = (above) =>
+      Buffer.concat([
+        Buffer.from(`${above}${older.slice(0, -1)} caf`),
+        Buffer.from([0xe9]),
+        Buffer.from(".\n"),
+      ]);
+    const [base, ours, theirs] = ["base", "ours", "theirs"].map((name) => path.join(root, name));
+    fs.writeFileSync(base, notes(shipped, older));
+    fs.writeFileSync(ours, notes(mine, shipped, older));
+    fs.writeFileSync(theirs, edited(`${shipped}\n\n`));
+    const merge = spawnSync(
+      process.execPath,
+      [path.join(__dirname, "release-notes.cjs"), "merge", base, ours, theirs],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(merge.status, 0, merge.stderr);
+    assert.deepEqual(fs.readFileSync(ours), edited(`${mine}\n\n${shipped}\n\n`));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 const withScript = (dir) => {
   fs.mkdirSync(path.join(dir, ".github/scripts"), { recursive: true });
   fs.copyFileSync(__dirname + "/release-notes.cjs", dir + "/.github/scripts/release-notes.cjs");

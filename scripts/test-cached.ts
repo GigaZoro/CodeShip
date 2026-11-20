@@ -13,9 +13,12 @@ import {
 import { GIT_OUTPUT_MAX_BYTES } from "../.github/scripts/git-history.cjs";
 import { localVitePlusCommand } from "./check-changed-command.ts";
 import {
+  gitPaths,
+  isReferenceRepoPath,
   matchesTestPath,
   missingVitePlusTestEnv,
   relativeTestPath,
+  TEST_FILE,
   testPathResolver,
 } from "./lib/cached-tests.ts";
 import { shardedTestFiles, validateShard } from "./lib/sharded-tests.ts";
@@ -84,11 +87,13 @@ if (import.meta.main) {
       }
     }
   } else {
-    candidates = NodeChildProcess.execFileSync(
-      "git",
-      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-      { cwd: root, encoding: "utf8", maxBuffer: GIT_OUTPUT_MAX_BYTES },
-    ).split("\0");
+    candidates = gitPaths(
+      NodeChildProcess.execFileSync(
+        "git",
+        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        { cwd: root, maxBuffer: GIT_OUTPUT_MAX_BYTES },
+      ),
+    );
   }
   const canonicalPath = testPathResolver(root);
   const resolveEntered = (path: string) =>
@@ -97,7 +102,7 @@ if (import.meta.main) {
   const selected = new Set<string>();
   for (const candidate of candidates) {
     const file =
-      /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(candidate) && !candidate.startsWith(".repos/")
+      TEST_FILE.test(candidate) && !isReferenceRepoPath(candidate)
         ? canonicalPath(candidate)
         : undefined;
     if (file !== undefined && matchesTestPath(file, filters)) {
@@ -111,8 +116,11 @@ if (import.meta.main) {
     console.error("No test files matched");
     process.exit(values.shard ? 0 : 1);
   }
+  // A renamed or misspelt file would otherwise run cached without a word.
+  const missing = values.uncached.filter((file) => resolveEntered(file) === undefined);
+  if (missing.length) throw new Error(`--uncached names no file on disk: ${missing.join(", ")}`);
   console.log(
-    `Cached tests: ${files.length} files, ${groupSize} per task, concurrency ${concurrency}`,
+    `Cached tests: ${files.length} files, about ${groupSize} per task, concurrency ${concurrency}`,
   );
   const env = {
     ...process.env,

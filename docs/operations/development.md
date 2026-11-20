@@ -223,6 +223,8 @@ test files that import a changed file directly or through test-support code (a `
 `testkit/`, `testing/`, `test/` or `fixtures/` folder), and the test files beside each production
 file that imports a changed file. The walk goes no further into production code, so a provider's
 replay suites and the service built on a changed module run, but not every test that loads the server.
+Vitest reads each test file it is given as part of a path, so a file on disk whose path holds a
+selected test's path, such as an ignored `x.test.tsx` beside `x.test.ts`, runs too.
 It also runs the checks that read other files: the agent context budget when the server is
 affected, and React Compiler coverage for only the changed web and mobile files. It maps
 files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
@@ -240,15 +242,42 @@ On a large machine a run takes about as long as its slowest step, usually
 knip's exports pass at about 10 s. Pass `--concurrency <n>` or set `CHECK_CHANGED_CONCURRENCY` to
 change the limit (`1` runs the steps one by one). A step that runs past `--timeout <seconds>` or
 `CHECK_CHANGED_TIMEOUT` (default 900) is killed with every process it started and reported as
-`TIMEOUT`, not as a failing check. When the files are exactly those of the last passing run, it prints that
-run's summary instead of running again. Any change to a file, the install, or a generated file runs
-the checks again. Editing a file of the change while the checks run fails the run: a test run keeps
-the version of each file it loaded first, so its result would mix old and new code. A generated
-file that the checks themselves rewrite only keeps that pass out of the cache. The test step's
+`TIMEOUT`, not as a failing check. Test groups run concurrently within the test step's worker
+budget. Server groups run one at a time alongside other packages. If Vite+ interrupts an in-flight
+group after another group fails, the test step runs it again and reports failures across the full
+selection. Each run uses a private copy of the cache kept for its HEAD. When the test step ends,
+even after a timeout or interruption, it publishes passed groups if HEAD and runtime inputs still
+match. A change to either fails the test step. A force-killed run leaves its unpublished results in
+the private copy. A HEAD's cache is removed after three days without a run. Retries across worktrees
+and chats, each with its own install, reuse groups at the same commit with the same file modes
+and execute access, matching inputs, install state, tracked environment, user, umask, and host
+capabilities. A group's inputs are the checkout files its tests read, hashed when the group ends.
+The machine's programs, network interfaces and cgroups, Git state beyond the commit, the read and
+write permissions of checkout files, and files another process rewrites during the run are not
+inputs, so a pass still replays after a program its tests run
+changes or goes away. A test whose coverage they decide, such as one that skips cases without a
+program or a cgroup it may join, or runs a program a variable names, or that writes a report another
+step needs, needs an uncached task. A group runs its files as CI runs the package's test script,
+under the projects it names. The script may add only `--passWithNoTests`, `--config`, `--dir` and
+`--project`, because a filter such as `-t` would let a group pass after running only some of their
+tests. A test that skips without a host capability, such as file symlinks or the IPv6 loopback,
+reads it from `packages/shared/src/testing/hostCapabilities.ts`. The command probes those
+capabilities once, keys the cache on them and passes them to its tests; a probe of the test's own
+would replay the skip after the host gains the capability. With `T3CODE_TEST_KEEP_PROVIDER_ENV=1`,
+every group runs uncached, because only uncached tasks get the provider variables it keeps. When the
+whole-run cache matches, the command validates the selected groups and reuses the previous summary
+for the other checks.
+
+Editing a changed file during checks fails the run because tests keep the first version they
+load. Editing and restoring a file during a run, or changing an installed package in place, can
+invalidate even an uncached verdict. A generated declaration that the checks themselves rewrite
+keeps the whole-run pass out of the cache, and fails a run that reused an earlier pass, because
+only its tests saw the new file. The test step's
 limit grows by two minutes per selected test file, because server test files run one at a time.
 
-Each pass, a cached one included, records the tree a commit of everything it checked would get:
-tracked changes and untracked files that are not ignored. The receipt lives in the repository's git
+The checks select their files from the tree a commit of the checkout would get under Git's own
+settings: tracked changes and untracked files that are not ignored. Each pass, a cached one
+included, records that tree. The receipt lives in the repository's git
 directory, so every worktree shares it. The tracked pre-push hook
 ([.vite-hooks/pre-push](../../.vite-hooks/pre-push), through
 [check-changed-receipt.cjs](../../.github/scripts/check-changed-receipt.cjs)) refuses a push to

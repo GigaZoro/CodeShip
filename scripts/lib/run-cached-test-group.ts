@@ -9,7 +9,10 @@ import {
 } from "vite-plus/test/node";
 import { validateNestedVitestOptions } from "./cached-vitest-options.ts";
 
-async function runCachedTestGroup(argv: string[]) {
+async function runCachedTestGroup(args: string[]) {
+  // check:changed passes the files its package config leaves out, as `vp test run` would.
+  const allowExcluded = args[0] === "--allow-excluded";
+  const argv = allowExcluded ? args.slice(1) : args;
   const separator = argv.indexOf("--");
   const files = separator < 0 ? argv : argv.slice(0, separator);
   const packageArgs = separator < 0 ? [] : argv.slice(separator + 1);
@@ -73,7 +76,8 @@ async function runCachedTestGroup(argv: string[]) {
       scheduled = specs.map(identity);
       const found = new Set(specs.map((spec) => NodePath.resolve(spec.moduleId)));
       const missing = [...requested].filter((file) => !found.has(file));
-      if (missing.length) throw new Error("Vitest did not discover: " + missing.join(", "));
+      if (missing.length && !allowExcluded)
+        throw new Error("Vitest did not discover: " + missing.join(", "));
       const extra = [...found].filter((file) => !requested.has(file));
       if (extra.length)
         throw new Error("Unexpected test files in cache group: " + extra.join(", "));
@@ -94,7 +98,7 @@ async function runCachedTestGroup(argv: string[]) {
         !errors.length &&
         active.size === 0 &&
         ambiguousModule === undefined &&
-        scheduled.length > 0 &&
+        (scheduled.length > 0 || allowExcluded) &&
         scheduled.every((key) => finished.has(key));
     },
   };

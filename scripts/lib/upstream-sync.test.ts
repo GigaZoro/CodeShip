@@ -5,6 +5,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 
+import { isLinuxHost } from "@t3tools/shared/testing/hostPlatform";
+
 import { recordPass } from "../../.github/scripts/check-changed-receipt.cjs";
 import { begin, checkCommand, land, recordCheck, RUN_LIMIT_MS, status } from "./upstream-sync.ts";
 
@@ -47,7 +49,7 @@ function isolateGit() {
 const git = (cwd: string, ...args: Array<string>) =>
   NodeChildProcess.execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
-function commitFiles(cwd: string, files: Record<string, string>, message: string) {
+function commitFiles(cwd: string, files: Record<string, string | Buffer>, message: string) {
   for (const [file, content] of Object.entries(files)) {
     NodeFS.mkdirSync(NodePath.dirname(NodePath.join(cwd, file)), { recursive: true });
     NodeFS.writeFileSync(NodePath.join(cwd, file), content);
@@ -106,9 +108,10 @@ function fixture(
     sync,
     originMain: () => git(path("origin.git"), "rev-parse", "main"),
     head: () => git(sync, "rev-parse", "HEAD"),
-    /** Another change lands on main while the sync runs. */
-    advanceMain: (files: Record<string, string>) => {
+    /** Another change lands on main while the sync runs; `write` adds names a string cannot hold. */
+    advanceMain: (files: Record<string, string | Buffer>, write?: (cwd: string) => void) => {
       git(path("dev"), "pull", "-q", "--ff-only");
+      write?.(path("dev"));
       commitFiles(path("dev"), files, "elsewhere");
       git(path("dev"), "push", "-q", "origin", "main");
     },
@@ -147,6 +150,14 @@ describe("upstream sync", () => {
     passCheck(repo.sync);
     expect(land(repo.sync, later(60))).toEqual({ status: "landed", commit: repo.head() });
     expect(repo.originMain()).toBe(repo.head());
+  });
+
+  it("names the files upstream conflicts on as the checkout spells them", () => {
+    const names = [" leading.txt", "upstream.txt", "über.txt"];
+    const both = (content: string) => Object.fromEntries(names.map((file) => [file, content]));
+    const repo = fixture({ upstream: both("upstream\n") });
+    commitFiles(repo.sync, both("ours\n"), "ours");
+    expect(begin(repo.sync, START)).toMatchObject({ status: "conflicts", conflicts: names });
   });
 
   it("merges a main that moved into the checked commit without moving the checkout, and lands the merge once the sync fast-forwards to it and checks it", () => {
@@ -285,6 +296,29 @@ describe("upstream sync", () => {
     });
     expect(repo.head()).toBe(checked);
   });
+
+  // Only Linux file systems hold a name that is not UTF-8.
+  it.runIf(isLinuxHost)(
+    "stops at conflicted names that are not UTF-8 instead of merging them",
+    () => {
+      const repo = fixture();
+      begin(repo.sync, START);
+      // The names differ only in a byte UTF-8 cannot decode, so a lossy read gives both one name.
+      const writeNames = (content: string) => (cwd: string) => {
+        for (const byte of [0x80, 0x81]) {
+          NodeFS.writeFileSync(
+            Buffer.concat([Buffer.from(`${cwd}/a`), Buffer.from([byte])]),
+            content,
+          );
+        }
+      };
+      writeNames("sync\n")(repo.sync);
+      commitFiles(repo.sync, {}, "names");
+      passCheck(repo.sync);
+      repo.advanceMain({}, writeNames("main\n"));
+      expect(() => land(repo.sync, later(60))).toThrow(/not UTF-8, so rename it/);
+    },
+  );
 
   it("holds after three merges while main keeps moving", () => {
     const repo = fixture();

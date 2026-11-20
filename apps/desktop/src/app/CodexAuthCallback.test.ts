@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalFetch:off - Tests exercise the real native loopback listener without an OpenAI account.
 import * as NodeHttp from "node:http";
-import * as NodeNet from "node:net";
 import { describe, expect, it } from "vite-plus/test";
 import { codexAuthDeliveryUrl, readCodexAuthDelivery } from "@t3tools/shared/codexAuthHandoff";
+import { ipv6LoopbackSupported } from "@t3tools/shared/testing/hostCapabilities";
 import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 import { receiveCodexAuthCallback, cancelCodexAuthCallback } from "./CodexAuthCallback.ts";
 import { receiveMcpAuthCallback, cancelMcpAuthCallback } from "./McpAuthCallback.ts";
@@ -113,12 +113,6 @@ describe("desktop Codex callback helper", () => {
   });
 });
 
-const ipv6Loopback = await new Promise<boolean>((resolve) => {
-  const probe = NodeNet.createServer();
-  probe.once("error", () => resolve(false));
-  probe.listen(0, "::1", () => probe.close(() => resolve(true)));
-});
-
 function mcpRequest(redirectUri: string, state = "s7Ate") {
   return `https://minions.example/oauth/authorize?${new URLSearchParams({
     response_type: "code",
@@ -146,8 +140,7 @@ describe("desktop MCP callback helper", () => {
     });
     expect(received).toBe(expected);
   });
-  // IPv6 loopback is switched off on some CI hosts, so there is nothing to bind there.
-  it.skipIf(!ipv6Loopback)("also answers a localhost redirect over ::1", async () => {
+  it.skipIf(!ipv6LoopbackSupported)("also answers a localhost redirect over ::1", async () => {
     const port = await freePort();
     const received = await receiveMcpAuthCallback(
       mcpRequest(`http://localhost:${port}/callback`),

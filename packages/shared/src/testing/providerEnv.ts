@@ -20,3 +20,7 @@ if (process.env.T3CODE_TEST_KEEP_PROVIDER_ENV !== "1") {
     }
   }
 }
+
+// check:changed runs tests with VITE_CACHE_PATH empty, and Vite+ aborts on an empty cache path,
+// so a `vp` a test starts would fail. Unset, it uses its default cache, not the run's.
+if (process.env.VITE_CACHE_PATH === "") delete process.env.VITE_CACHE_PATH;

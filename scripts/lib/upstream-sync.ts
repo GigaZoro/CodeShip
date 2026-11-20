@@ -11,6 +11,7 @@ import {
 import { MERGE_DRIVER_CONFIG, notesMergeProblem } from "../../.github/scripts/release-notes.cjs";
 // Loaded with this script, so a checkout that moves while `land` runs cannot swap the push it runs.
 import { pushChecked } from "../../.github/scripts/landing-turn.cjs";
+import { gitPaths } from "./cached-tests.ts";
 
 // A busy main moves every few minutes while a sync's checks take an hour, so a sync that chased
 // it by re-merging never ended. These limits make a run land or hold within a working morning.
@@ -89,7 +90,6 @@ interface SyncStatus {
 function run(cwd: string, args: ReadonlyArray<string>) {
   const result = NodeChildProcess.spawnSync("git", args, {
     cwd,
-    encoding: "utf8",
     env: { ...process.env, ...REAL_HISTORY_ENV },
     maxBuffer: GIT_OUTPUT_MAX_BYTES,
   });
@@ -98,19 +98,23 @@ function run(cwd: string, args: ReadonlyArray<string>) {
     ok: result.status === 0,
     status: result.status,
     stdout: result.stdout,
-    stderr: result.stderr.trim(),
+    stderr: result.stderr.toString().trim(),
   };
 }
 
 function git(cwd: string, ...args: ReadonlyArray<string>) {
   const result = run(cwd, args);
-  return { ...result, stdout: result.stdout.trim() };
+  return { ...result, stdout: result.stdout.toString().trim() };
+}
+
+function gitBytesOrThrow(cwd: string, ...args: ReadonlyArray<string>): Buffer {
+  const result = run(cwd, args);
+  if (!result.ok) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout;
 }
 
 function gitOrThrow(cwd: string, ...args: ReadonlyArray<string>): string {
-  const result = git(cwd, ...args);
-  if (!result.ok) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
-  return result.stdout;
+  return String(gitBytesOrThrow(cwd, ...args)).trim();
 }
 
 function statePath(worktree: string): string {
@@ -128,8 +132,10 @@ function writeState(worktree: string, state: SyncState): void {
 }
 
 function conflictedFiles(worktree: string): ReadonlyArray<string> {
-  const out = gitOrThrow(worktree, "diff", "--name-only", "--diff-filter=U");
-  return out === "" ? [] : out.split("\n");
+  // Without -z, Git quotes a path that holds a quote, backslash, control or non-ASCII character,
+  // and trimming would drop a leading space.
+  const listed = gitBytesOrThrow(worktree, "diff", "--name-only", "-z", "--diff-filter=U");
+  return gitPaths(listed).filter(Boolean);
 }
 
 function allConflicts(state: SyncState): ReadonlyArray<string> {
@@ -258,8 +264,8 @@ export function recordCheck(worktree: string, covers: CheckedCommit): void {
  * field, then each message as `<count>`, that many paths, its type and its text. Conflicts are the
  * listed paths and every path a CONFLICT message names.
  */
-function parseMergeTree(output: string) {
-  const fields = output.split("\0");
+function parseMergeTree(output: Buffer) {
+  const fields = gitPaths(output);
   const field = (index: number) => fields[index] ?? "";
   const conflicts = new Set<string>();
   let index = 1;

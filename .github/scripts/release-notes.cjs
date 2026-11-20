@@ -1,3 +1,4 @@
+const { isUtf8 } = require("node:buffer");
 const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -143,7 +144,12 @@ function mergeReleaseNotes(base, ours, theirs) {
 
 /** git's merge driver: writes the merge over `oursPath` and exits 0, or non-zero with conflict markers. */
 function mergeFiles(basePath, oursPath, theirsPath) {
-  const read = (file) => fs.readFileSync(file, "utf8");
+  // Decoding would turn a byte that is not UTF-8 into U+FFFD, so such notes take git's text merge.
+  const read = (file) => {
+    const bytes = fs.readFileSync(file);
+    if (!isUtf8(bytes)) throw new Error(`${NOTES_PATH}: a side is not UTF-8.`);
+    return bytes.toString("utf8");
+  };
   let merged = null;
   try {
     merged = mergeReleaseNotes(read(basePath), read(oursPath), read(theirsPath));
