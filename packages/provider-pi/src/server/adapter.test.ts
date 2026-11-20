@@ -1,3 +1,4 @@
+import { makePiProtocolSpawner } from "./rpc.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -44,8 +45,6 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { handoffBudget } from "@t3tools/provider-core/server/handoffBudget";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { attachWindowsJob } from "@t3tools/shared/windowsJob";
-import { markWindowsJobSpawner } from "@t3tools/shared/windowsJobSpawner";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { toolOutputImages, compactDynamicToolOutput } from "@t3tools/shared/toolOutput";
 import {
@@ -78,29 +77,6 @@ const SESSION_ID = ProviderSessionId.make("provider-session-pi-test");
 const FAKE_SESSION_FILE = "/fake/.pi/agent/sessions/--workspace--/0001_abc.jsonl";
 /** Deliberately outside the valid pid range so a group-kill can never land. */
 const FAKE_PID = 999_999_999;
-
-// Protocol fakes already own their process; native membership is tested in windowsJob.test.ts.
-const makePiSpawner = (spawn: Parameters<typeof ChildProcessSpawner.make>[0]) =>
-  markWindowsJobSpawner(
-    ChildProcessSpawner.make((command) =>
-      spawn(command).pipe(
-        Effect.map((handle) => {
-          if (command._tag === "StandardCommand" && command.command === "fake-job-host.exe") {
-            return ChildProcessSpawner.makeHandle({
-              ...handle,
-              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
-              stderr: Stream.empty,
-            });
-          }
-          attachWindowsJob(handle, {
-            host: "fake-job-host.exe",
-            name: "Global\\CodeShip.Job.pi-test",
-          });
-          return handle;
-        }),
-      ),
-    ),
-  );
 
 const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1000);
 
@@ -346,7 +322,7 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
     args: [],
     env: {},
   };
-  const spawner = makePiSpawner((command) =>
+  const spawner = makePiProtocolSpawner((command) =>
     Effect.sync(() => {
       if (ChildProcess.isStandardCommand(command)) {
         lastSpawn = {
@@ -441,7 +417,7 @@ const makeAdapter = Effect.fnUntraced(function* (
   const spawner =
     forkFake === undefined
       ? fake.spawner
-      : makePiSpawner((command) =>
+      : makePiProtocolSpawner((command) =>
           ChildProcess.isStandardCommand(command) && command.args.includes("--fork")
             ? forkFake.spawner.spawn(command)
             : fake.spawner.spawn(command),
@@ -1546,7 +1522,7 @@ describe("PiAdapterV2", () => {
       yield* Effect.gen(function* () {
         yield* openRuntime({
           ...fake,
-          spawner: makePiSpawner((command) =>
+          spawner: makePiProtocolSpawner((command) =>
             Effect.acquireRelease(
               fake.spawner
                 .spawn(command)
@@ -4376,7 +4352,7 @@ describe("PiRpc framing", () => {
     });
     return Effect.gen(function* () {
       const stdout = yield* Queue.unbounded<Uint8Array>();
-      const spawner = makePiSpawner(() =>
+      const spawner = makePiProtocolSpawner(() =>
         Effect.succeed(
           ChildProcessSpawner.makeHandle({
             pid: ChildProcessSpawner.ProcessId(FAKE_PID),
@@ -4457,7 +4433,7 @@ describe("PiRpc early process exit", () => {
   it.effect("reports a nonzero exit code instead of an unexplained stdout close", () =>
     Effect.gen(function* () {
       const secret = "API_KEY=super-secret\n";
-      const spawner = makePiSpawner(() =>
+      const spawner = makePiProtocolSpawner(() =>
         Effect.succeed(
           makeHandle({
             exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
