@@ -8,9 +8,12 @@ const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs"
 
 const LEASE_REF = "refs/heads/landing-lease/main";
 const TURN_ENV = "T3_LANDING_TURN";
+const TEST_STEP_MAX_ENV = "CHECK_CHANGED_TEST_STEP_MAX";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 // A check:changed run took 2 hours on a busy day. A holder that dies is replaced once its lease has expired.
 const LEASE_TTL_MS = 3 * 60 * 60 * 1000;
+// What a landing keeps back from its lease for the checks that are not the test step, and for the push.
+const LEASE_RESERVE_MS = 20 * 60 * 1000;
 const POLL_MS = 5000;
 const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 // A wait polls origin thousands of times, and one poll can meet a passing DNS or credential failure. Failures that go
@@ -198,12 +201,24 @@ function verifyPush({ cwd, remote, env = process.env, refs }) {
   }
 }
 
+/** Seconds a check may spend on its longest step and still end, with the push, before the lease expires. */
+function checkBudgetSeconds(elapsedMs) {
+  return Math.max(1, Math.floor((LEASE_TTL_MS - LEASE_RESERVE_MS - elapsedMs) / 1000));
+}
+
 /**
  * Lands HEAD on main under the turn: rebases onto main, runs `check` once and pushes the checked tree.
- * `check(turn, base)` returns true when the checks passed against `base`, the commit main is at, which the
- * push gate requires as their base.
+ * `check(turn, base, budgetSeconds)` returns true when the checks passed against `base`, the commit main is at, which
+ * the push gate requires as their base; `budgetSeconds` is what the lease leaves its longest step.
  */
-function land({ cwd, remote, check, branch = "main", ...rest }) {
+function land({
+  cwd,
+  remote,
+  check,
+  branch = "main",
+  turnClock = () => performance.now(),
+  ...rest
+}) {
   // check:changed passes for the working tree, untracked files included, but the push carries HEAD alone,
   // so the pre-push hook would refuse it only after the whole check.
   const uncommitted = git(cwd, ["status", "--porcelain"]).stdout;
@@ -212,6 +227,7 @@ function land({ cwd, remote, check, branch = "main", ...rest }) {
   const problem = notesMergeProblem(cwd);
   if (problem) throw new Error(problem);
   return withTurn({ cwd, remote, ...rest }, (turn) => {
+    const turnStarted = turnClock();
     // Into this turn's own ref: any other fetch in this checkout can rewrite FETCH_HEAD before it is read. Atomic,
     // because a named remote's fetch also updates its tracking ref, and a failure there must not leave this one behind.
     const fetched = `refs/worktree/landing-turn/${turn}`;
@@ -231,7 +247,8 @@ function land({ cwd, remote, check, branch = "main", ...rest }) {
     }).ok;
     // Main gains release notes while a lander waits; the driver merges them on machines whose git config predates it.
     if (!contained) git(cwd, ["rebase", base], { config: MERGE_DRIVER_CONFIG });
-    if (!check(turn, base)) return { status: "check-failed" };
+    if (!check(turn, base, checkBudgetSeconds(turnClock() - turnStarted)))
+      return { status: "check-failed" };
     git(cwd, ["push", "--quiet", remote, `HEAD:refs/heads/${branch}`], {
       env: { [TURN_ENV]: turn },
     });
@@ -256,12 +273,16 @@ function main(argv) {
     const result = land({
       cwd,
       remote: "origin",
-      check: (turn, base) =>
+      check: (turn, base, budgetSeconds) =>
         spawnSync(`vp run check:changed ${base}`, {
           cwd,
           shell: true,
           stdio: "inherit",
-          env: { ...process.env, [TURN_ENV]: turn },
+          env: {
+            ...process.env,
+            [TURN_ENV]: turn,
+            [TEST_STEP_MAX_ENV]: String(budgetSeconds),
+          },
         }).status === 0,
     });
     console.log(JSON.stringify(result));
@@ -290,4 +311,16 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LEASE_REF, TURN_ENV, tryAcquire, release, acquire, withTurn, verifyPush, land };
+module.exports = {
+  LEASE_REF,
+  TURN_ENV,
+  LEASE_TTL_MS,
+  LEASE_RESERVE_MS,
+  checkBudgetSeconds,
+  tryAcquire,
+  release,
+  acquire,
+  withTurn,
+  verifyPush,
+  land,
+};

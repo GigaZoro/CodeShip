@@ -7,7 +7,10 @@ const path = require("node:path");
 
 const {
   LEASE_REF,
+  LEASE_RESERVE_MS,
+  LEASE_TTL_MS,
   TURN_ENV,
+  checkBudgetSeconds,
   acquire,
   land,
   release,
@@ -356,6 +359,32 @@ test("a take whose push fails or times out is the lander's when origin took it, 
       () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0 }),
       /git push failed/,
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a landing hands its check what the lease leaves, less the reserve for the push", () => {
+  assert.equal(checkBudgetSeconds(0), (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000);
+  assert.equal(checkBudgetSeconds(30 * 60 * 1000), (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 1800);
+  assert.equal(checkBudgetSeconds(LEASE_TTL_MS), 1);
+});
+
+test("land passes the budget measured from the turn's start", () => {
+  const { root, origin, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "budget.txt");
+    const ticks = [1_000, 1_000 + 10 * 60 * 1000];
+    let budget;
+    const result = land({
+      cwd: dir,
+      remote: origin,
+      turnClock: () => ticks.shift(),
+      check: (_turn, _base, seconds) => ((budget = seconds), true),
+    });
+    assert.equal(result.status, "landed");
+    assert.equal(budget, (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 600);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -270,6 +270,7 @@ describe("check:changed", () => {
     assert.strictEqual(testStepTimeoutSeconds(20, 900, false), 2400);
     assert.strictEqual(testStepTimeoutSeconds(5000, 900, false), 3600);
     assert.strictEqual(testStepTimeoutSeconds(5000, 600, true), 600);
+    assert.strictEqual(testStepTimeoutSeconds(5000, 900, false, 9000), 9000);
   });
 
   it("splits a path list into steps whose arguments fit a Windows command line", () => {

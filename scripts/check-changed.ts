@@ -60,12 +60,18 @@ const GiB = 1024 ** 3;
 // The test step's limit grows by this much per selected file: server tests run one at a time.
 const TEST_FILE_SECONDS = 120;
 // Without an explicit timeout, a test step stops growing here, so a run selecting thousands of files ends.
+// A landing raises it to what its lease has left (CHECK_CHANGED_TEST_STEP_MAX).
 const TEST_STEP_MAX_SECONDS = 3600;
 
-export const testStepTimeoutSeconds = (files: number, timeoutSeconds: number, explicit: boolean) =>
+export const testStepTimeoutSeconds = (
+  files: number,
+  timeoutSeconds: number,
+  explicit: boolean,
+  maxSeconds = TEST_STEP_MAX_SECONDS,
+) =>
   explicit
     ? timeoutSeconds
-    : Math.min(Math.max(timeoutSeconds, TEST_FILE_SECONDS * files), TEST_STEP_MAX_SECONDS);
+    : Math.min(Math.max(timeoutSeconds, TEST_FILE_SECONDS * files), maxSeconds);
 
 // Windows cannot start a process whose command line passes 32,767 characters, and vp passes
 // its arguments on to the tool it starts, so a long list of paths runs in several steps.
@@ -623,6 +629,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const timeoutOverride = yield* override("timeout", input.timeout, "CHECK_CHANGED_TIMEOUT");
   const explicitTimeout = Option.isSome(timeoutOverride);
   const timeoutSeconds = Option.getOrElse(timeoutOverride, () => 900);
+  const testStepMaxSeconds = Option.getOrElse(
+    yield* override("test-step-max", Option.none(), "CHECK_CHANGED_TEST_STEP_MAX"),
+    () => TEST_STEP_MAX_SECONDS,
+  );
 
   if (input.suites.length > 0) {
     for (const directory of input.suites) {
@@ -843,7 +853,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (vitestTests.length > 0 && vitestTests.length === allVitestTests.length) {
     yield* Console.log(
       `check:changed: this change selects every test file (${vitestTests.length}). The test step ` +
-        `ends within ${explicitTimeout ? "--timeout" : `${TEST_STEP_MAX_SECONDS}s`}; ` +
+        `ends within ${explicitTimeout ? "--timeout" : `${testStepMaxSeconds}s`}; ` +
         "for a full run, use each package's own test script (vp run -r test).",
     );
   }
@@ -1031,7 +1041,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           ),
         workers: batch.length - serverTests + Math.min(serverTests, 1),
         serial: true,
-        timeoutSeconds: testStepTimeoutSeconds(batch.length, timeoutSeconds, explicitTimeout),
+        timeoutSeconds: testStepTimeoutSeconds(
+          batch.length,
+          timeoutSeconds,
+          explicitTimeout,
+          testStepMaxSeconds,
+        ),
       };
     }),
     ...batched(nodeTests, (batch, part) =>

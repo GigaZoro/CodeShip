@@ -1,3 +1,7 @@
+## 2026-11-20 — A landing's tests may run as long as its lease allows
+
+- The checks a landing runs under main's landing turn no longer stop their test step at one hour while the turn's lease lasts three. The test step now gets what the lease has left, less twenty minutes for the other checks and the push, so a slow day no longer fails a landing with nothing broken, and a landing still ends before its lease expires.
+
 ## 2026-11-20 — Checkouts clean up leftover git objects after a day
 
 - Every machine's CodeShip checkout now deletes unreachable git objects after one day instead of two weeks, so automatic git cleanup can keep up with the objects agent worktrees, rebases and checkpoints leave behind. Before, a checkout could collect over 200,000 of them (2 GB) while cleanup only warned.
