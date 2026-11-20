@@ -1,10 +1,13 @@
 import {
   CommandId,
+  EnvironmentAuthorizationError,
   EnvironmentId,
   MONITORING_FIX_CHAT_MAX_CHATS,
   type MonitoringCommandPhase,
   type MonitoringFindingCode,
   type MonitoringFindingSeverity,
+  MonitoringFixChatError,
+  type MonitoringFixChatFailure,
   type MonitoringFixChatInput,
   type MonitoringOverviewResult,
   type MonitoringThreadDetail,
@@ -14,6 +17,9 @@ import {
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 /** A summary and the environment that analyzed it; thread ids are only unique per environment. */
 export interface MonitoringChat {
@@ -436,6 +442,8 @@ export function rankFindings(
 }
 
 export interface MonitoringFixChatTarget {
+  /** The button's place. A retry from the same place resends the request it did not hear back from. */
+  readonly origin: string;
   readonly environmentId: EnvironmentId;
   /** Where the fix chat starts: the project that lost the most time, where the cause most likely lives. */
   readonly projectId: ProjectId;
@@ -489,6 +497,7 @@ export function fixChatTarget(
   const byProject = new Map<ProjectId, Loss<null>>();
   for (const hit of hits) addLoss(byProject, hit.summary.projectId, hit.wastedMs, null);
   return {
+    origin: "overview",
     environmentId: EnvironmentId.make(environmentId),
     // Every chat it reads belongs to a project, so one always lost the most.
     projectId: mostLost(byProject)![0],
@@ -499,37 +508,89 @@ export function fixChatTarget(
   };
 }
 
+/** The fix-chat target for one chat's own weak points. */
+export function threadFixChatTarget(
+  environmentId: EnvironmentId,
+  summary: Pick<MonitoringThreadSummary, "threadId" | "projectId">,
+): MonitoringFixChatTarget {
+  return {
+    origin: `thread:${environmentId}:${summary.threadId}`,
+    environmentId,
+    projectId: summary.projectId,
+    threadIds: [summary.threadId],
+  };
+}
+
+export interface MonitoringFixChatRequest {
+  readonly environmentId: EnvironmentId;
+  readonly input: MonitoringFixChatInput;
+}
+
 /**
- * Ids of fix-chat starts that have not reported success. They outlive the page that sent them, so
- * a retry from a page opened again sends the same id and opens the chat a lost answer started.
+ * Fix-chat requests that got no answer. They outlive the page that sent them, so a retry from a
+ * page opened again resends the same request, even once a new analysis changed the target, and
+ * opens the chat a lost answer started instead of starting a second one.
  */
-const unsettledFixChats = new Map<string, CommandId>();
+const unansweredFixChats = new Map<string, MonitoringFixChatRequest>();
 
 const fixChatKey = (target: MonitoringFixChatTarget, code: MonitoringFindingCode) =>
-  JSON.stringify([target.environmentId, target.projectId, code, target.threadIds]);
+  JSON.stringify([target.origin, code]);
 
-/** The request that starts a fix chat, under the id of an earlier start that did not report back. */
-export function fixChatInput(
+/** The request that starts a fix chat: the one from this place that got no answer, or a new one. */
+export function fixChatRequest(
   target: MonitoringFixChatTarget,
   code: MonitoringFindingCode,
   creationSource: "web" | "mobile",
   newId: () => string,
-): MonitoringFixChatInput {
+): MonitoringFixChatRequest {
   const key = fixChatKey(target, code);
-  const commandId = unsettledFixChats.get(key) ?? CommandId.make(newId());
-  unsettledFixChats.set(key, commandId);
-  return {
-    commandId,
-    creationSource,
-    code,
-    projectId: target.projectId,
-    threadIds: target.threadIds,
+  const unanswered = unansweredFixChats.get(key);
+  if (unanswered !== undefined) return unanswered;
+  const request: MonitoringFixChatRequest = {
+    environmentId: target.environmentId,
+    input: {
+      commandId: CommandId.make(newId()),
+      creationSource,
+      code,
+      projectId: target.projectId,
+      threadIds: target.threadIds,
+    },
   };
+  unansweredFixChats.set(key, request);
+  return request;
 }
 
-/** Forgets a start that reported success, so the next press starts another chat. */
-export function settleFixChat(target: MonitoringFixChatTarget, code: MonitoringFindingCode) {
-  unsettledFixChats.delete(fixChatKey(target, code));
+const isMonitoringFixChatError = Schema.is(MonitoringFixChatError);
+const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
+
+/** Why a fix chat did not start, from the failed command's cause. */
+export function fixChatFailureReason(
+  cause: Cause.Cause<unknown>,
+): MonitoringFixChatFailure | "unauthorized" | "offline" {
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+  if (isMonitoringFixChatError(error)) return error.reason;
+  return isAuthorizationError(error) ? "unauthorized" : "offline";
+}
+
+/** Refusals that start no chat, so a resend could only be refused again. */
+const REFUSED: ReadonlySet<ReturnType<typeof fixChatFailureReason>> = new Set([
+  "no-chats",
+  "no-model",
+  "unauthorized",
+]);
+
+/**
+ * Forgets the request once its answer says what happened, so the next press sends a new one: a
+ * started chat (`failure` null) or a refusal. After any other failure the chat may have started,
+ * so a retry resends the same request.
+ */
+export function settleFixChat(
+  target: MonitoringFixChatTarget,
+  code: MonitoringFindingCode,
+  failure: Cause.Cause<unknown> | null,
+) {
+  if (failure !== null && !REFUSED.has(fixChatFailureReason(failure))) return;
+  unansweredFixChats.delete(fixChatKey(target, code));
 }
 
 export interface MonitoringOutliers {

@@ -73,8 +73,9 @@ const WEAK_POINT_TEXT: Readonly<Record<MonitoringFindingCode, WeakPointText>> = 
   },
   run_failures: {
     title: "Runs failed",
-    definition: "Provider, network or other errors ended runs.",
-    counted: "failed runs",
+    definition:
+      "Provider, network or other errors ended runs. A chat's count is its errors or its failed runs, whichever is more.",
+    counted: "errors or failed runs",
     detail: (detail) => `most common error: ${detail}`,
   },
   retries: {
@@ -205,9 +206,8 @@ function monitoringFixChatMessage(
     "",
     `Weak point: ${text.title}`,
     `What it means: ${text.definition}`,
-    `Found in: ${scope}`,
     "",
-    "Chats, most time lost first:",
+    `Chats it hit (${scope}), most time lost first:`,
     ...hits.map((hit) => chatLine(hit, text, projectTitles)),
     "",
     "Read these chats first (t3_thread_read takes the thread id) and find what made this happen. The cause can be in a project's code, scripts or tests, in the agent instructions, rules or skills that steered the agent, or in T3.CodeShip itself.",
@@ -248,7 +248,11 @@ const make = Effect.gen(function* () {
         })
         .toSorted((left, right) => right.wastedMs - left.wastedMs);
       if (hits.length === 0) {
-        if (started !== null) return { threadId, resumed: true as const };
+        // Without its first message, sent as the user, the chat has nothing to work from, and
+        // the chats it was about no longer say what to send.
+        if (started !== null && started.latestUserMessageAt !== null) {
+          return { threadId, resumed: true as const };
+        }
         return yield* failure(
           "no-chats",
           "None of these chats still shows this weak point. Monitoring may have analyzed them again.",
@@ -262,7 +266,10 @@ const make = Effect.gen(function* () {
         const project = yield* projects
           .getById(projectId)
           .pipe(Effect.mapError(() => failure("launch-failed", "Could not read the project.")));
-        if (Option.isSome(project)) projectTitles.set(projectId, project.value.title);
+        // A title can carry a credential-bearing URL the chat should not see.
+        if (Option.isSome(project)) {
+          projectTitles.set(projectId, redactSensitiveText(project.value.title));
+        }
       }
       // The client picked the project that lost the most time, where the cause most likely
       // lives; the chat can still reach the others.

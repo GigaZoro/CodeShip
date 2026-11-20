@@ -8,7 +8,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import {
-  fixChatInput,
+  fixChatRequest,
   mergeMonitoringOverviews,
   settleFixChat,
   type MonitoringEnvironmentReport,
@@ -91,7 +91,7 @@ export function refreshMonitoringThread(
 
 export interface MonitoringFixChat {
   readonly code: MonitoringFindingCode;
-  /** False when no chat shows the weak point or this client may not start chats on its machine. */
+  /** False when no chat shows the weak point, or its machine cannot start one for this client. */
   readonly available: boolean;
   readonly pending: boolean;
   readonly failure: string | null;
@@ -109,8 +109,8 @@ export function useMonitoringFixChat(
     label: "monitoring start fix chat",
     reportFailure: false,
   });
-  const allowed = useAtomValue(
-    serverEnvironment.startMonitoringFixChat.permissionAtom(target?.environmentId ?? null),
+  const available = useAtomValue(
+    serverEnvironment.monitoringFixChatsAvailable(target?.environmentId ?? null),
   );
   const navigate = useNavigate();
   const router = useRouter();
@@ -119,26 +119,25 @@ export function useMonitoringFixChat(
   const [started, setStarted] = useState<MonitoringFixChat["started"]>(null);
   const start = () => {
     if (target === null || pending) return;
-    const { environmentId } = target;
+    const request = fixChatRequest(target, code, "web", randomUUID);
     setPending(true);
     setFailure(null);
     // The href holds the filters too, so a changed view counts as moving on.
     const startedAt = router.state.location.href;
-    void run({ environmentId, input: fixChatInput(target, code, "web", randomUUID) }).then(
-      (result) => {
-        setPending(false);
-        if (result._tag === "Success") {
-          settleFixChat(target, code);
-          const chat = { environmentId, threadId: result.value.threadId };
-          setStarted(chat);
-          // The chat opens only where the user asked for it; elsewhere the row links to it.
-          if (router.state.location.href !== startedAt) return;
-          void navigate({ to: "/$environmentId/$threadId", params: chat });
-        } else if (!isAtomCommandInterrupted(result)) {
-          setFailure(monitoringFixChatFailureMessage(result.cause));
-        }
-      },
-    );
+    void run(request).then((result) => {
+      setPending(false);
+      if (result._tag === "Success") {
+        settleFixChat(target, code, null);
+        const chat = { environmentId: request.environmentId, threadId: result.value.threadId };
+        setStarted(chat);
+        // The chat opens only where the user asked for it; elsewhere the row links to it.
+        if (router.state.location.href !== startedAt) return;
+        void navigate({ to: "/$environmentId/$threadId", params: chat });
+      } else if (!isAtomCommandInterrupted(result)) {
+        settleFixChat(target, code, result.cause);
+        setFailure(monitoringFixChatFailureMessage(result.cause));
+      }
+    });
   };
-  return { code, available: target !== null && allowed, pending, failure, started, start };
+  return { code, available: target !== null && available, pending, failure, started, start };
 }

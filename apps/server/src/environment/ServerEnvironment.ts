@@ -281,6 +281,7 @@ export const make = Effect.gen(function* () {
       usageHolds: true,
       manualStepReviews: true,
       manualStepChats: true,
+      monitoringFixChats: true,
       threadProjectFromScratch: true,
       threadTitleRegeneration: true,
       commandOutputStreaming: true,

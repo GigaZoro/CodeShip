@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId, MonitoringFindingCode, ThreadId } from "@t3tools/contracts";
 import {
-  fixChatInput,
+  fixChatRequest,
   type MonitoringFixChatTarget,
   settleFixChat,
 } from "@t3tools/client-runtime/monitoring";
@@ -24,7 +24,8 @@ import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteSc
 
 /**
  * Starts a chat that traces one weak point in `target`'s chats to its root cause and fixes it, and
- * opens it. Renders nothing when no chat shows the weak point or this client may not start chats.
+ * opens it. Renders nothing when no chat shows the weak point, or its machine cannot start one
+ * for this client.
  */
 export function MonitoringFixChatAction({
   target,
@@ -37,8 +38,8 @@ export function MonitoringFixChatAction({
     label: "monitoring start fix chat",
     reportFailure: false,
   });
-  const allowed = useAtomValue(
-    serverEnvironment.startMonitoringFixChat.permissionAtom(target?.environmentId ?? null),
+  const available = useAtomValue(
+    serverEnvironment.monitoringFixChatsAvailable(target?.environmentId ?? null),
   );
   const navigation = useNavigation();
   const openThread = useOpenScheduledTaskThread();
@@ -48,26 +49,26 @@ export function MonitoringFixChatAction({
     readonly environmentId: EnvironmentId;
     readonly threadId: ThreadId;
   } | null>(null);
-  if (target === null || !allowed) return null;
+  if (target === null || !available) return null;
 
   const start = () => {
     if (pending) return;
-    const { environmentId } = target;
+    const request = fixChatRequest(target, code, "mobile", uuidv4);
+    const { environmentId } = request;
     setPending(true);
     setFailure(null);
-    void run({ environmentId, input: fixChatInput(target, code, "mobile", uuidv4) }).then(
-      (result) => {
-        setPending(false);
-        if (result._tag === "Success") {
-          settleFixChat(target, code);
-          setStarted({ environmentId, threadId: result.value.threadId });
-          // The chat opens only while the user is still here; otherwise the row offers it.
-          if (navigation.isFocused()) openThread(environmentId, result.value.threadId);
-        } else if (!isAtomCommandInterrupted(result)) {
-          setFailure(monitoringFixChatFailureMessage(result.cause));
-        }
-      },
-    );
+    void run(request).then((result) => {
+      setPending(false);
+      if (result._tag === "Success") {
+        settleFixChat(target, code, null);
+        setStarted({ environmentId, threadId: result.value.threadId });
+        // The chat opens only while the user is still here; otherwise the row offers it.
+        if (navigation.isFocused()) openThread(environmentId, result.value.threadId);
+      } else if (!isAtomCommandInterrupted(result)) {
+        settleFixChat(target, code, result.cause);
+        setFailure(monitoringFixChatFailureMessage(result.cause));
+      }
+    });
   };
 
   return (

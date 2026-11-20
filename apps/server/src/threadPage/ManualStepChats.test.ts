@@ -18,6 +18,7 @@ import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Project from "../project/ProjectService.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -87,6 +88,9 @@ const layerFor = (
     Layer.provide(Layer.mock(Project.ProjectService)({ getById: () => Effect.succeedNone })),
     // Manual-step chats always run in the checkout, so they never ask git for a worktree base.
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      Layer.mock(T3ProjectFileLoader.T3ProjectFileLoader)({ load: () => Effect.succeedNone }),
+    ),
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(providers) }),
     ),

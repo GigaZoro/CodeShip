@@ -17,6 +17,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as Project from "../project/ProjectService.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { defaultWorktreeStrategy } from "../vcs/defaultWorktreeStrategy.ts";
@@ -113,15 +114,15 @@ export const makeStartChatAsUser = Effect.gen(function* () {
   const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const projectFiles = yield* T3ProjectFileLoader.T3ProjectFileLoader;
 
-  /** A folder without a committed git repository has no worktrees, so its chat runs in it. */
+  /** A folder that is not a git repository has no worktrees, so its chat runs in it, as from the composer. */
   const worktreeIfRepository = (cwd: string) =>
-    git.resolveCommit({ cwd, revision: "HEAD" }).pipe(
-      Effect.matchEffect({
-        onFailure: () =>
-          Effect.succeed<ThreadLaunch.ThreadLaunchWorkspaceStrategy>({ type: "root" }),
-        onSuccess: () => defaultWorktreeStrategy(git, cwd),
-      }),
+    git.statusDetailsLocal(cwd, { includeDivergence: false }).pipe(
+      Effect.mapError(() => failure("launch-failed", "Could not read the project's git status.")),
+      Effect.flatMap((status): Effect.Effect<ThreadLaunch.ThreadLaunchWorkspaceStrategy> =>
+        status.isRepo ? defaultWorktreeStrategy(git, cwd) : Effect.succeed({ type: "root" }),
+      ),
     );
 
   return Effect.fn("startChatAsUser")(function* (
@@ -136,7 +137,12 @@ export const makeStartChatAsUser = Effect.gen(function* () {
         .getById(projectId)
         .pipe(Effect.mapError(() => failure("launch-failed", "Could not read the project."))),
     );
-    const defaults = resolveProjectSettings(settings, projectId, project).settings;
+    // The project's t3.json can say where new chats run, as it does for the composer.
+    const projectFile =
+      project === undefined
+        ? null
+        : Option.getOrNull(yield* projectFiles.load(project.workspaceRoot));
+    const defaults = resolveProjectSettings(settings, projectId, project, projectFile).settings;
     // A repeated request replays on the model its chat started with, whatever the accounts
     // look like by now.
     const threadId = ThreadId.make(input.commandId);

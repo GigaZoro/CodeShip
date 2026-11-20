@@ -400,6 +400,26 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  // A move or rename changes what the lists show of a current analysis. The check runs before the
+  // wake, so a new analysis it starts publishes its own change.
+  const followMetadata = Effect.fn("MonitoringService.followMetadata")(
+    function* (threadId: ThreadId) {
+      if ((yield* summaries([threadId])).length > 0) yield* publishChange();
+      yield* Queue.offer(wake, undefined);
+    },
+    (effect, threadId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          notInterrupt(cause)
+            ? Effect.logWarning("A chat's change could not be shown in Monitoring.", {
+                threadId,
+                cause: Cause.pretty(cause),
+              })
+            : Effect.interrupt,
+        ),
+      ),
+  );
+
   const start: MonitoringService["Service"]["start"] = Effect.fn("MonitoringService.start")(
     function* () {
       const events = orchestrator.streamDomainEvents;
@@ -414,9 +434,12 @@ const make = Effect.gen(function* () {
               return removeAnalysis(event.threadId);
             // A pin and a skipped scheduled recovery change the settle with no settle event.
             case "thread.pinned":
-            case "thread.metadata-updated":
               return isSettled(event.payload)
                 ? Queue.offer(wake, undefined)
+                : removeAnalysis(event.threadId);
+            case "thread.metadata-updated":
+              return isSettled(event.payload)
+                ? followMetadata(event.threadId)
                 : removeAnalysis(event.threadId);
             default:
               return Effect.void;

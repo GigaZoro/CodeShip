@@ -1,10 +1,8 @@
 import {
-  EnvironmentAuthorizationError,
   type MonitoringCommandPhase,
   type MonitoringFinding,
   type MonitoringFindingCode,
   type MonitoringFindingSeverity,
-  MonitoringFixChatError,
   type MonitoringFixChatFailure,
   type MonitoringLaneKind,
   type MonitoringMarkerKind,
@@ -12,11 +10,9 @@ import {
   type MonitoringThreadKind,
 } from "@t3tools/contracts";
 import { msg, t, type Message } from "@t3tools/shared/i18n";
-import * as Cause from "effect/Cause";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
+import type * as Cause from "effect/Cause";
 
-import type { TimeBucketKey } from "./aggregate.ts";
+import { fixChatFailureReason, type TimeBucketKey } from "./aggregate.ts";
 
 export interface FindingText {
   readonly title: Message;
@@ -139,21 +135,9 @@ const FIX_CHAT_FAILURE_MESSAGES: Readonly<
   offline: msg("Could not reach the machine that runs the chat."),
 };
 
-const isMonitoringFixChatError = Schema.is(MonitoringFixChatError);
-const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
-
 /** Why a fix chat did not start, from the failed command's cause. */
 export function monitoringFixChatFailureMessage(cause: Cause.Cause<unknown>): string {
-  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
-  return t(
-    FIX_CHAT_FAILURE_MESSAGES[
-      isMonitoringFixChatError(error)
-        ? error.reason
-        : isAuthorizationError(error)
-          ? "unauthorized"
-          : "offline"
-    ],
-  );
+  return t(FIX_CHAT_FAILURE_MESSAGES[fixChatFailureReason(cause)]);
 }
 
 export const SEVERITY_LABEL: Readonly<Record<MonitoringFindingSeverity, Message>> = {

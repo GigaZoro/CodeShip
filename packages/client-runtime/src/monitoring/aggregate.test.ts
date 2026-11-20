@@ -1,19 +1,23 @@
 import {
+  EnvironmentAuthorizationError,
+  AuthOrchestrationOperateScope,
   EnvironmentId,
   MONITORING_FIX_CHAT_MAX_CHATS,
   type MonitoringFinding,
+  MonitoringFixChatError,
   type MonitoringThreadSummary,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 
 import {
   breakdownByModel,
   dailyTrend,
   dayKey,
   filterChats,
-  fixChatInput,
+  fixChatRequest,
   fixChatTarget,
   median,
   mergeMonitoringOverviews,
@@ -26,6 +30,7 @@ import {
   settleFixChat,
   sortChats,
   sumTimeBuckets,
+  threadFixChatTarget,
   totalsOf,
   TIME_BUCKET_KEYS,
   type MonitoringChat,
@@ -205,6 +210,7 @@ describe("fixChatTarget", () => {
       "slow_command",
     );
     expect(target).toEqual({
+      origin: "overview",
       environmentId: "env-b",
       projectId: ProjectId.make("p2"),
       threadIds: ["d", "b", "c"],
@@ -235,21 +241,52 @@ describe("fixChatTarget", () => {
   });
 });
 
-describe("fixChatInput", () => {
-  const target = {
-    environmentId: EnvironmentId.make("env-retry"),
-    projectId: ProjectId.make("p1"),
-    threadIds: [ThreadId.make("a")],
-  };
-  it("sends a retry under the unsettled start's id and a start after success under a new one", () => {
-    let ids = 0;
-    const newId = () => `id-${(ids += 1)}`;
-    const first = fixChatInput(target, "slow_command", "web", newId);
-    expect(fixChatInput(target, "slow_command", "web", newId).commandId).toBe(first.commandId);
-    expect(fixChatInput(target, "retries", "web", newId).commandId).not.toBe(first.commandId);
-    settleFixChat(target, "slow_command");
-    expect(fixChatInput(target, "slow_command", "web", newId).commandId).not.toBe(first.commandId);
+describe("fixChatRequest", () => {
+  const environmentId = EnvironmentId.make("env-retry");
+  const target = (threadId: string) =>
+    threadFixChatTarget(environmentId, {
+      threadId: ThreadId.make(threadId),
+      projectId: ProjectId.make("p1"),
+    });
+  let ids = 0;
+  const newId = () => `id-${(ids += 1)}`;
+
+  it("resends an unanswered request from the same place, even once the target changed", () => {
+    const first = fixChatRequest(target("a"), "slow_command", "web", newId);
+    const moved = { ...target("a"), projectId: ProjectId.make("p2"), threadIds: [] };
+    expect(fixChatRequest(moved, "slow_command", "web", newId)).toBe(first);
+    expect(fixChatRequest(target("a"), "retries", "web", newId)).not.toBe(first);
+    expect(fixChatRequest(target("b"), "slow_command", "web", newId)).not.toBe(first);
   });
+
+  it.each([
+    ["a started chat", null, true],
+    ["a refusal", Cause.fail(new MonitoringFixChatError({ reason: "no-chats", detail: "" })), true],
+    [
+      "a refused grant",
+      Cause.fail(
+        new EnvironmentAuthorizationError({
+          message: "",
+          requiredScope: AuthOrchestrationOperateScope,
+        }),
+      ),
+      true,
+    ],
+    [
+      "a failed launch",
+      Cause.fail(new MonitoringFixChatError({ reason: "launch-failed", detail: "" })),
+      false,
+    ],
+    ["a lost answer", Cause.fail(new Error("socket closed")), false],
+  ])(
+    "after %s, sends a new request next only when nothing could have started",
+    (name, failure, fresh) => {
+      const place = target(`settle ${name}`);
+      const first = fixChatRequest(place, "slow_command", "web", newId);
+      settleFixChat(place, "slow_command", failure);
+      expect(fixChatRequest(place, "slow_command", "web", newId) !== first).toBe(fresh);
+    },
+  );
 });
 
 describe("dailyTrend", () => {

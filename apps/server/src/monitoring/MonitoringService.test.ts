@@ -158,16 +158,19 @@ it.effect("analyzes settled chats at start and drops one when it is unsettled", 
 
 it.effect("lists a chat under its current project and title after it moved", () =>
   Effect.gen(function* () {
-    const { monitoring, seedThread, sql } = yield* makeHarness();
+    const { events, monitoring, seedThread, sql } = yield* makeHarness();
     yield* seedThread("moved-chat");
     yield* monitoring.start();
-    yield* nextChange(monitoring, 0);
+    const analyzed = yield* nextChange(monitoring, 0);
 
     yield* sql`
       UPDATE orchestration_v2_projection_threads
       SET project_id = 'project-2', title = 'Renamed chat'
       WHERE thread_id = 'moved-chat'
     `;
+    // Open Monitoring pages learn of the move.
+    yield* Queue.offer(events, domainEvent("thread.metadata-updated", appThread("moved-chat")));
+    yield* nextChange(monitoring, analyzed);
     const current = { projectId: "project-2", title: "Renamed chat" };
     const { threads } = yield* monitoring.overview({ since: SINCE, until: UNTIL });
     expect(threads).toMatchObject([current]);

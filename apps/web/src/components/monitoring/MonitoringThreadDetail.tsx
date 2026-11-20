@@ -6,6 +6,7 @@ import type {
   MonitoringThreadSummary,
   ThreadId,
 } from "@t3tools/contracts";
+import { threadFixChatTarget } from "@t3tools/client-runtime/monitoring";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import {
   formatCount,
@@ -114,10 +115,7 @@ function FindingRow({
   readonly summary: MonitoringThreadSummary;
 }) {
   const text = FINDING_TEXT[finding.code];
-  const fixChat = useMonitoringFixChat(
-    { environmentId, projectId: summary.projectId, threadIds: [summary.threadId] },
-    finding.code,
-  );
+  const fixChat = useMonitoringFixChat(threadFixChatTarget(environmentId, summary), finding.code);
   return (
     <li className="flex flex-col gap-1 px-3 py-2.5">
       <span className="flex flex-wrap items-center gap-2">

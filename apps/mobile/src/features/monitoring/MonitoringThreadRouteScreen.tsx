@@ -1,5 +1,6 @@
 import type { StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentId, MonitoringThreadDetail, ThreadId } from "@t3tools/contracts";
+import { threadFixChatTarget } from "@t3tools/client-runtime/monitoring";
 import {
   FINDING_DETAIL_LABELED,
   FINDING_TEXT,
@@ -255,11 +256,7 @@ function DeepDiveBody(props: {
                   </Text>
                 ) : null}
                 <MonitoringFixChatAction
-                  target={{
-                    environmentId,
-                    projectId: summary.projectId,
-                    threadIds: [summary.threadId],
-                  }}
+                  target={threadFixChatTarget(environmentId, summary)}
                   code={finding.code}
                 />
               </View>

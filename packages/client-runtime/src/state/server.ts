@@ -1466,15 +1466,26 @@ export function createServerEnvironmentAtoms<R, E>(
     concurrency: configConcurrency,
   });
 
+  const startMonitoringFixChat = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:server:monitoring:start-fix-chat",
+    tag: WS_METHODS.monitoringStartFixChat,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.commandId },
+  });
+  /** Whether the environment serves fix chats and this client may start them there. */
+  const monitoringFixChatsAvailable = Atom.family((environmentId: EnvironmentId | null) =>
+    Atom.make(
+      (get) =>
+        get(configValueAtom(environmentId))?.environment.capabilities.monitoringFixChats === true &&
+        get(startMonitoringFixChat.permissionAtom(environmentId)),
+    ).pipe(Atom.withLabel(`environment-data:server:monitoring:fix-chats:${environmentId}`)),
+  );
+
   return {
     monitoringChanges,
     monitoringOverview,
     monitoringThread,
-    startMonitoringFixChat: createEnvironmentRpcCommand(runtime, {
-      label: "environment-data:server:monitoring:start-fix-chat",
-      tag: WS_METHODS.monitoringStartFixChat,
-      concurrency: { mode: "singleFlight", key: ({ input }) => input.commandId },
-    }),
+    startMonitoringFixChat,
+    monitoringFixChatsAvailable,
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
