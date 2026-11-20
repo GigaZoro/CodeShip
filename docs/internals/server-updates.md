@@ -110,8 +110,8 @@ commands for its own request ID. Commands for other requests retain their order.
 ## Automatic installs
 
 The same [automatic update service](../../apps/server/src/cloud/autoUpdate.ts) runs in the
-launcher-managed server and the desktop app's bundled server. It checks at activation and every
-30 minutes while `installUpdatesAutomatically` is on. An update becomes due when a release
+launcher-managed server and the desktop app's bundled server. It checks at activation, at the daily install time and when a retry is due,
+with at most 30 minutes between checks while `installUpdatesAutomatically` is on. An update becomes due when a release
 newer than the running version was published by the most recent daily `automaticUpdateTime`
 (default `03:00`, in the server's local time). The GitHub release index supplies the publication
 times; the index is newest first but not strictly by version, so the service reads every entry
@@ -136,23 +136,24 @@ scheduled time is closer than the next regular occurrence, regardless of its cat
 On desktop the policy runs only in the primary backend, while Electron's install stops every
 backend the app runs, such as a WSL backend beside the Windows one. So the waits and the drain go
 through [`MachineRestartHold`](../../apps/server/src/cloud/machineRestartHold.ts), which merges the
-primary's own hold with the hold of each other backend that serves. Electron lists the serving
-backends and their addresses for the primary: over the telemetry descriptor as a `desktopBackends`
-message, which each new stream replays, or, for a WSL primary, by posting it to the update control
-path. Each listed backend streams its hold as JSON lines from `GET /api/desktop/restart-hold`,
-authenticated with the shared desktop bootstrap secret, and repeats an unchanged hold every 20
-seconds, so the primary treats a minute of silence or a closed stream as a failed read. The drain
-opens the same stream with `drain=1`: while it is open, that backend's `UpdateDrain` holds its own
-scheduled starts, and closing it releases them however the primary ends. Every drain the primary
-holds (the wait's, each preparation's and the one an accepted handoff keeps) shares one set of these
-links, open while any of them holds, so a drain that hands over to the next never lets another
-backend start anything between the two. A drain stream that drops is opened again while the
-backend stays listed. A listed backend whose hold cannot be read fails
-the read with a `BackendRestartHoldError` naming it, and the automatic install backs off as for any
-other failed read instead of cutting chats it cannot see. A backend that stops leaves the list.
+primary's own hold with each other backend's. Electron lists non-primary backends from spawn
+through process exit, including those still starting. It sends the inventory over the telemetry
+descriptor and replays it on each new stream. For a WSL primary it posts changes and replays
+the current inventory on its HTTP control poll. The primary waits up to a minute for the first
+inventory, even on a machine where the eventual list is empty.
 
-The final check runs after preparation. It reads the setting and managed policy again, and
-checks that the restart hold is still empty if the wait ended before the cut phase. When a chat
+Each listed backend streams JSON lines from `GET /api/desktop/restart-hold` and repeats its
+hold every 20 seconds. The backend-control token uses its own HMAC purpose and the same clock
+windows as desktop bootstrap. With `drain=1`, the backend holds scheduled starts and waits for
+admissions already in progress to become visible before sending its first line. Preparation
+waits for local admission and an acknowledgement from each listed backend, each bounded by a
+minute. Overlapping drains share links through the handoff. A dropped or silent link loses its
+acknowledgement until the backend reconnects and reports again.
+
+The final check reads the setting, managed policy, local hold, current inventory and each live
+drain link's latest hold. An unknown inventory, an unreachable backend or a missing acknowledgement
+counts as a failed attempt and triggers backoff, including in the cut phase. Once the deadline
+passes, a successfully read busy hold allows the cut. When a chat
 started during preparation, the service waits again with the same two-hour or drain deadline, so
 a busy machine cannot restart those waits with each preparation. `UpdateDrain` counts holds:
 every preparation holds scheduled starts, and an accepted handoff keeps holding them for up to
@@ -168,7 +169,7 @@ next allowed attempt: 15 minutes, doubling per attempt up to six hours. The reco
 process, so an install that did not apply, a launcher update that failed, or a handoff that left
 the same version running waits out that time, and new releases do not reset it. A record from an
 older version is ignored, and an unreadable one is replaced. A release the launcher rolled back,
-or a desktop update that did not apply, is skipped until a newer release exists. Manual updates
+or a desktop update that did not apply, is skipped until a newer release is due. Manual updates
 can be started at any time.
 
 ## Recovering interrupted threads

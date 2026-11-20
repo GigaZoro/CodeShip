@@ -867,7 +867,8 @@
 
 ## 2026-11-20 — Automatic desktop updates wait for chats on the WSL server too
 
-- The desktop app's automatic update waits for chats, background work and scheduled starts on every server the app runs, such as its WSL server, because the install restarts them all. Before, an idle Windows server could install and cut chats running in WSL. If the app cannot read what another of its servers is running, the update waits and tries again later.
+- Automatic updates check at the scheduled local time and when a retry is due. Before installing, the desktop app confirms every server it runs, including one still starting in WSL, has paused scheduled starts and reported its work. It retries if a server cannot confirm, even after the chat deadline. A rolled-back or unapplied release waits for a newer release to become due.
+- **Update everything** includes desktop apps whose primary server runs in WSL.
 
 ## 2026-11-20 — A desktop preview tab's viewers and recordings no longer fight over its screencast
 

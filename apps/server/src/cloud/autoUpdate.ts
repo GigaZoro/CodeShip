@@ -133,9 +133,9 @@ export const autoUpdateRetryDelay = (attempts: number): Duration.Duration =>
 
 // A clock change can push a skipped time past midnight into the next day, or repeat a whole day,
 // so the latest install time can fall on a local date other than today or yesterday.
-const INSTALL_TIME_DAYS = [1, 0, -1, -2, -3] as const;
+const INSTALL_TIME_DAYS = [-3, -2, -1, 0, 1, 2, 3] as const;
 
-function latestInstallTime(now: DateTime.Zoned, time: string): number {
+function adjacentInstallTimes(now: DateTime.Zoned, time: string) {
   const hour = Number(time.slice(0, 2));
   const minute = Number(time.slice(3));
   const nowMillis = DateTime.toEpochMillis(now);
@@ -144,6 +144,7 @@ function latestInstallTime(now: DateTime.Zoned, time: string): number {
   // Calendar days, counted in UTC so no clock change makes a day shorter or longer.
   const todayDate = DateTime.makeUnsafe({ year: today.year, month: today.month, day: today.day });
   let latest = Number.NEGATIVE_INFINITY;
+  let next = Number.POSITIVE_INFINITY;
   for (const days of INSTALL_TIME_DAYS) {
     const date = DateTime.toPartsUtc(DateTime.add(todayDate, { days }));
     const parts = { year: date.year, month: date.month, day: date.day, hour, minute };
@@ -153,10 +154,11 @@ function latestInstallTime(now: DateTime.Zoned, time: string): number {
       const millis = DateTime.toEpochMillis(
         DateTime.makeZonedUnsafe(parts, { ...options, disambiguation }),
       );
-      if (millis <= nowMillis && millis > latest) latest = millis;
+      if (millis <= nowMillis) latest = Math.max(latest, millis);
+      else next = Math.min(next, millis);
     }
   }
-  return latest;
+  return { latest, next };
 }
 
 const higherVersion = (current: string | undefined, candidate: string) =>
@@ -175,7 +177,7 @@ export function automaticUpdateTarget<E, R>(
   now: DateTime.Zoned,
   time: string,
 ): Effect.Effect<Option.Option<AutomaticUpdateTarget>, E, R> {
-  const cutoff = latestInstallTime(now, time);
+  const cutoff = adjacentInstallTimes(now, time).latest;
   return releases.pipe(
     Stream.takeWhile(({ version }) => compareExactServiceVersions(version, currentVersion) !== 0),
     Stream.filter(({ version }) => compareExactServiceVersions(version, currentVersion) > 0),
@@ -204,25 +206,29 @@ export function automaticUpdateTarget<E, R>(
  * attempt. Every other failure waits out the attempt record's retry time, which survives restarts.
  */
 function decideAutoUpdate(input: {
-  readonly newestVersion: string;
+  readonly dueVersion: string;
   readonly settledOutcome: ServerSelfUpdateOutcome | undefined;
   readonly notAppliedDesktopVersion: string | undefined;
   readonly attempt: AttemptRecord | undefined;
   readonly nowMillis: number;
 }): AutoUpdateDecision {
-  const { newestVersion, settledOutcome, attempt } = input;
-  const reachesNewest = (version: string | undefined) =>
-    version !== undefined && compareExactServiceVersions(version, newestVersion) >= 0;
-  if (
-    reachesNewest(input.notAppliedDesktopVersion) ||
-    (settledOutcome?.status === "rolled-back" && reachesNewest(settledOutcome.targetVersion))
-  ) {
-    return { _tag: "rolled-back", version: newestVersion };
+  const { dueVersion, settledOutcome, attempt } = input;
+  for (const version of [
+    input.notAppliedDesktopVersion,
+    settledOutcome?.status === "rolled-back" ? settledOutcome.targetVersion : undefined,
+  ]) {
+    if (version !== undefined && compareExactServiceVersions(version, dueVersion) >= 0) {
+      return { _tag: "rolled-back", version };
+    }
   }
   if (attempt !== undefined && attempt.retryAtMillis > input.nowMillis) {
-    return { _tag: "backing-off", version: newestVersion, retryAtMillis: attempt.retryAtMillis };
+    return {
+      _tag: "backing-off",
+      version: attempt.targetVersion,
+      retryAtMillis: attempt.retryAtMillis,
+    };
   }
-  return { _tag: "update", version: newestVersion };
+  return { _tag: "update", version: dueVersion };
 }
 
 /**
@@ -341,7 +347,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
   const reasonToHoldOff = Effect.fn("cloud.auto_update.reason_to_hold_off")(function* (
     schedule: UpdateSchedule,
     afterPatience: boolean,
-  ): Effect.fn.Return<HoldOff | undefined, never> {
+  ): Effect.fn.Return<HoldOff | undefined, ServerSelfUpdateError> {
     const current = yield* readSettings;
     if (!current?.installUpdatesAutomatically) {
       return { reason: "the setting was turned off", chats: false };
@@ -351,12 +357,12 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     }
     const refusal = managedUpdateRefusal(policy.document, schedule.channel);
     if (refusal !== undefined) return { reason: refusal, chats: false };
-    if (afterPatience) return undefined;
-    const hold = yield* machineHold.restartHold.pipe(Effect.option);
-    if (Option.isNone(hold)) return { reason: "background work could not be read", chats: false };
-    if (isRestartHoldEmpty(hold.value)) return undefined;
+    const hold = yield* machineHold.restartHold.pipe(
+      Effect.mapError((cause) => new ServerSelfUpdateError({ reason: cause.message, cause })),
+    );
+    if (afterPatience || isRestartHoldEmpty(hold)) return undefined;
     return {
-      reason: hold.value.work.length > 0 ? "a chat started background work" : "a chat is answering",
+      reason: hold.work.length > 0 ? "a chat started background work" : "a chat is answering",
       chats: true,
     };
   });
@@ -409,9 +415,9 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     yield* Effect.logInfo("Automatic update drains: new scheduled starts wait for it.", {
       targetVersion: installerVersion(target),
     });
-    return yield* machineHold.whileDraining(
-      drainThenInstall(installerVersion(target), schedule, waitFor, idleBefore),
-    );
+    return yield* machineHold
+      .whileDraining(drainThenInstall(installerVersion(target), schedule, waitFor, idleBefore))
+      .pipe(Effect.catch((error) => recordFailure(installerVersion(target), error.message)));
   });
 
   /** Lets running turns finish with scheduled starts held, then cuts only what outlasts the limit. */
@@ -428,13 +434,10 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       if (drained === "busy") break;
       if ((yield* handOff(schedule, false)) !== "chats") return;
     }
-    const hold = yield* machineHold.restartHold.pipe(Effect.option);
+    const hold = yield* machineHold.restartHold;
     yield* Effect.logWarning("Automatic update stops waiting for chats to be idle.", {
       targetVersion: version,
-      cutThreadIds: Option.match(hold, {
-        onNone: () => [],
-        onSome: (current) => (current.runningTurns ?? []).map((turn) => turn.threadId),
-      }),
+      cutThreadIds: (hold.runningTurns ?? []).map((turn) => turn.threadId),
     });
     // Work that never ends, such as a stuck tool call, would otherwise hold every later day too.
     const listedWorkEnded = yield* waitFor(waitForListedWork).pipe(
@@ -495,15 +498,21 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
           }).pipe(
             // The installer stops this server shortly; until then no scheduled start may begin.
             Effect.andThen(
-              machineHold.drainInBackground(
-                Effect.sleep(AUTO_UPDATE_HANDOFF_STOP_LIMIT).pipe(
-                  Effect.andThen(
-                    Effect.logWarning("Automatic update handoff did not stop this server.", {
-                      targetVersion: result.targetVersion,
-                    }),
+              machineHold
+                .drainInBackground(
+                  Effect.sleep(AUTO_UPDATE_HANDOFF_STOP_LIMIT).pipe(
+                    Effect.andThen(
+                      Effect.logWarning("Automatic update handoff did not stop this server.", {
+                        targetVersion: result.targetVersion,
+                      }),
+                    ),
+                  ),
+                )
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new ServerSelfUpdateError({ reason: cause.message, cause }),
                   ),
                 ),
-              ),
             ),
           ),
         ),
@@ -529,7 +538,9 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
         ),
       );
     // Held while the release is prepared, so no scheduled start begins under the handoff.
-    yield* machineHold.whileDraining(Effect.raceFirst(prepare, cancelPreparation));
+    yield* Effect.raceFirst(machineHold.whileDraining(prepare), cancelPreparation).pipe(
+      Effect.catch((error) => recordFailure(version, error.message)),
+    );
     return (yield* Ref.get(heldOff))?.chats === true ? ("chats" as const) : undefined;
   });
 
@@ -551,7 +562,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     );
     if (Option.isNone(target)) return;
     const decision = decideAutoUpdate({
-      newestVersion: target.value.newest,
+      dueVersion: target.value.due,
       settledOutcome: launcher.settledOutcome,
       notAppliedDesktopVersion: yield* selfUpdate.notAppliedDesktopVersion,
       attempt: yield* lastAttempt,
@@ -565,9 +576,11 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       }
       return target.value;
     }
-    if ((yield* Ref.getAndSet(reportedSkipRef, decision.version)) !== decision.version) {
+    const skip = [decision._tag, decision.version, target.value.due].join(" ");
+    if ((yield* Ref.getAndSet(reportedSkipRef, skip)) !== skip) {
       yield* Effect.logInfo("Automatic update is holding off a release that did not install.", {
         targetVersion: decision.version,
+        dueVersion: target.value.due,
         reason: decision._tag,
       });
     }
@@ -599,7 +612,21 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     if (target !== undefined) yield* install(target, schedule);
   }, Effect.scoped);
 
-  return { check };
+  const waitForNextCheck = Effect.gen(function* () {
+    const current = yield* readSettings;
+    if (!current?.installUpdatesAutomatically)
+      return yield* Effect.sleep(AUTO_UPDATE_CHECK_INTERVAL);
+    const attempt = yield* lastAttempt;
+    const now = yield* nowLocal;
+    const millis = DateTime.toEpochMillis(now);
+    const next = Math.min(
+      millis + Duration.toMillis(AUTO_UPDATE_CHECK_INTERVAL),
+      adjacentInstallTimes(now, current.automaticUpdateTime).next,
+      attempt !== undefined && attempt.retryAtMillis > millis ? attempt.retryAtMillis : Infinity,
+    );
+    yield* Effect.sleep(Duration.millis(next - millis));
+  });
+  return { check, waitForNextCheck };
 });
 
 /**
@@ -610,16 +637,15 @@ export const start = Effect.fn("cloud.auto_update.start")(function* () {
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
   if (
     serverConfig.mode === "desktop"
-      ? serverConfig.desktopTelemetryControlFd === undefined &&
-        !serverConfig.desktopUpdateHttpControl
+      ? !ServerConfig.supportsDesktopAppUpdate(serverConfig)
       : !launcher.managed
   )
     return;
-  const { check } = yield* make();
+  const { check, waitForNextCheck } = yield* make();
   yield* ServerActivation.forkParked(
     check().pipe(
       Effect.catchCause((cause) => Effect.logError("Automatic update check failed.", { cause })),
-      Effect.andThen(Effect.sleep(AUTO_UPDATE_CHECK_INTERVAL)),
+      Effect.andThen(waitForNextCheck),
       Effect.forever,
     ),
   );

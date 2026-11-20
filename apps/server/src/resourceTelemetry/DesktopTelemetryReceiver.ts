@@ -24,6 +24,7 @@ import { applyShellEnvironment } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -52,6 +53,17 @@ const STALE_CHECK_INTERVAL = Duration.seconds(30);
 // A closed desktop app stops reading while each daily attempt still queues and cancels a request;
 // only the newest commands can still matter.
 export const HTTP_UPDATE_COMMANDS_LIMIT = 16;
+
+export const DESKTOP_BACKEND_SILENCE_LIMIT = Duration.minutes(1);
+
+export class DesktopBackendInventoryUnavailable extends Schema.TaggedError<DesktopBackendInventoryUnavailable>()(
+  "DesktopBackendInventoryUnavailable",
+  {},
+) {
+  override get message(): string {
+    return "The desktop app did not report its backend inventory.";
+  }
+}
 
 export class DesktopTelemetryDescriptorUnavailable extends Schema.TaggedError<DesktopTelemetryDescriptorUnavailable>()(
   "DesktopTelemetryDescriptorUnavailable",
@@ -209,7 +221,10 @@ export class DesktopTelemetryReceiver extends Context.Service<
     ) => Effect.Effect<void>;
     readonly receiveDesktopReport: (report: DesktopUpdateControlReport) => Effect.Effect<void>;
     /** The other backends the desktop app runs now, the current set first. */
-    readonly desktopBackends: Stream.Stream<ReadonlyArray<DesktopBackendEndpoint>>;
+    readonly desktopBackends: Stream.Stream<
+      ReadonlyArray<DesktopBackendEndpoint>,
+      DesktopBackendInventoryUnavailable
+    >;
     readonly desktopUpdates: Effect.Effect<
       {
         readonly latest: Option.Option<DesktopUpdateStatusReport>;
@@ -437,9 +452,13 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     ReadonlyArray<DesktopUpdateControlCommand>
   >([]);
   const servingBackends = yield* SubscriptionRef.make<ReadonlyArray<DesktopBackendEndpoint>>([]);
+  const firstInventory = yield* Deferred.make<void>();
   const receiveDesktopReport = (report: DesktopUpdateControlReport) =>
     report.type === "desktopBackends"
-      ? SubscriptionRef.set(servingBackends, report.backends)
+      ? SubscriptionRef.set(servingBackends, report.backends).pipe(
+          Effect.andThen(Deferred.succeed(firstInventory, undefined)),
+          Effect.asVoid,
+        )
       : Ref.set(latestUpdateReport, Option.some(report)).pipe(
           Effect.andThen(PubSub.publish(updateReportChanges, report)),
           Effect.asVoid,
@@ -786,7 +805,18 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
       }),
     ),
     receiveDesktopReport,
-    desktopBackends: SubscriptionRef.changes(servingBackends),
+    desktopBackends:
+      config.mode === "desktop"
+        ? Stream.unwrap(
+            Deferred.await(firstInventory).pipe(
+              Effect.timeoutOrElse({
+                duration: DESKTOP_BACKEND_SILENCE_LIMIT,
+                orElse: () => Effect.fail(new DesktopBackendInventoryUnavailable()),
+              }),
+              Effect.as(SubscriptionRef.changes(servingBackends)),
+            ),
+          )
+        : Stream.make([]),
     desktopUpdates: Effect.gen(function* () {
       const subscription = yield* PubSub.subscribe(updateReportChanges);
       const initial = yield* Ref.get(latestUpdateReport);

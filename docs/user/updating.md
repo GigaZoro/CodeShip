@@ -81,8 +81,8 @@ are waiting on, and shows how many tasks it waits for, with **Update now** and
 ## Install updates automatically
 
 Turn on **Install updates automatically** under **Settings → Maintenance & about → Updates**.
-Set **Automatic update time** in the machine's local time. It defaults to **03:00**. If a newer
-release was published by the scheduled time, the machine installs the newest available release.
+Set **Automatic update time** in the machine's local time. It defaults to **03:00**. The machine checks at that time. If a newer
+release was published by then, the machine installs the newest available release.
 The desktop app installs the newest release its update feed offers, which is never older than
 the one due. A machine that was off or asleep checks when it comes back. If only releases
 published after the scheduled time are available, it waits for the next day. You can share the
@@ -100,14 +100,15 @@ off to cancel the wait, or use the manual update controls to install at any time
 Chats the update interrupted resume after the restart according to **Continue threads after
 restarts**, which is on by default. On desktop, the app installs even when its window is closed
 if it is still running. The install restarts every server the app runs, such as its WSL server,
-so the waits cover the chats and scheduled starts on each of them; if the app cannot read what one
-of them is running, it does not install and tries again later. You can start updates manually on a
+so the waits cover every server, including one that is still starting. Even after the chat
+deadline, the app retries later if it cannot confirm which servers are running and that each
+has paused scheduled starts and reported its work. You can start updates manually on a
 server you run with `t3 serve`.
 
 An update that fails, or restarts the same version, is tried again after 15 minutes, then after
 twice as long each time, up to six hours, also across restarts. A release the launcher rolled
-back, or a desktop update that did not apply, is not tried again automatically; the next newer
-release is.
+back, or a desktop update that did not apply, holds off automatic installation until a newer
+release reaches its daily install time.
 
 ## Switch between Stable and Nightly
 

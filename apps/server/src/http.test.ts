@@ -26,15 +26,20 @@ import {
   MCP_APP_MAX_HTML_BYTES,
 } from "@t3tools/shared/mcpApp";
 import {
+  DESKTOP_RESTART_HOLD_PATH,
   DESKTOP_UPDATE_CONTROL_PATH,
   type DesktopBackendEndpoint,
   ORCHESTRATION_PROTOCOL_HEADER,
 } from "@t3tools/contracts";
-import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import {
+  currentDesktopBootstrapToken,
+  currentDesktopControlToken,
+} from "@t3tools/shared/desktopBootstrapToken";
 import * as Clock from "effect/Clock";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import { MachineRestartHold } from "./cloud/machineRestartHold.ts";
 import * as ServerConfig from "./config.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as ServerSettings from "./serverSettings.ts";
@@ -56,14 +61,23 @@ describe("desktop update control", () => {
         Effect.provideService(ServerConfig.ServerConfig, config),
       );
       const services = yield* Layer.build(
-        HttpRouter.serve(ServerHttp.layerDesktopUpdateControlRoutes, {
-          disableListenLog: true,
-          disableLogger: true,
-        }).pipe(
+        HttpRouter.serve(
+          Layer.merge(
+            ServerHttp.layerDesktopUpdateControlRoutes,
+            ServerHttp.layerDesktopRestartHoldRoute,
+          ),
+          {
+            disableListenLog: true,
+            disableLogger: true,
+          },
+        ).pipe(
           Layer.provideMerge(NodeHttpServer.layerTest),
           Layer.provide(
             Layer.mergeAll(
               ServerConfig.layer(config),
+              Layer.mock(MachineRestartHold)({
+                serveToPrimary: () => Stream.make(new Uint8Array()),
+              }),
               Layer.succeed(DesktopTelemetryReceiver.DesktopTelemetryReceiver, receiver),
             ),
           ),
@@ -83,11 +97,23 @@ describe("desktop update control", () => {
       const servingBackends = Stream.runHead(receiver.desktopBackends);
       const now = yield* Clock.currentTimeMillis;
 
+      const get = (path: string, token: string) =>
+        HttpClientRequest.get(path).pipe(
+          HttpClientRequest.bearerToken(token),
+          client.execute,
+          Effect.map((response) => response.status),
+        );
+      yield* receiver.commitDesktopUpdate("pending");
+      const bootstrap = currentDesktopBootstrapToken(secret, now);
       expect(yield* post(undefined)).toBe(404);
-      expect(yield* post(currentDesktopBootstrapToken("another-secret", now))).toBe(404);
-      expect(yield* servingBackends).toEqual(Option.some([]));
+      expect(yield* post(bootstrap)).toBe(404);
+      expect(yield* get(DESKTOP_UPDATE_CONTROL_PATH, bootstrap)).toBe(404);
+      expect(yield* get(DESKTOP_RESTART_HOLD_PATH, bootstrap)).toBe(404);
 
-      expect(yield* post(currentDesktopBootstrapToken(secret, now))).toBe(204);
+      const control = currentDesktopControlToken(secret, now);
+      expect(yield* get(DESKTOP_UPDATE_CONTROL_PATH, control)).toBe(200);
+      expect(yield* get(DESKTOP_RESTART_HOLD_PATH, control)).toBe(200);
+      expect(yield* post(control)).toBe(204);
       expect(yield* servingBackends).toEqual(Option.some(backends));
     }).pipe(
       Effect.scoped,

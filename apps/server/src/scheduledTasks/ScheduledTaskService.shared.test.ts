@@ -1452,10 +1452,10 @@ it.effect("an update that drains over the time a one-machine turn was waiting fo
         `;
         // The update drains from just before that time until half an hour after it.
         const draining = yield* UpdateDrain;
-        yield* SubscriptionRef.set(draining, 1);
+        yield* SubscriptionRef.set(draining, { holders: 1, admitting: 0 });
         yield* scenario.tick(nextDue - 4 * MINUTE_MS);
         yield* scenario.tick(nextDue + 30 * MINUTE_MS);
-        yield* SubscriptionRef.set(draining, 0);
+        yield* SubscriptionRef.set(draining, { holders: 0, admitting: 0 });
 
         yield* scenario.tick(nextDue + 31 * MINUTE_MS);
         yield* scenario.settled;
@@ -1480,7 +1480,9 @@ it.effect("an update that drains over the time a one-machine turn was waiting fo
         ]);
       }),
     schedule,
-  ).pipe(Effect.provideServiceEffect(UpdateDrain, SubscriptionRef.make(0)));
+  ).pipe(
+    Effect.provideServiceEffect(UpdateDrain, SubscriptionRef.make({ holders: 0, admitting: 0 })),
+  );
 });
 
 // Fires the task when it is next due and waits for what that tick published.

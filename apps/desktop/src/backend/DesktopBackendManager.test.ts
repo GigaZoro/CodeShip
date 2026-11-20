@@ -246,47 +246,57 @@ describe("DesktopBackendManager", () => {
     ),
   );
 
-  it.effect("lists a secondary backend for the primary's update only while it serves", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const listed = yield* SubscriptionRef.make(Option.none<string>());
-        const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
-        const instance = yield* makeTestInstance({
-          id: DesktopBackendManager.BackendInstanceId("wsl"),
-          spawnerLayer: Layer.succeed(
-            ChildProcessSpawner.ChildProcessSpawner,
-            ChildProcessSpawner.make(() =>
-              Effect.acquireRelease(
-                Effect.succeed(
-                  makeProcess({
-                    exitCode: Deferred.await(exit),
-                    kill: () =>
-                      Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
-                  }),
+  it.effect(
+    "lists a secondary backend for the primary's update from spawn until exit, even before readiness",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const listed = yield* SubscriptionRef.make(Option.none<string>());
+          const probe = yield* Deferred.make<void>();
+          const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          const instance = yield* makeTestInstance({
+            id: DesktopBackendManager.BackendInstanceId("wsl"),
+            spawnerLayer: Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make(() =>
+                Effect.acquireRelease(
+                  Effect.succeed(
+                    makeProcess({
+                      exitCode: Deferred.await(exit),
+                      kill: () =>
+                        Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
+                    }),
+                  ),
+                  () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
                 ),
-                () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
               ),
             ),
-          ),
-          desktopTelemetryPublisher: {
-            setServingBackend: (backend) =>
-              SubscriptionRef.set(listed, Option.some(backend.httpBaseUrl)),
-            removeServingBackend: () => SubscriptionRef.set(listed, Option.none()),
-          },
-        });
-        const listedAs = (serving: boolean) =>
-          SubscriptionRef.changes(listed).pipe(
-            Stream.filter((httpBaseUrl) => Option.isSome(httpBaseUrl) === serving),
-            Stream.runHead,
-            Effect.map(Option.flatten),
-          );
+            httpClientLayer: layerHttpClient(() =>
+              Deferred.succeed(probe, undefined).pipe(Effect.andThen(Effect.never)),
+            ),
+            desktopTelemetryPublisher: {
+              setServingBackend: (backend) =>
+                SubscriptionRef.set(listed, Option.some(backend.httpBaseUrl)),
+              removeServingBackend: () => SubscriptionRef.set(listed, Option.none()),
+            },
+          });
+          const listedAs = (serving: boolean) =>
+            SubscriptionRef.changes(listed).pipe(
+              Stream.filter((httpBaseUrl) => Option.isSome(httpBaseUrl) === serving),
+              Stream.runHead,
+              Effect.map(Option.flatten),
+            );
 
-        yield* instance.start;
-        assert.deepStrictEqual(yield* listedAs(true), Option.some("http://127.0.0.1:3773/"));
-        yield* instance.stop();
-        assert.deepStrictEqual(yield* listedAs(false), Option.none());
-      }),
-    ),
+          yield* instance.start;
+          yield* Deferred.await(probe);
+          assert.deepStrictEqual(
+            yield* SubscriptionRef.get(listed),
+            Option.some("http://127.0.0.1:3773/"),
+          );
+          yield* instance.stop();
+          assert.deepStrictEqual(yield* listedAs(false), Option.none());
+        }),
+      ),
   );
 
   it.effect("spawns the backend with fd3 bootstrap and fd4 telemetry", () =>

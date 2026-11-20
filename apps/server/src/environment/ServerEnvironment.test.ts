@@ -74,6 +74,27 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
 });
 
 it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+  it.effect("advertises desktop updates for a primary with HTTP control", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped();
+      const config = yield* makeServerConfig(baseDir);
+      yield* fs.makeDirectory(config.stateDir, { recursive: true });
+      const descriptor = yield* ServerEnvironment.ServerEnvironment.pipe(
+        Effect.flatMap((environment) => environment.getDescriptor),
+        Effect.provide(
+          ServerEnvironment.layer.pipe(
+            Layer.provide(layerEmptySecretStore),
+            Layer.provide(
+              ServerConfig.layer({ ...config, mode: "desktop", desktopUpdateHttpControl: true }),
+            ),
+          ),
+        ),
+      );
+      expect(descriptor.capabilities.desktopAppUpdate).toBe(true);
+    }),
+  );
+
   // npm-global ownership is a POSIX layout; resolveServerInstallation returns null on win32.
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "publishes proven install ownership only for manually updated servers",

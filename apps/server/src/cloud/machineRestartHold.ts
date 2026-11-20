@@ -3,14 +3,19 @@ import {
   type DesktopBackendEndpoint,
   OrchestrationV2RestartHold,
 } from "@t3tools/contracts";
-import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import { currentDesktopControlToken } from "@t3tools/shared/desktopBootstrapToken";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as RcRef from "effect/RcRef";
+import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -27,7 +32,7 @@ import * as UpdateDrain from "./updateDrain.ts";
 
 /** A backend resends its hold this often while it is unchanged, so a dead link shows. */
 const LINK_KEEPALIVE = Duration.seconds(20);
-const LINK_SILENCE_LIMIT = Duration.minutes(1);
+const LINK_SILENCE_LIMIT = DesktopTelemetryReceiver.DESKTOP_BACKEND_SILENCE_LIMIT;
 /** A drain lease that drops is taken again while the desktop app still runs that backend. */
 const DRAIN_RELINK = Schedule.spaced(Duration.seconds(5));
 
@@ -43,7 +48,10 @@ export class BackendRestartHoldError extends Schema.TaggedError<BackendRestartHo
   }
 }
 
-export type MachineRestartHoldError = BackendRestartHoldError | ProviderRuntimeRecoveryError;
+export type MachineRestartHoldError =
+  | BackendRestartHoldError
+  | ProviderRuntimeRecoveryError
+  | DesktopTelemetryReceiver.DesktopBackendInventoryUnavailable;
 
 /**
  * The restart hold of every backend the desktop install stops. The primary's automatic update
@@ -56,14 +64,16 @@ export class MachineRestartHold extends Context.Service<
     /** The merged hold now and after every change in any backend or in which backends run. */
     readonly watchRestartHold: Stream.Stream<OrchestrationV2RestartHold, MachineRestartHoldError>;
     /** Holds scheduled starts in every backend for the life of `effect`. */
-    readonly whileDraining: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+    readonly whileDraining: <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | MachineRestartHoldError, R>;
     /**
      * Holds scheduled starts in every backend from now until `effect`, run in the background,
      * ends; it starts before this returns, so it outlasts a `whileDraining` the caller leaves.
      */
     readonly drainInBackground: <A, E>(
       effect: Effect.Effect<A, E>,
-    ) => Effect.Effect<Fiber.Fiber<A, E>>;
+    ) => Effect.Effect<Fiber.Fiber<A, E>, BackendRestartHoldError>;
     /** This backend's hold as JSON lines for the primary; `drain` holds its scheduled starts. */
     readonly serveToPrimary: (
       drain: boolean,
@@ -104,7 +114,7 @@ export const make = Effect.fn("cloud.machine_restart_hold.make")(function* () {
   const backends = receiver.desktopBackends.pipe(Stream.changesWith(sameBackends));
 
   /** A backend's stream ends only when it stops, so its end fails like silence does. */
-  const linkTo = (backend: DesktopBackendEndpoint, drain: boolean) => {
+  const linkTo = (backend: DesktopBackendEndpoint, drain: boolean, invalidate = Effect.void) => {
     const failure = (cause: unknown) =>
       new BackendRestartHoldError({ backend: backend.label, cause });
     return Stream.unwrap(
@@ -116,7 +126,7 @@ export const make = Effect.fn("cloud.machine_restart_hold.make")(function* () {
         );
         const request = HttpClientRequest.get(url).pipe(
           HttpClientRequest.bearerToken(
-            currentDesktopBootstrapToken(secret, yield* Clock.currentTimeMillis),
+            currentDesktopControlToken(secret, yield* Clock.currentTimeMillis),
           ),
           drain ? HttpClientRequest.setUrlParam("drain", "1") : (request) => request,
         );
@@ -131,8 +141,8 @@ export const make = Effect.fn("cloud.machine_restart_hold.make")(function* () {
         duration: LINK_SILENCE_LIMIT,
         orElse: () => Stream.fail("the backend went silent"),
       }),
-      Stream.changes,
       Stream.mapEffect((line) => decodeHoldLine(line)),
+      Stream.tapError(() => invalidate),
       Stream.tapError((cause) =>
         Effect.logWarning("Could not read another desktop backend's background work.", {
           backend: backend.id,
@@ -162,58 +172,175 @@ export const make = Effect.fn("cloud.machine_restart_hold.make")(function* () {
       Effect.map(Option.getOrThrowWith(() => new Error("the link ended without a hold"))),
     );
 
-  const restartHold = backends.pipe(
+  type LinkHolds = ReadonlyMap<string, { hold: OrchestrationV2RestartHold; at: number }>;
+  const endpointKey = (backend: DesktopBackendEndpoint) =>
+    encodeURIComponent(backend.id) + ":" + backend.httpBaseUrl;
+  const activeLinks = yield* Ref.make<SubscriptionRef.SubscriptionRef<LinkHolds> | undefined>(
+    undefined,
+  );
+  // Preparations, the patience drain and the installer overlap. Only their last release closes the links.
+  const othersHeld = yield* RcRef.make({
+    acquire: Effect.gen(function* () {
+      const lines = yield* SubscriptionRef.make<LinkHolds>(new Map());
+      yield* Effect.acquireRelease(Ref.set(activeLinks, lines), () =>
+        Ref.update(activeLinks, (active) => (active === lines ? undefined : active)),
+      );
+      const links = yield* FiberMap.make<string>();
+      yield* backends.pipe(
+        Stream.retry(DRAIN_RELINK),
+        Stream.runForEach((others) =>
+          Effect.gen(function* () {
+            const listed = new Map(others.map((backend) => [endpointKey(backend), backend]));
+            for (const [key] of links) {
+              if (!listed.has(key)) yield* FiberMap.remove(links, key);
+            }
+            for (const [key, backend] of listed) {
+              if (yield* FiberMap.has(links, key)) continue;
+              const forget = SubscriptionRef.update(lines, (holds) => {
+                const next = new Map(holds);
+                next.delete(key);
+                return next;
+              });
+              const listen = linkTo(backend, true, forget).pipe(
+                Stream.runForEach((hold) =>
+                  Clock.currentTimeMillis.pipe(
+                    Effect.flatMap((at) =>
+                      SubscriptionRef.update(lines, (holds) =>
+                        new Map(holds).set(key, { hold, at }),
+                      ),
+                    ),
+                  ),
+                ),
+                Effect.ensuring(forget),
+                Effect.retry(DRAIN_RELINK),
+              );
+              yield* FiberMap.run(links, key, listen);
+            }
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      return lines;
+    }),
+  });
+
+  const currentBackends = backends.pipe(
     Stream.runHead,
-    Effect.map(Option.getOrElse((): ReadonlyArray<DesktopBackendEndpoint> => [])),
-    Effect.flatMap((others) =>
-      others.length === 0
-        ? recovery.restartHold
-        : Effect.all([recovery.restartHold, ...others.map(firstHold)], {
-            concurrency: "unbounded",
-          }).pipe(Effect.map(mergeHolds)),
+    Effect.flatMap(
+      Option.match({
+        onNone: () =>
+          Effect.fail(new DesktopTelemetryReceiver.DesktopBackendInventoryUnavailable()),
+        onSome: Effect.succeed,
+      }),
     ),
   );
 
-  const drainLinks = backends.pipe(
-    Stream.switchMap((others) =>
-      Stream.mergeAll(
-        others.map((backend) => linkTo(backend, true).pipe(Stream.retry(DRAIN_RELINK))),
-        { concurrency: "unbounded" },
-      ),
-    ),
+  const drainSnapshot = (
+    others: ReadonlyArray<DesktopBackendEndpoint>,
+    lines: LinkHolds,
+    now: number,
+  ): Result.Result<ReadonlyArray<OrchestrationV2RestartHold>, BackendRestartHoldError> => {
+    const holds: Array<OrchestrationV2RestartHold> = [];
+    for (const backend of others) {
+      const line = lines.get(endpointKey(backend));
+      if (!line || now - line.at >= Duration.toMillis(LINK_SILENCE_LIMIT)) {
+        return Result.fail(
+          new BackendRestartHoldError({
+            backend: backend.label,
+            cause: "the drain link has no live acknowledgement",
+          }),
+        );
+      }
+      holds.push(line.hold);
+    }
+    return Result.succeed(holds);
+  };
+
+  const readDrainSnapshot = Effect.fn("cloud.machine_restart_hold.read_drain_snapshot")(function* (
+    lines: SubscriptionRef.SubscriptionRef<LinkHolds>,
+  ) {
+    const listed = yield* currentBackends;
+    return drainSnapshot(listed, yield* SubscriptionRef.get(lines), yield* Clock.currentTimeMillis);
+  });
+
+  const awaitAcknowledgements = Effect.fn("cloud.machine_restart_hold.await_acknowledgements")(
+    function* (lines: SubscriptionRef.SubscriptionRef<LinkHolds>) {
+      const read = readDrainSnapshot(lines);
+      const initial = yield* read;
+      if (Result.isSuccess(initial)) return;
+      let missing = initial.failure;
+      // Queued notifications can describe an older inventory or a link that has since dropped.
+      yield* Stream.merge(backends, SubscriptionRef.changes(lines)).pipe(
+        Stream.mapEffect(() => read),
+        Stream.map((snapshot) => {
+          if (Result.isSuccess(snapshot)) return true;
+          missing = snapshot.failure;
+          return false;
+        }),
+        Stream.filter((ready) => ready),
+        Stream.runHead,
+        Effect.flatMap(
+          Option.match({ onNone: () => Effect.fail(missing), onSome: () => Effect.void }),
+        ),
+        Effect.timeoutOrElse({ duration: LINK_SILENCE_LIMIT, orElse: () => Effect.fail(missing) }),
+      );
+    },
   );
 
-  /** How many of this backend's drains hold the other backends' scheduled starts now. */
-  const othersHeld = yield* SubscriptionRef.make(0);
-  const holdOthers = SubscriptionRef.update(othersHeld, (holders) => holders + 1);
-  const releaseOthers = SubscriptionRef.update(othersHeld, (holders) => holders - 1);
-  // One set of drain links serves every overlapping drain, so a drain that hands over to a
-  // background one never lets the other backends start anything between the two.
-  yield* SubscriptionRef.changes(othersHeld).pipe(
-    Stream.map((holders) => holders > 0),
-    Stream.changes,
-    Stream.switchMap((draining) => (draining ? drainLinks : Stream.empty)),
-    Stream.runDrain,
-    Effect.forkScoped,
-  );
+  const localTimeout = () =>
+    Effect.fail(
+      new BackendRestartHoldError({ backend: "primary", cause: "the local hold timed out" }),
+    );
+  const restartHold = Effect.gen(function* () {
+    const local = yield* recovery.restartHold.pipe(
+      Effect.timeoutOrElse({ duration: LINK_SILENCE_LIMIT, orElse: localTimeout }),
+    );
+    const links = yield* Ref.get(activeLinks);
+    if (links !== undefined) {
+      const snapshot = yield* readDrainSnapshot(links);
+      if (Result.isFailure(snapshot)) return yield* snapshot.failure;
+      return mergeHolds([local, ...snapshot.success]);
+    }
+    const others = yield* currentBackends;
+    return mergeHolds([
+      local,
+      ...(yield* Effect.forEach(others, firstHold, { concurrency: "unbounded" })),
+    ]);
+  });
 
-  const whileDraining = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    UpdateDrain.whileDraining(
-      Effect.acquireUseRelease(
-        holdOthers,
-        () => effect,
-        () => releaseOthers,
-      ),
-    ).pipe(Effect.provideService(UpdateDrain.UpdateDrain, drainRef));
+  const startDrain = <A, E>(effect: Effect.Effect<A, E>) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const ready = yield* Deferred.make<SubscriptionRef.SubscriptionRef<LinkHolds>>();
+        const child = yield* UpdateDrain.whileDraining(
+          RcRef.get(othersHeld).pipe(
+            Effect.flatMap((lines) => Deferred.succeed(ready, lines)),
+            Effect.andThen(effect),
+            Effect.scoped,
+          ),
+        ).pipe(
+          Effect.provideService(UpdateDrain.UpdateDrain, drainRef),
+          Effect.interruptible,
+          Effect.forkDetach,
+        );
+        const links = yield* restore(
+          Deferred.await(ready).pipe(
+            Effect.timeoutOrElse({ duration: LINK_SILENCE_LIMIT, orElse: localTimeout }),
+          ),
+        ).pipe(Effect.onError(() => Fiber.interrupt(child)));
+        return { child, links };
+      }),
+    );
 
   const drainInBackground = <A, E>(effect: Effect.Effect<A, E>) =>
-    Effect.uninterruptibleMask((restore) =>
-      holdOthers.pipe(
-        Effect.andThen(
-          UpdateDrain.drainInBackground(restore(effect).pipe(Effect.ensuring(releaseOthers))),
-        ),
-      ),
-    ).pipe(Effect.provideService(UpdateDrain.UpdateDrain, drainRef));
+    startDrain(effect).pipe(Effect.map(({ child }) => child));
+
+  const whileDraining = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      startDrain(Effect.never),
+      ({ links }) => awaitAcknowledgements(links).pipe(Effect.andThen(effect)),
+      ({ child }) => Fiber.interrupt(child),
+    );
 
   const serveToPrimary = (drain: boolean) => {
     const lines = recovery.watchRestartHold.pipe(

@@ -29,7 +29,10 @@ import { FetchHttpClient } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
-import { ProviderRuntimeRecoveryService } from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import {
+  ProviderRuntimeRecoveryError,
+  ProviderRuntimeRecoveryService,
+} from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as Settings from "../serverSettings.ts";
@@ -220,6 +223,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   const lookups = yield* Ref.make(0);
   // Runs inside each release lookup.
   const duringLookup = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+  const failRead = yield* Ref.make(false);
   const failUpdates = yield* Ref.make(false);
   const settings = yield* Ref.make({
     ...DEFAULT_SERVER_SETTINGS,
@@ -235,7 +239,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
       Effect.asVoid,
     );
   // Each test gets its own drain: a hold kept past the handoff must not leak into the next test.
-  const drain = yield* SubscriptionRef.make(0);
+  const drain = yield* SubscriptionRef.make({ holders: 0, admitting: 0 });
   const hold = yield* SubscriptionRef.make<OrchestrationV2RestartHold>({
     work: options.hold ?? [],
     runningTurns: options.answering === true ? answering : [],
@@ -300,7 +304,18 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
         }),
     }),
     Layer.mock(ProviderRuntimeRecoveryService)({
-      restartHold: SubscriptionRef.get(hold),
+      restartHold: Ref.get(failRead).pipe(
+        Effect.flatMap((fail) =>
+          fail
+            ? Effect.fail(
+                new ProviderRuntimeRecoveryError({
+                  operation: "read-projections",
+                  cause: "unavailable",
+                }),
+              )
+            : SubscriptionRef.get(hold),
+        ),
+      ),
       watchRestartHold: Stream.unwrap(
         Queue.offer(watchStarts, undefined).pipe(
           Effect.as(
@@ -365,8 +380,10 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     lookups,
     duringLookup,
     failUpdates,
+    failRead,
     updateSettings,
-    draining: SubscriptionRef.get(drain).pipe(Effect.map((holds) => holds > 0)),
+    drain,
+    draining: SubscriptionRef.get(drain).pipe(Effect.map(({ holders }) => holders > 0)),
     writeRecord,
     hold,
     holdSeen,
@@ -514,11 +531,11 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
         Duration.subtract(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
       );
       expect(yield* harness.draining).toBe(false);
-      yield* TestClock.adjust(Duration.minutes(2));
+      yield* TestClock.adjust(Duration.minutes(1));
+      yield* Queue.take(harness.watchStarts);
       expect(yield* harness.draining).toBe(true);
 
       // The drain empties the machine, and another chat starts while the release is prepared.
-      yield* Queue.take(harness.watchStarts);
       yield* SubscriptionRef.set(harness.hold, { work: [] });
       yield* Queue.take(harness.watchStarts);
       expect(harness.events).toEqual([`update ${NEWER}`, `update ${NEWER}`]);
@@ -571,12 +588,12 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
         const harness = yield* makeHarness();
         yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
         const check = yield* Effect.forkChild(harness.auto.check());
-        yield* Deferred.await(harness.holdSeen);
+        yield* Queue.take(harness.watchStarts);
         expect(yield* harness.draining).toBe(false);
 
-        yield* TestClock.adjust(
-          Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
-        );
+        yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+
+        yield* Queue.take(harness.watchStarts);
         expect(yield* harness.draining).toBe(true);
         expect(harness.events).toEqual([]);
 
@@ -595,14 +612,12 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
       const harness = yield* makeHarness();
       yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
       const check = yield* Effect.forkChild(harness.auto.check());
-      yield* Deferred.await(harness.holdSeen);
+      yield* Queue.take(harness.watchStarts);
 
-      yield* TestClock.adjust(
-        Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
-      );
-      yield* TestClock.adjust(
-        Duration.sum(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT, Duration.minutes(1)),
-      );
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+
+      yield* Queue.take(harness.watchStarts);
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT);
       yield* Fiber.join(check);
 
       expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
@@ -618,10 +633,12 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
       Effect.gen(function* () {
         const harness = yield* makeHarness({ desktop: true, answering: true, hold: [work("a")] });
         yield* harness.startDesktop;
-        yield* Deferred.await(harness.holdSeen);
+        yield* Queue.take(harness.watchStarts);
         expect(yield* harness.draining).toBe(false);
 
         yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+
+        yield* Queue.take(harness.watchStarts);
         expect(yield* harness.draining).toBe(true);
         expect(harness.events).toEqual([]);
 
@@ -637,14 +654,12 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
     Effect.gen(function* () {
       const harness = yield* makeHarness({ hold: [work("a")] });
       const check = yield* Effect.forkChild(harness.auto.check());
-      yield* Deferred.await(harness.holdSeen);
+      yield* Queue.take(harness.watchStarts);
 
-      yield* TestClock.adjust(
-        Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
-      );
-      yield* TestClock.adjust(
-        Duration.sum(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT, Duration.minutes(1)),
-      );
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+
+      yield* Queue.take(harness.watchStarts);
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT);
       expect(harness.events).toEqual([]);
 
       yield* SubscriptionRef.set(harness.hold, { work: [], runningTurns: answering });
@@ -657,11 +672,13 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
     Effect.gen(function* () {
       const harness = yield* makeHarness({ hold: [work("never ends")] });
       const check = yield* Effect.forkChild(harness.auto.check());
-      yield* Deferred.await(harness.holdSeen);
+      yield* Queue.take(harness.watchStarts);
 
       // Each phase starts when the one before it runs out, so the grace ends a minute after this.
       yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+      yield* Queue.take(harness.watchStarts);
       yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT);
+      yield* Queue.take(harness.watchStarts);
       yield* TestClock.adjust(
         Duration.subtract(AutoUpdate.AUTO_UPDATE_CUT_GRACE, Duration.minutes(1)),
       );
@@ -744,6 +761,93 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
     }),
   );
 
+  it.effect("counts a failed drain acquisition before preparation", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* SubscriptionRef.set(harness.drain, { holders: 0, admitting: 1 });
+      const check = yield* Effect.forkChild(harness.auto.check());
+      yield* SubscriptionRef.changes(harness.drain).pipe(
+        Stream.filter(({ holders }) => holders === 1),
+        Stream.runHead,
+      );
+      yield* TestClock.adjust("1 minute");
+      yield* Fiber.join(check);
+      const fs = yield* FileSystem.FileSystem;
+      expect(JSON.parse(yield* fs.readFileString(harness.recordPath))).toMatchObject({
+        attempts: 1,
+        targetVersion: NEWER,
+      });
+      expect(harness.events).toEqual([]);
+      yield* SubscriptionRef.set(harness.drain, { holders: 0, admitting: 0 });
+      yield* harness.auto.check();
+      expect(harness.events).toEqual([]);
+    }),
+  );
+
+  it.effect.each([false, true])("backs off after a failed final read, after patience %s", (cut) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ answering: cut });
+      yield* Ref.set(h.whilePreparing, Ref.set(h.failRead, true));
+      const check = yield* Effect.forkChild(h.auto.check());
+      yield* Deferred.await(h.holdSeen);
+      if (cut) {
+        yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+        yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT);
+      }
+      yield* Fiber.join(check);
+      expect(h.events).toEqual([`update ${NEWER}`]);
+      const fs = yield* FileSystem.FileSystem;
+      expect(JSON.parse(yield* fs.readFileString(h.recordPath))).toMatchObject({
+        attempts: 1,
+        targetVersion: NEWER,
+      });
+      yield* h.auto.check();
+      expect(h.events).toHaveLength(1);
+    }),
+  );
+
+  it.effect("the running loop wakes at the daily time and the first retry", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const before = DateTime.makeZonedUnsafe(
+        { year: 2026, month: 11, day: 18, hour: 2, minute: 59 },
+        {
+          timeZone: DateTime.zoneMakeLocal(),
+          adjustForTimeZone: true,
+        },
+      );
+      yield* TestClock.setTime(DateTime.toEpochMillis(before));
+      yield* Ref.set(h.newest, packageJson.version);
+      const clock = yield* Clock.Clock;
+      const sleeps = yield* Queue.unbounded<number>();
+      yield* h.startDesktop.pipe(
+        Effect.provideService(Clock.Clock, {
+          ...clock,
+          sleep: (duration) =>
+            Queue.offer(sleeps, Duration.toMillis(duration)).pipe(
+              Effect.andThen(clock.sleep(duration)),
+            ),
+        }),
+      );
+      expect(yield* Queue.take(sleeps)).toBe(60_000);
+      yield* Ref.set(h.newest, NEWER);
+      yield* Ref.set(h.failUpdates, true);
+      yield* TestClock.adjust("1 minute");
+      const nextCheck = yield* Stream.fromQueue(sleeps).pipe(
+        Stream.filter((delay) => delay === 15 * 60_000 || delay === 30 * 60_000),
+        Stream.runHead,
+      );
+      expect(nextCheck).toEqual(Option.some(15 * 60_000));
+      expect(h.events).toHaveLength(1);
+      yield* Ref.set(h.failUpdates, false);
+      yield* TestClock.adjust("14 minutes");
+      expect(h.events).toHaveLength(1);
+      yield* TestClock.adjust("1 minute");
+      yield* Deferred.await(h.handedOff);
+      expect(h.events).toEqual([`update ${NEWER}`, `update ${NEWER}`, `handoff ${NEWER}`]);
+    }),
+  );
+
   it.effect("leaves a release the launcher rolled back alone, and takes the next one", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
@@ -755,6 +859,7 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
         },
       });
       yield* harness.auto.check();
+      yield* Ref.set(harness.undue, NEWEST_AFTER);
       yield* harness.auto.check();
       expect(harness.events).toEqual([]);
 

@@ -329,7 +329,10 @@ it.effect.each([
         return task;
       }).pipe(
         Effect.provide(layer),
-        Effect.provideServiceEffect(UpdateDrain, SubscriptionRef.make(1)),
+        Effect.provideServiceEffect(
+          UpdateDrain,
+          SubscriptionRef.make({ holders: 1, admitting: 0 }),
+        ),
       );
 
       yield* Effect.gen(function* () {
@@ -407,7 +410,7 @@ it.effect("runs a fixed-time run an update held once a restart cut its run condi
       return task;
     }).pipe(
       Effect.provide(layer),
-      Effect.provideServiceEffect(UpdateDrain, SubscriptionRef.make(1)),
+      Effect.provideServiceEffect(UpdateDrain, SubscriptionRef.make({ holders: 1, admitting: 0 })),
     );
 
     yield* Effect.gen(function* () {

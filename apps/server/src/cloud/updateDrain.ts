@@ -1,21 +1,44 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
-/**
- * How many holds keep this server's scheduled starts waiting: its own update's, and each drain
- * link the primary holds open to it. A count, so a hold that ends inside another leaves the outer
- * one in place. A start that came due meanwhile runs after the install.
- */
-export class UpdateDrain extends Context.Reference<SubscriptionRef.SubscriptionRef<number>>(
+interface DrainState {
+  readonly holders: number;
+  readonly admitting: number;
+}
+
+export class UpdateDrain extends Context.Reference<SubscriptionRef.SubscriptionRef<DrainState>>(
   "t3/cloud/UpdateDrain",
-  { defaultValue: () => Effect.runSync(SubscriptionRef.make(0)) },
+  { defaultValue: () => Effect.runSync(SubscriptionRef.make({ holders: 0, admitting: 0 })) },
 ) {}
 
-const take = (drain: SubscriptionRef.SubscriptionRef<number>) =>
-  SubscriptionRef.update(drain, (holders) => holders + 1);
-const give = (drain: SubscriptionRef.SubscriptionRef<number>) =>
-  SubscriptionRef.update(drain, (holders) => holders - 1);
+const take = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
+  SubscriptionRef.update(drain, (state) => ({ ...state, holders: state.holders + 1 }));
+const give = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
+  SubscriptionRef.update(drain, (state) => ({ ...state, holders: state.holders - 1 }));
+
+const awaitAdmissions = (drain: SubscriptionRef.SubscriptionRef<DrainState>) =>
+  SubscriptionRef.changes(drain).pipe(
+    Stream.filter((state) => state.admitting === 0),
+    Stream.runHead,
+  );
+
+// Registration and the final drain check must agree even if a holder arrives during dispatch.
+export const tryAdmitStart = Effect.gen(function* () {
+  const drain = yield* UpdateDrain;
+  return yield* Effect.acquireRelease(
+    SubscriptionRef.modify(drain, (state) =>
+      state.holders > 0
+        ? ([false, state] as const)
+        : ([true, { ...state, admitting: state.admitting + 1 }] as const),
+    ),
+    (admitted) =>
+      admitted
+        ? SubscriptionRef.update(drain, (state) => ({ ...state, admitting: state.admitting - 1 }))
+        : Effect.void,
+  );
+});
 
 /** Holds scheduled starts for the life of `effect`, however it ends. */
 export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(function* <A, E, R>(
@@ -24,24 +47,8 @@ export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(func
   const drain = yield* UpdateDrain;
   return yield* Effect.acquireUseRelease(
     take(drain),
-    () => effect,
+    () => awaitAdmissions(drain).pipe(Effect.andThen(effect)),
     () => give(drain),
-  );
-});
-
-/**
- * Holds scheduled starts from now until `effect`, run in the background, ends. The hold starts
- * before this returns, so it outlasts a `whileDraining` the caller is about to leave.
- */
-export const drainInBackground = Effect.fn("cloud.update_drain.drain_in_background")(function* <
-  A,
-  E,
->(effect: Effect.Effect<A, E>) {
-  const drain = yield* UpdateDrain;
-  return yield* Effect.uninterruptibleMask((restore) =>
-    take(drain).pipe(
-      Effect.andThen(restore(effect).pipe(Effect.ensuring(give(drain)), Effect.forkDetach)),
-    ),
   );
 });
 
@@ -49,8 +56,9 @@ export const drainInBackground = Effect.fn("cloud.update_drain.drain_in_backgrou
 export const drainUntilClosed = Effect.gen(function* () {
   const drain = yield* UpdateDrain;
   yield* Effect.acquireRelease(take(drain), () => give(drain));
+  yield* awaitAdmissions(drain);
 });
 
 export const isDraining = Effect.fn("cloud.update_drain.is_draining")(function* () {
-  return (yield* SubscriptionRef.get(yield* UpdateDrain)) > 0;
+  return (yield* SubscriptionRef.get(yield* UpdateDrain)).holders > 0;
 });

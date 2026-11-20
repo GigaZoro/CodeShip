@@ -8,17 +8,20 @@ function windowIndex(nowMs: number): number {
   return Math.floor(nowMs / DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS);
 }
 
-function deriveToken(secret: string, window: number): string {
+type TokenPurpose = "bootstrap" | "control";
+
+function deriveToken(secret: string, purpose: TokenPurpose, window: number): string {
   return NodeCrypto.createHmac("sha256", secret)
-    .update(`t3-desktop-bootstrap:${window}`)
+    .update(`t3-desktop-${purpose}:${window}`)
     .digest("hex");
 }
 
 export function currentDesktopBootstrapToken(secret: string, nowMs: number): string {
-  return deriveToken(secret, windowIndex(nowMs));
+  return deriveToken(secret, "bootstrap", windowIndex(nowMs));
 }
 
-export function isValidDesktopBootstrapToken(
+function isValidToken(
+  purpose: TokenPurpose,
   secret: string,
   token: string,
   nowMs: number,
@@ -26,7 +29,23 @@ export function isValidDesktopBootstrapToken(
   const presented = Buffer.from(token);
   const current = windowIndex(nowMs);
   return [current - 1, current, current + 1].some((window) => {
-    const expected = Buffer.from(deriveToken(secret, window));
+    const expected = Buffer.from(deriveToken(secret, purpose, window));
     return expected.length === presented.length && NodeCrypto.timingSafeEqual(expected, presented);
   });
+}
+
+export function isValidDesktopBootstrapToken(
+  secret: string,
+  token: string,
+  nowMs: number,
+): boolean {
+  return isValidToken("bootstrap", secret, token, nowMs);
+}
+
+export function currentDesktopControlToken(secret: string, nowMs: number): string {
+  return deriveToken(secret, "control", windowIndex(nowMs));
+}
+
+export function isValidDesktopControlToken(secret: string, token: string, nowMs: number): boolean {
+  return isValidToken("control", secret, token, nowMs);
 }

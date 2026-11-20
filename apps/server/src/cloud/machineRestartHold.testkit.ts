@@ -23,7 +23,7 @@ export const serveDesktopBackend = Effect.fn("test.serve_desktop_backend")(funct
   hold: SubscriptionRef.SubscriptionRef<OrchestrationV2RestartHold>,
   baseDir: string,
 ) {
-  const drain = yield* SubscriptionRef.make(0);
+  const drain = yield* SubscriptionRef.make({ holders: 0, admitting: 0 });
   const config = yield* ServerConfig.ServerConfig.pipe(
     Effect.provide(ServerConfig.layerTest(baseDir, baseDir)),
   );

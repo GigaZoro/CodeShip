@@ -7,7 +7,7 @@ import {
   DesktopUpdateControlPost,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
-import { isValidDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import { isValidDesktopControlToken } from "@t3tools/shared/desktopBootstrapToken";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { injectMcpAppCookieBootstrap, injectMcpAppThemeBootstrap } from "@t3tools/shared/mcpApp";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
@@ -342,7 +342,7 @@ const authenticatedDesktopBackendCaller = Effect.gen(function* () {
   return (
     config.desktopBootstrapSecret !== undefined &&
     authorization?.startsWith("Bearer ") === true &&
-    isValidDesktopBootstrapToken(
+    isValidDesktopControlToken(
       config.desktopBootstrapSecret,
       authorization.slice(7),
       yield* Clock.currentTimeMillis,

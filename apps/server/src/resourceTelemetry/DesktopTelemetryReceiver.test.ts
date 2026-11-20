@@ -7,6 +7,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import * as Logger from "effect/Logger";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -24,6 +27,31 @@ import {
 } from "./DesktopTelemetryReceiver.ts";
 
 describe("DesktopTelemetryReceiver", () => {
+  it.effect("waits for the first desktop inventory and bounds a missing report", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const receiver = yield* make().pipe(
+        Effect.provideService(ServerConfig.ServerConfig, { ...config, mode: "desktop" }),
+      );
+      const first = Stream.runHead(receiver.desktopBackends);
+      const waiting = yield* Effect.forkChild(Effect.result(first));
+      yield* TestClock.adjust("59 seconds");
+      expect(waiting.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust("1 second");
+      expect((yield* Fiber.join(waiting))._tag).toBe("Failure");
+      const next = yield* Effect.forkChild(first);
+      yield* receiver.receiveDesktopReport({ version: 1, type: "desktopBackends", backends: [] });
+      expect(yield* Fiber.join(next)).toEqual(Option.some([]));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), process.cwd()),
+          ServerSettings.layerTest(),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+
   it.effect("delivers an earlier WSL commit before a later request", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

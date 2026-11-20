@@ -121,6 +121,10 @@ export class ServerConfig extends Context.Service<
   ) => layerTest(cwd, baseDirOrPrefix);
 }
 
+export const supportsDesktopAppUpdate = (config: ServerConfig["Service"]): boolean =>
+  config.mode === "desktop" &&
+  (config.desktopTelemetryControlFd !== undefined || config.desktopUpdateHttpControl === true);
+
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
 
 export const otlpResource = (

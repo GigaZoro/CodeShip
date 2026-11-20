@@ -4,12 +4,25 @@ import {
   DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS,
   currentDesktopBootstrapToken,
   isValidDesktopBootstrapToken,
+  currentDesktopControlToken,
+  isValidDesktopControlToken,
 } from "./desktopBootstrapToken.ts";
 
 const SECRET = "desktop-secret";
 const WINDOW = DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS;
 
 describe("desktop bootstrap token", () => {
+  it("isolates control from bootstrap across the accepted clock windows", () => {
+    const control = currentDesktopControlToken(SECRET, 10 * WINDOW);
+    const bootstrap = currentDesktopBootstrapToken(SECRET, 10 * WINDOW);
+    for (const window of [9, 10, 11]) {
+      expect(isValidDesktopControlToken(SECRET, control, window * WINDOW)).toBe(true);
+      expect(isValidDesktopControlToken(SECRET, bootstrap, window * WINDOW)).toBe(false);
+      expect(isValidDesktopBootstrapToken(SECRET, control, window * WINDOW)).toBe(false);
+    }
+    expect(isValidDesktopControlToken(SECRET, control, 12 * WINDOW)).toBe(false);
+  });
+
   it("rotates every window and stays accepted for one more", () => {
     const issuedAt = 10 * WINDOW + 1;
     const token = currentDesktopBootstrapToken(SECRET, issuedAt);

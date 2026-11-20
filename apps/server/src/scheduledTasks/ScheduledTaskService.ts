@@ -119,7 +119,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { resolveScheduledTaskDefaultModelSelection } from "@t3tools/shared/projectSettings";
 import * as DueHint from "../scheduling/DueHint.ts";
-import { isDraining as isUpdateDraining } from "../cloud/updateDrain.ts";
+import { isDraining as isUpdateDraining, tryAdmitStart } from "../cloud/updateDrain.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as LaunchJournal from "./LaunchJournal.ts";
@@ -2561,7 +2561,6 @@ export const layer = Layer.effect(
       webhook?: {
         readonly deliveryId: string;
         readonly prompt: string;
-        readonly immediate: boolean;
         readonly dispatched: Ref.Ref<boolean>;
       },
       fire?: ScheduledFire,
@@ -2638,12 +2637,10 @@ export const layer = Layer.effect(
                   ).pipe(Effect.map((read) => read.text)),
                 );
         const holdAutomaticStart = Effect.gen(function* () {
-          if (trigger === "manual" || !(yield* isUpdateDraining())) return false;
           if (trigger === "scheduled") yield* holdForUpdate([active], startedAt, true);
-          return true;
+          return { task: active, threadId: null, dispatchFailed: false, held: true } as const;
         });
-        const held = { task: active, threadId: null, dispatchFailed: false, held: true } as const;
-        if (yield* holdAutomaticStart) return held;
+        if (trigger !== "manual" && (yield* isUpdateDraining())) return yield* holdAutomaticStart;
         const selectTarget = Effect.gen(function* () {
           return active.threadId === null
             ? { type: "launch" as const, ...(yield* launchSelectionFor(active)) }
@@ -2653,7 +2650,8 @@ export const layer = Layer.effect(
         const prefetched =
           trigger === "scheduled" && active.promptFile != null ? yield* readPrompt : undefined;
         const automaticTarget = trigger === "manual" ? undefined : yield* selectTarget;
-        if (automaticTarget !== undefined && (yield* holdAutomaticStart)) return held;
+        if (automaticTarget !== undefined && !(yield* tryAdmitStart))
+          return yield* holdAutomaticStart;
         const scheduledFor =
           trigger === "scheduled" ? (fire?.scheduledFor ?? active.nextRunAt) : null;
         const started = {
@@ -2671,12 +2669,8 @@ export const layer = Layer.effect(
                 .withTransaction(
                   Effect.gen(function* () {
                     yield* markRunning(started);
-                    if (webhook.immediate) {
-                      yield* sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = ${webhook.deliveryId}`;
-                    } else {
-                      // Recovery must distinguish this delivery from other windows waiting on the same task.
-                      yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
-                    }
+                    // Recovery must distinguish this delivery from other windows waiting on the same task.
+                    yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
                   }),
                 )
                 .pipe(
@@ -2901,6 +2895,12 @@ export const layer = Layer.effect(
                 ),
               );
 
+        if (
+          webhook !== undefined &&
+          result._tag === "Failure" &&
+          Cause.hasInterruptsOnly<unknown>(result.cause)
+        )
+          return yield* Effect.interrupt;
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
         const completedAt = yield* localNow;
@@ -3034,7 +3034,7 @@ export const layer = Layer.effect(
         }),
         (reserved) =>
           reserved
-            ? run
+            ? Effect.scoped(run)
             : trigger !== "scheduled"
               ? Effect.fail(taskError("Schedule task is already running.", { taskId: task.id }))
               : Effect.succeed({ task, threadId: null, dispatchFailed: false }),
@@ -6549,6 +6549,11 @@ export const layer = Layer.effect(
       });
     });
 
+    const removePendingDelivery = (deliveryId: string) =>
+      sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = ${deliveryId}`.pipe(
+        Effect.mapError(dedupeError),
+      );
+
     const releaseFailedDelivery = Effect.fn("ScheduledTaskService.releaseFailedDelivery")(
       function* (deliveryId: string) {
         yield* releaseReplay(deliveryId);
@@ -6560,6 +6565,8 @@ export const layer = Layer.effect(
           yield* sql`DELETE FROM scheduled_task_webhook_relay_deliveries WHERE relay_delivery_id = ${deliveryId.slice("delivery:relay:".length)}`.pipe(
             Effect.mapError(dedupeError),
           );
+        // Redelivery can reuse this row's primary key as soon as its relay claim is released.
+        yield* removePendingDelivery(deliveryId);
       },
       (effect) => sql.withTransaction(effect).pipe(Effect.mapError(dedupeError)),
     );
@@ -6568,20 +6575,14 @@ export const layer = Layer.effect(
       task: ScheduledTask,
       deliveryId: string,
       prompt: string,
-      immediate: boolean,
     ) {
-      const removeImmediate = immediate
-        ? sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = ${deliveryId}`.pipe(
-            Effect.mapError(dedupeError),
-          )
-        : Effect.void;
       const runOutcome = (outcome: "started" | "skipped" | "failed") =>
         Effect.all([
           Effect.annotateCurrentSpan({ "scheduled_task.webhook.run_outcome": outcome }),
           Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
         ]);
       const dispatched = yield* Ref.make(false);
-      return yield* runTask(task, "webhook", { deliveryId, prompt, immediate, dispatched }).pipe(
+      return yield* runTask(task, "webhook", { deliveryId, prompt, dispatched }).pipe(
         Effect.flatMap((result) =>
           "held" in result
             ? Effect.succeed(false)
@@ -6590,14 +6591,13 @@ export const layer = Layer.effect(
                     Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
                     Effect.andThen(releaseFailedDelivery(deliveryId)),
                   )
-                : runOutcome("started")
+                : runOutcome("started").pipe(Effect.andThen(removePendingDelivery(deliveryId)))
               ).pipe(Effect.as(true)),
         ),
         Effect.catchTags({
           WebhookDeliverySkipped: (skipped) =>
             runOutcome("skipped").pipe(
               Effect.andThen(markDeliveryFailed(deliveryId, skipped.reason)),
-              Effect.andThen(removeImmediate),
               Effect.andThen(releaseFailedDelivery(deliveryId)),
               Effect.as(true),
             ),
@@ -6605,6 +6605,7 @@ export const layer = Layer.effect(
         // Dispatch success owns the replay key even if later bookkeeping fails.
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
+            if (Cause.hasInterruptsOnly(cause)) return yield* Effect.interrupt;
             const started = yield* Ref.get(dispatched);
             yield* Effect.logWarning("Webhook dispatch failed", { taskId: task.id, cause });
             yield* runOutcome(started ? "started" : "failed");
@@ -6627,7 +6628,6 @@ export const layer = Layer.effect(
                   }),
                 )
                 .pipe(Effect.mapError(dedupeError));
-              yield* removeImmediate;
               yield* releaseFailedDelivery(deliveryId);
             }
             // Pending windows retry the same command id to finish bookkeeping.
@@ -7029,10 +7029,10 @@ export const layer = Layer.effect(
           yield* Effect.gen(function* () {
             if (yield* isUpdateDraining()) return;
             const pending = yield* sql`SELECT 1 FROM scheduled_task_webhook_pending
-              WHERE delivery_id = ${deliveryId}`.pipe(NodeSqliteClient.readOnly);
-            if (pending.length > 0) {
-              yield* runWebhookDelivery(task, deliveryId, rendered.prompt, true);
-            }
+              WHERE delivery_id = ${deliveryId} AND state IN ('pending', 'dispatching')`.pipe(
+              NodeSqliteClient.readOnly,
+            );
+            if (pending.length > 0) yield* runWebhookDelivery(task, deliveryId, rendered.prompt);
           }).pipe(
             permit.withPermits(1),
             Effect.catch((cause) =>
@@ -7087,13 +7087,11 @@ export const layer = Layer.effect(
               WHERE task_id = ${taskId} AND state IN ('dispatching', 'running', 'completed', 'failed') ORDER BY due_at, rowid LIMIT 1
             `.pipe(NodeSqliteClient.readOnly);
               if (entry === undefined) return;
-              const remove = sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = ${entry.delivery_id}`;
               if (entry.state === "completed" || entry.state === "failed") {
                 if (entry.state === "failed") {
                   yield* markDeliveryFailed(entry.delivery_id, "The run failed to start.");
                   yield* releaseFailedDelivery(entry.delivery_id);
-                }
-                yield* remove;
+                } else yield* removePendingDelivery(entry.delivery_id);
                 continue;
               }
               const prepared = yield* Effect.gen(function* () {
@@ -7112,7 +7110,6 @@ export const layer = Layer.effect(
                   "The pending webhook payload could not be prepared.",
                 );
                 yield* releaseFailedDelivery(entry.delivery_id);
-                yield* remove;
                 continue;
               }
               const { task, prompt, rendered } = prepared.value;
@@ -7122,18 +7119,10 @@ export const layer = Layer.effect(
               } else {
                 if (rendered !== undefined)
                   yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${rendered.prompt.slice(0, WEBHOOK_DELIVERY_LOG_PROMPT_LIMIT)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
-                if (
-                  !(yield* runWebhookDelivery(
-                    task,
-                    entry.delivery_id,
-                    prompt,
-                    rendered === undefined,
-                  ))
-                )
-                  return;
-                if (rendered === undefined) continue;
+                else if (entry.state === "running")
+                  yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL WHERE delivery_id = ${entry.delivery_id}`;
+                if (!(yield* runWebhookDelivery(task, entry.delivery_id, prompt))) return;
               }
-              yield* remove;
             }
           });
           // The worker owns its reservation, so an interrupt anywhere still releases it.

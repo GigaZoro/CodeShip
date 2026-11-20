@@ -4,11 +4,12 @@ import {
   type DesktopUpdateControlAcknowledgement,
   type DesktopUpdateControlReport,
 } from "@t3tools/contracts";
-import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import { currentDesktopControlToken } from "@t3tools/shared/desktopBootstrapToken";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
@@ -25,7 +26,7 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
     if (Option.isNone(config) || !config.value.bootstrap.desktopUpdateHttpControl) return null;
     const secret = config.value.bootstrap.desktopBootstrapSecret;
     if (secret === undefined) return null;
-    const token = currentDesktopBootstrapToken(secret, yield* Clock.currentTimeMillis);
+    const token = currentDesktopControlToken(secret, yield* Clock.currentTimeMillis);
     return { url: new URL(DESKTOP_UPDATE_CONTROL_PATH, config.value.httpBaseUrl), token };
   });
 
@@ -52,6 +53,13 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
       ),
     );
   });
+  // Polls replay the inventory after a reconnect. Serialize them with changes so an older POST cannot arrive last.
+  const inventoryMutex = yield* Semaphore.make(1);
+  const sendInventory = inventoryMutex.withPermits(1)(
+    Stream.runHead(publisher.servingBackends).pipe(
+      Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: sendReport })),
+    ),
+  );
   let acknowledgement: DesktopUpdateControlAcknowledgement | undefined;
   const readCommands = Effect.gen(function* () {
     const target = yield* endpoint;
@@ -63,8 +71,7 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
     }
     const latest = yield* publisher.latestUpdateReport;
     if (Option.isSome(latest)) yield* sendReport(latest.value);
-    const backends = yield* Stream.runHead(publisher.servingBackends);
-    if (Option.isSome(backends)) yield* sendReport(backends.value);
+    yield* sendInventory;
     const command = yield* client
       .execute(HttpClientRequest.get(target.url).pipe(HttpClientRequest.bearerToken(target.token)))
       .pipe(
@@ -93,6 +100,6 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
   );
 
   yield* Effect.forkScoped(Stream.runForEach(publisher.updateReports, sendReport));
-  yield* Effect.forkScoped(Stream.runForEach(publisher.servingBackends, sendReport));
+  yield* Effect.forkScoped(Stream.runForEach(publisher.servingBackends, () => sendInventory));
   yield* Effect.forkScoped(readCommands);
 });

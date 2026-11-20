@@ -925,6 +925,18 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           );
         });
 
+        // Register before spawn so closing the process scope reaps the child before withdrawing its endpoint.
+        if (spec.id !== PRIMARY_INSTANCE_ID) {
+          const label = yield* spec.label;
+          yield* Effect.acquireRelease(
+            desktopTelemetryPublisher.setServingBackend({
+              id: spec.id,
+              label,
+              httpBaseUrl: config.value.httpBaseUrl.href,
+            }),
+            () => desktopTelemetryPublisher.removeServingBackend(spec.id),
+          ).pipe(Scope.provide(runScope));
+        }
         const program = runBackendProcess({
           ...config.value,
           desktopTelemetryStream: desktopTelemetryPublisher.encoded,
@@ -1004,11 +1016,11 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Scope.provide(runScope),
+          Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
           Effect.matchEffect({
             onFailure: (error) => finalizeRun(error.message),
             onSuccess: (exit) => finalizeRun(exit.reason, Option.getOrUndefined(exit.code)),
           }),
-          Effect.ensuring(Scope.close(runScope, Exit.void).pipe(Effect.ignore)),
         );
 
         const fiber = yield* Effect.forkIn(program, parentScope);
@@ -1187,29 +1199,6 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
         ),
       ),
   );
-
-  if (spec.id !== PRIMARY_INSTANCE_ID) {
-    // The primary's automatic update waits for this backend's chats, as the install stops it too.
-    yield* SubscriptionRef.changes(state).pipe(
-      Stream.map((current) =>
-        current.ready
-          ? Option.getOrNull(Option.map(current.config, (config) => config.httpBaseUrl.href))
-          : null,
-      ),
-      Stream.changes,
-      Stream.runForEach((httpBaseUrl) =>
-        httpBaseUrl === null
-          ? desktopTelemetryPublisher.removeServingBackend(spec.id)
-          : spec.label.pipe(
-              Effect.flatMap((label) =>
-                desktopTelemetryPublisher.setServingBackend({ id: spec.id, label, httpBaseUrl }),
-              ),
-            ),
-      ),
-      Effect.ensuring(desktopTelemetryPublisher.removeServingBackend(spec.id)),
-      Effect.forkScoped,
-    );
-  }
 
   yield* Effect.addFinalizer(() => stop());
 
