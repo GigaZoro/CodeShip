@@ -14,7 +14,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
+import * as Option from "effect/Option";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -284,7 +284,6 @@ function restartCancelledBackgroundWork(
 // Reads the projections at most about once per interval while tool events keep coming. A debounce
 // would wait for a quiet moment a busy agent never takes, and the hold would stay stale.
 const RESTART_HOLD_SETTLE = Duration.millis(500);
-const SHUTDOWN_LOCK_WAIT = Duration.seconds(1);
 const RESTART_HOLD_MAX_EVENTS = 1024;
 
 function changesRestartHold(event: OrchestrationV2DomainEvent): boolean {
@@ -1011,34 +1010,40 @@ export const make = Effect.gen(function* () {
     const stoppedThisPass = new Map<string, RecoverySession>();
     for (const threadId of threadIds) {
       // Shutdown does not drain admitted commands, so read and commit under the lock they plan under.
-      const { projection, result } = yield* threadDispatch.withLock(
-        threadId,
-        Effect.gen(function* () {
-          const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderRuntimeRecoveryError({
-                  operation: "read-projections",
-                  threadId,
-                  cause,
-                }),
-            ),
-          );
-          const enabled = continuesAfterRestart(
-            resumeRequested,
-            continueAfterRestart,
-            projection.thread.projectId,
-          );
-          const result = yield* reconcileProjection(
-            projection,
-            trigger,
-            enabled,
-            lastCommittedAt,
-            stoppedThisPass,
-          );
-          return { projection, result };
-        }),
-      );
+      const reconcileThread = Effect.gen(function* () {
+        const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({
+                operation: "read-projections",
+                threadId,
+                cause,
+              }),
+          ),
+        );
+        const enabled = continuesAfterRestart(
+          resumeRequested,
+          continueAfterRestart,
+          projection.thread.projectId,
+        );
+        const result = yield* reconcileProjection(
+          projection,
+          trigger,
+          enabled,
+          lastCommittedAt,
+          stoppedThisPass,
+        );
+        return { projection, result };
+      });
+      // A busy thread keeps its pre-reconciliation state for startup. Shutdown already recorded its intent.
+      const reconciled = yield* trigger === "shutdown"
+        ? threadDispatch.withLockIfAvailable(threadId, reconcileThread)
+        : threadDispatch.withLock(threadId, reconcileThread).pipe(Effect.asSome);
+      if (Option.isNone(reconciled)) {
+        yield* Effect.logWarning("Deferring busy thread reconciliation to startup", { threadId });
+        continue;
+      }
+      const { projection, result } = reconciled.value;
       for (const session of projection.providerSessions) {
         if (session.status !== "stopped" && session.status !== "error") {
           stoppedThisPass.set(session.id, session);
@@ -1069,9 +1074,8 @@ export const make = Effect.gen(function* () {
     if (!enabled && !resumeRequested) return;
     const threadIds = yield* projections.getRecoveryThreadIds("runtime");
     for (const threadId of threadIds) {
-      const acquired = yield* Deferred.make<void>();
       yield* Effect.gen(function* () {
-        yield* Deferred.succeed(acquired, undefined);
+        // The outbox checks Stop atomically at insertion and the worker revalidates the source.
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (!continuesAfterRestart(resumeRequested, enabled, projection.thread.projectId)) return;
         const run = yield* unstoppedRestartResumeRun(projection, yield* DateTime.now);
@@ -1085,21 +1089,6 @@ export const make = Effect.gen(function* () {
           ],
         });
       }).pipe(
-        (effect) => threadDispatch.withLock(threadId, effect),
-        // Bound only lock acquisition. Once acquired, allow the transaction to commit.
-        Effect.raceFirst(
-          Deferred.await(acquired).pipe(
-            Effect.timeout(SHUTDOWN_LOCK_WAIT),
-            Effect.andThen(Effect.never),
-            Effect.catchTags({
-              TimeoutError: () =>
-                Effect.logWarning("Skipping restart preparation for a busy thread", {
-                  threadId,
-                  lockWaitMs: Duration.toMillis(SHUTDOWN_LOCK_WAIT),
-                }),
-            }),
-          ),
-        ),
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
           (cause) =>
