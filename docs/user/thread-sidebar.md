@@ -393,9 +393,14 @@ terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
 When a thread has its own worktree, settling it asks first if that worktree has
-uncommitted files or commits the default branch does not have yet, so unshipped
-work does not slip out of view. Commits count as merged once they reach the
-default branch or the branch's pull request merges.
+uncommitted or untracked files, or commits its base branch does not have yet, so
+unshipped work does not slip out of view. The base branch is the one the
+worktree's branch was cut from, usually the default branch. Commits count as
+merged once they or the same changes reach the base branch, for example by
+cherry-pick or a rebase shipped from another worktree, or the branch's pull
+request merges into it. When Git cannot read the worktree, settling says its work
+could not be checked, and automatic settlement leaves the thread active until a
+later check succeeds.
 
 Automatic settlement keeps that work in view too. Before such a thread you wrote
 in settles on its own, T3.CodeShip commits its changes and opens a pull request,
@@ -403,7 +408,10 @@ then settles it. With **Keep threads with a PR** on, the thread stays active wit
 its new pull request. Turn off **Open a PR for unmerged work** in **Settings →
 Threads** to keep these threads active instead. A thread also stays active when
 its pull request cannot be opened, for example in a repository without a remote.
-A thread whose pull request was closed settles without a new one.
+A thread with an open or closed pull request settles once that pull request has
+all of its commits and nothing is left uncommitted. Newer work goes to an open
+pull request first. A thread whose pull request was closed gets no new one: it
+stays active until you ship or discard that work.
 
 A thread you never wrote in, such as a scheduled run, a subagent or a chat an
 agent started, never gets a pull request this way: where a thread you wrote in

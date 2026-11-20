@@ -2362,6 +2362,10 @@ describe("storage cleanup reports and local file policies", () => {
           yield* fs.writeFileString(`${worktree}/tracked.txt`, "shipped work\n");
           yield* command(worktree, ["commit", "-am", "shipped work"]);
           const shipped = (yield* command(worktree, ["rev-parse", "HEAD"])).stdout.trim();
+          // The default branch moves first, so the pick gets a SHA of its own.
+          yield* fs.writeFileString(`${repo}/other.txt`, "other\n");
+          yield* command(repo, ["add", "other.txt"]);
+          yield* command(repo, ["commit", "-m", "other"]);
           yield* command(repo, ["cherry-pick", shipped]);
           yield* command(repo, ["push", "origin", "main:main"]);
           yield* command(repo, ["fetch", "origin"]);

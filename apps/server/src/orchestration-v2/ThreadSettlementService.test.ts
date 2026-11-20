@@ -1,4 +1,4 @@
-import { SourceControlProviderKind } from "@t3tools/contracts";
+import { GitCommandError, SourceControlProviderKind } from "@t3tools/contracts";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import {
@@ -632,7 +632,11 @@ function makePullRequestSummary(input: {
   };
 }
 
-function makeBranchPullRequest(state: "open" | "closed" | "merged") {
+// The checkout's commits are all in a pull request whose head is WORKTREE_HEAD.
+const WORKTREE_HEAD = "worktree-head";
+const UNFETCHED_HEAD = "unfetched-head";
+
+function makeBranchPullRequest(state: "open" | "closed" | "merged", headSha = WORKTREE_HEAD) {
   return {
     number: 42,
     title: "Pull request",
@@ -644,6 +648,7 @@ function makeBranchPullRequest(state: "open" | "closed" | "merged") {
     updatedAt: NOW,
     closedAt: state === "closed" ? NOW : null,
     mergedAt: state === "merged" ? NOW : null,
+    headSha,
   } satisfies GitManager.GitBranchPullRequest;
 }
 
@@ -810,6 +815,17 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
         Effect.succeed(
           options.unmergedWork ?? { refName: null, changedFileCount: 0, unmergedCommitCount: 0 },
         ),
+      countUnmergedCommits: ({ baseRef }) =>
+        baseRef === UNFETCHED_HEAD
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "test.countUnmergedCommits",
+                command: "git",
+                cwd: "/worktrees/feature",
+                detail: "bad revision",
+              }),
+            )
+          : Effect.succeed(baseRef === WORKTREE_HEAD ? 0 : 1),
       localStatus: () =>
         Effect.succeed({
           isRepo: true,
@@ -1013,7 +1029,25 @@ describe("ThreadSettlementServiceV2 worker", () => {
           { name: "clean", work: undefined, pr: null, settles: true, opensPr: false },
           { name: "no pull request", work: unmerged, pr: null, settles: false, opensPr: true },
           { name: "pushed to open PR", work: pushed, pr: "open", settles: true, opensPr: false },
+          // Commits made after the pull request's head are in no pull request yet.
+          { name: "ahead of open PR", work: pushed, pr: "open", settles: false, opensPr: true },
+          { name: "unfetched open PR", work: pushed, pr: "open", settles: false, opensPr: true },
           { name: "closed PR", work: pushed, pr: "closed", settles: true, opensPr: false },
+          // Work made after the user closed the pull request stays in view without a new one.
+          {
+            name: "ahead of closed PR",
+            work: pushed,
+            pr: "closed",
+            settles: false,
+            opensPr: false,
+          },
+          {
+            name: "edited after closed PR",
+            work: unmerged,
+            pr: "closed",
+            settles: false,
+            opensPr: false,
+          },
           { name: "setting off", work: unmerged, pr: null, settles: false, opensPr: false },
           { name: "no remote", work: unmerged, pr: null, settles: false, opensPr: false },
           // Agents wrote its prompts, so the agent that started it decides how its own worktree's
@@ -1050,7 +1084,18 @@ describe("ThreadSettlementServiceV2 worker", () => {
             unwrittenThreadIds:
               testCase.name === "nobody wrote" || testCase.name === "subagent" ? [threadId] : [],
             branchPullRequest: () =>
-              Effect.succeed(testCase.pr === null ? null : makeBranchPullRequest(testCase.pr)),
+              Effect.succeed(
+                testCase.pr === null
+                  ? null
+                  : makeBranchPullRequest(
+                      testCase.pr,
+                      testCase.name.startsWith("ahead of")
+                        ? "pull-request-head"
+                        : testCase.name === "unfetched open PR"
+                          ? UNFETCHED_HEAD
+                          : WORKTREE_HEAD,
+                    ),
+              ),
           });
           yield* Effect.gen(function* () {
             const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;

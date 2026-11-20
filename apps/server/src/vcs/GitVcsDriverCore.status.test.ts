@@ -98,6 +98,49 @@ it.layer(layerTest)("Git repository status", (it) => {
     }),
   );
 
+  it.effect("counts a commit as merged only when the base holds the same change", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      // A detached HEAD falls back to main, whatever init.defaultBranch says.
+      const base = "main";
+      yield* git(cwd, ["branch", "-M", base]);
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const commitFile = (name: string, contents: string) =>
+        Effect.gen(function* () {
+          yield* writeTextFile(cwd, name, contents);
+          yield* git(cwd, ["add", name]);
+          yield* git(cwd, ["commit", "-m", name]);
+        });
+      yield* commitFile("code.py", "def f():\n  return 1\n");
+
+      yield* git(cwd, ["switch", "-c", "feature"]);
+      yield* commitFile("picked.txt", "picked\n");
+      // The base moves first, so the pick gets a SHA of its own.
+      yield* git(cwd, ["switch", base]);
+      yield* commitFile("other.txt", "other\n");
+      yield* git(cwd, ["cherry-pick", "feature"]);
+      yield* git(cwd, ["switch", "feature"]);
+      assert.equal(yield* driver.countUnmergedCommits({ cwd, baseRef: base }), 0);
+
+      // Patch-ids ignore whitespace, so they pair these two; in Python the indent is the change.
+      yield* commitFile("code.py", "def f():\n    return 2\n");
+      yield* git(cwd, ["switch", base]);
+      yield* commitFile("code.py", "def f():\n  return 2\n");
+      yield* git(cwd, ["switch", "feature"]);
+      assert.equal(yield* driver.countUnmergedCommits({ cwd, baseRef: base }), 1);
+
+      // A detached HEAD has no branch base, so its commits are compared with the default branch.
+      yield* git(cwd, ["switch", "--detach"]);
+      assert.equal(yield* driver.countUnmergedCommits({ cwd }), 1);
+
+      // Without a default branch, nothing says which of a detached HEAD's commits are merged.
+      yield* git(cwd, ["branch", "-m", base, "trunk"]);
+      const error = yield* Effect.flip(driver.countUnmergedCommits({ cwd }));
+      assert.equal(error.operation, "GitVcsDriver.countUnmergedCommits.base");
+    }),
+  );
+
   it.effect("does not open a project folder laid out as a bare repository", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();

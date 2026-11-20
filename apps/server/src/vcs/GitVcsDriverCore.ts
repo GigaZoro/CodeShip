@@ -2077,13 +2077,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const resolveBaseBranchForNoUpstream = Effect.fn("resolveBaseBranchForNoUpstream")(function* (
     cwd: string,
-    refName: string,
+    // A detached HEAD (null) has no branch config, so only the default branch candidates apply.
+    refName: string | null,
     options?: {
       readonly allowRemoteOfCurrent?: boolean;
       readonly knownOriginDefaultBranch?: string | null;
     },
   ) {
-    const configuredBaseRef = yield* readConfigValue(cwd, `branch.${refName}.t3-merge-base-ref`);
+    const configuredBaseRef =
+      refName === null ? null : yield* readConfigValue(cwd, `branch.${refName}.t3-merge-base-ref`);
     if (
       configuredBaseRef?.startsWith("refs/heads/") ||
       configuredBaseRef?.startsWith("refs/remotes/")
@@ -2098,7 +2100,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
     }
 
-    const configuredBaseBranch = (yield* readBranchBase(cwd, refName)) ?? "";
+    const configuredBaseBranch =
+      (refName === null ? null : yield* readBranchBase(cwd, refName)) ?? "";
     const configuredBase = yield* resolveComparisonBaseRef(cwd, configuredBaseBranch);
     if (
       configuredBase !== null &&
@@ -2319,6 +2322,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "--branch",
       "-z",
       ...(includeDivergence ? [] : ["--no-ahead-behind"]),
+      ...(options?.listAllChanges ? ["--untracked-files=all", "--ignore-submodules=none"] : []),
     ];
     const indexResult = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.statusDetails.indexPath",
@@ -4586,13 +4590,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const { cwd } = input;
       let base = input.baseRef ?? null;
       if (base === null) {
-        // Exit 1 is a detached HEAD, which has no branch to compare; other failures are not that.
+        // Exit 1 is a detached HEAD, which is compared with the default branch. Any other failure
+        // fails: a count read as zero would let unmerged work settle.
         const headArgs = ["symbolic-ref", "--quiet", "HEAD"];
         const head = yield* executeGit("GitVcsDriver.countUnmergedCommits.branch", cwd, headArgs, {
           allowNonZeroExit: true,
         });
-        if (head.exitCode === 1) return 0;
-        if (head.exitCode !== 0) {
+        if (head.exitCode !== 0 && head.exitCode !== 1) {
           return yield* unexpectedExit(
             "GitVcsDriver.countUnmergedCommits.branch",
             cwd,
@@ -4600,10 +4604,19 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             head,
           );
         }
-        const refName = head.stdout.trim().replace(/^refs\/heads\//, "");
-        if (refName === "") return 0;
-        base = (yield* resolveBaseBranchForNoUpstream(cwd, refName))?.comparisonRef ?? null;
-        if (base === null) return 0;
+        const refName = head.exitCode === 0 ? head.stdout.trim().replace(/^refs\/heads\//, "") : "";
+        const branch = refName === "" ? null : refName;
+        base = (yield* resolveBaseBranchForNoUpstream(cwd, branch))?.comparisonRef ?? null;
+        // A branch keeps its commits; a detached HEAD's are reachable only from this checkout.
+        if (base === null && branch !== null) return 0;
+        if (base === null) {
+          return yield* new GitCommandError({
+            operation: "GitVcsDriver.countUnmergedCommits.base",
+            command: "git",
+            cwd,
+            detail: "No default branch to compare the detached HEAD's commits with.",
+          });
+        }
       }
       const bySha = Number.parseInt(
         (yield* runGitStdout("GitVcsDriver.countUnmergedCommits.rangeCount", cwd, [
@@ -4630,6 +4643,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ])).trim();
         if (merged.stdout.trim().split("\n")[0] === baseTree) return 0;
       }
+      // Patch-ids ignore whitespace, so they also match a commit the base holds only reformatted.
+      // When the merge conflicts, cannot run or leaves part of HEAD out, they narrow the count
+      // but never clear it.
       const byPatch = Number.parseInt(
         (yield* runGitStdout("GitVcsDriver.countUnmergedCommits.patchCount", cwd, [
           "rev-list",
@@ -4641,7 +4657,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ])).trim(),
         10,
       );
-      return Number.isFinite(byPatch) ? Math.min(bySha, Math.max(0, byPatch)) : bySha;
+      return Number.isFinite(byPatch) ? Math.min(bySha, Math.max(1, byPatch)) : bySha;
     });
 
   const fetchRefCommit: GitVcsDriver.GitVcsDriver["Service"]["fetchRefCommit"] = Effect.fn(
@@ -5060,24 +5076,20 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     function* (input) {
       const [localInputExists, remoteExists] = yield* Effect.all(
         [
-          executeGit(
+          probeGit(
             "GitVcsDriver.switchRef.localInputExists",
             input.cwd,
             ["show-ref", "--verify", "--quiet", `refs/heads/${input.refName}`],
-            {
-              timeoutMs: 5_000,
-              allowNonZeroExit: true,
-            },
-          ).pipe(Effect.map((result) => result.exitCode === 0)),
-          executeGit(
+            1,
+            { timeoutMs: 5_000 },
+          ),
+          probeGit(
             "GitVcsDriver.switchRef.remoteExists",
             input.cwd,
             ["show-ref", "--verify", "--quiet", `refs/remotes/${input.refName}`],
-            {
-              timeoutMs: 5_000,
-              allowNonZeroExit: true,
-            },
-          ).pipe(Effect.map((result) => result.exitCode === 0)),
+            1,
+            { timeoutMs: 5_000 },
+          ),
         ],
         { concurrency: "unbounded" },
       );
@@ -5104,15 +5116,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const localTrackedBranchCandidate = deriveLocalBranchNameFromRemoteRef(input.refName);
       const localTrackedBranchTargetExists =
         remoteExists && !localInputExists && !localTrackingBranch && localTrackedBranchCandidate
-          ? yield* executeGit(
+          ? yield* probeGit(
               "GitVcsDriver.switchRef.localTrackedBranchTargetExists",
               input.cwd,
               ["show-ref", "--verify", "--quiet", `refs/heads/${localTrackedBranchCandidate}`],
-              {
-                timeoutMs: 5_000,
-                allowNonZeroExit: true,
-              },
-            ).pipe(Effect.map((result) => result.exitCode === 0))
+              1,
+              { timeoutMs: 5_000 },
+            )
           : false;
 
       const checkoutArgs = localInputExists

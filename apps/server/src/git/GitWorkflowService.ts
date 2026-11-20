@@ -53,6 +53,11 @@ export class GitWorkflowService extends Context.Service<
       readonly cwd: string;
       readonly refName: string;
     }) => Effect.Effect<boolean, GitCommandError>;
+    /** Counts HEAD's commits whose changes `baseRef` (else the branch's own base) lacks. */
+    readonly countUnmergedCommits: (input: {
+      readonly cwd: string;
+      readonly baseRef?: string;
+    }) => Effect.Effect<number, GitCommandError>;
     readonly status: (
       input: VcsStatusInput,
     ) => Effect.Effect<VcsStatusResult, GitManagerServiceError>;
@@ -412,6 +417,11 @@ export const make = Effect.gen(function* () {
             Effect.map((result) => result.stdout.trim().length > 0),
           );
     }),
+    countUnmergedCommits: Effect.fn("GitWorkflowService.countUnmergedCommits")(function (input) {
+      return ensureGitCommand("GitWorkflowService.countUnmergedCommits", input.cwd).pipe(
+        Effect.andThen(git.countUnmergedCommits(input)),
+      );
+    }),
     status: Effect.fn("GitWorkflowService.status")(function (input) {
       return detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>
@@ -456,19 +466,32 @@ export const make = Effect.gen(function* () {
     }),
     unmergedWork: Effect.fn("GitWorkflowService.unmergedWork")(function* (input) {
       const none = { refName: null, changedFileCount: 0, unmergedCommitCount: 0 };
+      // A .git that Git rejects (a damaged HEAD, a pruned worktree) may still hold work.
+      const notRepository = Effect.fnUntraced(function* () {
+        const rejected = yield* fileSystem
+          .exists(path.join(input.cwd, ".git"))
+          .pipe(Effect.orElseSucceed(() => true));
+        if (!rejected) return none;
+        return yield* new GitManagerError({
+          operation: "GitWorkflowService.unmergedWork",
+          cwd: input.cwd,
+          detail: "Git does not recognize this worktree's .git.",
+        });
+      });
       if (!(yield* detectGitRepositoryForStatus("GitWorkflowService.unmergedWork", input.cwd))) {
-        return none;
+        return yield* notRepository();
       }
       const read = Effect.fnUntraced(function* () {
-        const details = yield* git.statusDetailsLocal(input.cwd, { includeDivergence: true });
-        if (!details.isRepo) return none;
-        // The status count is by SHA; only a branch that looks ahead pays for the patch-id count.
-        const unmergedCommitCount =
-          details.isDefaultBranch || details.aheadOfDefaultCount === 0
-            ? 0
-            : yield* git
-                .countUnmergedCommits({ cwd: input.cwd })
-                .pipe(Effect.orElseSucceed(() => details.aheadOfDefaultCount));
+        const details = yield* git.statusDetailsLocal(input.cwd, {
+          includeDivergence: false,
+          listAllChanges: true,
+        });
+        // The registry keeps a repository it detected until its .git entries change on disk.
+        if (!details.isRepo) return yield* notRepository();
+        // Status reads a divergence it cannot count as none; this count fails instead.
+        const unmergedCommitCount = details.isDefaultBranch
+          ? 0
+          : yield* git.countUnmergedCommits({ cwd: input.cwd });
         return {
           refName: details.branch,
           changedFileCount: details.workingTree.files.length,
@@ -476,34 +499,49 @@ export const make = Effect.gen(function* () {
         };
       });
       const work = yield* read();
-      if (work.unmergedCommitCount === 0 || work.refName === null) return work;
-      // Squash and rebase merges leave the branch's own commits outside the default branch.
-      // A lookup that fails keeps the commits counted, so the warning errs toward showing.
-      const pullRequest = yield* gitManager
-        .branchPullRequest({ cwd: input.cwd, branch: work.refName }, { freshGitState: true })
-        .pipe(Effect.orElseSucceed(() => null));
-      if (pullRequest?.state === "merged") {
-        const head = pullRequest.headSha
-          ? yield* git.resolveCommit({ cwd: input.cwd, revision: "HEAD" })
-          : null;
-        // Commits added after the merge are still unmerged.
-        if (head === null || head.commitSha === pullRequest.headSha) {
-          return { ...work, unmergedCommitCount: 0 };
+      if (work.unmergedCommitCount === 0) return work;
+      const remoteDefaultBranch = Effect.fnUntraced(function* (remoteName: string) {
+        const named = yield* git.resolveDefaultBranchName(input.cwd, remoteName);
+        if (named !== null) return named;
+        // Repositories that were not cloned have no remote HEAD to name the default.
+        for (const refName of ["main", "master"]) {
+          if (yield* git.remoteBranchExists({ cwd: input.cwd, remoteName, refName })) {
+            return refName;
+          }
+        }
+        return null;
+      });
+      // The count compares the branch with the base T3 recorded for it, else the default branch.
+      const countBase = Effect.fnUntraced(function* (refName: string) {
+        const recorded = yield* git.readBranchBase(input.cwd, refName);
+        if (recorded !== null) return recorded;
+        return yield* git.resolvePrimaryRemoteName(input.cwd).pipe(
+          Effect.flatMap(remoteDefaultBranch),
+          Effect.orElseSucceed(() => null),
+        );
+      });
+      if (work.refName !== null) {
+        // Squash and rebase merges leave the branch's own commits outside the default branch.
+        // A lookup that fails keeps the commits counted, so the warning errs toward showing.
+        const pullRequest = yield* gitManager
+          .branchPullRequest({ cwd: input.cwd, branch: work.refName }, { freshGitState: true })
+          .pipe(Effect.orElseSucceed(() => null));
+        // Commits added after the merge are still unmerged, so only the merged head clears them,
+        // and only when it merged into the branch the count compares with.
+        if (pullRequest?.state === "merged" && pullRequest.headSha) {
+          const head = yield* git.resolveCommit({ cwd: input.cwd, revision: "HEAD" });
+          if (
+            head.commitSha === pullRequest.headSha &&
+            pullRequest.baseRef === (yield* countBase(work.refName))
+          ) {
+            return { ...work, unmergedCommitCount: 0 };
+          }
         }
       }
       // A merge or push from elsewhere reaches the local default ref only after a fetch.
       const fetchDefaultBranch = Effect.fnUntraced(function* () {
         const remoteName = yield* git.resolvePrimaryRemoteName(input.cwd);
-        let remoteBranch = yield* git.resolveDefaultBranchName(input.cwd, remoteName);
-        // Repositories that were not cloned have no remote HEAD to name the default.
-        if (remoteBranch === null) {
-          for (const refName of ["main", "master"]) {
-            if (yield* git.remoteBranchExists({ cwd: input.cwd, remoteName, refName })) {
-              remoteBranch = refName;
-              break;
-            }
-          }
-        }
+        const remoteBranch = yield* remoteDefaultBranch(remoteName);
         if (remoteBranch === null) return false;
         yield* git.fetchRemoteTrackingBranch({ cwd: input.cwd, remoteName, remoteBranch });
         return true;

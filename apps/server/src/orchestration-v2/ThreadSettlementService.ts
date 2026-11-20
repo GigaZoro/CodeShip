@@ -428,13 +428,21 @@ export const make = Effect.gen(function* () {
       work.refName === null
         ? null
         : yield* git.branchPullRequest({ cwd, branch: work.refName }, { freshGitState: true });
-    // A closed pull request set the work aside on purpose; an open one already holds the commits.
+    // A pull request accounts for the commits up to its head: an open one ships them and a closed
+    // one set them aside on purpose. Work made after its head is in no pull request yet.
     if (
-      pullRequest?.state === "closed" ||
-      (pullRequest?.state === "open" && work.changedFileCount === 0)
+      (pullRequest?.state === "open" || pullRequest?.state === "closed") &&
+      work.changedFileCount === 0 &&
+      pullRequest.headSha
     ) {
-      return release();
+      // A head pushed from elsewhere may be missing here, so the work stays unaccounted for.
+      const outsidePullRequest = yield* gitWorkflow
+        .countUnmergedCommits({ cwd, baseRef: pullRequest.headSha })
+        .pipe(Effect.orElseSucceed(() => null));
+      if (outsidePullRequest === 0) return release();
     }
+    // The user closed that pull request, so a new one for the same branch is theirs to open.
+    if (pullRequest?.state === "closed") return hold(UNMERGED_WORK_RECHECK_MS);
     if (
       action !== "open-pull-request" ||
       work.refName === null ||
