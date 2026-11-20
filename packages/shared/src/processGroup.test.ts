@@ -681,12 +681,53 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("layerHeldProce
     }),
   );
 
+  it.live("signals no group once its holder's beacon ended, though its scope is open", () =>
+    Effect.gen(function* () {
+      const freed = yield* watchFreedGroupSignals;
+      const reaped = NodeChildProcess.spawn("true", { stdio: "ignore" });
+      yield* exitOf(reaped);
+      const quitHolder = ChildProcessSpawner.make(() =>
+        Effect.succeed(
+          ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(reaped.pid!),
+            exitCode: Effect.never,
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: Stream.empty,
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          }),
+        ),
+      );
+      const held = yield* Effect.service(ChildProcessSpawner.ChildProcessSpawner).pipe(
+        Effect.provide(
+          layerHeldProcessGroups.pipe(
+            Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, quitHolder)),
+          ),
+        ),
+      );
+      const handle = yield* held.spawn(ChildProcess.make("sh", ["-c", "exit 0"]));
+
+      expect(yield* signalSpawnedGroup(handle, "SIGKILL")).toBe(false);
+      expect(freed.signals()).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("leaves the command the file descriptors it was given", () =>
     Effect.gen(function* () {
       const handle = yield* (yield* spawner).spawn(
-        ChildProcess.make("sh", ["-c", "echo three >&3"], {
-          additionalFds: { fd3: { type: "output" } },
-        }),
+        ChildProcess.make(
+          "sh",
+          [
+            "-c",
+            "echo three >&3; (true >&4) 2>/dev/null && echo four >&3; (true >&5) 2>/dev/null && echo five >&3",
+          ],
+          { additionalFds: { fd3: { type: "output" } } },
+        ),
       );
 
       expect(yield* Stream.mkString(Stream.decodeText(handle.getOutputFd(3)))).toBe("three\n");
