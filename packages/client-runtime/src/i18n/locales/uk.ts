@@ -2730,6 +2730,7 @@ const catalog: MessageCatalog = {
   "Auto-settle behavior": "Поведінка автозавершення",
   "Auto-settle defaults differ": "Типові значення автозавершення відрізняються",
   "Auto-settle inactive threads": "Автоматично завершувати неактивні чати",
+  "Auto-settle completed scheduled threads": "Автоматично завершувати виконані чати за розкладом",
   "Auto-settle merged threads": "Автоматично завершувати злиті чати",
   "auto-settle on merge": "автозавершення після злиття",
   "auto-show floating preview": "автопоказ плаваючого перегляду",
@@ -10843,6 +10844,8 @@ const catalog: MessageCatalog = {
   "Settings...": "Налаштування...",
   settle: "завершити",
   Settle: "Завершити",
+  "Settle threads started by a scheduled task when they finish and have no pending work.":
+    "Завершувати чати, запущені за розкладом, після виконання, якщо не залишилося незавершених дій.",
   "Settle “{title}”?": "Завершити «{title}»?",
   "Settle ({count})": "Завершити ({count})",
   "Settle {count} finished threads": {

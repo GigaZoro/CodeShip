@@ -1795,6 +1795,38 @@ export function ThreadsSettingsPanel() {
         <SettingsSection id="auto-settle" title={t("Auto-settle")}>
           <SettingsRow
             serverScoped
+            settingKeys={["sidebarAutoSettleScheduledThreads"]}
+            {...searchableSetting("auto-settle-scheduled-threads")}
+            description={t(
+              "Settle threads started by a scheduled task when they finish and have no pending work.",
+            )}
+            resetAction={
+              settings.sidebarAutoSettleScheduledThreads !==
+              DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleScheduledThreads ? (
+                <SettingResetButton
+                  label={t("Auto-settle completed scheduled threads")}
+                  onClick={() =>
+                    updateSettings({
+                      sidebarAutoSettleScheduledThreads:
+                        DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleScheduledThreads,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <ScopedSwitch
+                settingKeys={["sidebarAutoSettleScheduledThreads"]}
+                checked={settings.sidebarAutoSettleScheduledThreads}
+                onCheckedChange={(checked) =>
+                  updateSettings({ sidebarAutoSettleScheduledThreads: Boolean(checked) })
+                }
+                aria-label={t("Auto-settle completed scheduled threads")}
+              />
+            }
+          />
+          <SettingsRow
+            serverScoped
             settingKeys={["sidebarAutoSettleOnMerge"]}
             {...searchableSetting("auto-settle-merged-threads")}
             description={t(
@@ -1891,7 +1923,9 @@ export function ThreadsSettingsPanel() {
               }
             />
           ) : null}
-          {(settings.sidebarAutoSettleAfterDays !== null || settings.sidebarAutoSettleOnMerge) &&
+          {(settings.sidebarAutoSettleAfterDays !== null ||
+            settings.sidebarAutoSettleOnMerge ||
+            settings.sidebarAutoSettleScheduledThreads) &&
           supportsUnmergedWorkPullRequests ? (
             <SettingsRow
               serverScoped

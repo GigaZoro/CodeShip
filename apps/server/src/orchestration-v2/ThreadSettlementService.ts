@@ -167,9 +167,10 @@ export function dropExpiredHolds<K>(holds: Map<K, number>, nowMs: number): void 
 }
 
 /** The fields the inactivity and pull request rules read; delegated children add their parent's. */
+type ScheduledSettlementFields = "startedByScheduledTask" | "hasPendingScheduledWork";
 type SettlementRuleThread = Omit<
   ProjectionStore.ProjectionSettlementCandidate,
-  "parentWorktreePath" | "parentResultAt"
+  "parentWorktreePath" | "parentResultAt" | ScheduledSettlementFields
 >;
 
 export function isAutoSettlementCandidate(
@@ -252,11 +253,14 @@ function deliveredChildSettlementAt(
 }
 
 export function resolveAutoSettlementAt(input: {
-  readonly thread: SettlementRuleThread;
+  readonly thread: SettlementRuleThread &
+    Partial<Pick<ProjectionStore.ProjectionSettlementCandidate, ScheduledSettlementFields>>;
   readonly pullRequest: SettlementPullRequest | null;
   readonly nowMs: number;
   readonly autoSettleAfterDays: number | null;
   readonly autoSettleOnMerge: boolean;
+  readonly autoSettleScheduledThreads?: boolean;
+  readonly autoSettleLegacyRules?: boolean;
   readonly autoSettleKeepPullRequests?: boolean;
 }): DateTime.Utc | null {
   const { thread } = input;
@@ -293,6 +297,25 @@ export function resolveAutoSettlementAt(input: {
       toMillis(thread.latestRunStartedAt),
       toMillis(thread.latestRunCompletedAt),
     ]) ?? DateTime.toEpochMillis(thread.createdAt);
+  const hasPullRequest =
+    hasOpenLink ||
+    pullRequest !== null ||
+    thread.linkedPullRequest != null ||
+    thread.branchPullRequest != null;
+  if (
+    input.autoSettleScheduledThreads === true &&
+    thread.startedByScheduledTask &&
+    thread.lineage.parentThreadId === null &&
+    thread.status === "completed" &&
+    thread.hasPendingScheduledWork === false &&
+    !hasOpenLink &&
+    !(thread.pullRequests ?? []).some((link) => link.watch !== undefined) &&
+    pullRequest?.state !== "open" &&
+    (!hasPullRequest || pullRequest !== null)
+  ) {
+    return thread.latestRunCompletedAt ?? null;
+  }
+  if (input.autoSettleLegacyRules === false) return null;
   if (
     pullRequest !== null &&
     !awaitsMergeWake &&
@@ -300,11 +323,6 @@ export function resolveAutoSettlementAt(input: {
   ) {
     return DateTime.makeUnsafe(activityAtMs);
   }
-  const hasPullRequest =
-    hasOpenLink ||
-    pullRequest !== null ||
-    thread.linkedPullRequest != null ||
-    thread.branchPullRequest != null;
   if (input.autoSettleKeepPullRequests === true && hasPullRequest) return null;
   if (input.autoSettleAfterDays === null) return null;
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
@@ -341,6 +359,7 @@ export function autoSettlementSettingsKey(
   settings: import("@t3tools/contracts").ServerSettings,
 ): string {
   return JSON.stringify([
+    settings.sidebarAutoSettleScheduledThreads,
     settings.sidebarAutoSettleOnMerge,
     settings.sidebarAutoSettleAfterDays,
     settings.sidebarAutoSettleKeepPullRequests,
@@ -348,6 +367,7 @@ export function autoSettlementSettingsKey(
     Object.entries(settings.projectSettingsOverrides)
       .filter(
         ([, entry]) =>
+          entry.sidebarAutoSettleScheduledThreads !== undefined ||
           entry.sidebarAutoSettleOnMerge !== undefined ||
           entry.sidebarAutoSettleAfterDays !== undefined ||
           entry.sidebarAutoSettleKeepPullRequests !== undefined ||
@@ -356,6 +376,7 @@ export function autoSettlementSettingsKey(
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([projectId, entry]) => [
         projectId,
+        entry.sidebarAutoSettleScheduledThreads ?? "inherit",
         entry.sidebarAutoSettleOnMerge ?? "inherit",
         entry.sidebarAutoSettleAfterDays === undefined
           ? "inherit"
@@ -550,7 +571,12 @@ export const make = Effect.gen(function* () {
     const projects = new Map(projectShells.map((project) => [project.id, project]));
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
     const candidates = threads.filter((thread) =>
-      configured
+      configured ||
+      (thread.startedByScheduledTask &&
+        thread.status === "completed" &&
+        !thread.hasPendingScheduledWork &&
+        resolveProjectSettings(settings, thread.projectId).settings
+          .sidebarAutoSettleScheduledThreads)
         ? isAutoSettlementCandidate(thread, nowMs)
         : deliveredChildSettlementAt(thread, nowMs) !== null,
     );
@@ -573,6 +599,8 @@ export const make = Effect.gen(function* () {
             nowMs: decisionNowMs,
             autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
             autoSettleOnMerge: currentSettings.sidebarAutoSettleOnMerge,
+            autoSettleScheduledThreads: currentSettings.sidebarAutoSettleScheduledThreads,
+            autoSettleLegacyRules: configured,
             autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
           });
         if (settledAt === null) return thread;
@@ -627,6 +655,8 @@ export const make = Effect.gen(function* () {
             nowMs,
             autoSettleAfterDays: projectSettings.sidebarAutoSettleAfterDays,
             autoSettleOnMerge: projectSettings.sidebarAutoSettleOnMerge,
+            autoSettleScheduledThreads: projectSettings.sidebarAutoSettleScheduledThreads,
+            autoSettleLegacyRules: configured,
             autoSettleKeepPullRequests: projectSettings.sidebarAutoSettleKeepPullRequests,
           });
         return settledAt === null ? Effect.succeed(thread) : settleThread(thread, null);
@@ -641,8 +671,7 @@ export const make = Effect.gen(function* () {
           thread.linkedPullRequest != null ||
           thread.branchPullRequest != null,
       );
-    // Pull request lookups serve only the inactivity and merge rules.
-    if (!configured) return;
+    if (lookupCandidates.length === 0) return;
     const lookupCwdByThreadId = new Map<string, string>();
     yield* Effect.forEach(
       lookupCandidates,
@@ -713,6 +742,8 @@ export const make = Effect.gen(function* () {
             nowMs: DateTime.toEpochMillis(decisionNow),
             autoSettleAfterDays: settings.sidebarAutoSettleAfterDays,
             autoSettleOnMerge: settings.sidebarAutoSettleOnMerge,
+            autoSettleScheduledThreads: settings.sidebarAutoSettleScheduledThreads,
+            autoSettleLegacyRules: configured,
             autoSettleKeepPullRequests: settings.sidebarAutoSettleKeepPullRequests,
           }) !== null
         );
@@ -934,6 +965,10 @@ export const make = Effect.gen(function* () {
           ? enqueueThread(event.threadId)
           : Effect.void;
       }
+      case "runtime-request.updated":
+        return event.payload.status === "pending" ? Effect.void : enqueueThread(event.threadId);
+      case "plan.updated":
+        return event.payload.status === "active" ? Effect.void : enqueueThread(event.threadId);
       case "provider-session.updated":
         return event.payload.status !== "starting" && event.payload.status !== "running"
           ? enqueueThread(event.threadId)

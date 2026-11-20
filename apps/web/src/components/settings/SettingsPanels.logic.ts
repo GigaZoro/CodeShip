@@ -409,6 +409,9 @@ const RESTORABLE_SETTINGS: ReadonlyArray<RestorableSettings> = [
   restorable("/settings/threads", msg("Open a PR for unmerged work"), [
     "sidebarAutoSettleOpensPullRequests",
   ]),
+  restorable("/settings/threads", msg("Auto-settle completed scheduled threads"), [
+    "sidebarAutoSettleScheduledThreads",
+  ]),
   restorable("/settings/threads", msg("Auto-settle merged threads"), ["sidebarAutoSettleOnMerge"]),
   restorable("/settings/threads", msg("When a thread hits a usage limit"), [
     "autoResumeLimitedThreads",

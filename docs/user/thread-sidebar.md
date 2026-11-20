@@ -118,6 +118,10 @@ Change a task's choice with **Show in** in its menu on the **Scheduled tasks** p
 **Show all in** at the top of the **Scheduled tasks** page moves every task shown there at once.
 The choice is saved on the environment, so every device connected to it shows the same place.
 
+CodeShip automatically settles chats started by a scheduled task after a successful run with no
+pending work. To keep those chats in the active list after completion, turn off **Auto-settle
+completed scheduled threads** under **Settings → Threads → Auto-settle**.
+
 The **Scheduled tasks** page lists tasks from every environment this app is connected to, and
 each task shows its machine and project. Machines your computer links to (see
 [Remote access](remote-access.md)) that the app can't reach directly appear under **Linked

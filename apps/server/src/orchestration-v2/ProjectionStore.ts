@@ -291,6 +291,8 @@ export type ProjectionSettlementCandidate = Pick<
 > &
   Pick<OrchestrationV2AppThread, "lastSnoozeWakeAt"> & {
     readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
+    readonly startedByScheduledTask: boolean;
+    readonly hasPendingScheduledWork: boolean;
     /** The parent's worktree, which a subagent or side chat working in it leaves to the parent. */
     readonly parentWorktreePath: string | null;
     /** When the parent's latest task on this child completed with a result. */
@@ -1218,6 +1220,8 @@ type SettlementThreadRow = Pick<
   | "latest_user_message_at"
   | "latest_user_authored_message_at"
 > & {
+  readonly started_by_scheduled_task: number | null;
+  readonly has_pending_scheduled_work: number;
   readonly parent_worktree_path: string | null;
   readonly parent_result_at: string | null;
 };
@@ -7191,6 +7195,26 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS latest_user_authored_message_at,
               (
+                SELECT json_type(message.payload_json, '$.scheduledTaskId') IS 'text'
+                  OR message.message_id GLOB 'scheduled-task-message:*'
+                FROM orchestration_v2_projection_messages message
+                WHERE message.thread_id = t.thread_id AND message.role = 'user'
+                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND json_type(message.payload_json, '$.notification') IS NULL
+                ORDER BY message.created_at ASC, message.message_id ASC
+                LIMIT 1
+              ) AS started_by_scheduled_task,
+              (
+                EXISTS (
+                  SELECT 1 FROM orchestration_v2_projection_runs queued
+                  WHERE queued.thread_id = t.thread_id AND queued.status = 'queued'
+                ) OR EXISTS (
+                  SELECT 1 FROM orchestration_v2_projection_plans plan
+                  WHERE plan.thread_id = t.thread_id
+                    AND plan.kind = 'proposed_plan' AND plan.status = 'active'
+                )
+              ) AS has_pending_scheduled_work,
+              (
                 SELECT json_extract(parent.payload_json, '$.worktreePath')
                 FROM orchestration_v2_projection_threads parent
                 WHERE parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
@@ -7286,6 +7310,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     row.latest_user_authored_message_at === null
                       ? null
                       : DateTime.makeUnsafe(row.latest_user_authored_message_at),
+                  startedByScheduledTask: row.started_by_scheduled_task === 1,
+                  hasPendingScheduledWork: row.has_pending_scheduled_work === 1,
                   parentWorktreePath: row.parent_worktree_path,
                   parentResultAt:
                     row.parent_result_at === null

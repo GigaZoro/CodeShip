@@ -573,6 +573,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "project-defaults",
   },
   {
+    id: "auto-settle-scheduled-threads",
+    title: msg("Auto-settle completed scheduled threads"),
+    to: "/settings/threads",
+    searchTerms: ["schedule automation completed finished pending sidebar"],
+    requiresThreadAutoSettlement: true,
+    scope: "project-defaults",
+  },
+  {
     id: "auto-settle-opens-pull-requests",
     title: msg("Open a PR for unmerged work"),
     to: "/settings/threads",

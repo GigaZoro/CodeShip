@@ -91,6 +91,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "enableAgentBrowserAccess",
     "agentTerminalAccess",
     "importAgentConversations",
+    "sidebarAutoSettleScheduledThreads",
     "sidebarAutoSettleOnMerge",
     "sidebarAutoSettleAfterDays",
     "continueThreadsAfterServerUpdate",

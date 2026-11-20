@@ -60,7 +60,11 @@ function at(offsetMs: number): DateTime.Utc {
 type SettlementShell = OrchestrationV2ThreadShell &
   Pick<
     ProjectionStore.ProjectionSettlementCandidate,
-    "latestUserAuthoredMessageAt" | "parentWorktreePath" | "parentResultAt"
+    | "latestUserAuthoredMessageAt"
+    | "startedByScheduledTask"
+    | "hasPendingScheduledWork"
+    | "parentWorktreePath"
+    | "parentResultAt"
   >;
 
 function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
@@ -101,6 +105,8 @@ function shell(overrides: Partial<SettlementShell> = {}): SettlementShell {
     latestRunCompletedAt: null,
     latestUserMessageAt: null,
     latestUserAuthoredMessageAt: overrides.latestUserMessageAt ?? null,
+    startedByScheduledTask: false,
+    hasPendingScheduledWork: false,
     parentWorktreePath: null,
     parentResultAt: null,
     createdAt: at(-30 * DAY_MS),
@@ -223,6 +229,43 @@ describe("dropExpiredHolds", () => {
 });
 
 describe("resolveAutoSettlementAt", () => {
+  it("settles scheduled threads at completion only when the setting is on and work is clear", () => {
+    const thread = shell({
+      startedByScheduledTask: true,
+      status: "completed",
+      latestRunCompletedAt: at(-1),
+    });
+    const input = {
+      thread,
+      pullRequest: null,
+      nowMs: NOW_MS,
+      autoSettleAfterDays: null,
+      autoSettleOnMerge: false,
+      autoSettleScheduledThreads: true,
+    };
+    expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(at(-1));
+    expect(
+      ThreadSettlementService.resolveAutoSettlementAt({
+        ...input,
+        autoSettleScheduledThreads: false,
+      }),
+    ).toBeNull();
+    for (const changes of [
+      { startedByScheduledTask: false },
+      { status: "failed" as const },
+      { hasPendingScheduledWork: true },
+      { pinnedAt: at(-10) },
+      { pullRequests: [persistedLink("open", at(-10))] },
+    ]) {
+      expect(
+        ThreadSettlementService.resolveAutoSettlementAt({
+          ...input,
+          thread: { ...thread, ...changes },
+        }),
+      ).toBeNull();
+    }
+  });
+
   it("keeps threads with a PR from inactivity settlement only when asked", () => {
     const input = {
       thread: shell({

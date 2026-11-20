@@ -28,6 +28,7 @@ import {
   RuntimeRequestId,
   RunAttemptId,
   RunId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
   type ThreadPullRequestLink,
@@ -231,6 +232,49 @@ const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate
 
   return threadId;
 });
+
+it.effect(
+  "settlement distinguishes a scheduled opening prompt from a later scheduled message",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      for (const opening of ["scheduled", "legacy", "manual"] as const) {
+        const threadId = yield* addRolledBackRecoveryCandidate(`settle-${opening}`);
+        for (const [index, source] of [opening, "scheduled"].entries()) {
+          const createdAt = DateTime.add(now, { seconds: index });
+          const id = MessageId.make(
+            source === "legacy"
+              ? `scheduled-task-message:fixture:${threadId}`
+              : `${threadId}:${index}`,
+          );
+          yield* store.apply({
+            id: EventId.make(`event:${id}`),
+            type: "message.updated",
+            threadId,
+            occurredAt: createdAt,
+            payload: {
+              id,
+              threadId,
+              runId: null,
+              nodeId: null,
+              createdBy: source === "manual" ? "user" : "agent",
+              creationSource: source === "manual" ? "web" : "server",
+              role: "user",
+              text: "Prompt",
+              attachments: [],
+              streaming: false,
+              createdAt,
+              updatedAt: createdAt,
+              ...(source === "scheduled" ? { scheduledTaskId: ScheduledTaskId.make("task") } : {}),
+            },
+          });
+        }
+        const [candidate] = yield* store.getSettlementCandidates(threadId);
+        assert.equal(candidate?.startedByScheduledTask, opening !== "manual");
+      }
+    }).pipe(Effect.provide(layerTest)),
+);
 
 it.effect("record reads filter notification sources without dropping matching message bodies", () =>
   Effect.gen(function* () {
