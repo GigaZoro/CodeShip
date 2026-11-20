@@ -37,7 +37,9 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -1100,27 +1102,52 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           WHERE task_id = ${started.taskId}
         `;
           const processRunner = yield* ProcessRunner.ProcessRunner;
+          const fileSystem = yield* FileSystem.FileSystem;
           let startReads = 0;
+          // Adoption's read fails, as it does on a loaded machine. Linux reads the start from /proc.
+          const failingFirst = <A, E>(read: Effect.Effect<A, E>, failure: Effect.Effect<A, E>) => {
+            startReads += 1;
+            return startReads === 1 ? failure : read;
+          };
           yield* withServer(() => nextWake(chat.threadId)).pipe(
             Effect.provideService(ProcessRunner.ProcessRunner, {
-              run: (input) => {
-                if (input.command !== "ps") return processRunner.run(input);
-                startReads += 1;
-                // Adoption's read fails, as it does on a loaded machine.
-                return startReads === 1
-                  ? Effect.succeed({
-                      stdout: "",
-                      stderr: "",
-                      code: ChildProcessSpawner.ExitCode(1),
-                      timedOut: false,
-                      stdoutTruncated: false,
-                      stderrTruncated: false,
-                      stdoutInvalidUtf8: false,
-                      stderrInvalidUtf8: false,
-                    })
-                  : processRunner.run(input);
-              },
+              run: (input) =>
+                input.command === "ps"
+                  ? failingFirst(
+                      processRunner.run(input),
+                      Effect.succeed({
+                        stdout: "",
+                        stderr: "",
+                        code: ChildProcessSpawner.ExitCode(1),
+                        timedOut: false,
+                        stdoutTruncated: false,
+                        stderrTruncated: false,
+                        stdoutInvalidUtf8: false,
+                        stderrInvalidUtf8: false,
+                      }),
+                    )
+                  : processRunner.run(input),
             }),
+            Effect.provideService(
+              FileSystem.FileSystem,
+              FileSystem.FileSystem.of({
+                ...fileSystem,
+                readFileString: (file, encoding) =>
+                  /^\/proc\/\d+\/stat$/u.test(file)
+                    ? failingFirst(
+                        fileSystem.readFileString(file, encoding),
+                        Effect.fail(
+                          PlatformError.systemError({
+                            _tag: "Unknown",
+                            module: "FileSystem",
+                            method: "readFileString",
+                            pathOrDescriptor: file,
+                          }),
+                        ),
+                      )
+                    : fileSystem.readFileString(file, encoding),
+              }),
+            ),
           );
           const row = yield* commandRow(started.taskId);
           assert.equal(row?.status, "lost");
