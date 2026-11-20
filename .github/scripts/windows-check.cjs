@@ -14,6 +14,8 @@ const START_LIMIT_MS = 15 * 60 * 1000;
 // The job may run for the workflow's 360 minutes after it waits for a runner.
 const FINISH_LIMIT_MS = 400 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30 * 1000;
+// GitHub asks a client it refuses to wait at least a minute when it names no time, and longer after each refusal.
+const RETRY_MS = 60 * 1000;
 const MAX_FAILURES = 20;
 const NOT_PASSED_EXIT = 3;
 
@@ -48,12 +50,17 @@ function backoffMs(headers, now) {
   return 0;
 }
 
+const refusedForRateLimit = ({ status, headers }) =>
+  status === 429 ||
+  (status === 403 && (headers.has("retry-after") || headers.get("x-ratelimit-remaining") === "0"));
+
 /**
  * GitHub's API as one address sees it: each request first waits until GitHub allows it, on the monotonic `clock`, and
  * one GitHub refuses for its rate limit is sent again then. Resolves to null when GitHub allows none before `deadline`.
  */
 function githubApi({ fetch, sleep, clock, now, deadline }) {
   let notBefore = -Infinity;
+  let refusals = 0;
   return async (path) => {
     for (;;) {
       if (notBefore > deadline) return null;
@@ -67,11 +74,12 @@ function githubApi({ fetch, sleep, clock, now, deadline }) {
         },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
+      const refused = refusedForRateLimit(response);
+      refusals = refused ? refusals + 1 : 0;
       const backoff = backoffMs(response.headers, now);
-      notBefore = clock() + backoff;
+      notBefore = clock() + (refused ? Math.max(backoff, RETRY_MS * 2 ** (refusals - 1)) : backoff);
       if (response.ok) return { status: response.status, body: await response.json() };
       await response.body?.cancel();
-      const refused = (response.status === 403 || response.status === 429) && backoff > 0;
       if (!refused) return { status: response.status, body: null };
     }
   };
@@ -202,7 +210,7 @@ const failureOf = (result) => result.error?.message ?? result.stderr.trim();
  * none.
  */
 async function windowsCheck({ cwd, remote, commit, ...options }) {
-  const workflow = git(cwd, "ls-tree", "--name-only", commit, "--", WORKFLOW_PATH);
+  const workflow = git(cwd, "ls-tree", "--full-tree", "--name-only", commit, "--", WORKFLOW_PATH);
   if (workflow.status !== 0) {
     throw new Error(`windows check: cannot read ${commit}: ${failureOf(workflow)}`);
   }

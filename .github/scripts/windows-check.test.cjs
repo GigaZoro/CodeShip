@@ -222,22 +222,40 @@ test("a failed run's failures are read only after GitHub's reset, and again when
     workflow_runs: [{ id: 7, html_url: RUN_URL, status: "completed", conclusion: "failure" }],
   };
   const jobs = [{ id: 11, name: "Windows", conclusion: "failure", steps: [] }];
+  const failing = { status: "completed", conclusion: "failure" };
   const step = { name: "Check the pushed commits", conclusion: "failure" };
-  let refused = false;
+  const stepFailed = ['Windows: step "Check the pushed commits" failed'];
+  const outOfRequests = [`${OUT_OF_REQUESTS} (the run's jobs)`];
   // Another lander on this address used the last request between the run and its jobs.
-  const refusedOnce = () => {
-    if (refused) return Response.json({ jobs: [{ ...jobs[0], steps: [step] }] });
-    refused = true;
-    return new Response("{}", { status: 403, headers: { "retry-after": "60" } });
+  const refusedOnce = (status, headers) => {
+    let refused = false;
+    return (now) => {
+      if (refused) return Response.json({ jobs: [{ ...jobs[0], steps: [step] }] });
+      refused = true;
+      return new Response("{}", { status, headers: headers(now) });
+    };
   };
   for (const [runs, jobAnswers, requests, failures] of [
     [rateLimited(30 * MINUTE, failed), jobs, [0, 30, 30], []],
-    [rateLimited(500 * MINUTE, failed), jobs, [0], [`${OUT_OF_REQUESTS} (the run's jobs)`]],
+    [rateLimited(500 * MINUTE, failed), jobs, [0], outOfRequests],
+    [failing, refusedOnce(403, () => ({ "retry-after": "60" })), [0, 0, 1, 1], stepFailed],
+    // A refusal that names no time to wait, or a reset already past on this clock, waits a minute.
+    [failing, refusedOnce(429, () => ({ "retry-after": "0" })), [0, 0, 1, 1], stepFailed],
     [
-      { status: "completed", conclusion: "failure" },
-      refusedOnce,
+      failing,
+      refusedOnce(403, (now) => ({
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(now / 1000 - 60),
+      })),
       [0, 0, 1, 1],
-      ['Windows: step "Check the pushed commits" failed'],
+      stepFailed,
+    ],
+    // Each refusal in a row doubles the wait, until the next one falls past the time limit.
+    [
+      failing,
+      () => new Response("{}", { status: 429 }),
+      [0, 0, 1, 3, 7, 15, 31, 63, 127, 255],
+      outOfRequests,
     ],
   ]) {
     const fake = github({ runs: [runs], jobs: jobAnswers });
@@ -266,10 +284,12 @@ test("the command checks the run of the full commit on origin's GitHub push URL 
   git("remote", "set-url", "--add", "--push", "origin", "https://git.cafe/example/app.git");
   git("remote", "set-url", "--add", "--push", "origin", "git@github.com:example/app.git");
   git("remote", "set-url", "--add", "--push", "origin", "https://github.com/Example/App");
+  // A lander may run it from any folder of its checkout.
+  const cwd = path.join(root, ".github");
   const check = async (target, answers) => {
     const { fetch, sleep, clock, now } = github({ ...answers, commit });
     const lines = [];
-    const options = { cwd: root, log: (line) => lines.push(line), fetch, sleep, clock, now };
+    const options = { cwd, log: (line) => lines.push(line), fetch, sleep, clock, now };
     const code = await main([target], options);
     const [{ commit: checked, status, url }] = lines.map((line) => JSON.parse(line));
     return { code, commit: checked, status, url };
