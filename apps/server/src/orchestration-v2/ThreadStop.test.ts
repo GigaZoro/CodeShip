@@ -13,6 +13,7 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
+  type RunId,
   RuntimeRequestId,
   ScheduledTaskId,
   ThreadId,
@@ -610,6 +611,93 @@ it.effect.each(["run.interrupt", "thread.stop"] as const)(
         threadWide ? [stopCommandId] : [],
       );
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("interrupting the restart source stops children owned by every run in its chain", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = ThreadId.make("thread:restart-chain-children");
+    yield* createWatchingThread(threadId, 3);
+    const now = yield* DateTime.now;
+    const finishWithChild = (name: string, restartContinuationOfRunId?: RunId) =>
+      Effect.gen(function* () {
+        yield* send(threadId, name, "start_immediately");
+        const child = yield* delegate(threadId, name);
+        const run = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        yield* projections.apply({
+          id: EventId.make(name),
+          threadId,
+          occurredAt: now,
+          type: "run.updated",
+          payload: {
+            ...run,
+            restartContinuationOfRunId,
+            startedAt: now,
+            completedAt: now,
+            status: "completed",
+          },
+        });
+        return { child, run };
+      });
+    const other = yield* finishWithChild("unrelated");
+    const source = yield* finishWithChild("source");
+    const middle = yield* finishWithChild("first restart", source.run.id);
+    yield* send(threadId, "second restart", "start_immediately");
+    const active = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+    yield* projections.apply({
+      id: EventId.make("active"),
+      threadId,
+      occurredAt: now,
+      type: "run.updated",
+      payload: {
+        ...active,
+        status: "running",
+        startedAt: now,
+        restartContinuationOfRunId: middle.run.id,
+      },
+    });
+    yield* projections.apply({
+      id: EventId.make("active-turn"),
+      threadId,
+      occurredAt: now,
+      type: "provider-turn.updated",
+      payload: {
+        id: ProviderTurnId.make("turn:second-restart"),
+        providerThreadId: active.providerThreadId!,
+        nodeId: active.rootNodeId!,
+        runAttemptId: active.activeAttemptId!,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    });
+    const commandId = CommandId.make("interrupt-chain");
+    yield* orchestrator.dispatch({
+      type: "run.interrupt",
+      threadId,
+      commandId,
+      runId: source.run.id,
+    });
+    yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE command_id != ${commandId}`;
+    yield* worker.drain();
+    const stopped = yield* orchestrator.getThreadProjection(threadId);
+    for (const { child } of [source, middle]) {
+      assert.deepEqual((yield* threadState(child)).runs, ["interrupted"]);
+      assert.equal(
+        stopped.subagents.find((task) => task.childThreadId === child)?.completionDelivery?.state,
+        "disposed",
+      );
+    }
+    assert.deepEqual((yield* threadState(other.child)).runs, ["starting"]);
+    assert.isUndefined(
+      stopped.subagents.find((task) => task.childThreadId === other.child)?.completionDelivery,
+    );
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("a repeated Stop that changes nothing still stops the delegated tasks", () =>
