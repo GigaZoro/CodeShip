@@ -1193,75 +1193,91 @@ it.effect.each(["thread.stop", "thread.snooze", "thread.settle"] as const)(
     }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect.each(["user send", "queue.resume", "persisted source marker"] as const)(
-  "thread Stop keeps a queued restart cancelled after %s",
-  (release) =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const threadId = ThreadId.make("thread:stop-queued-restart");
-      yield* createWatchingThread(threadId, 7);
-      yield* send(threadId, "source", "start_immediately");
-      yield* send(threadId, "restart", "queue_after_active");
-      yield* send(threadId, "ordinary message", "queue_after_active");
-      const [source, restart, ordinary] = (yield* orchestrator.getThreadProjection(threadId)).runs;
-      assert.isDefined(source);
-      assert.isDefined(restart);
-      assert.isDefined(ordinary);
-      const now = yield* DateTime.now;
-      const queued = { ...restart, restartContinuationOfRunId: source.id };
-      if (release !== "persisted source marker") {
-        yield* projections.apply({
-          type: "run.updated",
-          threadId,
-          id: EventId.make("restart"),
-          occurredAt: now,
-          payload: queued,
-        });
-      }
+it.effect.each([
+  "user send",
+  "queue.resume",
+  "persisted marker and user send",
+  "persisted marker and queue.resume",
+] as const)("thread Stop keeps a queued restart cancelled after %s", (release) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:stop-queued-restart");
+    yield* createWatchingThread(threadId, 7);
+    yield* send(threadId, "source", "start_immediately");
+    yield* send(threadId, "restart", "queue_after_active");
+    yield* send(threadId, "ordinary message", "queue_after_active");
+    const [source, restart, ordinary] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+    assert.isDefined(source);
+    assert.isDefined(restart);
+    assert.isDefined(ordinary);
+    const now = yield* DateTime.now;
+    const queued = { ...restart, restartContinuationOfRunId: source.id };
+    const persisted = release.startsWith("persisted");
+    const userSend = release.endsWith("user send");
+    if (!persisted) {
       yield* projections.apply({
         type: "run.updated",
         threadId,
-        id: EventId.make("source"),
+        id: EventId.make("restart"),
         occurredAt: now,
-        payload: { ...source, status: "completed", startedAt: now, completedAt: now },
+        payload: queued,
       });
-      yield* orchestrator.dispatch({
-        type: "thread.stop",
+    }
+    yield* projections.apply({
+      type: "run.updated",
+      threadId,
+      id: EventId.make("source"),
+      occurredAt: now,
+      payload: { ...source, status: "completed", startedAt: now, completedAt: now },
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      threadId,
+      commandId: CommandId.make("stop"),
+    });
+    if (persisted) {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      yield* outbox.enqueue([
+        EffectOutbox.restartContinuationEffect({
+          threadId,
+          commandId: CommandId.make("old-retry"),
+          sourceRunId: restart.id,
+          availableAt: DateTime.add(now, { minutes: 3 }),
+        }),
+      ]);
+      assert.isTrue(yield* orchestrator.restartContinuationPending(restart));
+      // A thread stopped by an older server still has this queued entry and a source marker.
+      yield* projections.apply({
+        type: "run.updated",
         threadId,
-        commandId: CommandId.make("stop"),
+        id: EventId.make("old-queue"),
+        occurredAt: now,
+        payload: { ...queued, queueHeld: true },
       });
-      if (release === "persisted source marker") {
-        // A thread stopped by an older server still has this queued entry and a source marker.
-        yield* projections.apply({
-          type: "run.updated",
-          threadId,
-          id: EventId.make("old-queue"),
-          occurredAt: now,
-          payload: { ...queued, queueHeld: true },
-        });
-      }
-      if (release === "user send") yield* send(threadId, "new work", "start_immediately");
-      else
-        yield* orchestrator.dispatch({
-          type: "queue.resume",
-          threadId,
-          commandId: CommandId.make("resume"),
-        });
-      const after = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(after.runs.find((run) => run.id === restart.id)?.status, "cancelled");
-      assert.equal(
-        after.runs.find((run) => run.id === ordinary.id)?.status,
-        release === "user send" ? "queued" : "starting",
-      );
-      if (release === "user send") assert.equal(after.runs.at(-1)?.status, "starting");
-      assert.sameMembers(
-        after.turnItems
-          .filter((item) => item.type === "run_interrupt_request")
-          .map((item) => item.runId),
-        [source.id, restart.id],
-      );
-    }).pipe(Effect.provide(layerTest)),
+    }
+    if (userSend) yield* send(threadId, "new work", "start_immediately");
+    else
+      yield* orchestrator.dispatch({
+        type: "queue.resume",
+        threadId,
+        commandId: CommandId.make("resume"),
+      });
+    if (persisted) assert.isFalse(yield* orchestrator.restartContinuationPending(restart));
+    const after = yield* orchestrator.getThreadProjection(threadId);
+    assert.equal(after.runs.find((run) => run.id === restart.id)?.status, "cancelled");
+    assert.equal(
+      after.runs.find((run) => run.id === ordinary.id)?.status,
+      userSend ? "queued" : "starting",
+    );
+    if (userSend) assert.equal(after.runs.at(-1)?.status, "starting");
+    assert.sameMembers(
+      after.turnItems
+        .filter((item) => item.type === "run_interrupt_request")
+        .map((item) => item.runId),
+      [source.id, restart.id],
+    );
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect(
