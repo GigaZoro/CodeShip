@@ -348,9 +348,83 @@ export const windowsHostSpawnError = (host: string, cause: unknown) => {
 const isFileError = (error: unknown, code: string) =>
   error instanceof Error && "code" in error && error.code === code;
 
-const verifiedHosts = new Map<string, string>();
+interface PreparedWindowsHost {
+  readonly executable: string;
+  readonly manifestError?: unknown;
+}
+
+const preparedHosts = new Map<string, Promise<PreparedWindowsHost>>();
 const sha256 = (bytes: Uint8Array | string) =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+
+const prepareHost = async (
+  cache: string,
+  manifest: string,
+  systemRoot: string,
+): Promise<PreparedWindowsHost> => {
+  try {
+    const [expected, name] = (await NodeFSP.readFile(manifest, "utf8")).trim().split("\n");
+    if (expected !== undefined && /^[a-f0-9]{64}$/.test(expected)) {
+      const filename = name ?? `${expected}.exe`;
+      if (new RegExp(`^${expected}(?:-[a-f0-9]{32})?\\.exe$`).test(filename)) {
+        const executable = NodePath.join(cache, filename);
+        if (sha256(await NodeFSP.readFile(executable)) === expected) return { executable };
+      }
+    }
+  } catch (error) {
+    // An unreadable cache entry is replaceable; a failed write below identifies unusable storage.
+    if (!(error instanceof Error && "code" in error)) throw error;
+  }
+  await NodeFSP.mkdir(cache, { recursive: true });
+  const build = await NodeFSP.mkdtemp(NodePath.join(cache, "build-"));
+  try {
+    const source = NodePath.join(build, "JobHost.cs");
+    const binary = NodePath.join(build, "JobHost.exe");
+    await NodeFSP.writeFile(source, SOURCE);
+    const compiler = NodePath.join(
+      systemRoot,
+      "Microsoft.NET",
+      "Framework",
+      "v4.0.30319",
+      "csc.exe",
+    );
+    await new Promise<void>((resolve, reject) => {
+      NodeChildProcess.execFile(
+        compiler,
+        ["/nologo", "/target:exe", "/platform:anycpu", `/out:${binary}`, source],
+        { windowsHide: true, timeout: 120_000 },
+        (error, stdout, stderr) =>
+          error === null ? resolve() : reject(new Error(`${error.message}: ${stdout}${stderr}`)),
+      );
+    });
+    const digest = sha256(await NodeFSP.readFile(binary));
+    // Publishers never replace or unlink another server's executable, including a damaged one.
+    const filename = `${digest}-${NodeCrypto.randomUUID().replaceAll("-", "")}.exe`;
+    const executable = NodePath.join(cache, filename);
+    await NodeFSP.link(binary, executable);
+    if (sha256(await NodeFSP.readFile(executable)) !== digest)
+      throw new Error(
+        `The published Windows process host failed SHA-256 verification: ${executable}`,
+      );
+    const prepared = NodePath.join(build, "host.sha256");
+    await NodeFSP.writeFile(prepared, `${digest}\n${filename}`);
+    try {
+      await NodeFSP.rename(prepared, manifest);
+    } catch (manifestError) {
+      if (
+        !isFileError(manifestError, "EPERM") &&
+        !isFileError(manifestError, "EACCES") &&
+        !isFileError(manifestError, "EBUSY")
+      )
+        throw manifestError;
+      // A locked index must not prevent using the verified executable this preparation published.
+      return { executable, manifestError };
+    }
+    return { executable };
+  } finally {
+    await NodeFSP.rm(build, { recursive: true, force: true });
+  }
+};
 
 /** The framework compiler ships with Windows PowerShell; immutable cached hosts also serve older jobs. */
 export const prepareWindowsJobHost = Effect.fn("WindowsJob.prepare")(function* () {
@@ -359,71 +433,31 @@ export const prepareWindowsJobHost = Effect.fn("WindowsJob.prepare")(function* (
   const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
   if (systemRoot === undefined)
     return yield* new WindowsJobError({ detail: "Windows SystemRoot is missing." });
-  return yield* Effect.tryPromise({
-    try: async (signal) => {
-      const cache = NodePath.join(home, ".cache", "t3", "windows-job");
-      const manifest = NodePath.join(cache, `${sha256(SOURCE)}.sha256`);
-      const verified = verifiedHosts.get(manifest);
-      if (verified !== undefined) return verified;
-      try {
-        const expected = (await NodeFSP.readFile(manifest, "utf8")).trim();
-        if (/^[a-f0-9]{64}$/.test(expected)) {
-          const executable = NodePath.join(cache, `${expected}.exe`);
-          if (sha256(await NodeFSP.readFile(executable)) === expected) {
-            verifiedHosts.set(manifest, executable);
-            return executable;
-          }
-        }
-      } catch (error) {
-        if (!isFileError(error, "ENOENT")) throw error;
-      }
-      await NodeFSP.mkdir(cache, { recursive: true });
-      const build = await NodeFSP.mkdtemp(NodePath.join(cache, "build-"));
-      try {
-        const source = NodePath.join(build, "JobHost.cs");
-        const binary = NodePath.join(build, "JobHost.exe");
-        await NodeFSP.writeFile(source, SOURCE);
-        const compiler = NodePath.join(
-          systemRoot,
-          "Microsoft.NET",
-          "Framework",
-          "v4.0.30319",
-          "csc.exe",
-        );
-        await new Promise<void>((resolve, reject) => {
-          NodeChildProcess.execFile(
-            compiler,
-            ["/nologo", "/target:exe", "/platform:anycpu", `/out:${binary}`, source],
-            { windowsHide: true, timeout: 120_000, signal },
-            (error, stdout, stderr) =>
-              error === null
-                ? resolve()
-                : reject(new Error(`${error.message}: ${stdout}${stderr}`)),
-          );
-        });
-        const digest = sha256(await NodeFSP.readFile(binary));
-        const executable = NodePath.join(cache, `${digest}.exe`);
-        try {
-          await NodeFSP.link(binary, executable);
-        } catch (error) {
-          if (!isFileError(error, "EEXIST")) throw error;
-          if (sha256(await NodeFSP.readFile(executable)) !== digest) {
-            await NodeFSP.unlink(executable);
-            await NodeFSP.link(binary, executable);
-          }
-        }
-        const prepared = NodePath.join(build, "host.sha256");
-        await NodeFSP.writeFile(prepared, digest);
-        await NodeFSP.rename(prepared, manifest);
-        verifiedHosts.set(manifest, executable);
-        return executable;
-      } finally {
-        await NodeFSP.rm(build, { recursive: true, force: true });
-      }
-    },
+  const cache = NodePath.join(home, ".cache", "t3", "windows-job");
+  const manifest = NodePath.join(cache, `${sha256(SOURCE)}.sha256`);
+  let preparation = preparedHosts.get(manifest);
+  const first = preparation === undefined;
+  if (preparation === undefined) {
+    preparation = prepareHost(cache, manifest, systemRoot);
+    preparedHosts.set(manifest, preparation);
+    // One cancelled caller cannot abort compilation shared by other launches.
+    void preparation.catch(() => preparedHosts.delete(manifest));
+  }
+  const pending = preparation;
+  const result = yield* Effect.tryPromise({
+    try: () => pending,
     catch: (cause) =>
-      new WindowsJobError({ detail: "Could not prepare the Windows process host.", cause }),
+      new WindowsJobError({
+        detail: `Could not prepare the Windows process host in ${cache}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
+      }),
   });
+  if (first && result.manifestError !== undefined)
+    yield* Effect.logWarning("windows-job.cache-index-unavailable", {
+      manifest,
+      cause: result.manifestError,
+    });
+  return result.executable;
 });
 
 /** Override the native boundary when simulating Windows on another platform. */

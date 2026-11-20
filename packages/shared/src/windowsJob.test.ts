@@ -30,6 +30,7 @@ import { owningWindowsJobs } from "./windowsJobSpawner.ts";
 import { stopWindowsProcessTree } from "./windowsProcessTree.ts";
 
 vi.mock("node:child_process", { spy: true });
+vi.mock("node:fs/promises", { spy: true });
 
 it.each([
   ["EACCES", false, true],
@@ -298,6 +299,69 @@ class Fixture {
         Effect.provideService(HostProcess.HomeDirectory, anotherHome),
       );
       assert.isAbove(Number((yield* fs.stat(rebuilt)).size), 9);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.each(["manifest", "executable"] as const)(
+    "rebuilds an unreadable cached host entry: %s",
+    (entry) =>
+      Effect.gen(function* () {
+        const { host, home, path, fs, spawner } = yield* fixture;
+        const anotherHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-job-unreadable-" });
+        yield* fs.copy(path.join(home, ".cache"), path.join(anotherHome, ".cache"));
+        const cache = path.join(anotherHome, ".cache", "t3", "windows-job");
+        const manifest = (yield* fs.readDirectory(cache)).find((name) => name.endsWith(".sha256"))!;
+        const blocked = path.join(cache, entry === "manifest" ? manifest : path.basename(host));
+        const { readFile, rename } = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        using _read = vi.spyOn(NodeFSP, "readFile").mockImplementation((file, options) => {
+          if (String(file) === blocked)
+            return Promise.reject(
+              Object.assign(new Error("cache entry is held by another process"), {
+                code: entry === "manifest" ? "EPERM" : "EBUSY",
+              }),
+            );
+          return readFile(file, options);
+        });
+        using _rename = vi.spyOn(NodeFSP, "rename").mockImplementation((from, to) => {
+          if (entry === "manifest" && String(to) === blocked)
+            return Promise.reject(
+              Object.assign(new Error("cache index is locked"), { code: "EBUSY" }),
+            );
+          return rename(from, to);
+        });
+        const rebuilt = yield* prepareWindowsJobHost().pipe(
+          Effect.provideService(HostProcess.HomeDirectory, anotherHome),
+          Effect.mapError((error) => new Error(`${error.message}: ${String(error.cause)}`)),
+        );
+        assert.notEqual(rebuilt, blocked);
+        const identity = yield* spawner.string(
+          ChildProcess.make(rebuilt, ["identity", String(process.pid)]),
+        );
+        assert.match(identity.trim(), /^\d+$/);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("shares concurrent cache repair and retains the executable another server may use", () =>
+    Effect.gen(function* () {
+      const { host, home, path, fs } = yield* fixture;
+      const anotherHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-job-concurrent-" });
+      yield* fs.copy(path.join(home, ".cache"), path.join(anotherHome, ".cache"));
+      const cached = path.join(anotherHome, ".cache", "t3", "windows-job", path.basename(host));
+      yield* fs.writeFileString(cached, "truncated");
+      using compile = vi.spyOn(NodeChildProcess, "execFile");
+      compile.mockClear();
+      const repaired = yield* Effect.all([prepareWindowsJobHost(), prepareWindowsJobHost()], {
+        concurrency: 2,
+      }).pipe(
+        Effect.provideService(HostProcess.HomeDirectory, anotherHome),
+        Effect.mapError((error) => new Error(`${error.message}: ${String(error.cause)}`)),
+      );
+      assert.equal(compile.mock.calls.length, 1);
+      assert.equal(repaired[0], repaired[1]);
+      assert.equal(yield* fs.readFileString(cached), "truncated");
+      assert.isAbove(Number((yield* fs.stat(repaired[0]!)).size), 9);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
