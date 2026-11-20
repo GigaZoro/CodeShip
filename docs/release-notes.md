@@ -1,3 +1,8 @@
+## 2026-11-26 — Longer server traces and a scheduled launch log
+
+- The local trace retains slow and failed SQLite queries and drops routine successful ones. Larger trace backups make the oldest available span easier to find in `trace summary`.
+- Scheduled tasks record launch steps and skip reasons in `logs/scheduled-task-launches.ndjson`, including chat creation, prompt dispatch, and worktree provisioning.
+
 ## 2026-11-26 — Changed-file tests recover from Mac sleep
 
 - When a Mac sleeps during the test step of `vp run check:changed`, failed and unfinished test groups get one more attempt. Completed groups keep their results, and failures while the Mac stays awake still fail the check.

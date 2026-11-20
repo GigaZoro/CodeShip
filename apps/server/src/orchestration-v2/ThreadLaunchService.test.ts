@@ -53,6 +53,7 @@ import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMoc
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
+import { LaunchJournal, type LaunchMilestone } from "../scheduledTasks/LaunchJournal.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { originalDemandId } from "./demandId.ts";
@@ -905,10 +906,18 @@ it.effect.each(
   "attributes $createdBy-configured automations in $target threads without changing their prompt",
   ({ target, createdBy }) => {
     const harness = makeHarness();
+    const milestones: LaunchMilestone[] = [];
+    const journal = Layer.succeed(LaunchJournal, {
+      record: (entry) =>
+        Effect.sync(() => {
+          milestones.push(entry);
+        }),
+    });
     const layerScheduledTasks = ScheduledTasks.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
           harness.layer,
+          journal,
           NodeCrypto.layer,
           Scheduler.layer,
           layerSharedTaskIdentities(),
@@ -957,6 +966,21 @@ it.effect.each(
         projectThreads[0];
       assert.isDefined(thread);
       assert.equal(result.threadId, thread!.id);
+      assert.deepEqual(
+        milestones.map((entry) => entry.milestone),
+        target === "new"
+          ? [
+              "started",
+              "prompt_ready",
+              "launching",
+              "chat_created",
+              "prompt_sent",
+              "launched",
+              "finished",
+            ]
+          : ["started", "prompt_ready", "finished"],
+      );
+      assert.isTrue(milestones.every((entry) => entry.taskId === task.id));
       const projection = yield* threads.getThreadProjection(thread!.id);
       const wire = yield* encodeThreadProjection(projection);
       assert.equal(wire.messages[0]?.text, task.prompt);

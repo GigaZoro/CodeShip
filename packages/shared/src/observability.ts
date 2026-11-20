@@ -416,9 +416,10 @@ function formatTraceExit(exit: Exit.Exit<unknown, unknown>): EffectTraceRecord["
     return { _tag: "Success" };
   }
   if (Cause.hasInterruptsOnly(exit.cause)) {
+    // An interrupt's stack says nothing the span's parent does not, and was 7 KB per deadline timer.
     return {
       _tag: "Interrupted",
-      cause: Cause.pretty(exit.cause),
+      cause: Cause.pretty(exit.cause).split("\n", 1)[0] ?? "Interrupted",
     };
   }
   return {
@@ -519,7 +520,7 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
 
   let buffer: Array<{ readonly text: string; readonly bytes: number }> = [];
   let bufferBytes = 0;
-  const maxBufferBytes = Math.max(options.maxBytes, 4 * 1024 * 1024);
+  const maxBufferBytes = Math.max(Math.min(options.maxBytes, 10 * 1024 * 1024), 4 * 1024 * 1024);
   const flushRequests = yield* Queue.sliding<void>(1);
   const flushSemaphore = yield* Semaphore.make(1);
   let writeFailing = false;
@@ -648,6 +649,19 @@ export const makeTraceSink = Effect.fn("makeTraceSink")(function* (options: Trac
   } satisfies TraceSink;
 });
 
+/** A SQLite query span only says that a query ran; the trace keeps the ones that were slow or failed. */
+const ROUTINE_SPAN_NAME = "sqlite";
+export const SLOW_ROUTINE_SPAN_MS = 50;
+
+function isWorthRecording(
+  name: string,
+  durationNanos: bigint,
+  exit: Exit.Exit<unknown, unknown>,
+): boolean {
+  if (name !== ROUTINE_SPAN_NAME) return true;
+  return !ExitRuntime.isSuccess(exit) || Number(durationNanos) / 1_000_000 >= SLOW_ROUTINE_SPAN_MS;
+}
+
 class LocalFileSpan implements Tracer.Span {
   readonly _tag = "Span";
   readonly name: string;
@@ -699,7 +713,7 @@ class LocalFileSpan implements Tracer.Span {
     };
     this.delegate.end(endTime, traceExit);
 
-    if (this.sampled) {
+    if (this.sampled && isWorthRecording(this.name, endTime - this.status.startTime, exit)) {
       this.push(spanToTraceRecord(this));
     }
   }

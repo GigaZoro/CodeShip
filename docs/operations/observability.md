@@ -616,8 +616,11 @@ to the backend alone.
 Local trace file:
 
 - `T3CODE_TRACE_FILE`: override trace file path
-- `T3CODE_TRACE_MAX_BYTES`: per-file rotation size, default `10485760`
-- `T3CODE_TRACE_MAX_FILES`: rotated file count, default `10`
+- `T3CODE_TRACE_MAX_BYTES`: per-file rotation size, default `67108864` (64 MiB)
+- `T3CODE_TRACE_MAX_FILES`: rotated file count, default `128` (8 GiB of backups plus the active file)
+
+The default budget targets at least one day at the observed busy-server rate after filtering routine SQLite spans. Higher trace volume or a smaller configured budget can shorten this window. Run `trace summary` without `--since` to see the oldest retained span end time.
+
 - `T3CODE_TRACE_BATCH_WINDOW_MS`: flush window, default `1000`
 - `T3CODE_TRACE_MIN_LEVEL`: minimum trace level, default `Info`
 - `T3CODE_TRACE_TIMING_ENABLED`: enable timing metadata, default `true`

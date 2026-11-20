@@ -1632,7 +1632,7 @@ it.effect.each([
           yield* TestClock.setTime(Date.parse(task.nextRunAt!) + 1_000);
           yield* poll;
           const launched = [yield* Queue.take(launches), yield* Queue.take(launches)];
-          const comparable = (input: LaunchInput) => ({
+          const comparable = ({ onMilestone: _onMilestone, ...input }: LaunchInput) => ({
             ...input,
             commandId: null,
             threadId: null,
