@@ -1,3 +1,7 @@
+## 2026-11-20 — A command-runner test no longer waits forever for a file that already exists
+
+- Maintainers: the command-runner tests could hang for two minutes under load while waiting for a file their command had already written, because the wait reported only changes from a baseline it read after the file appeared. It now looks at the file on a short timer. No change to the app.
+
 ## 2026-11-20 — A Windows command whose launcher fails after its wrapper started is no longer reported unstarted
 
 - On Windows, when the launcher exited with an error or ran past its time limit after it had already started a background command, T3.CodeShip told the agent the command did not start and forgot it, while the command kept running with nothing watching or able to stop it, and an agent that retried ran it twice. The command is now watched and stopped like any other once the launcher printed its process id or the command's own process wrote its pid file.

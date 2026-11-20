@@ -386,18 +386,19 @@ const callerOf = (threadId: ThreadId): McpThreadInvocationScope => ({
 
 /**
  * Resolves once `file` exists, from its state rather than folder events: on macOS a file made just
- * after `fs.watch` returns can raise none, and a sandbox refuses the watch.
+ * after `fs.watch` returns can raise none, and a sandbox refuses the watch. It looks on a timer
+ * because `fs.watchFile` reports only a change from a baseline it reads after it returns, which a
+ * file made meanwhile is already part of.
  */
 const awaitFile = (file: string) =>
   Effect.callback<void>((resume) => {
-    const look = () => {
+    // @effect-diagnostics-next-line globalTimersInEffect:off - it.effect's TestClock never advances Effect.sleep, and the file comes from a real process.
+    const timer = setInterval(() => {
       if (!NodeFS.existsSync(file)) return;
-      NodeFS.unwatchFile(file, look);
+      clearInterval(timer);
       resume(Effect.void);
-    };
-    NodeFS.watchFile(file, { interval: 20 }, look);
-    look();
-    return Effect.sync(() => NodeFS.unwatchFile(file, look));
+    }, 20);
+    return Effect.sync(() => clearInterval(timer));
   });
 
 /** Resolves once each of `threadIds` has been offered a wake. */
@@ -419,6 +420,27 @@ const nextWake = (threadId: ThreadId) =>
       Queue.take(offers).pipe(Effect.repeat({ until: (request) => request.threadId === threadId })),
     ),
   );
+
+describe("awaitFile", () => {
+  it.effect("sees a file made right after the wait began", () =>
+    Effect.gen(function* () {
+      const folder = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-await-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(folder, { recursive: true, force: true })),
+      );
+      // watchFile takes its baseline stat on another thread after it returns, so a file made
+      // just after can already be in that baseline, and no change is ever reported.
+      yield* Effect.forEach(
+        Array.from({ length: 300 }, (_, i) => NodePath.join(folder, String(i))),
+        (file) =>
+          Effect.all([awaitFile(file), Effect.sync(() => NodeFS.writeFileSync(file, ""))], {
+            concurrency: "unbounded",
+          }),
+        { concurrency: "unbounded" },
+      );
+    }),
+  );
+});
 
 const commandRow = (taskId: string) =>
   Effect.gen(function* () {
