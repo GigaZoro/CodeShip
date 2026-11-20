@@ -2,10 +2,12 @@ import { assert, describe, it } from "@effect/vitest";
 
 import {
   compareIdentity,
-  ENDED_IDENTITY,
   identityTime,
+  identityWindow,
+  launchIdentity,
   linuxIdentity,
   timeIdentity,
+  windowIdentity,
 } from "./processIdentity.ts";
 
 describe("processIdentity", () => {
@@ -32,7 +34,11 @@ describe("processIdentity", () => {
     ["boot:a:5", "time:5", "unknown"],
     [timeIdentity(10_000), timeIdentity(10_900), "same"],
     [timeIdentity(10_000), timeIdentity(12_000), "other"],
-    [ENDED_IDENTITY, timeIdentity(10_000), "other"],
+    [windowIdentity(10_000, 12_000), timeIdentity(9_100), "same"],
+    [windowIdentity(10_000, 12_000), timeIdentity(12_900), "same"],
+    [windowIdentity(10_000, 12_000), timeIdentity(13_500), "other"],
+    [windowIdentity(10_000, 12_000), timeIdentity(8_500), "other"],
+    [windowIdentity(10_000, 12_000), "boot:a:5", "unknown"],
   ] as const)("compares %s with %s as %s", (stored, current, verdict) => {
     assert.strictEqual(compareIdentity(stored, current), verdict);
   });
@@ -42,5 +48,41 @@ describe("processIdentity", () => {
       [identityTime(timeIdentity(7)), identityTime("boot:a:5"), identityTime(null)],
       [7, undefined, undefined],
     );
+  });
+
+  it("reads when a process started, as closely as its identity tells", () => {
+    assert.deepEqual(
+      [
+        identityWindow(timeIdentity(7)),
+        identityWindow(windowIdentity(-5, 9)),
+        identityWindow("window:5"),
+        identityWindow("boot:a:5"),
+        identityWindow(null),
+      ],
+      [{ from: 7, to: 7 }, { from: -5, to: 9 }, undefined, undefined, undefined],
+    );
+  });
+
+  it.each([
+    ["no read", "win32", undefined, windowIdentity(10_000, 12_000)],
+    ["a Windows start inside the window", "win32", timeIdentity(12_000), timeIdentity(12_000)],
+    [
+      "a Windows start after the window",
+      "win32",
+      timeIdentity(12_001),
+      windowIdentity(10_000, 12_000),
+    ],
+    [
+      "a Windows start before the window",
+      "win32",
+      timeIdentity(9_999),
+      windowIdentity(10_000, 12_000),
+    ],
+    ["a macOS start after the window", "darwin", timeIdentity(70_000), timeIdentity(70_000)],
+    ["no macOS read", "darwin", undefined, null],
+    ["a Linux start", "linux", "boot:a:5", "boot:a:5"],
+    ["no Linux read", "linux", undefined, null],
+  ] as const)("records a launched wrapper from %s", (_, platform, read, identity) => {
+    assert.strictEqual(launchIdentity(read, { from: 10_000, to: 12_000 }, platform), identity);
   });
 });

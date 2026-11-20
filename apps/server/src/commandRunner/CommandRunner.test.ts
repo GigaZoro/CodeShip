@@ -25,13 +25,17 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { windowsStopTreeArgs } from "@t3tools/shared/windowsProcessTree";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -50,6 +54,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as CommandRunner from "./CommandRunner.ts";
+import { ENDED_IDENTITY, identityWindow } from "./processIdentity.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
@@ -118,27 +123,217 @@ const providerShell = (shellEnvironment?: ProviderInstance["shellEnvironment"]) 
           : undefined,
       ),
   });
+const exited = (code: number, stdout: string, stderr = ""): ProcessRunner.ProcessRunOutput => ({
+  stdout,
+  stderr,
+  code: ChildProcessSpawner.ExitCode(code),
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+});
+const isWindowsLaunch = (input: ProcessRunner.ProcessRunInput) =>
+  input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"));
 /** Fails the Windows launch, after its scripts are written, and hands over the launcher's input. */
 const refuseWindowsLaunch = (
   processRunner: ProcessRunner.ProcessRunner["Service"],
   launcher: Deferred.Deferred<ProcessRunner.ProcessRunInput>,
 ): ProcessRunner.ProcessRunner["Service"] => ({
   run: (input) =>
-    !input.args.some((arg) => arg.includes("Win32_Process -MethodName Create"))
+    !isWindowsLaunch(input)
       ? processRunner.run(input)
       : Deferred.succeed(launcher, input).pipe(
-          Effect.as({
-            stdout: "",
-            stderr: "Win32_Process.Create returned 9",
-            code: ChildProcessSpawner.ExitCode(1),
-            timedOut: false,
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            stdoutInvalidUtf8: false,
-            stderrInvalidUtf8: false,
-          }),
+          Effect.as(exited(1, "", "Win32_Process.Create returned 9")),
         ),
 });
+/** How far the wall clock of a runner on `fakeWindows` steps back during a launch, as NTP can. */
+const CLOCK_STEPS_BACK_MS = 60_000;
+/** How long a runner on `fakeWindows` stalls, as a busy scheduler can: both its clocks move on. */
+const CLOCK_PAUSE_MS = 1_000;
+/** The whole second after `at`, which a file's time keeps exactly. */
+const secondAfter = (at: number) => (Math.floor(at / 1_000) + 1) * 1_000;
+/** Writes the pid file a wrapper names itself in, as it does the second after `at`. */
+const nameWrapper = (directory: string, pid: number, at: number) => {
+  const file = NodePath.join(directory, "pid");
+  NodeFS.writeFileSync(file, `${pid}\r\n`);
+  NodeFS.utimesSync(file, secondAfter(at) / 1_000, secondAfter(at) / 1_000);
+};
+/** When the last launch on `fakeWindows` was made, which pid a start read asks about, and when. */
+interface StartReadAt {
+  readonly launched: number;
+  readonly pid: number;
+  readonly read: number;
+}
+/**
+ * Windows on any host: a launch's wrapper is made as it returns, start reads give `startOf`, and
+ * tree stops hand over their arguments. The clock stands still, so load never looks like a step,
+ * but for `readTakes` and `clock`: a step back per launch, and with `stalls` a pause after each
+ * yielded read before the first launch and one outlasting the step at the first after each launch.
+ */
+const fakeWindows = (options: {
+  readonly startOf: (at: StartReadAt) => number | undefined;
+  /** What the launcher prints after the pid: the wrapper's start, or that it found none. */
+  readonly launcherSees?: "start" | "none";
+  /** Whether the wrapper named itself in its pid file, the second after its launch, by then. */
+  readonly namedItself?: boolean;
+  /** How long each start read takes: both clocks move on by it. */
+  readonly readTakes?: number;
+  readonly clock?: { readonly stepsBack: number; readonly stalls?: boolean };
+}) =>
+  Effect.gen(function* () {
+    const realClock = yield* Clock.Clock;
+    // Not ahead of the real clock, which dates the pid files the tests leave.
+    const wallAt = realClock.currentTimeMillisUnsafe();
+    const monotonicAt = realClock.monotonicTimeNanosUnsafe();
+    let steppedBack = 0;
+    let paused = 0;
+    let launched = false;
+    let stallAfterLaunch = false;
+    const millis = () => wallAt - steppedBack + paused;
+    const monotonic = () => monotonicAt + BigInt(paused) * 1_000_000n;
+    // Spans and logs read the unsafe forms, so only the runner's own yielded reads stall.
+    const thenStall = <A>(read: () => A) =>
+      Effect.sync(() => {
+        const at = read();
+        if (options.clock?.stalls === true && !launched) paused += CLOCK_PAUSE_MS;
+        if (stallAfterLaunch) {
+          stallAfterLaunch = false;
+          paused += CLOCK_STEPS_BACK_MS + CLOCK_PAUSE_MS;
+        }
+        return at;
+      });
+    const clock: Clock.Clock = {
+      currentTimeMillisUnsafe: millis,
+      currentTimeMillis: thenStall(millis),
+      currentTimeNanosUnsafe: () => BigInt(millis()) * 1_000_000n,
+      currentTimeNanos: thenStall(() => BigInt(millis()) * 1_000_000n),
+      monotonicTimeNanosUnsafe: monotonic,
+      monotonicTimeNanos: thenStall(monotonic),
+      sleep: (duration) => realClock.sleep(duration),
+    };
+    const standIn = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        NodeChildProcess.spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], {
+          stdio: "ignore",
+        }),
+      ),
+      (child) => Effect.sync(() => child.kill()),
+    );
+    const wrapper = standIn.pid ?? (yield* Effect.die("The stand-in wrapper did not start"));
+    const launches = yield* Queue.unbounded<number>();
+    const stops = yield* Queue.unbounded<ReadonlyArray<string>>();
+    let lastLaunch = Number.NaN;
+    const processRunner: ProcessRunner.ProcessRunner["Service"] = {
+      run: (input) => {
+        if (isWindowsLaunch(input)) {
+          return Effect.gen(function* () {
+            steppedBack += options.clock?.stepsBack ?? 0;
+            launched = true;
+            lastLaunch = millis();
+            stallAfterLaunch = options.clock?.stalls === true;
+            if (options.namedItself === true) {
+              const wrapperPath = /-File "(.+run\.ps1)"/.exec(input.args.join(" "))?.[1] ?? "";
+              nameWrapper(NodePath.dirname(wrapperPath), wrapper, lastLaunch);
+            }
+            yield* Queue.offer(launches, lastLaunch);
+            const seen = {
+              start: DateTime.formatIso(DateTime.makeUnsafe(lastLaunch)),
+              none: ENDED_IDENTITY,
+            };
+            const sees = options.launcherSees;
+            return exited(0, `${wrapper}\r\n${sees === undefined ? "" : `${seen[sees]}\r\n`}`);
+          });
+        }
+        const script = input.args.join(" ");
+        // Before the start read: the stop's script also calls Get-Process.
+        if (script.includes("Stop-T3ProcessTree")) {
+          return Queue.offer(stops, input.args).pipe(Effect.as(exited(0, "")));
+        }
+        const startRead = /Get-Process -Id (\d+)/.exec(script);
+        if (startRead !== null) {
+          return Effect.sync(() => {
+            const at = { launched: lastLaunch, pid: Number(startRead[1]), read: millis() };
+            paused += options.readTakes ?? 0;
+            const startedAt = options.startOf(at);
+            return startedAt === undefined
+              ? exited(1, "", "Get-Process timed out")
+              : exited(0, DateTime.formatIso(DateTime.makeUnsafe(startedAt)));
+          });
+        }
+        return Effect.die(`Not a Windows call the runner makes: ${input.command}`);
+      },
+    };
+    const on = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+        Effect.provideService(Clock.Clock, clock),
+        Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(HostProcess.Environment, { SystemRoot: "C:\\Windows" }),
+      );
+    return { wrapper, launches, stops, on };
+  });
+const PROC_STAT = /^\/proc\/\d+\/stat$/;
+/**
+ * Runs `before` ahead of each read of a process's start, from /proc on Linux and by ps
+ * elsewhere, and fails that read when it gives "fail".
+ */
+const aroundStartReads =
+  (before: Effect.Effect<"fail" | "read">) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const processRunner = yield* ProcessRunner.ProcessRunner;
+      const fs = yield* FileSystem.FileSystem;
+      return yield* effect.pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: (input) =>
+            input.command !== "ps"
+              ? processRunner.run(input)
+              : Effect.flatMap(before, (then) =>
+                  then === "fail" ? Effect.succeed(exited(1, "")) : processRunner.run(input),
+                ),
+        }),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFileString: (path, encoding) =>
+            !PROC_STAT.test(path)
+              ? fs.readFileString(path, encoding)
+              : Effect.flatMap(before, (then) =>
+                  then === "fail"
+                    ? Effect.fail(
+                        PlatformError.systemError({
+                          _tag: "Unknown",
+                          module: "FileSystem",
+                          method: "readFileString",
+                          pathOrDescriptor: path,
+                        }),
+                      )
+                    : fs.readFileString(path, encoding),
+                ),
+        }),
+      );
+    });
+/** Fails each look for a wrapper's pid file, as a run directory that refuses access does. */
+const pidFileUnseen = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* effect.pipe(
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        exists: (path) =>
+          NodePath.basename(path) !== "pid"
+            ? fs.exists(path)
+            : Effect.fail(
+                PlatformError.systemError({
+                  _tag: "PermissionDenied",
+                  module: "FileSystem",
+                  method: "exists",
+                  pathOrDescriptor: path,
+                }),
+              ),
+      }),
+    );
+  });
 const layerTest = Layer.mergeAll(
   layerThreads,
   Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
@@ -218,15 +413,17 @@ const commandRow = (taskId: string) =>
       readonly status: string;
       readonly exit_code: number | null;
       readonly pid: number | null;
+      readonly process_identity: string | null;
       readonly started_at: string;
       readonly delivered_at: string | null;
       readonly last_alive_at: string | null;
       readonly probe_error: string | null;
       readonly lost_reason: string | null;
       readonly lost_output: string | null;
+      readonly directory: string;
     }>`
-      SELECT status, exit_code, pid, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
-        lost_output
+      SELECT status, exit_code, pid, process_identity, started_at, delivered_at, last_alive_at,
+        probe_error, lost_reason, lost_output, directory
       FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
@@ -242,13 +439,24 @@ const forgetPid = (taskId: string) =>
     `,
   );
 
+/** Leaves a pid file naming `pid` as all that names its process, as when its server stopped. */
+const leavePidFile = (taskId: string, pid: number) =>
+  Effect.gen(function* () {
+    const row = (yield* commandRow(taskId))!;
+    yield* forgetPid(taskId);
+    nameWrapper(row.directory, pid, Date.parse(row.started_at));
+  });
+
 const taskOf = (threadId: ThreadId, taskId: string) =>
   Orchestrator.OrchestratorV2.pipe(
     Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(threadId)),
     Effect.map((projection) => projection.subagents.find((task) => task.id === taskId)),
   );
 
-/** A chat whose run is live, in its own folder, whose commands are stopped when the test ends. */
+/**
+ * A chat whose run is live, in its own folder, whose commands are stopped, and left to no later
+ * server, when the test ends.
+ */
 const liveChat = (name: string) =>
   Effect.gen(function* () {
     const workspace = NodeFS.realpathSync(
@@ -276,6 +484,14 @@ const liveChat = (name: string) =>
           ),
         ),
         Effect.ignore,
+        // The tests share one database: a later test's server would adopt these, and its fakes
+        // would then answer for them.
+        Effect.andThen(
+          sql`
+            UPDATE command_runs SET delivered_at = COALESCE(delivered_at, started_at)
+            WHERE thread_id = ${parent.threadId}
+          `.pipe(Effect.orDie),
+        ),
         Effect.andThen(
           Effect.sync(() => NodeFS.rmSync(workspace, { recursive: true, force: true })),
         ),
@@ -582,6 +798,276 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
       }),
   );
 
+  /** Runs a command on `windows`, which a cancel ends while no server runs; then the next server. */
+  const cancelledWhileNoServerRan = (
+    windows: Effect.Success<ReturnType<typeof fakeWindows>>,
+    threadId: ThreadId,
+    between: (taskId: string) => Effect.Effect<void, never, SqlClient.SqlClient> = () =>
+      Effect.void,
+  ) =>
+    Effect.gen(function* () {
+      const started = yield* windows.on(
+        withServer((runner) => runner.run(callerOf(threadId), { command: "Write-Output started" })),
+      );
+      const launched = yield* Queue.take(windows.launches);
+      yield* between(started.taskId);
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.dispatch(cancellationOf(threadId, started.taskId));
+      // A run waits until the server has adopted what the earlier one left, stopping this one.
+      yield* windows.on(
+        withServer((runner) => runner.run(callerOf(threadId), { command: "Write-Output next" })),
+      );
+      return { row: (yield* commandRow(started.taskId))!, launched };
+    });
+
+  // Otherwise a process that took the pid after its wrapper ended passes for the wrapper.
+  it.effect.each([
+    ["while the clock held", "command-win-launched", { stepsBack: 0 }],
+    [
+      "once the clock stepped back during it",
+      "command-win-launch-stepped",
+      { stepsBack: CLOCK_STEPS_BACK_MS },
+    ],
+    [
+      "once the clock stepped back during it, and the server stalled around it",
+      "command-win-launch-stalled",
+      { stepsBack: CLOCK_STEPS_BACK_MS, stalls: true },
+    ],
+  ] as const)(
+    "bounds a Windows command's tree stop to a root made between its record and its launch's return, each widened by how far the clock stepped back, %s, when its wrapper's start could not be read",
+    ([, name, clock]) =>
+      Effect.gen(function* () {
+        // First, so its stand-in outlives the chat's cleanup, which signals the recorded pid.
+        const windows = yield* fakeWindows({ startOf: () => undefined, clock });
+        const chat = yield* liveChat(name);
+        const { row, launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
+        const since = Date.parse(row.started_at);
+        const bounds = identityWindow(row.process_identity)!;
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          windowsStopTreeArgs({ pid: windows.wrapper, since, created: bounds }),
+        ]);
+        // By the step alone, which no stall widens.
+        assert.equal(since - bounds.from, clock.stepsBack);
+        // Its wrapper is stamped as it was made: after the step, or as much later just before it.
+        assert.isAtMost(bounds.from, launched);
+        assert.isAtLeast(bounds.to, launched + clock.stepsBack);
+      }),
+  );
+
+  it.effect.each([
+    [
+      "its launcher, though the clock stepped back during the launch",
+      "command-win-launcher-read",
+      true,
+      0,
+    ],
+    [
+      "right after its launch, made just before the clock stepped back during it",
+      "command-win-launch-read",
+      false,
+      CLOCK_STEPS_BACK_MS,
+    ],
+  ] as const)(
+    "pins a Windows command's tree stop to its wrapper's start, read by %s",
+    ([, name, launcherReads, madeAfterLaunch]) =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({
+          startOf: ({ launched }) => (launcherReads ? undefined : launched + madeAfterLaunch),
+          ...(launcherReads ? { launcherSees: "start" as const } : {}),
+          clock: { stepsBack: CLOCK_STEPS_BACK_MS },
+        });
+        const chat = yield* liveChat(name);
+        const { launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
+        const made = launched + madeAfterLaunch;
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          windowsStopTreeArgs({
+            pid: windows.wrapper,
+            since: made,
+            created: { from: made, to: made },
+          }),
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    ["a second and a half", "command-win-launch-read-reused", 1_500],
+    // Within the second a later read allows, which the stop's root does not.
+    ["half a second", "command-win-launch-read-reused-soon", 500],
+  ] as const)(
+    "bounds a Windows command's tree stop to its launch, not to a process that took its pid %s after the start read right after the launch began",
+    ([, name, after]) =>
+      Effect.gen(function* () {
+        let holderMade: number | undefined;
+        const windows = yield* fakeWindows({
+          startOf: ({ read }) => (holderMade ??= read + after),
+          readTakes: 2_000,
+        });
+        const chat = yield* liveChat(name);
+        const { row, launched } = yield* cancelledWhileNoServerRan(windows, chat.threadId);
+        const from = Date.parse(row.started_at);
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          windowsStopTreeArgs({
+            pid: windows.wrapper,
+            since: from,
+            created: { from, to: launched },
+          }),
+        ]);
+      }),
+  );
+
+  it.effect.each([
+    ["finds", "command-win-launcher-found-none", false],
+    ["cannot look for", "command-win-launcher-found-none-unseen", true],
+  ] as const)(
+    "reports a Windows command lost at once without reading its pid's holder, and stops it with no holder of its pid as root from its record, which a clock step back put after its pid file, once its launcher found its wrapper gone and another process holds the pid, with a pid file the launch %s",
+    ([, name, unseen]) =>
+      Effect.gen(function* () {
+        let startReads = 0;
+        const windows = yield* fakeWindows({
+          // Inside the window the clock's step back widened by a minute, which would pass it for
+          // the wrapper.
+          startOf: ({ launched }) => {
+            startReads += 1;
+            return launched + 1_000;
+          },
+          launcherSees: "none",
+          namedItself: true,
+          clock: { stepsBack: CLOCK_STEPS_BACK_MS },
+        });
+        const chat = yield* liveChat(name);
+        const server = windows.on(
+          withServer((runner) =>
+            Effect.gen(function* () {
+              const started = yield* runner.run(callerOf(chat.threadId), {
+                command: "Write-Output started",
+              });
+              yield* nextWake(chat.threadId);
+              const row = (yield* commandRow(started.taskId))!;
+              assert.deepEqual(
+                [row.status, row.lost_reason, startReads, yield* Queue.clear(windows.stops)],
+                [
+                  "lost",
+                  "pid-reused",
+                  0,
+                  [
+                    windowsStopTreeArgs({
+                      pid: windows.wrapper,
+                      since: Date.parse(row.started_at),
+                      created: { from: 0, to: 0 },
+                    }),
+                  ],
+                ],
+              );
+            }),
+          ),
+        );
+        yield* unseen ? pidFileUnseen(server) : server;
+      }),
+  );
+
+  it.effect(
+    "fails to start a Windows command whose launcher found its wrapper gone before it named itself, and leaves nothing to stop",
+    () =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({ startOf: () => undefined, launcherSees: "none" });
+        const chat = yield* liveChat("command-win-wrapper-ended-unnamed");
+        const failed = yield* windows.on(
+          withServer((runner) =>
+            runner
+              .run(callerOf(chat.threadId), { command: "Write-Output started" })
+              .pipe(Effect.flip),
+          ),
+        );
+        const task = (yield* Orchestrator.OrchestratorV2.pipe(
+          Effect.flatMap((orchestrator) => orchestrator.getThreadProjection(chat.threadId)),
+        )).subagents.find((subagent) => subagent.command !== undefined);
+        assert.deepEqual(
+          [
+            failed.message,
+            task?.status,
+            yield* commandRow(task?.id ?? ""),
+            yield* Queue.clear(windows.stops),
+          ],
+          [
+            "Could not start the command: PowerShell ended before it started the command.",
+            "failed",
+            undefined,
+            [],
+          ],
+        );
+      }),
+  );
+
+  it.effect(
+    "reports a Windows command lost, and stops it bounded to its launch, once a later server finds under its pid a process made after that launch, though its wrapper's own start could not be read",
+    () =>
+      Effect.gen(function* () {
+        const holder: { startedAt: number | undefined } = { startedAt: undefined };
+        // Once: the next command's own start read must not find that process.
+        const windows = yield* fakeWindows({
+          startOf: () => {
+            const startedAt = holder.startedAt;
+            holder.startedAt = undefined;
+            return startedAt;
+          },
+        });
+        const chat = yield* liveChat("command-win-pid-reused");
+        const started = yield* windows.on(
+          withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: "Write-Output started" }),
+          ),
+        );
+        holder.startedAt = (yield* Queue.take(windows.launches)) + 60_000;
+        // A run waits until the server has adopted what the earlier one left.
+        yield* windows.on(
+          withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: "Write-Output next" }),
+          ),
+        );
+        const row = (yield* commandRow(started.taskId))!;
+        const since = Date.parse(row.started_at);
+        const bounds = identityWindow(row.process_identity)!;
+        assert.deepEqual(
+          [row.status, row.lost_reason, row.pid, yield* Queue.clear(windows.stops)],
+          [
+            "lost",
+            "pid-reused",
+            windows.wrapper,
+            [windowsStopTreeArgs({ pid: windows.wrapper, since, created: bounds })],
+          ],
+        );
+      }),
+  );
+
+  it.effect.each([
+    [
+      "once its wrapper had ended, with no holder of its pid as root",
+      "command-win-recovered-gone",
+      true,
+    ],
+    // Not from when it named itself: with no window for its start, that also bounds the root.
+    ["while its wrapper ran, its start unread, from its record on", "command-win-recovered", false],
+  ] as const)(
+    "stops a Windows command that a later server recovered from its pid file %s",
+    ([, name, gone]) =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({ startOf: () => undefined });
+        const chat = yield* liveChat(name);
+        // Past any pid_max, so the probe finds no process.
+        const pid = gone ? 2 ** 31 - 1 : windows.wrapper;
+        const { row } = yield* cancelledWhileNoServerRan(windows, chat.threadId, (taskId) =>
+          leavePidFile(taskId, pid).pipe(Effect.orDie),
+        );
+        const recorded = Date.parse(row.started_at);
+        const since = gone ? secondAfter(recorded) : recorded;
+        assert.deepEqual(yield* Queue.clear(windows.stops), [
+          // Whatever holds a gone wrapper's pid is another process, so it is no root. No clock
+          // reading caps its children: one taken after a step back can come before their starts.
+          windowsStopTreeArgs({ pid, since, ...(gone ? { created: { from: 0, to: 0 } } : {}) }),
+        ]);
+      }),
+  );
+
   it.effect.each([
     [
       "its agent's shell environment cannot be read",
@@ -817,10 +1303,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     Effect.gen(function* () {
       const chat = yield* liveChat("command-chat-deleted-late");
       const agentScope = yield* AgentScope;
-      const processRunner = yield* ProcessRunner.ProcessRunner;
       const starting = yield* Deferred.make<void>();
       const proceed = yield* Deferred.make<void>();
-      // Its first process lookup is the one that names the command it just started.
+      // Its first start read is the one of the command it just started.
       let spawning = false;
       const started = yield* withServer((runner) =>
         Effect.gen(function* () {
@@ -844,17 +1329,17 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
               spawning = true;
             }).pipe(Effect.andThen(agentScope.wrap(input))),
         }),
-        Effect.provideService(ProcessRunner.ProcessRunner, {
-          run: (input) => {
-            if (!spawning || input.command !== "ps") return processRunner.run(input);
+        aroundStartReads(
+          Effect.suspend(() => {
+            if (!spawning) return Effect.succeed("read" as const);
             spawning = false;
             return awaitFile(NodePath.join(chat.workspace, "ready")).pipe(
               Effect.andThen(Deferred.succeed(starting, undefined)),
               Effect.andThen(Deferred.await(proceed)),
-              Effect.andThen(processRunner.run(input)),
+              Effect.as("read" as const),
             );
-          },
-        }),
+          }),
+        ),
       );
       assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
     }),
@@ -1006,28 +1491,15 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             THEN 'boot:other:1' ELSE 'time:0' END
           WHERE task_id = ${started.taskId}
         `;
-          const processRunner = yield* ProcessRunner.ProcessRunner;
           let startReads = 0;
           yield* withServer(() => nextWake(chat.threadId)).pipe(
-            Effect.provideService(ProcessRunner.ProcessRunner, {
-              run: (input) => {
-                if (input.command !== "ps") return processRunner.run(input);
+            aroundStartReads(
+              Effect.sync(() => {
                 startReads += 1;
                 // Adoption's read fails, as it does on a loaded machine.
-                return startReads === 1
-                  ? Effect.succeed({
-                      stdout: "",
-                      stderr: "",
-                      code: ChildProcessSpawner.ExitCode(1),
-                      timedOut: false,
-                      stdoutTruncated: false,
-                      stderrTruncated: false,
-                      stdoutInvalidUtf8: false,
-                      stderrInvalidUtf8: false,
-                    })
-                  : processRunner.run(input);
-              },
-            }),
+                return startReads === 1 ? "fail" : "read";
+              }),
+            ),
           );
           const row = yield* commandRow(started.taskId);
           assert.equal(row?.status, "lost");
@@ -1522,6 +1994,22 @@ describe("the shell a command runs in", () => {
 
 // A Windows wrapper that ended leaves what it started running under a dead parent pid.
 describe.runIf(isWindowsHost)("Windows only", () => {
+  // Windows numbers processes in fours, so none has the id 3.
+  it.each([
+    ["no process has", "3", new RegExp(`^${ENDED_IDENTITY}$`)],
+    ["this PowerShell has", "$PID", /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z$/],
+  ] as const)(
+    "prints after a launch's pid, for an id %s, what it reads there",
+    (_, pid, printed) => {
+      const output = NodeChildProcess.execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", CommandRunner.windowsStartOrEnded(pid)],
+        { encoding: "utf8" },
+      );
+      assert.match(output.trim(), printed);
+    },
+  );
+
   it.layer(layerTest, { excludeTestServices: true })("a Windows command's console", (it) => {
     // Send returns once the command's own handler has the event, and takes it so the command goes on.
     // No API sends a close event, which ends every process in its console with STATUS_CONTROL_C_EXIT;

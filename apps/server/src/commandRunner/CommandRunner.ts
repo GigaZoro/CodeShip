@@ -24,6 +24,7 @@ import {
   WINDOWS_PROCESS_TREE_FUNCTIONS,
   windowsStopTreeArgs,
 } from "@t3tools/shared/windowsProcessTree";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -56,6 +57,8 @@ import {
   compareIdentity,
   ENDED_IDENTITY,
   identityTime,
+  identityWindow,
+  launchIdentity,
   linuxIdentity,
   timeIdentity,
 } from "./processIdentity.ts";
@@ -75,6 +78,11 @@ const LOG_KEEP_BYTES = 4 * 1024 * 1024;
 const LOG_COPY_CHUNK_BYTES = 1024 * 1024;
 const RESULT_TAIL_BYTES = 4 * 1024;
 const KILL_GRACE = Duration.seconds(5);
+/**
+ * A start no process has, which a gone wrapper's stop passes as its root's, so a holder of the pid
+ * is another process and bounds the wrapper's children by its start, not by a clock reading.
+ */
+const NO_ROOT = { from: 0, to: 0 };
 const RETENTION = Duration.days(14);
 const RETENTION_INTERVAL = Duration.hours(1);
 /**
@@ -125,6 +133,10 @@ const WINDOWS_WRAPPER = [
   "}",
   "",
 ].join("\r\n");
+
+/** PowerShell that prints when the process with id `pid` was made, or `ended` when none has it. */
+export const windowsStartOrEnded = (pid: string) =>
+  `$made = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($made) { $made.StartTime.ToUniversalTime().ToString('o') } else { '${ENDED_IDENTITY}' }`;
 
 // Names itself first, then runs the command and outlives it to write its exit status; each rename
 // makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
@@ -542,6 +554,7 @@ const make = Effect.gen(function* () {
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
     if (row.process_identity === null) return undefined;
+    if (row.process_identity === ENDED_IDENTITY) return { lost_reason: "pid-reused", probe_error };
     const verdict = compareIdentity(row.process_identity, yield* identityOf(row.pid));
     if (verdict === "unknown") return "unconfirmed";
     return verdict === "same" ? undefined : { lost_reason: "pid-reused", probe_error };
@@ -578,19 +591,29 @@ const make = Effect.gen(function* () {
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     const pid = row.pid;
     if (pid !== null && !(yield* rebootedSince(row))) {
-      const created = identityTime(row.process_identity);
       if (!windows) {
         if (!isProcessAlive(pid) || (yield* isSameProcess(row))) yield* killGroup(pid);
       } else {
+        const identity = row.process_identity;
+        const pinned = identityTime(identity);
+        const created = identity === ENDED_IDENTITY ? NO_ROOT : identityWindow(identity);
+        // With a window or an ended record, take nothing made before the record or before the
+        // wrapper named itself, just before it started the command, since the window may hold what
+        // an earlier holder of its pid made; a clock set back spares the command's own processes.
+        // Without a window, `since` also places the root, which was made before it named itself.
+        const recorded = Date.parse(row.started_at);
+        const named =
+          pinned === undefined && created !== undefined
+            ? yield* readWrapperFile(path.join(row.directory, PID_FILE))
+            : undefined;
+        const since = pinned ?? Math.max(recorded, named?.writtenAt?.getTime() ?? recorded);
         yield* processRunner
           .run({
             command: "powershell.exe",
             args: windowsStopTreeArgs({
               pid,
-              // The wrapper's creation time is stored by Windows, so a clock set back after the
-              // record cannot hide what it started from the stop.
-              since: created ?? Date.parse(row.started_at),
-              ...(created === undefined ? {} : { created: { from: created, to: created } }),
+              since,
+              ...(created === undefined ? {} : { created }),
             }),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
@@ -979,12 +1002,13 @@ const make = Effect.gen(function* () {
         yield* settle({ ...row, probe_error: probe.code });
       }
     } else {
-      // Written once a wall-clock minute, for the next server; a loss writes the exact time.
-      if (unconfirmed.has(row.task_id)) {
+      // A wrapper recorded as ended left its pid to whatever holds it now.
+      if (unconfirmed.has(row.task_id) || row.process_identity === ENDED_IDENTITY) {
         const loss = yield* lossOf(row);
         if (loss === undefined) unconfirmed.delete(row.task_id);
         else if (loss !== "unconfirmed") return yield* lose(loss);
       }
+      // Written once a wall-clock minute, for the next server; a loss writes the exact time.
       const seen: CommandRunRow = { ...row, last_alive_at: yield* nowIso };
       const minuteOf = (at: string | null) =>
         at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
@@ -1170,7 +1194,7 @@ const make = Effect.gen(function* () {
         // Windows folds names by a case table only it has, so the launcher keeps the last of the
         // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
         // like a member (Values) hides that member in PowerShell.
-        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId; $made = Get-Process -Id $r.ProcessId -ErrorAction SilentlyContinue; if ($made) { $made.StartTime.ToUniversalTime().ToString('o') }`,
+        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId; ${windowsStartOrEnded("$r.ProcessId")}`,
       ],
       // Base64, since PowerShell decodes stdin with the console code page.
       stdin: Buffer.from(
@@ -1182,7 +1206,9 @@ const make = Effect.gen(function* () {
       timeout: Duration.seconds(30),
       maxOutputBytes: 16_384,
     });
-    // The creation time comes from the call that created the process, as Windows stored it.
+    // The creation time comes from the call that created the process, as Windows stored it. A
+    // wrapper the launcher no longer finds has ended: a later read could find a process that took
+    // its pid inside a window a clock step widened.
     const [pidLine = "", madeLine = ""] = created.stdout.trim().split(/\s+/);
     const pid = Number.parseInt(pidLine, 10);
     const madeAt = Date.parse(madeLine);
@@ -1191,10 +1217,34 @@ const make = Effect.gen(function* () {
         detail: created.stderr.trim() || "Win32_Process.Create failed.",
       });
     }
+    // It names itself in its pid file before it starts the command, so without that file it
+    // started nothing, and what the pid's earlier holder started must not be taken for its own.
+    // A file that cannot be looked for may be there, so its record stays for the watcher.
+    const named =
+      madeLine !== ENDED_IDENTITY ||
+      (yield* fs
+        .exists(path.join(directory, PID_FILE))
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("command-runner.pid-file-unseen", { pid, cause }).pipe(
+              Effect.as(true),
+            ),
+          ),
+        ));
+    if (!named) {
+      return yield* new CommandLaunchError({
+        detail: "PowerShell ended before it started the command.",
+      });
+    }
     return {
       pid,
       unit: null,
-      identity: Number.isFinite(madeAt) ? timeIdentity(madeAt) : undefined,
+      identity:
+        madeLine === ENDED_IDENTITY
+          ? ENDED_IDENTITY
+          : Number.isFinite(madeAt)
+            ? timeIdentity(madeAt)
+            : undefined,
     };
   });
 
@@ -1384,7 +1434,16 @@ const make = Effect.gen(function* () {
                 if (closed !== undefined) {
                   return yield* unstarted(`Stopped: the chat was ${closed}.`, "interrupted");
                 }
-                const now = yield* DateTime.now;
+                // Each pair is read in one step, so no pause falls between its reads, and the
+                // monotonic reads enclose the wall ones: the wall clock then falls behind by at
+                // least any step back between the record and the launch's return.
+                const recorded = yield* Clock.clockWith((clock) =>
+                  Effect.sync(() => {
+                    const monotonic = clock.monotonicTimeNanosUnsafe();
+                    return { monotonic, wall: clock.currentTimeMillisUnsafe() };
+                  }),
+                );
+                const now = DateTime.makeUnsafe(recorded.wall);
                 const row: CommandRunRow = {
                   task_id: taskId,
                   thread_id: scope.thread.threadId,
@@ -1443,10 +1502,27 @@ const make = Effect.gen(function* () {
                   );
                 }
                 const { pid, unit, identity } = started.success;
+                const returned = yield* Clock.clockWith((clock) =>
+                  Effect.sync(() => {
+                    const wall = clock.currentTimeMillisUnsafe();
+                    return { wall, monotonic: clock.monotonicTimeNanosUnsafe() };
+                  }),
+                );
+                const tookMs = Number(returned.monotonic - recorded.monotonic) / 1_000_000;
+                // A step back stamps a wrapper that started before it up to this late, and one that
+                // started after it up to this early.
+                const lagMs = Math.max(0, Math.ceil(tookMs - (returned.wall - recorded.wall)));
                 const launched: CommandRunRow = {
                   ...row,
                   pid,
-                  process_identity: identity ?? (yield* identityOf(pid)) ?? null,
+                  // Taken before the read, which can take seconds and find a later process.
+                  process_identity:
+                    identity ??
+                    launchIdentity(
+                      yield* identityOf(pid),
+                      { from: recorded.wall - lagMs, to: returned.wall + lagMs },
+                      platform,
+                    ),
                   unit,
                   last_alive_at: yield* nowIso,
                 };
