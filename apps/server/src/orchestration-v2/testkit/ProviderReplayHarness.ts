@@ -264,7 +264,7 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
   return layerWithRegistry(scenario, layerRegistry, options);
 }
 
-export function layerWithRegistry<Error>(
+export function layerWithRegistry<Error, SettingsError = never>(
   scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
   registryLayer: Layer.Layer<
     ProviderAdapterRegistry.ProviderAdapterRegistryV2,
@@ -272,7 +272,7 @@ export function layerWithRegistry<Error>(
     McpProviderSessions.McpProviderSessions
   >,
   options: {
-    readonly serverSettingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService>;
+    readonly serverSettingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService, SettingsError>;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
@@ -290,7 +290,7 @@ export function layerWithRegistry<Error>(
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder,
-  Error | MigrationError | PlatformError.PlatformError | SqlError
+  Error | SettingsError | MigrationError | PlatformError.PlatformError | SqlError
 > {
   const layerServerConfig = Layer.effect(
     ServerConfig.ServerConfig,
@@ -562,7 +562,7 @@ export function layerWithRegistry<Error>(
   // Build recovery before runtime so it commits before the effect worker claims work.
   const layerStartupRecovery: Layer.Layer<
     never,
-    MigrationError | PlatformError.PlatformError | SqlError
+    SettingsError | MigrationError | PlatformError.PlatformError | SqlError
   > =
     options.recoverOnStartup === true
       ? Layer.effectDiscard(
