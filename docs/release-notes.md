@@ -1,3 +1,7 @@
+## 2026-11-20 — The default branch comes from the repository's main remote, not only one named origin
+
+- In a repository whose only remote has another name (for example `github`), a branch named `main` that was not the remote's default branch was treated as the default branch, so the unmerged-work check counted 0 commits and its work could be cleaned up as merged, while the real default branch was not recognized. Status now reads the default branch from the same main remote the rest of the unmerged-work check uses.
+
 ## 2026-11-20 — A replayed chat launch no longer prepares a worktree twice
 
 - Replaying a launch while its workspace preparation was being retried could create a second worktree, or fail the run because the branch already existed. A launch, its replay and a retry now share one preparation per run, and a replay reuses the worktree the run already has.

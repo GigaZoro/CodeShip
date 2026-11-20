@@ -660,6 +660,33 @@ it.layer(layerTest)("Git upstream status", (it) => {
     }),
   );
 
+  it.effect("reads the default branch from the primary remote when it is not named origin", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const remote = yield* makeTmpDir("git-vcs-driver-github-");
+      yield* initRepoWithCommit(cwd);
+      yield* git(remote, ["init", "--bare"]);
+      yield* git(cwd, ["branch", "-M", "trunk"]);
+      yield* git(cwd, ["remote", "add", "github", remote]);
+      yield* git(cwd, ["push", "github", "trunk"]);
+      yield* git(cwd, ["symbolic-ref", "refs/remotes/github/HEAD", "refs/remotes/github/trunk"]);
+      yield* git(cwd, ["checkout", "-b", "main"]);
+      yield* writeTextFile(cwd, "main.txt", "main\n");
+      yield* git(cwd, ["add", "main.txt"]);
+      yield* git(cwd, ["commit", "-m", "work on a branch named main"]);
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+
+      const onMain = yield* driver.statusDetailsLocal(cwd);
+      assert.isFalse(onMain.isDefaultBranch);
+      assert.equal(yield* driver.countUnmergedCommits({ cwd }), 1);
+
+      yield* git(cwd, ["checkout", "trunk"]);
+      const onTrunk = yield* driver.statusDetailsLocal(cwd);
+      assert.isTrue(onTrunk.isDefaultBranch);
+      assert.isTrue((yield* driver.statusDetails(cwd)).isDefaultBranch);
+    }),
+  );
+
   it.effect("uses origin HEAD for default-branch detection with a non-origin upstream", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();

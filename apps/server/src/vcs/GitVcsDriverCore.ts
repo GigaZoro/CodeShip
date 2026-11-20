@@ -118,6 +118,9 @@ export const NON_INTERACTIVE_GIT_ENV = Object.freeze({
   SSH_ASKPASS_REQUIRE: "never",
 } satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
+
+const pickPrimaryRemoteName = (remoteNames: ReadonlyArray<string>): string | null =>
+  remoteNames.includes("origin") ? "origin" : (remoteNames[0] ?? null);
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
 const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetails>({
   isRepo: false,
@@ -1768,15 +1771,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         const path = yield* Path.Path;
         const fetchCwd =
           path.basename(gitCommonDir) === ".git" ? path.dirname(gitCommonDir) : gitCommonDir;
+        const remotes = yield* executeGit(
+          "GitVcsDriver.statusDetails.defaultBranchRemotes",
+          fetchCwd,
+          ["--git-dir", gitCommonDir, "remote"],
+          { allowNonZeroExit: true },
+        );
+        const remoteName =
+          remotes.exitCode === 0
+            ? pickPrimaryRemoteName(parseRemoteNamesInGitOrder(remotes.stdout))
+            : null;
+        if (remoteName === null) return null;
         return yield* executeGit(
           "GitVcsDriver.statusDetails.defaultBranch",
           fetchCwd,
-          ["--git-dir", gitCommonDir, "symbolic-ref", "refs/remotes/origin/HEAD"],
+          ["--git-dir", gitCommonDir, "symbolic-ref", `refs/remotes/${remoteName}/HEAD`],
           { allowNonZeroExit: true },
         ).pipe(
           Effect.map((result) => {
             if (result.exitCode !== 0) return null;
-            return parseDefaultBranchFromRemoteHeadRef(result.stdout, "origin");
+            return parseDefaultBranchFromRemoteHeadRef(result.stdout, remoteName);
           }),
         );
       }),
@@ -1926,9 +1940,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       2,
     );
 
-  const originRemoteExists = (cwd: string): Effect.Effect<boolean, GitCommandError> =>
-    remoteExists({ cwd, remoteName: "origin" });
-
   const listRemoteNames = (cwd: string): Effect.Effect<ReadonlyArray<string>, GitCommandError> =>
     runGitStdout("GitVcsDriver.listRemoteNames", cwd, ["remote"]).pipe(
       Effect.map(parseRemoteNamesInGitOrder),
@@ -1944,12 +1955,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   });
 
   const findPrimaryRemoteName = Effect.fn("findPrimaryRemoteName")(function* (cwd: string) {
-    if (yield* originRemoteExists(cwd)) {
-      return "origin";
-    }
-    const [firstRemote] = yield* listRemoteNames(cwd);
-    return firstRemote ?? null;
+    return pickPrimaryRemoteName(yield* listRemoteNames(cwd));
   });
+
+  const resolvePrimaryRemoteDefaultBranchName = Effect.fn("resolvePrimaryRemoteDefaultBranchName")(
+    function* (cwd: string) {
+      const remoteName = yield* findPrimaryRemoteName(cwd);
+      return remoteName === null ? null : yield* resolveDefaultBranchName(cwd, remoteName);
+    },
+  );
 
   const resolvePrimaryRemoteName = Effect.fn("resolvePrimaryRemoteName")(function* (cwd: string) {
     const remoteName = yield* findPrimaryRemoteName(cwd);
@@ -2081,7 +2095,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     refName: string | null,
     options?: {
       readonly allowRemoteOfCurrent?: boolean;
-      readonly knownOriginDefaultBranch?: string | null;
+      readonly knownDefaultBranch?: string | null;
     },
   ) {
     const configuredBaseRef =
@@ -2119,8 +2133,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       Effect.succeed(configuredBaseBranch),
       primaryRemoteName === null
         ? Effect.succeed(null)
-        : primaryRemoteName === "origin" && options?.knownOriginDefaultBranch != null
-          ? Effect.succeed(options.knownOriginDefaultBranch)
+        : options?.knownDefaultBranch != null
+          ? Effect.succeed(options.knownDefaultBranch)
           : resolveDefaultBranchName(cwd, primaryRemoteName),
       ...DEFAULT_BASE_BRANCH_CANDIDATES.map(Effect.succeed),
     ];
@@ -2187,7 +2201,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const computeAheadCountAgainstBase = Effect.fn("computeAheadCountAgainstBase")(function* (
     cwd: string,
     refName: string,
-    options?: { readonly knownOriginDefaultBranch: string | null },
+    options?: { readonly knownDefaultBranch: string | null },
   ) {
     const base = yield* resolveBaseBranchForNoUpstream(cwd, refName, options);
     if (!base) {
@@ -2284,7 +2298,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       );
     }
 
-    const defaultBranch = yield* resolveDefaultBranchName(cwd, "origin");
+    const defaultBranch = yield* resolvePrimaryRemoteDefaultBranchName(cwd);
     const isDefaultBranch =
       branch !== null &&
       (branch === defaultBranch ||
@@ -2294,7 +2308,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ? upstreamRef === null
           ? aheadCount
           : yield* computeAheadCountAgainstBase(cwd, branch, {
-              knownOriginDefaultBranch: defaultBranch,
+              knownDefaultBranch: defaultBranch,
             }).pipe(Effect.orElseSucceed(() => 0))
         : 0;
 
@@ -2431,7 +2445,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ),
         statusCacheKey
           ? Cache.get(defaultBranchCache, statusCacheKey).pipe(Effect.orElseSucceed(() => null))
-          : resolveDefaultBranchName(cwd, "origin").pipe(Effect.orElseSucceed(() => null)),
+          : resolvePrimaryRemoteDefaultBranchName(cwd).pipe(Effect.orElseSucceed(() => null)),
         statusCacheKey
           ? Cache.get(primaryRemoteExistsCache, statusCacheKey).pipe(
               Effect.orElseSucceed(() => false),
@@ -2522,12 +2536,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       [
         refName !== null && (needsFallbackAhead || needsAheadOfDefault)
           ? computeAheadCountAgainstBase(cwd, refName, {
-              knownOriginDefaultBranch: defaultBranch,
+              knownDefaultBranch: defaultBranch,
             }).pipe(Effect.orElseSucceed(() => 0))
           : Effect.succeed(0),
         options?.includeBranchChanges
           ? readBranchChangeTotals(repositoryPaths?.worktreeRoot ?? cwd, refName, {
-              knownOriginDefaultBranch: defaultBranch,
+              knownDefaultBranch: defaultBranch,
               untrackedRoots,
             }).pipe(Effect.orElseSucceed(() => undefined))
           : Effect.undefined,
@@ -3330,7 +3344,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     cwd: string,
     branch: string | null,
     explicitBaseRef?: string,
-    knownOriginDefaultBranch: string | null = null,
+    knownDefaultBranch: string | null = null,
   ) {
     const base =
       explicitBaseRef !== undefined
@@ -3344,7 +3358,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         : branch
           ? yield* resolveBaseBranchForNoUpstream(cwd, branch, {
               allowRemoteOfCurrent: true,
-              knownOriginDefaultBranch,
+              knownDefaultBranch,
             }).pipe(Effect.orElseSucceed(() => null))
           : null;
     if (base === null) return { baseRef: null, mergeBase: "HEAD" };
@@ -3377,7 +3391,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     cwd: string,
     branch: string | null,
     options?: {
-      readonly knownOriginDefaultBranch: string | null;
+      readonly knownDefaultBranch: string | null;
       readonly untrackedRoots: ReadonlyArray<string>;
     },
   ) {
@@ -3385,7 +3399,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       cwd,
       branch,
       undefined,
-      options?.knownOriginDefaultBranch ?? null,
+      options?.knownDefaultBranch ?? null,
     );
     const roots = options?.untrackedRoots ?? [];
     // Bound pathspec matching work and stay below Windows' command-line limit.
