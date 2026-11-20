@@ -5,6 +5,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
   type PeerLinkSummary,
   GitCommandError,
   MessageId,
@@ -40,6 +41,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -6065,7 +6067,8 @@ describe("OrchestratorMcpService thread stop", () => {
   it.effect.each([
     { name: "a running turn", queued: false },
     { name: "a running turn with a queued message", queued: true },
-  ])("t3_thread_interrupt stop reports the run it interrupted on $name", ({ queued }) =>
+    { name: "a restart with delegated descendants", queued: false },
+  ])("t3_thread_interrupt stop reports the run it interrupted on $name", ({ queued, name }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("mcp-thread-stop");
@@ -6083,6 +6086,7 @@ describe("OrchestratorMcpService thread stop", () => {
         );
         const layerTest = layerOrchestratorService.pipe(
           Layer.provideMerge(layerThreads),
+          Layer.provideMerge(ProjectionStore.layer.pipe(Layer.provideMerge(layerDatabase))),
           Layer.provide(
             Layer.mergeAll(
               NodeServices.layer,
@@ -6126,6 +6130,77 @@ describe("OrchestratorMcpService thread stop", () => {
             createdBy: "user",
             creationSource: "web",
           });
+          if (name === "a restart with delegated descendants") {
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const sql = yield* SqlClient.SqlClient;
+            const now = yield* DateTime.now;
+            const delegateChild = (parentThreadId: ThreadId, task: string) =>
+              Effect.gen(function* () {
+                const owner = (yield* orchestrator.getThreadProjection(parentThreadId)).runs.at(
+                  -1,
+                )!;
+                yield* orchestrator.dispatch({
+                  type: "delegated_task.request",
+                  commandId: CommandId.make(task),
+                  parentThreadId,
+                  parentRunId: owner.id,
+                  parentNodeId: owner.rootNodeId!,
+                  modelSelection,
+                  task,
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  createdBy: "agent",
+                  creationSource: "mcp",
+                });
+                return (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+                  (row) => row.prompt === task,
+                )!.childThreadId!;
+              });
+            const endParentRun = (run: OrchestrationV2ThreadProjection["runs"][number]) =>
+              projections.apply({
+                id: EventId.make(`completed:${run.id}`),
+                threadId,
+                type: "run.updated",
+                occurredAt: now,
+                payload: { ...run, startedAt: now, status: "completed", completedAt: now },
+              });
+            yield* send("independent", "start_immediately");
+            const independent = yield* delegateChild(threadId, "independent child");
+            yield* endParentRun((yield* orchestrator.getThreadProjection(threadId)).runs[0]!);
+            yield* send("source", "start_immediately");
+            const child = yield* delegateChild(threadId, "owned child");
+            const grandchild = yield* delegateChild(child, "owned grandchild");
+            yield* send("restart", "queue_after_active");
+            const [, source, restart] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+            yield* endParentRun(source!);
+            yield* projections.apply({
+              id: EventId.make("queued-restart"),
+              type: "run.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...restart!, restartContinuationOfRunId: source!.id },
+            });
+            // The provider worker is paused. Drain only work requested by the MCP interrupt.
+            yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+            const result = yield* service.interruptThread(client, {
+              threadId,
+              runId: source!.id,
+              clientRequestId: "interrupt-chain",
+            });
+            assert.equal(result.status, "interrupt_requested");
+            yield* worker.drain();
+            for (const id of [child, grandchild]) {
+              assert.equal(
+                (yield* orchestrator.getThreadProjection(id)).runs[0]?.status,
+                "interrupted",
+              );
+            }
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(independent)).runs[0]?.status,
+              "starting",
+            );
+            return;
+          }
           const running = yield* orchestrator.streamDomainEvents.pipe(
             Stream.filter(
               (event) =>

@@ -555,6 +555,11 @@ retry. Cancelling a pending restart also interrupts provider work and settles
 delegated work owned by that chain. A terminal run with no pending restart
 returns `already_terminal`. Without `runId`, the tool selects the newest
 active run and returns `no_active_run` when the thread has none.
+After the interrupt commits, the worker stops the chain's app-owned commands
+and child runs, including their delegated descendants. A follow-up admitted
+under another owner survives, even when it reuses the same child thread.
+Force stop uses the same cascade when it dispatches a run interrupt.
+Pass `stop: true` to stop the whole thread and its delegated work across runs.
 
 ## Delegated Task Lifecycle
 
