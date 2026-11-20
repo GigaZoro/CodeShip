@@ -94,7 +94,7 @@ public static class CodeShipJobHost {
  static long Created(IntPtr process) {
   long made, exited, kernel, user;
   Check(GetProcessTimes(process, out made, out exited, out kernel, out user));
-  return (made - 116444736000000000L) / 10000;
+  return made;
  }
  static void Publish(string path, string text) {
   File.WriteAllText(path + ".tmp", text);
@@ -201,19 +201,20 @@ public static class CodeShipJobHost {
    if(args[0]=="stop" || args[0]=="count") {
     job=OpenJobObject(14,false,args[1]);
     if(job==IntPtr.Zero) { if(Marshal.GetLastWin32Error()==2) { Console.WriteLine(args[0]=="count" ? "0" : "Job already gone."); return 0; } throw new Win32Exception(); }
-    if(args[0]=="count") { Console.WriteLine(Count(job)); return 0; }
-    if(args.Length!=4) throw new ArgumentException("Stopping a job requires its recorded child pid and creation time.");
+    bool counting=args[0]=="count";
+    if(args.Length!=4) throw new ArgumentException("A job operation requires its recorded child pid and full FILETIME creation identity.");
     IntPtr owner=OpenProcess(0x1000,false,int.Parse(args[2]));
     if(owner==IntPtr.Zero) {
-     if(Marshal.GetLastWin32Error()==87) { Console.WriteLine("Job not ours: recorded child is gone."); return 0; }
+     if(Marshal.GetLastWin32Error()==87) { Console.WriteLine(counting ? "0" : "Job not ours: recorded child is gone."); return 0; }
      throw new Win32Exception();
     }
     try {
      bool member;
-     if(Created(owner)!=long.Parse(args[3])) { Console.WriteLine("Job not ours: child identity changed."); return 0; }
+     if(Created(owner)!=long.Parse(args[3])) { Console.WriteLine(counting ? "0" : "Job not ours: child identity changed."); return 0; }
      Check(IsProcessInJob(owner,job,out member));
-     if(!member) { Console.WriteLine("Job not ours: recorded child is not a member."); return 0; }
-     Stop(job);
+     if(!member) { Console.WriteLine(counting ? "0" : "Job not ours: recorded child is not a member."); return 0; }
+     if(counting) Console.WriteLine(Count(job));
+     else Stop(job);
     } finally { CloseHandle(owner); }
     return 0;
    }
@@ -285,7 +286,7 @@ public static class CodeShipJobHost {
    Check(CreateProcess(null,command,IntPtr.Zero,IntPtr.Zero,true,0x80004,IntPtr.Zero,null,ref extended,out child));
    ReleaseStreams(startup,control,reply);
    Directory.SetCurrentDirectory(Environment.SystemDirectory);
-   if(record.Length != 0) Publish(record, child.pid + " " + Created(child.process));
+   if(record.Length != 0) Publish(record, child.pid + " ft:" + Created(child.process));
    if(owned) SendControl(reply,"S " + child.pid + " " + Created(child.process));
    Check(ResumeThread(child.thread)!=0xffffffff);
    started=true;
@@ -478,10 +479,22 @@ export const WindowsJobHost = Context.Reference<ReturnType<typeof prepareWindows
   { defaultValue: () => prepareWindowsJobHost() },
 );
 
+/** FILETIME stays a decimal string across IPC, persistence and native process handles. */
+export const parseWindowsProcessIdentity = (value: string | undefined) =>
+  value !== undefined &&
+  /^[1-9]\d{0,18}$/.test(value) &&
+  BigInt(value) <= 9_223_372_036_854_775_807n
+    ? value
+    : undefined;
+
+/** Milliseconds are for display and legacy loss evidence only, never stop authorization. */
+export const windowsCreationTimeMillis = (identity: string) =>
+  Number((BigInt(identity) - 116_444_736_000_000_000n) / 10_000n);
+
 export interface WindowsJob {
   readonly host: string;
   readonly name: string;
-  child?: { readonly pid: number; readonly created: number };
+  child?: { readonly pid: number; readonly created: string };
   hostExited?: true;
 }
 

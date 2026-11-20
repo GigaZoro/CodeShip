@@ -214,7 +214,10 @@ class Fixture {
         ChildProcess.make(host, ["run", name, originalFile, process.execPath, "-e", ""]),
       );
       yield* original.exitCode;
-      const originalIdentity = (yield* fs.readFileString(originalFile)).trim().split(" ");
+      const originalIdentity = (yield* fs.readFileString(originalFile))
+        .trim()
+        .split(" ")
+        .map((value) => value.replace(/^ft:/, ""));
       const member = yield* processPipe;
       const source = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
       const replacementFile = path.join(home, "replacement-pid");
@@ -226,17 +229,54 @@ class Fixture {
       assert.isTrue(yield* replacement.isRunning);
       const outsiderPid = String(process.pid);
       const outsiderCreated = (yield* invoke(["identity", outsiderPid])).trim();
+      assert.equal(Number(yield* invoke(["count", name, outsiderPid, outsiderCreated])), 0);
       assert.include(yield* invoke(["stop", name, outsiderPid, outsiderCreated]), "not ours");
       assert.isTrue(yield* replacement.isRunning);
-      const [pid, created] = (yield* fs.readFileString(replacementFile)).trim().split(" ");
+      const [pid, created] = (yield* fs.readFileString(replacementFile))
+        .trim()
+        .split(" ")
+        .map((value) => value.replace(/^ft:/, ""));
       assert.include(
-        yield* invoke(["stop", name, pid!, String(Number(created) + 500)]),
+        yield* invoke([
+          "stop",
+          name,
+          pid!,
+          String(BigInt(created!) + (BigInt(created!) % 10_000n === 9_999n ? -1n : 1n)),
+        ]),
         "not ours",
       );
       assert.isTrue(yield* replacement.isRunning);
       yield* invoke(["stop", name, pid!, created!]);
       yield* member.ended;
       yield* replacement.exitCode;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("preserves every FILETIME tick when identifying a process", () =>
+    Effect.gen(function* () {
+      const { home, spawner, invoke } = yield* fixture;
+      const query = yield* compileFixture(
+        home,
+        `using System;
+using System.Runtime.InteropServices;
+class Fixture {
+ [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out long made,out long exited,out long kernel,out long user);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr process);
+ static void Main(string[] args) {
+  var process=OpenProcess(0x1000,false,int.Parse(args[0]));
+  try {
+   long made,exited,kernel,user;
+   if(!GetProcessTimes(process,out made,out exited,out kernel,out user)) throw new System.ComponentModel.Win32Exception();
+   Console.WriteLine(made);
+  } finally { CloseHandle(process); }
+ }
+}`,
+      );
+      const expected = (yield* spawner.string(
+        ChildProcess.make(query, [String(process.pid)]),
+      )).trim();
+      assert.equal((yield* invoke(["identity", String(process.pid)])).trim(), expected);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -484,7 +524,10 @@ class TestEntry {
         control.end();
         if (state === "unreferenced") {
           // The acknowledged unref outlives its worker; an independent controller still owns the job.
-          assert.isAtLeast(Number(yield* invoke(["count", name])), 1);
+          assert.isAtLeast(
+            Number(yield* invoke(["count", name, ...started.split(" ").slice(1)])),
+            1,
+          );
           yield* invoke(["stop", name, ...started.split(" ").slice(1)]);
         }
         yield* member.ended;
@@ -544,7 +587,7 @@ class TestEntry {
 
   it.live("owns an orphaned grandchild through the SDK spawn callback", () =>
     Effect.gen(function* () {
-      const { host } = yield* fixture;
+      const { host, invoke } = yield* fixture;
       const member = yield* processPipe;
       const source = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
       const intermediate = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(source)}],{stdio:'ignore',detached:true,windowsHide:true}).unref();`;
@@ -563,6 +606,9 @@ class TestEntry {
       });
       yield* member.started;
       yield* Effect.promise(() => ready);
+      const identity = windowsJobOf(child)?.child;
+      assert.isDefined(identity);
+      assert.equal(identity!.created, (yield* invoke(["identity", String(identity!.pid)])).trim());
       child.kill();
       yield* Effect.promise(() => exit);
       yield* member.ended;
@@ -591,9 +637,12 @@ class TestEntry {
         yield* member.started;
         // The intermediate has exited before the controller observes membership or stops the job.
         yield* leader.stdout.pipe(Stream.take(1), Stream.runDrain);
-        const [pid, created] = (yield* fs.readFileString(pidFile)).split(" ").map(Number);
-        assert.equal(Number(yield* invoke(["identity", String(pid)])), created);
-        assert.isAtLeast(Number(yield* invoke(["count", name])), 2);
+        const [pid, created] = (yield* fs.readFileString(pidFile))
+          .trim()
+          .split(" ")
+          .map((value) => value.replace(/^ft:/, ""));
+        assert.equal((yield* invoke(["identity", String(pid)])).trim(), created);
+        assert.isAtLeast(Number(yield* invoke(["count", name, pid!, created!])), 2);
         if (action === "stop") yield* invoke(["stop", name, String(pid), String(created)]);
         else yield* leader.kill();
         yield* member.ended;
@@ -610,8 +659,12 @@ class TestEntry {
       const source = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
       const child = yield* spawner.spawn(ChildProcess.make(process.execPath, ["-e", source]));
       yield* member.started;
-      const made = Number(yield* invoke(["identity", String(child.pid)]));
-      yield* invoke(["stop-process", String(child.pid), String(made - 500)]);
+      const made = BigInt((yield* invoke(["identity", String(child.pid)])).trim());
+      yield* invoke([
+        "stop-process",
+        String(child.pid),
+        String(made + (made % 10_000n === 9_999n ? -1n : 1n)),
+      ]);
       assert.isTrue(yield* child.isRunning);
       yield* invoke(["stop-process", String(child.pid), String(made)]);
       yield* member.ended;

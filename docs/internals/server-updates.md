@@ -311,7 +311,8 @@ starts POSIX commands in their own session; Linux services also give them a syst
 outside the service cgroup. Windows uses WMI to start a separate native host. The host
 creates the command inside a named Job Object before any command code executes, and
 holds the job until the command ends. A restarted server opens the job, pins the recorded
-child process, and verifies its exact creation time and membership before stopping it.
+child process, and verifies its full 100 ns FILETIME creation identity and membership before stopping it.
+That identity stays a decimal string through IPC and persistence; a millisecond timestamp cannot authorize a stop.
 A reused job name never authorizes termination. Windows retains descendant membership even when an intermediate process
 exits; PID ancestry snapshots cannot establish that ownership. The host closes admission
 and terminates the job before reporting completion. A host crash also terminates the job.
@@ -334,7 +335,7 @@ before accepting new requests, without waiting for probes. Separate bounded prob
 queues keep cancellation and deadlines independent of a held launcher or identity check.
 Healthy commands use cheap liveness checks with periodic identity verification. Before a
 command takes its start gate, its wrapper records its PID; on Windows the native host also records
-its UTC creation time. POSIX and Windows cancellation and recovery atomically close the same gate.
+its full FILETIME creation identity. POSIX and Windows cancellation and recovery atomically close the same gate.
 A closed gate proves the command
 cannot execute, including a late WMI creation; a failed database write does not prevent gate
 closure. Gate failures are written to the command log.
@@ -350,9 +351,10 @@ ownership-unknown result; this does not claim it never ran or that any process w
 preserves the wrapper-reported PID even when identity is unavailable. Proven absence,
 replacement or reboot ends a legacy task; an unknown identity alone does not prove loss.
 
-Commands started by older Windows versions have no job membership record. Cleanup may stop
-only a root with an exact creation time, through the same opened handle used to verify it;
-it cannot safely recover descendant ownership from reused PIDs. POSIX wrappers publish their
+Older Windows rows retain their millisecond evidence for proving loss, without converting it into
+exact ownership. A live rounded match leaves cleanup pending until a full wrapper identity appears
+or loss is proven. A root with a full identity can be stopped through the same opened handle used
+to verify it; PID ancestry cannot recover descendant ownership. POSIX wrappers publish their
 own `ps` identity before taking the launch gate; legacy PID-only records require an identity
 within the recorded launch and PID-file bounds. Persisted PID replacement or reboot evidence
 forbids further PID or process-group signals.

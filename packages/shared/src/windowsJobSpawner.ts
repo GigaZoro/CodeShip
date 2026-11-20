@@ -11,6 +11,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "./HostProcess.ts";
 import {
   attachWindowsJob,
+  parseWindowsProcessIdentity,
   WindowsJobHost,
   windowsHostSpawnError,
   windowsJobName,
@@ -133,14 +134,14 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
                 return;
               }
               const [kind, value, detail] = line.split(" ");
+              const identity = parseWindowsProcessIdentity(detail);
               if (
                 kind === "S" &&
                 Number.isSafeInteger(Number(value)) &&
                 Number(value) > 0 &&
-                Number.isSafeInteger(Number(detail)) &&
-                Number(detail) > 0
+                identity !== undefined
               ) {
-                job.child = { pid: Number(value), created: Number(detail) };
+                job.child = { pid: Number(value), created: identity };
                 yield* Deferred.succeed(started, job.child);
               } else if (kind === "E") {
                 return yield* failed(

@@ -20,7 +20,12 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { probeProcess } from "@t3tools/shared/processProbe";
 import { overrideEnvironment } from "@t3tools/shared/shell";
-import { WindowsJobHost, windowsJobName } from "@t3tools/shared/windowsJob";
+import {
+  WindowsJobHost,
+  windowsJobName,
+  parseWindowsProcessIdentity,
+  windowsCreationTimeMillis,
+} from "@t3tools/shared/windowsJob";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -49,7 +54,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
-import { readProcessStartedAt } from "../serverRuntimeState.ts";
+import { readProcessStartedAt, readWindowsProcessIdentity } from "../serverRuntimeState.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
 
 /** How often running commands are checked; tests shorten it. */
@@ -165,6 +170,8 @@ interface CommandRunRow {
   /** Null from its record until its process starts. */
   readonly pid: number | null;
   readonly process_started_at: number | null;
+  /** Full FILETIME; older millisecond-only rows cannot authorize a Windows stop. */
+  readonly windows_created_at: string | null;
   readonly unit: string | null;
   readonly status: CommandRunStatus;
   readonly exit_code: number | null;
@@ -513,7 +520,8 @@ const make = Effect.gen(function* () {
   // Slow probes and stops have separate limits so an unavailable probe cannot starve a deadline.
   const identitySlots = yield* Semaphore.make(2);
   const stopSlots = yield* Semaphore.make(2);
-  const identityKey = (row: CommandRunRow) => `${row.pid}:${row.process_started_at}`;
+  const identityKey = (row: CommandRunRow) =>
+    `${row.pid}:${row.process_started_at}:${row.windows_created_at}`;
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
   /** Open once start() has adopted the commands an earlier server left, so run() never races it. */
@@ -523,6 +531,12 @@ const make = Effect.gen(function* () {
   const startedAtOf = (pid: number) =>
     identitySlots.withPermits(1)(
       readProcessStartedAt(pid, windows ? WINDOWS_LAUNCH_TIMEOUT : undefined).pipe(
+        Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
+      ),
+    );
+  const windowsIdentityOf = (pid: number) =>
+    identitySlots.withPermits(1)(
+      readWindowsProcessIdentity(pid, WINDOWS_LAUNCH_TIMEOUT).pipe(
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
       ),
     );
@@ -537,10 +551,17 @@ const make = Effect.gen(function* () {
         const raw = text.trim();
         const numeric = /^\d+\s+(\d+)$/.exec(raw)?.[1];
         const posix = /^\d+\nps:(.+)$/.exec(raw)?.[1];
-        const identity = numeric === undefined ? Date.parse(`${posix ?? ""} UTC`) : Number(numeric);
+        const windowsIdentity = parseWindowsProcessIdentity(/^\d+\s+ft:(\d+)$/.exec(raw)?.[1]);
+        const identity =
+          windowsIdentity !== undefined
+            ? windowsCreationTimeMillis(windowsIdentity)
+            : numeric === undefined
+              ? Date.parse(`${posix ?? ""} UTC`)
+              : Number(numeric);
         return {
           value: Number.parseInt(raw, 10),
           identity: Number.isFinite(identity) ? identity : undefined,
+          windowsIdentity,
           writtenAt: Option.getOrUndefined(info.mtime),
         };
       }),
@@ -580,6 +601,31 @@ const make = Effect.gen(function* () {
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
     if (probe.state === "unknown") return "unknown";
+    if (windows) {
+      const observed = yield* windowsIdentityOf(row.pid);
+      if (observed === undefined) return "unknown";
+      const named =
+        row.windows_created_at === null
+          ? yield* readWrapperFile(path.join(row.directory, PID_FILE))
+          : undefined;
+      const expected =
+        row.windows_created_at ?? (named?.value === row.pid ? named.windowsIdentity : undefined);
+      const observedMillis = windowsCreationTimeMillis(observed);
+      if (expected !== undefined)
+        return observed === expected ? observedMillis : { lost_reason: "pid-reused", probe_error };
+      const legacyMillis =
+        row.process_started_at ?? (named?.value === row.pid ? named.identity : undefined);
+      if (legacyMillis !== undefined)
+        return observedMillis === legacyMillis
+          ? "unknown"
+          : { lost_reason: "pid-reused", probe_error };
+      if (
+        named?.writtenAt !== undefined &&
+        (observedMillis < Date.parse(row.started_at) || observedMillis > named.writtenAt.getTime())
+      )
+        return { lost_reason: "pid-reused", probe_error };
+      return "unknown";
+    }
     const startedAt = yield* startedAtOf(row.pid);
     // ps reports whole seconds; a failed probe proves neither ownership nor loss.
     if (startedAt === undefined) return "unknown";
@@ -593,10 +639,10 @@ const make = Effect.gen(function* () {
       const upper =
         exit?.endedAt === undefined ? named?.writtenAt?.getTime() : Date.parse(exit.endedAt);
       if (upper === undefined) return "unknown";
-      const precision = windows ? 0 : 1_000;
+      const precision = 1_000;
       if (startedAt < Date.parse(row.started_at) - precision || startedAt > upper + precision)
         return { lost_reason: "pid-reused", probe_error };
-      return windows ? "unknown" : startedAt;
+      return startedAt;
     }
     return startedAt === row.process_started_at
       ? startedAt
@@ -699,7 +745,11 @@ const make = Effect.gen(function* () {
     if (hasScope && (yield* agentScope.stopCommand(row.unit!))) return true;
     if (forbidsSignals(watched.get(row.task_id) ?? row)) return !hasScope;
     if (windows && row.unit?.startsWith(jobUnitPrefix)) {
-      if (row.pid === null || row.process_started_at === null) return false;
+      if (row.pid === null) return false;
+      if (row.windows_created_at === null) {
+        const identity = yield* isSameProcess(row);
+        return typeof identity !== "number" && identity !== "unknown";
+      }
       const host = yield* yield* WindowsJobHost;
       const stopped = yield* stopSlots
         .withPermits(1)(
@@ -709,7 +759,7 @@ const make = Effect.gen(function* () {
               "stop",
               row.unit.slice(jobUnitPrefix.length),
               String(row.pid),
-              String(row.process_started_at),
+              row.windows_created_at,
             ],
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
@@ -745,11 +795,12 @@ const make = Effect.gen(function* () {
         if (same === "unknown") return false;
         // A legacy row has no retained membership after its root ends; never infer another holder's family.
         if (typeof same !== "number") return true;
+        if (row.windows_created_at === null) return false;
         const stopped = yield* stopSlots
           .withPermits(1)(
             processRunner.run({
               command: yield* yield* WindowsJobHost,
-              args: ["stop-process", String(pid), String(same)],
+              args: ["stop-process", String(pid), row.windows_created_at],
               timeout: Duration.seconds(30),
               maxOutputBytes: 16_384,
             }),
@@ -772,7 +823,8 @@ const make = Effect.gen(function* () {
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
         probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
-        lost_output = ${row.lost_output}, launch_error = ${row.launch_error}, reported_at = ${row.reported_at}
+        lost_output = ${row.lost_output}, launch_error = ${row.launch_error}, reported_at = ${row.reported_at},
+        windows_created_at = ${row.windows_created_at}
       WHERE task_id = ${row.task_id}
     `;
 
@@ -1192,7 +1244,7 @@ const make = Effect.gen(function* () {
       ? { lost_reason: row.lost_reason!, probe_error: row.probe_error }
       : undefined;
     if (
-      (row.pid === null || (windows && row.process_started_at === null)) &&
+      (row.pid === null || (windows && row.windows_created_at === null)) &&
       row.lost_reason !== "pid-reused" &&
       row.lost_reason !== "rebooted" &&
       (row.status !== "exited" || (windows && row.unit?.startsWith(jobUnitPrefix))) &&
@@ -1238,6 +1290,7 @@ const make = Effect.gen(function* () {
         cached?.key !== identityKey(row) ||
         now - cached.at >= 60_000 ||
         row.process_started_at === null ||
+        (windows && row.windows_created_at === null) ||
         probe?.state !== "alive" ||
         (yield* rebootedSince(row));
       const identity = mustVerify ? yield* isSameProcess(row) : row.process_started_at!;
@@ -1305,6 +1358,7 @@ const make = Effect.gen(function* () {
         if (
           row.pid !== snapshot.pid ||
           row.process_started_at !== snapshot.process_started_at ||
+          row.windows_created_at !== snapshot.windows_created_at ||
           minuteOf(row.last_alive_at) !== minuteOf(seen.last_alive_at)
         ) {
           yield* settle(seen);
@@ -1537,6 +1591,7 @@ const make = Effect.gen(function* () {
       return {
         pid,
         process_started_at: (yield* startedAtOf(pid)) ?? null,
+        windows_created_at: null,
         unit: scoped.unit ?? null,
       };
     }
@@ -1598,19 +1653,26 @@ const make = Effect.gen(function* () {
     const evidence = yield* readWrapperFile(path.join(directory, PID_FILE));
     const pid = evidence?.value;
     const identity = evidence?.identity;
+    const windowsIdentity = evidence?.windowsIdentity;
     if (
       pid === undefined ||
       !Number.isSafeInteger(pid) ||
       pid <= 0 ||
       identity === undefined ||
       !Number.isSafeInteger(identity) ||
-      identity <= 0
+      identity <= 0 ||
+      windowsIdentity === undefined
     ) {
       return yield* new CommandLaunchError({
         detail: "The wrapper did not record its process creation time.",
       });
     }
-    return { pid, process_started_at: identity, unit: `${jobUnitPrefix}${jobFor(directory)}` };
+    return {
+      pid,
+      process_started_at: identity,
+      windows_created_at: windowsIdentity,
+      unit: `${jobUnitPrefix}${jobFor(directory)}`,
+    };
   });
 
   const run: CommandRunner["Service"]["run"] = Effect.fn("CommandRunner.run")(
@@ -1812,6 +1874,7 @@ const make = Effect.gen(function* () {
                   directory,
                   pid: null,
                   process_started_at: null,
+                  windows_created_at: null,
                   unit: windows ? `${jobUnitPrefix}${jobFor(directory)}` : null,
                   status: "running",
                   exit_code: null,
@@ -1947,6 +2010,7 @@ const make = Effect.gen(function* () {
             : row.pid,
         );
       if (named === undefined || !Number.isSafeInteger(named.value) || named.value <= 0) {
+        if (row.pid !== null) return { outcome: "started", row };
         if ((yield* readExitStatus(row)) !== undefined) return { outcome: "started", row };
         return { outcome: "unresolved" };
       }
@@ -1972,7 +2036,15 @@ const make = Effect.gen(function* () {
           identity = startedAt;
         } else return ended("gone", pid, probe.code);
       }
-      return { outcome: "started", row: { ...row, pid, process_started_at: identity } };
+      return {
+        outcome: "started",
+        row: {
+          ...row,
+          pid,
+          process_started_at: identity,
+          windows_created_at: windows ? (named.windowsIdentity ?? null) : null,
+        },
+      };
     },
     Effect.catch((cause) =>
       Effect.logWarning("command-runner.launch-recovery-failed", { cause }).pipe(

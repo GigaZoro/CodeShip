@@ -237,6 +237,7 @@ const commandRow = (taskId: string) =>
       readonly exit_code: number | null;
       readonly pid: number | null;
       readonly process_started_at: number | null;
+      readonly windows_created_at: string | null;
       readonly started_at: string;
       readonly delivered_at: string | null;
       readonly reported_at: string | null;
@@ -246,7 +247,7 @@ const commandRow = (taskId: string) =>
       readonly lost_output: string | null;
     }>`
       SELECT status, exit_code, pid, process_started_at, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
-        lost_output, reported_at
+        lost_output, reported_at, windows_created_at
       FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
@@ -280,7 +281,7 @@ const forgetPid = (taskId: string) =>
   Effect.flatMap(
     SqlClient.SqlClient,
     (sql) => sql`
-      UPDATE command_runs SET pid = NULL, process_started_at = NULL, last_alive_at = NULL
+      UPDATE command_runs SET pid = NULL, process_started_at = NULL, windows_created_at = NULL, last_alive_at = NULL
       WHERE task_id = ${taskId}
     `,
   );
@@ -306,6 +307,7 @@ const liveChat = (name: string) =>
         readonly directory: string;
         readonly started_at: string;
         readonly process_started_at: number | null;
+        readonly windows_created_at: string | null;
       }>`
         SELECT pid, directory, started_at, process_started_at FROM command_runs WHERE thread_id = ${parent.threadId}
       `.pipe(
@@ -321,7 +323,11 @@ const liveChat = (name: string) =>
                 if (identity.length !== 2) return;
                 yield* processRunner.run({
                   command: yield* yield* WindowsJobHost,
-                  args: ["stop", windowsJobName(NodePath.basename(row.directory)), ...identity],
+                  args: [
+                    "stop",
+                    windowsJobName(NodePath.basename(row.directory)),
+                    ...identity.map((value) => value.replace(/^ft:/, "")),
+                  ],
                   timeout: Duration.minutes(2),
                 });
                 return;
@@ -1669,6 +1675,12 @@ const processOutput = (stdout = "") => ({
 });
 
 /** A WMI boundary with explicit launch/probe barriers and no operating-system processes. */
+const windowsTicks = (milliseconds: number) =>
+  String(BigInt(milliseconds) * 10_000n + 116_444_736_000_000_000n);
+
+const fixtureWindowsIdentity = (entry: { identity: number; ticks?: number }) =>
+  String(BigInt(windowsTicks(entry.identity)) + BigInt(entry.ticks ?? 0));
+
 const windowsFixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const probes = yield* Queue.unbounded<void>();
@@ -1678,8 +1690,11 @@ const windowsFixture = Effect.gen(function* () {
     readonly pid: number;
     readonly identity: number | undefined;
   }>();
-  const processes = new Map<number, { identity: number; alive: boolean; directory: string }>();
-  const jobs = new Map<string, { pid: number; identity: number }>();
+  const processes = new Map<
+    number,
+    { identity: number; ticks?: number; alive: boolean; directory: string }
+  >();
+  const jobs = new Map<string, { pid: number; identity: number; ticks?: number }>();
   const groups = new Set<number>();
   const groupSignals: Array<string | number | undefined> = [];
   let nextPid = 2_147_483_000;
@@ -1715,12 +1730,15 @@ const windowsFixture = Effect.gen(function* () {
         processes.set(pid, { identity, alive: true, directory });
         groups.add(pid);
         jobs.set(NodePath.basename(directory), { pid, identity });
-        NodeFS.writeFileSync(NodePath.join(directory, "pid"), `${pid} ${identity}`);
+        NodeFS.writeFileSync(
+          NodePath.join(directory, "pid"),
+          `${pid} ft:${windowsTicks(identity)}`,
+        );
         NodeFS.renameSync(
           NodePath.join(directory, "launch-pending"),
           NodePath.join(directory, "launch-started"),
         );
-        return processOutput(`${pid} ${identity}`);
+        return processOutput(`${pid} ft:${windowsTicks(identity)}`);
       }) as Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError>,
   };
   const bootedAt = fixture.now - 86_400_000;
@@ -1788,11 +1806,11 @@ const windowsFixture = Effect.gen(function* () {
             if (member === undefined) return processOutput();
             const entry = processes.get(member.pid)!;
             const original =
-              entry.identity === member.identity &&
+              fixtureWindowsIdentity(entry) === fixtureWindowsIdentity(member) &&
               entry.alive &&
               (input.args.length === 2 ||
                 (Number(input.args[2]) === member.pid &&
-                  Number(input.args[3]) === member.identity));
+                  input.args[3] === fixtureWindowsIdentity(member)));
             if (original && NodeFS.existsSync(NodePath.join(entry.directory, "exit-status")))
               entry.alive = false;
             if (entry.alive && original) fixture.kills++;
@@ -1816,9 +1834,9 @@ const windowsFixture = Effect.gen(function* () {
           }
           if (input.command === "job-host.exe" && input.args[0] === "stop-process") {
             const pid = Number(input.args[1]);
-            const identity = Number(input.args[2]);
+            const identity = Number((BigInt(input.args[2]!) - 116_444_736_000_000_000n) / 10_000n);
             const entry = processes.get(pid)!;
-            if (entry.identity === identity) {
+            if (input.args[2] === fixtureWindowsIdentity(entry)) {
               fixture.kills++;
               entry.alive = false;
             }
@@ -1847,7 +1865,7 @@ const windowsFixture = Effect.gen(function* () {
                   .toUTCString()
                   .replace(" GMT", "")
               : script.includes("Get-CimInstance") || input.command === "job-host.exe"
-                ? String(processes.get(Number(probe![1]))!.identity)
+                ? fixtureWindowsIdentity(processes.get(Number(probe![1]))!)
                 : DateTime.formatIso(
                     DateTime.makeUnsafe(processes.get(Number(probe![1]))!.identity),
                   ),
@@ -1915,7 +1933,10 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
             yield* Deferred.await(delivered);
             assert.isTrue(NodeFS.existsSync(NodePath.join(directory, "launch-cancelled")));
             // The delayed host publishes identity before its wrapper competes for the gate.
-            NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${fixture.now}`);
+            NodeFS.writeFileSync(
+              NodePath.join(directory, "pid"),
+              `2147483000 ft:${windowsTicks(fixture.now)}`,
+            );
             assert.throws(() =>
               NodeFS.renameSync(
                 NodePath.join(directory, "launch-pending"),
@@ -2059,6 +2080,47 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       }),
   );
 
+  it.effect.each(["job", "root"] as const)(
+    "keeps legacy millisecond Windows cleanup pending without full ownership: %s",
+    (owner) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-legacy-milliseconds-${owner}`);
+        const fixture = yield* windowsFixture;
+        const result = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo legacy" }),
+        ).pipe(Effect.provide(fixture.layer));
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE command_runs SET windows_created_at = NULL, status = 'stopped', unit = CASE WHEN ${owner} = 'root' THEN NULL ELSE unit END WHERE task_id = ${result.taskId}`;
+        const pidFile = NodePath.join(NodePath.dirname(result.logPath), "pid");
+        if (owner === "job") NodeFS.writeFileSync(pidFile, `2147483000 ${fixture.now}`);
+        else NodeFS.unlinkSync(pidFile);
+        yield* Queue.clear(fixture.probes);
+        const reported = yield* Deferred.make<void>();
+        const delivered = yield* Deferred.make<void>();
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* Deferred.await(reported);
+            yield* Queue.take(fixture.probes);
+            yield* Queue.take(fixture.probes);
+            assert.isTrue(fixture.processes.get(2147483000)!.alive);
+            assert.equal(fixture.state.kills, 0);
+            assert.isNull((yield* commandRow(result.taskId))?.delivered_at);
+            assert.isNull((yield* commandRow(result.taskId))?.windows_created_at);
+            fixture.processes.get(2147483000)!.alive = false;
+            yield* Deferred.await(delivered);
+          }),
+        ).pipe(
+          Effect.provideService(Statement.CurrentTransformer, (...args) =>
+            args[0].compile()[1][6] == null
+              ? observeDelivery(result.taskId, reported, "reported_at")(...args)
+              : observeDelivery(result.taskId, delivered)(...args),
+          ),
+          Effect.provide(fixture.layer),
+        );
+        assert.isNotNull((yield* commandRow(result.taskId))?.delivered_at);
+      }),
+  );
+
   it.effect("keeps a replacement job alive when restart cleanup stops the recorded child", () =>
     Effect.gen(function* () {
       const chat = yield* liveChat("launch-replaced-job");
@@ -2088,7 +2150,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       assert.isTrue(fixture.processes.get(replacement.pid)!.alive);
       assert.deepEqual(fixture.stopRequests[0]?.slice(2), [
         String(row.pid),
-        String(row.process_started_at),
+        row.windows_created_at!,
       ]);
     }),
   );
@@ -2587,7 +2649,10 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       yield* withServer(() =>
         Effect.gen(function* () {
           entry.alive = true;
-          NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${entry.identity}`);
+          NodeFS.writeFileSync(
+            NodePath.join(directory, "pid"),
+            `2147483000 ft:${windowsTicks(entry.identity)}`,
+          );
           yield* Deferred.await(delivered);
           assert.isFalse(entry.alive);
         }),
@@ -2761,22 +2826,30 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
     }),
   );
 
-  it.effect("revalidates cached identity when a pid is replaced between live observations", () =>
-    Effect.gen(function* () {
-      const chat = yield* liveChat("launch-cache-reused");
-      const fixture = yield* windowsFixture;
-      yield* withServer((runner) =>
-        Effect.gen(function* () {
-          const result = yield* runner.run(callerOf(chat.threadId), { command: "echo original" });
-          fixture.processes.get(2147483000)!.identity += 500;
-          fixture.state.now += 60_000;
-          yield* nextWake(chat.threadId);
-          const row = yield* commandRow(result.taskId);
-          assert.equal(row?.lost_reason, "pid-reused");
-          assert.isTrue(fixture.processes.get(2147483000)!.alive);
-        }),
-      ).pipe(Effect.provide(fixture.layer));
-    }),
+  it.effect.each(["500 ms", "one FILETIME tick"] as const)(
+    "revalidates cached identity when a pid is replaced between live observations: %s",
+    (difference) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`launch-cache-reused-${difference}`);
+        const fixture = yield* windowsFixture;
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const result = yield* runner.run(callerOf(chat.threadId), { command: "echo original" });
+            const entry = fixture.processes.get(2147483000)!;
+            if (difference === "500 ms") entry.identity += 500;
+            else entry.ticks = 1;
+            assert.equal(
+              (yield* commandRow(result.taskId))?.windows_created_at,
+              windowsTicks(fixture.now),
+            );
+            fixture.state.now += 60_000;
+            yield* nextWake(chat.threadId);
+            const row = yield* commandRow(result.taskId);
+            assert.equal(row?.lost_reason, "pid-reused");
+            assert.isTrue(fixture.processes.get(2147483000)!.alive);
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+      }),
   );
 
   it.effect.each(["linux", "win32"] as const)(
@@ -3170,7 +3243,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           Effect.map((output) => {
             const entry = fixture.processes.get(2147483000)!;
             entry.identity += 500;
-            return { ...output, stdout: `2147483000 ${entry.identity}` };
+            return { ...output, stdout: `2147483000 ft:${windowsTicks(entry.identity)}` };
           }),
         );
       yield* withServer((runner) =>
@@ -3213,7 +3286,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
             assert.isNull((yield* commandRow(first.taskId))?.delivered_at);
             NodeFS.writeFileSync(
               NodePath.join(directory, "pid"),
-              `2147483000 ${fixture.state.now}`,
+              `2147483000 ft:${windowsTicks(fixture.state.now)}`,
             );
             yield* Queue.take(fixture.probes);
             NodeFS.writeFileSync(NodePath.join(directory, "exit-status"), "0");
@@ -3409,7 +3482,10 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           Effect.gen(function* () {
             const identity = DateTime.toEpochMillis(yield* DateTime.now);
             fixture.processes.set(2147483000, { identity, alive, directory });
-            NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${identity}`);
+            NodeFS.writeFileSync(
+              NodePath.join(directory, "pid"),
+              `2147483000 ft:${windowsTicks(identity)}`,
+            );
             return yield* new ProcessRunner.ProcessTimeoutError({
               command: input.command,
               argumentCount: input.args.length,
@@ -3452,7 +3528,10 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         const directory = NodePath.dirname(result.logPath);
         const identity = DateTime.toEpochMillis(yield* DateTime.now);
         fixture.processes.set(2147483000, { identity, alive: true, directory });
-        NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${identity}`);
+        NodeFS.writeFileSync(
+          NodePath.join(directory, "pid"),
+          `2147483000 ft:${windowsTicks(identity)}`,
+        );
         if (gate !== "pending")
           NodeFS.renameSync(
             NodePath.join(directory, "launch-pending"),
@@ -3606,7 +3685,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
                 const directory = NodePath.dirname(wrapper!);
                 NodeFS.writeFileSync(
                   NodePath.join(directory, "pid"),
-                  `2147483000 ${DateTime.toEpochMillis(yield* DateTime.now)}`,
+                  `2147483000 ft:${windowsTicks(DateTime.toEpochMillis(yield* DateTime.now))}`,
                 );
                 NodeFS.renameSync(
                   NodePath.join(directory, "launch-pending"),

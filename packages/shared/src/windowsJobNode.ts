@@ -6,6 +6,7 @@ import type * as NodeStream from "node:stream";
 
 import {
   attachWindowsJob,
+  parseWindowsProcessIdentity,
   windowsHostSpawnError,
   windowsJobName,
   type WindowsJob,
@@ -83,7 +84,10 @@ export const windowsJobSpawn = (host: string): typeof NodeChildProcess.spawn => 
       if (line === "W") control.write("R");
       else if (/^S \d+ \d+$/.test(line)) {
         const [, pid, created] = line.split(" ");
-        job.child = { pid: Number(pid), created: Number(created) };
+        const identity = parseWindowsProcessIdentity(created);
+        if (identity === undefined || !Number.isSafeInteger(Number(pid)) || Number(pid) <= 0)
+          return fail(new Error("Invalid Windows ownership reply."));
+        job.child = { pid: Number(pid), created: identity };
       } else if (line.startsWith("E ")) {
         const [, code, detail] = line.split(" ");
         fail(
