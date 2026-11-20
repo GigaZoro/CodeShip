@@ -1891,8 +1891,10 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         if (state === "already stopped")
           yield* sql`UPDATE command_runs SET status = 'stopped' WHERE task_id = ${first.taskId}`;
         const delivered = yield* Deferred.make<void>();
+        const adoptedGate = yield* Deferred.make<boolean>();
         yield* withServer(() =>
           Effect.gen(function* () {
+            if (state === "cancelled") assert.isTrue(yield* Deferred.await(adoptedGate));
             yield* Deferred.await(delivered);
             assert.isTrue(NodeFS.existsSync(NodePath.join(directory, "launch-cancelled")));
             // The delayed host publishes identity before its wrapper competes for the gate.
@@ -1908,10 +1910,14 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
             assert.lengthOf(fixture.stopRequests, 0);
           }),
         ).pipe(
-          Effect.provideService(
-            Statement.CurrentTransformer,
-            observeDelivery(first.taskId, delivered),
-          ),
+          Effect.provideService(Statement.CurrentTransformer, (...args) => {
+            if (args[0].compile()[0].includes("SELECT task_id FROM command_runs"))
+              return Deferred.succeed(
+                adoptedGate,
+                NodeFS.existsSync(NodePath.join(directory, "launch-cancelled")),
+              ).pipe(Effect.as(args[0]));
+            return observeDelivery(first.taskId, delivered)(...args);
+          }),
           Effect.provide(fixture.layer),
         );
       }),
