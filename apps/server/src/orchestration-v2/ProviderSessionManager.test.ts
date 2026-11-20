@@ -1560,6 +1560,63 @@ it.effect(
     }),
 );
 
+it.effect(
+  "ProviderSessionManagerV2 releases a runtime only once it sent nothing for the window",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-silent-release");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const subscription = yield* runtime.subscribeEvents!;
+        const adapterQueue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+        assert.isDefined(adapterQueue);
+        const releaseIfSilent = manager.releaseIfSilent({
+          providerSessionId,
+          silentForMs: 5 * 60_000,
+          detail: "The provider sent nothing for 5 minutes.",
+        });
+
+        yield* TestClock.adjust("4 minutes");
+        yield* Queue.offer(adapterQueue!, {
+          type: "provider_session.updated",
+          driver: CODEX_DRIVER,
+          providerSession: runtime.providerSession,
+        });
+        assert.isTrue(Option.isSome(yield* subscription.events.pipe(Stream.runHead)));
+        yield* TestClock.adjust("4 minutes");
+        assert.isFalse(yield* releaseIfSilent);
+        assert.isTrue(yield* manager.isLive(providerSessionId));
+
+        yield* TestClock.adjust("1 minute");
+        assert.isTrue(yield* releaseIfSilent);
+        assert.isFalse(yield* manager.isLive(providerSessionId));
+        const session = (yield* projectionStore.getThreadProjection(threadId)).providerSessions.at(
+          -1,
+        );
+        assert.equal(session?.status, "error");
+        assert.equal(session?.lastError, "The provider sent nothing for 5 minutes.");
+      }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60 * 60_000 })));
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 stops a session still opening when its layer shuts down", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

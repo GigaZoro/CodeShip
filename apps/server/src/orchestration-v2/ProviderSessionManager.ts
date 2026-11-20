@@ -218,6 +218,15 @@ export interface ProviderSessionManagerV2Shape {
     readonly detail?: string;
   }) => Effect.Effect<boolean, ProviderSessionManagerV2Error>;
   /**
+   * Releases the session as failed when its runtime sent no event for `silentForMs`, checked
+   * atomically with its removal. Succeeds with whether it was released.
+   */
+  readonly releaseIfSilent: (input: {
+    readonly providerSessionId: ProviderSessionId;
+    readonly silentForMs: number;
+    readonly detail: string;
+  }) => Effect.Effect<boolean, ProviderSessionManagerV2Error>;
+  /**
    * Other threads with a run or background work on this session's shared process; empty when
    * it serves one thread.
    */
@@ -250,6 +259,8 @@ interface LiveSessionEntry {
   readonly idleFiber: Fiber.Fiber<void, never> | null;
   readonly pinnedSinceMs: number | null;
   readonly idleThreadUnloads: ReadonlyMap<ThreadId, IdleThreadUnload>;
+  /** When the runtime opened or last sent an event, command output included. */
+  readonly lastProviderEventAtMs: Ref.Ref<number>;
 }
 
 interface IdleThreadUnload {
@@ -1268,6 +1279,7 @@ export const layerWithOptions = (
           readonly providerSessionId: ProviderSessionId;
           readonly onlyIfIdleGeneration?: number;
           readonly keepIfBusyOtherThan?: ReadonlyArray<ProviderThreadId>;
+          readonly keepIfEventAfterMs?: number;
         }): Effect.fn.Return<readonly [Option.Option<LiveSessionEntry>, DateTime.Utc]> {
           const key = sessionKey(input.providerSessionId);
           const candidate = (yield* Ref.get(sessions)).get(key);
@@ -1293,6 +1305,12 @@ export const layerWithOptions = (
                 [...existing.busyTurns].some(
                   (turnKey) => !own.some((id) => turnKey.startsWith(busyTurnPrefix(id))),
                 )
+              ) {
+                return ["kept", current] as const;
+              }
+              if (
+                input.keepIfEventAfterMs !== undefined &&
+                Ref.getUnsafe(existing.lastProviderEventAtMs) > input.keepIfEventAfterMs
               ) {
                 return ["kept", current] as const;
               }
@@ -1355,6 +1373,7 @@ export const layerWithOptions = (
         readonly cancelIdleFiber?: boolean;
         readonly onlyIfIdleGeneration?: number;
         readonly keepIfBusyOtherThan?: ReadonlyArray<ProviderThreadId>;
+        readonly keepIfEventAfterMs?: number;
         readonly gracefulSubscribers?: boolean;
       }) =>
         Effect.acquireUseRelease(
@@ -1458,6 +1477,17 @@ export const layerWithOptions = (
             ),
           ),
         );
+
+      // Untraced: each caller is its own traced method.
+      const releaseEntryAndReport = Effect.fnUntraced(function* (
+        input: Parameters<typeof releaseEntry>[0],
+      ) {
+        const key = sessionKey(input.providerSessionId);
+        const before = (yield* Ref.get(sessions)).get(key);
+        yield* releaseEntry(input);
+        // Identity, not presence: open can install a replacement under the same id meanwhile.
+        return before !== undefined && (yield* Ref.get(sessions)).get(key) !== before;
+      });
 
       const releaseIfStillIdle = Effect.fn("ProviderSessionManager.releaseIfStillIdle")(
         function* (input: {
@@ -2297,6 +2327,11 @@ export const layerWithOptions = (
       const startEventPump = (entry: LiveSessionEntry) => {
         let stoppedByProvider = false;
         return entry.runtime.events.pipe(
+          Stream.tap(() =>
+            Effect.clockWith((clock) =>
+              Ref.set(entry.lastProviderEventAtMs, clock.currentTimeMillisUnsafe()),
+            ),
+          ),
           Stream.runForEach((event) => {
             if (shutdownSignal.received) return Effect.void;
             // Live output bypasses persistence and subscribers so floods cannot delay domain events.
@@ -2613,6 +2648,7 @@ export const layerWithOptions = (
                       idleFiber: null,
                       pinnedSinceMs: null,
                       idleThreadUnloads: new Map(),
+                      lastProviderEventAtMs: yield* Ref.make(yield* Clock.currentTimeMillis),
                     };
                     yield* Ref.update(sessions, (current) => {
                       const updated = new Map(current);
@@ -2725,16 +2761,20 @@ export const layerWithOptions = (
         ),
         release: releaseEntry,
         releaseUnlessBusy: Effect.fn("ProviderSessionManager.releaseUnlessBusy")(function* (input) {
-          const key = sessionKey(input.providerSessionId);
-          const before = (yield* Ref.get(sessions)).get(key);
-          yield* releaseEntry({
+          return yield* releaseEntryAndReport({
             providerSessionId: input.providerSessionId,
             reason: input.reason,
             ...(input.detail === undefined ? {} : { detail: input.detail }),
             keepIfBusyOtherThan: input.ownProviderThreadIds,
           });
-          // Identity, not presence: open can install a replacement under the same id meanwhile.
-          return before !== undefined && (yield* Ref.get(sessions)).get(key) !== before;
+        }),
+        releaseIfSilent: Effect.fn("ProviderSessionManager.releaseIfSilent")(function* (input) {
+          return yield* releaseEntryAndReport({
+            providerSessionId: input.providerSessionId,
+            reason: "runtime_error",
+            detail: input.detail,
+            keepIfEventAfterMs: (yield* Clock.currentTimeMillis) - input.silentForMs,
+          });
         }),
         otherWorkingThreads: Effect.fn("ProviderSessionManager.otherWorkingThreads")(
           function* (input) {

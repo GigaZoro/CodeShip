@@ -703,11 +703,36 @@ export const layer: Layer.Layer<
         });
       }
       const unstarted = { projection, run, attempt, rootNode };
+      const providerSessionId = providerThread.providerSessionId;
       const settleRunBeforeStart = (settled: Parameters<typeof settleUnstartedRun>[1]) =>
         settleUnstartedRun(unstarted, settled);
+      // A process that sent nothing for a whole start step has stopped answering, and the retry
+      // would wait on it again. One still sending events for other turns stays.
+      const releaseSilentSession = (error: Error) =>
+        isProviderStartStepTimeoutError(error)
+          ? providerSessions
+              .releaseIfSilent({
+                providerSessionId,
+                silentForMs: Duration.toMillis(Duration.minutes(error.minutes)),
+                detail: `The provider sent nothing for ${error.minutes} minutes while a turn waited on it, so it was stopped. The next turn starts a new one.`,
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logError(
+                    "orchestration-v2.provider-turn-start.silent-session-release-failed",
+                    {
+                      providerSessionId,
+                      cause,
+                    },
+                  ),
+                ),
+              )
+          : Effect.void;
       const settleStartFailure = (failed: Parameters<typeof settleUnstartedRunFailure>[1]) =>
         Effect.flatMap(input.waitDuringStart, (wait) =>
-          settleUnstartedRunFailure(unstarted, { ...failed, wait }),
+          releaseSilentSession(failed.error).pipe(
+            Effect.andThen(settleUnstartedRunFailure(unstarted, { ...failed, wait })),
+          ),
         );
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
@@ -863,7 +888,6 @@ export const layer: Layer.Layer<
       const inheritedBackgroundTurnItems = yield* projectionStore
         .getRuntimeRecoveryProjection(projection.thread.id)
         .pipe(Effect.map(selectInheritedBackgroundItems));
-      const providerSessionId = providerThread.providerSessionId;
       const runControls = makeRunControls({
         threadId: projection.thread.id,
         runId: run.id,

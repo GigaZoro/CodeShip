@@ -1,3 +1,7 @@
+## 2026-11-21 — A provider that stops answering no longer blocks new chats
+
+- When a provider process sends nothing for the whole time a chat waits for it to start, CodeShip stops that process before the chat retries, so the retry and later chats start a new one. Before, a stuck Codex process failed every retry and every new chat on that account with "The provider did not load the conversation within 5 minutes" until the app restarted. A process still sending events for other chats keeps running.
+
 ## 2026-11-21 — A landing reads real git history and refuses marked files
 
 - The landing turn, its checks receipt, the pre-push hook, `check:changed` and the upstream sync read git history past replace refs and grafts, so an invented ancestry can no longer let a push move main past a commit it never held.

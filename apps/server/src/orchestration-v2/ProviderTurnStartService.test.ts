@@ -858,6 +858,9 @@ function makeLocalCommandHarness(input: {
     forkThread,
     startTurn,
   };
+  const releaseIfSilent = vi.fn<
+    ProviderSessionManager.ProviderSessionManagerV2Shape["releaseIfSilent"]
+  >(() => Effect.succeed(true));
   const open = vi.fn(() =>
     input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
@@ -1128,6 +1131,7 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
+          releaseIfSilent,
           isLive: () => Effect.succeed(input.sessionLive === true),
           get: () =>
             Effect.succeed(
@@ -1163,6 +1167,7 @@ function makeLocalCommandHarness(input: {
     resolveRuntimePolicy,
     createWorktree,
     open,
+    releaseIfSilent,
     writeIfRunCurrent,
     startRootRun,
     startTurn,
@@ -1174,6 +1179,7 @@ function makeLocalCommandHarness(input: {
     oldInstanceId,
     newInstanceId,
     attemptId,
+    providerSessionId,
     projection: () => projection,
     start: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
@@ -2063,6 +2069,16 @@ effectIt.effect(
       yield* Fiber.join(startup);
 
       expect(harness.freshThread).not.toHaveBeenCalled();
+      // Released before the run settles, so its retry cannot reopen the same process.
+      expect(harness.releaseIfSilent).toHaveBeenCalledExactlyOnceWith({
+        providerSessionId: harness.providerSessionId,
+        silentForMs: 5 * 60_000,
+        detail:
+          "The provider sent nothing for 5 minutes while a turn waited on it, so it was stopped. The next turn starts a new one.",
+      });
+      expect(harness.releaseIfSilent.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.writeIfRunCurrent.mock.invocationCallOrder[0]!,
+      );
       expect(harness.projection().runs.at(-1)?.status).toBe("failed");
       expect(
         harness

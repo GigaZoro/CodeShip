@@ -307,6 +307,7 @@ it.effect(
           detach: () => Effect.void,
           otherWorkingThreads: () => Effect.succeed([]),
           releaseUnlessBusy: () => Effect.succeed(true),
+          releaseIfSilent: () => Effect.die("unused releaseIfSilent"),
         }),
       );
       const terminalAwaited = yield* Deferred.make<RunAttemptId>();
