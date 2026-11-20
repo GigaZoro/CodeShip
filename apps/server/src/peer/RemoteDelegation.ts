@@ -429,7 +429,7 @@ const make = Effect.gen(function* () {
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
           message: task,
           clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
-          threadId: remoteThreadId,
+          launchId: remoteThreadId,
           // The thread there shows it is this thread's subagent, with a way back.
           delegatedFrom: {
             environmentId: hereId,
