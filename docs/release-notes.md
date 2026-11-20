@@ -1,4 +1,4 @@
-## 2026-11-16 ? Windows commands recover from launcher timeouts
+## 2026-11-20 — Windows commands recover from launcher timeouts
 
 - Windows command launches allow two minutes for PowerShell and WMI. Slow startup and identity checks leave cancellation, deadlines and other commands' completion delivery responsive. POSIX and Windows cancellation close the start gate before an unstarted command can execute, including during restart recovery.
 - A launcher failure returns a task ID and reports the outcome through normal task completion. Unreadable evidence stays under reconciliation across server restarts. Deadlines and cancellation report while cleanup remains pending, even when stopping the command fails.
