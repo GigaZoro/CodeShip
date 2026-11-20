@@ -26,16 +26,17 @@ export const withWindowsTreeRoot = <A extends { readonly pid: number }, E, R>(
   });
 
 /** Share successful cleanup, but retry a failed stop while retaining the same job ownership. */
-export const withWindowsTreeStop = <A extends { readonly pid: number }, E, R>(
-  spawn: Effect.Effect<A, E, R>,
-) =>
-  Effect.fn("WindowsProcessTree.withStop")(function* () {
-    const { handle, root } = yield* withWindowsTreeRoot(spawn);
-    const stopTree = yield* Effect.cachedWithTTL(stopWindowsProcessTree(root), (exit) =>
-      Exit.isSuccess(exit) ? Duration.infinity : Duration.zero,
-    );
-    return { handle, root, stopTree };
-  })();
+export const withWindowsTreeStop = Effect.fn("WindowsProcessTree.withStop")(function* <
+  A extends { readonly pid: number },
+  E,
+  R,
+>(spawn: Effect.Effect<A, E, R>) {
+  const { handle, root } = yield* withWindowsTreeRoot(spawn);
+  const stopTree = yield* Effect.cachedWithTTL(stopWindowsProcessTree(root), (exit) =>
+    Exit.isSuccess(exit) ? Duration.infinity : Duration.zero,
+  );
+  return { handle, root, stopTree };
+});
 
 const STOP_TIMEOUT = Duration.seconds(30);
 const STDERR_TAIL_CHARS = 4_096;

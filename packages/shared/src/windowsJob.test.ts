@@ -8,6 +8,7 @@ import * as NodeStreamConsumers from "node:stream/consumers";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -31,6 +32,11 @@ import { stopWindowsProcessTree } from "./windowsProcessTree.ts";
 
 vi.mock("node:child_process", { spy: true });
 vi.mock("node:fs/promises", { spy: true });
+
+class CacheHeldError extends Data.TaggedError("CacheHeldError")<{
+  readonly code: "EPERM" | "EBUSY";
+  readonly message: string;
+}> {}
 
 it.each([
   ["EACCES", false, true],
@@ -424,7 +430,8 @@ class TestEntry {
         using _read = vi.spyOn(NodeFSP, "readFile").mockImplementation((file, options) => {
           if (String(file) === blocked)
             return Promise.reject(
-              Object.assign(new Error("cache entry is held by another process"), {
+              new CacheHeldError({
+                message: "cache entry is held by another process",
                 code: entry === "manifest" ? "EPERM" : "EBUSY",
               }),
             );
@@ -433,13 +440,12 @@ class TestEntry {
         using _rename = vi.spyOn(NodeFSP, "rename").mockImplementation((from, to) => {
           if (entry === "manifest" && String(to) === blocked)
             return Promise.reject(
-              Object.assign(new Error("cache index is locked"), { code: "EBUSY" }),
+              new CacheHeldError({ message: "cache index is locked", code: "EBUSY" }),
             );
           return rename(from, to);
         });
         const rebuilt = yield* prepareWindowsJobHost().pipe(
           Effect.provideService(HostProcess.HomeDirectory, anotherHome),
-          Effect.mapError((error) => new Error(`${error.message}: ${String(error.cause)}`)),
         );
         assert.notEqual(rebuilt, blocked);
         const identity = yield* spawner.string(
@@ -460,10 +466,7 @@ class TestEntry {
       compile.mockClear();
       const repaired = yield* Effect.all([prepareWindowsJobHost(), prepareWindowsJobHost()], {
         concurrency: 2,
-      }).pipe(
-        Effect.provideService(HostProcess.HomeDirectory, anotherHome),
-        Effect.mapError((error) => new Error(`${error.message}: ${String(error.cause)}`)),
-      );
+      }).pipe(Effect.provideService(HostProcess.HomeDirectory, anotherHome));
       assert.equal(compile.mock.calls.length, 1);
       assert.equal(repaired[0], repaired[1]);
       assert.equal(yield* fs.readFileString(cached), "truncated");

@@ -1,5 +1,6 @@
-import * as NodeCrypto from "node:crypto";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
+import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import type * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -50,7 +51,10 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
         const host = yield* (yield* WindowsJobHost).pipe(
           Effect.mapError((error) => failed(error.message)),
         );
-        const job: WindowsJob = { host, name: windowsJobName(NodeCrypto.randomUUID()) };
+        const nonce = yield* Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4()).pipe(
+          Effect.provide(NodeCrypto.layer),
+        );
+        const job: WindowsJob = { host, name: windowsJobName(nonce) };
         const fd =
           Math.max(
             2,
