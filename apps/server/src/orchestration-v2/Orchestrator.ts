@@ -766,7 +766,7 @@ function delegatedTasksStopEffect(
   parentRunId?: RunId,
 ): PendingOrchestrationEffectV2 {
   return {
-    id: `effect:${command.commandId}:delegated-tasks.stop`,
+    id: `effect:${command.commandId}:delegated-tasks.stop${parentRunId === undefined ? "" : `:${parentRunId}`}`,
     commandId: command.commandId,
     threadId: command.threadId,
     request: {
@@ -12696,6 +12696,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       target === "exact-run"
         ? selectedRun
         : latestRestartContinuation(projection.runs, selectedRun);
+    // Recovery can keep delegated work alive across several server restarts.
+    const chainRunIds = new Set<RunId>();
+    const runsById = new Map(projection.runs.map((candidate) => [candidate.id, candidate]));
+    let ancestor: OrchestrationV2Run | undefined = run;
+    while (ancestor !== undefined && !chainRunIds.has(ancestor.id)) {
+      chainRunIds.add(ancestor.id);
+      ancestor =
+        ancestor.restartContinuationOfRunId === undefined
+          ? undefined
+          : runsById.get(ancestor.restartContinuationOfRunId);
+    }
     const lastExecuted = latestExecutedRun(projection.runs);
     const queuedContinuation =
       run.status === "queued" && run.restartContinuationOfRunId !== undefined ? run : undefined;
@@ -12806,12 +12817,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (candidate) => candidate.id === run.userMessageId,
     );
     const completionCohortRunId = completionMessage?.delegatedCompletion?.parentRunId ?? run.id;
+    const cohortRunIds = [...new Set([...chainRunIds, completionCohortRunId])];
     const outcome = {
-      delegatedTaskRunId: projection.subagents.some(
-        (task) => task.runId === run.id && isAppOwnedTaskWork(task),
-      )
-        ? run.id
-        : undefined,
+      delegatedTaskRunIds: new Set(
+        projection.subagents.flatMap((task) =>
+          task.runId !== null && chainRunIds.has(task.runId) && isAppOwnedTaskWork(task)
+            ? [task.runId]
+            : [],
+        ),
+      ),
       cancelUnsettledEffects: undefined,
     };
     const stopRemainingWork = () =>
@@ -12820,16 +12834,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             command,
             events,
             projection,
-            cohortRunIds: [
-              completionCohortRunId,
-              run.id,
-              ...(queuedContinuation === undefined ? [] : [queuedContinuation.id]),
-            ],
+            cohortRunIds,
             includeOtherCohorts: target === "exact-run",
             now,
           })
         : Effect.gen(function* () {
-            for (const parentRunId of new Set([completionCohortRunId, run.id])) {
+            for (const parentRunId of cohortRunIds) {
               yield* disposeDelegatedCompletionCohort({
                 command,
                 events,
@@ -14850,8 +14860,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "run.interrupt": {
         const outcome = yield* dispatchRunInterrupt(command, events, effects);
         cancelUnsettledEffects = outcome?.cancelUnsettledEffects;
-        const parentRunId = outcome?.delegatedTaskRunId;
-        if (parentRunId !== undefined) {
+        const parentRunIds = outcome?.delegatedTaskRunIds;
+        if (parentRunIds !== undefined && parentRunIds.size > 0) {
           // Stop must still commit when a child can't be read, so a failed repair's
           // partial events are dropped.
           const repairEvents = yield* Ref.make(yield* Ref.get(events));
@@ -14866,7 +14876,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   events: repairEvents,
                   projection: {
                     ...projection,
-                    subagents: projection.subagents.filter((task) => task.runId === parentRunId),
+                    subagents: projection.subagents.filter(
+                      (task) => task.runId !== null && parentRunIds.has(task.runId),
+                    ),
                   },
                 }),
               ),
@@ -14880,7 +14892,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             });
           yield* Ref.update(effects, (existing) => [
             ...existing,
-            delegatedTasksStopEffect(command, parentRunId),
+            ...Array.from(parentRunIds, (id) => delegatedTasksStopEffect(command, id)),
           ]);
         }
         break;
