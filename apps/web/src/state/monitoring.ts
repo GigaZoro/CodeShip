@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
-  CommandId,
   type EnvironmentId,
   type MonitoringFindingCode,
   type MonitoringOverviewInput,
@@ -9,7 +8,9 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import {
+  fixChatInput,
   mergeMonitoringOverviews,
+  settleFixChat,
   type MonitoringEnvironmentReport,
   type MonitoringFixChatTarget,
   type MonitoringOverviewView,
@@ -17,7 +18,7 @@ import {
 import { monitoringFixChatFailureMessage } from "@t3tools/client-runtime/monitoring-text";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -89,6 +90,7 @@ export function refreshMonitoringThread(
 }
 
 export interface MonitoringFixChat {
+  readonly code: MonitoringFindingCode;
   /** False when no chat shows the weak point or this client may not start chats on its machine. */
   readonly available: boolean;
   readonly pending: boolean;
@@ -115,32 +117,28 @@ export function useMonitoringFixChat(
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [started, setStarted] = useState<MonitoringFixChat["started"]>(null);
-  // A retry keeps the failed attempt's id, so a start whose answer was lost opens that chat.
-  const commandId = useRef<CommandId | null>(null);
   const start = () => {
     if (target === null || pending) return;
     const { environmentId } = target;
-    const id = commandId.current ?? CommandId.make(randomUUID());
-    commandId.current = id;
     setPending(true);
     setFailure(null);
-    const startedAt = router.state.location.pathname;
-    void run({
-      environmentId,
-      input: { commandId: id, creationSource: "web", code, threadIds: target.threadIds },
-    }).then((result) => {
-      setPending(false);
-      if (result._tag === "Success") {
-        commandId.current = null;
-        const chat = { environmentId, threadId: result.value.threadId };
-        setStarted(chat);
-        // The chat opens only where the user asked for it; elsewhere the row links to it.
-        if (router.state.location.pathname !== startedAt) return;
-        void navigate({ to: "/$environmentId/$threadId", params: chat });
-      } else if (!isAtomCommandInterrupted(result)) {
-        setFailure(monitoringFixChatFailureMessage(result.cause));
-      }
-    });
+    // The href holds the filters too, so a changed view counts as moving on.
+    const startedAt = router.state.location.href;
+    void run({ environmentId, input: fixChatInput(target, code, "web", randomUUID) }).then(
+      (result) => {
+        setPending(false);
+        if (result._tag === "Success") {
+          settleFixChat(target, code);
+          const chat = { environmentId, threadId: result.value.threadId };
+          setStarted(chat);
+          // The chat opens only where the user asked for it; elsewhere the row links to it.
+          if (router.state.location.href !== startedAt) return;
+          void navigate({ to: "/$environmentId/$threadId", params: chat });
+        } else if (!isAtomCommandInterrupted(result)) {
+          setFailure(monitoringFixChatFailureMessage(result.cause));
+        }
+      },
+    );
   };
-  return { available: target !== null && allowed, pending, failure, started, start };
+  return { code, available: target !== null && allowed, pending, failure, started, start };
 }

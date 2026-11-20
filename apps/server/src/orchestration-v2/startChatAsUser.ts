@@ -19,6 +19,8 @@ import * as Schema from "effect/Schema";
 import * as Project from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { defaultWorktreeStrategy } from "../vcs/defaultWorktreeStrategy.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
@@ -39,6 +41,11 @@ export interface StartChatAsUserInput {
   /** The first message, sent as the user. */
   readonly text: string;
   readonly creationSource: "web" | "mobile";
+  /**
+   * `root` runs in the project's checkout. `project-default` starts where a new chat in the
+   * project would, so a project set to worktrees gets one from its default branch.
+   */
+  readonly workspace: "root" | "project-default";
 }
 
 type Providers = ReadonlyArray<ServerProvider>;
@@ -87,8 +94,8 @@ const failure = (reason: StartChatAsUserError["reason"], detail: string) =>
   new StartChatAsUserError({ reason, detail });
 
 /**
- * Starts a chat in the project's root checkout, as the user, on the project's default model or
- * else the first account that can run it. For features that start a chat on the user's behalf.
+ * Starts a chat as the user, on the project's default model or else the first account that can
+ * run it. For features that start a chat on the user's behalf.
  */
 export const makeStartChatAsUser = Effect.gen(function* () {
   const projects = yield* Project.ProjectService;
@@ -96,6 +103,17 @@ export const makeStartChatAsUser = Effect.gen(function* () {
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const git = yield* GitVcsDriver.GitVcsDriver;
+
+  /** A folder without a committed git repository has no worktrees, so its chat runs in it. */
+  const worktreeIfRepository = (cwd: string) =>
+    git.resolveCommit({ cwd, revision: "HEAD" }).pipe(
+      Effect.matchEffect({
+        onFailure: () =>
+          Effect.succeed<ThreadLaunch.ThreadLaunchWorkspaceStrategy>({ type: "root" }),
+        onSuccess: () => defaultWorktreeStrategy(git, cwd),
+      }),
+    );
 
   return Effect.fn("startChatAsUser")(function* (input: StartChatAsUserInput) {
     const { projectId } = input;
@@ -140,6 +158,12 @@ export const makeStartChatAsUser = Effect.gen(function* () {
         "No provider account on this machine is signed in and enabled.",
       );
     }
+    const workspaceStrategy =
+      input.workspace === "project-default" &&
+      defaults.defaultThreadEnvMode === "worktree" &&
+      project !== undefined
+        ? yield* worktreeIfRepository(project.workspaceRoot)
+        : ({ type: "root" } as const);
     return yield* threadLaunch
       .launch({
         commandId: input.commandId,
@@ -149,7 +173,7 @@ export const makeStartChatAsUser = Effect.gen(function* () {
         modelSelection,
         runtimeMode: defaults.defaultRuntimeMode,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        workspaceStrategy: { type: "root" },
+        workspaceStrategy,
         initialMessage: {
           messageId: MessageId.make(input.commandId),
           text: input.text,

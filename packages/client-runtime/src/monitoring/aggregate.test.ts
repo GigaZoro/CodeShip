@@ -3,6 +3,8 @@ import {
   MONITORING_FIX_CHAT_MAX_CHATS,
   type MonitoringFinding,
   type MonitoringThreadSummary,
+  ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
@@ -11,6 +13,7 @@ import {
   dailyTrend,
   dayKey,
   filterChats,
+  fixChatInput,
   fixChatTarget,
   median,
   mergeMonitoringOverviews,
@@ -20,6 +23,7 @@ import {
   percentile,
   phaseTotals,
   rankFindings,
+  settleFixChat,
   sortChats,
   sumTimeBuckets,
   totalsOf,
@@ -189,18 +193,18 @@ describe("fixChatTarget", () => {
     detail: null,
   });
 
-  it("picks the environment that lost the most time and lists its chats worst first", () => {
+  it("picks the environment and project that lost the most time and lists chats worst first", () => {
     const target = fixChatTarget(
       [
         chat("a", { findings: [slow(100)] }, "env-a"),
-        chat("b", { findings: [slow(300)] }, "env-b"),
-        chat("c", { findings: [slow(50)] }, "env-b"),
+        chat("b", { projectId: "p2", findings: [slow(300)] }, "env-b"),
+        chat("c", { projectId: "p2", findings: [slow(150)] }, "env-b"),
         chat("d", { findings: [slow(400)] }, "env-b"),
-        chat("e", { findings: [] }, "env-b"),
+        chat("e", { projectId: "p3", findings: [] }, "env-b"),
       ],
       "slow_command",
     );
-    expect(target).toEqual({ environmentId: "env-b", threadIds: ["d", "b", "c"] });
+    expect(target).toEqual({ environmentId: "env-b", projectId: "p2", threadIds: ["d", "b", "c"] });
   });
 
   it("caps the chats a fix chat reads", () => {
@@ -212,8 +216,35 @@ describe("fixChatTarget", () => {
     expect(target?.threadIds[0]).toBe(`t${MONITORING_FIX_CHAT_MAX_CHATS + 4}`);
   });
 
+  it("picks the project over every chat with the weak point, not only the chats it reads", () => {
+    const worst = Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS }, (_, index) =>
+      chat(`w${index}`, { projectId: "p2", findings: [slow(100)] }),
+    );
+    const rest = Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS + 1 }, (_, index) =>
+      chat(`r${index}`, { findings: [slow(99)] }),
+    );
+    expect(fixChatTarget([...worst, ...rest], "slow_command")?.projectId).toBe("p1");
+  });
+
   it("is null when no chat has the weak point", () => {
     expect(fixChatTarget([chat("a", { findings: [slow(1)] })], "retries")).toBeNull();
+  });
+});
+
+describe("fixChatInput", () => {
+  const target = {
+    environmentId: EnvironmentId.make("env-retry"),
+    projectId: ProjectId.make("p1"),
+    threadIds: [ThreadId.make("a")],
+  };
+  it("sends a retry under the unsettled start's id and a start after success under a new one", () => {
+    let ids = 0;
+    const newId = () => `id-${(ids += 1)}`;
+    const first = fixChatInput(target, "slow_command", "web", newId);
+    expect(fixChatInput(target, "slow_command", "web", newId).commandId).toBe(first.commandId);
+    expect(fixChatInput(target, "retries", "web", newId).commandId).not.toBe(first.commandId);
+    settleFixChat(target, "slow_command");
+    expect(fixChatInput(target, "slow_command", "web", newId).commandId).not.toBe(first.commandId);
   });
 });
 

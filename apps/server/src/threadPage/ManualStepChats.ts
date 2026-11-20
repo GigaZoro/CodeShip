@@ -91,6 +91,7 @@ const make = Effect.gen(function* () {
         title: manualStepChatTitle(input.step),
         text: manualStepDecisionMessage(input.step, input.decision),
         creationSource: input.creationSource ?? "web",
+        workspace: "root",
       }).pipe(Effect.mapError((error) => failure(error.reason, error.detail)));
     },
     (effect, input) =>

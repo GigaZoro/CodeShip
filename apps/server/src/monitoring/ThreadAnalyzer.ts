@@ -171,7 +171,7 @@ export const LONG_QUEUE_MS = 2 * MINUTE_MS;
 export const APPROVAL_WAIT_MS = 2 * MINUTE_MS;
 export const DELEGATE_WAIT_MS = 10 * MINUTE_MS;
 export const LOW_CACHE_REUSE_RATIO = 0.7;
-const LOW_CACHE_REUSE_MIN_INPUT = 500_000;
+export const LOW_CACHE_REUSE_MIN_INPUT = 500_000;
 export const CONTEXT_PRESSURE_RATIO = 0.9;
 export const MANY_PROMPTS = 6;
 /** Requests the app answers by itself; only the rest wait on a person. */

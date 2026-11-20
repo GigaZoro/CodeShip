@@ -7,6 +7,7 @@ import {
   type MonitoringOverviewResult,
   type MonitoringThreadDetail,
   type OrchestrationV2AppThread,
+  ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -53,6 +54,13 @@ const failureMessage = (cause: Cause.Cause<unknown>) => {
 const SummaryJson = Schema.fromJsonString(MonitoringThreadSummary);
 const decodeSummary = Schema.decodeUnknownEffect(SummaryJson);
 const encodeSummary = Schema.encodeEffect(SummaryJson);
+
+interface AnalysisRow {
+  readonly thread_id: string;
+  readonly summary_json: string;
+  readonly project_id: string;
+  readonly title: string;
+}
 
 export class MonitoringService extends Context.Service<
   MonitoringService,
@@ -174,13 +182,16 @@ const make = Effect.gen(function* () {
     if (removed.length > 0) yield* publishChange();
   });
 
-  /** Rows whose stored summary cannot be read are skipped, so one bad row hides no others. */
-  const decodeRows = (
-    rows: ReadonlyArray<{ readonly thread_id: string; readonly summary_json: string }>,
-  ) =>
+  /**
+   * Rows whose stored summary cannot be read are skipped, so one bad row hides no others. A chat
+   * can move or be renamed after it settled, so its project and title come from the chat itself.
+   */
+  const decodeRows = (rows: ReadonlyArray<AnalysisRow>) =>
     Effect.forEach(rows, (row) =>
       decodeSummary(row.summary_json).pipe(
-        Effect.asSome,
+        Effect.map((summary) =>
+          Option.some({ ...summary, projectId: ProjectId.make(row.project_id), title: row.title }),
+        ),
         Effect.catch(() =>
           Effect.logWarning("A stored chat analysis could not be read.", {
             threadId: row.thread_id,
@@ -197,8 +208,8 @@ const make = Effect.gen(function* () {
     "MonitoringService.summaries",
   )(function* (threadIds) {
     if (threadIds.length === 0) return [];
-    const rows = yield* sql<{ readonly thread_id: string; readonly summary_json: string }>`
-      SELECT m.thread_id, m.summary_json
+    const rows = yield* sql<AnalysisRow>`
+      SELECT m.thread_id, m.summary_json, t.project_id, t.title
       FROM monitoring_thread_analyses m
       JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
       WHERE m.thread_id IN ${sql.in(threadIds)}
@@ -226,8 +237,8 @@ const make = Effect.gen(function* () {
     const until = DateTime.formatIso(untilTime.value);
 
     const data = yield* Effect.gen(function* () {
-      const rows = yield* sql<{ readonly thread_id: string; readonly summary_json: string }>`
-        SELECT m.thread_id, m.summary_json
+      const rows = yield* sql<AnalysisRow>`
+        SELECT m.thread_id, m.summary_json, t.project_id, t.title
         FROM monitoring_thread_analyses m
         JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
         WHERE ${settledListedThread(sql)}

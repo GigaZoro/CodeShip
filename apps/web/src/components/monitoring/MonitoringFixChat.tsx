@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { FINDING_TEXT } from "@t3tools/client-runtime/monitoring-text";
 import { WrenchIcon } from "lucide-react";
 
 import type { MonitoringFixChat } from "../../state/monitoring";
@@ -14,6 +15,12 @@ export function MonitoringFixChatButton({ fixChat }: { readonly fixChat: Monitor
       size="xs"
       variant="outline"
       disabled={fixChat.pending}
+      // Every weak point has this button, so its name says which one it fixes.
+      aria-label={
+        fixChat.pending
+          ? undefined
+          : t("Fix root cause: {weakPoint}", { weakPoint: t(FINDING_TEXT[fixChat.code].title) })
+      }
       onClick={fixChat.start}
     >
       <WrenchIcon aria-hidden />

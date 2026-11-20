@@ -370,6 +370,11 @@ export const MonitoringFixChatInput = Schema.Struct({
   /** Where the user asked; absent means web. */
   creationSource: Schema.optional(Schema.Literals(["web", "mobile"])),
   code: MonitoringFindingCode,
+  /**
+   * The project that lost the most time to the weak point, over every chat that shows it, not
+   * only the ones sent. The chat starts in No project when it no longer exists.
+   */
+  projectId: ProjectId,
   /** Chats the weak point hit, most time lost first. */
   threadIds: Schema.Array(ThreadId).check(
     Schema.isMinLength(1),

@@ -3,6 +3,7 @@ import type {
   EnvironmentId,
   MonitoringFinding,
   MonitoringThreadDetail,
+  MonitoringThreadSummary,
   ThreadId,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
@@ -106,14 +107,17 @@ export function MonitoringThreadDeepDive({
 function FindingRow({
   finding,
   environmentId,
-  threadId,
+  summary,
 }: {
   readonly finding: MonitoringFinding;
   readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
+  readonly summary: MonitoringThreadSummary;
 }) {
   const text = FINDING_TEXT[finding.code];
-  const fixChat = useMonitoringFixChat({ environmentId, threadIds: [threadId] }, finding.code);
+  const fixChat = useMonitoringFixChat(
+    { environmentId, projectId: summary.projectId, threadIds: [summary.threadId] },
+    finding.code,
+  );
   return (
     <li className="flex flex-col gap-1 px-3 py-2.5">
       <span className="flex flex-wrap items-center gap-2">
@@ -274,7 +278,7 @@ function DeepDiveBody({
                 key={finding.code}
                 finding={finding}
                 environmentId={environmentId}
-                threadId={summary.threadId}
+                summary={summary}
               />
             ))}
           </ul>

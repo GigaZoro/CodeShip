@@ -6,14 +6,17 @@ import {
   type MonitoringFixChatResult,
   type MonitoringThreadSummary,
   type ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { redactSensitiveText } from "@t3tools/shared/redaction";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import { makeStartChatAsUser } from "../orchestration-v2/startChatAsUser.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Project from "../project/ProjectService.ts";
 import * as Monitoring from "./MonitoringService.ts";
@@ -23,6 +26,7 @@ import {
   DELEGATE_WAIT_MS,
   FAILING_COMMANDS_MIN_COUNT,
   LONG_QUEUE_MS,
+  LOW_CACHE_REUSE_MIN_INPUT,
   LOW_CACHE_REUSE_RATIO,
   MANY_PROMPTS,
   MINUTE_MS,
@@ -35,7 +39,7 @@ export class MonitoringFixChats extends Context.Service<
   {
     /**
      * Starts a chat that traces one weak point in the given chats to its root cause and fixes it,
-     * in the project that lost the most time to it.
+     * in the given project, where a new chat there would start.
      */
     readonly start: (input: MonitoringFixChatInput) => Effect.Effect<
       /** `resumed` when this request repeats one that already started the chat. */
@@ -57,6 +61,8 @@ interface WeakPointText {
 
 const minutes = (ms: number) => `${ms / MINUTE_MS} minutes`;
 const percent = (ratio: number) => `${Math.round(ratio * 100)}%`;
+const NOT_COUNTED =
+  "reads, searches and git commands other than pushes and pull-request creates and merges are not counted";
 
 const WEAK_POINT_TEXT: Readonly<Record<MonitoringFindingCode, WeakPointText>> = {
   usage_limit: {
@@ -103,13 +109,13 @@ const WEAK_POINT_TEXT: Readonly<Record<MonitoringFindingCode, WeakPointText>> = 
   },
   repeated_command: {
     title: "Same command again and again",
-    definition: `One command line ran ${REPEATED_COMMAND_MIN_COUNT} or more times; reads, searches and git commands are not counted.`,
+    definition: `One command line ran ${REPEATED_COMMAND_MIN_COUNT} or more times; ${NOT_COUNTED}.`,
     counted: "runs of it",
     detail: (detail) => `command: ${detail}`,
   },
   failing_commands: {
     title: "Failing commands",
-    definition: `Commands failed ${FAILING_COMMANDS_MIN_COUNT} or more times; reads, searches and git commands are not counted.`,
+    definition: `Commands failed ${FAILING_COMMANDS_MIN_COUNT} or more times; ${NOT_COUNTED}.`,
     counted: "failed commands",
     detail: null,
   },
@@ -127,7 +133,7 @@ const WEAK_POINT_TEXT: Readonly<Record<MonitoringFindingCode, WeakPointText>> = 
   },
   low_cache_reuse: {
     title: "Low prompt-cache reuse",
-    definition: `Less than ${percent(LOW_CACHE_REUSE_RATIO)} of the input came from the prompt cache.`,
+    definition: `Less than ${percent(LOW_CACHE_REUSE_RATIO)} of the input came from the prompt cache, in a chat of ${LOW_CACHE_REUSE_MIN_INPUT.toLocaleString("en-US")} input tokens or more.`,
     counted: null,
     detail: (detail) => `cache reuse ${detail}%`,
   },
@@ -167,21 +173,6 @@ interface Hit {
   readonly detail: string | null;
 }
 
-/** Projects by the time the weak point cost them, then by how many chats it hit. */
-function projectsByLoss(hits: ReadonlyArray<Hit>): ReadonlyArray<ProjectId> {
-  const totals = new Map<ProjectId, { wastedMs: number; chats: number }>();
-  for (const hit of hits) {
-    const total = totals.get(hit.chat.projectId) ?? { wastedMs: 0, chats: 0 };
-    totals.set(hit.chat.projectId, {
-      wastedMs: total.wastedMs + hit.wastedMs,
-      chats: total.chats + 1,
-    });
-  }
-  return [...totals.entries()]
-    .toSorted(([, left], [, right]) => right.wastedMs - left.wastedMs || right.chats - left.chats)
-    .map(([projectId]) => projectId);
-}
-
 function chatLine(
   hit: Hit,
   text: WeakPointText,
@@ -191,10 +182,13 @@ function chatLine(
   const facts = [
     ...(text.counted !== null && hit.count > 0 ? [`${hit.count} ${text.counted}`] : []),
     ...(hit.wastedMs > 0 ? [`${formatDuration(hit.wastedMs)} lost`] : []),
-    ...(text.detail !== null && hit.detail !== null ? [text.detail(hit.detail)] : []),
+    // Details are command lines and error text, which can carry tokens the chat should not see.
+    ...(text.detail !== null && hit.detail !== null
+      ? [text.detail(redactSensitiveText(hit.detail))]
+      : []),
   ];
   const where = `thread ${hit.chat.threadId}, project ${project}, settled ${hit.chat.settledAt.slice(0, 10)}`;
-  return `- "${hit.chat.title}" (${where})${facts.length > 0 ? `: ${facts.join("; ")}` : ""}`;
+  return `- "${redactSensitiveText(hit.chat.title)}" (${where})${facts.length > 0 ? `: ${facts.join("; ")}` : ""}`;
 }
 
 /** The chat's first message. It is sent as the user, so it speaks in the first person. */
@@ -225,10 +219,23 @@ const make = Effect.gen(function* () {
   const monitoring = yield* Monitoring.MonitoringService;
   const projects = yield* Project.ProjectService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+  const threads = yield* ThreadManagement.ThreadManagementService;
   const startChatAsUser = yield* makeStartChatAsUser;
+
+  const scratchProject = managedFolders.ensureScratchProject.pipe(
+    Effect.map(({ projectId }) => projectId),
+    Effect.mapError((error) => failure("launch-failed", error.message)),
+  );
 
   const start: MonitoringFixChats["Service"]["start"] = Effect.fn("MonitoringFixChats.start")(
     function* (input) {
+      const threadId = ThreadId.make(input.commandId);
+      const shell = yield* threads
+        .getThreadShell(threadId)
+        .pipe(Effect.mapError(() => failure("launch-failed", "Could not read the chat.")));
+      // A retry of a start whose answer was lost finds its chat, even once the chats it was
+      // about have been analyzed again.
+      const started = shell === null || shell.deletedAt !== null ? null : shell;
       const chats = yield* monitoring
         .summaries([...new Set(input.threadIds)])
         .pipe(Effect.mapError((error) => failure("launch-failed", error.message)));
@@ -241,31 +248,34 @@ const make = Effect.gen(function* () {
         })
         .toSorted((left, right) => right.wastedMs - left.wastedMs);
       if (hits.length === 0) {
+        if (started !== null) return { threadId, resumed: true };
         return yield* failure(
           "no-chats",
           "None of these chats still shows this weak point. Monitoring may have analyzed them again.",
         );
       }
       const projectTitles = new Map<ProjectId, string>();
-      for (const projectId of new Set(hits.map((hit) => hit.chat.projectId))) {
+      for (const projectId of new Set([
+        input.projectId,
+        ...hits.map((hit) => hit.chat.projectId),
+      ])) {
         const project = yield* projects
           .getById(projectId)
           .pipe(Effect.mapError(() => failure("launch-failed", "Could not read the project.")));
         if (Option.isSome(project)) projectTitles.set(projectId, project.value.title);
       }
-      // The project that lost the most time is where the cause most likely lives; the chat can
-      // still reach the others. Chats whose projects are all gone fall back to No project.
+      // The client picked the project that lost the most time, where the cause most likely
+      // lives; the chat can still reach the others.
       const projectId =
-        projectsByLoss(hits).find((candidate) => projectTitles.has(candidate)) ??
-        (yield* managedFolders.ensureScratchProject.pipe(
-          Effect.mapError((error) => failure("launch-failed", error.message)),
-        )).projectId;
+        started?.projectId ??
+        (projectTitles.has(input.projectId) ? input.projectId : yield* scratchProject);
       return yield* startChatAsUser({
         commandId: input.commandId,
         projectId,
         title: `Fix weak point: ${WEAK_POINT_TEXT[input.code].title}`,
         text: monitoringFixChatMessage(input.code, hits, projectTitles),
         creationSource: input.creationSource ?? "web",
+        workspace: "project-default",
       }).pipe(Effect.mapError((error) => failure(error.reason, error.detail)));
     },
     (effect, input) =>

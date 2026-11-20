@@ -1,14 +1,17 @@
 import {
+  CommandId,
   EnvironmentId,
   MONITORING_FIX_CHAT_MAX_CHATS,
   type MonitoringCommandPhase,
   type MonitoringFindingCode,
   type MonitoringFindingSeverity,
+  type MonitoringFixChatInput,
   type MonitoringOverviewResult,
   type MonitoringThreadDetail,
   type MonitoringThreadKind,
   type MonitoringThreadSummary,
   type MonitoringTimeBuckets,
+  type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -434,13 +437,35 @@ export function rankFindings(
 
 export interface MonitoringFixChatTarget {
   readonly environmentId: EnvironmentId;
+  /** Where the fix chat starts: the project that lost the most time, where the cause most likely lives. */
+  readonly projectId: ProjectId;
   /** Most time lost first. */
   readonly threadIds: ReadonlyArray<ThreadId>;
 }
 
+interface Loss<Hit> {
+  wastedMs: number;
+  hits: Array<Hit>;
+}
+
+/** The key that lost the most time, then the one with more chats. */
+function mostLost<Key, Hit>(losses: ReadonlyMap<Key, Loss<Hit>>): [Key, Loss<Hit>] | undefined {
+  return [...losses].sort(
+    ([, left], [, right]) => right.wastedMs - left.wastedMs || right.hits.length - left.hits.length,
+  )[0];
+}
+
+function addLoss<Key, Hit>(losses: Map<Key, Loss<Hit>>, key: Key, wastedMs: number, hit: Hit) {
+  const loss = losses.get(key) ?? { wastedMs: 0, hits: [] };
+  loss.wastedMs += wastedMs;
+  loss.hits.push(hit);
+  losses.set(key, loss);
+}
+
 /**
  * The chats a fix chat for one weak point reads. A chat runs on one environment and reads only that
- * one's chats, so it goes to the environment that lost the most time to the weak point.
+ * one's chats, so it goes to the environment that lost the most time to the weak point, and starts
+ * in that environment's project that lost the most, over every chat, not only the ones it reads.
  */
 export function fixChatTarget(
   chats: ReadonlyArray<MonitoringChat>,
@@ -448,28 +473,63 @@ export function fixChatTarget(
 ): MonitoringFixChatTarget | null {
   const byEnvironment = new Map<
     string,
-    { wastedMs: number; hits: Array<{ threadId: ThreadId; wastedMs: number }> }
+    Loss<{ summary: MonitoringThreadSummary; wastedMs: number }>
   >();
   for (const { environmentId, summary } of chats) {
     const finding = summary.findings.find((candidate) => candidate.code === code);
     if (finding === undefined) continue;
-    const entry = byEnvironment.get(environmentId) ?? { wastedMs: 0, hits: [] };
-    entry.wastedMs += finding.wastedMs;
-    entry.hits.push({ threadId: summary.threadId, wastedMs: finding.wastedMs });
-    byEnvironment.set(environmentId, entry);
+    addLoss(byEnvironment, environmentId, finding.wastedMs, {
+      summary,
+      wastedMs: finding.wastedMs,
+    });
   }
-  const [best] = [...byEnvironment].sort(
-    ([, left], [, right]) => right.wastedMs - left.wastedMs || right.hits.length - left.hits.length,
-  );
+  const best = mostLost(byEnvironment);
   if (best === undefined) return null;
   const [environmentId, { hits }] = best;
+  const byProject = new Map<ProjectId, Loss<null>>();
+  for (const hit of hits) addLoss(byProject, hit.summary.projectId, hit.wastedMs, null);
   return {
     environmentId: EnvironmentId.make(environmentId),
+    // Every chat it reads belongs to a project, so one always lost the most.
+    projectId: mostLost(byProject)![0],
     threadIds: hits
       .sort((left, right) => right.wastedMs - left.wastedMs)
       .slice(0, MONITORING_FIX_CHAT_MAX_CHATS)
-      .map((hit) => hit.threadId),
+      .map((hit) => hit.summary.threadId),
   };
+}
+
+/**
+ * Ids of fix-chat starts that have not reported success. They outlive the page that sent them, so
+ * a retry from a page opened again sends the same id and opens the chat a lost answer started.
+ */
+const unsettledFixChats = new Map<string, CommandId>();
+
+const fixChatKey = (target: MonitoringFixChatTarget, code: MonitoringFindingCode) =>
+  JSON.stringify([target.environmentId, target.projectId, code, target.threadIds]);
+
+/** The request that starts a fix chat, under the id of an earlier start that did not report back. */
+export function fixChatInput(
+  target: MonitoringFixChatTarget,
+  code: MonitoringFindingCode,
+  creationSource: "web" | "mobile",
+  newId: () => string,
+): MonitoringFixChatInput {
+  const key = fixChatKey(target, code);
+  const commandId = unsettledFixChats.get(key) ?? CommandId.make(newId());
+  unsettledFixChats.set(key, commandId);
+  return {
+    commandId,
+    creationSource,
+    code,
+    projectId: target.projectId,
+    threadIds: target.threadIds,
+  };
+}
+
+/** Forgets a start that reported success, so the next press starts another chat. */
+export function settleFixChat(target: MonitoringFixChatTarget, code: MonitoringFindingCode) {
+  unsettledFixChats.delete(fixChatKey(target, code));
 }
 
 export interface MonitoringOutliers {

@@ -156,6 +156,25 @@ it.effect("analyzes settled chats at start and drops one when it is unsettled", 
   }).pipe(Effect.scoped),
 );
 
+it.effect("lists a chat under its current project and title after it moved", () =>
+  Effect.gen(function* () {
+    const { monitoring, seedThread, sql } = yield* makeHarness();
+    yield* seedThread("moved-chat");
+    yield* monitoring.start();
+    yield* nextChange(monitoring, 0);
+
+    yield* sql`
+      UPDATE orchestration_v2_projection_threads
+      SET project_id = 'project-2', title = 'Renamed chat'
+      WHERE thread_id = 'moved-chat'
+    `;
+    const current = { projectId: "project-2", title: "Renamed chat" };
+    const { threads } = yield* monitoring.overview({ since: SINCE, until: UNTIL });
+    expect(threads).toMatchObject([current]);
+    expect(yield* monitoring.summaries([ThreadId.make("moved-chat")])).toMatchObject([current]);
+  }).pipe(Effect.scoped),
+);
+
 it.effect("follows a settle and an unsettle that come without their own event", () =>
   Effect.gen(function* () {
     const { events, monitoring, seedThread, sql } = yield* makeHarness();

@@ -1,4 +1,5 @@
 import {
+  EnvironmentAuthorizationError,
   type MonitoringCommandPhase,
   type MonitoringFinding,
   type MonitoringFindingCode,
@@ -126,23 +127,31 @@ const FINDING_DETAIL_INLINE: ReadonlySet<MonitoringFindingCode> = new Set([
   "context_pressure",
 ]);
 
-const FIX_CHAT_FAILURE_MESSAGES: Readonly<Record<MonitoringFixChatFailure | "offline", Message>> = {
+const FIX_CHAT_FAILURE_MESSAGES: Readonly<
+  Record<MonitoringFixChatFailure | "unauthorized" | "offline", Message>
+> = {
   "no-chats": msg("Those chats no longer show this weak point. Refresh and try again."),
   "no-model": msg(
     "No provider account on that machine is signed in. Sign in to one, then try again.",
   ),
   "launch-failed": msg("The chat could not be started. Try again."),
+  unauthorized: msg("This connection may not start chats on that machine."),
   offline: msg("Could not reach the machine that runs the chat."),
 };
 
 const isMonitoringFixChatError = Schema.is(MonitoringFixChatError);
+const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 /** Why a fix chat did not start, from the failed command's cause. */
 export function monitoringFixChatFailureMessage(cause: Cause.Cause<unknown>): string {
-  const error = Cause.findErrorOption(cause);
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
   return t(
     FIX_CHAT_FAILURE_MESSAGES[
-      Option.isSome(error) && isMonitoringFixChatError(error.value) ? error.value.reason : "offline"
+      isMonitoringFixChatError(error)
+        ? error.reason
+        : isAuthorizationError(error)
+          ? "unauthorized"
+          : "offline"
     ],
   );
 }

@@ -255,7 +255,11 @@ function DeepDiveBody(props: {
                   </Text>
                 ) : null}
                 <MonitoringFixChatAction
-                  target={{ environmentId, threadIds: [summary.threadId] }}
+                  target={{
+                    environmentId,
+                    projectId: summary.projectId,
+                    threadIds: [summary.threadId],
+                  }}
                   code={finding.code}
                 />
               </View>

@@ -5,11 +5,13 @@ import {
   type MonitoringFinding,
   type MonitoringFixChatInput,
   type MonitoringThreadSummary,
+  type OrchestrationV2ThreadShell,
   type Project as ProjectRecord,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerSettings as ServerSettingsValue,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -23,6 +25,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Project from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as MonitoringFixChats from "./MonitoringFixChats.ts";
 import * as Monitoring from "./MonitoringService.ts";
 
@@ -70,7 +73,9 @@ const chat = (
   }) as unknown as MonitoringThreadSummary;
 
 const chats = [
-  chat("thread:a", app, [slowCommand(30 * MINUTE, "vp run test")]),
+  chat("thread:a", app, [
+    slowCommand(30 * MINUTE, "TOKEN=sk-ant-abcdefghijklmnopqrstuvwxyz0123 vp run test"),
+  ]),
   chat("thread:b", site, [slowCommand(45 * MINUTE, "vp run build")]),
   chat("thread:c", site, [slowCommand(10 * MINUTE, "vp run lint")]),
   chat("thread:d", app, [
@@ -82,13 +87,22 @@ const input: MonitoringFixChatInput = {
   commandId: CommandId.make("command:fix"),
   creationSource: "mobile",
   code: "slow_command",
+  projectId: site,
   threadIds: chats.map((summary) => summary.threadId),
 };
 
-const projectRecord = (id: ProjectId, title: string) => ({ id, title }) as ProjectRecord;
+const projectRecord = (id: ProjectId, title: string) =>
+  ({ id, title, workspaceRoot: `/projects/${title}` }) as ProjectRecord;
+
+interface Setup {
+  readonly existingProjects: ReadonlyArray<ProjectRecord>;
+  /** Chats that already exist, such as one an earlier attempt of the same request started. */
+  readonly existingChats?: ReadonlyArray<{ readonly id: ThreadId; readonly projectId: ProjectId }>;
+  readonly settings?: Partial<ServerSettingsValue>;
+}
 
 const layerFor = (
-  existingProjects: ReadonlyArray<ProjectRecord>,
+  { existingProjects, existingChats = [], settings = {} }: Setup,
   launches: Ref.Ref<ReadonlyArray<ThreadLaunch.ThreadLaunchInput>>,
 ) =>
   MonitoringFixChats.layer.pipe(
@@ -117,7 +131,26 @@ const layerFor = (
     ),
     Layer.provide(
       Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: () => Effect.succeed(null),
+        getThreadShell: (threadId) => {
+          const existing = existingChats.find((candidate) => candidate.id === threadId);
+          return Effect.succeed(
+            existing === undefined
+              ? null
+              : ({
+                  ...existing,
+                  deletedAt: null,
+                  modelSelection: { instanceId, model: "large" },
+                } as unknown as OrchestrationV2ThreadShell),
+          );
+        },
+      }),
+    ),
+    // Every project is a repository whose remote's default branch is main.
+    Layer.provide(
+      Layer.mock(GitVcsDriver.GitVcsDriver)({
+        resolveCommit: () => Effect.succeed({ commitSha: "abc123" }),
+        resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+        resolveDefaultBranchName: () => Effect.succeed("main"),
       }),
     ),
     Layer.provide(
@@ -132,20 +165,20 @@ const layerFor = (
       }),
     ),
     Layer.provide(
-      ServerSettings.layerTest({ providerInstances: { [instanceId]: { driver: claude } } }),
+      ServerSettings.layerTest({
+        providerInstances: { [instanceId]: { driver: claude } },
+        ...settings,
+      }),
     ),
     Layer.provide(NodeServices.layer),
   );
 
-const start = (
-  existingProjects: ReadonlyArray<ProjectRecord>,
-  request: MonitoringFixChatInput = input,
-) =>
+const start = (setup: Setup, request: MonitoringFixChatInput = input) =>
   Effect.gen(function* () {
     const launches = yield* Ref.make<ReadonlyArray<ThreadLaunch.ThreadLaunchInput>>([]);
     const result = yield* MonitoringFixChats.MonitoringFixChats.pipe(
       Effect.flatMap((service) => service.start(request)),
-      Effect.provide(layerFor(existingProjects, launches).pipe(Layer.orDie)),
+      Effect.provide(layerFor(setup, launches).pipe(Layer.orDie)),
       Effect.result,
     );
     return { result, launches: yield* Ref.get(launches) };
@@ -154,16 +187,16 @@ const start = (
 describe("MonitoringFixChats", () => {
   it.effect("starts a chat that lists every chat with the weak point, most time lost first", () =>
     Effect.gen(function* () {
-      const { result, launches } = yield* start([
-        projectRecord(app, "App"),
-        projectRecord(site, "Site"),
-      ]);
+      const { result, launches } = yield* start({
+        existingProjects: [projectRecord(app, "App"), projectRecord(site, "Site")],
+      });
       expect(result).toMatchObject({ _tag: "Success", success: { threadId: "thread:fix" } });
       expect(launches).toHaveLength(1);
       const [launch] = launches;
       expect(launch).toMatchObject({
         commandId: input.commandId,
         threadId: input.commandId,
+        projectId: site,
         title: "Fix weak point: Slow commands",
         workspaceStrategy: { type: "root" },
         createdBy: "user",
@@ -176,34 +209,57 @@ describe("MonitoringFixChats", () => {
       const lines = text.split("\n").filter((line) => line.startsWith("- "));
       expect(lines).toEqual([
         '- "Chat thread:b" (thread thread:b, project Site, settled 2026-11-19): 2 slow commands; 45m lost; slowest command: vp run build',
-        '- "Chat thread:a" (thread thread:a, project App, settled 2026-11-19): 2 slow commands; 30m lost; slowest command: vp run test',
+        '- "Chat thread:a" (thread thread:a, project App, settled 2026-11-19): 2 slow commands; 30m lost; slowest command: TOKEN=[redacted] vp run test',
         '- "Chat thread:c" (thread thread:c, project Site, settled 2026-11-19): 2 slow commands; 10m lost; slowest command: vp run lint',
       ]);
     }),
   );
 
-  it.effect.each([
-    [
-      "the project that lost the most time",
-      [projectRecord(app, "App"), projectRecord(site, "Site")],
-      site,
-    ],
-    ["the next project when that one is gone", [projectRecord(app, "App")], app],
-    ["No project when every project is gone", [], scratchProjectId],
-  ] as const)("starts in %s", ([, existingProjects, projectId]) =>
+  it.effect("starts in No project when the chosen project is gone", () =>
     Effect.gen(function* () {
-      const { launches } = yield* start(existingProjects);
-      expect(launches[0]?.projectId).toBe(projectId);
+      const { launches } = yield* start({ existingProjects: [projectRecord(app, "App")] });
+      expect(launches[0]?.projectId).toBe(scratchProjectId);
+    }),
+  );
+
+  it.effect("starts in a worktree from the default branch when the project uses worktrees", () =>
+    Effect.gen(function* () {
+      const { launches } = yield* start({
+        existingProjects: [projectRecord(site, "Site")],
+        settings: { defaultThreadEnvMode: "worktree" },
+      });
+      expect(launches[0]?.workspaceStrategy).toEqual({
+        type: "worktree",
+        baseRef: "origin/main",
+        startFromOrigin: true,
+      });
     }),
   );
 
   it.effect("fails without starting a chat when no chat still shows the weak point", () =>
     Effect.gen(function* () {
-      const { result, launches } = yield* start([projectRecord(app, "App")], {
-        ...input,
-        code: "usage_limit",
-      });
+      const { result, launches } = yield* start(
+        { existingProjects: [projectRecord(app, "App")] },
+        { ...input, code: "usage_limit" },
+      );
       expect(result).toMatchObject({ _tag: "Failure", failure: { reason: "no-chats" } });
+      expect(launches).toEqual([]);
+    }),
+  );
+
+  it.effect("opens the chat a lost answer started, even once its chats no longer qualify", () =>
+    Effect.gen(function* () {
+      const { result, launches } = yield* start(
+        {
+          existingProjects: [projectRecord(app, "App")],
+          existingChats: [{ id: ThreadId.make(input.commandId), projectId: app }],
+        },
+        { ...input, code: "usage_limit" },
+      );
+      expect(result).toMatchObject({
+        _tag: "Success",
+        success: { threadId: input.commandId, resumed: true },
+      });
       expect(launches).toEqual([]);
     }),
   );

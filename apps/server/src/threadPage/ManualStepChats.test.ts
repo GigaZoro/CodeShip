@@ -20,6 +20,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Project from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ManualStepChats from "./ManualStepChats.ts";
 
 const scratchProjectId = ProjectId.make("project:scratch");
@@ -84,6 +85,8 @@ const layerFor = (
       }),
     ),
     Layer.provide(Layer.mock(Project.ProjectService)({ getById: () => Effect.succeedNone })),
+    // Manual-step chats always run in the checkout, so they never ask git for a worktree base.
+    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed(providers) }),
     ),

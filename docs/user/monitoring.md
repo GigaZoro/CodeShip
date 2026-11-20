@@ -19,7 +19,8 @@ you are connected to; if one cannot be read, a warning names it.
 - **Weak points** ranks findings such as repeated or slow commands, failed runs and low cache
   reuse. Select one to list only the chats it hit. **Fix root cause** starts a chat that reads
   the chats it hit, up to 20 that lost the most time, traces the weak point to its cause and fixes
-  it. The chat runs on the machine and in the project that lost the most time to it.
+  it. The chat runs on the machine and in the project that lost the most time to it, and starts
+  the way a new chat there would, in a worktree when the project uses them.
 - **Steps** groups shell commands by what they were for.
 - **Daily trend**, the **breakdowns** and the **chat list** compare days, projects, kinds and
   models. Select a chat to open its deep dive.

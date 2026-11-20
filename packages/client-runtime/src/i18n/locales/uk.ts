@@ -6041,6 +6041,7 @@ const catalog: MessageCatalog = {
   "Fix in a thread": "Виправити в чаті",
   "Fix in this thread": "Виправити в цьому чаті",
   "Fix root cause": "Усунути першопричину",
+  "Fix root cause: {weakPoint}": "Усунути першопричину: {weakPoint}",
   "Fix the cause before running it again; run focused checks first.":
     "Усуньте причину, перш ніж запускати знову; спершу запускайте точкові перевірки.",
   "Fix the expression above to continue editing visually.":
@@ -12800,6 +12801,8 @@ const catalog: MessageCatalog = {
     "Це підключення не має дозволу змінювати налаштування на {environment}.",
   "This connection lacks permission to change these settings.":
     "Це з’єднання не має дозволу змінювати ці налаштування.",
+  "This connection may not start chats on that machine.":
+    "Це підключення не може запускати чати на тій машині.",
   "This connection needs permission to view and manage T3 Connect settings.":
     "Цьому з’єднанню потрібен дозвіл на перегляд і керування налаштуваннями T3 Connect.",
   "This connection needs permission to write source control and add projects.":
