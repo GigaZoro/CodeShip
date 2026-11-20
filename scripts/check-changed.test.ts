@@ -41,8 +41,10 @@ import {
   ignoredInputs,
   isTestInput,
   keepModuleCache,
+  runSpawner,
   runSteps,
   runTestGroups,
+  spawnVp,
   splitTests,
   suiteSteps,
   testStepTimeoutSeconds,
@@ -769,6 +771,29 @@ describe("check:changed", () => {
         yield* Fiber.join(listing),
         `check:changed: git ls-files --others did not finish within ${GIT_TIMEOUT}`,
       );
+    }),
+  );
+
+  // Each walk of a Windows process tree starts PowerShell, which takes seconds on a loaded machine, and
+  // a run makes many git calls, one after another.
+  it.effect("walks the tree of each step on Windows, and of no git call that exited", () =>
+    Effect.gen(function* () {
+      const spawned: Array<string> = [];
+      const fake = fakeGit(() => ({ exitCode: exited(0), stdout: "a.ts\n" }));
+      const spawner = runSpawner(
+        ChildProcessSpawner.make((command) => {
+          if (ChildProcess.isStandardCommand(command)) spawned.push(command.command);
+          return fake.spawn(command);
+        }),
+        "win32",
+      );
+      const listed = yield* gitLines("/repo", ["ls-files"]).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+      assert.deepStrictEqual(listed, ["a.ts"]);
+      assert.deepStrictEqual(spawned, ["git"]);
+      yield* spawnVp(spawner, "win32", ["lint"], "/repo", {}, () => {});
+      assert.deepStrictEqual(spawned, ["git", process.execPath, "powershell.exe"]);
     }),
   );
 

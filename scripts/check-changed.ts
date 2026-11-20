@@ -960,7 +960,7 @@ export const uncachedTests = [
 ];
 
 // Output is piped, so keep the colors a terminal would get.
-const spawnVp = (
+export const spawnVp = (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
   platform: NodeJS.Platform,
   args: ReadonlyArray<string>,
@@ -971,7 +971,9 @@ const spawnVp = (
   Effect.scoped(
     Effect.gen(function* () {
       const [command, commandArgs] = vitePlusCommand(args, platform);
-      const handle = yield* spawner.spawn(
+      // A step's tools start workers and servers, which end with the step, also after it exited, as
+      // its process group does on POSIX.
+      const handle = yield* endingWindowsTrees(spawner, platform, "always").spawn(
         ChildProcess.make(command, commandArgs, {
           cwd,
           env: { ...(process.stdout.isTTY ? { FORCE_COLOR: "1" } : {}), ...extraEnv },
@@ -1944,12 +1946,20 @@ export const checkChangedCommand = Command.make(
     ),
 ).pipe(Command.withDescription("Run CI's fast checks for this branch's changes."));
 
-// Every process ends with what it started, also after it exited, as its process group does on POSIX.
+// A walk of a Windows process tree starts PowerShell, which takes seconds on a loaded machine, so a git
+// call's tree is walked only when it is killed or a process it started still holds its output. What git
+// leaves once it exited with its output closed, such as its fsmonitor or credential-cache daemon, is
+// meant to outlive it, as it does on POSIX. Each step's tree is walked (spawnVp).
+export const runSpawner = (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  platform: NodeJS.Platform,
+) => endingWindowsTrees(spawner, platform, "leftBehind");
+
 const spawnerLayer = Layer.effect(
   ChildProcessSpawner.ChildProcessSpawner,
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    return endingWindowsTrees(spawner, yield* HostProcess.Platform);
+    return runSpawner(spawner, yield* HostProcess.Platform);
   }),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
