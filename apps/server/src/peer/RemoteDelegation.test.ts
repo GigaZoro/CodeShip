@@ -1343,6 +1343,54 @@ it.effect.each([
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect(
+  "a launch whose reply is lost with the box unreachable is followed once the box is back",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const retries = yield* steppedRetries;
+        const a = yield* makeLaptop(database, offers).pipe(
+          Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        // The thread is there, then the box goes away before the reply arrives.
+        yield* Ref.set(
+          thread.afterLaunch,
+          Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere")).pipe(
+            Effect.andThen(Effect.die("reply lost")),
+          ),
+        );
+        const result = yield* a.call("delegate_task", {
+          task: "Run the full suite on the box.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "lost-reply",
+        });
+        expect(result.isError).toBe(true);
+        // The task was on record before the launch, so it is followed, not forgotten.
+        expect(yield* a.projections.getOpenRemoteDelegatedTasks).toHaveLength(1);
+        yield* Ref.set(b.descriptor, box);
+        yield* Ref.set(thread.reply, "Done on the box.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        yield* Queue.offer(retries.retry, undefined);
+        const [open] = yield* a.projections.getOpenRemoteDelegatedTasks;
+        expect(yield* taskResult(a, open!.taskId)).toMatchObject({ result: "Done on the box." });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("a task named only by driver runs on the box's own instance of it", () =>
   Effect.scoped(
     Effect.gen(function* () {

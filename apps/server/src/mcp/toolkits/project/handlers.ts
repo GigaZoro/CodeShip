@@ -129,7 +129,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           input.clientRequestId === undefined
             ? yield* newCommandId()
             : yield* launchCommandId(scope.requestNamespace, input.clientRequestId);
-        const threadId = ThreadId.make(commandId);
+        // Only the link's own session may choose the id, so its delegated task is on record
+        // before the thread exists.
+        const threadId =
+          input.threadId !== undefined && input.delegatedFrom !== undefined && caller === undefined
+            ? input.threadId
+            : ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         if (
           input.scratch === true &&

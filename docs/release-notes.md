@@ -1,3 +1,7 @@
+## 2026-11-20 — Delegated tasks on linked machines survive a restart mid-launch
+
+- A task delegated to a linked environment is recorded before its chat starts there, so a restart or lost reply no longer leaves a chat running on the other machine that nothing follows. A launch that never happened fails the task instead.
+
 ## 2026-11-20 — A command-runner test no longer waits forever for a file that already exists
 
 - Maintainers: the command-runner tests could hang for two minutes under load while waiting for a file their command had already written, because the wait reported only changes from a baseline it read after the file appeared. It now looks at the file on a short timer. No change to the app.

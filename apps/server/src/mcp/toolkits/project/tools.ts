@@ -132,6 +132,8 @@ const LaunchWorkspaceStrategy = OrchestrationV2ThreadLaunchWorkspaceStrategy.map
   ],
 );
 export type LaunchWorkspaceStrategy = typeof LaunchWorkspaceStrategy.Type;
+/** The id a linked environment gives the thread of a delegated task it launches here. */
+const REMOTE_DELEGATE_THREAD_ID = /^remote-delegate:[0-9a-f]{64}$/;
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
@@ -176,6 +178,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
     /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+    /** Set by a linked environment that recorded its delegated task before launching it here; ignored otherwise. */
+    threadId: Schema.optional(ThreadId.check(Schema.isPattern(REMOTE_DELEGATE_THREAD_ID))),
   }),
   success: Schema.Struct({
     threadId: ThreadId,

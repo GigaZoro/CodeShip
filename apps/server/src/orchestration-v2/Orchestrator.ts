@@ -710,6 +710,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "delegated_task.remote.request":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
+    case "delegated_task.remote.attach-run":
     case "delegated_task.command.request":
     case "delegated_task.command.complete":
     case "delegated_task.wake-policy":
@@ -9290,6 +9291,56 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     yield* emitRemoteStopOwed(events, command, task, task.remoteChild);
   });
 
+  const dispatchRemoteDelegatedTaskAttachRun = Effect.fn(
+    "orchestrationV2.dispatch.remoteDelegatedTaskAttachRun",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "delegated_task.remote.attach-run" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const { subagents } = yield* projectionStore
+      .getThreadRecords(command.parentThreadId, ["subagents"])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
+        ),
+      );
+    const task = subagents.find(
+      (candidate) =>
+        candidate.id === command.taskId &&
+        candidate.origin === "app_owned" &&
+        candidate.remoteChild !== undefined,
+    );
+    if (task?.remoteChild === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Delegated task ${command.taskId} is not a remote task of thread ${command.parentThreadId}.`,
+      });
+    }
+    // The first run named stands, and a finished task has no use for one.
+    if (task.result !== null || task.remoteChild.runId !== undefined) return;
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "subagent.updated",
+      threadId: command.parentThreadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      occurredAt: now,
+      payload: {
+        ...task,
+        remoteChild: { ...task.remoteChild, runId: command.runId },
+        updatedAt: now,
+      },
+    });
+  });
+
   const emitRemoteStopOwed = Effect.fn("orchestrationV2.dispatch.remoteStopOwed")(function* (
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     command: Extract<
@@ -14741,6 +14792,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "delegated_task.remote.stop":
         yield* dispatchRemoteDelegatedTaskStop(command, events);
+        break;
+      case "delegated_task.remote.attach-run":
+        yield* dispatchRemoteDelegatedTaskAttachRun(command, events);
         break;
       case "delegated_task.command.request":
         yield* dispatchCommandTaskRequest(command, events);

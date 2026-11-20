@@ -3772,6 +3772,18 @@ const OrchestrationV2InternalCommand = Schema.Union([
     taskId: NodeId,
   }),
   /**
+   * Records the run there that carries a remote task, once its launch returned it. The task is
+   * recorded before the launch, so this is the only way its follower learns which run is its
+   * own. A task that has its result, or already names a run, keeps it.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.attach-run"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    runId: RunId,
+  }),
+  /**
    * Records a `t3_command_run` command on the thread that runs it: the task, its node and its
    * turn item, as a remote task is recorded. The ids derive from `commandId`, so a retry records
    * nothing new.
