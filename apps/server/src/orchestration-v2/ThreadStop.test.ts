@@ -1277,6 +1277,8 @@ it.effect.each([
   "missing session",
   "live session",
   "only if active",
+  "MCP queued restart",
+  "MCP delayed restart with live session",
   "without queue hold",
 ] as const)(
   "per-run Stop reaches pending work on provider threads across a restart continuation (%s)",
@@ -1343,7 +1345,19 @@ it.effect.each([
           completedAt: now,
         },
       });
+      const mcp = scenario.startsWith("MCP");
+      const delayed = scenario.startsWith("MCP delayed");
       const unprepared = scenario.startsWith("unprepared");
+      if (delayed) {
+        yield* outbox.enqueue([
+          EffectOutbox.restartContinuationEffect({
+            commandId: CommandId.make("pending-retry"),
+            threadId,
+            sourceRunId: source.id,
+            availableAt: DateTime.add(now, { minutes: 3 }),
+          }),
+        ]);
+      }
       const live = scenario.endsWith("live session");
       yield* projections.apply({
         ...event,
@@ -1351,7 +1365,7 @@ it.effect.each([
         type: "run.updated",
         payload: {
           ...queued,
-          restartContinuationOfRunId: source.id,
+          ...(delayed ? {} : { restartContinuationOfRunId: source.id }),
           ...(unprepared
             ? {
                 status: "failed" as const,
@@ -1487,20 +1501,34 @@ it.effect.each([
         });
       }
       const commandId = CommandId.make("stop-queued-restart");
-      const holdQueue = scenario !== "without queue hold";
+      const holdQueue = !mcp && scenario !== "without queue hold";
       const onlyIfActive = scenario === "only if active";
-      const { storedEvents } = yield* orchestrator.dispatch(
-        threadWide
-          ? { type: "thread.stop", threadId, commandId }
-          : {
-              type: "run.interrupt",
+      const { storedEvents } = yield* mcp
+        ? Effect.gen(function* () {
+            const threads = yield* ThreadManagementService.ThreadManagementService;
+            const result = yield* threads.interruptThread({
+              projectId: before.thread.projectId,
               threadId,
-              commandId,
               runId: source.id,
-              holdQueue,
-              ...(onlyIfActive ? { onlyIfActive } : {}),
-            },
-      );
+              commandId,
+            });
+            assert.equal(result.type, "interrupt_requested");
+            if (result.type !== "interrupt_requested")
+              return assert.fail("pending restart was not interrupted");
+            return result.dispatch;
+          })
+        : orchestrator.dispatch(
+            threadWide
+              ? { type: "thread.stop", threadId, commandId }
+              : {
+                  type: "run.interrupt",
+                  threadId,
+                  commandId,
+                  runId: source.id,
+                  holdQueue,
+                  ...(onlyIfActive ? { onlyIfActive } : {}),
+                },
+          );
       const interrupts = (yield* outbox.listByCommandId(commandId)).flatMap(({ request }) =>
         request.type === "provider-turn.interrupt" ? [request] : [],
       );
@@ -1537,15 +1565,15 @@ it.effect.each([
       const stopped = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(
         stopped.providerThreads.find((p) => p.id === owner.id)!.pendingBackgroundTasks,
-        onlyIfActive ? roster : [],
+        [],
       );
       assert.equal(
         stopped.turnItems.find((item) => item.id === itemId)?.status,
-        onlyIfActive || (separateOwner && !threadWide) ? "running" : "interrupted",
+        separateOwner && !threadWide ? "running" : "interrupted",
       );
       assert.equal(
         stopped.runs.find((run) => run.id === queued.id)?.status,
-        unprepared ? "failed" : "cancelled",
+        delayed ? "queued" : unprepared ? "failed" : "cancelled",
       );
       if (unprepared)
         assert.deepInclude(
@@ -1560,7 +1588,7 @@ it.effect.each([
             ? [event.runId]
             : [],
         ),
-        [queued.id, source.id],
+        delayed ? [source.id] : [queued.id, source.id],
       );
       assert.lengthOf(
         storedEvents.filter(
@@ -1573,16 +1601,12 @@ it.effect.each([
       );
       if (cancelledLater)
         assert.equal(stopped.runs.find((run) => run.id === later.id)?.status, "cancelled");
-      if (!onlyIfActive) {
-        assert.equal(
-          stopped.subagents.find((task) => task.childThreadId === sourceChild)?.completionDelivery
-            ?.state,
-          "disposed",
-        );
-      }
-      assert.deepEqual((yield* threadState(sourceChild)).runs, [
-        onlyIfActive ? "starting" : "interrupted",
-      ]);
+      assert.equal(
+        stopped.subagents.find((task) => task.childThreadId === sourceChild)?.completionDelivery
+          ?.state,
+        "disposed",
+      );
+      assert.deepEqual((yield* threadState(sourceChild)).runs, ["interrupted"]);
       assert.deepEqual((yield* threadState(unrelatedChild)).runs, [
         threadWide ? "interrupted" : "starting",
       ]);
