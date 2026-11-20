@@ -1832,7 +1832,9 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     harness.getThreadRecords.mockImplementationOnce(() =>
       Deferred.succeed(readEntered, undefined).pipe(Effect.as(harness.projection())),
     );
-    const holder = yield* withWorkspaceLease(worktreePath, Deferred.await(release)).pipe(
+    // The service keys its lease by the resolved path, which gains a drive letter on Windows.
+    const resolvedPath = (yield* Path.Path).resolve(worktreePath);
+    const holder = yield* withWorkspaceLease(resolvedPath, Deferred.await(release)).pipe(
       Effect.forkChild({ startImmediately: true }),
     );
     const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
@@ -1848,7 +1850,7 @@ effectIt.effect("reads current startup state after waiting for the workspace lea
     yield* Fiber.join(startup);
     expect(harness.open).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
-  }),
+  }).pipe(Effect.provide(NodePath.layer)),
 );
 
 // regression: #15784 superseded provider startups kept running

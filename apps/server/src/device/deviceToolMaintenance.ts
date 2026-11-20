@@ -43,7 +43,8 @@ async function withToolMaintenance(root, operation) {
           try { previous = JSON.parse(maintenanceFs.readFileSync(previousFile, 'utf8')); } catch {}
           if (Number.isSafeInteger(previous?.pid) && previous.pid > 0 && !maintenanceAlive(previous.pid)) {
             // The unique filename belongs only to that owner. Never unlink a replacement owner's file.
-            try { maintenanceFs.unlinkSync(previousFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+            // Windows refuses to delete a file another waiter has open; that waiter closes it, and this loop retries.
+            try { maintenanceFs.unlinkSync(previousFile); } catch (error) { if (!['ENOENT', 'EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error; }
           }
         }
         // A concurrent acquirer publishes its owner file with the directory, so this cannot remove it.
@@ -54,7 +55,14 @@ async function withToolMaintenance(root, operation) {
     }
     try { return operation(); }
     finally {
-      maintenanceFs.unlinkSync(maintenancePath.join(lock, ownerFile));
+      for (let attempt = 0; ; attempt++) {
+        try { maintenanceFs.unlinkSync(maintenancePath.join(lock, ownerFile)); break; }
+        catch (error) {
+          // A waiter reading this owner file on Windows blocks the delete for a moment.
+          if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || attempt >= 100) throw error;
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
       removeEmptyLock();
     }
   } finally {

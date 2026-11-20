@@ -70,6 +70,10 @@ jobs:
       - name: Install
         run: vp install
 
+      - name: Install Chromium for server browser tests
+        if: inputs.package == 'apps/server'
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+
       - name: Ensure Electron runtime is installed
         if: inputs.package == '' || inputs.package == 'apps/desktop'
         run: vp run --filter "@t3tools/desktop" ensure:electron
