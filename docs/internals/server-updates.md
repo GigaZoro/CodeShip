@@ -310,8 +310,9 @@ provider and server lifetimes. The [command runner](../../apps/server/src/comman
 starts POSIX commands in their own session; Linux services also give them a systemd scope
 outside the service cgroup. Windows uses WMI to start a separate native host. The host
 creates the command inside a named Job Object before any command code executes, and
-holds the job until the command ends. A restarted server opens that job by name to stop
-or inspect it. Windows retains descendant membership even when an intermediate process
+holds the job until the command ends. A restarted server opens the job, pins the recorded
+child process, and verifies its exact creation time and membership before stopping it.
+A reused job name never authorizes termination. Windows retains descendant membership even when an intermediate process
 exits; PID ancestry snapshots cannot establish that ownership. The host closes admission
 and terminates the job before reporting completion. A host crash also terminates the job.
 
@@ -320,23 +321,29 @@ through the worker, standalone spawners and SDK callbacks. Their control pipe ke
 owned through startup: losing the owner ends the job unless an acknowledged unref permits
 it to outlive that owner. Command-runner hosts instead survive server restarts. Job handles
 and control descriptors are private to the host, so a child cannot retain ownership by
-inheriting them. The helper builds into a source-hashed cache using the Windows .NET Framework
-compiler; failure to prepare it fails startup before execution.
+inheriting them. The host releases its copies of command stream handles after spawn, so a
+child closing stdout can finish a protocol stream while it remains alive. The helper builds
+with the Windows .NET Framework compiler and verifies cached executable contents by SHA-256
+once per server process. It is unsigned and stored in the user's cache: AppLocker or WDAC rules
+that block executables in user-writable folders prevent Windows commands from launching;
+the launch error names these policies as a possible cause.
 
 Launch and identity work run outside the shared state lock. Startup registers every row
 before accepting new requests, without waiting for probes. Separate bounded probe and stop
 queues keep cancellation and deadlines independent of a held launcher or identity check.
 Healthy commands use cheap liveness checks with periodic identity verification. Before a
-Windows command takes its start gate, the native host records its PID and UTC creation time.
-Cancellation and recovery atomically close the same gate. A closed gate proves the command
+command takes its start gate, its wrapper records its PID; on Windows the native host also records
+its UTC creation time. POSIX and Windows cancellation and recovery atomically close the same gate.
+A closed gate proves the command
 cannot execute, including a late WMI creation; a failed database write does not prevent gate
 closure. Gate failures are written to the command log.
 
 A launcher failure returns a task ID. The task remains watched while startup evidence is
 unreadable, and its result arrives through normal task delivery. Recovery retries filesystem
 and database failures after a restart too. Missing legacy evidence proves neither execution
-nor non-execution. A deadline reports the task's failure while unresolved cleanup stays
-watched, with result reporting recorded separately from cleanup completion. A status file
+nor non-execution. Deadlines and cancellation report once before identity probes or termination,
+with cleanup explicitly pending. Cleanup failures remain watched and retry independently;
+delivery is recorded only after the gate is closed or authorized cleanup finishes. A status file
 preserves the wrapper-reported PID even when identity is unavailable. Proven absence,
 replacement or reboot ends a legacy task; an unknown identity alone does not prove loss.
 
@@ -344,8 +351,12 @@ Commands started by older Windows versions have no job membership record. Cleanu
 only a root with an exact creation time, through the same opened handle used to verify it;
 it cannot safely recover descendant ownership from reused PIDs. POSIX fills missing identity
 only within the recorded launch and PID-file bounds, allowing the one-second precision of
-`ps`. POSIX has no start gate: cancellation reconciles spawn and stops the process group,
-which can outlive its leader. Neither platform treats an I/O failure as a missing status file.
+`ps`. Persisted PID replacement or reboot evidence forbids further PID or process-group signals.
+A systemd unit owns its cleanup even after the leader exits. Without a unit, as on macOS,
+cleanup may signal the surviving group only when no replacement has been observed. One window
+remains unobservable: the whole original group ends, a replacement leader reuses its PID, and
+that leader exits while its children live, all between two probes. Neither platform treats
+an I/O failure as a missing status file or a delay as proof that a launch cannot execute.
 
 Output goes to a capped log and exit status is published by atomic rename. The Windows
 command has a separate console so its Ctrl+C or console close cannot end the wrapper first.
