@@ -1015,7 +1015,8 @@
 ## 2026-11-19 — Automatic updates run daily on desktop and background servers
 
 - Set **Automatic update time** in **Settings → Maintenance & about → Updates**. It defaults to 03:00 in the machine's time zone. If a newer release was published by that time, the machine installs the newest available release.
-- Desktop and background servers give active chats time to finish and pause new scheduled starts if needed. A desktop app with chats running all day can now update, and interrupted chats resume after it restarts.
+- Desktop and background servers give active chats time to finish and pause new scheduled starts if needed. A desktop app with chats running all day can now update, and interrupted chats resume after it restarts when **Continue threads after restarts** is on (the default).
+- An automatic update that fails is tried again after 15 minutes, then less often, up to every six hours, also across restarts.
 
 ## 2026-11-19 — The upstream sync checks against its own base
 

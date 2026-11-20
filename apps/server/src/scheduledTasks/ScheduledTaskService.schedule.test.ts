@@ -325,7 +325,7 @@ it.effect.each([
         yield* TestClock.adjust(drain);
         expect(yield* Ref.get(launched)).toBe(0);
         return task;
-      }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(true)));
+      }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(1)));
 
       yield* Effect.gen(function* () {
         const service = yield* ScheduledTaskService.ScheduledTaskService;
@@ -400,7 +400,7 @@ it.effect("runs a fixed-time run an update held once a restart cut its run condi
       );
       yield* TestClock.adjust("90 minutes");
       return task;
-    }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(true)));
+    }).pipe(Effect.provide(layer), Effect.provideService(UpdateDrain, Ref.makeUnsafe(1)));
 
     yield* Effect.gen(function* () {
       yield* TestClock.adjust("6 seconds");

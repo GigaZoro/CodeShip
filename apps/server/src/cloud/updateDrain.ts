@@ -3,12 +3,12 @@ import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 
 /**
- * Set while an automatic update lets running turns finish before it installs. New scheduled
- * starts wait for it to clear, so the update has something to drain: a scheduled start that came
- * due meanwhile runs right after the install. A Reference so that a test provides its own.
+ * Holds an automatic update keeps on scheduled starts while running turns finish and the install
+ * hands off; a start that came due meanwhile runs after the install. A count, so a hold that ends
+ * inside another leaves the outer one in place.
  */
-export class UpdateDrain extends Context.Reference<Ref.Ref<boolean>>("t3/cloud/UpdateDrain", {
-  defaultValue: () => Ref.makeUnsafe(false),
+export class UpdateDrain extends Context.Reference<Ref.Ref<number>>("t3/cloud/UpdateDrain", {
+  defaultValue: () => Ref.makeUnsafe(0),
 }) {}
 
 /** Holds scheduled starts for the life of `effect`, however it ends. */
@@ -17,12 +17,28 @@ export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(func
 ) {
   const drain = yield* UpdateDrain;
   return yield* Effect.acquireUseRelease(
-    Ref.set(drain, true),
+    Ref.update(drain, (holds) => holds + 1),
     () => effect,
-    () => Ref.set(drain, false),
+    () => Ref.update(drain, (holds) => holds - 1),
+  );
+});
+
+/**
+ * Holds scheduled starts from now until `effect`, run in the background, ends. The hold starts
+ * before this returns, so it outlasts a `whileDraining` the caller is about to leave.
+ */
+export const drainInBackground = Effect.fn("cloud.update_drain.drain_in_background")(function* <
+  A,
+  E,
+>(effect: Effect.Effect<A, E>) {
+  const drain = yield* UpdateDrain;
+  yield* Ref.update(drain, (holds) => holds + 1);
+  return yield* effect.pipe(
+    Effect.ensuring(Ref.update(drain, (holds) => holds - 1)),
+    Effect.forkDetach,
   );
 });
 
 export const isDraining = Effect.fn("cloud.update_drain.is_draining")(function* () {
-  return yield* Ref.get(yield* UpdateDrain);
+  return (yield* Ref.get(yield* UpdateDrain)) > 0;
 });

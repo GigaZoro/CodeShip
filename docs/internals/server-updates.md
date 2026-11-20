@@ -109,29 +109,41 @@ launcher-managed server and the desktop app's bundled server. It checks at activ
 30 minutes while `installUpdatesAutomatically` is on. An update becomes due when a release
 newer than the running version was published by the most recent daily `automaticUpdateTime`
 (default `03:00`, in the server's local time). The GitHub release index supplies the publication
-times. Once due, the service offers the newest release on the running track. A local time
-skipped by a clock change moves forward by the gap. A repeated time uses the later occurrence
-once it has passed. The runtime records the local date and running version before handoff, so
-booting on a newer version on that date prevents a second automatic install.
+times; the index is newest first but not strictly by version, so the service reads every entry
+above the running release. Once due, the launcher installs the newest release on the running
+track. The desktop shell installs its feed's newest release, which can lag the index, so it gets
+the newest due release as the least it may install. A local time skipped by a clock change moves
+forward by the gap. A repeated time uses the later occurrence once it has passed. An install
+leaves the machine on a release at least as new as every due one, so nothing is due again until
+the next day's time.
 
 The service waits up to two hours for a restart hold with no running turns or work, then
 [`UpdateDrain`](../../apps/server/src/cloud/updateDrain.ts) holds new scheduled starts for up to
 three more hours while existing chats finish. After that, the wait follows **Update when it
-finishes** and waits only for the listed background work and tool calls. The log names the
-threads that may be cut. A fixed-time scheduled start held during the drain is recorded in
+finishes** and waits only for the listed background work and tool calls, for at most one hour so
+work that never ends cannot hold every later day. The log names the threads that may be cut;
+they resume according to the server's restart-continuation setting. A fixed-time scheduled start held during the drain is recorded in
 `scheduled_task_drain_holds` so it can start after the restart, even outside its missed-run grace.
 
 The final check runs after preparation. It reads the setting and managed policy again, and
 checks that the restart hold is still empty if the wait ended before the cut phase. When a chat
 started during preparation, the service waits again with the same two-hour or drain deadline, so
-a busy machine cannot restart those waits with each preparation. The drain
-covers preparation and handoff and ends when an attempt exits or the server shuts down.
-Turning automatic updates off or changing the time ends an active wait. The bundled server
-prepares and commits the update through the desktop shell's update channel. Desktop installs
-request thread continuation. The launcher stages and trials the release and applies the
-server's restart-continuation setting. Each host skips a release it rolled back or failed
-to apply. Preparation and handoff errors back off for that release between 15 minutes and
-six hours. Manual updates can be started at any time.
+a busy machine cannot restart those waits with each preparation. `UpdateDrain` counts holds:
+every preparation holds scheduled starts, and an accepted handoff keeps holding them for up to
+five minutes, until the installer stops the server, so none starts in the launcher's handoff
+window. The subscription to setting changes opens before the settings are read, so turning
+automatic updates off or changing the time during the release lookup still ends the wait. The
+bundled server prepares and commits the update through the desktop shell's update channel; the
+launcher stages and trials the release. Both apply the server's restart-continuation setting.
+
+Before each handoff, and after each failure before one, the service writes
+`runtime/automatic-update.json` with the running version, the target, the attempt count and the
+next allowed attempt: 15 minutes, doubling per attempt up to six hours. The record outlives the
+process, so an install that did not apply, a launcher update that failed, or a handoff that left
+the same version running waits out that time, and new releases do not reset it. A record from an
+older version is ignored, and an unreadable one is replaced. A release the launcher rolled back,
+or a desktop update that did not apply, is skipped until a newer release exists. Manual updates
+can be started at any time.
 
 ## Recovering interrupted threads
 

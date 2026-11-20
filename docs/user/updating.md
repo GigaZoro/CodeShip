@@ -83,19 +83,26 @@ are waiting on, and shows how many tasks it waits for, with **Update now** and
 Turn on **Install updates automatically** under **Settings → Maintenance & about → Updates**.
 Set **Automatic update time** in the machine's local time. It defaults to **03:00**. If a newer
 release was published by the scheduled time, the machine installs the newest available release.
-A machine that was off or asleep checks when it comes back. If only releases published after the
-scheduled time are available, it waits for the next day. You can share the setting across machines.
+The desktop app installs the newest release its update feed offers, which is never older than
+the one due. A machine that was off or asleep checks when it comes back. If only releases
+published after the scheduled time are available, it waits for the next day. You can share the
+setting across machines.
 
 The machine first gives chats two hours to finish, then holds new scheduled starts and gives
-running chats another three hours. After that it waits for background work and running tool calls
-before installing. A chat that starts while the release downloads does not restart these waits.
-Held scheduled starts run after the restart. Turn automatic updates off to
-cancel the wait, or use the manual update controls to install at any time.
+running chats another three hours. After that it waits up to one more hour for background work
+and running tool calls, then installs. A chat that starts while the release downloads does not
+restart these waits. Scheduled starts stay held while the release downloads and until the
+restart; they run after it. Turn automatic updates off to cancel the wait, or use the manual
+update controls to install at any time.
 
-On desktop, the app installs even when its window is closed if it is still running, and its
-interrupted chats resume. A launcher-managed server resumes interrupted chats according to
-**Continue threads after restarts**. You can start updates manually on a server you run with
-`t3 serve`.
+Chats the update interrupted resume after the restart according to **Continue threads after
+restarts**, which is on by default. On desktop, the app installs even when its window is closed
+if it is still running. You can start updates manually on a server you run with `t3 serve`.
+
+An update that fails, or restarts the same version, is tried again after 15 minutes, then after
+twice as long each time, up to six hours, also across restarts. A release the launcher rolled
+back, or a desktop update that did not apply, is not tried again automatically; the next newer
+release is.
 
 ## Switch between Stable and Nightly
 

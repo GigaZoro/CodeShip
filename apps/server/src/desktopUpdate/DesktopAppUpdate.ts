@@ -1,5 +1,4 @@
 import {
-  DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE,
   ServerSelfUpdateError,
   type DesktopUpdateState,
   type DesktopUpdateStatusReport,
@@ -10,10 +9,8 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -63,8 +60,6 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
   const config = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
   const receiver = yield* DesktopTelemetryReceiver.DesktopTelemetryReceiver;
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const inFlight = yield* Ref.make(false);
 
   const available =
@@ -74,20 +69,6 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
     cause === undefined
       ? new ServerSelfUpdateError({ reason })
       : new ServerSelfUpdateError({ reason, cause });
-  const resumeMarker = path.join(
-    config.baseDir,
-    "runtime",
-    DESKTOP_UPDATE_RESUME_THREADS_MARKER_FILE,
-  );
-  // The shell cannot write the update marker in a WSL backend's Linux home.
-  const markWslResume = config.desktopUpdateHttpControl
-    ? fs.makeDirectory(path.dirname(resumeMarker), { recursive: true }).pipe(
-        Effect.andThen(fs.writeFileString(resumeMarker, "")),
-        Effect.mapError((cause) =>
-          failWith("Could not record the desktop restart continuation.", cause),
-        ),
-      )
-    : Effect.void;
 
   const consumeReports = Effect.fn("DesktopAppUpdate.consumeReports")(function* (
     requestId: string,
@@ -211,55 +192,45 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
 
   const commit: DesktopAppUpdate["Service"]["commit"] = Effect.fn(
     "desktopUpdate.desktopAppUpdate.commit",
-  )(
-    function* (requestId, onHandoffAccepted = () => Effect.void) {
-      if (!available) {
-        return yield* failWith("This server cannot commit a desktop app update.");
-      }
-      const terminal = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const { latest, changes } = yield* receiver.desktopUpdates;
-          const reports = Option.match(latest, {
-            onNone: () => changes,
-            onSome: (report) => Stream.concat(Stream.make(report), changes),
-          });
-          yield* Effect.uninterruptible(
-            markWslResume.pipe(
-              Effect.andThen(receiver.commitDesktopUpdate(requestId)),
-              Effect.mapError((error) =>
-                failWith("Could not reach the T3.CodeShip desktop app.", error),
-              ),
-              Effect.tap(() => onHandoffAccepted()),
+  )(function* (requestId, onHandoffAccepted = () => Effect.void) {
+    if (!available) {
+      return yield* failWith("This server cannot commit a desktop app update.");
+    }
+    const terminal = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const { latest, changes } = yield* receiver.desktopUpdates;
+        const reports = Option.match(latest, {
+          onNone: () => changes,
+          onSome: (report) => Stream.concat(Stream.make(report), changes),
+        });
+        yield* Effect.uninterruptible(
+          receiver.commitDesktopUpdate(requestId).pipe(
+            Effect.mapError((error) =>
+              failWith("Could not reach the T3.CodeShip desktop app.", error),
             ),
-          );
-          return yield* reports.pipe(
-            Stream.filter(
-              (report) => report.requestId === requestId && report.outcome === "failed",
-            ),
-            Stream.runHead,
-            Effect.timeout(DESKTOP_INSTALL_TIMEOUT),
-            Effect.catchTags({
-              TimeoutError: () =>
-                failWith("The desktop app did not report an install result in time."),
-            }),
-          );
-        }),
-      );
-      if (Option.isNone(terminal)) {
-        return yield* failWith("The desktop app stopped reporting the install.");
-      }
-      return yield* failWith(
-        terminal.value.reason ??
-          terminal.value.state.message ??
-          "The desktop app failed to install the update.",
-      );
-    },
-    Effect.tapError(() =>
-      config.desktopUpdateHttpControl
-        ? fs.remove(resumeMarker, { force: true }).pipe(Effect.ignore({ log: true }))
-        : Effect.void,
-    ),
-  );
+            Effect.tap(() => onHandoffAccepted()),
+          ),
+        );
+        return yield* reports.pipe(
+          Stream.filter((report) => report.requestId === requestId && report.outcome === "failed"),
+          Stream.runHead,
+          Effect.timeout(DESKTOP_INSTALL_TIMEOUT),
+          Effect.catchTags({
+            TimeoutError: () =>
+              failWith("The desktop app did not report an install result in time."),
+          }),
+        );
+      }),
+    );
+    if (Option.isNone(terminal)) {
+      return yield* failWith("The desktop app stopped reporting the install.");
+    }
+    return yield* failWith(
+      terminal.value.reason ??
+        terminal.value.state.message ??
+        "The desktop app failed to install the update.",
+    );
+  });
 
   const notAppliedVersion = Effect.scoped(
     receiver.desktopUpdates.pipe(
