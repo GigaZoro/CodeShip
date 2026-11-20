@@ -168,6 +168,12 @@ const toBuffer = (data: Uint8Array) => Buffer.from(data.buffer, data.byteOffset,
 
 const brokenPipe = () => Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
 
+/** As a Node pipe at EOF: read(0) ends an empty stream even while a 'readable' listener holds it. */
+const endOutput = (stream: NodeStream.Readable) => {
+  stream.push(null);
+  stream.read(0);
+};
+
 /** What Node's spawn reports for its kill on abort. */
 const abortError = (cause: unknown) =>
   Object.assign(new Error("The operation was aborted", { cause }), {
@@ -216,10 +222,10 @@ class WorkerChild
     if (this.spawned) this.emit("error", abortError(reason));
     else this.#abortedBeforeStart = { reason };
   };
-  // Node reads the output nobody reads once a child exits, so its close can follow.
+  // Node's flushStdio: once a child exits, its output flows, unless a 'readable' listener holds it.
   readonly #flushOutput = () => {
     for (const stream of this.#outputs()) {
-      if (stream.readable && stream.listenerCount("readable") === 0) stream.resume();
+      if (stream.readable) stream.resume();
     }
   };
 
@@ -279,14 +285,19 @@ class WorkerChild
 
   /** Nothing more comes for this child; Node reports its close once every output has ended. */
   closed(): void {
-    let open = 1;
+    // Only 'end' and 'close' listeners, so an error after this close stays the caller's, as in Node.
+    const open = this.#outputs().filter((stream) => !stream.readableEnded && !stream.destroyed);
+    let remaining = open.length + 1;
     const settle = () => {
-      open--;
-      if (open === 0) this.emit("close", this.exitCode, this.signalCode);
+      remaining--;
+      if (remaining === 0) this.emit("close", this.exitCode, this.signalCode);
     };
-    for (const stream of this.#outputs()) {
-      open++;
-      NodeStream.finished(stream, { writable: false }, settle);
+    for (const stream of open) {
+      const done = () => {
+        stream.off("end", done).off("close", done);
+        settle();
+      };
+      stream.on("end", done).on("close", done);
     }
     settle();
   }
@@ -355,7 +366,7 @@ class WorkerChild
 
   onEof(fd: number): void {
     const stream = this.stdio[fd];
-    if (stream && "push" in stream) stream.push(null);
+    if (stream && "push" in stream) endOutput(stream);
   }
 
   onFinished(fd: number): void {
@@ -412,7 +423,7 @@ class WorkerChild
     this.#detachSignal();
     // Not destroy(error): Effect leaves an unread stderr's pipe without an error listener.
     for (const stream of this.stdio) {
-      if (stream && "push" in stream && !stream.readableEnded) stream.push(null);
+      if (stream && "push" in stream && !stream.readableEnded) endOutput(stream);
       else if (stream && !("push" in stream)) stream.destroy();
     }
     const waiting = [...[...this.#writes.values()].flat(), ...this.#finals.values()];

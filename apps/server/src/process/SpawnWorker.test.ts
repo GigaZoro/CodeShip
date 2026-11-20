@@ -230,25 +230,43 @@ describe("SpawnWorker", () => {
       }),
   );
 
-  it.live("closes a child once a reader holding its output reads it, not before", () =>
-    Effect.gen(function* () {
-      const pool = new SpawnWorker.__testing.SpawnWorkerPool("win32");
-      const child = pool.spawn(process.execPath, ["-e", "process.stdout.write('held')"], {
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      pool.close();
-      // Node reads no output that has a 'readable' listener, and reports no close until it ends.
-      child.stdout!.on("readable", () => {});
-      let closes = 0;
-      child.on("close", () => closes++);
-      // The launcher ends once it has sent the close, whether or not the output was read.
-      yield* Effect.promise(() => NodeEvents.EventEmitter.once(child.worker.worker, "exit"));
-      const closesBeforeRead = closes;
-      const closed = NodeEvents.EventEmitter.once(child, "close");
-      const read = String(child.stdout!.read());
-      yield* Effect.promise(() => closed);
-      expect([closesBeforeRead, read, closes]).toEqual([0, "held", 1]);
-    }),
+  it.live(
+    "closes a child once a reader holding its output reads it, or at once when it has none",
+    () =>
+      Effect.gen(function* () {
+        // A child of its own keeps the output open after the child exits.
+        const outlived =
+          "require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'] }).unref()";
+        for (const [output, script, expected] of [
+          ["held", "process.stdout.write('held')", [0, "held"]],
+          ["none", "", [1, null]],
+          ["none, ending after the exit", outlived, [1, null]],
+        ] as const) {
+          const pool = new SpawnWorker.__testing.SpawnWorkerPool("win32");
+          const child = pool.spawn(process.execPath, ["-e", script], {
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          pool.close();
+          // As in Node, only a 'readable' listener reads its output, and the close waits for its end.
+          child.stdout!.on("readable", () => {});
+          let closes = 0;
+          child.on("close", () => closes++);
+          // The launcher ends once it has sent the close, whether or not the output was read.
+          yield* Effect.promise(() => NodeEvents.EventEmitter.once(child.worker.worker, "exit"));
+          const closesAtLauncherEnd = closes;
+          const closed = closes === 0 ? NodeEvents.EventEmitter.once(child, "close") : undefined;
+          const read: Buffer | null = child.stdout!.read();
+          if (closed !== undefined) yield* Effect.promise(() => closed);
+          // No error listener stays behind, so an error after the close is the caller's, as in Node.
+          expect([
+            output,
+            closesAtLauncherEnd,
+            read?.toString() ?? null,
+            closes,
+            child.stdout!.listenerCount("error"),
+          ]).toEqual([output, ...expected, 1, 0]);
+        }
+      }),
   );
 
   it.live("kills running commands, detached or not, and on scope interruption", () =>
