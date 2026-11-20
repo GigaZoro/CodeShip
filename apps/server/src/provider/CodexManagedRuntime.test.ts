@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - checks the host's default Codex directory without writing to it.
+import * as NodeFS from "node:fs";
 import * as NodeURL from "node:url";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Stream from "effect/Stream";
@@ -129,10 +130,18 @@ it.live.each(
               yield* fs.readLink(path.join(effective.config.homePath, "sessions")),
               path.join(sharedHome, "sessions"),
             );
-            assert.equal(
-              yield* fs.readLink(path.join(effective.config.homePath, "config.toml")),
-              path.join(sharedHome, "config.toml"),
-            );
+            // Setup hard-links shared files on Windows and symlinks them elsewhere.
+            const configLink = path.join(effective.config.homePath, "config.toml");
+            const sharedConfig = path.join(sharedHome, "config.toml");
+            if (HostProcess.Platform.defaultValue() === "win32") {
+              const identity = (file: string) => {
+                const info = NodeFS.statSync(file, { bigint: true });
+                return `${info.dev}:${info.ino}`;
+              };
+              assert.equal(identity(configLink), identity(sharedConfig));
+            } else {
+              assert.equal(yield* fs.readLink(configLink), sharedConfig);
+            }
             assert.isFalse(yield* fs.exists(path.join(effective.config.homePath, "auth.json")));
           }
           assert.isUndefined(effective.environment.ACCESS_TOKEN);

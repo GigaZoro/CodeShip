@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as Effect from "effect/Effect";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Layer from "effect/Layer";
 import { McpServer } from "effect/ai";
 
@@ -160,6 +161,8 @@ it.effect("agent context matches the committed budget", () =>
       McpHttpServer.layerTools.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(toolHandlerServices),
+        // Windows registers the Visual Studio tools too; the budget is one platform's measure.
+        Layer.provide(Layer.succeed(HostProcess.Platform, "linux")),
       ),
     ),
   ),

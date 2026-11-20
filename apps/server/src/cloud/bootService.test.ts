@@ -843,26 +843,29 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
   );
 
   // regression: #17532
-  it.effect("puts the runtime an update installs on the launch agent PATH", () =>
-    Effect.gen(function* () {
-      const { makeService, fs, baseDir, runtime } = yield* makeHarness("darwin");
-      const path = yield* Path.Path;
-      const previous = runtime.versionDir;
-      const installed = pinnedRuntimePaths(path, baseDir, "1.2.4", "darwin").versionDir;
-      // The 1.2.3 CLI, or the 1.2.3 service's own PATH, installs 1.2.4.
-      const updated = yield* makeService(
-        `/usr/bin:${previous}:/bin`,
-        "1.2.4",
-        undefined,
-        false,
-        runtime.entryPath,
-      );
-      const plan = yield* updated.install();
+  // A launchd PATH is colon-separated, and a Windows runtime directory's drive letter holds a colon.
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "puts the runtime an update installs on the launch agent PATH",
+    () =>
+      Effect.gen(function* () {
+        const { makeService, fs, baseDir, runtime } = yield* makeHarness("darwin");
+        const path = yield* Path.Path;
+        const previous = runtime.versionDir;
+        const installed = pinnedRuntimePaths(path, baseDir, "1.2.4", "darwin").versionDir;
+        // The 1.2.3 CLI, or the 1.2.3 service's own PATH, installs 1.2.4.
+        const updated = yield* makeService(
+          `/usr/bin:${previous}:/bin`,
+          "1.2.4",
+          undefined,
+          false,
+          runtime.entryPath,
+        );
+        const plan = yield* updated.install();
 
-      expect(yield* fs.readFileString(plan.unitPath)).toContain(
-        `    <key>PATH</key>\n    <string>/usr/bin:${installed}:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin</string>`,
-      );
-    }),
+        expect(yield* fs.readFileString(plan.unitPath)).toContain(
+          `    <key>PATH</key>\n    <string>/usr/bin:${installed}:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin</string>`,
+        );
+      }),
   );
 
   it.effect("drops PATH directories that cannot be represented in a launch agent plist", () =>

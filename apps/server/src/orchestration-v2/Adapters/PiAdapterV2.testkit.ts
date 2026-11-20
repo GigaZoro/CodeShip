@@ -16,6 +16,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
@@ -384,6 +385,9 @@ export function layer<E, R>(input: {
         TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
         NodeServices.layer,
         IdAllocator.layer,
+        // On win32 PiRpc ends its tree by spawning PowerShell through this replay spawner, which
+        // never exits that process, so each session close waited out the 30 s stop timeout.
+        Layer.succeed(HostProcess.Platform, "linux"),
       ),
     ),
   );

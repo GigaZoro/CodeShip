@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "node:path";
 import * as ModelManifest from "./ModelManifest.ts";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -58,8 +59,11 @@ const makeHarness = Effect.fn("test.makeCodexInstallation")(function* (
   const fs = yield* FileSystem.FileSystem;
   const baseDir =
     input.baseDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-install-test-" }));
-  const localDirectory = `${baseDir}/local`;
-  const localBinaryPath = `${localDirectory}/codex${input.platform === "win32" ? ".exe" : ""}`;
+  const localDirectory = NodePath.join(baseDir, "local");
+  const localBinaryPath = NodePath.join(
+    localDirectory,
+    `codex${input.platform === "win32" ? ".exe" : ""}`,
+  );
   const probeLog = `${baseDir}/local-probes.txt`;
   if (input.local) {
     yield* fs.makeDirectory(localDirectory, { recursive: true });
@@ -321,7 +325,7 @@ it.effect.each([
 ] as const)("runs a $kind $name launcher symlink as codex without resolving it", ({ kind, name }) =>
   Effect.gen(function* () {
     const h = yield* makeHarness({ local: { version: "0.156.1" } });
-    const launcher = `${h.baseDir}/${name}`;
+    const launcher = NodePath.join(h.baseDir, name);
     const local = { version: "0.156.1", native: kind === "native" };
     yield* h.fs.writeFileString(launcher, localFixture(local), { mode: 0o755 });
     yield* h.fs.remove(h.localBinaryPath);
@@ -340,7 +344,9 @@ it.effect(
       yield* installation.start;
       expect((yield* terminalState(installation)).phase).toBe("succeeded");
       const executable = yield* installation.resolve();
-      expect(executable.executablePath).toBe(`${baseDir}/tools/codex/0.156.1/bin/codex`);
+      expect(executable.executablePath).toBe(
+        NodePath.join(baseDir, "tools", "codex", "0.156.1", "bin", "codex"),
+      );
       expect(
         yield* fs.readFileString(`${executable.managedVersionDirectory}/bin/codex-code-mode-host`),
       ).toBe("host");
