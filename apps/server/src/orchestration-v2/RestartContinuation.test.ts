@@ -22,6 +22,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -974,7 +975,7 @@ const continuationDispatches = (
 ) =>
   Effect.gen(function* () {
     const dispatches: Array<Extract<OrchestrationV2Command, { type: "message.dispatch" }>> = [];
-    yield* continueRestartedRun({ threadId, sourceRunId }).pipe(
+    yield* continueRestartedRun({ threadId: projection.thread.id, sourceRunId }).pipe(
       Effect.provide(
         Layer.merge(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -1369,70 +1370,119 @@ it.effect(
     }),
 );
 
-it.effect.each(["projection fails", "lock stays busy"] as const)(
-  "prepares later threads' continuations when one %s",
-  (failure) =>
-    Effect.gen(function* () {
-      const brokenThreadId = ThreadId.make("thread:broken");
-      const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
-      const waiting = yield* Deferred.make<void>();
-      const locked = yield* Deferred.make<void>();
-      const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor.pipe(
-        Effect.provide(ThreadCommandExecutor.layer),
-      );
-      if (failure === "lock stays busy") {
-        yield* locks
-          .withLock(
-            brokenThreadId,
-            Deferred.succeed(locked, undefined).pipe(Effect.andThen(Effect.never)),
-          )
-          .pipe(Effect.forkScoped);
-        yield* Deferred.await(locked);
-      }
-      const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, {
-              ...locks,
-              withLock: (id, effect) =>
-                Deferred.succeed(waiting, undefined).pipe(
-                  Effect.andThen(locks.withLock(id, effect)),
-                ),
-            }),
-            ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-            Layer.mock(ProjectionStore.ProjectionStoreV2)({
-              getRecoveryThreadIds: () => Effect.succeed([brokenThreadId, threadId]),
-              getThreadRecords: () => Effect.succeed(makeProjection()),
-              getRuntimeRecoveryProjection: (id) =>
-                id === brokenThreadId
-                  ? Effect.fail(
-                      new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
-                    )
-                  : Effect.succeed(makeProjection()),
-            }),
-            Layer.mock(EventSink.EventSinkV2)({
-              lastCommittedAt: Effect.succeed(null),
-              writeWithEffects: (input) =>
-                Effect.sync(() => {
-                  writes.push(input);
-                  return [];
-                }),
-            }),
-            IdAllocator.layer,
-            Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
-            Layer.mock(EffectOutbox.EffectOutboxV2)({}),
-          ),
+it.effect.each([
+  "lock stays held",
+  "lock released during session shutdown",
+  "projection fails",
+] as const)("recovers a continuation through shutdown and startup when one %s", (scenario) =>
+  Effect.gen(function* () {
+    const busyThreadId = ThreadId.make("thread:busy");
+    const busyRunId = RunId.make("run:busy");
+    const base = makeProjection();
+    let busy = {
+      ...base,
+      thread: { ...base.thread, id: busyThreadId },
+      runs: [{ ...base.runs[0]!, id: busyRunId }],
+      providerThreads: [{ ...base.providerThreads[0]!, appThreadId: busyThreadId }],
+    };
+    const prepared = new Map<string, EffectOutbox.PendingOrchestrationEffectV2>();
+    const reconciled: ThreadId[] = [];
+    const acquired = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor.pipe(
+      Effect.provide(ThreadCommandExecutor.layer),
+    );
+    const holder = yield* locks
+      .withLock(
+        busyThreadId,
+        Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      )
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(acquired);
+    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, locks),
+          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([busyThreadId, threadId]),
+            getThreadRecords: () => Effect.succeed(base),
+            getRuntimeRecoveryProjection: (id) =>
+              id === busyThreadId && scenario === "projection fails"
+                ? Effect.fail(
+                    new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
+                  )
+                : Effect.succeed(id === busyThreadId ? busy : base),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            lastCommittedAt: Effect.succeed(null),
+            writeWithEffects: ({ effects }) =>
+              Effect.sync(() => {
+                for (const effect of effects) prepared.set(effect.id, effect);
+                return [];
+              }),
+            commitCommand: (input) =>
+              Effect.sync(() => {
+                reconciled.push(input.threadId);
+                if (input.threadId === busyThreadId) {
+                  for (const event of input.events) {
+                    if (event.type === "run.updated") busy.runs = [event.payload];
+                    if (event.type === "provider-turn.updated")
+                      busy.providerTurns = [event.payload];
+                  }
+                }
+                return { committed: true, cancelledEffectCount: 0 } as never;
+              }),
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            cancelUnsettled: () => Effect.succeed([]),
+            signalCancellations: () => Effect.void,
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          }),
         ),
-      );
-      const preparation = yield* recovery.prepareForShutdown.pipe(Effect.forkScoped);
-      yield* Deferred.await(waiting);
-      yield* TestClock.adjust("10 seconds");
-      assert.deepEqual(
-        writes.map((write) => write.effects[0]?.request),
-        [{ type: "provider-runtime.continue", sourceRunId: runId }],
-      );
-      yield* Fiber.join(preparation);
-    }).pipe(Effect.provide(TestClock.layer())),
+      ),
+    );
+    const shutdown = yield* Effect.gen(function* () {
+      yield* recovery.prepareForShutdown;
+      // ProviderSessionManager closes sessions between prepare and reconcile in the runtime finalizer.
+      busy = {
+        ...busy,
+        providerSessions: busy.providerSessions.map((session) => ({
+          ...session,
+          status: "stopped",
+        })),
+      };
+      if (scenario === "lock released during session shutdown") {
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(holder);
+      }
+      yield* recovery.reconcile("shutdown");
+    }).pipe(Effect.timeoutOption("5 seconds"), Effect.forkScoped);
+    yield* TestClock.adjust("6 seconds");
+    assert.isTrue(Option.isSome(yield* Fiber.join(shutdown)), "shutdown waited for a held lock");
+    assert.isTrue(prepared.has(EffectOutbox.restartContinuationEffectId(runId)));
+    assert.deepEqual(
+      reconciled,
+      scenario === "lock released during session shutdown" ? [busyThreadId, threadId] : [threadId],
+    );
+    if (scenario === "projection fails") return;
+    assert.deepEqual(prepared.get(EffectOutbox.restartContinuationEffectId(busyRunId))?.request, {
+      type: "provider-runtime.continue",
+      sourceRunId: busyRunId,
+    });
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(holder);
+    yield* recovery.recover;
+    assert.equal(busy.runs[0]?.status, "cancelled");
+    assert.deepEqual(
+      (yield* continuationDispatches(busy, busyRunId)).map(
+        (command) => command.restartContinuationOfRunId,
+      ),
+      [busyRunId],
+    );
+  }).pipe(Effect.provide(TestClock.layer())),
 );
 
 // The restart keeps a question answerable by message, and the answer continues the thread. Every
