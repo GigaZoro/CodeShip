@@ -177,6 +177,8 @@ const fakeWindows = (options: {
   readonly launcherSees?: "start" | "none";
   /** Whether the wrapper named itself in its pid file, the second after its launch, by then. */
   readonly namedItself?: boolean;
+  /** The launcher fails after its wrapper started: exits non-zero after the pid, or times out. */
+  readonly launcherFails?: "exits" | "times-out";
   /** How long each start read takes: both clocks move on by it. */
   readonly readTakes?: number;
   readonly clock?: { readonly stepsBack: number; readonly stalls?: boolean };
@@ -241,6 +243,18 @@ const fakeWindows = (options: {
               start: DateTime.formatIso(DateTime.makeUnsafe(lastLaunch)),
               none: ENDED_IDENTITY,
             };
+            if (options.launcherFails === "times-out") {
+              return yield* new ProcessRunner.ProcessTimeoutError({
+                command: input.command,
+                argumentCount: input.args.length,
+                cwd: input.cwd,
+                spawnCwd: input.spawnCwd,
+                timeoutMs: 30_000,
+              });
+            }
+            if (options.launcherFails === "exits") {
+              return exited(1, `${wrapper}\r\n`, "Exception getting StartTime");
+            }
             const sees = options.launcherSees;
             return exited(0, `${wrapper}\r\n${sees === undefined ? "" : `${seen[sees]}\r\n`}`);
           });
@@ -962,6 +976,33 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           ),
         );
         yield* unseen ? pidFileUnseen(server) : server;
+      }),
+  );
+
+  it.effect.each([
+    ["exits non-zero after printing its pid", "command-win-launcher-exits", "exits"],
+    ["times out after its wrapper started", "command-win-launcher-times-out", "times-out"],
+  ] as const)(
+    "watches a Windows command whose launcher %s, instead of reporting it unstarted",
+    ([, name, launcherFails]) =>
+      Effect.gen(function* () {
+        const windows = yield* fakeWindows({
+          startOf: () => undefined,
+          namedItself: true,
+          launcherFails,
+        });
+        const chat = yield* liveChat(name);
+        yield* windows.on(
+          withServer((runner) =>
+            Effect.gen(function* () {
+              const started = yield* runner.run(callerOf(chat.threadId), {
+                command: "Write-Output started",
+              });
+              const row = yield* commandRow(started.taskId);
+              assert.deepEqual([row?.status, row?.pid], ["running", windows.wrapper]);
+            }),
+          ),
+        );
       }),
   );
 

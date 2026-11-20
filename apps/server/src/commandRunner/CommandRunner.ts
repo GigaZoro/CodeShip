@@ -1185,38 +1185,57 @@ const make = Effect.gen(function* () {
     );
     yield* fs.writeFileString(wrapperPath, WINDOWS_WRAPPER);
     yield* fs.writeFileString(logPath, "");
-    const created = yield* processRunner.run({
-      command: "powershell.exe",
-      args: [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        // Windows folds names by a case table only it has, so the launcher keeps the last of the
-        // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
-        // like a member (Values) hides that member in PowerShell.
-        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId; ${windowsStartOrEnded("$r.ProcessId")}`,
-      ],
-      // Base64, since PowerShell decodes stdin with the console code page.
-      stdin: Buffer.from(
-        Object.entries(commandEnv)
-          .map(([name, value]) => `${name}=${value}`)
-          .join("\0"),
-        "utf8",
-      ).toString("base64"),
-      timeout: Duration.seconds(30),
-      maxOutputBytes: 16_384,
-    });
+    const created = yield* processRunner
+      .run({
+        command: "powershell.exe",
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          // Windows folds names by a case table only it has, so the launcher keeps the last of the
+          // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
+          // like a member (Values) hides that member in PowerShell.
+          `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId; ${windowsStartOrEnded("$r.ProcessId")}`,
+        ],
+        // Base64, since PowerShell decodes stdin with the console code page.
+        stdin: Buffer.from(
+          Object.entries(commandEnv)
+            .map(([name, value]) => `${name}=${value}`)
+            .join("\0"),
+          "utf8",
+        ).toString("base64"),
+        timeout: Duration.seconds(30),
+        maxOutputBytes: 16_384,
+      })
+      .pipe(Effect.result);
+    // Once Create returned a pid the command has started, whatever the launcher does after: its
+    // stdout names the pid, and when a timeout lost the stdout, the wrapper's pid file does. The
+    // creation read is best effort, since a failed read leaves the runner to read it itself.
+    const output = created._tag === "Success" ? created.success : undefined;
+    const [pidLine = "", madeLine = ""] = (output?.stdout ?? "").trim().split(/\s+/);
+    const printed = Number.parseInt(pidLine, 10);
+    const pid =
+      Number.isSafeInteger(printed) && printed > 0
+        ? printed
+        : yield* readWrapperFile(path.join(directory, PID_FILE)).pipe(
+            Effect.map((named) =>
+              named !== undefined && Number.isSafeInteger(named.value) && named.value > 0
+                ? named.value
+                : undefined,
+            ),
+          );
+    if (pid === undefined) {
+      return yield* new CommandLaunchError({
+        detail:
+          output?.stderr.trim() ||
+          (created._tag === "Failure" ? created.failure.message : "") ||
+          "Win32_Process.Create failed.",
+      });
+    }
     // The creation time comes from the call that created the process, as Windows stored it. A
     // wrapper the launcher no longer finds has ended: a later read could find a process that took
     // its pid inside a window a clock step widened.
-    const [pidLine = "", madeLine = ""] = created.stdout.trim().split(/\s+/);
-    const pid = Number.parseInt(pidLine, 10);
     const madeAt = Date.parse(madeLine);
-    if (created.code !== 0 || !Number.isSafeInteger(pid) || pid <= 0) {
-      return yield* new CommandLaunchError({
-        detail: created.stderr.trim() || "Win32_Process.Create failed.",
-      });
-    }
     // It names itself in its pid file before it starts the command, so without that file it
     // started nothing, and what the pid's earlier holder started must not be taken for its own.
     // A file that cannot be looked for may be there, so its record stays for the watcher.
