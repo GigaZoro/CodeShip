@@ -814,7 +814,9 @@ const make = Effect.gen(function* () {
               ? `Cancelled after ${elapsed}; cleanup is still pending. CodeShip keeps trying to stop the command.`
               : `Cancelled and stopped after ${elapsed}.`
             : row.status === "lost"
-              ? `Ended after at most ${elapsed} without an exit status: it was killed, or this machine restarted.`
+              ? row.lost_reason === "no-pid"
+                ? "The command's deadline passed, but its ownership could not be established. Monitoring ended without stopping any process; the command may still be running."
+                : `Ended after at most ${elapsed} without an exit status: it was killed, or this machine restarted.`
               : row.exit_code === null
                 ? `Ended after ${elapsed} with an unreadable exit status.`
                 : `Exited with code ${row.exit_code} after ${elapsed}.`;
@@ -1123,14 +1125,38 @@ const make = Effect.gen(function* () {
     return "legacy" as const;
   });
 
-  /** A result can wake its caller before cleanup; delivery still requires a closed gate or a stop. */
+  const retireUnownedLegacy = Effect.fn("CommandRunner.retireUnownedLegacy")(function* (
+    row: CommandRunRow,
+    gate: "legacy" | "started" | "cancelled",
+  ) {
+    if (
+      windows ||
+      gate !== "legacy" ||
+      row.pid !== null ||
+      row.unit !== null ||
+      forbidsSignals(row) ||
+      Date.parse(row.deadline_at) > DateTime.toEpochMillis(yield* DateTime.now) ||
+      (yield* readWrapperFile(path.join(row.directory, PID_FILE))) !== undefined ||
+      (yield* readExitStatus(row)) !== undefined
+    )
+      return false;
+    const lost = yield* recordLoss(row, { lost_reason: "no-pid", probe_error: null });
+    yield* deliver(lost);
+    return true;
+  });
+
+  /** Results precede cleanup; unowned legacy launches explicitly retire without claiming a stop. */
   const prepareCleanup = Effect.fn("CommandRunner.prepareCleanup")(function* (row: CommandRunRow) {
     if (watched.get(row.task_id) !== row) return undefined;
+    const gate = yield* closeLaunchGate(row).pipe(Effect.result);
+    if (gate._tag === "Success" && (yield* retireUnownedLegacy(row, gate.success)))
+      return undefined;
     if ((row.status === "stopped" || row.status === "timed_out") && row.reported_at === null)
       yield* deliver(row, true);
+    if (gate._tag === "Failure") return yield* gate.failure;
     const current = watched.get(row.task_id);
     if (current === undefined) return undefined;
-    if ((yield* closeLaunchGate(current)) === "cancelled") {
+    if (gate.success === "cancelled") {
       yield* deliver(current);
       return undefined;
     }
@@ -1373,6 +1399,7 @@ const make = Effect.gen(function* () {
     pendingStops.add(taskId);
     const gate = yield* closeLaunchGate(stopped).pipe(Effect.result);
     const saved = yield* writeRow(stopped).pipe(Effect.result);
+    if (gate._tag === "Success" && (yield* retireUnownedLegacy(stopped, gate.success))) return;
     yield* deliver(stopped, gate._tag !== "Success" || gate.success !== "cancelled");
     if (gate._tag === "Failure") return yield* gate.failure;
     if (saved._tag === "Failure") return yield* saved.failure;

@@ -343,7 +343,9 @@ unreadable, and its result arrives through normal task delivery. Recovery retrie
 and database failures after a restart too. Missing legacy evidence proves neither execution
 nor non-execution. Deadlines and cancellation report once before identity probes or termination,
 with cleanup explicitly pending. Cleanup failures remain watched and retry independently;
-delivery is recorded only after the gate is closed or authorized cleanup finishes. A status file
+delivery is recorded after the gate is closed or authorized cleanup finishes. A legacy POSIX
+launch with no gate, unit, PID file or exit status retires at its deadline with an explicit
+ownership-unknown result; this does not claim it never ran or that any process was stopped. A status file
 preserves the wrapper-reported PID even when identity is unavailable. Proven absence,
 replacement or reboot ends a legacy task; an unknown identity alone does not prove loss.
 
