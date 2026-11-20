@@ -99,6 +99,10 @@
       "types": "./src/scheduledTaskPromptFile.ts",
       "default": "./src/scheduledTaskPromptFile.ts"
     },
+    "./scheduled-task-description": {
+      "types": "./src/scheduledTaskDescription.ts",
+      "default": "./src/scheduledTaskDescription.ts"
+    },
     "./scheduled-task-pins": {
       "types": "./src/scheduledTaskPins.ts",
       "default": "./src/scheduledTaskPins.ts"

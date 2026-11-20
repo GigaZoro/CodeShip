@@ -155,7 +155,12 @@ branch name remains.
 Open the **Tasks** tab to create scheduled tasks or manage existing
 ones across your connected environments. Use the settings filter to narrow the
 list by environment or project. Each task runs on the environment you choose,
-using its project, model, and workspace settings. Fixed-time schedules use that
+using its project, model, and workspace settings. To show what a task does in
+the list, open its editor and fill in **Description**. If you leave it empty,
+the list previews the execution prompt. Editing the description changes only
+what people see.
+
+Fixed-time schedules use that
 environment's time zone, which may differ from your phone's. Choose **Once**
 to run a task a single time at a date and time in your own time zone. If the
 environment is offline then, the task runs when it is back.

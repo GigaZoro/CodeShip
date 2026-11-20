@@ -1294,13 +1294,13 @@ const catalog: MessageCatalog = {
   "{error} Use Publish Repository in the Git menu to try again.":
     "{error} Скористайтеся пунктом «Опублікувати репозиторій» у меню Git, щоб повторити.",
   "{failed} failed": "невдач: {failed}",
-  "{failed} failed, {duration}": "невдало: {failed}, {duration}",
   "{failed} failed, {count} prompts": {
     one: "невдало: {failed}, {count} запит",
     few: "невдало: {failed}, {count} запити",
     many: "невдало: {failed}, {count} запитів",
     other: "невдало: {failed}, {count} запиту",
   },
+  "{failed} failed, {duration}": "невдало: {failed}, {duration}",
   "{failed} of {runs} runs failed": "Невдалих запусків: {failed} із {runs}",
   "{failed} of {total} failed": "Не вдалося: {failed} із {total}",
   "{failed} of {total} provider updates failed":
@@ -1438,6 +1438,8 @@ const catalog: MessageCatalog = {
     "{machine} не може читати запити з файлів. Використайте текст або виберіть інший комп’ютер.",
   "{machine} cannot run checks. Remove the check or pick another machine.":
     "{machine} не може виконувати перевірки. Видаліть перевірку або виберіть інший комп’ютер.",
+  "{machine} cannot save descriptions. Clear the description or pick another machine.":
+    "На комп’ютері {machine} неможливо зберегти опис. Очистьте опис або виберіть інший комп’ютер.",
   "{machine} could not save this change first, so it was not sent here.":
     "{machine} не вдалося першим зберегти цю зміну, тому її сюди не надіслано.",
   "{machine} couldn't check {other}: {reason}": "{machine} не вдалося перевірити {other}: {reason}",
@@ -1982,6 +1984,8 @@ const catalog: MessageCatalog = {
     "Запуск за розкладом пропускається, поки стільки запусків цього завдання ще працюють, разом із делегованими ними завданнями.",
   "A secret provider with this name exists.": "Провайдер секретів із такою назвою вже існує.",
   "a selected environment": "вибране середовище",
+  "A short summary shown in the scheduled task list.":
+    "Короткий опис, який видно у списку запланованих завдань.",
   "A t3.json exists in this checkout but fails to parse, so every action and icon it declares is ignored. Check the JSON syntax and icon values.":
     "У цій робочій копії є t3.json, але його не вдалося розібрати, тому всі оголошені в ньому дії та значки ігноруються. Перевірте синтаксис JSON і значення значків.",
   "A task starts a thread on a schedule, or when its webhook URL receives a request.":
@@ -5044,6 +5048,8 @@ const catalog: MessageCatalog = {
   "Describe this {term}": "Опишіть цей {term}",
   "Describe your changes…": "Опишіть свої зміни…",
   Description: "Опис",
+  "Description (optional)": "Опис (необов’язково)",
+  "Description could not be saved": "Не вдалося зберегти опис",
   "Deselect all": "Зняти виділення",
   Design: "Дизайн",
   Desktop: "Настільний ПК",

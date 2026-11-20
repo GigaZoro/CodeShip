@@ -38,6 +38,7 @@ import {
 } from "@t3tools/client-runtime/scheduled-task-run-condition";
 import { providerDriverDisplayName } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
+  MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH,
   MAX_THREAD_FOLDER_LENGTH,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
@@ -92,6 +93,11 @@ import {
   promptFileReadFor,
   promptUpsertFields,
 } from "@t3tools/client-runtime/scheduled-task-prompt-file";
+import {
+  scheduledTaskDescriptionField,
+  scheduledTaskDescriptionUnsupported,
+  scheduledTaskPreview,
+} from "@t3tools/client-runtime/scheduled-task-description";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import {
@@ -993,6 +999,7 @@ function SettingsScheduledTaskEditorScreen({ title }: { readonly title: string }
                 draft: {
                   ...draftForEnvironment(target.environmentId),
                   title: editor.draft.title,
+                  description: editor.draft.description,
                   group: editor.draft.group,
                   prompt: editor.draft.prompt,
                   promptSource: editor.draft.promptSource,
@@ -1168,6 +1175,13 @@ function TaskForm({
   const offersRunCondition = targetSupportsRunConditions && draft.schedule.mode !== "webhook";
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const supportsPromptFiles = config?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const supportsDescriptions = config?.environment.capabilities.scheduledTaskDescriptions === true;
+  const savedDescription = draft.task?.description ?? "";
+  const descriptionField = scheduledTaskDescriptionField({
+    supported: supportsDescriptions,
+    description: draft.description,
+    savedDescription,
+  });
   const offersDelegateProviders =
     config?.environment.capabilities.scheduledTaskDelegateProviders === true;
   const delegateProviderChoices = [
@@ -1290,6 +1304,13 @@ function TaskForm({
       );
       return;
     }
+    if (descriptionField === null) {
+      Dialog.alert(
+        t("Description could not be saved"),
+        scheduledTaskDescriptionUnsupported(environmentLabel),
+      );
+      return;
+    }
     const maxLiveRuns = offersLiveRuns ? liveRunLimitInput(draft.maxLiveRuns) : undefined;
     if (offersLiveRuns && maxLiveRuns === undefined) {
       Dialog.alert(t("Invalid live-run limit"), liveRunLimitInvalidText());
@@ -1303,6 +1324,7 @@ function TaskForm({
     const input: ScheduledTaskUpsertInput = {
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
+      ...descriptionField,
       ...promptUpsertFields({ supportsPromptFiles, draft }),
       projectId: draft.projectId,
       modelSelection: taskModel,
@@ -1477,6 +1499,31 @@ function TaskForm({
             placeholder={t("Check for issues")}
             onChange={(title) => setDraft({ ...draft, title })}
           />
+          {supportsDescriptions || draft.description !== "" || savedDescription !== "" ? (
+            <View className="gap-2 border-t border-border-subtle px-4 py-3">
+              <Text className="text-sm text-foreground-muted">{t("Description (optional)")}</Text>
+              <RNTextInput
+                accessibilityLabel={t("Description (optional)")}
+                multiline
+                readOnly={saving}
+                value={draft.description}
+                maxLength={MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH}
+                onChangeText={(description) => setDraft({ ...draft, description })}
+                textAlignVertical="top"
+                className="min-h-14 font-sans text-base text-foreground"
+              />
+              <View className="flex-row items-start justify-between gap-3">
+                <Text className="min-w-0 flex-1 text-sm text-foreground-muted">
+                  {descriptionField === null
+                    ? scheduledTaskDescriptionUnsupported(environmentLabel)
+                    : t("A short summary shown in the scheduled task list.")}
+                </Text>
+                <Text className="text-sm text-foreground-muted">
+                  {`${draft.description.length} / ${MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH}`}
+                </Text>
+              </View>
+            </View>
+          ) : null}
           {offersGroups ? (
             <GroupField
               value={draft.group}
@@ -2578,12 +2625,15 @@ function SharedTaskRow({
           oneMachine
             ? t("Edit {title}, runs on one machine", { title: task.title })
             : t("Edit {title}, runs on every machine", { title: task.title })
-        }${[...failingChecks].map(([id, text]) => `, ${labelOf(id)}: ${text}`).join("")}`}
+        }${task.description ? `, ${task.description}` : ""}${[...failingChecks].map(([id, text]) => `, ${labelOf(id)}: ${text}`).join("")}`}
         onPress={() => onEdit(environmentId, task)}
         className="min-w-0 flex-1 gap-1 active:opacity-70"
       >
         <Text textRole="body" className="text-foreground" numberOfLines={1}>
           {task.title}
+        </Text>
+        <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+          {scheduledTaskPreview(task)}
         </Text>
         <Text className="text-sm text-foreground-muted" numberOfLines={2}>
           {describeSchedule(task)}
@@ -2784,6 +2834,9 @@ function LinkedMachineTasks({
                 {task.title}
               </Text>
               <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+                {scheduledTaskPreview(task)}
+              </Text>
+              <Text className="text-sm text-foreground-muted" numberOfLines={2}>
                 {[
                   project,
                   describeSchedule(task),
@@ -2965,7 +3018,7 @@ function EnvironmentTasks({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${task.title}${inGroup ? t(", on {machine}", { machine: environment.label }) : ""}${project === null ? "" : t(", in {project}", { project })}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}${failingCheck === null ? "" : `, ${failingCheck}`}`}
+          accessibilityLabel={`${task.title}${inGroup ? t(", on {machine}", { machine: environment.label }) : ""}${project === null ? "" : t(", in {project}", { project })}${task.description ? `, ${task.description}` : ""}${task.shared ? (task.shared.runOn === "one" ? t(", runs on one machine") : t(", runs on every machine")) : ""}${task.modelUnavailableHere ? t(", runs the default model here") : ""}${noWorkSkip === null ? "" : `, ${noWorkSkip}`}${failingCheck === null ? "" : `, ${failingCheck}`}`}
           accessibilityHint={
             runThreadId === null ? t("Opens the task editor.") : t("Opens the task's last run.")
           }
@@ -2977,6 +3030,9 @@ function EnvironmentTasks({
         >
           <Text textRole="body" className="text-foreground" numberOfLines={1}>
             {task.title}
+          </Text>
+          <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+            {scheduledTaskPreview(task)}
           </Text>
           <Text className="text-sm text-foreground-muted" numberOfLines={2}>
             {inGroup ? `${environment.label} · ` : ""}

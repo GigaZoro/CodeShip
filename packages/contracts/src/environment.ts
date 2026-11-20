@@ -149,6 +149,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   scheduledTaskRunConditions: Schema.optionalKey(Schema.Boolean),
   /** Reads a task's `promptFile` at each run; hide that choice where absent, since older servers drop it. */
   scheduledTaskPromptFiles: Schema.optionalKey(Schema.Boolean),
+  /** Stores a task's description. */
+  scheduledTaskDescriptions: Schema.optionalKey(Schema.Boolean),
   /** Stores a task's `group`, serves `scheduledTasks.setGroupPaused` and `scheduledTasks.stats`; hide groups where absent. */
   scheduledTaskGroups: Schema.optionalKey(Schema.Boolean),
   /**

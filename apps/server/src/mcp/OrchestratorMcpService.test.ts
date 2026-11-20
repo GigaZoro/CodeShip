@@ -3336,7 +3336,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     it.effect("checks a bound task against its thread's current modes", () =>
       Effect.gen(function* () {
         const upserted = yield* Ref.make(0);
-        const bound = task({ threadId: boundThreadId });
+        const bound = task({ threadId: boundThreadId, description: "Checks the latest build." });
         const layer = service(
           [bound],
           liveThreadShell(boundThreadId, { runtimeMode: "full-access" }),
@@ -3348,6 +3348,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         const listed = yield* mcp.listScheduledTasks(supervisedClient, { projectId });
         assert.equal(listed.tasks[0]?.webhookUrl, undefined);
         assert.equal(listed.tasks[0]?.prompt, undefined);
+        assert.equal(listed.tasks[0]?.description, bound.description);
         assert.equal(listed.tasks[0]?.promptHash?.length, 12);
         const withPrompt = yield* mcp.listScheduledTasks(supervisedClient, {
           projectId,

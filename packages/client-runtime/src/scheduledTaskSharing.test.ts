@@ -132,14 +132,16 @@ describe("planSharedScheduledTaskSync", () => {
 
   it.each([
     {
-      name: "a source that lists them sends its run condition, catch-up choice, delegate providers and live-run limit, cleared ones too",
+      name: "a source that lists optional fields sends them, including cleared values",
       fields: {
+        description: null,
         runCondition: null,
         catchUpMissedRun: false,
         delegateProviders: [],
         maxLiveRuns: 1,
       },
       expected: {
+        description: null,
         runCondition: null,
         catchUpMissedRun: false,
         delegateProviders: [],
@@ -147,7 +149,7 @@ describe("planSharedScheduledTaskSync", () => {
       },
     },
     {
-      name: "a source on an older version sends neither, so the receiver keeps its own",
+      name: "a source on an older version omits these fields, so the receiver keeps its own",
       fields: {},
       expected: {},
     },
@@ -158,6 +160,7 @@ describe("planSharedScheduledTaskSync", () => {
     ]);
     const copy = op?.input.type === "upsert" ? op.input.task : null;
     expect({
+      ...("description" in (copy ?? {}) ? { description: copy?.description } : {}),
       ...("runCondition" in (copy ?? {}) ? { runCondition: copy?.runCondition } : {}),
       ...("catchUpMissedRun" in (copy ?? {}) ? { catchUpMissedRun: copy?.catchUpMissedRun } : {}),
       ...("delegateProviders" in (copy ?? {})

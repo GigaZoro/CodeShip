@@ -105,6 +105,7 @@ import Migration0095 from "./Migrations/095_CommandRunLossEvidence.ts";
 import Migration0096 from "./Migrations/096_MonitoringThreadAnalyses.ts";
 import Migration0097 from "./Migrations/097_NodePayloadWithoutColumnKeys.ts";
 import Migration0098 from "./Migrations/098_CommandRunProcessIdentity.ts";
+import Migration0099 from "./Migrations/099_ScheduledTaskDescriptions.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -206,6 +207,7 @@ const migrationEntries = [
   [96, "MonitoringThreadAnalyses", Migration0096],
   [97, "NodePayloadWithoutColumnKeys", Migration0097],
   [98, "CommandRunProcessIdentity", Migration0098],
+  [99, "ScheduledTaskDescriptions", Migration0099],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

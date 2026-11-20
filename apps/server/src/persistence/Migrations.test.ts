@@ -34,6 +34,18 @@ describe("runMigrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 80 });
+      yield* sql`
+        INSERT INTO scheduled_tasks (
+          task_id, title, prompt, enabled, schedule_json, project_id, workspace_strategy_json,
+          model_selection_json, runtime_mode, interaction_mode, created_by, creation_source,
+          created_at, updated_at, last_run_status, run_count
+        ) VALUES (
+          'inbox', 'Inbox', 'Process inbox', 1, '{"type":"interval","everyMs":60000}',
+          'project', '{"type":"root"}', '{"instanceId":"codex","model":"gpt-5.4"}',
+          'full-access', 'default', 'user', 'web', '2026-11-08T00:00:00.000Z',
+          '2026-11-08T00:00:00.000Z', 'succeeded', 1
+        )
+      `;
       yield* ScheduledTaskRunHistory;
       yield* sql`INSERT INTO scheduled_task_runs (run_id, task_id, trigger, scheduled_for, started_at, outcome)
         VALUES ('old-run', 'inbox', 'scheduled', '2026-11-08T01:00:00.000Z', '2026-11-08T01:05:00.000Z', 'succeeded')`;
@@ -42,6 +54,9 @@ describe("runMigrations", () => {
         yield* sql`SELECT run_id, scheduled_for, check_json FROM scheduled_task_runs`,
         [{ run_id: "old-run", scheduled_for: "2026-11-08T01:00:00.000Z", check_json: null }],
       );
+      assert.deepEqual(yield* sql`SELECT title, prompt, description_json FROM scheduled_tasks`, [
+        { title: "Inbox", prompt: "Process inbox", description_json: null },
+      ]);
       assert.deepEqual(yield* sql`SELECT * FROM scheduled_task_run_conditions`, []);
       assert.deepEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

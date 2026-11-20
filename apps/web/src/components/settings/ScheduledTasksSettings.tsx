@@ -43,6 +43,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   MAX_RUN_CONDITION_TIMEOUT_SECONDS,
+  MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH,
   MAX_SCHEDULED_TASK_MAX_LIVE_RUNS,
   RUN_CONDITION_FAILING_STREAK,
 } from "@t3tools/contracts";
@@ -196,6 +197,11 @@ import {
   promptUpsertFields,
   type PromptSource,
 } from "@t3tools/client-runtime/scheduled-task-prompt-file";
+import {
+  scheduledTaskDescriptionField,
+  scheduledTaskDescriptionUnsupported,
+  scheduledTaskPreview,
+} from "@t3tools/client-runtime/scheduled-task-description";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import {
   Autocomplete,
@@ -281,6 +287,8 @@ const EQUALS_FILTER_EXAMPLE = "opened";
 const EMPTY_DRAFT: DraftState = {
   editingId: null,
   title: "",
+  description: "",
+  savedDescription: "",
   prompt: "",
   promptSource: "text",
   promptFile: "",
@@ -1337,7 +1345,7 @@ function LinkedScheduledTaskRow({
   return (
     <SettingsRow
       title={task.title}
-      description={<span className="line-clamp-2">{task.prompt}</span>}
+      description={<span className="line-clamp-2">{scheduledTaskPreview(task)}</span>}
       status={
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex min-w-0 max-w-full items-center gap-2">
@@ -1930,7 +1938,7 @@ function ScheduledTaskRow({
   return (
     <SettingsRow
       title={task.title}
-      description={<span className="line-clamp-2">{task.prompt}</span>}
+      description={<span className="line-clamp-2">{scheduledTaskPreview(task)}</span>}
       status={
         <div className="flex flex-wrap items-center gap-2">
           <ScheduledTaskPlace environmentId={environmentId} projectId={task.projectId} />
@@ -2135,7 +2143,7 @@ function SharedScheduledTaskRow({
   return (
     <SettingsRow
       title={task.title}
-      description={<span className="line-clamp-2">{task.prompt}</span>}
+      description={<span className="line-clamp-2">{scheduledTaskPreview(task)}</span>}
       status={
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -2832,6 +2840,13 @@ function ScheduledTaskEditorForm({
   const runConditionLost = runConditionLostOnTarget({ targetSupportsRunConditions, draft });
   const supportsPromptFiles =
     environment?.serverConfig?.environment.capabilities.scheduledTaskPromptFiles === true;
+  const supportsDescriptions =
+    environment?.serverConfig?.environment.capabilities.scheduledTaskDescriptions === true;
+  const descriptionField = scheduledTaskDescriptionField({
+    supported: supportsDescriptions,
+    description: draft.description,
+    savedDescription: draft.savedDescription,
+  });
   const offersDelegateProviders =
     environment?.serverConfig?.environment.capabilities.scheduledTaskDelegateProviders === true;
   const delegateProviderChoices = [
@@ -3038,6 +3053,13 @@ function ScheduledTaskEditorForm({
       );
       return;
     }
+    if (descriptionField === null) {
+      reportFailure(
+        t("Description could not be saved"),
+        scheduledTaskDescriptionUnsupported(environment?.label ?? environmentId),
+      );
+      return;
+    }
     const maxLiveRuns = offersLiveRuns ? liveRunLimitInput(draft.maxLiveRuns) : undefined;
     if (offersLiveRuns && maxLiveRuns === undefined) {
       reportFailure(t("Invalid live-run limit"), liveRunLimitInvalidText());
@@ -3053,6 +3075,7 @@ function ScheduledTaskEditorForm({
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
+      ...descriptionField,
       ...promptUpsertFields({ supportsPromptFiles, draft }),
       enabled: draft.enabled,
       ...scheduledTaskGroupUpsertField({
@@ -3397,6 +3420,34 @@ function ScheduledTaskEditorForm({
               }
             />
           </Field>
+
+          {supportsDescriptions || draft.description !== "" || draft.savedDescription !== "" ? (
+            <Field label={t("Description (optional)")} htmlFor="scheduled-task-description">
+              <Textarea
+                id="scheduled-task-description"
+                size="sm"
+                aria-describedby="scheduled-task-description-help"
+                value={draft.description}
+                maxLength={MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, description: event.target.value }))
+                }
+              />
+              <div
+                id="scheduled-task-description-help"
+                className="grid grid-cols-[1fr_auto] items-start gap-3 text-xs text-muted-foreground"
+              >
+                <span>
+                  {descriptionField === null
+                    ? scheduledTaskDescriptionUnsupported(environment?.label ?? environmentId)
+                    : t("A short summary shown in the scheduled task list.")}
+                </span>
+                <span className="tabular-nums">
+                  {`${draft.description.length} / ${MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH}`}
+                </span>
+              </div>
+            </Field>
+          ) : null}
 
           {offersGroups ? (
             <Field label={t("Group")} htmlFor="scheduled-task-group">

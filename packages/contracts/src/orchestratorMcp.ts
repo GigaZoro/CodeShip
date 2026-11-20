@@ -24,6 +24,7 @@ import {
 import {
   RUN_CONDITION_FAILING_STREAK,
   ScheduledTaskChangedBy,
+  ScheduledTaskDescription,
   ScheduledTaskGroupLabel,
   ScheduledTaskFailingCheck,
   ScheduledTaskNoWorkSkip,
@@ -910,6 +911,9 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   ...scheduledTaskPromptFileField,
   schedule: OrchestratorMcpSchedule,
   title: Schema.optional(OrchestratorMcpTitle),
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)).annotate({
+    description: "Plain-language summary shown on the Scheduled tasks page. Null clears it.",
+  }),
   enabled: Schema.optional(Schema.Boolean.annotate({ description: "Default true." })),
   bindToCurrentThread: Schema.optional(
     Schema.Boolean.annotate({
@@ -976,6 +980,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   followsDefaultModel: Schema.optional(Schema.Boolean),
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
+  description: Schema.optional(ScheduledTaskDescription),
   prompt: Schema.optional(Schema.String),
   promptFile: Schema.optional(ScheduledTaskPromptFile).annotate({
     description:
@@ -1138,6 +1143,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   ...scheduledTaskPromptFileField,
   title: Schema.optional(OrchestratorMcpTitle),
   schedule: Schema.optional(OrchestratorMcpSchedule),
+  description: OrchestratorMcpScheduleTaskInput.fields.description,
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   shared: Schema.optional(Schema.Boolean),

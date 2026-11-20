@@ -2,13 +2,26 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
+  ScheduledTaskDescription,
   ScheduledTaskSchedule,
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 
 const decodeSchedule = Schema.decodeUnknownSync(ScheduledTaskSchedule);
 const decodeUpsertSchedule = Schema.decodeUnknownSync(ScheduledTaskUpsertSchedule);
+
+describe("ScheduledTaskDescription", () => {
+  const decode = Schema.decodeUnknownSync(ScheduledTaskDescription);
+
+  it("trims the description before checking its length", () => {
+    const longest = "x".repeat(MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH);
+    expect(decode(`  ${longest}\n`)).toBe(longest);
+    expect(() => decode(`${longest}x`)).toThrow();
+    expect(() => decode("  \n")).toThrow();
+  });
+});
 
 describe("ScheduledTaskSchedule", () => {
   it("keeps legacy sub-minute persisted schedules readable", () => {

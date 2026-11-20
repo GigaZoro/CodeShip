@@ -6,6 +6,8 @@ import {
   ProjectId,
   ScheduledTask,
   ScheduledTaskChangedBy,
+  ScheduledTaskDescription,
+  MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH,
   ScheduledTaskSharing,
   ScheduledTaskOneMachineDecision,
   ScheduledTaskProjectMachineOrder,
@@ -322,6 +324,12 @@ const webhookDedupe = (signature: UpsertWebhookSignature, dedupe: WebhookDedupe)
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeRunRecord = Schema.decodeUnknownOption(ScheduledTaskRunRecord);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
+const decodeDescription = Schema.decodeUnknownEffect(
+  Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
+);
+const decodeDescriptionJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.NullOr(ScheduledTaskDescription)),
+);
 const decodeScheduleJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.schedule),
 );
@@ -391,6 +399,7 @@ const encodeMissingFieldsJson = Schema.encodeSync(MissingFieldsJson);
 interface ScheduledTaskRow {
   readonly task_id: string;
   readonly title: string;
+  readonly description_json: string | null;
   readonly prompt: string;
   readonly enabled: number;
   readonly schedule_json: string;
@@ -829,6 +838,9 @@ const decodeRow = Effect.fnUntraced(
     return yield* decodeTask({
       id: row.task_id,
       title: row.title,
+      ...(row.description_json === null
+        ? {}
+        : { description: yield* decodeDescriptionJson(row.description_json) }),
       prompt: row.prompt,
       enabled: row.enabled === 1,
       schedule,
@@ -1417,6 +1429,7 @@ export const layer = Layer.effect(
       SELECT
         task_id,
         title,
+        description_json,
         prompt,
         enabled,
         schedule_json,
@@ -1527,6 +1540,7 @@ export const layer = Layer.effect(
       SELECT
         task_id,
         title,
+        description_json,
         prompt,
         enabled,
         schedule_json,
@@ -1667,6 +1681,7 @@ export const layer = Layer.effect(
         INSERT INTO scheduled_tasks (
           task_id,
           title,
+          description_json,
           prompt,
           enabled,
           schedule_json,
@@ -1692,6 +1707,7 @@ export const layer = Layer.effect(
         SELECT
           ${task.id},
           ${task.title},
+          ${task.description === undefined ? null : JSON.stringify(task.description)},
           ${task.prompt},
           ${task.enabled ? 1 : 0},
           ${JSON.stringify(task.schedule)},
@@ -1718,6 +1734,7 @@ export const layer = Layer.effect(
         ON CONFLICT (task_id)
         DO UPDATE SET
           title = excluded.title,
+          description_json = COALESCE(excluded.description_json, scheduled_tasks.description_json),
           prompt = excluded.prompt,
           enabled = excluded.enabled,
           schedule_json = excluded.schedule_json,
@@ -4465,6 +4482,7 @@ export const layer = Layer.effect(
                 {
                   id: task.id,
                   title: task.title,
+                  ...(task.description === undefined ? {} : { description: task.description }),
                   prompt: task.prompt,
                   enabled: task.enabled,
                   schedule: task.schedule,
@@ -4663,6 +4681,16 @@ export const layer = Layer.effect(
         Effect.map((rows) => rows.length > 0),
       );
 
+    const normalizeDescription = (description: ScheduledTask["description"], id: ScheduledTaskId) =>
+      decodeDescription(description).pipe(
+        Effect.mapError((cause) =>
+          taskError(
+            `Expected a nonblank description of at most ${MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH} characters.`,
+            { taskId: id, cause },
+          ),
+        ),
+      );
+
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input, by) {
@@ -4724,6 +4752,7 @@ export const layer = Layer.effect(
       // keep their run history, and so real load failures propagate instead
       // of silently resetting an existing row.
       const existingTask = yield* findTask(id);
+      const description = yield* normalizeDescription(input.description, id);
       // Omitted keeps the stored choice, so a client that predates sharing can re-save a task.
       const sharedExclusions =
         input.shared === undefined
@@ -4878,6 +4907,7 @@ export const layer = Layer.effect(
       const task: ScheduledTask = {
         id,
         title: input.title,
+        ...(description === undefined ? {} : { description }),
         prompt,
         enabled: input.enabled,
         schedule,
@@ -5021,6 +5051,10 @@ export const layer = Layer.effect(
       const id = input.type === "upsert" ? input.task.id : input.deletion.id;
       const incoming =
         input.type === "upsert" ? input.task.shared.revision : input.deletion.revision;
+      const description = yield* normalizeDescription(
+        input.type === "upsert" ? input.task.description : undefined,
+        id,
+      );
       const toTaskError = (cause: unknown) =>
         isScheduledTaskError(cause)
           ? cause
@@ -5078,6 +5112,15 @@ export const layer = Layer.effect(
               WHERE task_id = ${taskId} AND fallback_model_selections_json IS NULL
               RETURNING task_id
             `;
+            const descriptionJson = description === undefined ? null : JSON.stringify(description);
+            const filledDescription =
+              descriptionJson === null
+                ? []
+                : yield* sql`
+                  UPDATE scheduled_tasks SET description_json = ${descriptionJson}
+                  WHERE task_id = ${taskId} AND description_json IS NOT ${descriptionJson}
+                  RETURNING task_id
+                `;
             const liveRunLimitDiffers =
               task.maxLiveRuns !== undefined &&
               task.maxLiveRuns !== (yield* liveRunLimitOf(taskId));
@@ -5112,6 +5155,7 @@ export const layer = Layer.effect(
               !delegatesDiffer &&
               !liveRunLimitDiffers &&
               !changedByMissing &&
+              filledDescription.length === 0 &&
               filledFallbacks.length === 0
             ) {
               return { outcome: "stale" as const };
@@ -5208,6 +5252,7 @@ export const layer = Layer.effect(
       const saved: ScheduledTask = {
         id,
         title: task.title,
+        ...(description === undefined ? {} : { description }),
         prompt: task.prompt,
         enabled: task.enabled,
         schedule,

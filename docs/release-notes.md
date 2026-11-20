@@ -1,3 +1,7 @@
+## 2026-11-20 — Plain-language descriptions for scheduled tasks
+
+- Add a description in a task’s editor to see its purpose on the Scheduled tasks page. Shared tasks carry the description across machines.
+
 ## 2026-11-20 — Completed scheduled threads settle automatically
 
 - CodeShip settles threads started by a scheduled task after a successful run when no work is pending. You can turn this off in **Settings → Threads → Auto-settle**.

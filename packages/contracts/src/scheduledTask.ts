@@ -668,9 +668,16 @@ export const ScheduledTaskMaxLiveRuns = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: MAX_SCHEDULED_TASK_MAX_LIVE_RUNS }),
 );
 
+export const MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH = 500;
+
+export const ScheduledTaskDescription = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(MAX_SCHEDULED_TASK_DESCRIPTION_LENGTH),
+);
+
 export const ScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
   /** With `promptFile`, the text its last read found; runs read the file again. */
   prompt: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
@@ -763,6 +770,7 @@ export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 export const LinkedScheduledTask = Schema.Struct({
   id: ScheduledTaskId,
   title: Schema.String,
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
   prompt: Schema.String,
   enabled: Schema.Boolean,
   projectId: ProjectId,
@@ -813,6 +821,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   }),
   commandId: Schema.optional(CommandId),
   title: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)).annotate({
+    description: "Display text for people. Omitted keeps the stored description. Null clears it.",
+  }),
   prompt: Schema.optional(TrimmedNonEmptyString).annotate({
     description: "Needed unless the task reads its prompt from a file; ignored when it does.",
   }),
@@ -875,6 +886,8 @@ export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 export const ScheduledTaskSharedCopy = Schema.Struct({
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
+  /** An omitted description keeps the receiving machine's value. */
+  description: Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
   prompt: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
   schedule: ScheduledTaskSchedule,

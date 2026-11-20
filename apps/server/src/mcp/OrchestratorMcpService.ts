@@ -390,6 +390,7 @@ function scheduledTaskSummary(
       : { fallbackModelSelections: task.fallbackModelSelections }),
     scheduledTaskId: task.id,
     title: task.title,
+    ...(task.description == null ? {} : { description: task.description }),
     ...(includePrompt ? { prompt: task.prompt } : {}),
     ...(task.promptFile == null ? {} : { promptFile: task.promptFile }),
     promptPreview: promptPreview(task.prompt),
@@ -2770,6 +2771,7 @@ const make = Effect.gen(function* () {
       }
       const upsertInput: ScheduledTaskUpsertInput = {
         title,
+        ...(input.description === undefined ? {} : { description: input.description }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
         ...(input.promptFile === undefined ? {} : { promptFile: input.promptFile }),
         enabled: input.enabled ?? true,
@@ -3005,6 +3007,7 @@ const make = Effect.gen(function* () {
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
+          ...(input.description === undefined ? {} : { description: input.description }),
           prompt: input.prompt ?? existing.prompt,
           ...(input.promptFile === undefined ? {} : { promptFile: input.promptFile }),
           enabled: input.enabled ?? existing.enabled,

@@ -171,6 +171,7 @@ const make = Effect.gen(function* () {
       tasks.map((task): LinkedScheduledTask => ({
         id: task.scheduledTaskId,
         title: task.title,
+        ...(task.description === undefined ? {} : { description: task.description }),
         prompt: task.prompt ?? task.promptPreview ?? "",
         enabled: task.enabled,
         projectId: task.projectId,

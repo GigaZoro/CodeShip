@@ -94,6 +94,7 @@ function sharedCopyOf(task: ScheduledTask): ScheduledTaskSharedCopy | null {
   return {
     id: task.id,
     title: task.title,
+    ...(task.description === undefined ? {} : { description: task.description }),
     prompt: task.prompt,
     enabled: task.enabled,
     schedule: task.schedule,
