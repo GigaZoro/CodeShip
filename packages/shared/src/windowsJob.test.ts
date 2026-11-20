@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- These tests exercise native Windows handles and inherited descriptors.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeReadline from "node:readline";
 import * as NodeStreamConsumers from "node:stream/consumers";
 
@@ -38,7 +39,163 @@ const fixture = Effect.gen(function* () {
   return { fs, path, home, host, spawner, name, invoke };
 });
 
+const compileFixture = Effect.fn("WindowsJobTest.compile")(function* (
+  home: string,
+  source: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const env = yield* HostProcess.Environment;
+  const file = path.join(home, "Fixture.cs");
+  const executable = path.join(home, "Fixture.exe");
+  yield* fs.writeFileString(file, source);
+  yield* Effect.tryPromise(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        NodeChildProcess.execFile(
+          path.join(env.SystemRoot!, "Microsoft.NET", "Framework", "v4.0.30319", "csc.exe"),
+          ["/nologo", "/target:exe", `/out:${executable}`, file],
+          { windowsHide: true },
+          (error, stdout, stderr) =>
+            error === null ? resolve() : reject(new Error(`${error.message}: ${stdout}${stderr}`)),
+        );
+      }),
+  );
+  return executable;
+});
+
 describe.runIf(isWindowsHost)("a Windows job", () => {
+  it.live("fails a stop when the job stays active beyond its termination budget", () =>
+    Effect.gen(function* () {
+      const { home, spawner } = yield* fixture;
+      const implementation = yield* Effect.tryPromise(() =>
+        NodeFSP.readFile(new URL("./windowsJob.ts", import.meta.url), "utf8"),
+      );
+      const stop = / static void Stop\(IntPtr job\) \{[\s\S]*?\n \}/.exec(implementation)?.[0];
+      assert.isDefined(stop);
+      // Compile the actual wait against a stuck kernel response and a clock already at its limit.
+      const executable = yield* compileFixture(
+        home,
+        `using System;
+class Stopwatch { public static Stopwatch StartNew() { return new Stopwatch(); } public long ElapsedMilliseconds { get { return 20000; } } }
+class Thread { public static void Sleep(int ms) { throw new Exception("Unbounded job wait"); } }
+class Fixture {
+ static void Limits(IntPtr job, bool closed) {} static bool TerminateJobObject(IntPtr job, uint code) { return true; }
+ static void Check(bool value) {} static uint Count(IntPtr job) { return 1; }
+ ${stop}
+ static int Main() { try { Stop(IntPtr.Zero); return 1; } catch(TimeoutException error) { Console.WriteLine(error.Message); return 0; } }
+}`,
+      );
+      const child = yield* spawner.spawn(ChildProcess.make(executable));
+      const output = yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString);
+      assert.equal(yield* child.exitCode, 0);
+      assert.include(output, "still has active processes after 20 seconds");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("does not stop a replacement job with the same name or a child outside that job", () =>
+    Effect.gen(function* () {
+      const { host, home, path, fs, name, spawner, invoke } = yield* fixture;
+      const originalFile = path.join(home, "original-pid");
+      const original = yield* spawner.spawn(
+        ChildProcess.make(host, ["run", name, originalFile, process.execPath, "-e", ""]),
+      );
+      yield* original.exitCode;
+      const originalIdentity = (yield* fs.readFileString(originalFile)).trim().split(" ");
+      const member = yield* processPipe;
+      const source = `const s=require('node:net').connect(${JSON.stringify(member.path)},()=>s.write(String(process.pid))); s.on('error',()=>{}); s.on('close',()=>process.exit());`;
+      const replacementFile = path.join(home, "replacement-pid");
+      const replacement = yield* spawner.spawn(
+        ChildProcess.make(host, ["run", name, replacementFile, process.execPath, "-e", source]),
+      );
+      yield* member.started;
+      assert.include(yield* invoke(["stop", name, ...originalIdentity]), "not ours");
+      assert.isTrue(yield* replacement.isRunning);
+      const outsiderPid = String(process.pid);
+      const outsiderCreated = (yield* invoke(["identity", outsiderPid])).trim();
+      assert.include(yield* invoke(["stop", name, outsiderPid, outsiderCreated]), "not ours");
+      assert.isTrue(yield* replacement.isRunning);
+      const [pid, created] = (yield* fs.readFileString(replacementFile)).trim().split(" ");
+      assert.include(
+        yield* invoke(["stop", name, pid!, String(Number(created) + 500)]),
+        "not ours",
+      );
+      assert.isTrue(yield* replacement.isRunning);
+      yield* invoke(["stop", name, pid!, created!]);
+      yield* member.ended;
+      yield* replacement.exitCode;
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.each([false, true])(
+    "releases stdout before an owned child exits or receives stdin EOF, raw %s",
+    (raw) =>
+      Effect.gen(function* () {
+        const { host, home } = yield* fixture;
+        const executable = yield* compileFixture(
+          home,
+          `using System;
+using System.Runtime.InteropServices;
+class Fixture {
+ [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int number);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+ [DllImport("kernelbase.dll")] static extern bool CompareObjectHandles(IntPtr first,IntPtr second);
+ [DllImport("kernel32.dll")] static extern uint PssCaptureSnapshot(IntPtr process,uint flags,uint context,out IntPtr snapshot);
+ [DllImport("kernel32.dll")] static extern uint PssFreeSnapshot(IntPtr process,IntPtr snapshot);
+ [DllImport("kernel32.dll")] static extern uint PssWalkMarkerCreate(IntPtr allocator,out IntPtr marker);
+ [DllImport("kernel32.dll")] static extern uint PssWalkMarkerFree(IntPtr marker);
+ [DllImport("kernel32.dll")] static extern uint PssWalkSnapshot(IntPtr snapshot,int kind,IntPtr marker,IntPtr buffer,uint size);
+ static void Check(uint result) { if(result!=0) throw new System.ComponentModel.Win32Exception((int)result); }
+ static void Main() {
+  uint entrySize=IntPtr.Size==8 ? 136u : 104u;
+  IntPtr snapshot,marker,entry=Marshal.AllocHGlobal((int)entrySize),output=GetStdHandle(-11);
+  var handles=new System.Collections.Generic.List<IntPtr>();
+  Check(PssCaptureSnapshot(new IntPtr(-1),4,0,out snapshot));
+  Check(PssWalkMarkerCreate(IntPtr.Zero,out marker));
+  for(;;) {
+   uint status=PssWalkSnapshot(snapshot,2,marker,entry,entrySize);
+   if(status==259)break;
+   Check(status);
+   IntPtr handle=Marshal.ReadIntPtr(entry);
+   if(CompareObjectHandles(handle,output)) handles.Add(handle);
+  }
+  PssWalkMarkerFree(marker); PssFreeSnapshot(new IntPtr(-1),snapshot); Marshal.FreeHGlobal(entry);
+  foreach(var handle in handles) CloseHandle(handle);
+  Console.OpenStandardInput().ReadByte();
+ }
+}`,
+        );
+        const child = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            windowsJobSpawn(host)(executable, [], { windowsVerbatimArguments: raw }),
+          ),
+          (child) =>
+            Effect.sync(() => {
+              child.kill();
+            }),
+        );
+        const exit = exited(child);
+        yield* Effect.tryPromise(() => NodeStreamConsumers.buffer(child.stdout));
+        assert.isNull(child.exitCode, "stdout EOF must precede the child's exit");
+        child.stdin.end();
+        assert.equal((yield* Effect.promise(() => exit))[0], 0);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("rebuilds a truncated cached host before executing it", () =>
+    Effect.gen(function* () {
+      const { host, home, path, fs } = yield* fixture;
+      const anotherHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-job-corrupt-" });
+      yield* fs.copy(path.join(home, ".cache"), path.join(anotherHome, ".cache"));
+      const cached = path.join(anotherHome, ".cache", "t3", "windows-job", path.basename(host));
+      yield* fs.writeFileString(cached, "truncated");
+      const rebuilt = yield* prepareWindowsJobHost().pipe(
+        Effect.provideService(HostProcess.HomeDirectory, anotherHome),
+      );
+      assert.isAbove(Number((yield* fs.stat(rebuilt)).size), 9);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live.each(["before start", "referenced", "unreferenced", "referenced again"] as const)(
     "owns the command when the worker control pipe closes, %s",
     (state) =>
@@ -78,7 +235,8 @@ describe.runIf(isWindowsHost)("a Windows job", () => {
           return;
         }
         control.write("R");
-        assert.match(yield* line(), /^S \d+ \d+$/);
+        const started = yield* line();
+        assert.match(started, /^S \d+ \d+$/);
         yield* member.started;
         if (state !== "referenced") {
           control.write("U");
@@ -92,7 +250,7 @@ describe.runIf(isWindowsHost)("a Windows job", () => {
         if (state === "unreferenced") {
           // The acknowledged unref outlives its worker; an independent controller still owns the job.
           assert.isAtLeast(Number(yield* invoke(["count", name])), 1);
-          yield* invoke(["stop", name]);
+          yield* invoke(["stop", name, ...started.split(" ").slice(1)]);
         }
         yield* member.ended;
         yield* Effect.promise(() => exit);
@@ -197,7 +355,7 @@ describe.runIf(isWindowsHost)("a Windows job", () => {
         const [pid, created] = (yield* fs.readFileString(pidFile)).split(" ").map(Number);
         assert.equal(Number(yield* invoke(["identity", String(pid)])), created);
         assert.isAtLeast(Number(yield* invoke(["count", name])), 2);
-        if (action === "stop") yield* invoke(["stop", name]);
+        if (action === "stop") yield* invoke(["stop", name, String(pid), String(created)]);
         else yield* leader.kill();
         yield* member.ended;
         yield* leader.exitCode;

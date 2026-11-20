@@ -602,12 +602,18 @@ const make = Effect.gen(function* () {
   /** Jobs retain Windows membership; legacy records prove only their root process identity. */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     if (windows && row.unit?.startsWith(jobUnitPrefix)) {
+      if (row.pid === null || row.process_started_at === null) return false;
       const host = yield* yield* WindowsJobHost;
       const stopped = yield* stopSlots
         .withPermits(1)(
           processRunner.run({
             command: host,
-            args: ["stop", row.unit.slice(jobUnitPrefix.length)],
+            args: [
+              "stop",
+              row.unit.slice(jobUnitPrefix.length),
+              String(row.pid),
+              String(row.process_started_at),
+            ],
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
           }),

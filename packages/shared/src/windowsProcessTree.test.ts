@@ -39,7 +39,11 @@ const fakeWindowsSpawner = (options: {
   readonly output: "ends" | "held";
   readonly job?: WindowsJob;
 }) => {
-  const job = options.job ?? { host: "job-host.exe", name: "Global\\CodeShip.Job.fake" };
+  const job = options.job ?? {
+    host: "job-host.exe",
+    name: "Global\\CodeShip.Job.fake",
+    child: { pid: 1, created: 1234 },
+  };
   const events: Array<"kill" | "walk"> = [];
   const jobsStopped: Array<string> = [];
   let running = options.running;
@@ -65,7 +69,12 @@ const fakeWindowsSpawner = (options: {
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
       if (command._tag === "StandardCommand" && command.command === job.host) {
-        assert.equal(command.args[0], "stop");
+        assert.deepEqual(command.args, [
+          "stop",
+          job.name,
+          String(job.child?.pid),
+          String(job.child?.created),
+        ]);
         jobsStopped.push(command.args[1]!);
         if (options.job === undefined) events.push("walk");
         return handle(Stream.empty);
@@ -105,7 +114,11 @@ describe("endingWindowsTrees stops a Windows tree", () => {
 
   it.effect("retains the owned job through wrappers and stops its members without a PID walk", () =>
     Effect.gen(function* () {
-      const job = { host: "job-host.exe", name: "Global\\CodeShip.Job.test" };
+      const job = {
+        host: "job-host.exe",
+        name: "Global\\CodeShip.Job.test",
+        child: { pid: 1, created: 1234 },
+      };
       const fake = fakeWindowsSpawner({ running: false, output: "ends", job });
       const outer = endingWindowsTrees(endingWindowsTrees(fake.spawner, "win32"), "win32");
       yield* Effect.scoped(

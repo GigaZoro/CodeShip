@@ -9,7 +9,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "./HostProcess.ts";
-import { attachWindowsJob, WindowsJobHost, windowsJobName } from "./windowsJob.ts";
+import { attachWindowsJob, WindowsJobHost, windowsJobName, type WindowsJob } from "./windowsJob.ts";
 
 type Spawner = ChildProcessSpawner.ChildProcessSpawner["Service"];
 const owned = new WeakSet<Spawner>();
@@ -43,7 +43,7 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
         const host = yield* (yield* WindowsJobHost).pipe(
           Effect.mapError((error) => failed(error.message)),
         );
-        const job = { host, name: windowsJobName(NodeCrypto.randomUUID()) };
+        const job: WindowsJob = { host, name: windowsJobName(NodeCrypto.randomUUID()) };
         const fd =
           Math.max(
             2,
@@ -111,7 +111,14 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
                 return;
               }
               const [kind, value, detail] = line.split(" ");
-              if (kind === "S" && Number.isSafeInteger(Number(value)) && Number(value) > 0) {
+              if (
+                kind === "S" &&
+                Number.isSafeInteger(Number(value)) &&
+                Number(value) > 0 &&
+                Number.isSafeInteger(Number(detail)) &&
+                Number(detail) > 0
+              ) {
+                job.child = { pid: Number(value), created: Number(detail) };
                 yield* Deferred.succeed(started, Number(value));
               } else if (kind === "E") {
                 return yield* failed(
@@ -144,8 +151,14 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
           kill: () =>
             Effect.scoped(
               Effect.gen(function* () {
+                if (job.child === undefined)
+                  return yield* failed("Windows job child identity is not published.");
                 const stop = yield* spawner.spawn(
-                  ChildProcess.make(job.host, ["stop", job.name], { stdin: "ignore" }),
+                  ChildProcess.make(
+                    job.host,
+                    ["stop", job.name, String(job.child.pid), String(job.child.created)],
+                    { stdin: "ignore" },
+                  ),
                 );
                 const [code, stderr] = yield* Effect.all(
                   [stop.exitCode, stop.stderr.pipe(Stream.decodeText(), Stream.mkString)],
