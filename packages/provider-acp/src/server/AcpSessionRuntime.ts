@@ -1213,14 +1213,12 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
 > {
   const crypto = yield* Crypto.Crypto;
+  const hostPlatform = yield* HostProcess.Platform;
   // On Windows a session's tree ends with it; a tree the session owns is stopped below instead.
   const spawner =
     options.ownDetachedProcessGroup === true
       ? withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner)
-      : endingWindowsTrees(
-          yield* ChildProcessSpawner.ChildProcessSpawner,
-          yield* HostProcess.Platform,
-        );
+      : endingWindowsTrees(yield* ChildProcessSpawner.ChildProcessSpawner, hostPlatform);
   const runtimeScope = yield* Scope.fork(yield* Scope.Scope);
   const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
@@ -1430,9 +1428,11 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
         ...(spawnEnvironment ? { env: spawnEnvironment } : {}),
         extendEnv: options.spawn.extendEnv ?? true,
+        // A detached Windows child starts without a console, and a .cmd launcher then never
+        // receives stdin. Windows owns no process group; its tree is stopped through PowerShell.
         ...(options.ownDetachedProcessGroup === undefined
           ? {}
-          : { detached: options.ownDetachedProcessGroup }),
+          : { detached: options.ownDetachedProcessGroup && hostPlatform !== "win32" }),
         shell: containedSpawnCommand.shell,
       }),
     )
@@ -1597,7 +1597,6 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     Effect.uninterruptible(terminateOwnedProcessGroupImpl),
   );
   if (options.ownDetachedProcessGroup === true) {
-    const hostPlatform = yield* HostProcess.Platform;
     const forceTerminateOwnedProcessGroup =
       hostPlatform === "win32"
         ? stopChildTree

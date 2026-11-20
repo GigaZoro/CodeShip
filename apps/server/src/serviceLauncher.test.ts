@@ -3,8 +3,9 @@ import type * as NodeChildProcess from "node:child_process";
 import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import { SERVER_EXIT_CODE_STATE_DIR_OWNED } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -132,6 +133,9 @@ const writeFakeRuntime = (
   });
 
 it.layer(NodeServices.layer)("service state persistence", (it) => {
+  // The Windows runtime is t3.exe; a shebang script cannot stand in for it there.
+  const fakeRuntimeIt = it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32");
+
   it.effect(
     "loads optional service.env literally without changing inherited or managed variables",
     () =>
@@ -272,7 +276,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
-  it.effect("keeps bounding boot-service.log while the service runs", () =>
+  fakeRuntimeIt("keeps bounding boot-service.log while the service runs", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -419,7 +423,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       "}",
     ].join("\n");
 
-  it.effect("hands the service to the active release's launcher as its delegate", () =>
+  fakeRuntimeIt("hands the service to the active release's launcher as its delegate", () =>
     Effect.gen(function* () {
       const { fs, ranPath, running } = yield* launcherHandOff({ "1.1.0": probeThenRun(recordRun) });
       assert.equal(yield* Effect.promise(() => running), "stopped");
@@ -427,7 +431,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
-  it.effect("a delegate hands the service back instead of starting a launcher under it", () =>
+  fakeRuntimeIt("a delegate hands the service back instead of starting a launcher under it", () =>
     Effect.gen(function* () {
       const { fs, ranPath, running } = yield* launcherHandOff(
         { "1.1.0": probeThenRun(recordRun) },
@@ -438,7 +442,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
-  it.effect("starts the newer launcher when its delegate hands the service back", () =>
+  fakeRuntimeIt("starts the newer launcher when its delegate hands the service back", () =>
     Effect.gen(function* () {
       const { fs, ranPath, running } = yield* launcherHandOff({
         "1.1.0": probeThenRun(
@@ -451,7 +455,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
-  it.effect(
+  fakeRuntimeIt(
     "keeps the old launcher running the service when the new launcher fails its probe",
     () =>
       Effect.gen(function* () {
@@ -464,7 +468,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       }),
   );
 
-  it.effect(
+  fakeRuntimeIt(
     "restarts the service when the new launcher fails, then keeps the old launcher for that release",
     () =>
       Effect.gen(function* () {
@@ -487,7 +491,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       }),
   );
 
-  it.effect(
+  fakeRuntimeIt(
     "stops instead of handing over when a stop arrives while the committed server stops",
     () =>
       Effect.gen(function* () {
@@ -519,7 +523,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
       }),
   );
 
-  it.effect("stays idle instead of exiting when another server owns the T3 home", () =>
+  fakeRuntimeIt("stays idle instead of exiting when another server owns the T3 home", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -559,7 +563,7 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
-  it.effect("commits only after the trial reports prepared", () =>
+  fakeRuntimeIt("commits only after the trial reports prepared", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -612,121 +616,128 @@ if (context.update?.status === "pending") {
     }),
   );
 
-  it.effect.each([
-    { reportsPrepared: true, outcome: ["1.1.0", "committed", undefined] },
-    { reportsPrepared: false, outcome: ["1.0.0", "rolled-back", "prepared-timeout"] },
-  ] as const)(
-    "keeps a trial that reports migration progress until it stops (prepared $reportsPrepared)",
-    ({ reportsPrepared, outcome }) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-progress-" });
-        const statePath = path.join(root, "runtime", "service-state.json");
-        const databasePath = path.join(root, "userdata", "state.sqlite");
-        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
-        yield* fs.writeFileString(databasePath, "before trial");
-        const childSource = `
-const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
-if (context.update?.status === "pending") {
-  process.on("message", (message) => {
-    if (message === "migrate") {
-      process.send({ type: "preparing", updateId: context.update.id });
-      process.send("migrated");
-    } else if (message === "finish") {
-      process.send({ type: "prepared", updateId: context.update.id });
-    } else if (message.type === "committed") {
-      process.exit(0);
-    }
-  });
-  process.send("trial-started");
-} else if (context.update === undefined) {
-  process.on("message", (message) => {
-    if (message.type === "update-accepted") process.send("update-accepted");
-  });
-  process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${JSON.stringify(databasePath)} });
-  setInterval(() => {}, 1_000);
-} else {
-  process.exit(0);
-}
-`;
-        for (const version of ["1.0.0", "1.1.0"]) {
-          yield* writeFakeRuntime(
-            fs,
-            path,
-            path.join(root, "runtime", "versions", version),
-            childSource,
-          );
-        }
-        yield* Effect.promise(() =>
-          writeServiceState(statePath, {
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: "1.0.0",
-          }),
-        );
-        const listeners: Array<(child: NodeChildProcess.ChildProcess) => void> = [];
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => listeners.forEach((listener) => spawnListeners.delete(listener))),
-        );
-        const fromChild = (text: string) =>
-          new Promise<NodeChildProcess.ChildProcess>((resolve) => {
-            const listener = (child: NodeChildProcess.ChildProcess) =>
-              child.on("message", (message) => {
-                if (message === text) resolve(child);
+  describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "needs a t3.exe stand-in",
+    () => {
+      it.effect.each([
+        { reportsPrepared: true, outcome: ["1.1.0", "committed", undefined] },
+        { reportsPrepared: false, outcome: ["1.0.0", "rolled-back", "prepared-timeout"] },
+      ] as const)(
+        "keeps a trial that reports migration progress until it stops (prepared $reportsPrepared)",
+        ({ reportsPrepared, outcome }) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fs.makeTempDirectoryScoped({
+              prefix: "t3-service-launcher-progress-",
+            });
+            const statePath = path.join(root, "runtime", "service-state.json");
+            const databasePath = path.join(root, "userdata", "state.sqlite");
+            yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+            yield* fs.writeFileString(databasePath, "before trial");
+            const childSource = `
+  const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+  if (context.update?.status === "pending") {
+    process.on("message", (message) => {
+      if (message === "migrate") {
+        process.send({ type: "preparing", updateId: context.update.id });
+        process.send("migrated");
+      } else if (message === "finish") {
+        process.send({ type: "prepared", updateId: context.update.id });
+      } else if (message.type === "committed") {
+        process.exit(0);
+      }
+    });
+    process.send("trial-started");
+  } else if (context.update === undefined) {
+    process.on("message", (message) => {
+      if (message.type === "update-accepted") process.send("update-accepted");
+    });
+    process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${JSON.stringify(databasePath)} });
+    setInterval(() => {}, 1_000);
+  } else {
+    process.exit(0);
+  }
+  `;
+            for (const version of ["1.0.0", "1.1.0"]) {
+              yield* writeFakeRuntime(
+                fs,
+                path,
+                path.join(root, "runtime", "versions", version),
+                childSource,
+              );
+            }
+            yield* Effect.promise(() =>
+              writeServiceState(statePath, {
+                protocol: SERVICE_LAUNCHER_PROTOCOL,
+                activeVersion: "1.0.0",
+              }),
+            );
+            const listeners: Array<(child: NodeChildProcess.ChildProcess) => void> = [];
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => listeners.forEach((listener) => spawnListeners.delete(listener))),
+            );
+            const fromChild = (text: string) =>
+              new Promise<NodeChildProcess.ChildProcess>((resolve) => {
+                const listener = (child: NodeChildProcess.ChildProcess) =>
+                  child.on("message", (message) => {
+                    if (message === text) resolve(child);
+                  });
+                listeners.push(listener);
+                spawnListeners.add(listener);
               });
-            listeners.push(listener);
-            spawnListeners.add(listener);
-          });
-        const accepted = fromChild("update-accepted");
-        const trialStarted = fromChild("trial-started");
+            const accepted = fromChild("update-accepted");
+            const trialStarted = fromChild("trial-started");
 
-        const launcher = new Launcher(
-          root,
-          yield* Effect.promise(() => readServiceState(statePath)),
-        );
-        const running = launcher.run().then(
-          () => Promise.reject(new Error("launcher unexpectedly completed")),
-          () => undefined,
-        );
-        yield* Effect.promise(() => accepted);
-        // The hand-off timer is already on the real clock; the trial's deadline is not.
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
-        const trial = yield* Effect.promise(() => trialStarted);
-        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(29 * 60_000));
-        // The first deadline fires after the launcher queued the progress report, before it handles it.
-        trial.on("message", (message) => {
-          if (Predicate.hasProperty(message, "type") && message.type === "preparing") {
-            vi.advanceTimersByTime(60_000);
-          }
-        });
-        const migrated = new Promise<void>((resolve) =>
-          trial.on("message", (message) => {
-            if (message === "migrated") resolve();
+            const launcher = new Launcher(
+              root,
+              yield* Effect.promise(() => readServiceState(statePath)),
+            );
+            const running = launcher.run().then(
+              () => Promise.reject(new Error("launcher unexpectedly completed")),
+              () => undefined,
+            );
+            yield* Effect.promise(() => accepted);
+            // The hand-off timer is already on the real clock; the trial's deadline is not.
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+            const trial = yield* Effect.promise(() => trialStarted);
+            yield* Effect.promise(() => vi.advanceTimersByTimeAsync(29 * 60_000));
+            // The first deadline fires after the launcher queued the progress report, before it handles it.
+            trial.on("message", (message) => {
+              if (Predicate.hasProperty(message, "type") && message.type === "preparing") {
+                vi.advanceTimersByTime(60_000);
+              }
+            });
+            const migrated = new Promise<void>((resolve) =>
+              trial.on("message", (message) => {
+                if (message === "migrated") resolve();
+              }),
+            );
+            trial.send("migrate");
+            yield* Effect.promise(() => migrated);
+            // Past the trial's first deadline, and before or after the one its progress set.
+            yield* Effect.promise(() =>
+              vi.advanceTimersByTimeAsync((reportsPrepared ? 29 : 31) * 60_000),
+            );
+            if (reportsPrepared && trial.connected) trial.send("finish");
+            yield* Effect.promise(() => running);
+
+            const state = yield* Effect.promise(() => readServiceState(statePath));
+            assert.deepEqual(
+              [
+                state.activeVersion,
+                state.update?.status,
+                state.update?.status === "rolled-back" ? state.update.reason : undefined,
+              ],
+              [...outcome],
+            );
           }),
-        );
-        trial.send("migrate");
-        yield* Effect.promise(() => migrated);
-        // Past the trial's first deadline, and before or after the one its progress set.
-        yield* Effect.promise(() =>
-          vi.advanceTimersByTimeAsync((reportsPrepared ? 29 : 31) * 60_000),
-        );
-        if (reportsPrepared && trial.connected) trial.send("finish");
-        yield* Effect.promise(() => running);
-
-        const state = yield* Effect.promise(() => readServiceState(statePath));
-        assert.deepEqual(
-          [
-            state.activeVersion,
-            state.update?.status,
-            state.update?.status === "rolled-back" ? state.update.reason : undefined,
-          ],
-          [...outcome],
-        );
-      }),
+      );
+    },
   );
 
-  it.effect("rolls back invalid trials with the startup environment", () =>
+  fakeRuntimeIt("rolls back invalid trials with the startup environment", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -802,164 +813,176 @@ if (context.update?.status === "pending") {
     }),
   );
 
-  it.effect.each([false, true, undefined] as const)(
-    "snapshots the database unless the target migrates nothing (migratesDatabase %s)",
-    (migratesDatabase) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-nomig-" });
-        const statePath = path.join(root, "runtime", "service-state.json");
-        const databasePath = path.join(root, "userdata", "state.sqlite");
-        const seenPath = path.join(root, "backup-seen.txt");
-        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
-        yield* fs.writeFileString(databasePath, "database");
-        const encoded = JSON.stringify({ databasePath, seenPath, migratesDatabase });
-        const childSource = `
-import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const paths = ${encoded};
-const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
-if (context.update?.status === "pending") {
-  const backupDir = join(paths.databasePath, "..", "..", "runtime", "db-backup", context.update.id);
-  writeFileSync(paths.seenPath, String(existsSync(backupDir)));
-  process.exit(1);
-} else if (context.update === undefined) {
-  process.send({
-    type: "request-update",
-    targetVersion: "1.1.0",
-    dbPath: paths.databasePath,
-    ...(paths.migratesDatabase === undefined ? {} : { migratesDatabase: paths.migratesDatabase }),
-  });
-  setInterval(() => {}, 1_000);
-} else {
-  process.exit(0);
-}
-`;
-        for (const version of ["1.0.0", "1.1.0"]) {
-          yield* writeFakeRuntime(
-            fs,
-            path,
-            path.join(root, "runtime", "versions", version),
-            childSource,
-          );
-        }
-        yield* Effect.promise(() =>
-          writeServiceState(statePath, {
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: "1.0.0",
-          }),
-        );
-        let spaceChecks = 0;
-        const launcher = new Launcher(
-          root,
-          yield* Effect.promise(() => readServiceState(statePath)),
-          {
-            backupSpaceProbe: {
-              readFreeBytes: async () => {
-                spaceChecks += 1;
-                return Number.MAX_SAFE_INTEGER;
+  describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "needs a t3.exe stand-in",
+    () => {
+      it.effect.each([false, true, undefined] as const)(
+        "snapshots the database unless the target migrates nothing (migratesDatabase %s)",
+        (migratesDatabase) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fs.makeTempDirectoryScoped({
+              prefix: "t3-service-launcher-nomig-",
+            });
+            const statePath = path.join(root, "runtime", "service-state.json");
+            const databasePath = path.join(root, "userdata", "state.sqlite");
+            const seenPath = path.join(root, "backup-seen.txt");
+            yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+            yield* fs.writeFileString(databasePath, "database");
+            const encoded = JSON.stringify({ databasePath, seenPath, migratesDatabase });
+            const childSource = `
+  import { existsSync, writeFileSync } from "node:fs";
+  import { join } from "node:path";
+  const paths = ${encoded};
+  const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+  if (context.update?.status === "pending") {
+    const backupDir = join(paths.databasePath, "..", "..", "runtime", "db-backup", context.update.id);
+    writeFileSync(paths.seenPath, String(existsSync(backupDir)));
+    process.exit(1);
+  } else if (context.update === undefined) {
+    process.send({
+      type: "request-update",
+      targetVersion: "1.1.0",
+      dbPath: paths.databasePath,
+      ...(paths.migratesDatabase === undefined ? {} : { migratesDatabase: paths.migratesDatabase }),
+    });
+    setInterval(() => {}, 1_000);
+  } else {
+    process.exit(0);
+  }
+  `;
+            for (const version of ["1.0.0", "1.1.0"]) {
+              yield* writeFakeRuntime(
+                fs,
+                path,
+                path.join(root, "runtime", "versions", version),
+                childSource,
+              );
+            }
+            yield* Effect.promise(() =>
+              writeServiceState(statePath, {
+                protocol: SERVICE_LAUNCHER_PROTOCOL,
+                activeVersion: "1.0.0",
+              }),
+            );
+            let spaceChecks = 0;
+            const launcher = new Launcher(
+              root,
+              yield* Effect.promise(() => readServiceState(statePath)),
+              {
+                backupSpaceProbe: {
+                  readFreeBytes: async () => {
+                    spaceChecks += 1;
+                    return Number.MAX_SAFE_INTEGER;
+                  },
+                },
               },
-            },
-          },
-        );
-        yield* Effect.promise(() =>
-          launcher.run().then(
-            () => Promise.reject(new Error("launcher unexpectedly completed")),
-            () => Promise.resolve(),
-          ),
-        );
+            );
+            yield* Effect.promise(() =>
+              launcher.run().then(
+                () => Promise.reject(new Error("launcher unexpectedly completed")),
+                () => Promise.resolve(),
+              ),
+            );
 
-        const snapshots = migratesDatabase !== false;
-        assert.equal(yield* fs.readFileString(seenPath), String(snapshots));
-        assert.equal(spaceChecks, snapshots ? 1 : 0);
-        const state = yield* Effect.promise(() => readServiceState(statePath));
-        assert.equal(state.activeVersion, "1.0.0");
-        assert.equal(state.update?.status, "rolled-back");
-        assert.equal(yield* fs.readFileString(databasePath), "database");
-      }),
-  );
-
-  it.effect.each(["file", "symlink", "dangling symlink"] as const)(
-    "restores the database when a migrating trial exits, with the database a %s",
-    (kind) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-db-" });
-        const statePath = path.join(root, "runtime", "service-state.json");
-        const databasePath = path.join(root, "userdata", "state.sqlite");
-        const databaseFile =
-          kind === "file" ? databasePath : path.join(root, "data", "original.sqlite");
-        const linkTarget = kind === "dangling symlink" ? "../original.sqlite" : databaseFile;
-        const original = "database before migration";
-        yield* fs.makeDirectory(path.dirname(databaseFile), { recursive: true });
-        if (kind === "dangling symlink") {
-          yield* fs.makeDirectory(path.join(root, "data", "sub"));
-          yield* fs.symlink(path.join(root, "data", "sub"), path.dirname(databasePath));
-        } else {
-          yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
-        }
-        yield* fs.writeFileString(databaseFile, original);
-        if (kind !== "file") yield* fs.symlink(linkTarget, databasePath);
-        const encodedDatabasePath = JSON.stringify(databasePath);
-        const childSource = `
-import { realpathSync, unlinkSync, writeFileSync } from "node:fs";
-const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
-if (context.update?.status === "pending") {
-  writeFileSync(context.update.dbPath, "database after migration");
-  writeFileSync(context.update.dbPath + "-wal", "trial wal");
-  writeFileSync(context.update.dbPath + "-shm", "trial shm");
-  ${kind === "dangling symlink" ? "unlinkSync(realpathSync(context.update.dbPath));" : ""}
-  process.exit(1);
-} else if (context.update === undefined) {
-  process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${encodedDatabasePath} });
-  setInterval(() => {}, 1_000);
-} else {
-  process.exit(0);
-}
-`;
-        for (const version of ["1.0.0", "1.1.0"]) {
-          yield* writeFakeRuntime(
-            fs,
-            path,
-            path.join(root, "runtime", "versions", version),
-            childSource,
-          );
-        }
-        yield* Effect.promise(() =>
-          writeServiceState(statePath, {
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: "1.0.0",
+            const snapshots = migratesDatabase !== false;
+            assert.equal(yield* fs.readFileString(seenPath), String(snapshots));
+            assert.equal(spaceChecks, snapshots ? 1 : 0);
+            const state = yield* Effect.promise(() => readServiceState(statePath));
+            assert.equal(state.activeVersion, "1.0.0");
+            assert.equal(state.update?.status, "rolled-back");
+            assert.equal(yield* fs.readFileString(databasePath), "database");
           }),
-        );
-
-        const launcher = new Launcher(
-          root,
-          yield* Effect.promise(() => readServiceState(statePath)),
-        );
-        yield* Effect.promise(() =>
-          launcher.run().then(
-            () => Promise.reject(new Error("launcher unexpectedly completed")),
-            () => Promise.resolve(),
-          ),
-        );
-
-        const state = yield* Effect.promise(() => readServiceState(statePath));
-        assert.equal(state.activeVersion, "1.0.0");
-        assert.equal(state.update?.status, "rolled-back");
-        assert.equal(yield* fs.readFileString(databaseFile), original);
-        if (kind !== "file") assert.equal(yield* fs.readLink(databasePath), linkTarget);
-        assert.isFalse(yield* fs.exists(path.join(root, "original.sqlite")));
-        assert.isFalse(yield* fs.exists(`${databasePath}-wal`));
-        assert.isFalse(yield* fs.exists(`${databasePath}-shm`));
-        const updateId = state.update?.id;
-        assert.isDefined(updateId);
-        assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", updateId)));
-      }),
+      );
+    },
   );
 
-  it.effect("rolls a migrating trial back without copying a WAL database", () =>
+  describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "needs a t3.exe stand-in",
+    () => {
+      it.effect.each(["file", "symlink", "dangling symlink"] as const)(
+        "restores the database when a migrating trial exits, with the database a %s",
+        (kind) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-db-" });
+            const statePath = path.join(root, "runtime", "service-state.json");
+            const databasePath = path.join(root, "userdata", "state.sqlite");
+            const databaseFile =
+              kind === "file" ? databasePath : path.join(root, "data", "original.sqlite");
+            const linkTarget = kind === "dangling symlink" ? "../original.sqlite" : databaseFile;
+            const original = "database before migration";
+            yield* fs.makeDirectory(path.dirname(databaseFile), { recursive: true });
+            if (kind === "dangling symlink") {
+              yield* fs.makeDirectory(path.join(root, "data", "sub"));
+              yield* fs.symlink(path.join(root, "data", "sub"), path.dirname(databasePath));
+            } else {
+              yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+            }
+            yield* fs.writeFileString(databaseFile, original);
+            if (kind !== "file") yield* fs.symlink(linkTarget, databasePath);
+            const encodedDatabasePath = JSON.stringify(databasePath);
+            const childSource = `
+  import { realpathSync, unlinkSync, writeFileSync } from "node:fs";
+  const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+  if (context.update?.status === "pending") {
+    writeFileSync(context.update.dbPath, "database after migration");
+    writeFileSync(context.update.dbPath + "-wal", "trial wal");
+    writeFileSync(context.update.dbPath + "-shm", "trial shm");
+    ${kind === "dangling symlink" ? "unlinkSync(realpathSync(context.update.dbPath));" : ""}
+    process.exit(1);
+  } else if (context.update === undefined) {
+    process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${encodedDatabasePath} });
+    setInterval(() => {}, 1_000);
+  } else {
+    process.exit(0);
+  }
+  `;
+            for (const version of ["1.0.0", "1.1.0"]) {
+              yield* writeFakeRuntime(
+                fs,
+                path,
+                path.join(root, "runtime", "versions", version),
+                childSource,
+              );
+            }
+            yield* Effect.promise(() =>
+              writeServiceState(statePath, {
+                protocol: SERVICE_LAUNCHER_PROTOCOL,
+                activeVersion: "1.0.0",
+              }),
+            );
+
+            const launcher = new Launcher(
+              root,
+              yield* Effect.promise(() => readServiceState(statePath)),
+            );
+            yield* Effect.promise(() =>
+              launcher.run().then(
+                () => Promise.reject(new Error("launcher unexpectedly completed")),
+                () => Promise.resolve(),
+              ),
+            );
+
+            const state = yield* Effect.promise(() => readServiceState(statePath));
+            assert.equal(state.activeVersion, "1.0.0");
+            assert.equal(state.update?.status, "rolled-back");
+            assert.equal(yield* fs.readFileString(databaseFile), original);
+            if (kind !== "file") assert.equal(yield* fs.readLink(databasePath), linkTarget);
+            assert.isFalse(yield* fs.exists(path.join(root, "original.sqlite")));
+            assert.isFalse(yield* fs.exists(`${databasePath}-wal`));
+            assert.isFalse(yield* fs.exists(`${databasePath}-shm`));
+            const updateId = state.update?.id;
+            assert.isDefined(updateId);
+            assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", updateId)));
+          }),
+      );
+    },
+  );
+
+  fakeRuntimeIt("rolls a migrating trial back without copying a WAL database", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -1111,7 +1134,7 @@ if (context.update?.status === "pending") {
       };
     });
 
-  it.effect("refuses a backup that cannot fit and leaves the server running", () =>
+  fakeRuntimeIt("refuses a backup that cannot fit and leaves the server running", () =>
     Effect.gen(function* () {
       const { reason, trialStarted, state } = yield* requestRejectedUpdate({
         readFreeBytes: () => Promise.resolve(0),
@@ -1126,7 +1149,7 @@ if (context.update?.status === "pending") {
     }),
   );
 
-  it.effect("refuses the update when free space cannot be checked", () =>
+  fakeRuntimeIt("refuses the update when free space cannot be checked", () =>
     Effect.gen(function* () {
       const { reason, trialStarted, state } = yield* requestRejectedUpdate({
         readFreeBytes: () => Promise.reject(new Error("statfs unavailable")),
@@ -1142,7 +1165,7 @@ if (context.update?.status === "pending") {
     }),
   );
 
-  it.effect("records no update when the server exits during the backup check", () =>
+  fakeRuntimeIt("records no update when the server exits during the backup check", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;

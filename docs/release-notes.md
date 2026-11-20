@@ -1,3 +1,9 @@
+## 2026-11-20 — The server test suite runs on Windows in CI
+
+- Every CI run that touches the server now also runs its tests on Windows, in eight shards beside the Linux ones. Maintainers: the manual Windows Tests workflow is gone; its lane is the `Test Server Windows` job in `ci.yml`.
+- Fixed on the way: a Grok or other ACP agent started through a `.cmd` launcher on Windows never received its input, because the session started it detached. Windows sessions now start it attached and still stop its whole process tree.
+- Tests that emulate a POSIX host or need an executable shebang script skip themselves on Windows instead of hanging for two minutes each.
+
 ## 2026-11-20 — On Windows, stopping a process no longer ends an unrelated program that took a reused process id
 
 - Effect's process kill on Windows (`taskkill /T`) ended descendants by id from a snapshot, so a program that took a descendant's id in the meantime could be ended. It now ends only the process it started, and the checked process-tree stop that already follows ends its descendants.

@@ -1,3 +1,4 @@
+import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import type { ManagedUpdatesPolicy } from "@t3tools/contracts";
@@ -343,7 +344,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       const bare = yield* resolveLauncherPath.pipe(
         Effect.provideService(HostProcess.InvokedAs, "t3"),
         Effect.provideService(HostProcess.Environment, {
-          PATH: `${path.join(root, "missing")}:${path.join(root, "bin")}`,
+          PATH: [path.join(root, "missing"), path.join(root, "bin")].join(NodePath.delimiter),
         }),
         Effect.provideService(HostProcess.WorkingDirectory, root),
       );
@@ -361,6 +362,9 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       assert.equal(bare, launcher);
       assert.equal(relative, launcher);
       assert.equal(absent, undefined);
-    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(HostProcess.Platform, NodePath.delimiter === ";" ? "win32" : "linux"),
+    ),
   );
 });
