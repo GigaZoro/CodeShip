@@ -1588,7 +1588,7 @@ const make = Effect.gen(function* () {
     });
     if (created.code !== 0) {
       return yield* new CommandLaunchError({
-        detail: `${created.stderr.trim() || "Win32_Process.Create failed."} Check whether AppLocker or WDAC blocks the unsigned command host in the user cache.`,
+        detail: created.stderr.trim() || "Win32_Process.Create failed.",
       });
     }
     const evidence = yield* readWrapperFile(path.join(directory, PID_FILE));

@@ -2,11 +2,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import { leaderLeavingChild, processPipe } from "@t3tools/shared/testing/leftoverChild";
+import { WindowsJobHost } from "@t3tools/shared/windowsJob";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
@@ -36,6 +38,22 @@ const errorLogs = () => {
 };
 
 describe("WorkerProcessSpawner", () => {
+  it.live.runIf(isWindowsHost)(
+    "preserves the rejected native host path in worker spawn errors",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const host = yield* fs.makeTempDirectoryScoped({ prefix: "t3-blocked-host-" });
+        const error = yield* node("", quiet).pipe(
+          Effect.provideService(WindowsJobHost, Effect.succeed(host)),
+          Effect.flip,
+        );
+        assert.include(error.message, host);
+        assert.notInclude(error.message, "AppLocker or WDAC");
+        assert.equal(error.reason._tag, "NotFound");
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, layer))),
+  );
+
   it.live.runIf(isWindowsHost)(
     "ends an orphaned grandchild when its worker stops after the intermediate exited",
     () =>

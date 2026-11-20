@@ -325,8 +325,9 @@ inheriting them. The host releases its copies of command stream handles after sp
 child closing stdout can finish a protocol stream while it remains alive. The helper builds
 with the Windows .NET Framework compiler and verifies cached executable contents by SHA-256
 once per server process. It is unsigned and stored in the user's cache: AppLocker or WDAC rules
-that block executables in user-writable folders prevent Windows commands from launching;
-the launch error names these policies as a possible cause.
+that block executables in user-writable folders prevent Windows commands and provider processes
+from launching. A rejected host spawn preserves the cached executable's path and system error;
+access-denied or unknown spawn errors name these policies as a possible cause.
 
 Launch and identity work run outside the shared state lock. Startup registers every row
 before accepting new requests, without waiting for probes. Separate bounded probe and stop

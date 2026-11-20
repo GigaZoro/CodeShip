@@ -3,7 +3,12 @@ import * as NodeWorkerThreads from "node:worker_threads";
 import { flattenCommand } from "@effect/platform-node-shared/NodeChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
-import { WindowsJobHost, attachWindowsJob, type WindowsJob } from "@t3tools/shared/windowsJob";
+import {
+  WindowsJobHost,
+  attachWindowsJob,
+  windowsHostSpawnError,
+  type WindowsJob,
+} from "@t3tools/shared/windowsJob";
 import { markWindowsJobSpawner } from "@t3tools/shared/windowsJobSpawner";
 import type * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -38,6 +43,7 @@ const STAT_STATE = 0;
 const STAT_PPID = 1;
 const STAT_START_TIME = 19;
 const STOP_TREE_TIMEOUT_MS = ${STOP_TREE_TIMEOUT_MS};
+const hostSpawnError = ${windowsHostSpawnError.toString()};
 const children = new Map();
 const post = (message, transfer) => parentPort.postMessage(message, transfer);
 const describe = (error) => ({
@@ -209,7 +215,7 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
       ? spawn(job.host, [raw ? "owned-raw" : "owned", job.name, String(ownershipFd), target, ...targetArgs], { ...options, shell: false, stdio: [...options.stdio, "pipe", "pipe"] })
       : spawn(command, args, options);
   } catch (error) {
-    post({ type: "spawnFailed", id, error: describe(error) });
+    post({ type: "spawnFailed", id, error: describe(job ? hostSpawnError(job.host, error) : error) });
     return;
   }
   const entry = {
@@ -238,7 +244,7 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     if (entry.started) return;
     entry.started = true;
     children.delete(id);
-    post({ type: "spawnFailed", id, error: describe(error) });
+    post({ type: "spawnFailed", id, error: describe(job ? hostSpawnError(job.host, error) : error) });
   });
   const started = () => {
     if (entry.started) return;
@@ -539,7 +545,8 @@ const toPlatformError = (
     _tag: systemErrorTags[error.code ?? ""] ?? "Unknown",
     module: "ChildProcess",
     method,
-    pathOrDescriptor: `${command.command} ${command.args.join(" ")}`,
+    pathOrDescriptor: error.path ?? `${command.command} ${command.args.join(" ")}`,
+    description: error.message,
     syscall: error.syscall,
     cause: error,
   });

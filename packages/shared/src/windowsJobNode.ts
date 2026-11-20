@@ -4,7 +4,12 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeReadline from "node:readline";
 import type * as NodeStream from "node:stream";
 
-import { attachWindowsJob, windowsJobName, type WindowsJob } from "./windowsJob.ts";
+import {
+  attachWindowsJob,
+  windowsHostSpawnError,
+  windowsJobName,
+  type WindowsJob,
+} from "./windowsJob.ts";
 
 /** The returned handle owns the host; closing its control pipe also ends the job on server exit. */
 export const windowsJobSpawn = (host: string): typeof NodeChildProcess.spawn => {
@@ -36,17 +41,29 @@ export const windowsJobSpawn = (host: string): typeof NodeChildProcess.spawn => 
       raw = /cmd(?:\.exe)?$/i.test(executable);
       argv = raw ? ["/d", "/s", "/c", `"${content}"`] : ["-c", content];
     }
-    const child = NodeChildProcess.spawn(
-      host,
-      [raw ? "owned-raw" : "owned", job.name, String(fd), executable, ...argv],
-      {
-        ...options,
-        shell: false,
-        windowsVerbatimArguments: false,
-        windowsHide: true,
-        stdio: [...streams, "pipe", "pipe"],
-      },
-    );
+    let child: NodeChildProcess.ChildProcess;
+    try {
+      child = NodeChildProcess.spawn(
+        host,
+        [raw ? "owned-raw" : "owned", job.name, String(fd), executable, ...argv],
+        {
+          ...options,
+          shell: false,
+          windowsVerbatimArguments: false,
+          windowsHide: true,
+          stdio: [...streams, "pipe", "pipe"],
+        },
+      );
+    } catch (cause) {
+      throw windowsHostSpawnError(host, cause);
+    }
+    child.prependListener("error", (error) => {
+      if (child.pid === undefined) {
+        const diagnostic = windowsHostSpawnError(host, error);
+        error.message = diagnostic.message;
+        Object.assign(error, { path: host });
+      }
+    });
     attachWindowsJob(child, job);
     child.once("exit", () => {
       job.hostExited = true;
