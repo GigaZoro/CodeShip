@@ -403,6 +403,10 @@ patchedDependencies:
   # 127.0.0.1 listener on the same port answers in its place (PeerLinks.test.ts). Drop it once
   # Effect's layerTest names its host.
   "@effect/platform-node@4.0.5": patches/@effect__platform-node@4.0.5.patch
+  # Effect ends a Windows tree with taskkill /T, which ends descendants by pid from a snapshot and
+  # can end a program that took a pid meanwhile. The patch ends only the leader; endingWindowsTrees
+  # ends the descendants through its checked walk. Drop it once Effect stops using taskkill.
+  "@effect/platform-node-shared@4.0.5": patches/@effect__platform-node-shared@4.0.5.patch
 
 peerDependencyRules:
   allowAny:

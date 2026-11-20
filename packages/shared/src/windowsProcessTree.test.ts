@@ -11,6 +11,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { isProcessAlive } from "./processProbe.ts";
 import { leaderLeavingChild } from "./testing/leftoverChild.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import {
@@ -255,6 +256,22 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
 
       yield* leftover.ended;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.runIf(isWindowsHost)(
+    "a kill ends the running leader alone, leaving its descendants to the checked walk",
+    () =>
+      Effect.gen(function* () {
+        const leftover = yield* leaderLeavingChild({ untilInputEnds: true });
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const leader = yield* spawner.spawn(leftover.command);
+        const child = yield* leftover.started;
+
+        yield* leader.kill();
+
+        // taskkill /T would have ended the child by pid; the probe only checks that it still runs.
+        assert.isTrue(isProcessAlive(child));
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live("ends what its leader left running when killed after the leader exited", () =>

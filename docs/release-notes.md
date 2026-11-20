@@ -1,3 +1,7 @@
+## 2026-11-20 — On Windows, stopping a process no longer ends an unrelated program that took a reused process id
+
+- Effect's process kill on Windows (`taskkill /T`) ended descendants by id from a snapshot, so a program that took a descendant's id in the meantime could be ended. It now ends only the process it started, and the checked process-tree stop that already follows ends its descendants.
+
 ## 2026-11-20 — Commands whose process check failed are re-checked
 
 - A background command whose process identity could not be read when the server picked it up is now checked again on later passes. If another process has taken its pid, the command is reported lost instead of showing as running until its deadline.
