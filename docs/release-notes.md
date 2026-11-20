@@ -1,3 +1,7 @@
+## 2026-11-20 — A replayed chat launch no longer prepares a worktree twice
+
+- Replaying a launch while its workspace preparation was being retried could create a second worktree, or fail the run because the branch already existed. A launch, its replay and a retry now share one preparation per run, and a replay reuses the worktree the run already has.
+
 ## 2026-11-20 — Stopping a Windows command spares a program that took its process id
 
 - When T3.CodeShip could not read when a background command's process started on Windows, stopping the command could end an unrelated program that had taken that process's id once the command ended, along with everything that program started. The stop now takes a program under that id for the command only if it started between the command's launch and the moment the launch returned, give or take a tenth of a second and allowing for a clock change in between, and never once the command's process was found gone, right after its launch or by a restarted T3.CodeShip. A start read that finds a program started after the launch no longer ties the stop to that program, and a restarted T3.CodeShip that finds under the id a program started more than a second outside that time reports the command lost. A command whose PowerShell ended before it started the command now fails to start with that reason, and one whose PowerShell ended right after is reported lost at once when another program holds its id, instead of looking like it still runs.

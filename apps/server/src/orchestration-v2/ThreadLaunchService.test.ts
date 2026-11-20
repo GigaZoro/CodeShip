@@ -1685,6 +1685,64 @@ it.effect("replays a server-allocated launch", () =>
   }),
 );
 
+it.effect("a replayed launch during a preparation retry joins it instead of preparing again", () =>
+  Effect.gen(function* () {
+    const retrySetupEntered = yield* Deferred.make<void>();
+    const allowRetrySetup = yield* Deferred.make<void>();
+    let setupRuns = 0;
+    const harness = makeHarness({
+      runSetup: () =>
+        setupRuns++ === 0
+          ? Effect.die("Setup failed.")
+          : Deferred.succeed(retrySetupEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(allowRetrySetup)),
+              Effect.as({ status: "no-script" as const }),
+            ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = launchInput({
+        command: "command:launch:replay-during-retry",
+        thread: "thread:launch:replay-during-retry",
+        message: "Prepare once",
+        workspace: { type: "worktree", baseRef: "main" },
+      });
+      const first = yield* launches.launch(input);
+      yield* threads.streamStoredEventsFrom({ threadId: first.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+        ),
+        Stream.runHead,
+      );
+      yield* launches.retryPreparation({
+        commandId: CommandId.make("command:launch:replay-during-retry:retry"),
+        threadId: first.threadId,
+        runId: first.projection.runs[0]!.id,
+      });
+      yield* Deferred.await(retrySetupEntered);
+
+      const replayed = yield* launches.launch(input);
+
+      assert.isTrue(replayed.resumed);
+      // Let a second preparation, if the replay started one, run while the retry holds setup.
+      yield* Effect.yieldNow.pipe(Effect.repeat({ times: 50 }));
+      yield* Deferred.succeed(allowRetrySetup, undefined);
+      yield* threads.streamStoredEventsFrom({ threadId: first.threadId }).pipe(
+        Stream.filter((stored) => stored.commandId?.endsWith(":release") === true),
+        Stream.runHead,
+      );
+      assert.notEqual(
+        (yield* threads.getThreadProjection(first.threadId)).runs[0]?.status,
+        "failed",
+      );
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.equal(harness.runSetup.mock.calls.length, 2);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect("replays an accepted launch after the project disables the instance", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {

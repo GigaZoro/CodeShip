@@ -233,7 +233,9 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const preparationScope = yield* Scope.make("sequential");
-  const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
+  // Preparation belongs to the run, so a replayed launch and a retry share one reservation.
+  // The value is the command that owns it.
+  const scheduledLaunches = yield* Ref.make<ReadonlyMap<string, CommandId>>(new Map());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
   const mapError =
@@ -787,18 +789,29 @@ const make = Effect.gen(function* () {
             ),
           );
 
-  const reservePreparation = (commandId: CommandId) =>
+  const preparationKey = (commandId: CommandId, runId: RunId | null): string => runId ?? commandId;
+
+  // A retry takes over: the run only failed once its earlier attempt stopped, though that
+  // attempt may not have released yet.
+  const reservePreparation = (
+    commandId: CommandId,
+    runId: RunId | null,
+    takeOver: boolean = false,
+  ) =>
     Ref.modify(scheduledLaunches, (scheduled) => {
-      if (scheduled.has(commandId)) return [false, scheduled] as const;
-      const next = new Set(scheduled);
-      next.add(commandId);
+      const key = preparationKey(commandId, runId);
+      if (!takeOver && scheduled.has(key)) return [false, scheduled] as const;
+      const next = new Map(scheduled);
+      next.set(key, commandId);
       return [true, next] as const;
     });
 
-  const releasePreparation = (commandId: CommandId) =>
+  const releasePreparation = (commandId: CommandId, runId: RunId | null) =>
     Ref.update(scheduledLaunches, (scheduled) => {
-      const next = new Set(scheduled);
-      next.delete(commandId);
+      const key = preparationKey(commandId, runId);
+      if (scheduled.get(key) !== commandId) return scheduled;
+      const next = new Map(scheduled);
+      next.delete(key);
       return next;
     });
 
@@ -843,7 +856,7 @@ const make = Effect.gen(function* () {
         ),
       ),
       Effect.ignoreCause,
-      Effect.ensuring(releasePreparation(input.commandId)),
+      Effect.ensuring(releasePreparation(input.commandId, runId)),
       Effect.forkIn(preparationScope),
     );
   });
@@ -1069,8 +1082,17 @@ const make = Effect.gen(function* () {
                 branch: workspaceStrategy.branch,
               }
             : workspaceStrategy;
-        if (shouldSchedule) {
-          const ownsPreparation = yield* reservePreparation(input.commandId);
+        const preparingRun =
+          runId === null ? undefined : projection.runs.find((run) => run.id === runId);
+        if (shouldSchedule && preparingRun?.workspacePreparation !== undefined) {
+          // The run's own preparation, so a replay reuses a checkout an earlier attempt bound.
+          yield* startRunPreparation({
+            commandId: input.commandId,
+            threadId,
+            runId: preparingRun.id,
+          }).pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+        } else if (shouldSchedule) {
+          const ownsPreparation = yield* reservePreparation(input.commandId, runId);
           if (ownsPreparation) {
             yield* Effect.gen(function* () {
               const preparationStillRequired =
@@ -1089,9 +1111,9 @@ const make = Effect.gen(function* () {
                   runId,
                 );
               } else {
-                yield* releasePreparation(input.commandId);
+                yield* releasePreparation(input.commandId, runId);
               }
-            }).pipe(Effect.onError(() => releasePreparation(input.commandId)));
+            }).pipe(Effect.onError(() => releasePreparation(input.commandId, runId)));
           }
         }
 
@@ -1110,25 +1132,35 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const prepareRun: ThreadLaunchService["Service"]["prepareRun"] = Effect.fn(
-    "ThreadLaunchService.prepareRun",
-  )(function* (input) {
-    const scheduled = yield* Effect.gen(function* () {
-      const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
-        runIds: [input.runId],
-      });
-      const run = runs.find((candidate) => candidate.id === input.runId);
-      const workspacePreparation = run?.workspacePreparation;
-      if (run?.status !== "preparing" || workspacePreparation === undefined) return;
-      if (!(yield* reservePreparation(input.commandId))) return;
-      yield* scheduleRunPreparation(input, thread, run, workspacePreparation).pipe(
-        Effect.onError(() => releasePreparation(input.commandId)),
-      );
-    }).pipe(Effect.exit);
+  const startRunPreparation = Effect.fn("ThreadLaunchService.startRunPreparation")(function* (
+    input: ThreadLaunchPreparationInput,
+    takeOver: boolean = false,
+  ) {
+    const { thread, runs } = yield* threads.getThreadRecords(input.threadId, ["runs"], {
+      runIds: [input.runId],
+    });
+    const run = runs.find((candidate) => candidate.id === input.runId);
+    const workspacePreparation = run?.workspacePreparation;
+    if (run?.status !== "preparing" || workspacePreparation === undefined) return;
+    if (!(yield* reservePreparation(input.commandId, run.id, takeOver))) return;
+    yield* scheduleRunPreparation(input, thread, run, workspacePreparation).pipe(
+      Effect.onError(() => releasePreparation(input.commandId, run.id)),
+    );
+  });
+
+  const prepareRunOrFail = Effect.fn("ThreadLaunchService.prepareRunOrFail")(function* (
+    input: ThreadLaunchPreparationInput,
+    takeOver: boolean,
+  ) {
+    const scheduled = yield* startRunPreparation(input, takeOver).pipe(Effect.exit);
     if (Exit.isFailure(scheduled)) {
       yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
     }
   });
+
+  const prepareRun: ThreadLaunchService["Service"]["prepareRun"] = Effect.fn(
+    "ThreadLaunchService.prepareRun",
+  )((input) => prepareRunOrFail(input, false));
 
   const retryPreparation: ThreadLaunchService["Service"]["retryPreparation"] = Effect.fn(
     "ThreadLaunchService.retryPreparation",
@@ -1140,7 +1172,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       runId: input.runId,
     });
-    yield* prepareRun(input);
+    yield* prepareRunOrFail(input, true);
     return dispatched;
   });
 
