@@ -607,11 +607,9 @@ const make = Effect.gen(function* () {
 
   /** Jobs retain Windows membership; legacy records prove only their root process identity. */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
-    if (row.lost_reason === "pid-reused" || row.lost_reason === "rebooted") return true;
-    if (!windows && row.unit !== null) {
-      yield* agentScope.stop(row.unit);
-      return true;
-    }
+    const hasScope = !windows && row.unit !== null;
+    if (hasScope && (yield* agentScope.stopCommand(row.unit!))) return true;
+    if (row.lost_reason === "pid-reused" || row.lost_reason === "rebooted") return !hasScope;
     if (windows && row.unit?.startsWith(jobUnitPrefix)) {
       if (row.pid === null || row.process_started_at === null) return false;
       const host = yield* yield* WindowsJobHost;
@@ -650,11 +648,12 @@ const make = Effect.gen(function* () {
               if (watched.get(row.task_id) === row) yield* settle({ ...row, ...same });
             }),
           );
-          return true;
+          return !hasScope;
         }
         // Without a unit, a group can outlive its leader. Reuse followed by another leader's exit
         // between probes remains unobservable; a recorded replacement must never reach this signal.
-        if (typeof same === "number" || same.lost_reason === "gone") yield* killGroup(pid);
+        if (typeof same === "number" || (!hasScope && same.lost_reason === "gone"))
+          yield* killGroup(pid);
       } else {
         const same = yield* isSameProcess(row);
         if (same === "unknown") return false;
@@ -677,8 +676,7 @@ const make = Effect.gen(function* () {
         }
       }
     }
-    if (row.unit !== null) yield* agentScope.stop(row.unit);
-    return true;
+    return !hasScope;
   });
 
   const writeRow = (row: CommandRunRow) =>

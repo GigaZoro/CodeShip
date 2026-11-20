@@ -2078,9 +2078,10 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         ),
         Effect.provideService(AgentScope, {
           ...agentScope,
-          stop: (name) =>
+          stopCommand: (name) =>
             Effect.sync(() => {
               units.push(name);
+              return true;
             }),
         }),
         Effect.provideService(HostProcess.Platform, "darwin"),
@@ -2094,6 +2095,57 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         evidence === "observed replacement" ? "pid-reused" : reason,
       );
     }),
+  );
+
+  it.effect.each([null, "pid-reused"] as const)(
+    "retains command cleanup until its systemd scope is empty, loss %s",
+    (reason) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`unit-stop-${reason}`);
+        const fixture = yield* windowsFixture;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo scoped" }),
+        ).pipe(Effect.provide(fixture.layer));
+        const sql = yield* SqlClient.SqlClient;
+        const unit = "t3code-command-owned.scope";
+        yield* sql`UPDATE command_runs SET unit = ${unit}, lost_reason = ${reason}, status = 'stopped' WHERE task_id = ${first.taskId}`;
+        fixture.processes.get(2147483000)!.alive = false;
+        const attempts = yield* Queue.unbounded<string>();
+        const delivered = yield* Deferred.make<void>();
+        const agentScope = yield* AgentScope;
+        let populated = true;
+        const stop = (name: string) => Queue.offer(attempts, name).pipe(Effect.asVoid);
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            assert.equal(yield* Queue.take(attempts), unit);
+            assert.equal(yield* Queue.take(attempts), unit);
+            assert.isNull((yield* commandRow(first.taskId))?.delivered_at);
+            assert.isTrue(fixture.groups.has(2147483000));
+            populated = false;
+            yield* Deferred.await(delivered);
+          }),
+        ).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(first.taskId, delivered),
+          ),
+          Effect.provideService(AgentScope, {
+            ...agentScope,
+            stop,
+            stopCommand: (name) =>
+              stop(name).pipe(
+                Effect.map(() => {
+                  if (!populated) fixture.groups.delete(2147483000);
+                  return !populated;
+                }),
+              ),
+          }),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provide(fixture.layer),
+        );
+        assert.isFalse(fixture.groups.has(2147483000));
+        assert.deepEqual(fixture.groupSignals, []);
+      }),
   );
 
   it.effect("reports an unresolved legacy launch at its deadline and reconciles a later pid", () =>
