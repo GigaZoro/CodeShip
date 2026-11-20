@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Stands in for an Electron debugger and joins download paths as the host does.
 import { describe, expect, it, vi } from "@effect/vitest";
-import { DesktopBrowserEvent } from "@t3tools/contracts";
+import { DESKTOP_BROWSER_ATTACH_WAIT_MS, DesktopBrowserEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -211,6 +211,53 @@ describe("DesktopBrowserHost", () => {
       releaseRecording();
 
       expect(window.backgroundThrottling).toEqual([false, true]);
+    }),
+  );
+
+  it.effect("lets the main window throttle once the server's longest wait has passed", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const window = makeDebuggee();
+      host.setMainWindow(window.tab.webContents);
+      yield* awaiting(host, key, true);
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS * 0.75);
+      // A wait that ended and started again gets its own full span.
+      yield* awaiting(host, key, false);
+      yield* awaiting(host, key, true);
+      expect(window.backgroundThrottling).toEqual([false, true, false]);
+
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS * 0.5);
+      expect(window.backgroundThrottling).toEqual([false, true, false]);
+
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS * 0.5);
+      expect(window.backgroundThrottling).toEqual([false, true, false, true]);
+    }),
+  );
+
+  it.effect("lets a guest the agent drove go idle once its backend leaves mid-turn", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+      const backend = yield* Effect.forkChild(Stream.runDrain(host.events), {
+        startImmediately: true,
+      });
+      yield* host.handleCommandLine(
+        encodeJson({ type: "turn", threadId: key.threadId, active: true }),
+      );
+      yield* command(host, 1, "Input.dispatchKeyEvent");
+      yield* settle;
+      debuggee.release();
+      yield* settle;
+      yield* TestClock.adjust("1 minute");
+      expect(debuggee.focusEmulation).toEqual([true]);
+      expect(debuggee.backgroundThrottling).toEqual([false]);
+
+      yield* Fiber.interrupt(backend);
+      yield* TestClock.adjust("1 minute");
+
+      expect(debuggee.focusEmulation).toEqual([true, false]);
+      expect(debuggee.backgroundThrottling).toEqual([false, true]);
     }),
   );
 

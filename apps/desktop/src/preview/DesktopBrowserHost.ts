@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Names download files on the shared disk.
 /** The manager owns the single debugger attachment; the relay shares it. */
 import {
+  DESKTOP_BROWSER_ATTACH_WAIT_MS,
   DesktopBrowserCommand,
   DesktopBrowserEvent,
   type DesktopBrowserEvent as DesktopBrowserEventType,
@@ -129,8 +130,8 @@ export const make = Effect.gen(function* () {
   const renderingHolds = new Map<number, number>();
   /** Undefined until the first window opens: tabs awaited before then wait for it. */
   let mainWindow: Electron.WebContents | null | undefined;
-  /** Tabs the server waits on to attach, by key. */
-  const awaited = new Map<string, DesktopBrowserTabKey>();
+  /** Tabs the server waits on to attach, by key; each wait is its own entry. */
+  const awaited = new Map<string, { readonly key: DesktopBrowserTabKey }>();
   let awaitedHold: { readonly window: Electron.WebContents; readonly release: () => void } | null =
     null;
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
@@ -539,14 +540,30 @@ export const make = Effect.gen(function* () {
     if (!active) awaited.delete(id);
     // The server then runs the tab headless rather than wait out its timeout.
     else if (mainWindow === null) emit({ type: "declined", ...key });
-    else if (!tabs.has(id)) awaited.set(id, key);
+    else if (!tabs.has(id)) {
+      const wait = { key };
+      awaited.set(id, wait);
+      // The server has stopped waiting by then, so an `awaiting: false` lost on the way,
+      // whichever pipe or process failed, cannot keep the window rendering.
+      runFork(
+        Effect.sleep(DESKTOP_BROWSER_ATTACH_WAIT_MS).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (awaited.get(id) !== wait) return;
+              awaited.delete(id);
+              syncAwaitedRendering();
+            }),
+          ),
+        ),
+      );
+    }
     syncAwaitedRendering();
   };
 
   const setMainWindow = (webContents: Electron.WebContents | null) => {
     mainWindow = webContents;
     if (webContents === null) {
-      for (const key of awaited.values()) emit({ type: "declined", ...key });
+      for (const { key } of awaited.values()) emit({ type: "declined", ...key });
       awaited.clear();
     }
     syncAwaitedRendering();
@@ -588,21 +605,20 @@ export const make = Effect.gen(function* () {
 
   /** Counts backends that subscribed, so one that leaves after its successor came keeps out of its way. */
   let backends = 0;
-  // A backend that leaves ends its turns and waits without telling us.
+  // A backend that leaves ends its turns, waits and relays without telling us. Its turns kept
+  // the guests it drove focused; with no relay they drop their holds once idle.
   const forgetBackend = () => {
     agentTurns.clear();
     awaited.clear();
     syncAwaitedRendering();
+    for (const tab of tabs.values()) dropRelay(tab);
   };
 
   const announceAll = Effect.suspend(() => {
     forgetBackend();
     return Effect.forEach(
       [...tabs.values()],
-      (tab) => {
-        dropRelay(tab);
-        return PubSub.publish(outbox, { type: "attached", ...tab.key });
-      },
+      (tab) => PubSub.publish(outbox, { type: "attached", ...tab.key }),
       { discard: true },
     );
   });

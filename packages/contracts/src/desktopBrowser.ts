@@ -17,6 +17,13 @@ export const DesktopBrowserEvent = Schema.Union([
 ]);
 export type DesktopBrowserEvent = typeof DesktopBrowserEvent.Type;
 
+/**
+ * How long the server waits for a desktop tab to attach. The desktop keeps its window rendering
+ * meanwhile, and a renderer still loading after a restart needs the margin. The desktop also ends
+ * its hold after this long, so an `awaiting: false` lost with its pipe cannot keep the hold.
+ */
+export const DESKTOP_BROWSER_ATTACH_WAIT_MS = 60_000;
+
 export const DesktopBrowserCommand = Schema.Union([
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
   Schema.Struct({ type: Schema.Literal("release"), ...TabKey }),
