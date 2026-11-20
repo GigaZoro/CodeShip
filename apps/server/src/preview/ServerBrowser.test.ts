@@ -24,6 +24,7 @@ import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -457,6 +458,20 @@ const dependenciesWith = (desktopChannel: Layer.Layer<DesktopChannel.DesktopBrow
   );
 const dependencies = dependenciesWith(fakeDesktopChannel);
 const layer = ServerBrowser.layer.pipe(Layer.provideMerge(dependencies));
+/** `layer`, logging each Error-level message into `errors` instead of the console. */
+const layerLoggingErrorsTo = (errors: Array<unknown>) =>
+  layer.pipe(
+    Layer.provide(
+      Logger.layer(
+        [
+          Logger.make(({ logLevel, message }) => {
+            if (logLevel === "Error") errors.push(Array.isArray(message) ? message[0] : message);
+          }),
+        ],
+        { mergeWithExisting: false },
+      ),
+    ),
+  );
 const ready = Effect.gen(function* () {
   const browser = yield* ServerBrowser.ServerBrowser;
   const broker = yield* Broker.PreviewAutomationBroker;
@@ -854,8 +869,9 @@ it.effect("a tab that fails to set up releases its desktop page or headless cont
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("a tab setting that arrives while an agent closes the tab is dropped quietly", () =>
-  Effect.scoped(
+it.effect("a tab setting that arrives while an agent closes the tab is dropped quietly", () => {
+  const errors: Array<unknown> = [];
+  return Effect.scoped(
     Effect.gen(function* () {
       const { browser, broker, tabId } = yield* ready;
       const manager = yield* Manager.PreviewManager;
@@ -907,24 +923,32 @@ it.effect("a tab setting that arrives while an agent closes the tab is dropped q
       yield* Fiber.join(close);
 
       expect(unobserved).toEqual([]);
+      expect(errors).toEqual([]);
     }),
-  ).pipe(Effect.provide(layer)),
-);
+  ).pipe(Effect.provide(layerLoggingErrorsTo(errors)));
+});
 
-it.effect("a tab setting that fails does not hold up the tab's later settings", () =>
-  Effect.scoped(
+it.effect("a tab setting that fails is applied again and does not hold up later settings", () => {
+  const errors: Array<unknown> = [];
+  return Effect.scoped(
     Effect.gen(function* () {
       const { browser } = yield* ready;
       const manager = yield* Manager.PreviewManager;
       const other = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
       yield* browser.attachViewer(viewerInput(other.tabId, false));
-      // Settles on the later setting, or on a rejection nobody observed, whichever comes first.
+      // Settles on the last setting, or on a rejection nobody observed, whichever comes first.
       const settled = Promise.withResolvers<void>();
       const otherPage = contexts[1]!.page;
       const setViewportSize = otherPage.setViewportSize.getMockImplementation()!;
+      let failNext = true;
+      const appliedWidths: Array<number | undefined> = [];
       otherPage.setViewportSize.mockImplementation(async (size) => {
-        if (size?.width === 800) throw new Error("The page navigated away mid-resize.");
+        if (size?.width === 800 && failNext) {
+          failNext = false;
+          throw new Error("The page navigated away mid-resize.");
+        }
         await setViewportSize(size);
+        appliedWidths.push(size?.width);
         if (size?.width === 900) settled.resolve();
       });
       const unobserved: Array<unknown> = [];
@@ -937,16 +961,14 @@ it.effect("a tab setting that fails does not hold up the tab's later settings", 
         Effect.sync(() => process.off("unhandledRejection", onUnhandled)),
       );
 
-      yield* manager.resize({
-        threadId: scope.thread.threadId,
-        tabId: other.tabId,
-        viewport: { _tag: "freeform", width: 800, height: 600 },
-      });
-      yield* manager.resize({
-        threadId: scope.thread.threadId,
-        tabId: other.tabId,
-        viewport: { _tag: "freeform", width: 900, height: 700 },
-      });
+      // The same setting again, once the page could not take it the first time.
+      for (const width of [800, 800, 900]) {
+        yield* manager.resize({
+          threadId: scope.thread.threadId,
+          tabId: other.tabId,
+          viewport: { _tag: "freeform", width, height: width - 200 },
+        });
+      }
       yield* Effect.promise(() => settled.promise);
       // Two macrotask turns: Node reports a rejection nobody observed after the first.
       for (let turn = 0; turn < 2; turn++) {
@@ -955,10 +977,12 @@ it.effect("a tab setting that fails does not hold up the tab's later settings", 
       }
 
       expect(unobserved).toEqual([]);
+      expect(errors).toEqual(["server preview could not apply a tab event"]);
+      expect([...new Set(appliedWidths)]).toEqual([800, 900]);
       expect(otherPage.setViewportSize).toHaveBeenLastCalledWith({ width: 900, height: 700 });
     }),
-  ).pipe(Effect.provide(layer)),
-);
+  ).pipe(Effect.provide(layerLoggingErrorsTo(errors)));
+});
 
 it.effect("a user's tab that waits for the desktop does not hold up closing another tab", () =>
   Effect.scoped(

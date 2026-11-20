@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeEvents from "node:events";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 
@@ -32,6 +33,14 @@ const command = (
     }),
   );
 
+/** What a relay's end undoes on the page's debugger, as Chrome would for a client that left. */
+const RELAY_RESETS: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+  ["Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }],
+  ["Fetch.disable", {}],
+  ["Page.setInterceptFileChooserDialog", { enabled: false }],
+];
+const SCREENCAST_RESET = ["Page.stopScreencast", {}] as const;
+
 let nextWebContentsId = 1;
 const makeDebuggee = (
   options: {
@@ -43,6 +52,7 @@ const makeDebuggee = (
   const pending: Array<() => void> = [];
   const focusChanges: Array<() => void> = [];
   const sent: Array<unknown> = [];
+  const resets: Array<readonly [string, unknown]> = [];
   const sendWaiters: Array<() => void> = [];
   const focusEmulation: Array<boolean> = [];
   const backgroundThrottling: Array<boolean> = [];
@@ -67,6 +77,16 @@ const makeDebuggee = (
           else resolve({});
           return;
         }
+        if (
+          [...RELAY_RESETS, SCREENCAST_RESET].some(
+            ([resetMethod, resetParams]) =>
+              resetMethod === method && NodeUtil.isDeepStrictEqual(resetParams, params),
+          )
+        ) {
+          resets.push([method, params]);
+          resolve({});
+          return;
+        }
         sent.push(params?.id);
         pending.push(() => resolve({ method }));
         sendWaiters.shift()?.();
@@ -89,8 +109,10 @@ const makeDebuggee = (
     },
     emit: (method: string, params: unknown) => emitter.emit("message", {}, method, params, ""),
     navigate: () => webContents.emit("did-navigate"),
-    /** Ids of the commands the debugger received, in order. */
+    /** Ids of the commands the debugger received, in order, but for the resets below. */
     sent,
+    /** Each reset a relay's end sent, in order. */
+    resets,
     focusEmulation,
     /** Each `setBackgroundThrottling` call; false keeps a hidden guest drawing frames. */
     backgroundThrottling,
@@ -234,6 +256,21 @@ describe("DesktopBrowserHost", () => {
     }),
   );
 
+  it.effect("stops its wait timers when it shuts down", () =>
+    Effect.gen(function* () {
+      const window = makeDebuggee();
+      yield* Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        host.setMainWindow(window.tab.webContents);
+        yield* awaiting(host, key, true);
+      }).pipe(Effect.scoped);
+
+      yield* TestClock.adjust(DESKTOP_BROWSER_ATTACH_WAIT_MS);
+
+      expect(window.backgroundThrottling).toEqual([false]);
+    }),
+  );
+
   it.effect("lets a guest the agent drove go idle once its backend leaves mid-turn", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
@@ -252,12 +289,14 @@ describe("DesktopBrowserHost", () => {
       yield* TestClock.adjust("1 minute");
       expect(debuggee.focusEmulation).toEqual([true]);
       expect(debuggee.backgroundThrottling).toEqual([false]);
+      expect(debuggee.resets).toEqual([]);
 
       yield* Fiber.interrupt(backend);
       yield* TestClock.adjust("1 minute");
 
       expect(debuggee.focusEmulation).toEqual([true, false]);
       expect(debuggee.backgroundThrottling).toEqual([false, true]);
+      expect(debuggee.resets).toEqual(RELAY_RESETS);
     }),
   );
 
@@ -358,6 +397,27 @@ describe("DesktopBrowserHost", () => {
       expect(yield* Queue.take(replies)).toBe(2);
       expect(debuggee.sent).toEqual([1, 2, 3]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("undoes what a released relay set on the page's debugger", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      const unused = makeDebuggee();
+      const unusedKey = { threadId: "thread-2", tabId: "tab-2" };
+      host.attach(key, debuggee.tab);
+      host.attach(unusedKey, unused.tab);
+      yield* command(host, 1, "Page.startScreencast");
+      yield* settle;
+
+      yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+      // With no relay left, nothing is undone twice.
+      yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+      yield* host.handleCommandLine(encodeJson({ type: "release", ...unusedKey }));
+
+      expect(debuggee.resets).toEqual([...RELAY_RESETS, SCREENCAST_RESET]);
+      expect(unused.resets).toEqual([]);
+    }),
   );
 
   it.effect("drops screenshots a released relay left waiting", () =>
@@ -1207,11 +1267,8 @@ describe("DesktopBrowserHost", () => {
 
       const { type, threadId, tabId } = detached!;
       expect({ type, threadId, tabId }).toEqual({ type: "detached", ...key });
-      expect(send).toHaveBeenCalledWith("Target.setAutoAttach", {
-        autoAttach: false,
-        waitForDebuggerOnStart: false,
-        flatten: true,
-      });
+      expect(tabs[0]!.resets).toEqual([...RELAY_RESETS, SCREENCAST_RESET]);
+      expect(tabs[1]!.resets).toEqual([]);
       tabs[0]!.settleFocus();
       yield* settle;
       expect(send).not.toHaveBeenCalledWith("Target.setAutoAttach", {
@@ -1219,7 +1276,6 @@ describe("DesktopBrowserHost", () => {
         waitForDebuggerOnStart: true,
         flatten: true,
       });
-      expect(send).toHaveBeenCalledWith("Page.stopScreencast");
       expect(tabs[0]!.focusEmulation).toEqual([true, false]);
       expect(next).toMatchObject({ type: "cdp", ...keys[1] });
       expect(JSON.parse((next as { message: string }).message)).toMatchObject({

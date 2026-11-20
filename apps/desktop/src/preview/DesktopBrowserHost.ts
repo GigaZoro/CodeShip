@@ -9,6 +9,8 @@ import {
 import * as Context from "effect/Context";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -132,6 +134,9 @@ export const make = Effect.gen(function* () {
   let mainWindow: Electron.WebContents | null | undefined;
   /** Tabs the server waits on to attach, by key; each wait is its own entry. */
   const awaited = new Map<string, { readonly key: DesktopBrowserTabKey }>();
+  /** Each wait's lease timer, by key; the host's scope ends any still running. */
+  const leases = yield* FiberMap.make<string>();
+  const runLease = yield* FiberMap.runtime(leases)<never>();
   let awaitedHold: { readonly window: Electron.WebContents; readonly release: () => void } | null =
     null;
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
@@ -226,6 +231,19 @@ export const make = Effect.gen(function* () {
         Effect.logWarning("Preview main window background throttling did not change.", { cause }),
       );
     }
+  };
+
+  // Each interrupts the timers running now, never one a later wait for the same tab starts.
+  const endWait = (id: string) => {
+    if (!awaited.delete(id)) return false;
+    const lease = FiberMap.getUnsafe(leases, id);
+    if (Option.isSome(lease)) runFork(Fiber.interrupt(lease.value));
+    return true;
+  };
+
+  const endAllWaits = () => {
+    awaited.clear();
+    runFork(Fiber.interruptAll([...leases].map(([, lease]) => lease)));
   };
 
   const syncRendering = (tab: AttachedTab) => {
@@ -339,7 +357,30 @@ export const make = Effect.gen(function* () {
     syncPainting(tab);
   };
 
+  /**
+   * Chrome undoes what a client set when it disconnects, but the relay shares the manager's
+   * debugger session, so a relay that ends undoes by hand what would stall the page or the
+   * person without a client: children paused on start, intercepted requests and file pickers,
+   * and its screencast.
+   */
+  const releaseDebuggee = (tab: AttachedTab) => {
+    const resets: Array<readonly [string, Record<string, unknown>]> = [
+      // Disabling auto-attach detaches child sessions and releases their debugger pauses.
+      ["Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }],
+      // Requests paused for interception continue once it ends.
+      ["Fetch.disable", {}],
+      ["Page.setInterceptFileChooserDialog", { enabled: false }],
+    ];
+    if (tab.screencasts.size > 0) resets.push(["Page.stopScreencast", {}]);
+    for (const [method, params] of resets) {
+      tab.debuggee.debugger.sendCommand(method, params).catch((cause: unknown) => {
+        runFork(Effect.logWarning("Preview guest debugger was not reset.", { method, cause }));
+      });
+    }
+  };
+
   const dropRelay = (tab: AttachedTab) => {
+    if (tab.relay !== null) releaseDebuggee(tab);
     tab.relay = null;
     tab.screencasts.clear();
     tab.agentUsed = false;
@@ -448,17 +489,7 @@ export const make = Effect.gen(function* () {
       // replay the same oversized event, so the tab stays detached.
       () => {
         if (tab.relay !== relay || tabs.get(keyOf(tab.key)) !== tab) return;
-        // Disabling auto-attach detaches child sessions and releases their debugger pauses.
-        void debuggee
-          .sendCommand("Target.setAutoAttach", {
-            autoAttach: false,
-            waitForDebuggerOnStart: false,
-            flatten: true,
-          })
-          .catch(() => {});
-        if (tab.screencasts.size > 0) {
-          void debuggee.sendCommand("Page.stopScreencast").catch(() => {});
-        }
+        releaseDebuggee(tab);
         setDriven(tab, false);
         detach(tab.key);
       },
@@ -532,20 +563,22 @@ export const make = Effect.gen(function* () {
     debuggee.debugger.on("message", tab.onMessage);
     debuggee.webContents.on("did-navigate", tab.onNewDocument);
     emit({ type: "attached", ...key });
-    if (awaited.delete(id)) syncAwaitedRendering();
+    if (endWait(id)) syncAwaitedRendering();
   };
 
   const awaitTab = (key: DesktopBrowserTabKey, active: boolean) => {
     const id = keyOf(key);
-    if (!active) awaited.delete(id);
+    if (!active) endWait(id);
     // The server then runs the tab headless rather than wait out its timeout.
     else if (mainWindow === null) emit({ type: "declined", ...key });
     else if (!tabs.has(id)) {
       const wait = { key };
       awaited.set(id, wait);
       // The server has stopped waiting by then, so an `awaiting: false` lost on the way,
-      // whichever pipe or process failed, cannot keep the window rendering.
-      runFork(
+      // whichever pipe or process failed, cannot keep the window rendering. A newer wait for
+      // the same tab replaces this timer.
+      runLease(
+        id,
         Effect.sleep(DESKTOP_BROWSER_ATTACH_WAIT_MS).pipe(
           Effect.andThen(
             Effect.sync(() => {
@@ -564,7 +597,7 @@ export const make = Effect.gen(function* () {
     mainWindow = webContents;
     if (webContents === null) {
       for (const { key } of awaited.values()) emit({ type: "declined", ...key });
-      awaited.clear();
+      endAllWaits();
     }
     syncAwaitedRendering();
   };
@@ -609,7 +642,7 @@ export const make = Effect.gen(function* () {
   // the guests it drove focused; with no relay they drop their holds once idle.
   const forgetBackend = () => {
     agentTurns.clear();
-    awaited.clear();
+    endAllWaits();
     syncAwaitedRendering();
     for (const tab of tabs.values()) dropRelay(tab);
   };

@@ -312,6 +312,8 @@ interface ServerTab {
   } | null;
   dialog: Dialog | null;
   setting: PreviewViewportSetting;
+  /** False while the page has not taken `setting`, so the next setting event applies it again. */
+  settingApplied: boolean;
   colorScheme: PreviewAppearancePreference;
   zoomFactor: number;
   /** Last usable CSS size measured on the desktop. */
@@ -722,19 +724,22 @@ const make = Effect.gen(function* () {
   };
 
   const applySetting = async (tab: ServerTab, setting: PreviewViewportSetting) => {
+    // Recorded at once, so a viewer's resize meanwhile follows the new setting.
     tab.setting = setting;
-
-    if (tab.desktop) return;
-    const size =
-      fixedViewportSize(setting) ??
-      [...tab.viewers]
-        .map((viewer) => viewer.requestedSize)
-        .filter((requested) => requested !== null)
-        .sort((left, right) => right.order - left.order)[0] ??
-      UNATTACHED_FILL_VIEWPORT;
-    await tab.page.setViewportSize({ width: size.width, height: size.height });
-    await applyZoom(tab);
-    await broadcastViewport(tab);
+    tab.settingApplied = false;
+    if (!tab.desktop) {
+      const size =
+        fixedViewportSize(setting) ??
+        [...tab.viewers]
+          .map((viewer) => viewer.requestedSize)
+          .filter((requested) => requested !== null)
+          .sort((left, right) => right.order - left.order)[0] ??
+        UNATTACHED_FILL_VIEWPORT;
+      await tab.page.setViewportSize({ width: size.width, height: size.height });
+      await applyZoom(tab);
+    }
+    if (tab.setting === setting) tab.settingApplied = true;
+    if (!tab.desktop) await broadcastViewport(tab);
   };
 
   const applyRendering = async (tab: ServerTab, snapshot: PreviewSessionSnapshot) => {
@@ -876,6 +881,7 @@ const make = Effect.gen(function* () {
       fileChooser: null,
       dialog: null,
       setting: snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
+      settingApplied: false,
       colorScheme: "system",
       zoomFactor: 1,
       desktopViewport: null,
@@ -894,6 +900,7 @@ const make = Effect.gen(function* () {
     if (!desktop) {
       await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
     }
+    tab.settingApplied = true;
     await applyRendering(tab, snapshot);
     if (desktop) {
       // The desktop resizes and zooms its webview itself; viewers map input with the new size.
@@ -2338,6 +2345,7 @@ const make = Effect.gen(function* () {
         await tab.control
           .system(async () => {
             if (
+              !tab.settingApplied ||
               !viewportSettingsEqual(event.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT, tab.setting)
             ) {
               await applySetting(tab, event.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT);
