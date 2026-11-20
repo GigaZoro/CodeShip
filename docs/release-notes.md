@@ -1,3 +1,7 @@
+## 2026-11-20 — Settling and cleanup see commits a rewound default branch no longer holds
+
+- The check for unmerged work trusted its last copy of the remote's default branch, and fetched a fresh one only after that copy showed commits ahead. When the remote's default branch had been rewound, the old copy still held a branch's commits, so the check counted none and settlement or cleanup could remove a worktree whose work was no longer on the default branch. It now fetches the default branch first, within the same 10-second limit, and counts against the result.
+
 ## 2026-11-20 — Client tests no longer depend on the machine's language
 
 - Maintainers: the snooze-menu and usage-limit banner tests failed on a computer set to a non-English region, because they expected English dates and times from the system's own format. Web, desktop, mobile and client-runtime tests now start with English and US formatting active and a Ukrainian system locale, so they pass on every machine, and a new test that relies on the system's format fails everywhere, CI included.

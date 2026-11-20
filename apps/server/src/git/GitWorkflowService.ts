@@ -498,8 +498,6 @@ export const make = Effect.gen(function* () {
           unmergedCommitCount,
         };
       });
-      const work = yield* read();
-      if (work.unmergedCommitCount === 0) return work;
       const remoteDefaultBranch = Effect.fnUntraced(function* (remoteName: string) {
         const named = yield* git.resolveDefaultBranchName(input.cwd, remoteName);
         if (named !== null) return named;
@@ -511,6 +509,17 @@ export const make = Effect.gen(function* () {
         }
         return null;
       });
+      // A merge, push or rewind elsewhere reaches the local default ref only after a fetch, and a stale
+      // ref that over-reports the default branch makes the count 0, so the fetch comes before it.
+      const fetchDefaultBranch = Effect.fnUntraced(function* () {
+        const remoteName = yield* git.resolvePrimaryRemoteName(input.cwd);
+        const remoteBranch = yield* remoteDefaultBranch(remoteName);
+        if (remoteBranch === null) return;
+        yield* git.fetchRemoteTrackingBranch({ cwd: input.cwd, remoteName, remoteBranch });
+      });
+      yield* fetchDefaultBranch().pipe(Effect.timeout(UNMERGED_WORK_FETCH_TIMEOUT), Effect.ignore);
+      const work = yield* read();
+      if (work.unmergedCommitCount === 0) return work;
       // The count compares the branch with the base T3 recorded for it, else the default branch.
       const countBase = Effect.fnUntraced(function* (refName: string) {
         const recorded = yield* git.readBranchBase(input.cwd, refName);
@@ -538,19 +547,7 @@ export const make = Effect.gen(function* () {
           }
         }
       }
-      // A merge or push from elsewhere reaches the local default ref only after a fetch.
-      const fetchDefaultBranch = Effect.fnUntraced(function* () {
-        const remoteName = yield* git.resolvePrimaryRemoteName(input.cwd);
-        const remoteBranch = yield* remoteDefaultBranch(remoteName);
-        if (remoteBranch === null) return false;
-        yield* git.fetchRemoteTrackingBranch({ cwd: input.cwd, remoteName, remoteBranch });
-        return true;
-      });
-      const fetched = yield* fetchDefaultBranch().pipe(
-        Effect.timeout(UNMERGED_WORK_FETCH_TIMEOUT),
-        Effect.orElseSucceed(() => false),
-      );
-      return fetched ? yield* read() : work;
+      return work;
     }),
     remoteStatus: Effect.fn("GitWorkflowService.remoteStatus")(function (input, options) {
       return detectGitRepositoryForStatus("GitWorkflowService.remoteStatus", input.cwd).pipe(

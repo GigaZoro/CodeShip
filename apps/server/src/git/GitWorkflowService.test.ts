@@ -261,6 +261,29 @@ it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
     }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
   );
 
+  it.effect("counts a commit the remote default branch no longer holds after it was rewound", () =>
+    Effect.gen(function* () {
+      const { root, cwd, git, change, workflow } = yield* unmergedWorkRepo;
+      const origin = `${root}/origin.git`;
+      for (const args of [
+        ["init", "--bare", "-b", "main", origin],
+        ["remote", "add", "origin", origin],
+        ["push", "origin", "main"],
+        ["switch", "-c", "t3/feature"],
+      ]) {
+        yield* git(cwd, args);
+      }
+      yield* change("one");
+      yield* git(cwd, ["push", "origin", "HEAD:main"]);
+      yield* git(cwd, ["fetch", "origin"]);
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 0);
+      // The remote drops the commit; the local remote-tracking ref still holds it.
+      yield* git(cwd, ["push", "--force", "origin", "HEAD~1:refs/heads/main"]);
+      yield* git(cwd, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      assert.equal((yield* workflow.unmergedWork({ cwd })).unmergedCommitCount, 1);
+    }).pipe(Effect.scoped, Effect.provide(layerUnmergedWork())),
+  );
+
   it.effect("finds no work in a missing folder but fails on a .git Git rejects", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
