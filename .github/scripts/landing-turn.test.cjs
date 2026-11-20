@@ -1,14 +1,19 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { execFileSync, spawnSync } = require("node:child_process");
+const { once } = require("node:events");
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 
 const {
+  LEASE_CALL_MS,
   LEASE_REF,
   LEASE_RESERVE_MS,
   LEASE_TTL_MS,
+  QUEUE_PREFIX,
+  QUEUE_STALE_MS,
   TURN_ENV,
   checkBudgetSeconds,
   acquire,
@@ -52,8 +57,20 @@ function setup() {
     git(dir, "add", ".");
     git(dir, "commit", "-qm", file);
   };
-  return { root, origin, git, clone, commit };
+  // A remote of `dir` that runs the sh script `body` for each call to origin. An ext:: URL splits its arguments on bare
+  // spaces.
+  const scriptRemote = (dir, name, body) => {
+    const script = slash(path.join(root, `${name}.sh`));
+    fs.writeFileSync(script, body);
+    git(dir, "config", "protocol.ext.allow", "always");
+    const url = `ext::sh ${script.replaceAll("%", "%%").replaceAll(" ", "% ")} %s`;
+    git(dir, "config", `remote.${name}.url`, url);
+  };
+  return { root, origin, git, clone, commit, scriptRemote };
 }
+
+// Git for Windows' sh reads forward slashes.
+const slash = (file) => file.replaceAll("\\", "/");
 
 test("a second lander cannot push to main while the first holds the turn, and the first lands after one check", () => {
   const { root, origin, git, clone, commit } = setup();
@@ -238,6 +255,117 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
   }
 });
 
+test("a lander that starts waiting later takes the turn only after the waiter ahead of it, whichever polls first", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const early = clone("early");
+    const late = clone("late");
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    // Waits that started before the holder's lease expires, which keeps that lease live to them.
+    const start = Date.parse("2026-01-01T00:00:00.000Z");
+    let lateQueue = null;
+    const pauses = [
+      () => {
+        // The turn comes free, and a lander that started later polls before the early one does.
+        release({ cwd: holder, remote: origin }, held);
+        let minutes = 0;
+        assert.throws(
+          () =>
+            acquire({
+              cwd: late,
+              remote: origin,
+              now: () => start + 1,
+              maxWaitMs: 60_000,
+              clock: () => minutes * 60_000,
+              sleep: () => {
+                minutes += 1;
+                lateQueue = queue().split("\n").length;
+              },
+            }),
+          /still holds/,
+        );
+      },
+    ];
+
+    const turn = acquire({
+      cwd: early,
+      remote: origin,
+      now: () => start,
+      sleep: () => pauses.shift()(),
+    });
+
+    // The late lander queued behind the early one, and each left the queue when it gave up or took the turn.
+    assert.deepEqual(
+      [lateQueue, git(origin, "rev-parse", "landing-lease/main"), queue()],
+      [2, turn, ""],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a dead waiter's entry holds no place once it has gone unrenamed for the stale age, and is deleted", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const waiter = clone("waiter");
+    // A waiter that died while it waited: its entry sorts first and is never renamed again. A branch under the queue's
+    // prefix that is no entry holds no place either, and is not the waiters' to delete, even one named after an entry.
+    const dead = "000000000000001-dead.1";
+    git(
+      waiter,
+      "push",
+      "-q",
+      origin,
+      `HEAD:${QUEUE_PREFIX}${dead}`,
+      `HEAD:${QUEUE_PREFIX}maintenance`,
+    );
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    const names = () =>
+      queue()
+        .split("\n")
+        .map((ref) => ref.slice(QUEUE_PREFIX.length).replace(/^\d{15}-[\da-f-]{36}/, "own"));
+    let minutes = 0;
+    const seen = [];
+
+    const turn = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => minutes * 60_000,
+      sleep: () => {
+        seen.push(names());
+        if (minutes === 0) {
+          const [, stem] = /\/(\d{15}-[\da-f-]{36})\.1$/m.exec(queue());
+          git(waiter, "push", "-q", origin, `HEAD:${QUEUE_PREFIX}${stem}.backup`);
+        }
+        minutes += 1;
+      },
+    });
+
+    // It waited behind the dead entry until that went stale, renaming its own each minute rather than adding names.
+    const waits = Math.ceil(QUEUE_STALE_MS / 60_000);
+    assert.deepEqual(
+      [seen, git(origin, "rev-parse", "landing-lease/main"), names()],
+      [
+        [
+          [dead, "own.1", "maintenance"],
+          ...Array.from({ length: waits - 1 }, (_, wait) => [
+            dead,
+            `own.${wait + 2}`,
+            "own.backup",
+            "maintenance",
+          ]),
+        ],
+        turn,
+        ["own.backup", "maintenance"],
+      ],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a waiting lander waits through failed reads of origin, and only failures that go on or come from its checkout end its wait", () => {
   const { root, origin, git, clone } = setup();
   try {
@@ -295,43 +423,92 @@ test("a waiting lander waits through failed reads of origin, and only failures t
   }
 });
 
-test("a waiting lander that cannot fetch the holder's lease leaves it in place", () => {
-  const { root, origin, git, clone } = setup();
+test("a waiting lander that cannot fetch the holder's lease leaves it in place, and keeps its place in the queue", () => {
+  const { root, origin, git, clone, scriptRemote } = setup();
   try {
     const holder = clone("holder");
     const waiter = clone("waiter");
     const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
-    // Origin lists the lease but cannot send its commit, as when the fetch after the listing fails.
-    fs.rmSync(path.join(origin, "objects", held.slice(0, 2), held.slice(2)));
+    // Origin lists the lease and takes pushes but cannot send its commit, as when the fetch after the listing fails.
+    scriptRemote(
+      waiter,
+      "unsent",
+      `[ "$1" = upload-pack ] && exec git -c uploadpack.packObjectsHook=false upload-pack "${slash(origin)}"\nexec git "$1" "${slash(origin)}"\n`,
+    );
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    let minutes = 0;
+    const renames = [];
 
-    assert.throws(() => acquire({ cwd: waiter, remote: origin, maxWaitMs: 0 }), /git fetch failed/);
-    assert.equal(git(waiter, "ls-remote", "--refs", origin, LEASE_REF).split("\t")[0], held);
+    assert.throws(
+      () =>
+        acquire({
+          cwd: waiter,
+          remote: "unsent",
+          failingMs: 3 * 60_000,
+          clock: () => minutes * 60_000,
+          sleep: () => {
+            renames.push(queue().split(".").pop());
+            minutes += 1;
+          },
+        }),
+      /git fetch failed/,
+    );
+    // It renamed its entry each minute while the reads failed, so other waiters saw it alive, and left when it gave up.
+    assert.deepEqual(
+      [renames, git(waiter, "ls-remote", "--refs", origin, LEASE_REF).split("\t")[0], queue()],
+      [["1", "2", "3"], held, ""],
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("a take whose push fails or times out is the lander's when origin took it, and a failed poll when it did not", () => {
+test("a take whose push fails or times out is the lander's when origin took it, and a failed poll when it did not", async () => {
   const { root, origin, git, clone } = setup();
   try {
     const lander = clone("lander");
-    // Origin commits the take, then its receive-pack dies before it acknowledges the push.
-    const hooks = path.join(origin, "hooks");
-    git(origin, "config", "core.hooksPath", hooks);
+    // Origin takes the push, but the connection drops before its status report reaches the lander. Pushes go through
+    // a filter that passes receive-pack's ref advertisement, up to its flush packet, and drops what follows. A hook
+    // cannot kill receive-pack under Git for Windows, whose sh sees no parent process.
+    const dropped = path.join(root, "status-dropped");
+    const filter = path.join(root, "drop-status.cjs");
     fs.writeFileSync(
-      path.join(hooks, "reference-transaction"),
-      '#!/bin/sh\n[ "$1" = committed ] && [ -e drop-ack ] && rm drop-ack && kill -9 "$PPID"\nexit 0\n',
-      { mode: 0o755 },
+      filter,
+      `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const pack = spawn("git", ["receive-pack", ${JSON.stringify(origin)}], { stdio: ["inherit", "pipe", "inherit"] });
+let pending = Buffer.alloc(0);
+let advertised = false;
+pack.stdout.on("data", (chunk) => {
+  pending = Buffer.concat([pending, chunk]);
+  let end = 0;
+  while (!advertised && pending.length - end >= 4) {
+    const size = parseInt(pending.toString("latin1", end, end + 4), 16);
+    if (size !== 0 && pending.length - end < size) break;
+    advertised = size === 0;
+    end += size === 0 ? 4 : size;
+  }
+  process.stdout.write(pending.subarray(0, end));
+  if (advertised && end < pending.length) fs.writeFileSync(${JSON.stringify(dropped)}, "");
+  pending = advertised ? Buffer.alloc(0) : pending.subarray(end);
+});
+`,
     );
-    fs.writeFileSync(path.join(origin, "drop-ack"), "");
+    // An ext:: URL splits its arguments on bare spaces.
+    const extArg = (value) => value.replaceAll("%", "%%").replaceAll(" ", "% ");
+    git(lander, "config", "protocol.ext.allow", "always");
+    git(lander, "config", "remote.unacknowledged.url", origin);
+    git(
+      lander,
+      "config",
+      "remote.unacknowledged.pushurl",
+      `ext::${extArg(process.execPath)} ${extArg(filter)}`,
+    );
 
-    const turn = acquire({ cwd: lander, remote: origin, maxWaitMs: 0 });
+    const turn = acquire({ cwd: lander, remote: "unacknowledged", maxWaitMs: 0 });
     assert.deepEqual(
-      [
-        fs.existsSync(path.join(origin, "drop-ack")),
-        git(origin, "rev-parse", "landing-lease/main"),
-      ],
-      [false, turn],
+      [fs.existsSync(dropped), git(origin, "rev-parse", "landing-lease/main")],
+      [true, turn],
     );
     // The lease is its wait's by the run id that wait made: another wait that names the same id does not get it.
     const { run_id: runId } = JSON.parse(
@@ -345,14 +522,52 @@ test("a take whose push fails or times out is the lander's when origin took it, 
     release({ cwd: lander, remote: path.join(root, "missing.git") }, turn);
     release({ cwd: lander, remote: origin }, turn);
 
-    // Origin stops answering and never takes the lease: the push runs out of time, which is a failed poll.
-    const stall = path.join(hooks, "pre-receive");
-    fs.writeFileSync(stall, "#!/bin/sh\nsleep 6\nexit 1\n", { mode: 0o755 });
-    assert.throws(
-      () => acquire({ cwd: lander, remote: origin, maxWaitMs: 0, callMs: 2000 }),
-      /git push failed: did not finish within 2 seconds/,
-    );
-    fs.rmSync(stall);
+    // A take that reached origin unacknowledged is found by the wait's next poll even when a waiter ahead of it has
+    // appeared by then, and that waiter keeps its place. A live holder keeps the first poll from taking the lease; in
+    // the pause the lease becomes the one such a take leaves, carrying the run id of the wait's queue entry.
+    const holder = clone("holder");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    const ahead = `${QUEUE_PREFIX}000000000000001-ahead.1`;
+    const pauses = [
+      () => {
+        const [, waitId] = /\/\d{15}-([^.]+)\.1$/.exec(queue());
+        release({ cwd: holder, remote: origin }, held);
+        tryAcquire({ cwd: holder, remote: origin, runId: waitId });
+        git(holder, "push", "-q", origin, `HEAD:${ahead}`);
+      },
+    ];
+    const ownTurn = acquire({
+      cwd: lander,
+      remote: origin,
+      clock: () => 0,
+      sleep: () => pauses.shift()(),
+    });
+    assert.deepEqual([git(origin, "rev-parse", "landing-lease/main"), queue()], [ownTurn, ahead]);
+    release({ cwd: lander, remote: origin }, ownTurn);
+    git(origin, "update-ref", "-d", ahead);
+
+    // Origin stops answering pushes and never takes the lease: the push runs out of time, which is a failed poll. A
+    // git:// listener stalls it with no process of its own, which on Windows would keep the fixture from being deleted
+    // while it outlived the push; its connection is closed only after the push, which blocks this process, has ended.
+    const silent = net.createServer((socket) => socket.destroy());
+    silent.listen(0, "127.0.0.1");
+    await once(silent, "listening");
+    try {
+      git(lander, "config", "remote.stall.url", origin);
+      git(
+        lander,
+        "config",
+        "remote.stall.pushurl",
+        `git://127.0.0.1:${silent.address().port}/origin.git`,
+      );
+      assert.throws(
+        () => acquire({ cwd: lander, remote: "stall", maxWaitMs: 0, callMs: 2000 }),
+        /git push failed: did not finish within 2 seconds/,
+      );
+    } finally {
+      silent.close();
+    }
 
     git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
     assert.throws(
@@ -365,26 +580,46 @@ test("a take whose push fails or times out is the lander's when origin took it, 
 });
 
 test("a landing hands its check what the lease leaves, less the reserve for the push", () => {
-  assert.equal(checkBudgetSeconds(0), (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000);
-  assert.equal(checkBudgetSeconds(30 * 60 * 1000), (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 1800);
-  assert.equal(checkBudgetSeconds(LEASE_TTL_MS), 1);
+  assert.equal(checkBudgetSeconds(LEASE_TTL_MS), (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000);
+  assert.equal(
+    checkBudgetSeconds(LEASE_TTL_MS - 30 * 60 * 1000),
+    (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 1800,
+  );
+  assert.equal(checkBudgetSeconds(0), 1);
 });
 
-test("land passes the budget measured from the turn's start", () => {
-  const { root, origin, clone, commit } = setup();
+test("land's budget counts from the take, though the take reached origin a poll before the wait found it", () => {
+  const { root, origin, git, clone, commit } = setup();
   try {
     const dir = clone("lander");
     commit(dir, "budget.txt");
-    const ticks = [1_000, 1_000 + 10 * 60 * 1000];
+    const holder = clone("holder");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    // In the pause the lease becomes the one the wait's own take leaves when it reaches origin unacknowledged, ten
+    // minutes before the wait's next poll finds it.
+    const taken = Date.parse("2026-01-01T00:00:00.000Z");
+    let wall = taken;
+    const pauses = [
+      () => {
+        const [, waitId] = /\/\d{15}-([^.]+)\.1$/.exec(queue());
+        release({ cwd: holder, remote: origin }, held);
+        tryAcquire({ cwd: holder, remote: origin, runId: waitId, now: () => taken });
+        wall = taken + 10 * 60 * 1000;
+      },
+    ];
     let budget;
     const result = land({
       cwd: dir,
       remote: origin,
-      turnClock: () => ticks.shift(),
+      now: () => wall,
+      sleep: () => pauses.shift()(),
       check: (_turn, _base, seconds) => ((budget = seconds), true),
     });
-    assert.equal(result.status, "landed");
-    assert.equal(budget, (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 600);
+    assert.deepEqual(
+      [result.status, budget],
+      ["landed", (LEASE_TTL_MS - LEASE_RESERVE_MS) / 1000 - 600],
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -461,3 +696,105 @@ test("a rebase that conflicts is aborted, and a worktree in a stopped rebase is 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+const slowWaits = [
+  {
+    lease: "a live lease",
+    hold({ origin, holder }) {
+      const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+      return (pauses) => pauses === 4 && release({ cwd: holder, remote: origin }, held);
+    },
+  },
+  {
+    // A take of an expired lease makes the most calls a poll can: it deletes that lease, and origin refuses the take.
+    lease: "an expired lease whose take origin refuses",
+    hold({ root, origin, holder }) {
+      const past = Date.parse("2026-01-01T00:00:00Z");
+      const expired = (runId) =>
+        tryAcquire({ cwd: holder, remote: origin, runId, now: () => past });
+      const refuse = path.join(root, "refuse-take");
+      fs.writeFileSync(
+        path.join(origin, "hooks/pre-receive"),
+        `#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = ${LEASE_REF} ] && [ "$old" = ${"0".repeat(40)} ] && [ -e "${slash(refuse)}" ]; then exit 1; fi\ndone\n`,
+        { mode: 0o755 },
+      );
+      expired("dead");
+      fs.writeFileSync(refuse, "");
+      return (pauses) => {
+        if (pauses === 1) {
+          fs.rmSync(refuse);
+          expired("dead-again");
+          fs.writeFileSync(refuse, "");
+        }
+        if (pauses === 2) fs.rmSync(refuse);
+      };
+    },
+  },
+];
+
+for (const { lease, hold } of slowWaits)
+  test(`a waiter whose every call to origin takes as long as a call may still renames its entry before it looks dead, behind ${lease}`, () => {
+    const { root, origin, git, clone, scriptRemote } = setup();
+    try {
+      const holder = clone("holder");
+      const waiter = clone("waiter");
+      const onPause = hold({ root, origin, holder });
+      // Each call through this remote logs the queue as origin has it when the call starts, and takes LEASE_CALL_MS on
+      // the waiter's clock; so does each pause, POLL_MS.
+      const log = path.join(root, "calls.log");
+      fs.writeFileSync(log, "");
+      scriptRemote(
+        waiter,
+        "slow",
+        `echo call $(git --git-dir="${slash(origin)}" for-each-ref --format='%(refname)' ${QUEUE_PREFIX}) >> "${slash(log)}"\nexec git "$1" "${slash(origin)}"\n`,
+      );
+      const pollMs = 5000;
+      const lines = () => fs.readFileSync(log, "utf8").split("\n").filter(Boolean);
+      const at = (count) =>
+        lines()
+          .slice(0, count)
+          .reduce((ms, line) => ms + (line === "pause" ? pollMs : LEASE_CALL_MS), 0);
+      let pauses = 0;
+
+      const turn = acquire({
+        cwd: waiter,
+        remote: "slow",
+        pollMs,
+        // A refused take fails its poll, and at a minute a call two such polls outlast FAILING_MS.
+        failingMs: Infinity,
+        clock: () => at(Infinity),
+        sleep: () => {
+          fs.appendFileSync(log, "pause\n");
+          pauses += 1;
+          onPause(pauses);
+        },
+      });
+
+      // A name appears during the call before the first one that lists it, and stays the newest at most until the end of
+      // the last call that lists it as the newest. A reader's own listing may add one call to the age it measures.
+      const calls = lines().flatMap((line, index) =>
+        line === "pause" ? [] : [{ index, names: line.split(" ").slice(1) }],
+      );
+      const created = new Map();
+      const rename = (name) => Number(name.split(".").pop());
+      const listing = calls.map(({ index, names }, call) => {
+        for (const name of names) if (!created.has(name)) created.set(name, calls[call - 1].index);
+        if (names.length === 0) return null;
+        const newest = names.reduce((a, b) => (rename(a) > rename(b) ? a : b));
+        return at(index) + LEASE_CALL_MS - at(created.get(newest));
+      });
+      const listed = listing.flatMap((age, call) => (age === null ? [] : [call]));
+      const oldest = Math.max(...listing.slice(listed[0], listed.at(-1) + 1));
+      assert.deepEqual(
+        [
+          git(origin, "rev-parse", "landing-lease/main"),
+          git(origin, "for-each-ref", QUEUE_PREFIX),
+          listing.slice(listed[0], listed.at(-1) + 1).includes(null),
+          oldest + LEASE_CALL_MS < QUEUE_STALE_MS || oldest,
+        ],
+        [turn, "", false, true],
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });

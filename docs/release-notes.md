@@ -1,3 +1,7 @@
+## 2026-11-21 — Landings on main take turns in the order they started waiting
+
+- Maintainers: landers waiting for main's landing turn now queue first come, first served. Before, whoever polled first after a release took the turn, so a chat landing commit after commit kept it, and a lander that had waited six hours gave up. A lander killed while waiting holds no place once another lander has seen its entry unchanged for about seven minutes; one whose calls to origin are slow keeps its place. A landing's check also gets the time its lease has left from the moment the lease was taken. The landing tests also run on Windows again: a stalled push no longer leaves a process that keeps its test folder from being deleted. No change to the app.
+
 ## 2026-11-21 — A landing reads real git history and refuses marked files
 
 - The landing turn, its checks receipt, the pre-push hook, `check:changed` and the upstream sync read git history past replace refs and grafts, so an invented ancestry can no longer let a push move main past a commit it never held.
