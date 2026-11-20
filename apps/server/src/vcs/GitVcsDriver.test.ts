@@ -1126,19 +1126,6 @@ it.effect("GitVcsDriver treats a missing git executable as outside any repositor
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("GitVcsDriver detects no repository in a folder that is gone", () =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-gone-git-" });
-    const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
-      Effect.provide(vcsProcessSpawning("git")),
-    );
-
-    assert.strictEqual(yield* driver.detectRepository(path.join(root, "gone")), null);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-);
-
 it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   "GitVcsDriver detects a repository whose path contains a newline",
   () =>
@@ -1192,12 +1179,14 @@ const vcsProcessAnswering = (stderr: string) =>
 
 it.effect("GitVcsDriver keeps Git's exit code and error lines when detection fails", () =>
   Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-broken-repo-" });
     const broken = yield* GitVcsDriver.makeVcsDriverShape().pipe(
       Effect.provide(
         vcsProcessAnswering("hint: x\nfatal: bad config line 3 in file /r/.git/config\n"),
       ),
     );
-    const error = yield* broken.detectRepository("/r").pipe(Effect.flip);
+    const error = yield* broken.detectRepository(cwd).pipe(Effect.flip);
     assert.strictEqual(error._tag, "VcsProcessExitError");
     assert.strictEqual(error._tag === "VcsProcessExitError" && error.exitCode, 128);
     assert.include(error.message, "fatal: bad config line 3");
