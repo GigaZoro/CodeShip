@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ProviderInstanceId,
   ScheduledTaskId,
   type ScheduledTask,
   type ScheduledTaskRunRecord,
@@ -32,6 +33,13 @@ const A = EnvironmentId.make("env-a");
 const B = EnvironmentId.make("env-b");
 const C = EnvironmentId.make("env-c");
 const ID = ScheduledTaskId.make("task-1");
+const fallbackModels = [
+  {
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "gpt-6.1-terra",
+    options: [{ id: "reasoningEffort", value: "medium" }],
+  },
+];
 
 const rev = (at: string, environmentId = A): ScheduledTaskSharedRevision => ({
   at: `2026-11-0${at}T00:00:00.000Z`,
@@ -128,6 +136,32 @@ describe("planSharedScheduledTaskSync", () => {
   it("keys an op by environment, task and winning revision", () => {
     const [op] = planSharedScheduledTaskSync([snap(A, [shared("1")]), snap(B)]);
     expect(op?.key).toBe(`env-b:task-1:${rev("1").at}:env-a`);
+  });
+
+  it.each([{ fallbackModelSelections: fallbackModels }, { fallbackModelSelections: [] }])(
+    "sends the fallback list %j over the client sync path",
+    ({ fallbackModelSelections }) => {
+      const [op] = planSharedScheduledTaskSync([
+        snap(A, [{ ...shared("1"), fallbackModelSelections }]),
+        snap(B),
+      ]);
+      expect(op?.input).toMatchObject({ type: "upsert", task: { fallbackModelSelections } });
+    },
+  );
+
+  it("fills an omitted fallback list from the same revision even when the incomplete copy is seen first", () => {
+    const complete = { ...shared("2"), fallbackModelSelections: fallbackModels };
+    const [op, extra] = planSharedScheduledTaskSync([
+      snap(B, [shared("2")]),
+      snap(A, [complete]),
+      snap(C, [{ ...complete, fallbackModelSelections: [] }]),
+    ]);
+    expect(extra).toBeUndefined();
+    expect(op).toMatchObject({
+      environmentId: B,
+      input: { type: "upsert", task: { fallbackModelSelections: fallbackModels } },
+    });
+    expect(op?.key).not.toBe(planSharedScheduledTaskSync([snap(A, [complete]), snap(B)])[0]?.key);
   });
 
   it.each([

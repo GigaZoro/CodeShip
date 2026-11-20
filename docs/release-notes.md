@@ -1,3 +1,7 @@
+## 2026-11-20 — Shared schedules keep their fallback models
+
+- Shared tasks carry their ordered fallback models when CodeShip syncs them between connected machines. A machine that already has the current task can fill in a missing fallback list from a complete copy.
+
 ## 2026-11-20 — Plain-language descriptions for scheduled tasks
 
 - Add a description in a task’s editor to see its purpose on the Scheduled tasks page. Shared tasks carry the description across machines.
