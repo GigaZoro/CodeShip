@@ -365,6 +365,70 @@ const ORPHANING_COMMAND = `echo orphaning; ${STOP_NOTING_CHILD} until [ -e go ];
 // Real processes and the real clock: the runner watches commands on a wall-clock interval.
 it.layer(layerTest, { excludeTestServices: true })("a command run apart from its agent", (it) => {
   it.effect.skipIf(isWindowsHost)(
+    "retains the systemd owner when the server loses launch reconciliation after execution",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("scope-before-launch");
+        const sql = yield* SqlClient.SqlClient;
+        const agentScope = yield* AgentScope;
+        const unit = "t3code-command-before-launch.scope";
+        const stops = yield* Queue.unbounded<string>();
+        const delivered = yield* Deferred.make<void>();
+        NodeChildProcess.execFileSync("mkfifo", [NodePath.join(chat.workspace, "hold")]);
+        yield* sql`CREATE TEMP TRIGGER reject_launch_reconcile BEFORE UPDATE ON command_runs WHEN NEW.pid IS NOT NULL BEGIN SELECT RAISE(FAIL, 'server stopped before launch reconciliation'); END`;
+        let pid: number | undefined;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            if (pid === undefined) return;
+            try {
+              signalProcessGroup(pid, "SIGKILL");
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+            }
+          }),
+        );
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), {
+            command: "cat hold",
+          }),
+        ).pipe(
+          Effect.provideService(AgentScope, {
+            ...agentScope,
+            wrap: (input) =>
+              agentScope.wrap(input).pipe(Effect.map((wrapped) => ({ ...wrapped, unit }))),
+          }),
+        );
+        const pidFile = NodePath.join(NodePath.dirname(first.logPath), "pid");
+        yield* awaitFile(pidFile);
+        pid = Number(NodeFS.readFileSync(pidFile, "utf8"));
+        const [row] = yield* sql<{
+          readonly unit: string | null;
+          readonly pid: number | null;
+        }>`SELECT unit, pid FROM command_runs WHERE task_id = ${first.taskId}`;
+        assert.equal(row?.unit, unit);
+        assert.isNull(row?.pid);
+        yield* sql`DROP TRIGGER reject_launch_reconcile`;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch(cancellationOf(chat.threadId, first.taskId));
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            assert.equal(yield* Queue.take(stops), unit);
+            yield* Deferred.await(delivered);
+          }),
+        ).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(first.taskId, delivered),
+          ),
+          Effect.provideService(AgentScope, {
+            ...agentScope,
+            stopCommand: (name) => Queue.offer(stops, name).pipe(Effect.as(true)),
+          }),
+        );
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
     "a paused POSIX wrapper cannot run after restart cancels its gate",
     () =>
       Effect.gen(function* () {

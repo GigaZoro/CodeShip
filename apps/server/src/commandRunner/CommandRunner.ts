@@ -1374,7 +1374,7 @@ const make = Effect.gen(function* () {
    * On Linux under systemd it also leaves the server's cgroup, in the agents slice.
    */
   const launch = Effect.fn("CommandRunner.launch")(function* (
-    directory: string,
+    { directory, task_id }: CommandRunRow,
     { command, shell }: Pick<OrchestratorMcpRunCommandInput, "command" | "shell">,
     cwd: string,
     /** The command's whole environment, as the calling agent's own shell commands get it. */
@@ -1407,6 +1407,17 @@ const make = Effect.gen(function* () {
         env,
         survivesRestart: true,
       });
+      yield* lock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = watched.get(task_id);
+          if (current?.status !== "running")
+            return yield* new CommandLaunchError({
+              detail: "Command launch was cancelled before it started.",
+            });
+          // The wrapper cannot execute before its restart-safe owner is durable.
+          if (scoped.unit !== undefined) yield* settle({ ...current, unit: scoped.unit });
+        }),
+      );
       const pid = yield* spawnDetached(scoped.command, scoped.args, cwd, env);
       return {
         pid,
@@ -1742,7 +1753,7 @@ const make = Effect.gen(function* () {
             );
           if (prepared === undefined) return result(taskId);
           const started = yield* Effect.gen(function* () {
-            const launched = yield* launch(directory, input, cwd, commandEnv).pipe(
+            const launched = yield* launch(prepared, input, cwd, commandEnv).pipe(
               Effect.catchCause((cause) => {
                 const error = Cause.squash(cause);
                 return Effect.logWarning("command-runner.launch-failed", { taskId, cause }).pipe(
