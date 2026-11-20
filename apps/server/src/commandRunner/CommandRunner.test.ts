@@ -413,7 +413,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         );
         const pidFile = NodePath.join(NodePath.dirname(first.logPath), "pid");
         yield* awaitFile(pidFile);
-        pid = Number(NodeFS.readFileSync(pidFile, "utf8"));
+        pid = Number.parseInt(NodeFS.readFileSync(pidFile, "utf8"), 10);
         const [row] = yield* sql<{
           readonly unit: string | null;
           readonly pid: number | null;
@@ -2470,6 +2470,47 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         assert.isFalse(fixture.groups.has(2147483000));
         assert.deepEqual(fixture.groupSignals, []);
       }),
+  );
+
+  it.effect("adopts the POSIX wrapper's published identity despite rounded ps wall time", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("posix-published-identity");
+      const fixture = yield* windowsFixture;
+      fixture.state.now = Math.floor(fixture.state.now / 1_000) * 1_000 + 116;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), { command: "echo adopted identity" }),
+      ).pipe(Effect.provide(fixture.layer));
+      yield* forgetPid(first.taskId);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
+      const entry = fixture.processes.get(2147483000)!;
+      entry.identity = Math.floor(fixture.state.now / 1_000) * 1_000 - 1_000;
+      const published = DateTime.toDateUtc(DateTime.makeUnsafe(entry.identity))
+        .toUTCString()
+        .replace(" GMT", "");
+      const directory = NodePath.dirname(first.logPath);
+      NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000\nps:${published}\n`);
+      const adopted = yield* Deferred.make<void>();
+      yield* withServer(() =>
+        Effect.gen(function* () {
+          yield* Deferred.await(adopted);
+          const row = yield* commandRow(first.taskId);
+          assert.equal(row?.status, "running");
+          assert.equal(row?.process_started_at, entry.identity);
+          assert.deepEqual(fixture.groupSignals, []);
+          NodeFS.writeFileSync(NodePath.join(directory, "exit-status"), "0");
+          yield* nextWake(chat.threadId);
+          assert.equal((yield* taskOf(chat.threadId, first.taskId))?.status, "completed");
+        }),
+      ).pipe(
+        Effect.provideService(
+          Statement.CurrentTransformer,
+          observeDelivery(first.taskId, adopted, "pid"),
+        ),
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provide(fixture.layer),
+      );
+    }),
   );
 
   it.effect.each(["running", "timed_out"] as const)(

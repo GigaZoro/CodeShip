@@ -130,7 +130,9 @@ const WINDOWS_WRAPPER = [
 // makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
 const POSIX_WRAPPER = [
   'exec >>"$1" 2>&1 </dev/null',
-  'printf "%s\\n" "$$" >"$3.tmp" && mv -f "$3.tmp" "$3" || exit 1',
+  // ps can round boot time and process age separately; persist its self-identity before execution.
+  'identity=$(LC_ALL=C TZ=UTC /bin/ps -p "$$" -o lstart=) && [ -n "$identity" ] || exit 125',
+  'printf "%s\\nps:%s\\n" "$$" "$identity" >"$3.tmp" && mv -f "$3.tmp" "$3" || exit 1',
   'run() { shift 3; "$@"; }',
   'if mv "${3%/*}/launch-pending" "${3%/*}/launch-started"; then',
   '  run "$@"',
@@ -527,11 +529,17 @@ const make = Effect.gen(function* () {
   /** A file the wrapper wrote, with when it wrote it. */
   const readWrapperFile = (file: string) =>
     Effect.all([fs.readFileString(file), fs.stat(file)]).pipe(
-      Effect.map(([text, info]) => ({
-        value: Number.parseInt(text.trim(), 10),
-        identity: /^\d+\s+\d+$/.test(text.trim()) ? Number(text.trim().split(/\s+/)[1]) : undefined,
-        writtenAt: Option.getOrUndefined(info.mtime),
-      })),
+      Effect.map(([text, info]) => {
+        const raw = text.trim();
+        const numeric = /^\d+\s+(\d+)$/.exec(raw)?.[1];
+        const posix = /^\d+\nps:(.+)$/.exec(raw)?.[1];
+        const identity = numeric === undefined ? Date.parse(`${posix ?? ""} UTC`) : Number(numeric);
+        return {
+          value: Number.parseInt(raw, 10),
+          identity: Number.isFinite(identity) ? identity : undefined,
+          writtenAt: Option.getOrUndefined(info.mtime),
+        };
+      }),
       Effect.catchIf(
         (cause) => cause.reason._tag === "NotFound",
         () => Effect.undefined,
@@ -573,6 +581,10 @@ const make = Effect.gen(function* () {
     if (startedAt === undefined) return "unknown";
     if (row.process_started_at === null) {
       const named = yield* readWrapperFile(path.join(row.directory, PID_FILE));
+      if (named?.value === row.pid && named.identity !== undefined)
+        return startedAt === named.identity
+          ? startedAt
+          : { lost_reason: "pid-reused", probe_error };
       const exit = yield* readExitStatus(row);
       const upper =
         exit?.endedAt === undefined ? named?.writtenAt?.getTime() : Date.parse(exit.endedAt);

@@ -351,9 +351,10 @@ replacement or reboot ends a legacy task; an unknown identity alone does not pro
 
 Commands started by older Windows versions have no job membership record. Cleanup may stop
 only a root with an exact creation time, through the same opened handle used to verify it;
-it cannot safely recover descendant ownership from reused PIDs. POSIX fills missing identity
-only within the recorded launch and PID-file bounds, allowing the one-second precision of
-`ps`. Persisted PID replacement or reboot evidence forbids further PID or process-group signals.
+it cannot safely recover descendant ownership from reused PIDs. POSIX wrappers publish their
+own `ps` identity before taking the launch gate; legacy PID-only records require an identity
+within the recorded launch and PID-file bounds. Persisted PID replacement or reboot evidence
+forbids further PID or process-group signals.
 A systemd unit owns its cleanup even after the leader exits. Without a unit, as on macOS,
 cleanup may signal the surviving group only when no replacement has been observed. One window
 remains unobservable: the whole original group ends, a replacement leader reuses its PID, and
