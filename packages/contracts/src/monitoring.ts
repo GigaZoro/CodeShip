@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import {
+  CommandId,
   ForwardCompatibleArray,
   IsoDateTime,
   NonNegativeInt,
@@ -355,3 +356,46 @@ export const MonitoringChange = Schema.Struct({
   revision: NonNegativeInt,
 });
 export type MonitoringChange = typeof MonitoringChange.Type;
+
+/** A fix chat reads at most this many of the chats a weak point hit, most time lost first. */
+export const MONITORING_FIX_CHAT_MAX_CHATS = 20;
+
+/**
+ * Starts a chat that traces one weak point to its root cause and fixes it. The chats are this
+ * environment's; the server reads their analyses, so the chat sees what Monitoring saw.
+ */
+export const MonitoringFixChatInput = Schema.Struct({
+  /** The chat takes this id, so a retry with the same id opens the chat the first attempt started. */
+  commandId: CommandId,
+  /** Where the user asked; absent means web. */
+  creationSource: Schema.optional(Schema.Literals(["web", "mobile"])),
+  code: MonitoringFindingCode,
+  /** Chats the weak point hit, most time lost first. */
+  threadIds: Schema.Array(ThreadId).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(MONITORING_FIX_CHAT_MAX_CHATS),
+  ),
+});
+export type MonitoringFixChatInput = typeof MonitoringFixChatInput.Type;
+
+export const MonitoringFixChatResult = Schema.Struct({ threadId: ThreadId });
+export type MonitoringFixChatResult = typeof MonitoringFixChatResult.Type;
+
+export const MonitoringFixChatFailure = Schema.Literals([
+  /** None of the chats has a current analysis with this weak point. */
+  "no-chats",
+  /** No provider account on this machine is signed in and enabled. */
+  "no-model",
+  /** The chat could not be created or its first message was not accepted. */
+  "launch-failed",
+]);
+export type MonitoringFixChatFailure = typeof MonitoringFixChatFailure.Type;
+
+export class MonitoringFixChatError extends Schema.TaggedError<MonitoringFixChatError>()(
+  "MonitoringFixChatError",
+  { reason: MonitoringFixChatFailure, detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}

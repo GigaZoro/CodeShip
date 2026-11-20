@@ -369,6 +369,7 @@ function MonitoringOverview({
           >
             <MonitoringFindingRanking
               ranks={ranks}
+              chats={scoped}
               activeCode={filters.finding}
               onSelect={(finding) => onFiltersChange({ ...filters, finding })}
             />

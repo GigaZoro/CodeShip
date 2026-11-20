@@ -1,4 +1,9 @@
-import { EnvironmentId, type MonitoringThreadSummary } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  MONITORING_FIX_CHAT_MAX_CHATS,
+  type MonitoringFinding,
+  type MonitoringThreadSummary,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
 import {
@@ -6,6 +11,7 @@ import {
   dailyTrend,
   dayKey,
   filterChats,
+  fixChatTarget,
   median,
   mergeMonitoringOverviews,
   monitoringWindowStart,
@@ -171,6 +177,43 @@ describe("rankFindings", () => {
       chat("a", { findings: [finding] }, "env-b"),
     ]);
     expect(rank!.chats).toBe(2);
+  });
+});
+
+describe("fixChatTarget", () => {
+  const slow = (wastedMs: number): MonitoringFinding => ({
+    code: "slow_command",
+    severity: "high",
+    wastedMs,
+    count: 1,
+    detail: null,
+  });
+
+  it("picks the environment that lost the most time and lists its chats worst first", () => {
+    const target = fixChatTarget(
+      [
+        chat("a", { findings: [slow(100)] }, "env-a"),
+        chat("b", { findings: [slow(300)] }, "env-b"),
+        chat("c", { findings: [slow(50)] }, "env-b"),
+        chat("d", { findings: [slow(400)] }, "env-b"),
+        chat("e", { findings: [] }, "env-b"),
+      ],
+      "slow_command",
+    );
+    expect(target).toEqual({ environmentId: "env-b", threadIds: ["d", "b", "c"] });
+  });
+
+  it("caps the chats a fix chat reads", () => {
+    const chats = Array.from({ length: MONITORING_FIX_CHAT_MAX_CHATS + 5 }, (_, index) =>
+      chat(`t${index}`, { findings: [slow(index)] }),
+    );
+    const target = fixChatTarget(chats, "slow_command");
+    expect(target?.threadIds).toHaveLength(MONITORING_FIX_CHAT_MAX_CHATS);
+    expect(target?.threadIds[0]).toBe(`t${MONITORING_FIX_CHAT_MAX_CHATS + 4}`);
+  });
+
+  it("is null when no chat has the weak point", () => {
+    expect(fixChatTarget([chat("a", { findings: [slow(1)] })], "retries")).toBeNull();
   });
 });
 

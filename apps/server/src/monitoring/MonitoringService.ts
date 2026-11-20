@@ -64,6 +64,10 @@ export class MonitoringService extends Context.Service<
     readonly thread: (input: {
       readonly threadId: ThreadId;
     }) => Effect.Effect<MonitoringThreadDetail | null, MonitoringError>;
+    /** The current stored analyses of these chats; a chat that has none is left out. */
+    readonly summaries: (
+      threadIds: ReadonlyArray<ThreadId>,
+    ) => Effect.Effect<ReadonlyArray<MonitoringThreadSummary>, MonitoringError>;
     readonly subscribeChanges: Stream.Stream<MonitoringChange>;
     /** Analyzes every settled chat that has no current analysis, then each chat as it settles. */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
@@ -170,6 +174,45 @@ const make = Effect.gen(function* () {
     if (removed.length > 0) yield* publishChange();
   });
 
+  /** Rows whose stored summary cannot be read are skipped, so one bad row hides no others. */
+  const decodeRows = (
+    rows: ReadonlyArray<{ readonly thread_id: string; readonly summary_json: string }>,
+  ) =>
+    Effect.forEach(rows, (row) =>
+      decodeSummary(row.summary_json).pipe(
+        Effect.asSome,
+        Effect.catch(() =>
+          Effect.logWarning("A stored chat analysis could not be read.", {
+            threadId: row.thread_id,
+          }).pipe(Effect.as(Option.none<MonitoringThreadSummary>())),
+        ),
+      ),
+    ).pipe(
+      Effect.map((summaries) =>
+        summaries.flatMap((summary) => (Option.isSome(summary) ? [summary.value] : [])),
+      ),
+    );
+
+  const summaries: MonitoringService["Service"]["summaries"] = Effect.fn(
+    "MonitoringService.summaries",
+  )(function* (threadIds) {
+    if (threadIds.length === 0) return [];
+    const rows = yield* sql<{ readonly thread_id: string; readonly summary_json: string }>`
+      SELECT m.thread_id, m.summary_json
+      FROM monitoring_thread_analyses m
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = m.thread_id
+      WHERE m.thread_id IN ${sql.in(threadIds)}
+        AND ${settledListedThread(sql)}
+        AND json_extract(t.payload_json, '$.settledAt') = m.settled_at
+        AND m.analyzer_version = ${ANALYZER_VERSION}
+        AND m.summary_json IS NOT NULL
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.mapError(toError("Could not read the chat analyses.")),
+    );
+    return yield* decodeRows(rows);
+  });
+
   const overview: MonitoringService["Service"]["overview"] = Effect.fn(
     "MonitoringService.overview",
   )(function* (input) {
@@ -214,18 +257,8 @@ const make = Effect.gen(function* () {
       Effect.mapError(toError("Could not read the monitoring overview.")),
     );
 
-    const summaries = yield* Effect.forEach(data.rows.slice(0, MONITORING_OVERVIEW_LIMIT), (row) =>
-      decodeSummary(row.summary_json).pipe(
-        Effect.asSome,
-        Effect.catch(() =>
-          Effect.logWarning("A stored chat analysis could not be read.", {
-            threadId: row.thread_id,
-          }).pipe(Effect.as(Option.none<MonitoringThreadSummary>())),
-        ),
-      ),
-    );
     return {
-      threads: summaries.flatMap((summary) => (Option.isSome(summary) ? [summary.value] : [])),
+      threads: yield* decodeRows(data.rows.slice(0, MONITORING_OVERVIEW_LIMIT)),
       truncated: data.rows.length > MONITORING_OVERVIEW_LIMIT,
       pendingAnalysis: data.pending,
       failedAnalysis: data.failed,
@@ -389,6 +422,7 @@ const make = Effect.gen(function* () {
   return MonitoringService.of({
     overview,
     thread,
+    summaries,
     subscribeChanges: Stream.unwrap(
       PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
     ),

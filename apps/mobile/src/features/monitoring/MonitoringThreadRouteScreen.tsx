@@ -31,6 +31,7 @@ import { usePullToRefresh } from "../../state/use-pull-to-refresh";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteScreen";
+import { MonitoringFixChatAction } from "./MonitoringFixChat";
 import { MonitoringKpi } from "./MonitoringKpi";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 import { MonitoringTimeline } from "./MonitoringTimeline";
@@ -73,7 +74,11 @@ export function MonitoringThreadRouteScreen({
       >
         <View className="w-full gap-5 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
           {detail ? (
-            <DeepDiveBody detail={detail} onOpenChat={() => openThread(environmentId, threadId)} />
+            <DeepDiveBody
+              detail={detail}
+              environmentId={environmentId}
+              onOpenChat={() => openThread(environmentId, threadId)}
+            />
           ) : query.error !== null ? (
             <EmptyState
               variant="plain"
@@ -101,9 +106,10 @@ export function MonitoringThreadRouteScreen({
 
 function DeepDiveBody(props: {
   readonly detail: MonitoringThreadDetail;
+  readonly environmentId: EnvironmentId;
   readonly onOpenChat: () => void;
 }) {
-  const { detail } = props;
+  const { detail, environmentId } = props;
   const { summary } = detail;
   const input = summary.tokens.inputTokens;
   const workingMs = summary.time.agentMs + summary.time.commandMs + summary.time.toolMs;
@@ -248,6 +254,10 @@ function DeepDiveBody(props: {
                     {t(text.advice)}
                   </Text>
                 ) : null}
+                <MonitoringFixChatAction
+                  target={{ environmentId, threadIds: [summary.threadId] }}
+                  code={finding.code}
+                />
               </View>
             );
           })

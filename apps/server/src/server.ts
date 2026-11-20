@@ -88,6 +88,7 @@ import * as SharedTaskPull from "./scheduledTasks/SharedTaskPull.ts";
 import * as SharedSettings from "./sharedSettings/SharedSettings.ts";
 import * as SharedSettingsPull from "./sharedSettings/SharedSettingsPull.ts";
 import * as LinkedScheduledTasks from "./scheduledTasks/LinkedScheduledTasks.ts";
+import * as MonitoringFixChats from "./monitoring/MonitoringFixChats.ts";
 import * as MonitoringService from "./monitoring/MonitoringService.ts";
 import * as ScheduledTaskStats from "./scheduledTasks/ScheduledTaskStats.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
@@ -964,6 +965,8 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   // Run counts, failures and cost per scheduled task, read from the run history and the threads' usage.
   Layer.provide(ScheduledTaskStats.layer),
+  // Chats that fix a weak point; they read the analyses below.
+  Layer.provide(MonitoringFixChats.layer),
   // Per-chat time and weak-point analyses, refreshed in the background as chats settle.
   Layer.provide(MonitoringService.layerStarted),
   // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.

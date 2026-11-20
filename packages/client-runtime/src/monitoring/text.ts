@@ -1,14 +1,19 @@
-import type {
-  MonitoringCommandPhase,
-  MonitoringFinding,
-  MonitoringFindingCode,
-  MonitoringFindingSeverity,
-  MonitoringLaneKind,
-  MonitoringMarkerKind,
-  MonitoringSegmentStatus,
-  MonitoringThreadKind,
+import {
+  type MonitoringCommandPhase,
+  type MonitoringFinding,
+  type MonitoringFindingCode,
+  type MonitoringFindingSeverity,
+  MonitoringFixChatError,
+  type MonitoringFixChatFailure,
+  type MonitoringLaneKind,
+  type MonitoringMarkerKind,
+  type MonitoringSegmentStatus,
+  type MonitoringThreadKind,
 } from "@t3tools/contracts";
 import { msg, t, type Message } from "@t3tools/shared/i18n";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import type { TimeBucketKey } from "./aggregate.ts";
 
@@ -120,6 +125,27 @@ const FINDING_DETAIL_INLINE: ReadonlySet<MonitoringFindingCode> = new Set([
   "low_cache_reuse",
   "context_pressure",
 ]);
+
+const FIX_CHAT_FAILURE_MESSAGES: Readonly<Record<MonitoringFixChatFailure | "offline", Message>> = {
+  "no-chats": msg("Those chats no longer show this weak point. Refresh and try again."),
+  "no-model": msg(
+    "No provider account on that machine is signed in. Sign in to one, then try again.",
+  ),
+  "launch-failed": msg("The chat could not be started. Try again."),
+  offline: msg("Could not reach the machine that runs the chat."),
+};
+
+const isMonitoringFixChatError = Schema.is(MonitoringFixChatError);
+
+/** Why a fix chat did not start, from the failed command's cause. */
+export function monitoringFixChatFailureMessage(cause: Cause.Cause<unknown>): string {
+  const error = Cause.findErrorOption(cause);
+  return t(
+    FIX_CHAT_FAILURE_MESSAGES[
+      Option.isSome(error) && isMonitoringFixChatError(error.value) ? error.value.reason : "offline"
+    ],
+  );
+}
 
 export const SEVERITY_LABEL: Readonly<Record<MonitoringFindingSeverity, Message>> = {
   high: msg("High"),

@@ -8,6 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   filterChats,
+  fixChatTarget,
   mainModel,
   NO_MODEL,
   monitoringChatKey,
@@ -45,6 +46,7 @@ import { useProjects } from "../../state/entities";
 import { useMonitoringOverview } from "../../state/monitoring";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { MonitoringFixChatAction } from "./MonitoringFixChat";
 import { MonitoringKpi } from "./MonitoringKpi";
 import { MonitoringTimeBar } from "./MonitoringTimeBar";
 
@@ -252,33 +254,41 @@ export function MonitoringRouteScreen(props: { readonly workspace?: boolean }) {
                   : t("No time counted"),
               ].join(" · ");
               return (
-                <Pressable
+                <View
                   key={rank.code}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  accessibilityLabel={`${t(text.title)}, ${t(SEVERITY_LABEL[rank.severity])}, ${stats}`}
-                  accessibilityHint={t("Choose one to list only the chats it hit.")}
-                  className={`min-h-11 gap-1 px-4 py-3 active:opacity-70 ${active ? "bg-secondary" : ""} ${index > 0 ? "border-t border-border-subtle" : ""}`}
-                  onPress={() => {
-                    setFinding(active ? null : rank.code);
-                    setShown(PAGE_SIZE);
-                  }}
+                  className={`px-4 py-3 ${active ? "bg-secondary" : ""} ${index > 0 ? "border-t border-border-subtle" : ""}`}
                 >
-                  <Text className="font-t3-medium text-foreground">
-                    {`${t(text.title)} · ${t(SEVERITY_LABEL[rank.severity])}`}
-                  </Text>
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {t(text.overview ?? text.explanation)}
-                  </Text>
-                  {text.advice ? (
-                    <Text textRole="footnote" className="text-foreground">
-                      {t(text.advice)}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`${t(text.title)}, ${t(SEVERITY_LABEL[rank.severity])}, ${stats}`}
+                    accessibilityHint={t("Choose one to list only the chats it hit.")}
+                    className="min-h-11 gap-1 active:opacity-70"
+                    onPress={() => {
+                      setFinding(active ? null : rank.code);
+                      setShown(PAGE_SIZE);
+                    }}
+                  >
+                    <Text className="font-t3-medium text-foreground">
+                      {`${t(text.title)} · ${t(SEVERITY_LABEL[rank.severity])}`}
                     </Text>
-                  ) : null}
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {stats}
-                  </Text>
-                </Pressable>
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {t(text.overview ?? text.explanation)}
+                    </Text>
+                    {text.advice ? (
+                      <Text textRole="footnote" className="text-foreground">
+                        {t(text.advice)}
+                      </Text>
+                    ) : null}
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {stats}
+                    </Text>
+                  </Pressable>
+                  <MonitoringFixChatAction
+                    target={fixChatTarget(scoped, rank.code)}
+                    code={rank.code}
+                  />
+                </View>
               );
             })
           )}

@@ -1470,6 +1470,11 @@ export function createServerEnvironmentAtoms<R, E>(
     monitoringChanges,
     monitoringOverview,
     monitoringThread,
+    startMonitoringFixChat: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:monitoring:start-fix-chat",
+      tag: WS_METHODS.monitoringStartFixChat,
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.commandId },
+    }),
     configValueAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",

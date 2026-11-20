@@ -1,13 +1,15 @@
-import type {
+import {
   EnvironmentId,
-  MonitoringCommandPhase,
-  MonitoringFindingCode,
-  MonitoringFindingSeverity,
-  MonitoringOverviewResult,
-  MonitoringThreadDetail,
-  MonitoringThreadKind,
-  MonitoringThreadSummary,
-  MonitoringTimeBuckets,
+  MONITORING_FIX_CHAT_MAX_CHATS,
+  type MonitoringCommandPhase,
+  type MonitoringFindingCode,
+  type MonitoringFindingSeverity,
+  type MonitoringOverviewResult,
+  type MonitoringThreadDetail,
+  type MonitoringThreadKind,
+  type MonitoringThreadSummary,
+  type MonitoringTimeBuckets,
+  type ThreadId,
 } from "@t3tools/contracts";
 
 /** A summary and the environment that analyzed it; thread ids are only unique per environment. */
@@ -428,6 +430,46 @@ export function rankFindings(
         b.chats - a.chats ||
         SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
     );
+}
+
+export interface MonitoringFixChatTarget {
+  readonly environmentId: EnvironmentId;
+  /** Most time lost first. */
+  readonly threadIds: ReadonlyArray<ThreadId>;
+}
+
+/**
+ * The chats a fix chat for one weak point reads. A chat runs on one environment and reads only that
+ * one's chats, so it goes to the environment that lost the most time to the weak point.
+ */
+export function fixChatTarget(
+  chats: ReadonlyArray<MonitoringChat>,
+  code: MonitoringFindingCode,
+): MonitoringFixChatTarget | null {
+  const byEnvironment = new Map<
+    string,
+    { wastedMs: number; hits: Array<{ threadId: ThreadId; wastedMs: number }> }
+  >();
+  for (const { environmentId, summary } of chats) {
+    const finding = summary.findings.find((candidate) => candidate.code === code);
+    if (finding === undefined) continue;
+    const entry = byEnvironment.get(environmentId) ?? { wastedMs: 0, hits: [] };
+    entry.wastedMs += finding.wastedMs;
+    entry.hits.push({ threadId: summary.threadId, wastedMs: finding.wastedMs });
+    byEnvironment.set(environmentId, entry);
+  }
+  const [best] = [...byEnvironment].sort(
+    ([, left], [, right]) => right.wastedMs - left.wastedMs || right.hits.length - left.hits.length,
+  );
+  if (best === undefined) return null;
+  const [environmentId, { hits }] = best;
+  return {
+    environmentId: EnvironmentId.make(environmentId),
+    threadIds: hits
+      .sort((left, right) => right.wastedMs - left.wastedMs)
+      .slice(0, MONITORING_FIX_CHAT_MAX_CHATS)
+      .map((hit) => hit.threadId),
+  };
 }
 
 export interface MonitoringOutliers {

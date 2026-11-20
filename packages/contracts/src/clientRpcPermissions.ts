@@ -58,6 +58,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.manualStepsReviewAgain]: AuthOrchestrationOperateScope,
   // Starts a thread and its first turn, as launching one from the composer does.
   [WS_METHODS.manualStepsStartChat]: AuthOrchestrationOperateScope,
+  [WS_METHODS.monitoringStartFixChat]: AuthOrchestrationOperateScope,
   [WS_METHODS.projectsCreateFromThread]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,

@@ -1294,13 +1294,13 @@ const catalog: MessageCatalog = {
   "{error} Use Publish Repository in the Git menu to try again.":
     "{error} Скористайтеся пунктом «Опублікувати репозиторій» у меню Git, щоб повторити.",
   "{failed} failed": "невдач: {failed}",
-  "{failed} failed, {duration}": "невдало: {failed}, {duration}",
   "{failed} failed, {count} prompts": {
     one: "невдало: {failed}, {count} запит",
     few: "невдало: {failed}, {count} запити",
     many: "невдало: {failed}, {count} запитів",
     other: "невдало: {failed}, {count} запиту",
   },
+  "{failed} failed, {duration}": "невдало: {failed}, {duration}",
   "{failed} of {runs} runs failed": "Невдалих запусків: {failed} із {runs}",
   "{failed} of {total} failed": "Не вдалося: {failed} із {total}",
   "{failed} of {total} provider updates failed":
@@ -1911,6 +1911,7 @@ const catalog: MessageCatalog = {
   "90th percentile": "90-й процентиль",
   "A background prompt could not be sent": "Не вдалося надіслати фоновий запит",
   "A chat is carrying out your decision.": "Чат виконує ваше рішення.",
+  "A chat is fixing this weak point.": "Чат усуває це слабке місце.",
   "A comment is anchored to the whole change, so switch to All commits to write one.":
     "Коментар прив’язується до всіх змін, тому перемкніться на «Усі коміти», щоб його написати.",
   "A community color theme for your editor.": "Колірна тема від спільноти для вашого редактора.",
@@ -6039,6 +6040,7 @@ const catalog: MessageCatalog = {
   "Fix findings in this thread": "Виправити знахідки в цьому чаті",
   "Fix in a thread": "Виправити в чаті",
   "Fix in this thread": "Виправити в цьому чаті",
+  "Fix root cause": "Усунути першопричину",
   "Fix the cause before running it again; run focused checks first.":
     "Усуньте причину, перш ніж запускати знову; спершу запускайте точкові перевірки.",
   "Fix the expression above to continue editing visually.":
@@ -8014,6 +8016,8 @@ const catalog: MessageCatalog = {
   "No projects.": "Немає проєктів.",
   "No provider account on that machine is signed in. Sign in to one, then choose again.":
     "На цьому комп’ютері немає жодного облікового запису провайдера з виконаним входом. Увійдіть в один із них і виберіть ще раз.",
+  "No provider account on that machine is signed in. Sign in to one, then try again.":
+    "На тій машині не виконано вхід у жоден обліковий запис провайдера. Увійдіть в один, потім спробуйте ще раз.",
   "No provider available": "Немає доступного провайдера",
   "No provider installs plugins here": "Жоден провайдер тут не встановлює плагіни",
   "No provider manages MCP servers here": "Жоден провайдер тут не керує серверами MCP",
@@ -13254,6 +13258,8 @@ const catalog: MessageCatalog = {
   "this workspace": "цьому робочому просторі",
   "This workspace is not a git repository.": "Цей робочий простір не є git-репозиторієм.",
   "This ZIP is empty": "Цей ZIP порожній",
+  "Those chats no longer show this weak point. Refresh and try again.":
+    "У цих чатах цього слабкого місця вже немає. Оновіть і спробуйте ще раз.",
   "Those references are marked unavailable.": "Ці посилання позначено як недоступні.",
   "Those threads and any archived threads are deleted from T3.CodeShip. Provider sessions are kept.":
     "Ці чати та всі архівовані чати буде видалено з T3.CodeShip. Сеанси провайдерів збережуться.",
