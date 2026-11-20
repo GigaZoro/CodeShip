@@ -323,6 +323,7 @@ class PiReplayController {
   private fail(cause: unknown): void {
     if (this.failure !== null) return;
     this.failure = cause;
+    console.error('PIDEBUG ' + JSON.stringify(cause, (_k, v) => (typeof v === 'bigint' ? String(v) : v)).slice(0, 3000));
     for (const process of this.processes) Queue.endUnsafe(process.stdout);
   }
 }
