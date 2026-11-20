@@ -4,8 +4,10 @@
   "project": "CodeShip",
   "repository": "https://github.com/GigaZoro/CodeShip.git",
   "branch": "main",
-  "$git_config": "Git runs the tracked hooks in .vite-hooks itself, so they work with no install. Their pre-push hook refuses a push to main unless `vp run check:changed` passed for the exact tree it pushes.",
+  "$git_config": "Git runs the tracked hooks in .vite-hooks itself, so they work with no install, and `prepare` must not run `vp config`, which would repoint core.hooksPath at its generated .vite-hooks/_ shims. Their pre-push hook refuses a push to main unless `vp run check:changed` passed for the exact tree it pushes.",
   "git_config": { "core.hooksPath": ".vite-hooks" },
+  "$ignore_local": ".claude/settings.local.json is Claude Code's own per-checkout list of commands a person approved in a chat. It holds nothing to share, so it stays local.",
+  "ignore_local": [".claude/settings.local.json"],
   "$automation_order": "\"one\" runs each occurrence on the first machine that is up, in this order. Each task's settings exclude Zoro-PC. The job machine gets no copy: it is not linked to these machines, and CodeShip accepts no exclusion for a machine no copy reaches.",
   "automation_order": ["Zoro-VPS", "MacBook-Pro-Andrii"],
   "automations": {

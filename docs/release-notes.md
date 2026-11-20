@@ -1,3 +1,8 @@
+## 2026-11-20 — Push gate stays on after install
+
+- Installing dependencies no longer repoints Git's hooks at generated shims, so the checked push gate on `main` keeps running in every checkout.
+- Development and testing notes that lived only in agent memory are now in the docs.
+
 ## 2026-11-20 — Landings refuse a local merge rule that breaks the release notes
 
 - Maintainers: a landing now stops before it waits for its turn when the checkout's own git attributes give `docs/release-notes.md` another merge than its merge driver, and it names the file to fix. Such an attribute in `.git/info/attributes` outranks the repository's own, so every rebase joined two entries without the blank line between them, and the landing failed its format check only after it had waited for its turn and run its checks. `vp i` warns about it too. No change to the app.

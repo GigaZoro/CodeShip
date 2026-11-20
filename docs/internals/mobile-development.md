@@ -76,3 +76,7 @@ directives are errors but the hooks stay legal until `KNOWN_BAILOUTS` is empty.
 `t3code/no-hookless-use-function` rejects a `use*` function that calls no hook, since the compiler
 leaves it uncached. A platform stub of a real hook, such as an `.android.ts` file, keeps the hook
 name and suppresses the rule with a reason.
+
+## Hermes lacks some `Intl` APIs
+
+On Hermes (React Native 0.88) `Intl.PluralRules`, `Intl.Locale`, `Intl.RelativeTimeFormat` and `Intl.ListFormat` are undefined, as is `Intl.Segmenter`; `getCanonicalLocales`, `NumberFormat`, `DateTimeFormat` and `Collator` exist. Node and web have all of them, so tests and the web UI never show it, and one used at module load in `packages/shared` or `packages/client-runtime` crashes the whole app (`undefined cannot be used as a constructor`). Check the list before using an `Intl` constructor in shared code, and test the module with the API removed (`i18n.test.ts` shows how).

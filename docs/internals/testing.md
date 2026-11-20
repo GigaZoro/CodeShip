@@ -42,3 +42,18 @@ Rules for writing tests, and for asking for them in review. AGENTS.md carries th
     expect(onSave).toHaveBeenCalledWith("Title");
   });
   ```
+
+## Traps
+
+- **Shared database.** Tests inside one `it.layer(layerTest)` block (`runtimeLayer.test.ts`, `FoundationPersistence.test.ts`) share a database, and `worker.runOnce()` claims the oldest effect from any thread. A test that leaves outbox rows pending breaks later ones: run the handler directly and settle or delete only your own rows by `effect_id` or `thread_id`.
+- **Replayed command ids.** Under `TestClock` two `recovery.reconcile("startup")` calls reuse one command id (it embeds the timestamp), so the second commits nothing. `TestClock.adjust` between restarts.
+- **Waiting on the reactor.** The orchestrator's run-update reactor is one ordered stream. Start a queued run in a second thread after your event and await its `starting` event.
+- **Seed through the production write path** (`OrchestrationEventStore.appendAgentEvents` with real `OrchestrationV2DomainEvent`s), never raw INSERTs into a table you picked: a query and a test seeded into the retired `orchestration_v2_events` agree on a result that is always 0 in production (`t3code/no-retired-event-table`).
+- **Settle state.** `thread.unsettled` is not one per reopen: the unsettle command sets `settledOverride: "active"`, the next turn emits a second one, and pinning a settled chat reopens it with `thread.pinned` alone. Every `thread.*` event except `thread.pull-request-link-updated` carries the whole thread, so count settled→not-settled transitions with `LAG`. A test history must mix cases that do not cancel each other.
+- **Scheduler registration run.** `Scheduler.register` forks a run that does due work when the registering fiber next yields, so unrelated startup statements can move it past a test's setup. Provide `Layer.succeed(ServerActivation, Effect.never)` to park it and fork subscribers with `Effect.forkScoped({ startImmediately: true })`. Do not make the Scheduler skip that run: eight other test files rely on it.
+- **A silent focused run.** A `vp test run` of one server file that prints nothing for 20 minutes is every test hitting the 120 s timeout, usually from a mock that yields a non-Effect (`yield* undefined`, `Effect.andThen(() => value)`). Run `vp run typecheck` first and pass `--reporter=verbose`.
+- **Proving a test fails without its fix.** `git checkout -- <file>` is blocked by a hook, so copy the fixed file to the scratchpad, change only the fix's condition, run the one test, copy it back and grep that the fix is there, each as its own call. A test that waits on an event hangs without the fix and can leave it reverted when the call is killed; say it hangs instead of running it. macOS has no `timeout`.
+- **Tool text.** Editing an MCP tool's description or schema trips two tests outside the file: `AgentContextBudget.test.ts` compares measured bytes with `agentContextBudget.json` exactly, and `toolTextArguments.test.ts` flags a code span like `` `key=...` `` as an argument the tool lacks. Run both before landing.
+- **Codex's macOS sandbox** refuses `fs.watch` on a folder (EMFILE) and makes `os.uptime()` throw EPERM, so the `CommandRunner` tests that stop a tree hang under it. Run them unsandboxed or report "could not run".
+- **Windows-only cases** from a Mac: delegate to a Claude child on a Windows machine (a Codex child's sandbox denies WMI, so process-tree tests fail). Clone with `git -c core.autocrlf=false`, and read logs with `FileShare.ReadWrite`.
+- **Background checks.** `vp run check:changed > log 2>&1; echo "exit $?"` makes the task notice report the `echo`'s status. Let the check's own exit code be the task's, and read the log's `FAIL` lines.

@@ -782,3 +782,9 @@ Checklist:
 - Build fails with signing error:
   - Retry with secrets removed to confirm unsigned path still works.
   - Re-check certificate/profile names and tenant/client credentials.
+
+## Every push to `main` releases
+
+Every push to `main` on the fork publishes a signed desktop release (`.github/workflows/release-fork.yml`) so installed apps offer it through the update button. Add no path filters, approval steps or other conditions that let a push skip it; a manual `workflow_dispatch` run is only an extra way to set a version.
+
+A release run can stay `queued` for an hour while later commits release first, so do not watch a commit's own run. Fetch tags and test `git merge-base --is-ancestor <commit> <tag>` against `gh release list -R GigaZoro/CodeShip`. `t3_environment_read` shows the `serverVersion` a machine runs; the desktop app installs an update only from its update button unless `installUpdatesAutomatically` is on.

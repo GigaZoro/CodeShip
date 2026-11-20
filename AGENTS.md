@@ -164,6 +164,7 @@ The developer asked on 2026-11-12 for finished work to land by itself ("automati
 
 - Every shipment to `main` must prepend a dated entry to `docs/release-notes.md` in the same change, including fixes, maintenance, and documentation-only work. Write concise user-facing changes; preserve older entries. `vp run check:changed` and fork release preflight enforce this. See [Release notes](docs/operations/release.md#release-notes-for-every-shipment).
 - Never make a PR unless the developer explicitly asks you to do so.
+- This fork's GitHub Issues are off: implement fixes, and file what remains in the Azure DevOps project `CodeShip` ([Working notes](docs/operations/development.md#working-notes)). In a checkout, `gh` defaults to upstream: pass `-R GigaZoro/CodeShip`.
 - If `origin` is git.cafe, follow [GitCafe mirror](docs/operations/development.md#gitcafe-mirror-optional): push to `origin`, open and track PRs with `cafe` and their git.cafe URLs, and keep `gh` for merging.
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
