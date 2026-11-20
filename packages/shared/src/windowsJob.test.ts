@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeReadline from "node:readline";
+import * as NodeStream from "node:stream";
 import * as NodeStreamConsumers from "node:stream/consumers";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -10,15 +11,94 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { vi } from "vite-plus/test";
 
 import * as HostProcess from "./HostProcess.ts";
 import { isWindowsHost } from "./testing/hostPlatform.ts";
 import { processPipe } from "./testing/leftoverChild.ts";
 import { windowsJobSpawn } from "./windowsJobNode.ts";
-import { prepareWindowsJobHost, windowsJobName, windowsJobOf } from "./windowsJob.ts";
+import {
+  prepareWindowsJobHost,
+  WindowsJobHost,
+  windowsJobName,
+  windowsJobOf,
+} from "./windowsJob.ts";
+import { owningWindowsJobs } from "./windowsJobSpawner.ts";
 import { stopWindowsProcessTree } from "./windowsProcessTree.ts";
+
+vi.mock("node:child_process", { spy: true });
+
+it.each([
+  ["EACCES", false, true],
+  ["UNKNOWN", true, true],
+  [1260, false, true],
+  [5, true, true],
+  ["ENOENT", true, false],
+] as const)(
+  "preserves a rejected SDK host spawn: %s, asynchronous %s",
+  async (code, asynchronous, policy) => {
+    const host = "C:/cache/unsigned-host.exe";
+    const original = Object.assign(new Error("operating system rejected spawn"), {
+      code,
+      errno: -4092,
+    });
+    const fake = Object.assign(new NodeChildProcess.ChildProcess(), {
+      stdio: Array.from({ length: 5 }, () => new NodeStream.PassThrough()),
+    });
+    using _spawn = vi.spyOn(NodeChildProcess, "spawn").mockImplementationOnce(() => {
+      if (!asynchronous) throw original;
+      queueMicrotask(() => {
+        fake.emit("error", original);
+        fake.emit("close", null, null);
+      });
+      return fake;
+    });
+    const error = await new Promise<Error & { code?: string | number; path?: string }>(
+      (resolve) => {
+        try {
+          windowsJobSpawn(host)("provider.exe", []).once("error", resolve);
+        } catch (cause) {
+          resolve(cause as Error);
+        }
+      },
+    );
+    for (const stream of fake.stdio) stream?.destroy();
+    assert.equal(error.code, code);
+    assert.equal(error.path, host);
+    assert.include(error.message, host);
+    assert.include(error.message, "operating system rejected spawn");
+    assert.equal(error.message.includes("AppLocker or WDAC"), policy);
+  },
+);
+
+it.effect("preserves a rejected standalone host spawn and its system error", () =>
+  Effect.gen(function* () {
+    const host = "C:/cache/unsigned-host.exe";
+    const cause = Object.assign(new Error("spawn access denied"), { code: "EACCES", errno: -4092 });
+    const spawner = ChildProcessSpawner.make(() =>
+      PlatformError.systemError({
+        _tag: "PermissionDenied",
+        module: "ChildProcess",
+        method: "spawn",
+        cause,
+      }),
+    );
+    const error = yield* owningWindowsJobs(spawner, "win32")
+      .spawn(ChildProcess.make("provider.exe"))
+      .pipe(
+        Effect.provideService(WindowsJobHost, Effect.succeed(host)),
+        Effect.scoped,
+        Effect.flip,
+      );
+    assert.equal(error.reason._tag, "PermissionDenied");
+    assert.include(error.message, host);
+    assert.include(error.message, "AppLocker or WDAC");
+    assert.include(error.message, "spawn access denied");
+  }),
+);
 
 const exited = (child: NodeChildProcess.ChildProcess) =>
   new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {

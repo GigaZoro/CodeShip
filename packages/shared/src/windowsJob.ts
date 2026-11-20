@@ -325,6 +325,26 @@ export class WindowsJobError extends Schema.TaggedError<WindowsJobError>()("Wind
 /** A job's global name also reaches a WMI-created command in another Windows session. */
 export const windowsJobName = (nonce: string) => `Global\\CodeShip.Job.${nonce}`;
 
+/** Shared with the inline spawn worker; this function must not capture module state. */
+export const windowsHostSpawnError = (host: string, cause: unknown) => {
+  const error = cause instanceof Error ? cause : new Error(String(cause));
+  const code = "code" in error ? error.code : undefined;
+  const policy =
+    code === "EACCES" ||
+    code === "UNKNOWN" ||
+    code === 1260 ||
+    code === 5 ||
+    code === "1260" ||
+    code === "5";
+  const message = `Could not start the Windows process host ${host}${code === undefined ? "" : ` (${String(code)})`}: ${error.message}${policy ? " AppLocker or WDAC may block this unsigned executable in the user cache." : ""}`;
+  return Object.assign(new Error(message, { cause }), {
+    path: host,
+    ...("code" in error ? { code: error.code } : {}),
+    ...("errno" in error ? { errno: error.errno } : {}),
+    ...("syscall" in error ? { syscall: error.syscall } : {}),
+  });
+};
+
 const isFileError = (error: unknown, code: string) =>
   error instanceof Error && "code" in error && error.code === code;
 

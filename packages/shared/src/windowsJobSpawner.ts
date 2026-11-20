@@ -9,7 +9,13 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as HostProcess from "./HostProcess.ts";
-import { attachWindowsJob, WindowsJobHost, windowsJobName, type WindowsJob } from "./windowsJob.ts";
+import {
+  attachWindowsJob,
+  WindowsJobHost,
+  windowsHostSpawnError,
+  windowsJobName,
+  type WindowsJob,
+} from "./windowsJob.ts";
 
 type Spawner = ChildProcessSpawner.ChildProcessSpawner["Service"];
 const owned = new WeakSet<Spawner>();
@@ -68,21 +74,34 @@ export const owningWindowsJobs = (spawner: Spawner, platform: NodeJS.Platform): 
           raw = /cmd(?:\.exe)?$/i.test(target);
           args = raw ? ["/d", "/s", "/c", `"${content}"`] : ["-c", content];
         }
-        const child = yield* spawner.spawn(
-          ChildProcess.make(
-            host,
-            [raw ? "owned-raw" : "owned", job.name, String(fd), target, ...args],
-            {
-              ...command.options,
-              shell: false,
-              additionalFds: {
-                ...command.options.additionalFds,
-                [`fd${fd}`]: { type: "input", stream: Stream.fromQueue(input) },
-                [`fd${fd + 1}`]: { type: "output" },
+        const child = yield* spawner
+          .spawn(
+            ChildProcess.make(
+              host,
+              [raw ? "owned-raw" : "owned", job.name, String(fd), target, ...args],
+              {
+                ...command.options,
+                shell: false,
+                additionalFds: {
+                  ...command.options.additionalFds,
+                  [`fd${fd}`]: { type: "input", stream: Stream.fromQueue(input) },
+                  [`fd${fd + 1}`]: { type: "output" },
+                },
               },
-            },
-          ),
-        );
+            ),
+          )
+          .pipe(
+            Effect.mapError((error) => {
+              if (error.reason._tag === "BadArgument") return error;
+              const diagnostic = windowsHostSpawnError(host, error.reason.cause ?? error);
+              return PlatformError.systemError({
+                ...error.reason,
+                pathOrDescriptor: host,
+                description: diagnostic.message,
+                cause: diagnostic,
+              });
+            }),
+          );
         const failPending = (error: PlatformError.PlatformError) =>
           Effect.sync(() => {
             Deferred.doneUnsafe(started, Effect.fail(error));

@@ -1860,7 +1860,7 @@ const windowsFixture = Effect.gen(function* () {
 
 it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
   it.effect(
-    "names executable policy as a possible cause when Windows cannot start its cached host",
+    "does not blame executable policy for an unrelated nonzero Windows launcher result",
     () =>
       Effect.gen(function* () {
         const chat = yield* liveChat("launch-host-policy");
@@ -1880,8 +1880,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         ).pipe(Effect.provide(fixture.layer));
         const message = (yield* taskOf(chat.threadId, result.taskId))?.result ?? "";
         assert.include(message, "Win32_Process.Create returned 2");
-        assert.include(message, "AppLocker or WDAC");
-        assert.include(message, "unsigned");
+        assert.notInclude(message, "AppLocker or WDAC");
       }),
   );
 
