@@ -1,6 +1,6 @@
 import { assert } from "@effect/vitest";
 import type { ProviderReplayTranscript } from "@t3tools/contracts";
-import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
+import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/contracts";
 
 import type { OrchestratorV2ScenarioResult } from "../../OrchestratorScenario.ts";
 import {
@@ -13,7 +13,7 @@ import {
 } from "../shared.ts";
 
 const AUTH_FAILURE_TEXT =
-  "Claude could not authenticate. For subscription login, run `claude auth login` on this environment's machine, then start a new thread. For API-key authentication, check this instance's configured credentials.";
+  "Claude could not authenticate. For subscription login, run `claude auth login` on this environment's machine, then resume this thread, or send your message again if Claude had not started on it. For API-key authentication, check this instance's configured credentials.";
 
 export function assertClaudeResultIsErrorOutput(
   result: OrchestratorV2ScenarioResult,

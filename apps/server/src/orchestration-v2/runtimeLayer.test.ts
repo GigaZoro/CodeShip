@@ -1,5 +1,6 @@
 import * as ProviderSkillsTestkit from "../provider/ProviderSkills.testkit.ts";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   SourceControlProviderKind,
@@ -9734,8 +9735,15 @@ it.layer(layerSharedApplicationDataPlaneTest)("shared application data plane", (
   );
 });
 
+const RESUMABLE_STOPS = [
+  "interrupted",
+  "usage_limit",
+  "transport_error",
+  "authentication_failed",
+] as const;
+
 it.layer(layerTest)("usage-limit recovery", (it) => {
-  it.effect.each(["interrupted", "usage_limit", "transport_error"] as const)(
+  it.effect.each(RESUMABLE_STOPS)(
     "manually resumes an %s run ahead of its queued message only once",
     (reason) =>
       Effect.gen(function* () {
@@ -9841,22 +9849,28 @@ it.layer(layerTest)("usage-limit recovery", (it) => {
                   startedAt: now,
                   completedAt: now,
                   updatedAt: now,
-                  failure:
-                    reason === "usage_limit"
-                      ? {
-                          class: "usage_limit",
-                          message: "Plan limit reached.",
-                          code: "usageLimitExceeded",
-                          retryable: null,
-                          resetAt,
-                        }
-                      : {
-                          class: "transport_error",
-                          message:
-                            "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
-                          code: "api_error",
-                          retryable: null,
-                        },
+                  failure: {
+                    usage_limit: {
+                      class: "usage_limit" as const,
+                      message: "Plan limit reached.",
+                      code: "usageLimitExceeded",
+                      retryable: null,
+                      resetAt,
+                    },
+                    transport_error: {
+                      class: "transport_error" as const,
+                      message:
+                        "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+                      code: "api_error",
+                      retryable: null,
+                    },
+                    authentication_failed: {
+                      class: "provider_error" as const,
+                      message: "Claude could not authenticate.",
+                      code: AUTHENTICATION_FAILED_FAILURE_CODE,
+                      retryable: null,
+                    },
+                  }[reason],
                 },
               },
             ],

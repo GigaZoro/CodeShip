@@ -84,6 +84,7 @@ import {
   formatClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   type ChatAttachment,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ClaudeSettings,
@@ -223,7 +224,6 @@ import {
   makeProviderFailure,
   makeProviderRetryTurnItem,
   promptNotSentFailure,
-  AUTHENTICATION_FAILED_FAILURE_CODE,
 } from "@t3tools/provider-core/server/failure";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";

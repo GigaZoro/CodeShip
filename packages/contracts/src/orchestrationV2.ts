@@ -776,6 +776,8 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 /** The agent failed to start before it received the message, so the run can go again. */
 export const ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE = "prompt_not_sent";
+/** The provider refused the turn because the account's login no longer works; signing in again clears it. */
+export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
 
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,

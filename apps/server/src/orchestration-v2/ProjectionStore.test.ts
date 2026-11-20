@@ -5183,7 +5183,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
-  it.effect("lists threads a rejected login stopped before the agent did any work", () =>
+  it.effect("lists threads a rejected login stopped, and whether the agent did any work", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
       const threadId = yield* addRolledBackRecoveryCandidate("signed-out");
@@ -5203,7 +5203,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       };
       const listed = (maxAgeMs = 60_000) =>
         store
-          .getSignedOutFailoverCandidates({ now: DateTime.add(now, { seconds: 2 }), maxAgeMs })
+          .getSignedOutCandidates({ now: DateTime.add(now, { seconds: 2 }), maxAgeMs })
           .pipe(Effect.map((rows) => rows.find((row) => row.id === threadId)));
       const screenshot = {
         type: "image" as const,
@@ -5295,6 +5295,9 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       const candidate = yield* listed();
       assert.equal(candidate?.latestRunId, failedRunId);
       assert.equal(candidate?.latestRunProviderInstanceId, providerInstanceId);
+      assert.deepEqual(candidate?.latestRunCompletedAt, run.completedAt);
+      assert.equal(candidate?.latestRunUserMessageId, messageId);
+      assert.isFalse(candidate?.workDone);
       assert.deepEqual(candidate?.message, {
         text: "Summarise the inbox",
         attachments: [screenshot],
@@ -5319,7 +5322,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           input: "ls",
         },
       });
-      assert.isUndefined(yield* listed(), "a run that did work is not repeated on a new account");
+      assert.isTrue((yield* listed())?.workDone);
     }),
   );
 

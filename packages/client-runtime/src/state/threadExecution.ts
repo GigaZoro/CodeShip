@@ -3,10 +3,12 @@ import {
   latestExecutedRun,
   latestRootProviderFailure,
   latestUnheldRun,
+  runDidWork,
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   latestProviderTurnForAttempt,
@@ -216,7 +218,12 @@ export function deriveResumableRunId(
   const run = latestExecutedRun(projection.runs);
   if (run?.status === "interrupted") return run.id;
   const failure = latestRootProviderFailure(run, projection.turnItems);
-  return run !== null && isContinuableFailure(failure) && runtime?.lastErrorClass === failure?.class
+  return run !== null &&
+    isContinuableFailure(failure) &&
+    runtime?.lastErrorClass === failure?.class &&
+    // Continuing a run whose agent never started would lose its message.
+    (failure?.code !== AUTHENTICATION_FAILED_FAILURE_CODE ||
+      runDidWork(run.id, projection.turnItems))
     ? run.id
     : null;
 }

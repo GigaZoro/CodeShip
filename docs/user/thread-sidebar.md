@@ -502,8 +502,8 @@ from its context menu, or **Copy thread** from its long-press menu on mobile.
 keeps the provider's explanation. Retry after the limit resets, or switch to
 another provider instance.
 Press **Resume** in an empty composer to continue a limited or interrupted turn
-manually. Do this when the provider reports no reset time, because nothing
-continues the turn on its own.
+manually, or one a rejected login stopped after its agent started working. Do this
+when the provider reports no reset time, because nothing continues the turn on its own.
 Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes.
 
@@ -586,7 +586,12 @@ An account whose login Codex, Claude or Muse Code rejected shows as signed out i
 **Providers** and **Manual steps**, and Auto and scheduled tasks skip it until you sign in
 again. With account switching on, a chat that failed this way in the last day, before its
 agent did any work, starts again with the same message on the next account of that
-provider.
+provider. With **Resume when the limit resets** (alone or with switching), a chat that failed
+this way in the last day and stayed on its account continues there once that account reads
+signed in again: after you sign in, after another chat on it gets an answer, or after a
+restart. It sends the message again when the agent did no work, and asks it to continue
+otherwise. By hand, press **Resume** in an empty composer when the agent had started working,
+or send the message again when it had not.
 
 **Auto** picks the model and the account for you. Set it up in **Settings →
 Providers & models → Models** on web or desktop: pick a primary provider under **Auto mode**, and

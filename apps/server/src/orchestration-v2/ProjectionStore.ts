@@ -1,13 +1,11 @@
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   countOlderSettledFolders,
   pendingGuestMessageCount,
   threadFolderKeyOf,
 } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
-import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
-  MODEL_NOT_SUPPORTED_FAILURE_CODE,
-} from "@t3tools/provider-core/server/failure";
+import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -21,6 +19,7 @@ import type {
 import {
   isUndeliveredFailure,
   latestRootProviderFailure,
+  NON_WORK_TURN_ITEM_TYPES,
   latestUnheldRun,
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
@@ -176,7 +175,7 @@ export const ProjectionStoreV2Error = Schema.Union([
 ]);
 export type ProjectionStoreV2Error = typeof ProjectionStoreV2Error.Type;
 
-/** A thread whose latest run a failed login stopped before the agent did any work. */
+/** A thread whose latest run a rejected login stopped. */
 export type ProjectionSignedOutCandidate = Pick<
   OrchestrationV2ThreadShell,
   | "id"
@@ -190,7 +189,11 @@ export type ProjectionSignedOutCandidate = Pick<
   readonly latestRunId: RunId;
   /** The account whose login failed; the thread may point elsewhere since. */
   readonly latestRunProviderInstanceId: ProviderInstanceId | null;
-  /** What the person asked, which the agent never saw. */
+  readonly latestRunCompletedAt: DateTime.Utc;
+  /** The message that started the run, which tells a resume the server sent apart. */
+  readonly latestRunUserMessageId: MessageId;
+  /** The run did work, so the agent saw the message. */
+  readonly workDone: boolean;
   readonly message: Pick<OrchestrationV2ConversationMessage, "text" | "context" | "attachments">;
 };
 
@@ -626,8 +629,8 @@ export interface ProjectionStoreV2Shape {
     readonly snooze: boolean;
     readonly waiting?: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
-  /** Threads whose latest run failed on a rejected login before doing any work, within `maxAgeMs`. */
-  readonly getSignedOutFailoverCandidates: (options: {
+  /** Threads whose latest run failed on a rejected login within `maxAgeMs`. */
+  readonly getSignedOutCandidates: (options: {
     readonly now: DateTime.Utc;
     readonly maxAgeMs: number;
   }) => Effect.Effect<ReadonlyArray<ProjectionSignedOutCandidate>, ProjectionStoreV2Error>;
@@ -4351,10 +4354,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
-    const getSignedOutFailoverCandidates = Effect.fn(
-      "ProjectionStore.getSignedOutFailoverCandidates",
-    )(
-      function* (options: Parameters<ProjectionStoreV2Shape["getSignedOutFailoverCandidates"]>[0]) {
+    const getSignedOutCandidates = Effect.fn("ProjectionStore.getSignedOutCandidates")(
+      function* (options: Parameters<ProjectionStoreV2Shape["getSignedOutCandidates"]>[0]) {
         const cutoff = DateTime.formatIso(
           DateTime.subtract(options.now, { milliseconds: options.maxAgeMs }),
         );
@@ -4362,9 +4363,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly payload_json: string;
           readonly run_id: string;
           readonly provider_instance_id: string | null;
+          readonly completed_at: string;
+          readonly message_id: string;
           readonly message_payload_json: string;
+          readonly work_done: number;
         }>`
-          SELECT t.payload_json, r.run_id, r.provider_instance_id, message.payload_json AS message_payload_json
+          SELECT t.payload_json, r.run_id, r.provider_instance_id, r.completed_at,
+            message.message_id, message.payload_json AS message_payload_json,
+            EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_turn_items work
+              WHERE work.thread_id = t.thread_id AND work.run_id = r.run_id
+                AND work.type NOT IN ${sql.in(NON_WORK_TURN_ITEM_TYPES)}
+            ) AS work_done
           FROM orchestration_v2_projection_threads t
           INNER JOIN orchestration_v2_projection_runs r ON r.run_id = (
             SELECT latest.run_id FROM orchestration_v2_projection_runs latest
@@ -4397,12 +4407,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 AND error.node_id IS json_extract(r.payload_json, '$.rootNodeId')
                 AND json_extract(error.payload_json, '$.failure.code') = ${AUTHENTICATION_FAILED_FAILURE_CODE}
             )
-            -- Work the run did means the agent saw the message, and a new account would repeat it.
-            AND NOT EXISTS (
-              SELECT 1 FROM orchestration_v2_projection_turn_items work
-              WHERE work.thread_id = t.thread_id AND work.run_id = r.run_id
-                AND work.type NOT IN ('error', 'user_message', 'notification', 'system_notice')
-            )
             AND NOT EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runtime_requests request
               WHERE request.thread_id = t.thread_id AND request.status = 'pending'
@@ -4428,6 +4432,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               row.provider_instance_id === null
                 ? null
                 : ProviderInstanceId.make(row.provider_instance_id),
+            latestRunCompletedAt: DateTime.makeUnsafe(row.completed_at),
+            latestRunUserMessageId: MessageId.make(row.message_id),
+            workDone: row.work_done === 1,
             message: { text, attachments, ...(context === undefined ? {} : { context }) },
           });
         }
@@ -8152,7 +8159,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getProviderControlContext: readOnReader(getProviderControlContext),
       getScheduledTaskRecoveryState: readOnReader(getScheduledTaskRecoveryState),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
-      getSignedOutFailoverCandidates: readOnReader(getSignedOutFailoverCandidates),
+      getSignedOutCandidates: readOnReader(getSignedOutCandidates),
       getUsageLimitedProviderInstances: readOnReader(getUsageLimitedProviderInstances),
       liftUsageLimitHolds,
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),

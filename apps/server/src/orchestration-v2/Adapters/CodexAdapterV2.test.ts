@@ -1,5 +1,4 @@
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
   MODEL_NOT_SUPPORTED_FAILURE_CODE,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -11,6 +10,7 @@ import {
 } from "./ProviderTextDeltaCoalescer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   CommandId,
   CheckpointId,
   CodexSettings,

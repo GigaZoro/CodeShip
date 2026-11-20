@@ -1,3 +1,8 @@
+## 2026-11-20 — Chats stopped by a rejected login continue once the account works
+
+- A chat that stopped because its account's login was rejected continues on the same account once that account reads signed in again (after a sign-in, another chat's answer on it, or a restart), when **Resume when the limit resets** is on, including when the login was only unreadable for a moment. It sends the message again when the agent did no work and asks it to continue otherwise. **Resume** in an empty composer now also continues such a chat by hand once its agent had started working.
+- Moving a chat whose login was rejected before any work to another signed-in account works again; the server had refused that continuation. Claude's sign-in hint now says to resume the chat, or send the message again, instead of starting a new one.
+
 ## 2026-11-20 — Settling and cleanup keep commits the default branch does not hold
 
 - A Git failure could still make the check count no commits, so automatic settlement could settle a thread whose commits had not reached the default branch. The check counted commits only when the branch status showed some ahead, and status also shows none when Git cannot compare the branch; and a worktree whose `.git` Git no longer recognizes, such as one with a damaged `HEAD`, read as holding no repository. Now both report that the worktree could not be checked, and the thread stays active until a later check succeeds.

@@ -5,6 +5,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MspError } from "@muse-code/sdk";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   MUSE_DEFAULT_MODEL,
   EnvironmentId,
   MessageId,
@@ -43,7 +44,6 @@ import type { MuseSdkHost, MuseSdkHostOptions } from "./sdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
-import { AUTHENTICATION_FAILED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { makeMuseAdapterV2, type MuseAdapterV2Options } from "./adapter.ts";
 
 const testLayer = Layer.mergeAll(

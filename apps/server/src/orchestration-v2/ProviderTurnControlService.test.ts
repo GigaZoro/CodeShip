@@ -220,7 +220,7 @@ it.effect(
           liftUsageLimitHolds: () => Effect.die("unused liftUsageLimitHolds"),
           getScheduledTaskRecoveryState: () => Effect.die("unused"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
-          getSignedOutFailoverCandidates: () => Effect.die("unused getSignedOutFailoverCandidates"),
+          getSignedOutCandidates: () => Effect.die("unused getSignedOutCandidates"),
           getUsageLimitedProviderInstances: () =>
             Effect.die("unused getUsageLimitedProviderInstances"),
           getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),

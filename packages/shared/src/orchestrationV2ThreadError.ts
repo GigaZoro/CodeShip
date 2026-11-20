@@ -1,4 +1,5 @@
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   ORCHESTRATION_V2_PROMPT_NOT_SENT_FAILURE_CODE,
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
   type OrchestrationV2LimitRecovery,
@@ -40,6 +41,24 @@ export function latestRootProviderFailure(
   return latest?.failure ?? null;
 }
 
+/** Items a run records whether or not its agent did anything. */
+export const NON_WORK_TURN_ITEM_TYPES = [
+  "error",
+  "user_message",
+  "notification",
+  "system_notice",
+] as const satisfies ReadonlyArray<OrchestrationV2TurnItem["type"]>;
+
+const nonWorkTurnItemTypes: ReadonlySet<string> = new Set(NON_WORK_TURN_ITEM_TYPES);
+
+/** Whether the run's agent did anything, such as replying or calling a tool. */
+export function runDidWork(
+  runId: string,
+  turnItems: ReadonlyArray<Pick<OrchestrationV2TurnItem, "runId" | "type">>,
+): boolean {
+  return turnItems.some((item) => item.runId === runId && !nonWorkTurnItemTypes.has(item.type));
+}
+
 /** The run failed before its agent received the message, so the run goes again instead. */
 export function isUndeliveredFailure(
   failure: Pick<OrchestrationV2ProviderFailure, "code"> | null,
@@ -50,10 +69,15 @@ export function isUndeliveredFailure(
   );
 }
 
-/** Whether a failed run's turn can be continued: it hit a usage limit or lost its connection. */
+/**
+ * Whether a failed run's turn can be continued: it hit a usage limit, lost its connection, or
+ * its account's login was rejected, which signing in again clears.
+ */
 export function isContinuableFailure(failure: OrchestrationV2ProviderFailure | null): boolean {
   return (
-    (failure?.class === "usage_limit" || failure?.class === "transport_error") &&
+    (failure?.class === "usage_limit" ||
+      failure?.class === "transport_error" ||
+      failure?.code === AUTHENTICATION_FAILED_FAILURE_CODE) &&
     !isUndeliveredFailure(failure)
   );
 }

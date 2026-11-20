@@ -40,9 +40,6 @@ export class ContextHandoffBackgroundWorkError extends Schema.TaggedError<Contex
   }
 }
 
-/** The failure code of a turn a provider refused because the account's login no longer works. */
-export const AUTHENTICATION_FAILED_FAILURE_CODE = "authentication_failed";
-
 /** The failure code of a turn a provider refused because this account's login cannot run the model. */
 export const MODEL_NOT_SUPPORTED_FAILURE_CODE = "model_not_supported";
 

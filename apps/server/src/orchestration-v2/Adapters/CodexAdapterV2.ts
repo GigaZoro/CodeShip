@@ -32,6 +32,7 @@ import {
   type CodexRateLimitSnapshot,
 } from "../../provider/codexUsageLimits.ts";
 import {
+  AUTHENTICATION_FAILED_FAILURE_CODE,
   CodexSettings,
   defaultInstanceIdForDriver,
   isOrchestrationV2WorkActive,
@@ -146,7 +147,6 @@ import {
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { backgroundWorkNotification } from "@t3tools/provider-core/server/notification";
 import {
-  AUTHENTICATION_FAILED_FAILURE_CODE,
   MODEL_NOT_SUPPORTED_FAILURE_CODE,
   makeProviderFailure,
   modelHoldScope,
