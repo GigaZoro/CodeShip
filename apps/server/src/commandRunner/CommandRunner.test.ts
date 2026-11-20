@@ -24,7 +24,7 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isProcessAlive } from "@t3tools/shared/processProbe";
-import { isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
+import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -237,7 +237,7 @@ const forgetPid = (taskId: string) =>
   Effect.flatMap(
     SqlClient.SqlClient,
     (sql) => sql`
-      UPDATE command_runs SET pid = NULL, process_started_at = NULL, last_alive_at = NULL
+      UPDATE command_runs SET pid = NULL, process_identity = NULL, last_alive_at = NULL
       WHERE task_id = ${taskId}
     `,
   );
@@ -957,6 +957,38 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
     );
   });
 
+  describe.runIf(isLinuxHost)("Linux process identity", () => {
+    it.effect("still stops a command after a step of the wall clock moved what ps reports", () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("command-clock-step");
+        const started = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+        );
+        yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+        const processRunner = yield* ProcessRunner.ProcessRunner;
+        // ps derives a start from the boot time, which moves with every step of the wall clock.
+        yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "true" }),
+        ).pipe(
+          Effect.provideService(ProcessRunner.ProcessRunner, {
+            run: (input) =>
+              input.command === "ps"
+                ? processRunner
+                    .run(input)
+                    .pipe(
+                      Effect.map((result) => ({ ...result, stdout: "Sat Jan  1 00:00:00 2000\n" })),
+                    )
+                : processRunner.run(input),
+          }),
+        );
+        assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
+      }),
+    );
+  });
+
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
     it.effect(
       "reports a command lost when a later start read finds another process under its pid",
@@ -970,7 +1002,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const sql = yield* SqlClient.SqlClient;
           // A start time that differs from the real one stands for a process that took the pid.
           yield* sql`
-          UPDATE command_runs SET process_started_at = process_started_at - 3600000
+          UPDATE command_runs SET process_identity = CASE WHEN process_identity LIKE 'boot:%'
+            THEN 'boot:other:1' ELSE 'time:0' END
           WHERE task_id = ${started.taskId}
         `;
           const processRunner = yield* ProcessRunner.ProcessRunner;
@@ -1024,7 +1057,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           const sql = yield* SqlClient.SqlClient;
           // Started before the machine last booted, so what its pid names now is someone else's.
           yield* sql`
-          UPDATE command_runs SET started_at = '2000-01-01T00:00:00.000Z', process_started_at = NULL
+          UPDATE command_runs SET started_at = '2000-01-01T00:00:00.000Z', process_identity = NULL
           WHERE task_id = ${started.taskId}
         `;
           yield* withServer(() => nextWake(chat.threadId));

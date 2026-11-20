@@ -1,3 +1,7 @@
+## 2026-11-20 — A clock change no longer makes a running command look lost
+
+- Background commands are now recognized by their start in ticks since boot on Linux and by the creation time Windows stored, instead of a start time derived from the wall clock. A clock change after a command started no longer reports it lost or leaves it running unwatched, and on Windows a stop still reaches what the command started.
+
 ## 2026-11-20 — A thread opened as a reply streams in stays at the end
 
 - Opening a running thread just as a new reply arrives no longer jumps the timeline to the top and stops following new replies, on web, desktop, mobile and the guest page.

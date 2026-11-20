@@ -77,6 +77,7 @@ describe("V2 preview upgrade", () => {
         [95, "CommandRunLossEvidence"],
         [96, "MonitoringThreadAnalyses"],
         [97, "NodePayloadWithoutColumnKeys"],
+        [98, "CommandRunProcessIdentity"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -197,6 +198,7 @@ describe("V2 preview upgrade", () => {
         [95, "CommandRunLossEvidence"],
         [96, "MonitoringThreadAnalyses"],
         [97, "NodePayloadWithoutColumnKeys"],
+        [98, "CommandRunProcessIdentity"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

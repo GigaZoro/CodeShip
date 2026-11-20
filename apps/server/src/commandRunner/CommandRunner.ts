@@ -52,6 +52,13 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
 import { readProcessStartedAt } from "../serverRuntimeState.ts";
+import {
+  compareIdentity,
+  ENDED_IDENTITY,
+  identityTime,
+  linuxIdentity,
+  timeIdentity,
+} from "./processIdentity.ts";
 import { isServerOnlyEnvKey } from "../terminal/userShellEnv.ts";
 
 /** How often running commands are checked; tests shorten it. */
@@ -148,7 +155,8 @@ interface CommandRunRow {
   readonly directory: string;
   /** Null from its record until its process starts. */
   readonly pid: number | null;
-  readonly process_started_at: number | null;
+  /** What tells the wrapper from a later process under its pid (`processIdentity.ts`). */
+  readonly process_identity: string | null;
   readonly unit: string | null;
   readonly status: CommandRunStatus;
   readonly exit_code: number | null;
@@ -473,6 +481,18 @@ const make = Effect.gen(function* () {
     readProcessStartedAt(pid).pipe(
       Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
     );
+  /** Linux reads the start in ticks since boot, which a step of the wall clock cannot move. */
+  const identityOf = Effect.fn("CommandRunner.identityOf")(function* (pid: number) {
+    if (platform === "linux") {
+      const read = yield* Effect.all([
+        fs.readFileString(`/proc/${pid}/stat`),
+        fs.readFileString("/proc/sys/kernel/random/boot_id"),
+      ]).pipe(Effect.option);
+      return Option.isSome(read) ? linuxIdentity(read.value[0], read.value[1]) : undefined;
+    }
+    const startedAt = yield* startedAtOf(pid);
+    return startedAt === undefined ? undefined : timeIdentity(startedAt);
+  });
   const logPathOf = (row: Pick<CommandRunRow, "directory">) => path.join(row.directory, LOG_FILE);
   const statusPathOf = (row: Pick<CommandRunRow, "directory">) =>
     path.join(row.directory, STATUS_FILE);
@@ -521,13 +541,10 @@ const make = Effect.gen(function* () {
     if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
     const probe = probeProcess(row.pid);
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
-    if (row.process_started_at === null) return undefined;
-    const startedAt = yield* startedAtOf(row.pid);
-    // ps reports whole seconds.
-    if (startedAt === undefined) return "unconfirmed";
-    return Math.abs(startedAt - row.process_started_at) <= 1_000
-      ? undefined
-      : { lost_reason: "pid-reused", probe_error };
+    if (row.process_identity === null) return undefined;
+    const verdict = compareIdentity(row.process_identity, yield* identityOf(row.pid));
+    if (verdict === "unknown") return "unconfirmed";
+    return verdict === "same" ? undefined : { lost_reason: "pid-reused", probe_error };
   });
   const isSameProcess = (row: CommandRunRow) =>
     // Unknown identity stays conservative for a stop: the wrapper's group is signalled.
@@ -561,6 +578,7 @@ const make = Effect.gen(function* () {
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     const pid = row.pid;
     if (pid !== null && !(yield* rebootedSince(row))) {
+      const created = identityTime(row.process_identity);
       if (!windows) {
         if (!isProcessAlive(pid) || (yield* isSameProcess(row))) yield* killGroup(pid);
       } else {
@@ -569,10 +587,10 @@ const make = Effect.gen(function* () {
             command: "powershell.exe",
             args: windowsStopTreeArgs({
               pid,
-              since: Date.parse(row.started_at),
-              ...(row.process_started_at === null
-                ? {}
-                : { created: { from: row.process_started_at, to: row.process_started_at } }),
+              // The wrapper's creation time is stored by Windows, so a clock set back after the
+              // record cannot hide what it started from the stop.
+              since: created ?? Date.parse(row.started_at),
+              ...(created === undefined ? {} : { created: { from: created, to: created } }),
             }),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,
@@ -586,7 +604,7 @@ const make = Effect.gen(function* () {
   const writeRow = (row: CommandRunRow) =>
     sql`
       UPDATE command_runs
-      SET pid = ${row.pid}, process_started_at = ${row.process_started_at}, unit = ${row.unit},
+      SET pid = ${row.pid}, process_identity = ${row.process_identity}, unit = ${row.unit},
         status = ${row.status}, exit_code = ${row.exit_code}, ended_at = ${row.ended_at},
         delivered_at = ${row.delivered_at}, last_alive_at = ${row.last_alive_at},
         probe_error = ${row.probe_error}, lost_reason = ${row.lost_reason},
@@ -1114,7 +1132,7 @@ const make = Effect.gen(function* () {
         survivesRestart: true,
       });
       const pid = yield* spawnDetached(scoped.command, scoped.args, cwd, env);
-      return { pid, unit: scoped.unit ?? null };
+      return { pid, unit: scoped.unit ?? null, identity: undefined };
     }
     // Win32_Process.Create parents the wrapper under WMI, outside this server's job and tree. Its
     // startup block is the command's whole environment, which the launcher reads from stdin so no
@@ -1152,7 +1170,7 @@ const make = Effect.gen(function* () {
         // Windows folds names by a case table only it has, so the launcher keeps the last of the
         // spellings Windows reads as one name. It keeps them in a list: a dictionary key named
         // like a member (Values) hides that member in PowerShell.
-        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId`,
+        `$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())).Split([char]0); $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); $environment = [Collections.Generic.List[string]]::new(); for ($i = $entries.Length - 1; $i -ge 0; $i--) { if ($names.Add($entries[$i].Substring(0, [Math]::Max(0, $entries[$i].IndexOf('=', 1))))) { $environment.Insert(0, $entries[$i]) } }; $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'; $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ EnvironmentVariables = $environment.ToArray(); CreateFlags = [uint32]${CREATE_UNICODE_ENVIRONMENT}; ShowWindow = [uint16]${SW_HIDE} }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"' + $powershell + ${escapePowerShellStringLiteral(`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wrapperPath}"`)}; CurrentDirectory = ${escapePowerShellStringLiteral(cwd)}; ProcessStartupInformation = $startup }; if ($r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create returned $($r.ReturnValue)"); exit 1 }; $r.ProcessId; $made = Get-Process -Id $r.ProcessId -ErrorAction SilentlyContinue; if ($made) { $made.StartTime.ToUniversalTime().ToString('o') }`,
       ],
       // Base64, since PowerShell decodes stdin with the console code page.
       stdin: Buffer.from(
@@ -1164,13 +1182,20 @@ const make = Effect.gen(function* () {
       timeout: Duration.seconds(30),
       maxOutputBytes: 16_384,
     });
-    const pid = Number.parseInt(created.stdout.trim(), 10);
+    // The creation time comes from the call that created the process, as Windows stored it.
+    const [pidLine = "", madeLine = ""] = created.stdout.trim().split(/\s+/);
+    const pid = Number.parseInt(pidLine, 10);
+    const madeAt = Date.parse(madeLine);
     if (created.code !== 0 || !Number.isSafeInteger(pid) || pid <= 0) {
       return yield* new CommandLaunchError({
         detail: created.stderr.trim() || "Win32_Process.Create failed.",
       });
     }
-    return { pid, unit: null };
+    return {
+      pid,
+      unit: null,
+      identity: Number.isFinite(madeAt) ? timeIdentity(madeAt) : undefined,
+    };
   });
 
   const run: CommandRunner["Service"]["run"] = Effect.fn("CommandRunner.run")(
@@ -1369,7 +1394,7 @@ const make = Effect.gen(function* () {
                   cwd,
                   directory,
                   pid: null,
-                  process_started_at: null,
+                  process_identity: null,
                   unit: null,
                   status: "running",
                   exit_code: null,
@@ -1389,11 +1414,11 @@ const make = Effect.gen(function* () {
                     sql`
                 INSERT INTO command_runs (
                   task_id, thread_id, run_id, label, command, cwd, directory, pid,
-                  process_started_at, unit, status, exit_code, started_at, deadline_at, ended_at,
+                  process_identity, unit, status, exit_code, started_at, deadline_at, ended_at,
                   delivered_at
                 ) VALUES (
                   ${row.task_id}, ${row.thread_id}, ${row.run_id}, ${row.label}, ${row.command},
-                  ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_started_at}, ${row.unit},
+                  ${row.cwd}, ${row.directory}, ${row.pid}, ${row.process_identity}, ${row.unit},
                   ${row.status}, ${row.exit_code}, ${row.started_at}, ${row.deadline_at},
                   ${row.ended_at}, ${row.delivered_at}
                 )
@@ -1417,11 +1442,11 @@ const make = Effect.gen(function* () {
                     `Could not start the command: ${started.failure.message}`,
                   );
                 }
-                const { pid, unit } = started.success;
+                const { pid, unit, identity } = started.success;
                 const launched: CommandRunRow = {
                   ...row,
                   pid,
-                  process_started_at: (yield* startedAtOf(pid)) ?? null,
+                  process_identity: identity ?? (yield* identityOf(pid)) ?? null,
                   unit,
                   last_alive_at: yield* nowIso,
                 };
@@ -1458,10 +1483,10 @@ const make = Effect.gen(function* () {
       return undefined;
     }
     const pid = named.value;
-    // A wrapper that is gone still names its group, which can outlive it. When it wrote the file
-    // stands in for its start, so a later process under the pid is never taken for it.
+    // A wrapper that is gone still names its group, which can outlive it. A live process under its
+    // pid later is another one, so it is never taken for the wrapper.
     if (!isProcessAlive(pid)) {
-      return { ...row, pid, process_started_at: named.writtenAt?.getTime() ?? null };
+      return { ...row, pid, process_identity: ENDED_IDENTITY };
     }
     const startedAt = yield* startedAtOf(pid);
     const writtenAt = named.writtenAt?.getTime();
@@ -1470,7 +1495,11 @@ const make = Effect.gen(function* () {
     if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
       return { ...row, lost_reason: "pid-reused" as const };
     }
-    const recovered: CommandRunRow = { ...row, pid, process_started_at: startedAt ?? null };
+    const recovered: CommandRunRow = {
+      ...row,
+      pid,
+      process_identity: (yield* identityOf(pid)) ?? null,
+    };
     yield* writeRow(recovered);
     return recovered;
   });
