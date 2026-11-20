@@ -419,7 +419,7 @@ const FIND_GIT_BASH = [
   "        [Console]::Error.WriteLine(\"CodeShip stopped 'git --exec-path' ($($git.Path)), which did not answer within 10 s, and looks for Git Bash in the standard install folders.\")",
   "        $run.Kill(); $run.WaitForExit()",
   "      }",
-  '    } catch { [Console]::Error.WriteLine("CodeShip could not ask git where Git Bash is: $_") } finally { & $t3JobHost stop $probeJob; if ($run) { $run.Dispose() } }',
+  '    } catch { [Console]::Error.WriteLine("CodeShip could not ask git where Git Bash is: $_") } finally { if ($run) { if (-not $run.HasExited) { $run.Kill(); $run.WaitForExit() }; $run.Dispose() } }',
   "  }",
   "  foreach ($folder in $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)}) { if ($folder) { [IO.Path]::Combine($folder, 'Git') } }",
   "  if ($env:LOCALAPPDATA) { [IO.Path]::Combine($env:LOCALAPPDATA, 'Programs', 'Git') }",
@@ -1468,7 +1468,7 @@ const make = Effect.gen(function* () {
     });
     if (created.code !== 0) {
       return yield* new CommandLaunchError({
-        detail: created.stderr.trim() || "Win32_Process.Create failed.",
+        detail: `${created.stderr.trim() || "Win32_Process.Create failed."} Check whether AppLocker or WDAC blocks the unsigned command host in the user cache.`,
       });
     }
     const evidence = yield* readWrapperFile(path.join(directory, PID_FILE));
