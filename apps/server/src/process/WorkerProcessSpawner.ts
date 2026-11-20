@@ -107,9 +107,9 @@ const isAlive = (entry) => {
   }
 };
 const stopTree = ({ job }, done) => {
-  if (!job) return done(new Error("Windows process ownership is missing"));
+  if (!job || !job.child) return done(new Error("Windows process ownership is missing"));
   try {
-    execFile(job.host, ["stop", job.name], { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS }, (error, _stdout, stderr) => {
+    execFile(job.host, ["stop", job.name, String(job.child.pid), String(job.child.created)], { windowsHide: true, timeout: STOP_TREE_TIMEOUT_MS }, (error, _stdout, stderr) => {
       done(error ? new Error("Could not stop Windows job " + job.name + ": " + error.message + ": " + String(stderr).trim()) : undefined);
     });
   } catch (error) { done(error); }
@@ -272,6 +272,7 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
         if (line === "R" || line === "U") { reply(id, entry.refReplies.shift(), undefined); continue; }
         const fields = line.split(" ");
         if (fields[0] === "S" && Number(fields[1]) > 0 && Number(fields[2]) > 0) {
+          job.child = { pid: Number(fields[1]), created: Number(fields[2]) };
           entry.root = { pid: Number(fields[1]), since: Number(fields[2]), spawnedAt: Number(fields[2]), job };
           started();
         } else if (fields[0] === "E") {

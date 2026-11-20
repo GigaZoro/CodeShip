@@ -4,7 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeReadline from "node:readline";
 import type * as NodeStream from "node:stream";
 
-import { attachWindowsJob, windowsJobName } from "./windowsJob.ts";
+import { attachWindowsJob, windowsJobName, type WindowsJob } from "./windowsJob.ts";
 
 /** The returned handle owns the host; closing its control pipe also ends the job on server exit. */
 export const windowsJobSpawn = (host: string): typeof NodeChildProcess.spawn => {
@@ -25,7 +25,7 @@ export const windowsJobSpawn = (host: string): typeof NodeChildProcess.spawn => 
     if (streams.includes("ipc"))
       throw new Error("Windows job SDK launches do not support Node IPC.");
     const fd = streams.length;
-    const job = { host, name: windowsJobName(NodeCrypto.randomUUID()) };
+    const job: WindowsJob = { host, name: windowsJobName(NodeCrypto.randomUUID()) };
     let executable = command;
     let argv = args;
     let raw = options?.windowsVerbatimArguments === true;
@@ -61,7 +61,10 @@ export const windowsJobSpawn = (host: string): typeof NodeChildProcess.spawn => 
     replies.on("error", fail);
     lines.on("line", (line) => {
       if (line === "W") control.write("R");
-      else if (line.startsWith("E ")) {
+      else if (/^S \d+ \d+$/.test(line)) {
+        const [, pid, created] = line.split(" ");
+        job.child = { pid: Number(pid), created: Number(created) };
+      } else if (line.startsWith("E ")) {
         const [, code, detail] = line.split(" ");
         fail(
           Object.assign(new Error(Buffer.from(detail ?? "", "base64").toString()), {

@@ -299,9 +299,15 @@ const liveChat = (name: string) =>
           Effect.forEach(rows, (row) =>
             Effect.gen(function* () {
               if (isWindowsHost) {
+                const identity = yield* Effect.try(() =>
+                  NodeFS.readFileSync(NodePath.join(row.directory, "pid"), "utf8")
+                    .trim()
+                    .split(/\s+/),
+                ).pipe(Effect.orElseSucceed(() => [] as string[]));
+                if (identity.length !== 2) return;
                 yield* processRunner.run({
                   command: yield* yield* WindowsJobHost,
-                  args: ["stop", windowsJobName(NodePath.basename(row.directory))],
+                  args: ["stop", windowsJobName(NodePath.basename(row.directory)), ...identity],
                   timeout: Duration.minutes(2),
                 });
                 return;
@@ -1548,6 +1554,8 @@ const windowsFixture = Effect.gen(function* () {
     renamed,
     stopped,
     processes,
+    jobs,
+    stopRequests: [] as Array<ReadonlyArray<string>>,
     unavailable: false,
     failGate: false,
     failRead: "",
@@ -1620,10 +1628,16 @@ const windowsFixture = Effect.gen(function* () {
         Effect.gen(function* () {
           const script = input.args.join(" ");
           if (input.command === "job-host.exe" && input.args[0] === "stop") {
+            fixture.stopRequests.push(input.args);
             const member = jobs.get(input.args[1]!.split(".").at(-1)!);
             if (member === undefined) return processOutput();
             const entry = processes.get(member.pid)!;
-            const original = entry.identity === member.identity && entry.alive;
+            const original =
+              entry.identity === member.identity &&
+              entry.alive &&
+              (input.args.length === 2 ||
+                (Number(input.args[2]) === member.pid &&
+                  Number(input.args[3]) === member.identity));
             if (original && NodeFS.existsSync(NodePath.join(entry.directory, "exit-status")))
               entry.alive = false;
             if (entry.alive && original) fixture.kills++;
@@ -1690,6 +1704,40 @@ const windowsFixture = Effect.gen(function* () {
 });
 
 it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
+  it.effect("keeps a replacement job alive when restart cleanup stops the recorded child", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("launch-replaced-job");
+      const fixture = yield* windowsFixture;
+      const result = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), { command: "echo original" }),
+      ).pipe(Effect.provide(fixture.layer));
+      const row = (yield* commandRow(result.taskId))!;
+      const directory = NodePath.dirname(result.logPath);
+      const replacement = { pid: 2147483001, identity: fixture.now + 500 };
+      fixture.jobs.set(NodePath.basename(directory), replacement);
+      fixture.processes.set(replacement.pid, {
+        identity: replacement.identity,
+        directory,
+        alive: true,
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE command_runs SET status = 'stopped' WHERE task_id = ${result.taskId}`;
+      const delivered = yield* Deferred.make<void>();
+      yield* withServer(() => Deferred.await(delivered)).pipe(
+        Effect.provideService(
+          Statement.CurrentTransformer,
+          observeDelivery(result.taskId, delivered),
+        ),
+        Effect.provide(fixture.layer),
+      );
+      assert.isTrue(fixture.processes.get(replacement.pid)!.alive);
+      assert.deepEqual(fixture.stopRequests[0]?.slice(2), [
+        String(row.pid),
+        String(row.process_started_at),
+      ]);
+    }),
+  );
+
   it.effect("ends a POSIX launch interrupted before spawn", () =>
     Effect.gen(function* () {
       const chat = yield* liveChat("launch-posix-no-spawn");
