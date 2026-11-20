@@ -365,6 +365,59 @@ const ORPHANING_COMMAND = `echo orphaning; ${STOP_NOTING_CHILD} until [ -e go ];
 // Real processes and the real clock: the runner watches commands on a wall-clock interval.
 it.layer(layerTest, { excludeTestServices: true })("a command run apart from its agent", (it) => {
   it.effect.skipIf(isWindowsHost)(
+    "a paused POSIX wrapper cannot run after restart cancels its gate",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("posix-native-gate");
+        const agentScope = yield* AgentScope;
+        let releasePath = "";
+        const release = Effect.try(() => {
+          if (releasePath === "") return;
+          const descriptor = NodeFS.openSync(
+            releasePath,
+            NodeFS.constants.O_WRONLY | NodeFS.constants.O_NONBLOCK,
+          );
+          try {
+            NodeFS.writeSync(descriptor, "go\n");
+          } finally {
+            NodeFS.closeSync(descriptor);
+            releasePath = "";
+          }
+        });
+        yield* Effect.gen(function* () {
+          const first = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), {
+              command: "echo ran > ran",
+            }),
+          ).pipe(
+            Effect.provideService(AgentScope, {
+              ...agentScope,
+              wrap: (input) =>
+                Effect.gen(function* () {
+                  const directory = NodePath.dirname(input.args[5]!);
+                  releasePath = NodePath.join(directory, "release");
+                  NodeChildProcess.execFileSync("mkfifo", [releasePath]);
+                  const args = [...input.args];
+                  args[1] =
+                    'printf "ready\\n" > "${3%/*}/paused"; IFS= read -r go < "${3%/*}/release"\n' +
+                    args[1];
+                  return yield* agentScope.wrap({ ...input, args });
+                }),
+            }),
+          );
+          const directory = NodePath.dirname(first.logPath);
+          yield* awaitFile(NodePath.join(directory, "paused"));
+          yield* forgetPid(first.taskId);
+          yield* withServer(() => nextWake(chat.threadId));
+          assert.equal((yield* commandRow(first.taskId))?.status, "unstarted");
+          yield* release;
+          yield* awaitFile(NodePath.join(directory, "exit-status"));
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "ran")));
+        }).pipe(Effect.ensuring(release.pipe(Effect.ignore)));
+      }),
+  );
+
+  it.effect.skipIf(isWindowsHost)(
     "keeps running through a restart and wakes its chat once with its end",
     () =>
       Effect.gen(function* () {
@@ -1716,6 +1769,32 @@ const windowsFixture = Effect.gen(function* () {
 });
 
 it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
+  it.effect(
+    "names executable policy as a possible cause when Windows cannot start its cached host",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("launch-host-policy");
+        const fixture = yield* windowsFixture;
+        fixture.state.launch = () =>
+          Effect.succeed({
+            ...processOutput(),
+            code: ChildProcessSpawner.ExitCode(1),
+            stderr: "Win32_Process.Create returned 2",
+          });
+        const result = yield* withServer((runner) =>
+          runner
+            .run(callerOf(chat.threadId), {
+              command: "echo policy",
+            })
+            .pipe(Effect.tap(() => nextWake(chat.threadId))),
+        ).pipe(Effect.provide(fixture.layer));
+        const message = (yield* taskOf(chat.threadId, result.taskId))?.result ?? "";
+        assert.include(message, "Win32_Process.Create returned 2");
+        assert.include(message, "AppLocker or WDAC");
+        assert.include(message, "unsigned");
+      }),
+  );
+
   it.effect.each(["cancelled", "already stopped"] as const)(
     "closes a pending gate during restart cleanup for a task %s before late Create",
     (state) =>
@@ -3609,9 +3688,7 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             NodeFS.readFileSync(NodePath.join(chat.workspace, "child.pid"), "utf8"),
             10,
           );
-          yield* Effect.addFinalizer(() =>
-            Effect.try(() => process.kill(childPid)).pipe(Effect.ignore),
-          );
+          assert.isTrue(isProcessAlive(childPid));
           // Only the wrapper, as a stop cut by a restart leaves it.
           // oxlint-disable-next-line t3code/no-raw-taskkill -- this stops the wrapper alone on purpose
           NodeChildProcess.execFileSync("taskkill", [
@@ -3619,17 +3696,22 @@ describe.runIf(isWindowsHost)("Windows only", () => {
             String((yield* commandRow(started.taskId))!.pid),
             "/F",
           ]);
-          assert.isTrue(isProcessAlive(childPid));
+          const delivered = yield* Deferred.make<void>();
           if (cancelled) {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
-            // Run elsewhere: a Windows folder cannot be removed while a command still has it open.
-            yield* withServer((runner) =>
-              runner.run(callerOf(chat.threadId), { command: "exit 0", cwd: NodeOS.tmpdir() }),
-            );
-          } else {
-            yield* withServer(() => nextWake(chat.threadId));
           }
+          yield* withServer(() =>
+            Effect.gen(function* () {
+              if (!cancelled) yield* nextWake(chat.threadId);
+              yield* Deferred.await(delivered);
+            }),
+          ).pipe(
+            Effect.provideService(
+              Statement.CurrentTransformer,
+              observeDelivery(started.taskId, delivered),
+            ),
+          );
           assert.equal((yield* commandRow(started.taskId))?.status, cancelled ? "stopped" : "lost");
           assert.isFalse(stillRunning(childPid));
         }),

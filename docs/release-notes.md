@@ -1,8 +1,8 @@
 ## 2026-11-21 — Windows commands recover from launcher timeouts
 
-- Windows command launches allow two minutes for PowerShell and WMI. Slow startup and identity checks leave cancellation, deadlines and other commands' completion delivery responsive. Cancellation closes the start gate before an unstarted command can execute.
-- A launcher failure returns a task ID and reports the outcome through normal task completion. Unreadable evidence stays under reconciliation across server restarts. Deadlines still report failure while uncertain cleanup remains watched.
-- Windows keeps each new command and provider process family in an operating-system Job Object, including descendants whose parents exit. Commands survive server restarts; stopping their job ends the whole family without guessing ownership from reused process IDs. Commands started by older versions retain safe root-only cleanup when their exact identity is available.
+- Windows command launches allow two minutes for PowerShell and WMI. Slow startup and identity checks leave cancellation, deadlines and other commands' completion delivery responsive. POSIX and Windows cancellation close the start gate before an unstarted command can execute, including during restart recovery.
+- A launcher failure returns a task ID and reports the outcome through normal task completion. Unreadable evidence stays under reconciliation across server restarts. Deadlines and cancellation report while cleanup remains pending, even when stopping the command fails.
+- Windows keeps each new command and provider process family in an operating-system Job Object, including descendants whose parents exit. Commands survive server restarts; stopping verifies the recorded child's identity and job membership so a reused job name cannot target another process family. Provider streams finish when the child closes them. Commands started by older versions retain safe root-only cleanup when their exact identity is available.
 
 ## 2026-11-21 — Organize tasks into folders from Scheduled
 
