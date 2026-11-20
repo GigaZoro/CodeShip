@@ -2161,7 +2161,7 @@ const make = Effect.gen(function* () {
 
   /**
    * Records a running command as cancelled; its runner then stops the command's processes.
-   * The caller asked for the stop, so the command's end does not wake it.
+   * Its first result reports pending cleanup because completion results are immutable.
    */
   const cancelCommandTask = Effect.fn("OrchestratorMcpService.cancelCommandTask")(function* (
     scope: McpThreadInvocationScope,
@@ -2185,7 +2185,7 @@ const make = Effect.gen(function* () {
         parentThreadId: scope.thread.threadId,
         taskId: current.taskId,
         status: "cancelled",
-        result: input.reason === undefined ? "Cancelled." : `Cancelled: ${input.reason}`,
+        result: `${input.reason === undefined ? "Cancelled." : `Cancelled: ${input.reason}`} Command cleanup is still pending. CodeShip keeps trying to stop the command.`,
       })
       .pipe(
         Effect.as(undefined),
@@ -2207,25 +2207,6 @@ const make = Effect.gen(function* () {
         ),
       );
     if (recorded !== undefined) return { taskId: current.taskId, status: recorded };
-    yield* threadManagement
-      .dispatch({
-        type: "delegated_task.completion-delivery.dispose",
-        commandId: stableCommandId({
-          scope,
-          requestKey: key,
-          operation: "cancel-task-completion-delivery",
-        }),
-        parentThreadId: scope.thread.threadId,
-        taskId: current.taskId,
-      })
-      .pipe(
-        Effect.mapError((error) =>
-          failure(
-            "orchestration_error",
-            `Unable to dispose command task ${current.taskId} completion delivery: ${errorMessage(error)}`,
-          ),
-        ),
-      );
     return { taskId: current.taskId, status: "cancel_requested" };
   });
 
