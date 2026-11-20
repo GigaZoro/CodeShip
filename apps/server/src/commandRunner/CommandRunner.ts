@@ -499,6 +499,7 @@ const make = Effect.gen(function* () {
   const watched = new Map<string, CommandRunRow>();
   const launching = new Set<string>();
   const checking = new Set<string>();
+  const identityObservations = new Map<string, number>();
   const stopping = new Set<string>();
   const pendingStops = new Set<string>();
   const verified = new Map<string, { readonly key: string; readonly at: number }>();
@@ -558,7 +559,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (
+  const readIdentity = Effect.fn("CommandRunner.readIdentity")(function* (
     row: CommandRunRow,
   ): Effect.fn.Return<number | "unknown" | Loss, import("effect/PlatformError").PlatformError> {
     const probe_error = row.probe_error;
@@ -581,35 +582,106 @@ const make = Effect.gen(function* () {
         return { lost_reason: "pid-reused", probe_error };
       return windows ? "unknown" : startedAt;
     }
-    return Math.abs(startedAt - row.process_started_at) <= (windows ? 0 : 1_000)
+    return startedAt === row.process_started_at
       ? startedAt
       : { lost_reason: "pid-reused", probe_error };
   });
 
-  /** SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period. */
-  const killGroup = Effect.fn("CommandRunner.killGroup")(function* (pid: number) {
+  const forbidsSignals = (row: Pick<CommandRunRow, "lost_reason">) =>
+    row.lost_reason === "pid-reused" || row.lost_reason === "rebooted";
+
+  const retainOwnershipLoss = Effect.fn("CommandRunner.retainOwnershipLoss")(
+    (row: CommandRunRow, loss: Loss) =>
+      lock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = watched.get(row.task_id);
+          if (
+            current === undefined ||
+            identityKey(current) !== identityKey(row) ||
+            forbidsSignals(current)
+          )
+            return;
+          const next = { ...current, ...loss };
+          // A failed database write must not let another in-flight check signal the replacement.
+          watched.set(row.task_id, next);
+          yield* writeRow(next);
+        }),
+      ),
+  );
+
+  const isSameProcess = Effect.fn("CommandRunner.isSameProcess")(function* (row: CommandRunRow) {
+    identityObservations.set(row.task_id, (identityObservations.get(row.task_id) ?? 0) + 1);
+    return yield* readIdentity(row).pipe(
+      Effect.tap((identity) =>
+        typeof identity !== "number" && identity !== "unknown" && forbidsSignals(identity)
+          ? retainOwnershipLoss(row, identity)
+          : Effect.void,
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          const remaining = identityObservations.get(row.task_id)! - 1;
+          if (remaining === 0) identityObservations.delete(row.task_id);
+          else identityObservations.set(row.task_id, remaining);
+        }),
+      ),
+    );
+  });
+
+  /** SIGTERM to the whole group; escalation needs a fresh ownership check and confirmed absence. */
+  const killGroup = Effect.fn("CommandRunner.killGroup")(function* (row: CommandRunRow) {
     const signal = (name: NodeJS.Signals | 0) =>
-      Effect.sync(() => {
-        try {
-          signalProcessGroup(pid, name);
-          return true;
-        } catch {
-          return false;
-        }
+      Effect.try({
+        try: () => {
+          try {
+            signalProcessGroup(row.pid!, name);
+            return true;
+          } catch (cause) {
+            if (
+              typeof cause === "object" &&
+              cause !== null &&
+              "code" in cause &&
+              cause.code === "ESRCH"
+            )
+              return false;
+            throw cause;
+          }
+        },
+        catch: (cause) =>
+          new CommandStopError({
+            detail: `Could not signal command group ${row.pid} with ${name}: ${cause instanceof Error ? cause.message : String(cause)}`,
+            cause,
+          }),
       });
-    if (!(yield* signal("SIGTERM"))) return;
+    const current = watched.get(row.task_id);
+    if (current === undefined || identityKey(current) !== identityKey(row)) return false;
+    if (forbidsSignals(current)) return true;
+    if (!(yield* signal("SIGTERM"))) return true;
     const gone = yield* signal(0).pipe(
       Effect.repeat({ while: (alive) => alive, schedule: Schedule.spaced(Duration.millis(200)) }),
       Effect.timeoutOption(KILL_GRACE),
     );
-    if (Option.isNone(gone)) yield* signal("SIGKILL");
+    if (Option.isSome(gone)) return true;
+    const latest = watched.get(row.task_id);
+    if (latest === undefined || identityKey(latest) !== identityKey(row)) return false;
+    if (forbidsSignals(latest)) return true;
+    const identity = yield* isSameProcess(latest);
+    if (identity === "unknown") return false;
+    if (typeof identity !== "number" && forbidsSignals(identity)) return true;
+    if (
+      typeof identity !== "number" &&
+      (row.unit !== null || identityObservations.has(row.task_id))
+    )
+      return false;
+    if (forbidsSignals(watched.get(row.task_id) ?? latest)) return true;
+    if (!(yield* signal("SIGKILL"))) return true;
+    return !(yield* signal(0));
   });
 
   /** Jobs retain Windows membership; legacy records prove only their root process identity. */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
     const hasScope = !windows && row.unit !== null;
     if (hasScope && (yield* agentScope.stopCommand(row.unit!))) return true;
-    if (row.lost_reason === "pid-reused" || row.lost_reason === "rebooted") return !hasScope;
+    if (forbidsSignals(watched.get(row.task_id) ?? row)) return !hasScope;
     if (windows && row.unit?.startsWith(jobUnitPrefix)) {
       if (row.pid === null || row.process_started_at === null) return false;
       const host = yield* yield* WindowsJobHost;
@@ -643,17 +715,15 @@ const make = Effect.gen(function* () {
           typeof same !== "number" &&
           (same.lost_reason === "pid-reused" || same.lost_reason === "rebooted")
         ) {
-          yield* lock.withPermits(1)(
-            Effect.gen(function* () {
-              if (watched.get(row.task_id) === row) yield* settle({ ...row, ...same });
-            }),
-          );
           return !hasScope;
         }
+        // An in-flight observation may still prove that this absent leader was a replacement.
+        if (typeof same !== "number" && identityObservations.has(row.task_id)) return false;
         // Without a unit, a group can outlive its leader. Reuse followed by another leader's exit
         // between probes remains unobservable; a recorded replacement must never reach this signal.
-        if (typeof same === "number" || (!hasScope && same.lost_reason === "gone"))
-          yield* killGroup(pid);
+        if (typeof same === "number" || (!hasScope && same.lost_reason === "gone")) {
+          if (!(yield* killGroup(row))) return false;
+        }
       } else {
         const same = yield* isSameProcess(row);
         if (same === "unknown") return false;
@@ -1076,7 +1146,9 @@ const make = Effect.gen(function* () {
       snapshot = prepared;
     }
     let row = snapshot;
-    let loss: Loss | undefined;
+    let loss: Loss | undefined = forbidsSignals(row)
+      ? { lost_reason: row.lost_reason!, probe_error: row.probe_error }
+      : undefined;
     if (
       (row.pid === null || (windows && row.process_started_at === null)) &&
       row.lost_reason !== "pid-reused" &&
