@@ -217,16 +217,30 @@ test("an address out of requests asks again only after GitHub's reset, and not o
   assert.deepEqual(result, { status: "unfinished", url: WORKFLOW_URL, reason: OUT_OF_REQUESTS });
 });
 
-test("a failed run found with the address's last request reads its failures only after GitHub's reset", async () => {
+test("a failed run's failures are read only after GitHub's reset, and again when GitHub refuses that request", async () => {
   const failed = {
     workflow_runs: [{ id: 7, html_url: RUN_URL, status: "completed", conclusion: "failure" }],
   };
   const jobs = [{ id: 11, name: "Windows", conclusion: "failure", steps: [] }];
-  for (const [resetInMs, requests, failures] of [
-    [30 * MINUTE, [0, 30, 30], []],
-    [500 * MINUTE, [0], [`${OUT_OF_REQUESTS} (the run's jobs)`]],
+  const step = { name: "Check the pushed commits", conclusion: "failure" };
+  let refused = false;
+  // Another lander on this address used the last request between the run and its jobs.
+  const refusedOnce = () => {
+    if (refused) return Response.json({ jobs: [{ ...jobs[0], steps: [step] }] });
+    refused = true;
+    return new Response("{}", { status: 403, headers: { "retry-after": "60" } });
+  };
+  for (const [runs, jobAnswers, requests, failures] of [
+    [rateLimited(30 * MINUTE, failed), jobs, [0, 30, 30], []],
+    [rateLimited(500 * MINUTE, failed), jobs, [0], [`${OUT_OF_REQUESTS} (the run's jobs)`]],
+    [
+      { status: "completed", conclusion: "failure" },
+      refusedOnce,
+      [0, 0, 1, 1],
+      ['Windows: step "Check the pushed commits" failed'],
+    ],
   ]) {
-    const fake = github({ runs: [rateLimited(resetInMs, failed)], jobs });
+    const fake = github({ runs: [runs], jobs: jobAnswers });
     const result = await waitForWindowsCheck(fake);
     assert.deepEqual(
       [result.status, result.failures, fake.requests],
@@ -247,10 +261,11 @@ test("the command checks the run of the full commit on origin's GitHub push URL 
   git("add", ".");
   git("commit", "-q", "-m", "landed");
   const commit = git("rev-parse", "HEAD");
-  // Fetches come from a mirror, while a push goes to the mirror and to GitHub.
+  // Fetches come from a mirror; a push goes to the mirror and to GitHub, whose name it spells in two cases.
   git("remote", "add", "origin", "https://git.cafe/example/app.git");
   git("remote", "set-url", "--add", "--push", "origin", "https://git.cafe/example/app.git");
   git("remote", "set-url", "--add", "--push", "origin", "git@github.com:example/app.git");
+  git("remote", "set-url", "--add", "--push", "origin", "https://github.com/Example/App");
   const check = async (target, answers) => {
     const { fetch, sleep, clock, now } = github({ ...answers, commit });
     const lines = [];
@@ -288,6 +303,13 @@ test("the command checks the run of the full commit on origin's GitHub push URL 
     check(commit, structuredClone(failedRun)),
     /several GitHub repositories \(example\/app, example\/fork\)/,
   );
+
+  // A commit whose tree git cannot read is an error, not a commit without the workflow.
+  const tree = git("rev-parse", `${commit}^{tree}`);
+  const object = path.join(root, ".git/objects", tree.slice(0, 2), tree.slice(2));
+  fs.chmodSync(object, 0o666);
+  fs.rmSync(object);
+  await assert.rejects(check(commit, { runs: [new Error("asked GitHub")] }), /cannot read/);
 });
 
 test("only GitHub remotes name a repository, with or without credentials, a port or .git", () => {
@@ -296,6 +318,8 @@ test("only GitHub remotes name a repository, with or without credentials, a port
     ["https://x-access-token:secret@github.com/GigaZoro/CodeShip", "GigaZoro/CodeShip"],
     ["https://GitHub.com/GigaZoro/CodeShip/", "GigaZoro/CodeShip"],
     ["git@github.com:GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
+    ["git@github.com:/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
+    ["github.com:GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
     ["ssh://git@github.com/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
     ["ssh://git@github.com:22/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
     ["ssh://git@ssh.github.com:443/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],

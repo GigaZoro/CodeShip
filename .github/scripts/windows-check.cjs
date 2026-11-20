@@ -19,7 +19,7 @@ const NOT_PASSED_EXIT = 3;
 
 /** The GitHub owner and repository a remote URL points at, or null for any other host. */
 function githubRepository(url) {
-  const scp = /^[^@/:]+@(?:ssh\.)?github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url);
+  const scp = /^(?:[^@/:]+@)?(?:ssh\.)?github\.com:\/?([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url);
   if (scp) return `${scp[1]}/${scp[2]}`;
   let parsed;
   try {
@@ -50,25 +50,30 @@ function backoffMs(headers, now) {
 
 /**
  * GitHub's API as one address sees it: each request first waits until GitHub allows it, on the monotonic `clock`, and
- * resolves to null instead when GitHub allows none before `deadline`.
+ * one GitHub refuses for its rate limit is sent again then. Resolves to null when GitHub allows none before `deadline`.
  */
 function githubApi({ fetch, sleep, clock, now, deadline }) {
   let notBefore = -Infinity;
   return async (path) => {
-    if (notBefore > deadline) return null;
-    const wait = notBefore - clock();
-    if (wait > 0) await sleep(wait);
-    const response = await fetch(`${API}${path}`, {
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "t3-landing-turn",
-        "x-github-api-version": "2022-11-28",
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    notBefore = clock() + backoffMs(response.headers, now);
-    if (!response.ok) await response.body?.cancel();
-    return { status: response.status, body: response.ok ? await response.json() : null };
+    for (;;) {
+      if (notBefore > deadline) return null;
+      const wait = notBefore - clock();
+      if (wait > 0) await sleep(wait);
+      const response = await fetch(`${API}${path}`, {
+        headers: {
+          accept: "application/vnd.github+json",
+          "user-agent": "t3-landing-turn",
+          "x-github-api-version": "2022-11-28",
+        },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      const backoff = backoffMs(response.headers, now);
+      notBefore = clock() + backoff;
+      if (response.ok) return { status: response.status, body: await response.json() };
+      await response.body?.cancel();
+      const refused = (response.status === 403 || response.status === 429) && backoff > 0;
+      if (!refused) return { status: response.status, body: null };
+    }
   };
 }
 
@@ -190,22 +195,29 @@ async function waitForWindowsCheck({
 
 const git = (cwd, ...args) =>
   spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true });
+const failureOf = (result) => result.error?.message ?? result.stderr.trim();
 
 /**
  * Waits for the Windows check of `commit` pushed to `remote`. A commit without the workflow, or a push off GitHub, has
  * none.
  */
 async function windowsCheck({ cwd, remote, commit, ...options }) {
-  if (git(cwd, "cat-file", "-e", `${commit}:${WORKFLOW_PATH}`).status !== 0) {
+  const workflow = git(cwd, "ls-tree", "--name-only", commit, "--", WORKFLOW_PATH);
+  if (workflow.status !== 0) {
+    throw new Error(`windows check: cannot read ${commit}: ${failureOf(workflow)}`);
+  }
+  if (workflow.stdout.trim() === "") {
     return { status: "none", url: null, reason: `The commit has no ${WORKFLOW_PATH}.` };
   }
   const pushUrls = git(cwd, "remote", "get-url", "--push", "--all", remote);
   if (pushUrls.status !== 0) {
-    const detail = pushUrls.error?.message ?? pushUrls.stderr.trim();
-    throw new Error(`windows check: no push URL for ${remote}: ${detail}`);
+    throw new Error(`windows check: no push URL for ${remote}: ${failureOf(pushUrls)}`);
   }
+  // GitHub's owner and repository names ignore case.
   const repositories = [
-    ...new Set(pushUrls.stdout.split("\n").map((url) => githubRepository(url.trim()))),
+    ...new Set(
+      pushUrls.stdout.split("\n").map((url) => githubRepository(url.trim())?.toLowerCase()),
+    ),
   ].filter(Boolean);
   if (repositories.length === 0) {
     return { status: "none", url: null, reason: `${remote} does not push to GitHub.` };
