@@ -44,6 +44,16 @@ import * as Statement from "effect/sql/Statement";
 
 import * as ServerConfig from "../config.ts";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -1918,6 +1928,72 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
               ).pipe(Effect.as(args[0]));
             return observeDelivery(first.taskId, delivered)(...args);
           }),
+          Effect.provide(fixture.layer),
+        );
+      }),
+  );
+
+  it.effect(
+    "reports pending command cleanup through task_cancel before a failed stop can finish",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("mcp-cancel-command-cleanup");
+        const fixture = yield* windowsFixture;
+        fixture.state.stopError = "injected stop access denied";
+        const reported = yield* Deferred.make<void>();
+        const delivered = yield* Deferred.make<void>();
+        let taskId: string | undefined;
+        const mcpLayer = OrchestratorMcpService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+              Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+              Layer.mock(PeerLinks.PeerLinks)({}),
+              Layer.mock(MemoryAdmission.MemoryAdmission)({}),
+              Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+              ProviderAdapterRegistry.layerFromAdapters([adapter]),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+              Layer.mock(ServerSettings.ServerSettingsService)({}),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            ),
+          ),
+        );
+        yield* withServer((runner) =>
+          Effect.gen(function* () {
+            const scope: McpThreadInvocationScope = {
+              ...callerOf(chat.threadId),
+              capabilities: new Set(["orchestration"]),
+            };
+            const started = yield* runner.run(scope, { command: "echo held cleanup" });
+            taskId = started.taskId;
+            const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+            const cancelled = yield* mcp.cancelTask(scope, {
+              taskId: NodeId.make(taskId),
+              reason: "requested stop",
+            });
+            assert.equal(cancelled.status, "cancel_requested");
+            yield* Queue.take(fixture.stopped);
+            yield* Deferred.await(reported);
+            const task = yield* taskOf(chat.threadId, taskId);
+            assert.include(task?.result ?? "", "cleanup is still pending");
+            assert.include(task?.result ?? "", "requested stop");
+            assert.notEqual(task?.completionDelivery?.state, "disposed");
+            yield* nextWake(chat.threadId);
+            assert.equal(fixture.state.stopError, "injected stop access denied");
+            assert.isNull((yield* commandRow(taskId))?.delivered_at);
+            fixture.state.stopError = "";
+            yield* Deferred.await(delivered);
+          }),
+        ).pipe(
+          Effect.provide(mcpLayer),
+          Effect.provideService(Statement.CurrentTransformer, (...args) =>
+            taskId === undefined
+              ? Effect.succeed(args[0])
+              : args[0].compile()[1][6] == null
+                ? observeDelivery(taskId, reported, "reported_at")(...args)
+                : observeDelivery(taskId, delivered)(...args),
+          ),
           Effect.provide(fixture.layer),
         );
       }),
