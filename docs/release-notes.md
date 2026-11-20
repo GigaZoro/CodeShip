@@ -1,3 +1,7 @@
+## 2026-11-20 — A landing on main rides out a dropped connection
+
+- Maintenance only, with no change in the app. A lander waiting for `main`'s landing turn polls again when a poll of the remote fails, and gives up with git's error only when the remote stays unreachable, or keeps refusing the push that takes the turn, for 10 minutes. Before, one dropped connection ended a wait of hours. Each git command that talks to the remote stops after 5 minutes, so a stalled connection counts as a dropped one. A poll that cannot fetch the lease's holder no longer treats a live lease as abandoned and takes it over. A lander finds its own lease when the push that took it lost its answer, unless that lease has expired. Releasing the turn is retried while the remote is unreachable, instead of leaving the turn held for up to 3 hours.
+
 ## 2026-11-19 — Claude's held resets say what they clear, or why they cannot
 
 - In `orchestrator_capabilities` with `usage`, every Claude banked reset, usable now or held back, names what it clears in `kind`. When Claude gave only a total because no reset can be used now, the reset has `kind: null` and `kindUnknownReason: "total_only"`.

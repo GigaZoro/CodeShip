@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { TURN_ENV, acquire, land, tryAcquire, verifyPush } = require("./landing-turn.cjs");
+const { TURN_ENV, acquire, land, release, tryAcquire, verifyPush } = require("./landing-turn.cjs");
 
 // `land` runs git itself, so its rebase needs an identity on a runner without one. A hook exports GIT_DIR
 // and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
@@ -179,6 +179,82 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
       () =>
         acquire({ cwd: holder, remote: origin, runId: "holder", maxWaitMs: 0, sleep: () => {} }),
       /still holds/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a lander rides out a dropped connection while it waits and releases, and never takes over a lease it could not read", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const reader = clone("reader");
+    const gone = path.join(root, "gone.git");
+    const unplug = () => git(reader, "remote", "set-url", "origin", gone);
+    const plugIn = () => git(reader, "remote", "set-url", "origin", origin);
+    const stale = tryAcquire({
+      cwd: holder,
+      remote: origin,
+      runId: "holder",
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+    });
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    assert.notEqual(held, stale);
+    // A run whose lease push reached the remote but lost its answer finds that lease its own.
+    assert.equal(tryAcquire({ cwd: holder, remote: origin, runId: "holder" }), held);
+
+    // The lease is listed but its commit cannot be fetched, as git cannot write FETCH_HEAD: the reader must not
+    // read that as no holder. Listing and pushing still work, so a takeover would succeed.
+    const fetchHead = path.join(reader, ".git", "FETCH_HEAD");
+    unplug();
+    const steps = [
+      () => {
+        plugIn();
+        fs.mkdirSync(fetchHead);
+      },
+      () => {
+        assert.equal(git(origin, "rev-parse", "refs/heads/landing-lease/main"), held);
+        fs.rmdirSync(fetchHead);
+      },
+      () => release({ cwd: holder, remote: origin }, held),
+    ];
+    const turn = acquire({
+      cwd: reader,
+      remote: "origin",
+      runId: "reader",
+      sleep: () => steps.shift()(),
+    });
+    assert.equal(steps.length, 0);
+
+    unplug();
+    release({ cwd: reader, remote: "origin", sleep: plugIn }, turn);
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+
+    git(reader, "remote", "set-url", "--push", "origin", gone);
+    assert.throws(
+      () =>
+        acquire({
+          cwd: reader,
+          remote: "origin",
+          runId: "reader",
+          maxOutageMs: 0,
+          sleep: () => assert.fail("kept waiting on a remote that refused every push"),
+        }),
+      /push failed/,
+    );
+
+    unplug();
+    assert.throws(
+      () =>
+        acquire({
+          cwd: reader,
+          remote: "origin",
+          runId: "reader",
+          maxOutageMs: 0,
+          sleep: () => assert.fail("kept waiting on a remote that stayed down"),
+        }),
+      /ls-remote failed/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
