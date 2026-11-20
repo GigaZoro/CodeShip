@@ -243,14 +243,15 @@ const observeDelivery =
   (
     taskId: string,
     delivered: Deferred.Deferred<void>,
-    field: "pid" | "delivered_at" = "delivered_at",
+    field: "pid" | "reported_at" | "delivered_at" = "delivered_at",
   ): Statement.Transformer =>
   (statement, sql) => {
     const [query, params] = statement.compile();
     if (
       !query.includes("UPDATE command_runs") ||
+      !query.includes(`${field} =`) ||
       params.at(-1) !== taskId ||
-      params[field === "pid" ? 0 : 6] === null
+      params[field === "pid" ? 0 : field === "reported_at" ? 12 : 6] === null
     )
       return Effect.succeed(statement);
     return statement.pipe(
@@ -1545,6 +1546,8 @@ const windowsFixture = Effect.gen(function* () {
   }>();
   const processes = new Map<number, { identity: number; alive: boolean; directory: string }>();
   const jobs = new Map<string, { pid: number; identity: number }>();
+  const groups = new Set<number>();
+  const groupSignals: Array<string | number | undefined> = [];
   let nextPid = 2_147_483_000;
   const clock = yield* Clock.Clock;
   const fixture = {
@@ -1555,6 +1558,8 @@ const windowsFixture = Effect.gen(function* () {
     stopped,
     processes,
     jobs,
+    groups,
+    groupSignals,
     stopRequests: [] as Array<ReadonlyArray<string>>,
     unavailable: false,
     failGate: false,
@@ -1569,6 +1574,7 @@ const windowsFixture = Effect.gen(function* () {
         const pid = nextPid++;
         const identity = DateTime.toEpochMillis(yield* DateTime.now);
         processes.set(pid, { identity, alive: true, directory });
+        groups.add(pid);
         jobs.set(NodePath.basename(directory), { pid, identity });
         NodeFS.writeFileSync(NodePath.join(directory, "pid"), `${pid} ${identity}`);
         NodeFS.renameSync(
@@ -1580,6 +1586,12 @@ const windowsFixture = Effect.gen(function* () {
   };
   const originalKill = process.kill.bind(process);
   const spy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (pid < 0 && processes.has(-pid)) {
+      groupSignals.push(signal);
+      if (!groups.has(-pid)) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      if (signal !== 0) groups.delete(-pid);
+      return true;
+    }
     const known = processes.get(pid);
     if (known === undefined) return originalKill(pid, signal);
     assert.equal(signal, 0);
@@ -1704,6 +1716,109 @@ const windowsFixture = Effect.gen(function* () {
 });
 
 it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it) => {
+  it.effect.each(["cancelled", "already stopped"] as const)(
+    "closes a pending gate during restart cleanup for a task %s before late Create",
+    (state) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`restart-pending-${state}`);
+        const fixture = yield* windowsFixture;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo late Create" }),
+        ).pipe(Effect.provide(fixture.layer));
+        const directory = NodePath.dirname(first.logPath);
+        yield* forgetPid(first.taskId);
+        NodeFS.unlinkSync(NodePath.join(directory, "pid"));
+        NodeFS.renameSync(
+          NodePath.join(directory, "launch-started"),
+          NodePath.join(directory, "launch-pending"),
+        );
+        fixture.jobs.clear();
+        fixture.processes.get(2147483000)!.alive = false;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch(cancellationOf(chat.threadId, first.taskId));
+        const sql = yield* SqlClient.SqlClient;
+        if (state === "already stopped")
+          yield* sql`UPDATE command_runs SET status = 'stopped' WHERE task_id = ${first.taskId}`;
+        const delivered = yield* Deferred.make<void>();
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* Deferred.await(delivered);
+            assert.isTrue(NodeFS.existsSync(NodePath.join(directory, "launch-cancelled")));
+            // The delayed host publishes identity before its wrapper competes for the gate.
+            NodeFS.writeFileSync(NodePath.join(directory, "pid"), `2147483000 ${fixture.now}`);
+            assert.throws(() =>
+              NodeFS.renameSync(
+                NodePath.join(directory, "launch-pending"),
+                NodePath.join(directory, "launch-started"),
+              ),
+            );
+            assert.isFalse(NodeFS.existsSync(NodePath.join(directory, "launch-started")));
+            assert.equal((yield* commandRow(first.taskId))?.status, "stopped");
+            assert.lengthOf(fixture.stopRequests, 0);
+          }),
+        ).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(first.taskId, delivered),
+          ),
+          Effect.provide(fixture.layer),
+        );
+      }),
+  );
+
+  it.effect.each(["deadline", "cancellation"] as const)(
+    "reports %s before a legacy cleanup identity probe is released",
+    (reason) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`report-held-${reason}`);
+        const fixture = yield* windowsFixture;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), {
+            command: "echo held cleanup",
+            timeoutMinutes: 1,
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
+        const release = yield* Deferred.make<void>();
+        const reported = yield* Deferred.make<void>();
+        const delivered = yield* Deferred.make<void>();
+        fixture.state.beforeProbe = Deferred.await(release);
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* Queue.take(fixture.probes);
+            if (reason === "deadline") fixture.state.now += 60_000;
+            else
+              yield* Orchestrator.OrchestratorV2.pipe(
+                Effect.flatMap((orchestrator) =>
+                  orchestrator.dispatch(cancellationOf(chat.threadId, first.taskId)),
+                ),
+              );
+            yield* Deferred.await(reported);
+            if (reason === "deadline") {
+              yield* nextWake(chat.threadId);
+              assert.include(
+                (yield* taskOf(chat.threadId, first.taskId))?.result ?? "",
+                "cleanup is still pending",
+              );
+            }
+            assert.isTrue(fixture.processes.get(2147483000)!.alive);
+            assert.isNull((yield* commandRow(first.taskId))?.delivered_at);
+            yield* Deferred.succeed(release, undefined);
+            yield* Deferred.await(delivered);
+          }),
+        ).pipe(
+          Effect.provideService(Statement.CurrentTransformer, (...args) =>
+            args[0].compile()[1][6] == null
+              ? observeDelivery(first.taskId, reported, "reported_at")(...args)
+              : observeDelivery(first.taskId, delivered)(...args),
+          ),
+          Effect.provide(fixture.layer),
+          Effect.ensuring(Deferred.succeed(release, undefined)),
+        );
+      }),
+  );
+
   it.effect("keeps a replacement job alive when restart cleanup stops the recorded child", () =>
     Effect.gen(function* () {
       const chat = yield* liveChat("launch-replaced-job");
@@ -1738,7 +1853,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
     }),
   );
 
-  it.effect("ends a POSIX launch interrupted before spawn", () =>
+  it.effect("cancels a pending POSIX gate before a paused launcher can run", () =>
     Effect.gen(function* () {
       const chat = yield* liveChat("launch-posix-no-spawn");
       const fixture = yield* windowsFixture;
@@ -1752,14 +1867,153 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       yield* forgetPid(first.taskId);
       yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
       NodeFS.unlinkSync(NodePath.join(NodePath.dirname(first.logPath), "pid"));
+      NodeFS.renameSync(
+        NodePath.join(NodePath.dirname(first.logPath), "launch-started"),
+        NodePath.join(NodePath.dirname(first.logPath), "launch-pending"),
+      );
       fixture.processes.get(2147483000)!.alive = false;
-      fixture.state.now += 60_000;
+      fixture.state.now += 6_000;
       yield* withServer(() => nextWake(chat.threadId)).pipe(
         Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provide(fixture.layer),
       );
       assert.equal((yield* commandRow(first.taskId))?.status, "unstarted");
       assert.equal((yield* taskOf(chat.threadId, first.taskId))?.status, "failed");
+      assert.isTrue(
+        NodeFS.existsSync(NodePath.join(NodePath.dirname(first.logPath), "launch-cancelled")),
+      );
+    }),
+  );
+
+  it.effect(
+    "keeps a POSIX launcher that took the gate unresolved past five seconds until it publishes its pid",
+    () =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat("posix-late-pid");
+        const fixture = yield* windowsFixture;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), {
+            command: "echo late identity",
+            timeoutMinutes: 1,
+          }),
+        ).pipe(Effect.provide(fixture.layer));
+        const sql = yield* SqlClient.SqlClient;
+        yield* forgetPid(first.taskId);
+        yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
+        const pidFile = NodePath.join(NodePath.dirname(first.logPath), "pid");
+        const pidText = NodeFS.readFileSync(pidFile, "utf8");
+        NodeFS.unlinkSync(pidFile);
+        fixture.state.now += 6_000;
+        const fs = yield* FileSystem.FileSystem;
+        const missing = yield* Deferred.make<void>();
+        const publish = yield* Deferred.make<void>();
+        const adopted = yield* Deferred.make<void>();
+        let held = true;
+        const missingPid = Deferred.succeed(missing, undefined).pipe(
+          Effect.andThen(Deferred.await(publish)),
+          Effect.andThen(
+            Effect.fail(
+              new PlatformError.PlatformError(
+                new PlatformError.SystemError({
+                  _tag: "NotFound",
+                  module: "FileSystem",
+                  method: "readFileString",
+                }),
+              ),
+            ),
+          ),
+        );
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* Deferred.await(missing);
+            NodeFS.writeFileSync(pidFile, pidText);
+            held = false;
+            yield* Deferred.succeed(publish, undefined);
+            yield* Deferred.await(adopted);
+            assert.equal((yield* commandRow(first.taskId))?.status, "running");
+            assert.isTrue(fixture.groups.has(2147483000));
+            NodeFS.writeFileSync(
+              NodePath.join(NodePath.dirname(first.logPath), "exit-status"),
+              "0",
+            );
+            yield* nextWake(chat.threadId);
+            assert.equal((yield* taskOf(chat.threadId, first.taskId))?.status, "completed");
+          }),
+        ).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(first.taskId, adopted, "pid"),
+          ),
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readFileString: (file, ...args) =>
+              file === pidFile && held ? missingPid : fs.readFileString(file, ...args),
+            stat: (file) => (file === pidFile && held ? missingPid : fs.stat(file)),
+          }),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provide(fixture.layer),
+          Effect.ensuring(Deferred.succeed(publish, undefined)),
+        );
+      }),
+  );
+
+  it.effect.each([
+    "observed replacement",
+    "recorded replacement",
+    "recorded reboot",
+    "systemd unit",
+  ] as const)("never signals a replacement POSIX group after its leader exits: %s", (evidence) =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat(`posix-group-${evidence}`);
+      const fixture = yield* windowsFixture;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), {
+          command: "echo original group",
+        }),
+      ).pipe(Effect.provide(fixture.layer));
+      const sql = yield* SqlClient.SqlClient;
+      const reason =
+        evidence === "recorded replacement"
+          ? "pid-reused"
+          : evidence === "recorded reboot"
+            ? "rebooted"
+            : null;
+      const unit = evidence === "systemd unit" ? "original.scope" : null;
+      yield* sql`UPDATE command_runs SET unit = ${unit}, lost_reason = ${reason},
+        status = ${evidence === "observed replacement" ? "running" : "stopped"}
+        WHERE task_id = ${first.taskId}`;
+      const entry = fixture.processes.get(2147483000)!;
+      entry.identity += 5_000;
+      if (evidence === "observed replacement")
+        fixture.state.beforeProbe = Effect.sync(() => {
+          entry.alive = false;
+        });
+      else entry.alive = false;
+      const delivered = yield* Deferred.make<void>();
+      const agentScope = yield* AgentScope;
+      const units: string[] = [];
+      yield* withServer(() => Deferred.await(delivered)).pipe(
+        Effect.provideService(
+          Statement.CurrentTransformer,
+          observeDelivery(first.taskId, delivered),
+        ),
+        Effect.provideService(AgentScope, {
+          ...agentScope,
+          stop: (name) =>
+            Effect.sync(() => {
+              units.push(name);
+            }),
+        }),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(fixture.layer),
+      );
+      assert.isTrue(fixture.groups.has(2147483000));
+      assert.deepEqual(fixture.groupSignals, []);
+      assert.deepEqual(units, unit === null ? [] : [unit]);
+      assert.equal(
+        (yield* commandRow(first.taskId))?.lost_reason,
+        evidence === "observed replacement" ? "pid-reused" : reason,
+      );
     }),
   );
 
@@ -2143,6 +2397,8 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
     Effect.gen(function* () {
       const chat = yield* liveChat("launch-stop-stderr");
       const fixture = yield* windowsFixture;
+      const delivered = yield* Deferred.make<void>();
+      let taskId = "";
       fixture.state.stopError = "injected stop access denied";
       const warnings: unknown[] = [];
       const logger = Logger.make(({ message }) => {
@@ -2154,16 +2410,25 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
             command: "echo deadline",
             timeoutMinutes: 1,
           });
+          taskId = result.taskId;
           fixture.state.now += 60_000;
           for (let pass = 0; pass < 4; pass++) yield* Queue.take(fixture.stopped);
           assert.equal(warnings.length, 1);
           assert.include(JSON.stringify(warnings), "injected stop access denied");
           assert.isNull((yield* commandRow(result.taskId))?.delivered_at);
-          fixture.state.stopError = "";
           yield* nextWake(chat.threadId);
+          assert.include(
+            (yield* taskOf(chat.threadId, result.taskId))?.result ?? "",
+            "cleanup is still pending",
+          );
+          fixture.state.stopError = "";
+          yield* Deferred.await(delivered);
           assert.equal((yield* commandRow(result.taskId))?.status, "timed_out");
         }),
       ).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (...args) =>
+          observeDelivery(taskId, delivered)(...args),
+        ),
         Effect.provide(
           Layer.merge(fixture.layer, Logger.layer([logger], { mergeWithExisting: false })),
         ),
@@ -2188,7 +2453,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
         );
       yield* sql`CREATE TEMP TABLE cancellation_writes (task_id TEXT)`;
       yield* sql`CREATE TEMP TRIGGER count_cancellation_writes AFTER UPDATE ON command_runs
-        WHEN NEW.status = 'stopped' AND NEW.delivered_at IS NULL
+        WHEN NEW.status = 'stopped' AND OLD.status <> 'stopped'
         BEGIN INSERT INTO cancellation_writes VALUES (NEW.task_id); END`;
       let taskId = "";
       yield* withServer((runner) =>
@@ -2251,14 +2516,22 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       ).pipe(Effect.provide(fixture.layer));
       fixture.state.unavailable = true;
       fixture.state.now += 60_000;
+      const delivered = yield* Deferred.make<void>();
       yield* withServer(() =>
         Effect.gen(function* () {
           yield* nextWake(chat.threadId);
+          yield* Deferred.await(delivered);
           assert.equal((yield* commandRow(result.taskId))?.status, "timed_out");
           assert.equal(fixture.state.probeCalls, 0);
           assert.isFalse(fixture.processes.get(2147483000)!.alive);
         }),
-      ).pipe(Effect.provide(fixture.layer));
+      ).pipe(
+        Effect.provideService(
+          Statement.CurrentTransformer,
+          observeDelivery(result.taskId, delivered),
+        ),
+        Effect.provide(fixture.layer),
+      );
     }),
   );
 

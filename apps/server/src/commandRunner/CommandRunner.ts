@@ -129,11 +129,18 @@ const WINDOWS_WRAPPER = [
 // Names itself first, then runs the command and outlives it to write its exit status; each rename
 // makes its file appear whole. Arguments: log, status file, pid file, then the command's argv.
 const POSIX_WRAPPER = [
-  'printf "%s\\n" "$$" >"$3.tmp" && mv -f "$3.tmp" "$3"',
   'exec >>"$1" 2>&1 </dev/null',
+  'printf "%s\\n" "$$" >"$3.tmp" && mv -f "$3.tmp" "$3" || exit 1',
   'run() { shift 3; "$@"; }',
-  'run "$@"',
-  "code=$?",
+  'if mv "${3%/*}/launch-pending" "${3%/*}/launch-started"; then',
+  '  run "$@"',
+  "  code=$?",
+  "else",
+  '  if [ -d "${3%/*}/launch-cancelled" ]; then',
+  '    printf "%s\\n" "Command launch was cancelled before it started."',
+  '  else printf "%s\\n" "Could not take the command start gate."; fi',
+  "  code=1",
+  "fi",
   'printf "%s\\n" "$code" >"$2.tmp" && mv -f "$2.tmp" "$2"',
 ].join("\n");
 
@@ -179,7 +186,6 @@ type LaunchResolution =
   | { readonly outcome: "cancelled" }
   | { readonly outcome: "started"; readonly row: CommandRunRow }
   | { readonly outcome: "ended"; readonly row: CommandRunRow; readonly loss: Loss }
-  | { readonly outcome: "unstarted" }
   | { readonly outcome: "unresolved" };
 
 /**
@@ -601,6 +607,11 @@ const make = Effect.gen(function* () {
 
   /** Jobs retain Windows membership; legacy records prove only their root process identity. */
   const killTree = Effect.fn("CommandRunner.killTree")(function* (row: CommandRunRow) {
+    if (row.lost_reason === "pid-reused" || row.lost_reason === "rebooted") return true;
+    if (!windows && row.unit !== null) {
+      yield* agentScope.stop(row.unit);
+      return true;
+    }
     if (windows && row.unit?.startsWith(jobUnitPrefix)) {
       if (row.pid === null || row.process_started_at === null) return false;
       const host = yield* yield* WindowsJobHost;
@@ -626,10 +637,23 @@ const make = Effect.gen(function* () {
       return true;
     }
     const pid = row.pid;
-    if (pid !== null && !(yield* rebootedSince(row))) {
+    if (pid !== null) {
       if (!windows) {
         const same = yield* isSameProcess(row);
         if (same === "unknown") return false;
+        if (
+          typeof same !== "number" &&
+          (same.lost_reason === "pid-reused" || same.lost_reason === "rebooted")
+        ) {
+          yield* lock.withPermits(1)(
+            Effect.gen(function* () {
+              if (watched.get(row.task_id) === row) yield* settle({ ...row, ...same });
+            }),
+          );
+          return true;
+        }
+        // Without a unit, a group can outlive its leader. Reuse followed by another leader's exit
+        // between probes remains unobservable; a recorded replacement must never reach this signal.
         if (typeof same === "number" || same.lost_reason === "gone") yield* killGroup(pid);
       } else {
         const same = yield* isSameProcess(row);
@@ -715,13 +739,17 @@ const make = Effect.gen(function* () {
         ? `Could not start the command: ${row.launch_error ?? "the server stopped before launch completed."}`
         : row.status === "timed_out"
           ? cleanupPending
-            ? `Timed out after ${elapsed}. CodeShip cannot verify ownership yet and keeps checking before stopping it.`
+            ? `Timed out after ${elapsed}; cleanup is still pending. CodeShip keeps trying to stop the command.`
             : `Timed out and was stopped after ${elapsed}.`
-          : row.status === "lost"
-            ? `Ended after at most ${elapsed} without an exit status: it was killed, or this machine restarted.`
-            : row.exit_code === null
-              ? `Ended after ${elapsed} with an unreadable exit status.`
-              : `Exited with code ${row.exit_code} after ${elapsed}.`;
+          : row.status === "stopped"
+            ? cleanupPending
+              ? `Cancelled after ${elapsed}; cleanup is still pending. CodeShip keeps trying to stop the command.`
+              : `Cancelled and stopped after ${elapsed}.`
+            : row.status === "lost"
+              ? `Ended after at most ${elapsed} without an exit status: it was killed, or this machine restarted.`
+              : row.exit_code === null
+                ? `Ended after ${elapsed} with an unreadable exit status.`
+                : `Exited with code ${row.exit_code} after ${elapsed}.`;
     const logPath = logPathOf(row);
     const output = yield* readTail(row);
     return [
@@ -1012,7 +1040,6 @@ const make = Effect.gen(function* () {
   const closeLaunchGate = Effect.fn("CommandRunner.closeLaunchGate")(function* (
     row: CommandRunRow,
   ) {
-    if (!windows) return "legacy" as const;
     const closed = yield* fs
       .rename(path.join(row.directory, LAUNCH_PENDING), path.join(row.directory, LAUNCH_CANCELLED))
       .pipe(
@@ -1028,28 +1055,42 @@ const make = Effect.gen(function* () {
     return "legacy" as const;
   });
 
+  /** A result can wake its caller before cleanup; delivery still requires a closed gate or a stop. */
+  const prepareCleanup = Effect.fn("CommandRunner.prepareCleanup")(function* (row: CommandRunRow) {
+    if (watched.get(row.task_id) !== row) return undefined;
+    if ((row.status === "stopped" || row.status === "timed_out") && row.reported_at === null)
+      yield* deliver(row, true);
+    const current = watched.get(row.task_id);
+    if (current === undefined) return undefined;
+    if ((yield* closeLaunchGate(current)) === "cancelled") {
+      yield* deliver(current);
+      return undefined;
+    }
+    return current;
+  });
+
   /** Slow evidence and process operations belong to one row, never to the shared lock. */
-  const check = Effect.fn("CommandRunner.check")(function* (snapshot: CommandRunRow) {
+  const check = Effect.fn("CommandRunner.check")(function* (initial: CommandRunRow) {
+    let snapshot = initial;
+    if (snapshot.status !== "running") {
+      const prepared = yield* lock.withPermits(1)(prepareCleanup(snapshot));
+      if (prepared === undefined) return;
+      snapshot = prepared;
+    }
     let row = snapshot;
     let loss: Loss | undefined;
     if (
       (row.pid === null || (windows && row.process_started_at === null)) &&
-      row.status !== "exited" &&
-      (row.status !== "unstarted" || row.reported_at !== null) &&
-      !(row.status !== "running" && windows && row.unit?.startsWith(jobUnitPrefix))
+      row.lost_reason !== "pid-reused" &&
+      row.lost_reason !== "rebooted" &&
+      (row.status !== "exited" || (windows && row.unit?.startsWith(jobUnitPrefix))) &&
+      (row.status !== "unstarted" || row.reported_at !== null)
     ) {
       const resolution = yield* recoverPid(row);
-      if (resolution.outcome === "unresolved" || resolution.outcome === "unstarted") {
+      if (resolution.outcome === "unresolved") {
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
             if (watched.get(row.task_id) !== snapshot) return;
-            if (
-              resolution.outcome === "unstarted" &&
-              (row.status === "running" || row.status === "timed_out")
-            ) {
-              row = { ...row, status: "unstarted", ended_at: row.ended_at ?? (yield* nowIso) };
-              yield* settle(row);
-            }
             if (row.status !== "running") yield* deliver(row, true);
           }),
         );
@@ -1064,7 +1105,6 @@ const make = Effect.gen(function* () {
               status: row.status === "running" ? "unstarted" : row.status,
               ended_at: row.ended_at ?? now,
             };
-            if (next.status === "stopped") return yield* settle({ ...next, delivered_at: now });
             yield* settle(next);
             yield* deliver(next);
           }),
@@ -1110,7 +1150,7 @@ const make = Effect.gen(function* () {
         if (mustVerify) verified.set(row.task_id, { key: identityKey(row), at: now });
       } else loss = identity;
     }
-    const next = yield* lock.withPermits(1)(
+    const ended = yield* lock.withPermits(1)(
       Effect.gen(function* () {
         if (watched.get(row.task_id) !== snapshot) return undefined;
         if (row.status !== "running") {
@@ -1160,6 +1200,8 @@ const make = Effect.gen(function* () {
         return undefined;
       }),
     );
+    if (ended === undefined) return;
+    const next = yield* lock.withPermits(1)(prepareCleanup(ended));
     if (next === undefined) return;
     if (
       (next.status === "stopped" ||
@@ -1179,8 +1221,7 @@ const make = Effect.gen(function* () {
     yield* lock.withPermits(1)(
       Effect.gen(function* () {
         if (watched.get(next.task_id) !== next) return;
-        if (next.status === "stopped") yield* settle({ ...next, delivered_at: yield* nowIso });
-        else yield* deliver(next);
+        yield* deliver(next);
       }),
     );
   });
@@ -1232,44 +1273,44 @@ const make = Effect.gen(function* () {
   });
 
   /** Cancellation closes the gate before waiting for any launcher or identity probe. */
-  const requestStop = (taskId: string, status: "stopped" | "timed_out") =>
-    lock.withPermits(1)(
-      Effect.gen(function* () {
-        const row = watched.get(taskId);
-        if (row === undefined || (row.status !== "running" && row.status !== status)) return;
-        if (row.status === status && !pendingStops.has(taskId)) return;
-        if (status === "timed_out" && row.status === "running") {
-          const exit = yield* readExitStatus(row);
-          if (exit !== undefined) {
-            const exited: CommandRunRow = {
-              ...row,
-              status: "exited",
-              exit_code: exit.code,
-              ended_at: exit.endedAt ?? (yield* nowIso),
-            };
-            yield* settle(exited);
-            return;
-          }
-        }
-        const stopped: CommandRunRow = {
+  const requestStopLocked = Effect.fn("CommandRunner.requestStopLocked")(function* (
+    taskId: string,
+    status: "stopped" | "timed_out",
+  ) {
+    const row = watched.get(taskId);
+    if (row === undefined || (row.status !== "running" && row.status !== status)) return;
+    if (row.status === status && !pendingStops.has(taskId)) return;
+    if (status === "timed_out" && row.status === "running") {
+      const exit = yield* readExitStatus(row);
+      if (exit !== undefined) {
+        const exited: CommandRunRow = {
           ...row,
-          status,
-          ended_at: row.ended_at ?? (yield* nowIso),
+          status: "exited",
+          exit_code: exit.code,
+          ended_at: exit.endedAt ?? (yield* nowIso),
         };
-        // Keep the stop intent even if persistence or the gate is temporarily unavailable.
-        watched.set(taskId, stopped);
-        pendingStops.add(taskId);
-        const gate = yield* closeLaunchGate(stopped).pipe(Effect.result);
-        const saved = yield* writeRow(stopped).pipe(Effect.result);
-        if (gate._tag === "Success" && gate.success === "cancelled") {
-          if (status === "stopped") yield* settle({ ...stopped, delivered_at: yield* nowIso });
-          else yield* deliver(stopped);
-        }
-        if (gate._tag === "Failure") return yield* gate.failure;
-        if (saved._tag === "Failure") return yield* saved.failure;
-        pendingStops.delete(taskId);
-      }),
-    );
+        yield* settle(exited);
+        return;
+      }
+    }
+    const stopped: CommandRunRow = {
+      ...row,
+      status,
+      ended_at: row.ended_at ?? (yield* nowIso),
+    };
+    // Keep the stop intent even if persistence or the gate is temporarily unavailable.
+    watched.set(taskId, stopped);
+    pendingStops.add(taskId);
+    const gate = yield* closeLaunchGate(stopped).pipe(Effect.result);
+    const saved = yield* writeRow(stopped).pipe(Effect.result);
+    yield* deliver(stopped, gate._tag !== "Success" || gate.success !== "cancelled");
+    if (gate._tag === "Failure") return yield* gate.failure;
+    if (saved._tag === "Failure") return yield* saved.failure;
+    pendingStops.delete(taskId);
+  });
+
+  const requestStop = (taskId: string, status: "stopped" | "timed_out") =>
+    lock.withPermits(1)(requestStopLocked(taskId, status));
 
   const stopForTask = (taskId: string) => requestStop(taskId, "stopped");
 
@@ -1664,9 +1705,7 @@ const make = Effect.gen(function* () {
                 // Recorded before it starts, so a server that stops in between leaves the next one
                 // a record to adopt it by, never a command nothing watches.
                 const recordedRow = yield* fs.makeDirectory(directory, { recursive: true }).pipe(
-                  Effect.andThen(
-                    windows ? fs.makeDirectory(path.join(directory, LAUNCH_PENDING)) : Effect.void,
-                  ),
+                  Effect.andThen(fs.makeDirectory(path.join(directory, LAUNCH_PENDING))),
                   Effect.andThen(
                     sql`
                 INSERT INTO command_runs (
@@ -1785,12 +1824,6 @@ const make = Effect.gen(function* () {
         );
       if (named === undefined || !Number.isSafeInteger(named.value) || named.value <= 0) {
         if ((yield* readExitStatus(row)) !== undefined) return { outcome: "started", row };
-        if (!windows && row.launch_error !== null) return { outcome: "cancelled" };
-        if (
-          !windows &&
-          DateTime.toEpochMillis(yield* DateTime.now) - Date.parse(row.started_at) >= 5_000
-        )
-          return { outcome: "unstarted" };
         return { outcome: "unresolved" };
       }
       const pid = named.value;
@@ -1843,9 +1876,7 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.ignore({ log: true }));
     }
-    const stopped: CommandRunRow = { ...row, status: "stopped", ended_at: yield* nowIso };
-    watched.set(row.task_id, stopped);
-    yield* writeRow(stopped);
+    yield* requestStopLocked(row.task_id, "stopped");
   });
 
   /**
