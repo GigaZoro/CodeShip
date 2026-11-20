@@ -1,4 +1,3 @@
-import * as NodeFS from "node:fs";
 // @effect-diagnostics nodeBuiltinImport:off - resolves the mock ACP agent script path relative to this test file.
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
@@ -306,20 +305,10 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-probe-" });
       const mockAgentPath = NodePath.resolve(__dirname, "../../scripts/acp-mock-agent.ts");
-      setInterval(() => { try { console.error("GROKTRACE " + dir + "\n" + NodeFS.readFileSync(NodePath.join(dir, "trace.log"), "utf8") + "\nREQ " + (NodeFS.existsSync(NodePath.join(dir, "requests.log")) ? NodeFS.readFileSync(NodePath.join(dir, "requests.log"), "utf8").slice(0, 600) : "none") + "\nREQ " + (NodeFS.existsSync(NodePath.join(dir, "requests.log")) ? NodeFS.readFileSync(NodePath.join(dir, "requests.log"), "utf8").slice(0, 600) : "none")); } catch (e) { console.error("GROKTRACE none " + dir); } }, 30000).unref();
       return writeFakeCli({
         directory: dir,
         name: "grok",
-        env: { T3_ACP_REQUEST_LOG_PATH: NodePath.join(dir, "requests.log") },
         source: [
-          'import { appendFileSync as t0 } from "node:fs";',
-          `const T = ${JSON.stringify(NodePath.join(dir, "trace.log"))};`,
-          "const t = (m) => t0(T, Date.now() + ' ' + m + '\\n');",
-          "t('start ' + process.argv.slice(2).join(' ') + ' node=' + process.version);",
-          "process.on('exit', (c) => t('exit ' + c));",
-          "const ow = process.stdout.write.bind(process.stdout); process.stdout.write = (c, ...a) => { t('stdout ' + String(c).slice(0, 200)); return ow(c, ...a); };",
-          "process.on('uncaughtException', (e) => t('uncaught ' + e.stack));",
-          "process.on('unhandledRejection', (e) => t('rejection ' + e));",
           ...(input.updateLogPath
             ? [
                 'import { appendFileSync as appendUpdateAttempt } from "node:fs";',
@@ -342,7 +331,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
           "  process.exit(0);",
           "}",
           'if (process.argv[2] !== "agent") process.exit(1);',
-          ...(input.acp ? ["t('importing');", execScriptSource({ scriptPath: mockAgentPath }), "t('imported');"] : ["process.exit(3);"]),
+          ...(input.acp ? [execScriptSource({ scriptPath: mockAgentPath })] : ["process.exit(3);"]),
           "",
         ].join("\n"),
       });
