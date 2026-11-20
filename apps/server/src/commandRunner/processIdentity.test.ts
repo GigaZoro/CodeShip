@@ -6,6 +6,7 @@ import {
   identityTime,
   linuxIdentity,
   timeIdentity,
+  windowsTreeRoot,
 } from "./processIdentity.ts";
 
 describe("processIdentity", () => {
@@ -35,6 +36,21 @@ describe("processIdentity", () => {
     [ENDED_IDENTITY, timeIdentity(10_000), "other"],
   ] as const)("compares %s with %s as %s", (stored, current, verdict) => {
     assert.strictEqual(compareIdentity(stored, current), verdict);
+  });
+
+  it("walks a Windows stop from the recorded start, and never from a later holder of an ended wrapper's pid", () => {
+    assert.deepEqual(
+      [
+        windowsTreeRoot(7, "1970-01-01T00:00:02.000Z", timeIdentity(1_000), 5_000),
+        windowsTreeRoot(7, "1970-01-01T00:00:02.000Z", ENDED_IDENTITY, 5_000),
+        windowsTreeRoot(7, "1970-01-01T00:00:02.000Z", null, 5_000),
+      ],
+      [
+        { pid: 7, since: 1_000, created: { from: 1_000, to: 1_000 } },
+        { pid: 7, since: 2_000, ended: 5_000 },
+        { pid: 7, since: 2_000 },
+      ],
+    );
   });
 
   it("reads a start time only from a time identity", () => {

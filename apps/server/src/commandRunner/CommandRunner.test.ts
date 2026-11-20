@@ -57,7 +57,9 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { readProcessStartedAt } from "../serverRuntimeState.ts";
 import * as CommandRunner from "./CommandRunner.ts";
+import { timeIdentity } from "./processIdentity.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
@@ -242,9 +244,10 @@ const commandRow = (taskId: string) =>
       readonly probe_error: string | null;
       readonly lost_reason: string | null;
       readonly lost_output: string | null;
+      readonly directory: string;
     }>`
       SELECT status, exit_code, pid, started_at, delivered_at, last_alive_at, probe_error, lost_reason,
-        lost_output
+        lost_output, directory
       FROM command_runs WHERE task_id = ${taskId}
     `;
     return rows[0];
@@ -259,6 +262,72 @@ const forgetPid = (taskId: string) =>
       WHERE task_id = ${taskId}
     `,
   );
+
+/** Out of the runner's sight, the command's holder still keeps the number, for the cleanup to use. */
+const hideHolder = (directory: string) =>
+  Effect.gen(function* () {
+    const holder = NodePath.join(directory, "group-holder");
+    const hidden = `${holder}.hidden`;
+    NodeFS.renameSync(holder, hidden);
+    yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.renameSync(hidden, holder)));
+  });
+
+/**
+ * Services under which the first read of when `pid` started fails, as on a loaded machine: macOS
+ * asks ps and Linux reads /proc. `reads` counts every read of it.
+ */
+const failingFirstStartRead = (pid: number) =>
+  Effect.gen(function* () {
+    const processRunner = yield* ProcessRunner.ProcessRunner;
+    const fileSystem = yield* FileSystem.FileSystem;
+    let reads = 0;
+    const failingFirst = <A, E>(read: Effect.Effect<A, E>, failure: Effect.Effect<A, E>) =>
+      Effect.suspend(() => {
+        reads += 1;
+        return reads === 1 ? failure : read;
+      });
+    const services = Layer.mergeAll(
+      Layer.succeed(ProcessRunner.ProcessRunner, {
+        run: (input) =>
+          input.command === "ps" && input.args.includes(String(pid))
+            ? failingFirst(
+                processRunner.run(input),
+                Effect.succeed({
+                  stdout: "",
+                  stderr: "",
+                  code: ChildProcessSpawner.ExitCode(1),
+                  timedOut: false,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                }),
+              )
+            : processRunner.run(input),
+      }),
+      Layer.succeed(
+        FileSystem.FileSystem,
+        FileSystem.FileSystem.of({
+          ...fileSystem,
+          readFileString: (file, encoding) =>
+            file === `/proc/${pid}/stat`
+              ? failingFirst(
+                  fileSystem.readFileString(file, encoding),
+                  Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "readFileString",
+                      pathOrDescriptor: file,
+                    }),
+                  ),
+                )
+              : fileSystem.readFileString(file, encoding),
+        }),
+      ),
+    );
+    return { services, reads: () => reads };
+  });
 
 const taskOf = (threadId: ThreadId, taskId: string) =>
   Orchestrator.OrchestratorV2.pipe(
@@ -1028,15 +1097,9 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
           );
           yield* ready;
+          const run = (yield* commandRow(started.taskId))!;
+          yield* hideHolder(run.directory);
           const sql = yield* SqlClient.SqlClient;
-          const [run] = yield* sql<{ readonly directory: string; readonly pid: number }>`
-          SELECT directory, pid FROM command_runs WHERE task_id = ${started.taskId}
-        `;
-          // Out of the runner's sight, the holder still keeps the number, for the cleanup to use.
-          const holder = NodePath.join(run!.directory, "group-holder");
-          const hidden = `${holder}.hidden`;
-          NodeFS.renameSync(holder, hidden);
-          yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.renameSync(hidden, holder)));
           yield* sql`
           UPDATE command_runs SET process_identity = NULL WHERE task_id = ${started.taskId}
         `;
@@ -1044,39 +1107,146 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
           yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
 
-          assert.isTrue(isProcessAlive(run!.pid));
+          assert.isTrue(isProcessAlive(run.pid!));
           assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+        }),
+    );
+
+    it.effect(
+      "stops a command whose pid its server never recorded while its holder keeps the number",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-pid-file-older");
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* ready;
+          const run = (yield* commandRow(started.taskId))!;
+          yield* forgetPid(started.taskId);
+          // A later step of the wall clock moves the start ps reports past when it wrote its pid.
+          NodeFS.utimesSync(NodePath.join(run.directory, "pid"), 946_684_800, 946_684_800);
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+          yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+
+          assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+          assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
+        }),
+    );
+
+    it.effect(
+      "signals no process under an unrecorded pid whose start it cannot read, without a holder",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-pid-unrecorded-unread");
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+          const decoyReady = yield* watchForFile(NodePath.join(chat.workspace, "decoy-ready"));
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* ready;
+          const run = (yield* commandRow(started.taskId))!;
+          yield* hideHolder(run.directory);
+          // A group leader that took the pid the wrapper's file names after the file was written.
+          const decoy = NodeChildProcess.spawn(
+            "sh",
+            [
+              "-c",
+              `trap "echo > decoy-stopped; exit 0" TERM; echo > decoy-ready; while [ -e decoy-ready ]; do sleep 1; done`,
+            ],
+            { cwd: chat.workspace, detached: true, stdio: "ignore" },
+          );
+          yield* Effect.addFinalizer(() => Effect.sync(() => decoy.kill("SIGKILL")));
+          yield* decoyReady;
+          const pidFile = NodePath.join(run.directory, "pid");
+          const named = NodeFS.readFileSync(pidFile, "utf8");
+          NodeFS.writeFileSync(pidFile, `${decoy.pid}\n`);
+          NodeFS.utimesSync(pidFile, 946_684_800, 946_684_800);
+          yield* forgetPid(started.taskId);
+          const sql = yield* SqlClient.SqlClient;
+          // So that the cleanup finds the command's own group.
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => NodeFS.writeFileSync(pidFile, named)).pipe(
+              Effect.andThen(
+                sql`UPDATE command_runs SET pid = ${run.pid} WHERE task_id = ${started.taskId}`,
+              ),
+              Effect.ignore,
+            ),
+          );
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+          const startRead = yield* failingFirstStartRead(decoy.pid!);
+          yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: "true" }),
+          ).pipe(Effect.provide(startRead.services));
+
+          assert.isAbove(startRead.reads(), 0);
+          assert.isFalse(NodeFS.existsSync(NodePath.join(chat.workspace, "decoy-stopped")));
         }),
     );
   });
 
   describe.runIf(isLinuxHost)("Linux process identity", () => {
-    it.effect("still stops a command after a step of the wall clock moved what ps reports", () =>
+    it.effect(
+      "still stops a command after a step of the wall clock moved its start on that clock",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-clock-step");
+          const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* ready;
+          // So that only its identity tells the runner the group is still the command's.
+          yield* hideHolder((yield* commandRow(started.taskId))!.directory);
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
+          const fileSystem = yield* FileSystem.FileSystem;
+          // A start on the wall clock adds the boot time, which every step of that clock moves.
+          yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: "true" }),
+          ).pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              FileSystem.FileSystem.of({
+                ...fileSystem,
+                readFileString: (file, encoding) =>
+                  file === "/proc/stat"
+                    ? fileSystem
+                        .readFileString(file, encoding)
+                        .pipe(
+                          Effect.map((text) => text.replace(/^btime \d+$/mu, "btime 946684800")),
+                        )
+                    : fileSystem.readFileString(file, encoding),
+              }),
+            ),
+          );
+          assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
+          assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
+        }),
+    );
+
+    it.effect("still stops a command recorded with its start time, as before boot identities", () =>
       Effect.gen(function* () {
-        const chat = yield* liveChat("command-clock-step");
+        const chat = yield* liveChat("command-time-identity");
         const ready = yield* watchForFile(NodePath.join(chat.workspace, "ready"));
         const started = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
         );
         yield* ready;
+        const run = (yield* commandRow(started.taskId))!;
+        yield* hideHolder(run.directory);
+        const startedAt = yield* readProcessStartedAt(run.pid!);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          UPDATE command_runs SET process_identity = ${timeIdentity(startedAt!)}
+          WHERE task_id = ${started.taskId}
+        `;
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         yield* orchestrator.dispatch(cancellationOf(chat.threadId, started.taskId));
-        const processRunner = yield* ProcessRunner.ProcessRunner;
-        // ps derives a start from the boot time, which moves with every step of the wall clock.
-        yield* withServer((runner) =>
-          runner.run(callerOf(chat.threadId), { command: "true" }),
-        ).pipe(
-          Effect.provideService(ProcessRunner.ProcessRunner, {
-            run: (input) =>
-              input.command === "ps"
-                ? processRunner
-                    .run(input)
-                    .pipe(
-                      Effect.map((result) => ({ ...result, stdout: "Sat Jan  1 00:00:00 2000\n" })),
-                    )
-                : processRunner.run(input),
-          }),
-        );
+        yield* withServer((runner) => runner.run(callerOf(chat.threadId), { command: "true" }));
+
         assert.isTrue(NodeFS.existsSync(NodePath.join(chat.workspace, "stopped")));
         assert.equal((yield* commandRow(started.taskId))?.status, "stopped");
       }),
@@ -1101,58 +1271,13 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             THEN 'boot:other:1' ELSE 'time:0' END
           WHERE task_id = ${started.taskId}
         `;
-          const processRunner = yield* ProcessRunner.ProcessRunner;
-          const fileSystem = yield* FileSystem.FileSystem;
-          let startReads = 0;
-          // Adoption's read fails, as it does on a loaded machine. Linux reads the start from /proc.
-          const failingFirst = <A, E>(read: Effect.Effect<A, E>, failure: Effect.Effect<A, E>) => {
-            startReads += 1;
-            return startReads === 1 ? failure : read;
-          };
-          yield* withServer(() => nextWake(chat.threadId)).pipe(
-            Effect.provideService(ProcessRunner.ProcessRunner, {
-              run: (input) =>
-                input.command === "ps"
-                  ? failingFirst(
-                      processRunner.run(input),
-                      Effect.succeed({
-                        stdout: "",
-                        stderr: "",
-                        code: ChildProcessSpawner.ExitCode(1),
-                        timedOut: false,
-                        stdoutTruncated: false,
-                        stderrTruncated: false,
-                        stdoutInvalidUtf8: false,
-                        stderrInvalidUtf8: false,
-                      }),
-                    )
-                  : processRunner.run(input),
-            }),
-            Effect.provideService(
-              FileSystem.FileSystem,
-              FileSystem.FileSystem.of({
-                ...fileSystem,
-                readFileString: (file, encoding) =>
-                  /^\/proc\/\d+\/stat$/u.test(file)
-                    ? failingFirst(
-                        fileSystem.readFileString(file, encoding),
-                        Effect.fail(
-                          PlatformError.systemError({
-                            _tag: "Unknown",
-                            module: "FileSystem",
-                            method: "readFileString",
-                            pathOrDescriptor: file,
-                          }),
-                        ),
-                      )
-                    : fileSystem.readFileString(file, encoding),
-              }),
-            ),
-          );
+          // Adoption's read fails, as it does on a loaded machine.
+          const startRead = yield* failingFirstStartRead((yield* commandRow(started.taskId))!.pid!);
+          yield* withServer(() => nextWake(chat.threadId)).pipe(Effect.provide(startRead.services));
           const row = yield* commandRow(started.taskId);
           assert.equal(row?.status, "lost");
           assert.equal(row?.lost_reason, "pid-reused");
-          assert.isAbove(startReads, 1);
+          assert.isAbove(startRead.reads(), 1);
         }),
     );
 

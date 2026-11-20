@@ -1,3 +1,5 @@
+import type { WindowsProcessTreeRoot } from "@t3tools/shared/windowsProcessTree";
+
 /**
  * What tells a command's wrapper from a later process under the same pid, read on a clock that
  * never steps. Linux: the start in clock ticks since boot with the boot id, both fixed when the
@@ -34,6 +36,26 @@ export const linuxIdentity = (stat: string, bootId: string): string | undefined 
   return ticks !== undefined && /^\d+$/.test(ticks) && boot !== ""
     ? `${BOOT_PREFIX}${boot}:${ticks}`
     : undefined;
+};
+
+/**
+ * Where a Windows stop walks from for a wrapper `identity` names. Windows stores its creation time,
+ * so a clock set back after the record cannot hide what it started; one already gone by `now` is
+ * not whatever holds its pid since.
+ */
+export const windowsTreeRoot = (
+  pid: number,
+  startedAt: string,
+  identity: string | null,
+  now: number,
+): WindowsProcessTreeRoot => {
+  const created = identityTime(identity);
+  return {
+    pid,
+    since: created ?? Date.parse(startedAt),
+    ...(created === undefined ? {} : { created: { from: created, to: created } }),
+    ...(identity === ENDED_IDENTITY ? { ended: now } : {}),
+  };
 };
 
 /** Whether a live process reading `current` is the one `stored` names; "unknown" when it cannot be told. */
