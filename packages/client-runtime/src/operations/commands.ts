@@ -867,20 +867,17 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
       });
     }
   }
-  // A run named by the caller belongs to the parent, not the rerouted child.
+  const config = yield* getInitialServerConfig();
+  if (config.environment.capabilities.threadStop === true) {
+    return yield* dispatch({
+      type: "thread.stop",
+      commandId: yield* allocateCommandId(input),
+      threadId,
+    });
+  }
+  // Older servers require a run. A composer hint belongs to the original thread.
   let runId =
     threadId === input.threadId ? (input.runId ?? (input.turnId as RunId | undefined)) : undefined;
-  if (runId === undefined) {
-    const config = yield* getInitialServerConfig();
-    if (config.environment.capabilities.threadStop === true) {
-      // A paginated projection can omit commands still running from earlier turns.
-      return yield* dispatch({
-        type: "thread.stop",
-        commandId: yield* allocateCommandId(input),
-        threadId,
-      });
-    }
-  }
   if (runId === undefined) {
     const projection = yield* getProjection(threadId);
     runId = projection.runs.findLast(
