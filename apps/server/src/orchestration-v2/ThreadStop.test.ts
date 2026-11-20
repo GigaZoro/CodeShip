@@ -20,6 +20,8 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -611,6 +613,87 @@ it.effect.each(["run.interrupt", "thread.stop"] as const)(
         threadWide ? [stopCommandId] : [],
       );
     }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("a scoped delegated Stop rechecks ownership after a child admits a follow-up", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const parentId = ThreadId.make("thread:parent-reusing-child");
+    yield* createWatchingThread(parentId, 6);
+    yield* send(parentId, "original owner", "start_immediately");
+    const childId = yield* delegate(parentId, "original task");
+    const previousGrandchild = yield* delegate(childId, "previous delegated work");
+    const parent = yield* orchestrator.getThreadProjection(parentId);
+    const child = yield* orchestrator.getThreadProjection(childId);
+    const original = parent.subagents[0]!;
+    const captured = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const read = orchestrator.getThreadRecords;
+    const snapshot = vi
+      .spyOn(orchestrator, "getThreadRecords")
+      .mockImplementationOnce((id, fields, filter) =>
+        read(id, fields, filter).pipe(
+          Effect.tap(() =>
+            Deferred.succeed(captured, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          ),
+        ),
+      );
+    yield* Effect.addFinalizer(() => Effect.sync(() => snapshot.mockRestore()));
+    const stop = yield* threads
+      .stopDelegatedTasks({
+        commandId: CommandId.make("stale-scoped-stop"),
+        threadId: parentId,
+        parentRunId: original.runId!,
+      })
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(captured);
+    const now = yield* DateTime.now;
+    for (const run of [child.runs[0]!, parent.runs[0]!]) {
+      yield* projections.apply({
+        type: "run.updated",
+        threadId: run.threadId,
+        id: EventId.make(`completed:${run.id}`),
+        occurredAt: now,
+        payload: { ...run, status: "completed", completedAt: now },
+      });
+    }
+    yield* projections.apply({
+      type: "subagent.updated",
+      threadId: parentId,
+      id: EventId.make("task-result"),
+      occurredAt: now,
+      payload: { ...original, status: "completed", result: "Done", completedAt: now },
+    });
+    yield* send(parentId, "new owner", "start_immediately");
+    yield* send(childId, "follow-up", "start_immediately");
+    const grandchild = yield* delegate(childId, "follow-up work");
+    const current = yield* orchestrator.getThreadProjection(parentId);
+    assert.equal(current.subagents.at(-1)?.runId, current.runs.at(-1)?.id);
+    assert.notEqual(current.subagents.at(-1)?.id, original.id);
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(stop);
+    assert.deepEqual((yield* threadState(childId)).runs, ["completed", "starting"]);
+    assert.deepEqual((yield* threadState(grandchild)).runs, ["starting"]);
+    assert.equal(
+      (yield* orchestrator.getThreadProjection(parentId)).subagents.at(-1)?.result,
+      null,
+    );
+
+    // A real Stop of the follow-up owns its grandchild, but not the previous child run's task.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+    yield* threads.stopDelegatedTasks({
+      commandId: CommandId.make("stop-follow-up-owner"),
+      threadId: parentId,
+      parentRunId: current.runs.at(-1)!.id,
+    });
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    yield* worker.drain();
+    assert.deepEqual((yield* threadState(grandchild)).runs, ["interrupted"]);
+    assert.deepEqual((yield* threadState(previousGrandchild)).runs, ["starting"]);
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("interrupting the restart source stops children owned by every run in its chain", () =>
