@@ -757,6 +757,42 @@ function pendingThreadTitleGenerationEffect(
   };
 }
 
+/** Select the provider work a run interrupt owns, including runless items bound to its attempts. */
+function interruptWorkForRuns<
+  P extends Pick<
+    OrchestrationV2ThreadProjection,
+    "runs" | "attempts" | "providerThreads" | "providerTurns" | "turnItems"
+  >,
+>(projection: P, runIds?: ReadonlyArray<RunId>) {
+  if (runIds === undefined) return projection;
+  const owned = new Set(runIds);
+  const attempts = projection.attempts.filter((attempt) => owned.has(attempt.runId));
+  const attemptIds = new Set(attempts.map((attempt) => attempt.id));
+  const providerTurns = projection.providerTurns.filter(
+    (turn) => turn.runAttemptId !== null && attemptIds.has(turn.runAttemptId),
+  );
+  const turnIds = new Set(providerTurns.map((turn) => turn.id));
+  const turnItems = projection.turnItems.filter((item) =>
+    item.runId === null
+      ? item.providerTurnId !== null && turnIds.has(item.providerTurnId)
+      : owned.has(item.runId),
+  );
+  const providerThreadIds = new Set([
+    ...attempts.map((attempt) => attempt.providerThreadId),
+    ...projection.runs.filter((run) => owned.has(run.id)).map((run) => run.providerThreadId),
+    ...providerTurns.map((turn) => turn.providerThreadId),
+    ...turnItems.map((item) => item.providerThreadId),
+  ]);
+  return {
+    ...projection,
+    providerTurns,
+    turnItems,
+    providerThreads: projection.providerThreads.filter((thread) =>
+      providerThreadIds.has(thread.id),
+    ),
+  };
+}
+
 function delegatedTasksStopEffect(
   command: {
     readonly commandId: CommandId;
@@ -11768,6 +11804,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >;
     readonly stoppedProviderThreadId: OrchestrationV2ProviderThread["id"] | null;
     readonly throughRunOrdinal: number;
+    readonly stopRunIds?: ReadonlyArray<RunId> | undefined;
     readonly now: DateTime.Utc;
   }) {
     const emitEvent = emit(input.events, input.command);
@@ -11863,6 +11900,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     for (const providerThread of input.projection.providerThreads) {
       if ((providerThread.pendingBackgroundTasks?.length ?? 0) === 0) continue;
+      const rosterOwner = input.projection.runs.find(
+        (candidate) => candidate.ordinal === providerThread.lastRunOrdinal,
+      );
+      if (
+        input.stopRunIds !== undefined &&
+        rosterOwner !== undefined &&
+        !input.stopRunIds.includes(rosterOwner.id)
+      )
+        continue;
       if (providerThread.id === input.stoppedProviderThreadId) {
         // A refused newer start can take ownership and reject the stopped
         // turn's roster clear. Reconcile it without hiding surviving work.
@@ -12413,6 +12459,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             "runtimeRequests",
             "turnItems",
             "providerThreads",
+            ...(command.stopRunIds === undefined ? [] : (["providerTurns"] as const)),
           ],
           {
             turnItemTypes: [
@@ -12524,9 +12571,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* settleBackgroundWork({
         command,
         events,
-        projection,
+        projection: interruptWorkForRuns(projection, command.stopRunIds),
         stoppedProviderThreadId: command.providerThreadId,
         throughRunOrdinal: stoppedRun.ordinal,
+        stopRunIds: command.stopRunIds,
         now,
       });
     },
@@ -12655,10 +12703,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
-    target: "restart-chain" | "exact-run" = "restart-chain",
+    target: "restart-chain" | "thread" = "restart-chain",
   ) {
-    // Thread-wide, like the Waiting strip: a settled thread's background
-    // work can belong to an earlier run than the one Stop targets.
     const workFilter = {
       turnItemTypes: [
         "command_execution",
@@ -12693,9 +12739,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     let run =
-      target === "exact-run"
-        ? selectedRun
-        : latestRestartContinuation(projection.runs, selectedRun);
+      target === "thread" ? selectedRun : latestRestartContinuation(projection.runs, selectedRun);
     // Recovery can keep delegated work alive across several server restarts.
     const chainRunIds = new Set<RunId>();
     const runsById = new Map(projection.runs.map((candidate) => [candidate.id, candidate]));
@@ -12757,13 +12801,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       return;
     }
+    const stopRunIds = target === "thread" ? undefined : [...chainRunIds];
+    const work = interruptWorkForRuns(projection, stopRunIds);
     const hasBackgroundWork =
-      run.id === lastExecuted?.id &&
+      (target !== "thread" || run.id === lastExecuted?.id) &&
       derivePendingBackgroundWork({
         latestRun: run,
-        providerThreads: projection.providerThreads,
-        turnItems: projection.turnItems,
-        activeProviderThreadId: projection.thread.activeProviderThreadId,
+        providerThreads: work.providerThreads,
+        turnItems: work.turnItems,
+        activeProviderThreadId:
+          target === "thread" ? projection.thread.activeProviderThreadId : null,
         runs: projection.runs,
       }).length > 0;
     if (pendingContinuation || hasBackgroundWork) {
@@ -12795,21 +12842,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // A failed start has no provider turn. Background work still belongs
     // to the provider thread, so Stop reaches its latest accepted turn.
     const providerTurn =
-      projection.providerTurns.findLast(
+      work.providerTurns.findLast(
         (candidate) =>
           run.activeAttemptId !== null &&
           candidate.runAttemptId === run.activeAttemptId &&
           (run.status === "running" || candidate.status === "running" || hasBackgroundWork),
       ) ??
       (hasBackgroundWork
-        ? (projection.providerTurns.findLast(
+        ? (work.providerTurns.findLast(
             (candidate) =>
               candidate.providerThreadId === run.providerThreadId &&
               projection.attempts.some(
                 (attempt) => attempt.id === candidate.runAttemptId && attempt.runId === run.id,
               ),
           ) ??
-          projection.providerTurns.findLast(
+          work.providerTurns.findLast(
             (candidate) => candidate.providerThreadId === run.providerThreadId,
           ))
         : undefined);
@@ -12835,7 +12882,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             events,
             projection,
             cohortRunIds,
-            includeOtherCohorts: target === "exact-run",
+            includeOtherCohorts: target === "thread",
             now,
           })
         : Effect.gen(function* () {
@@ -12887,7 +12934,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     };
 
     const otherProviderInterrupts: Array<PendingOrchestrationEffectV2> = [];
-    if (hasBackgroundWork || command.holdQueue === true) {
+    if (hasBackgroundWork || command.holdQueue === true || chainRunIds.size > 1) {
       const runOrdinals = new Map(
         projection.runs.map((candidate) => [candidate.id, candidate.ordinal]),
       );
@@ -12901,13 +12948,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         { readonly turn: (typeof projection.providerTurns)[number]; readonly runOrdinal: number }
       >();
       for (const item of pendingBackgroundTurnItems({
-        turnItems: projection.turnItems,
+        turnItems: work.turnItems,
         runs: projection.runs,
       })) {
         if (item.type === "subagent" && isAppOwnedTaskWork(item)) continue;
-        const turn = projection.providerTurns.find(
-          (candidate) => candidate.id === item.providerTurnId,
-        );
+        const turn = work.providerTurns.find((candidate) => candidate.id === item.providerTurnId);
         if (turn === undefined || turn.providerThreadId === providerThread?.id) continue;
         const runOrdinal = runOrdinalOf(item);
         const latest = latestTurnByProviderThread.get(turn.providerThreadId);
@@ -12930,6 +12975,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           threadId: command.threadId,
           request: {
             type: "provider-turn.interrupt",
+            ...(stopRunIds === undefined ? {} : { stopRunIds }),
             providerSessionId: owner.providerSessionId,
             providerThreadId: owner.id,
             providerTurnId: turn.id,
@@ -12938,16 +12984,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
-    if (pendingContinuation && providerTurn === undefined) {
+    if (
+      providerTurn === undefined &&
+      (pendingContinuation || (target !== "thread" && !isActiveRun(run)))
+    ) {
       yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
       yield* stopRemainingWork();
       if (providerThread !== undefined || hasBackgroundWork) {
         yield* settleBackgroundWork({
           command,
           events,
-          projection,
+          projection: work,
           stoppedProviderThreadId: providerThread?.id ?? null,
           throughRunOrdinal: run.ordinal,
+          stopRunIds,
           now,
         });
       }
@@ -13098,6 +13148,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             threadId: command.threadId,
             request: {
               type: "provider-turn.interrupt",
+              ...(stopRunIds === undefined ? {} : { stopRunIds }),
               providerSessionId: supersededOwner.providerSessionId,
               providerThreadId: supersededOwner.id,
               providerTurnId: supersededTurn.id,
@@ -13151,9 +13202,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* settleBackgroundWork({
         command,
         events,
-        projection,
+        projection: work,
         stoppedProviderThreadId: providerThread.id,
         throughRunOrdinal: run.ordinal,
+        stopRunIds,
         now,
       });
       yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
@@ -13194,6 +13246,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         threadId: command.threadId,
         request: {
           type: "provider-turn.interrupt",
+          ...(stopRunIds === undefined ? {} : { stopRunIds }),
           providerSessionId,
           providerThreadId: providerThread.id,
           providerTurnId: providerTurn.id,
@@ -13460,7 +13513,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
           interruptEvents,
           interruptEffects,
-          "exact-run",
+          "thread",
         ),
       );
       // A failed interrupt may have written part of its events, so they are kept apart.

@@ -939,7 +939,7 @@ const stopEarlierBackgroundWork = ({
         }
 
         yield* orchestrator.dispatch(
-          stopWithQueue === "thread.stop"
+          stopWithQueue !== "run.interrupt"
             ? {
                 type: "thread.stop",
                 commandId: CommandId.make("stop-background-work"),
@@ -962,10 +962,12 @@ const stopEarlierBackgroundWork = ({
         assert.sameDeepMembers(
           interrupts.map((interrupt) => [interrupt.providerThread.id, interrupt.providerTurnId]),
           [
-            ...(olderStart || failedStart
+            ...(olderStart || failedStart || stopWithQueue === "run.interrupt"
               ? []
               : [[otherProviderThreadId, latestRun.providerTurnId]]),
-            [codexProviderThread.id, reviewerRun.providerTurnId],
+            ...(stopWithQueue === "run.interrupt"
+              ? []
+              : [[codexProviderThread.id, reviewerRun.providerTurnId]]),
           ],
         );
         const after = yield* orchestrator.getThreadProjection(threadId);
@@ -979,6 +981,12 @@ const stopEarlierBackgroundWork = ({
           assert.equal(after.runs.at(-1)?.status, "queued");
           assert.equal(after.runs.at(-1)?.queueHeld, true);
           assert.lengthOf(started, 1);
+        }
+        if (stopWithQueue === "run.interrupt") {
+          for (const id of [devServerId, ...(olderStart ? [] : [watcherId]), reviewerId])
+            assert.equal(after.turnItems.find((item) => item.id === id)?.status, "running");
+          assert.equal(after.subagents[0]?.status, "running");
+          return;
         }
         assert.deepEqual(
           [devServerId, ...(olderStart ? [] : [watcherId]), reviewerId].map(
@@ -1048,12 +1056,12 @@ it.effect("Stop preserves the roster when the background work probe fails", () =
 );
 
 it.effect.each(["thread.stop", "run.interrupt"] as const)(
-  "%s stops background work when a later message is queued",
+  "%s respects background work ownership when a later message is queued",
   (stopType) => stopEarlierBackgroundWork({ stopWithQueue: stopType }),
 );
 
 it.effect.each(["thread.stop", "run.interrupt"] as const)(
-  "%s reaches later background work when an older run is starting",
+  "%s respects later background work ownership when an older run is starting",
   (stopType) => stopEarlierBackgroundWork({ stopWithQueue: stopType, olderStart: true }),
 );
 
