@@ -1660,19 +1660,33 @@ const make = Effect.gen(function* () {
         continue;
       }
       const threadId = task.childThreadId;
-      // Follow-up tasks reuse a child thread; walk its subtree only once.
-      if (stoppedChildThreadIds.has(threadId)) continue;
-      stoppedChildThreadIds.add(threadId);
-      yield* dispatch({
-        type: "thread.stop",
-        commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
-        threadId,
-        stopDelegatedTasks: false,
-        ...(input.reason === undefined ? {} : { reason: input.reason }),
-      }).pipe(
-        Effect.andThen(
-          stopDelegatedTasks({ commandId: input.commandId, reason: input.reason, threadId }),
-        ),
+      const stopChild =
+        input.parentRunId === undefined
+          ? dispatch({
+              type: "thread.stop",
+              commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
+              threadId,
+              stopDelegatedTasks: false,
+              ...(input.reason === undefined ? {} : { reason: input.reason }),
+            }).pipe(
+              Effect.andThen(
+                stopDelegatedTasks({ commandId: input.commandId, reason: input.reason, threadId }),
+              ),
+            )
+          : orchestrator.stopOwnedDelegatedChild({
+              commandId: CommandId.make(`${input.commandId}:stop:${task.id}`),
+              parentThreadId: input.threadId,
+              parentRunId: input.parentRunId,
+              taskId: task.id,
+              childThreadId: threadId,
+              reason: input.reason,
+            });
+      if (input.parentRunId === undefined) {
+        // The thread-wide walk visits a reused thread once. Scoped effects visit individual tasks.
+        if (stoppedChildThreadIds.has(threadId)) continue;
+        stoppedChildThreadIds.add(threadId);
+      }
+      yield* stopChild.pipe(
         Effect.catch((error) =>
           Effect.logWarning("Unable to stop a delegated task", {
             parentThreadId: input.threadId,
