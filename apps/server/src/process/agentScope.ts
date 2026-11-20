@@ -381,9 +381,9 @@ export const make = Effect.gen(function* () {
     if (systemctl === null) return false;
     const isEmpty = (state: ScopeState | undefined) =>
       state !== undefined &&
+      state.populated !== true &&
       (state.loadState === "not-found" ||
         state.activeState === "inactive" ||
-        state.activeState === "failed" ||
         state.populated === false);
     const before = yield* readScope(systemctl, unit);
     if (isEmpty(before)) return true;

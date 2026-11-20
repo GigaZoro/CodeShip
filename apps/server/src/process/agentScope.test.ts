@@ -400,31 +400,45 @@ describe("AgentScope service", () => {
     ),
   );
 
-  it.effect.each(["populated", "unreadable", "stop failed", "manager unavailable"] as const)(
-    "keeps command cleanup pending when its scope is %s",
-    (failure) =>
-      withFakeSystemd(
-        ({ scope, units, cgroupRoot, calls }) =>
-          Effect.gen(function* () {
-            const unit = "t3code-command-owned.scope";
-            exitedAgent(units, cgroupRoot, unit, { populated: true, oomKills: undefined });
-            expect(yield* scope.stopCommand(unit)).toBe(false);
-            if (failure === "populated") {
-              expect(stopsOf(calls)).toEqual([["--user", "stop", "--no-block", unit]]);
-              exitedAgent(units, cgroupRoot, unit, { populated: false, oomKills: undefined });
-              expect(yield* scope.stopCommand(unit)).toBe(true);
-              units.get(unit)!.activeState = "inactive";
-              expect(yield* scope.stopCommand(unit)).toBe(true);
-              units.delete(unit);
-              expect(yield* scope.stopCommand(unit)).toBe(true);
-            }
-          }),
-        {
-          showFails: failure === "unreadable",
-          stopFails: failure === "stop failed",
-          runtimeDir: failure === "manager unavailable" ? "" : "/run/user/1",
-        },
-      ),
+  it.effect.each([
+    "populated",
+    "unreadable",
+    "stop failed",
+    "manager unavailable",
+    "failed populated",
+    "failed unreadable",
+    "inactive populated",
+  ] as const)("keeps command cleanup pending when its scope is %s", (failure) =>
+    withFakeSystemd(
+      ({ scope, units, cgroupRoot, calls }) =>
+        Effect.gen(function* () {
+          const unit = "t3code-command-owned.scope";
+          exitedAgent(units, cgroupRoot, unit, { populated: true, oomKills: undefined });
+          if (failure.startsWith("failed ")) units.get(unit)!.activeState = "failed";
+          if (failure === "inactive populated") units.get(unit)!.activeState = "inactive";
+          if (failure === "failed unreadable")
+            NodeFS.unlinkSync(NodePath.join(cgroupRoot, unit, "cgroup.events"));
+          expect(yield* scope.stopCommand(unit)).toBe(false);
+          if (failure === "failed populated" || failure === "inactive populated") {
+            NodeFS.writeFileSync(NodePath.join(cgroupRoot, unit, "cgroup.events"), "populated 0\n");
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+          }
+          if (failure === "populated") {
+            expect(stopsOf(calls)).toEqual([["--user", "stop", "--no-block", unit]]);
+            exitedAgent(units, cgroupRoot, unit, { populated: false, oomKills: undefined });
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+            units.get(unit)!.activeState = "inactive";
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+            units.delete(unit);
+            expect(yield* scope.stopCommand(unit)).toBe(true);
+          }
+        }),
+      {
+        showFails: failure === "unreadable",
+        stopFails: failure === "stop failed",
+        runtimeDir: failure === "manager unavailable" ? "" : "/run/user/1",
+      },
+    ),
   );
 
   it.effect("stops leftover processes only in an active agent scope", () =>
