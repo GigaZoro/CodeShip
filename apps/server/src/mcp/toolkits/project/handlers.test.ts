@@ -83,8 +83,8 @@ const clientLaunchHarness = (input: {
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
   readonly webOrigin?: string;
-  /** The orchestrator refuses the new thread's mode, as under a managed ceiling. */
-  readonly refusedByCeiling?: true;
+  /** The launch refuses the new thread: its mode, under a managed ceiling, or a pin in No project. */
+  readonly refusedBy?: "ceiling" | "scratch-pin";
   readonly autoModeProvider?: ProviderDriverKind;
   /** Accounts a usage limit stopped, with their resets. */
   readonly limited?: ReadonlyMap<
@@ -186,20 +186,23 @@ const clientLaunchHarness = (input: {
       checkWorktreeBase: input.checkWorktreeBase ?? (() => Effect.void),
       launch: (launch) => {
         input.launched.push(launch);
-        if (input.refusedByCeiling) {
+        if (input.refusedBy !== undefined) {
           return Effect.fail(
             new ThreadLaunch.ThreadLaunchError({
               operation: "create-thread",
               commandId: launch.commandId,
               projectId: launch.projectId,
-              cause: new OrchestratorRuntimeModeAboveCeilingError({
-                commandId: launch.commandId,
-                threadId: launch.threadId ?? ThreadId.make("thread:refused"),
-                refused: "mode",
-                runtimeMode: launch.runtimeMode,
-                maxRuntimeMode: "approval-required",
-                organization: "Example Corp",
-              }),
+              cause:
+                input.refusedBy === "scratch-pin"
+                  ? new ThreadLaunch.ScratchPinnedWorktreeError()
+                  : new OrchestratorRuntimeModeAboveCeilingError({
+                      commandId: launch.commandId,
+                      threadId: launch.threadId ?? ThreadId.make("thread:refused"),
+                      refused: "mode",
+                      runtimeMode: launch.runtimeMode,
+                      maxRuntimeMode: "approval-required",
+                      organization: "Example Corp",
+                    }),
             }),
           );
         }
@@ -283,10 +286,10 @@ it.effect(
           readonly targeted?: false;
           readonly overrideModel?: ModelSelection;
           readonly webOrigin?: string;
-          readonly refusedByCeiling?: true;
+          readonly refusedBy?: "ceiling" | "scratch-pin";
         },
       ) {
-        const { targeted, overrideModel, webOrigin, refusedByCeiling, ...input } = params;
+        const { targeted, overrideModel, webOrigin, refusedBy, ...input } = params;
         const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
         const { projectId, modelSelection, dependencies } = clientLaunchHarness({
           runtimeModeCeiling,
@@ -294,7 +297,7 @@ it.effect(
           launched,
           ...(overrideModel === undefined ? {} : { overrideModel }),
           ...(webOrigin === undefined ? {} : { webOrigin }),
-          ...(refusedByCeiling === undefined ? {} : { refusedByCeiling }),
+          ...(refusedBy === undefined ? {} : { refusedBy }),
         });
         const toolkit = yield* ProjectToolkit.pipe(
           Effect.provide(
@@ -359,14 +362,23 @@ it.effect(
       });
       expect(fromSettings.launched[0]?.modelSelection).toEqual(overrideModel);
 
-      // An administrator's ceiling the orchestrator enforces is named, not reported as unavailable.
+      // An administrator's ceiling the orchestrator enforces is named, not reported as unavailable,
+      // and so is a pinned commit No project cannot hold.
       const managed = yield* launchWith("full-access", "full-access", {
         title: "Fix",
-        refusedByCeiling: true,
+        refusedBy: "ceiling",
       });
       expect(managed.result).toMatchObject({
         code: "invalid_request",
         message: "Example Corp limits threads to Supervised.",
+      });
+      const scratchPin = yield* launchWith("full-access", "full-access", {
+        title: "Fix",
+        refusedBy: "scratch-pin",
+      });
+      expect(scratchPin.result).toMatchObject({
+        code: "invalid_request",
+        message: new ThreadLaunch.ScratchPinnedWorktreeError().message,
       });
     }),
 );
@@ -939,6 +951,17 @@ it.effect("a launch into a new worktree creates nothing when its base ref has no
     expect((refused as { message: string }).message).toContain(
       'Base ref "t3/renamed" does not resolve to a commit in project "Client target" (/projects/client-target). No thread was created.',
     );
+    expect(launched).toHaveLength(0);
+
+    // The default base is a remote-tracking ref, which a pinned commit cannot be fetched by.
+    const pinnedWithoutBase = (yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Fix",
+        projectId,
+        workspaceStrategy: { type: "worktree", baseCommit: "a".repeat(40) },
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies))).at(-1)?.result;
+    expect(pinnedWithoutBase).toMatchObject({ code: "invalid_request" });
     expect(launched).toHaveLength(0);
 
     expect((yield* launchFrom("main")).at(-1)?.result).toMatchObject({ projectId });

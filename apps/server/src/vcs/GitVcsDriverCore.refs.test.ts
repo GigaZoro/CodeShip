@@ -598,6 +598,8 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
       assert.notEqual(beforeFetch, remoteHead);
 
       yield* git(peer, ["push", "origin", "HEAD:refs/heads/unrelated"]);
+      yield* git(peer, ["push", "origin", "HEAD:refs/heads/deleted"]);
+      yield* git(cwd, ["push", "origin", "--delete", "deleted"]);
       const driver = yield* GitVcsDriver.GitVcsDriver;
       yield* driver.fetchRemote({
         cwd,
@@ -606,6 +608,35 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
       });
       assert.isFalse(
         yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "unrelated" }),
+      );
+      // The clone's origin/HEAD, and its tracking ref of a branch deleted there since, point
+      // there too, but name no branch the remote has.
+      assert.deepEqual(
+        yield* driver.listRemoteBranchesAt({
+          cwd: peer,
+          remoteName: "origin",
+          commitSha: remoteHead,
+        }),
+        [initialBranch, "unrelated"].toSorted(),
+      );
+      assert.deepEqual(
+        yield* driver.listRemoteBranchesAt({ cwd, remoteName: "origin", commitSha: beforeFetch }),
+        [],
+      );
+      // A single-branch clone tracks no other branch it pushes; the remote still lists it.
+      const narrow = yield* makeTmpDir("git-narrow-");
+      yield* git(narrow, ["clone", "--single-branch", "--branch", initialBranch, remote, "."]);
+      yield* git(narrow, ["config", "user.email", "test@test.com"]);
+      yield* git(narrow, ["config", "user.name", "Test"]);
+      yield* git(narrow, ["commit", "--allow-empty", "-m", "narrow"]);
+      yield* git(narrow, ["push", "origin", "HEAD:refs/heads/narrow"]);
+      assert.deepEqual(
+        yield* driver.listRemoteBranchesAt({
+          cwd: narrow,
+          remoteName: "origin",
+          commitSha: yield* git(narrow, ["rev-parse", "HEAD"]),
+        }),
+        ["narrow"],
       );
 
       assert.equal(
@@ -676,6 +707,32 @@ it.layer(layerTest)("Git remote worktree bases", (it) => {
       yield* driver.fetchRemote({ cwd, remoteName: "origin", refName: "local-only" });
       assert.isTrue(
         yield* driver.remoteBranchExists({ cwd, remoteName: "origin", refName: "unrelated" }),
+      );
+    }),
+  );
+
+  it.effect("finds the branch at a commit on a remote whose heads outgrow the output cap", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const remote = yield* makeTmpDir("git-remote-");
+      yield* initRepoWithCommit(cwd);
+      const crowded = yield* git(cwd, ["rev-parse", "HEAD"]);
+      yield* git(cwd, ["commit", "--allow-empty", "-m", "wanted"]);
+      const wanted = yield* git(cwd, ["rev-parse", "HEAD"]);
+      yield* git(remote, ["-c", "init.defaultRefFormat=files", "init", "--bare"]);
+      yield* git(cwd, ["remote", "add", "origin", remote]);
+      yield* git(cwd, ["push", "origin", "HEAD:refs/heads/wanted"]);
+      // Loose refs take minutes on Windows, so the 1.2 MB of other heads go in one packed-refs file.
+      const heads = Array.from(
+        { length: 7_000 },
+        (_, index) => `${crowded} refs/heads/${"crowded-".padEnd(120, "x")}-${index}\n`,
+      );
+      yield* writeTextFile(remote, "packed-refs", heads.join(""));
+
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      assert.deepEqual(
+        yield* driver.listRemoteBranchesAt({ cwd, remoteName: "origin", commitSha: wanted }),
+        ["wanted"],
       );
     }),
   );

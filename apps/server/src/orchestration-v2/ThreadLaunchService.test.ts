@@ -22,6 +22,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  type RepositoryIdentity,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -47,6 +48,7 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as MemoryAdmission from "../resourceTelemetry/MemoryAdmission.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -138,6 +140,7 @@ interface HarnessOptions {
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+  readonly resolveRepositoryIdentity?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"];
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -215,6 +218,9 @@ function makeHarness(options: HarnessOptions = {}) {
       remoteBranchExists: () => Effect.succeed(true),
       removeWorktree,
       ...options.git,
+    }),
+    Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+      resolve: options.resolveRepositoryIdentity ?? (() => Effect.succeed(null)),
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
       runForThread: runSetup,
@@ -918,6 +924,47 @@ it.effect("does not update a reused thread title when the initial message is rej
   }),
 );
 
+it.effect("binds a reused empty thread to the workspace its launch asks for", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const threadId = ThreadId.make("thread:launch:reused-worktree");
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("command:launch:reused-worktree:create"),
+        threadId,
+        projectId,
+        title: "Draft",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "earlier-branch",
+        worktreePath: "/repo-worktrees/earlier",
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+      const launched = yield* launches.launch({
+        ...launchInput({
+          command: "command:launch:reused-worktree",
+          thread: "thread:launch:reused-worktree",
+          message: "Start from main",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+        reuseExistingThread: true,
+      });
+
+      // A retried preparation reuses the thread's checkout, which only this launch may record.
+      assert.deepEqual(
+        [launched.projection.thread.branch, launched.projection.thread.worktreePath],
+        [null, null],
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 // Stands `projectId` in for the Scratch project: a plain folder, not a Git
 // repository, so Git fails there with the error a real one raises.
 function scratchHarness() {
@@ -1047,6 +1094,34 @@ it.effect("launches a worktree request for Scratch at the root, in its own folde
     assert.equal(git.runs[0]?.workspacePreparation?.type, "worktree");
     assert.equal(git.thread.worktreePath, "/other-repo-worktrees/feature");
     assert.equal(harness.createWorktree.mock.calls[0]?.[0]?.cwd, "/other-repo");
+
+    // A retry of an accepted launch replays what it recorded, whatever it asks for now.
+    const replayed = yield* launches.launch(
+      launchInput({
+        command: "command:launch:git-worktree",
+        thread: "thread:launch:git-worktree",
+        message: "Build the feature",
+        workspace: { ...worktreeStrategy, baseCommit: "a".repeat(40) },
+      }),
+    );
+    assert.isTrue(replayed.resumed);
+
+    // A pinned worktree promises its commit, which Scratch cannot hold.
+    const pinned = yield* launches
+      .launch(
+        launchInput({
+          command: "command:launch:scratch-pinned",
+          thread: "thread:launch:scratch-pinned",
+          message: "Review the change",
+          workspace: { ...worktreeStrategy, baseCommit: "a".repeat(40) },
+        }),
+      )
+      .pipe(Effect.flip);
+    if (pinned._tag !== "ThreadLaunchError") {
+      assert.fail(`expected ThreadLaunchError, got ${pinned._tag}`);
+    }
+    assert.equal(pinned.operation, "resolve-project");
+    assert.instanceOf(pinned.cause, ThreadLaunch.ScratchPinnedWorktreeError);
     assert.deepEqual(harness.claimed, [launched.threadId]);
   }).pipe(Effect.provide(harness.layer));
 });
@@ -1187,6 +1262,231 @@ it.effect.each(["stable", "upstream/release"])(
         ),
       ),
     ),
+);
+
+it.effect("starts a worktree at its pinned commit after the branch moved on, or not at all", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "launch-pinned-base-" });
+    const sender = `${directory}/sender`;
+    const cwd = `${directory}/repo`;
+    const remote = `${directory}/remote.git`;
+    const fork = `${directory}/fork.git`;
+    yield* fs.makeDirectory(sender);
+    const command = (at: string, args: string[]) =>
+      git.execute({ operation: "launch-test", cwd: at, args });
+    yield* command(sender, ["init", "-b", "main"]);
+    yield* command(sender, ["config", "user.name", "Test"]);
+    yield* command(sender, ["config", "user.email", "test@example.test"]);
+    yield* command(sender, ["commit", "--allow-empty", "-m", "initial"]);
+    yield* command(sender, ["init", "--bare", "-b", "main", remote]);
+    yield* command(sender, ["remote", "add", "origin", remote]);
+    yield* command(sender, ["push", "origin", "main"]);
+    yield* command(directory, ["clone", remote, cwd]);
+    // Here a local branch of that name tracks another remote, where the pinned commit never was.
+    yield* command(cwd, ["init", "--bare", fork]);
+    yield* command(cwd, ["remote", "add", "upstream", fork]);
+    yield* command(cwd, ["push", "upstream", "main:feature"]);
+    yield* command(cwd, ["fetch", "upstream"]);
+    yield* command(cwd, ["branch", "--track", "feature", "upstream/feature"]);
+    // The branch the parent pushed, and the commit someone pushed onto it after.
+    yield* command(sender, ["commit", "--allow-empty", "-m", "pinned"]);
+    const pinned = (yield* command(sender, ["rev-parse", "HEAD"])).stdout.trim();
+    yield* command(sender, ["commit", "--allow-empty", "-m", "later"]);
+    yield* command(sender, ["push", "origin", "HEAD:feature"]);
+
+    // What the identity resolver would read from these remotes were they not local paths:
+    // `origin` is the repository the parent pushed to, and `upstream` the fork.
+    const identity = yield* Ref.make<RepositoryIdentity | null>({
+      canonicalKey: "example.test/acme/fork",
+      locator: {
+        source: "git-remote",
+        remoteName: "upstream",
+        remoteUrl: "https://example.test/acme/fork",
+      },
+      origin: { canonicalKey: "example.test/acme/app" },
+    });
+
+    const setupReached = new Map<string, Deferred.Deferred<void>>();
+    const harness = makeHarness({
+      hasCommit: ({ refName }) =>
+        command(cwd, ["rev-parse", "--verify", `${refName}^{commit}`]).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        ),
+      resolveRepositoryIdentity: () => Ref.get(identity),
+      git: {
+        resolveWorktreeBaseRemote: (input) => git.resolveWorktreeBaseRemote({ ...input, cwd }),
+        hasRefNamed: () => Effect.succeed(false),
+      },
+      fetchWorktreeBaseCommit: (input) => git.fetchWorktreeBaseCommit({ ...input, cwd }),
+      createWorktree: (input, options) =>
+        git.createWorktree(
+          { ...input, cwd, path: `${directory}/${input.newRefName ?? "worktree"}` },
+          options,
+        ),
+      runSetup: ({ threadId }) =>
+        Deferred.succeed(setupReached.get(threadId)!, undefined).pipe(
+          Effect.as({ status: "no-script" as const }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      // A pinned commit is fetched by its branch without asking for it.
+      const pinnedTo = (baseCommit: string, branch = "child") => ({
+        type: "worktree" as const,
+        baseRef: "feature",
+        branch,
+        baseCommit,
+      });
+      const pinnedLaunch = (name: string, workspace: ThreadLaunch.ThreadLaunchWorkspaceStrategy) =>
+        Deferred.make<void>().pipe(
+          Effect.map((reached) => {
+            setupReached.set(`thread:launch:${name}`, reached);
+            return launchInput({
+              command: `command:launch:${name}`,
+              thread: `thread:launch:${name}`,
+              message: "Start at the pinned commit",
+              workspace,
+            });
+          }),
+        );
+      // The preparation's error message, or null once it reached the setup script.
+      const preparationFailure = (threadId: ThreadId) =>
+        Effect.raceFirst(
+          Deferred.await(setupReached.get(threadId)!).pipe(Effect.as(null)),
+          threads.streamStoredEventsFrom({ threadId }).pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+            ),
+            Stream.runHead,
+            Effect.andThen(threads.getThreadProjection(threadId)),
+            Effect.map(
+              (projection) =>
+                projection.turnItems.find((item) => item.type === "error")?.failure?.message ?? "",
+            ),
+          ),
+        );
+
+      const missing = "f".repeat(40);
+      const failed = yield* launches.launch(
+        yield* pinnedLaunch("pinned-missing", pinnedTo(missing)),
+      );
+      assert.include((yield* preparationFailure(failed.threadId)) ?? "", missing);
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+
+      const launched = yield* launches.launch(yield* pinnedLaunch("pinned", pinnedTo(pinned)));
+      assert.isNull(yield* preparationFailure(launched.threadId));
+      assert.equal(
+        (yield* command(`${directory}/child`, ["rev-parse", "HEAD"])).stdout.trim(),
+        pinned,
+      );
+      assert.equal(
+        (yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath,
+        `${directory}/child`,
+      );
+
+      // A pin that is not fetched needs its commit here, whatever its branch is called here.
+      const unfetched = (baseCommit: string, baseRef: string) =>
+        launches.checkWorktreeBase({
+          projectId,
+          workspaceStrategy: { ...pinnedTo(baseCommit), baseRef, startFromOrigin: false },
+        });
+      yield* unfetched(pinned, "zz-review");
+      assert.include((yield* Effect.flip(unfetched(missing, "feature"))).message, missing);
+      assert.include((yield* Effect.flip(unfetched(missing, ":/initial"))).message, missing);
+
+      // A retry that asks for another project and commit still prepares the thread's project
+      // at the commit its first attempt recorded.
+      const retry = yield* pinnedLaunch("pinned-retry", pinnedTo(missing, "retried"));
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: retry.commandId,
+        threadId: retry.threadId,
+        projectId: retry.projectId,
+        title: retry.title,
+        modelSelection: retry.modelSelection,
+        runtimeMode: retry.runtimeMode,
+        interactionMode: retry.interactionMode,
+        branch: null,
+        worktreePath: null,
+        createdBy: retry.createdBy,
+        creationSource: retry.creationSource,
+      });
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${retry.commandId}:initial-message`),
+        threadId: retry.threadId,
+        messageId: MessageId.make("message:launch:pinned-retry"),
+        text: "Start at the pinned commit",
+        attachments: [],
+        modelSelection: retry.modelSelection,
+        dispatchMode: { type: "defer_start", workspaceStrategy: pinnedTo(pinned, "retried") },
+        createdBy: retry.createdBy,
+        creationSource: retry.creationSource,
+      });
+      const retried = yield* launches.launch({ ...retry, projectId: otherProjectId });
+      assert.isNull(yield* preparationFailure(retried.threadId));
+      assert.equal(harness.createWorktree.mock.calls.at(-1)?.[0].cwd, project.workspaceRoot);
+      assert.equal(
+        (yield* command(`${directory}/retried`, ["rev-parse", "HEAD"])).stdout.trim(),
+        pinned,
+      );
+
+      // Without `origin`, the repository is the one at `upstream`, though `backup` sorts first.
+      yield* command(cwd, ["remote", "rename", "upstream", "backup"]);
+      yield* command(cwd, ["remote", "rename", "origin", "upstream"]);
+      yield* Ref.set(identity, {
+        canonicalKey: "example.test/acme/app",
+        locator: {
+          source: "git-remote",
+          remoteName: "upstream",
+          remoteUrl: "https://example.test/acme/app",
+        },
+      });
+      yield* command(sender, ["commit", "--allow-empty", "-m", "matched"]);
+      const matched = (yield* command(sender, ["rev-parse", "HEAD"])).stdout.trim();
+      yield* command(sender, ["push", "origin", "HEAD:feature"]);
+      const fromUpstream = yield* launches.launch(
+        yield* pinnedLaunch("pinned-upstream", pinnedTo(matched, "from-upstream")),
+      );
+      assert.isNull(yield* preparationFailure(fromUpstream.threadId));
+      assert.equal(
+        (yield* command(`${directory}/from-upstream`, ["rev-parse", "HEAD"])).stdout.trim(),
+        matched,
+      );
+
+      // A local-path remote identifies no repository, so a pin is not fetched from `backup`: it
+      // starts at a commit the repository has and refuses one it lacks, even on an unborn branch.
+      yield* command(cwd, ["remote", "remove", "upstream"]);
+      yield* Ref.set(identity, null);
+      const offlineCheck = launches.checkWorktreeBase({
+        projectId,
+        workspaceStrategy: pinnedTo(missing),
+      });
+      assert.include((yield* Effect.flip(offlineCheck)).message, missing);
+      const offline = yield* launches.launch(
+        yield* pinnedLaunch("pinned-offline", pinnedTo(matched, "offline")),
+      );
+      assert.isNull(yield* preparationFailure(offline.threadId));
+      assert.equal(
+        (yield* command(`${directory}/offline`, ["rev-parse", "HEAD"])).stdout.trim(),
+        matched,
+      );
+      yield* command(cwd, ["checkout", "--orphan", "unborn"]);
+      assert.include((yield* Effect.flip(offlineCheck)).message, missing);
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(
+    Effect.provide(
+      GitVcsDriver.layer.pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "launch-pinned-git-" })),
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    ),
+  ),
 );
 
 it.effect("fetches the origin base from the remote it already resolved", () => {
@@ -2719,6 +3019,93 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
       assert.deepEqual(yield* Ref.get(fetched), ["origin"]);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.effect.each(["sha1", "sha256"])(
+  "launches a worktree at a pushed %s commit the checkout does not have yet",
+  (objectFormat) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const git = yield* GitVcsDriver.GitVcsDriver;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "launch-sha-base-" });
+      const sender = `${directory}/sender`;
+      const cwd = `${directory}/repo`;
+      const remote = `${directory}/remote.git`;
+      const worktreePath = `${directory}/worktree`;
+      yield* fs.makeDirectory(sender);
+      const command = (at: string, args: string[]) =>
+        git.execute({ operation: "launch-test", cwd: at, args });
+      const format = `--object-format=${objectFormat}`;
+      yield* command(sender, ["init", "-b", "main", format]);
+      yield* command(sender, ["config", "user.name", "Test"]);
+      yield* command(sender, ["config", "user.email", "test@example.test"]);
+      yield* command(sender, ["commit", "--allow-empty", "-m", "initial"]);
+      yield* command(sender, ["init", "--bare", "-b", "main", format, remote]);
+      yield* command(sender, ["remote", "add", "origin", remote]);
+      yield* command(sender, ["push", "origin", "main"]);
+      yield* command(directory, ["clone", remote, cwd]);
+      yield* command(sender, ["commit", "--allow-empty", "-m", "pushed after the clone"]);
+      yield* command(sender, ["push", "origin", "main"]);
+      const sha = (yield* command(sender, ["rev-parse", "HEAD"])).stdout.trim();
+
+      const setupStarted = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        hasCommit: ({ refName }) =>
+          command(cwd, ["rev-parse", "--verify", `${refName}^{commit}`]).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          ),
+        git: {
+          resolveWorktreeBaseRemote: (input) => git.resolveWorktreeBaseRemote({ ...input, cwd }),
+          fetchRemote: (input) => git.fetchRemote({ ...input, cwd }),
+          hasRefNamed: () => Effect.succeed(false),
+        },
+        createWorktree: (input, options) =>
+          git.createWorktree({ ...input, cwd, path: worktreePath }, options),
+        runSetup: () =>
+          Deferred.succeed(setupStarted, undefined).pipe(
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        // Only the MCP tools run checkWorktreeBase first, so launch fetches the commit itself.
+        // The message makes it a prepared run, whose failure is reported as a failed run.
+        const launched = yield* launches.launch(
+          launchInput({
+            command: `command:launch:sha-${objectFormat}`,
+            thread: `thread:launch:sha-${objectFormat}`,
+            message: "Start at the pushed commit",
+            workspace: { type: "worktree", baseRef: sha, branch: "feature", startFromOrigin: true },
+          }),
+        );
+        const failed = yield* Effect.raceFirst(
+          Deferred.await(setupStarted).pipe(Effect.as(null)),
+          threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+            ),
+            Stream.runHead,
+            Effect.andThen(threads.getThreadProjection(launched.threadId)),
+            Effect.map(
+              (projection) =>
+                projection.turnItems.find((item) => item.type === "error")?.failure?.message ?? "",
+            ),
+          ),
+        );
+        assert.isNull(failed);
+        assert.equal((yield* command(worktreePath, ["rev-parse", "HEAD"])).stdout.trim(), sha);
+      }).pipe(Effect.provide(harness.layer));
+    }).pipe(
+      Effect.provide(
+        GitVcsDriver.layer.pipe(
+          Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "launch-sha-git-" })),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
 );
 
 it.effect("replays an accepted send after the project disables the instance", () => {

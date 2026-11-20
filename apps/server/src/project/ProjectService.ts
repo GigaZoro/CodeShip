@@ -134,11 +134,13 @@ export class ProjectService extends Context.Service<
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
     /**
      * A page of active projects in creation order, each with its repository
-     * identity resolved, so a caller can match projects by repository.
+     * identity resolved, so a caller can match projects by repository;
+     * `refreshRepositoryIdentity` reads each from its remotes now, not a cache.
      */
     readonly listPage: (input: {
       readonly cursor: number;
       readonly limit: number;
+      readonly refreshRepositoryIdentity?: boolean;
     }) => Effect.Effect<
       { readonly projects: ReadonlyArray<Project>; readonly nextCursor: number | null },
       ProjectOperationError
@@ -570,17 +572,19 @@ export const make = Effect.gen(function* () {
   });
 
   const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
-    function* ({ cursor, limit }) {
+    function* ({ cursor, limit, refreshRepositoryIdentity = false }) {
       const rows = (yield* listRows).filter((project) => project.deletedAt === null);
       const projects = yield* Effect.forEach(
         rows.slice(cursor, cursor + limit),
         (row) =>
           hydrate(row).pipe(
             Effect.filterOrElse(
-              (project) => project.repositoryIdentity !== null,
+              (project) => !refreshRepositoryIdentity && project.repositoryIdentity !== null,
               (project) =>
                 projectEnrichment
-                  .readRepositoryIdentity(project.workspaceRoot)
+                  .readRepositoryIdentity(project.workspaceRoot, {
+                    refresh: refreshRepositoryIdentity,
+                  })
                   .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
             ),
           ),

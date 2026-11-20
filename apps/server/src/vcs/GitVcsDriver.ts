@@ -73,6 +73,8 @@ export interface ExecuteRemoteGitInput {
   readonly timeoutMs?: number;
   /** The failure's detail when Git's output names no known cause. */
   readonly fallbackErrorDetail: string;
+  /** Reads stdout line by line, past the output cap where `stdout` stops. */
+  readonly onStdoutLine?: (line: string) => Effect.Effect<void, never>;
 }
 
 export interface ExecuteGitResult {
@@ -432,6 +434,10 @@ export class GitVcsDriver extends Context.Service<
     readonly remoteBranchExists: (
       input: GitRemoteBranchExistsInput,
     ) => Effect.Effect<boolean, GitCommandError>;
+    /** Branches of the remote whose tip is `commitSha`, as the remote lists them now. */
+    readonly listRemoteBranchesAt: (
+      input: GitRemoteExistsInput & { readonly commitSha: string },
+    ) => Effect.Effect<ReadonlyArray<string>, GitCommandError>;
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,
     ) => Effect.Effect<GitResolveRemoteTrackingCommitResult, GitCommandError>;
@@ -654,7 +660,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     ).pipe(Effect.catchIf(isMissingExecutable, () => Effect.succeed(null)));
     if (result === null) return null;
     if (result.exitCode !== 0) {
-      // Only "not a git repository" means there is nothing to detect; any other exit is a broken repository.
+      // "Not a git repository" or a folder that is gone means there is nothing to detect; any other
+      // exit is a broken repository.
       if (isNonRepositoryGitStderr(result.stderr)) return null;
       const diagnostics = gitErrorLines(result.stderr);
       return yield* new VcsProcessExitError({

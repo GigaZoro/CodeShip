@@ -625,7 +625,7 @@ export const requireMemoryForDelegation = Effect.fn(
           .map((link) => `${link.label}, environmentId ${link.environmentId}`)
           .join(
             "; ",
-          )}): pass target.environmentId, no isolation, on a pushed branch. Another delegation here is refused the same way until memory frees up.`
+          )}): pass target.environmentId. With isolation "worktree" the child starts there in a project of the same repository at this checkout's commit, which must be the tip of a pushed branch; without isolation it works in that project's checkout there as it is. Another delegation here is refused the same way until memory frees up.`
       : "Do the work inline in this thread instead; another delegation is refused the same way until memory frees up.";
   return yield* failure(
     "memory_short",
@@ -3419,8 +3419,11 @@ const make = Effect.gen(function* () {
         requestKey: key,
         operation: "delegate-task",
       });
-      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const committedThread = isRetryOfAcceptedDelegation
+      const isRetryOfDelegation =
+        (yield* threadManagement
+          .receiptStatus(commandId)
+          .pipe(Effect.mapError(threadManagementFailure))) !== undefined;
+      const committedThread = isRetryOfDelegation
         ? yield* threadManagement
             .getThreadShell(derive.delegatedTaskThread({ commandId }))
             .pipe(Effect.mapError(threadManagementFailure))
@@ -3457,7 +3460,7 @@ const make = Effect.gen(function* () {
               );
       const projectId = foreignProjectId ?? parent.thread.projectId;
       const route =
-        !isRetryOfAcceptedDelegation && input.target === undefined && Option.isSome(accountRouting)
+        !isRetryOfDelegation && input.target === undefined && Option.isSome(accountRouting)
           ? yield* accountRouting.value.failoverLaunch({
               selection: primaryTarget.modelSelection,
               projectId,
@@ -3475,7 +3478,7 @@ const make = Effect.gen(function* () {
               )?.supportedRuntimeModes,
             }
           : primaryTarget;
-      if (!isRetryOfAcceptedDelegation) {
+      if (!isRetryOfDelegation) {
         yield* requireAccountWithRoom(
           {
             selection: target.modelSelection,
@@ -3495,7 +3498,7 @@ const make = Effect.gen(function* () {
         input.interactionMode,
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
+      if (input.isolation === "worktree" && !isRetryOfDelegation) {
         const project = yield* requireProject(foreignProjectId ?? parent.thread.projectId);
         if (foreignProjectId !== undefined) {
           // The parent's commit means nothing in another repository: start from its default branch.
@@ -3917,8 +3920,11 @@ const make = Effect.gen(function* () {
                   `Thread ${index + 1}: pass auto:true or target, not both.`,
                 );
               }
-              const isRetryOfAcceptedCreation = yield* threadManagement.hasReceipt(commandId);
-              const committedThread = isRetryOfAcceptedCreation
+              const isRetryOfCreation =
+                (yield* threadManagement
+                  .receiptStatus(commandId)
+                  .pipe(Effect.mapError(threadManagementFailure))) !== undefined;
+              const committedThread = isRetryOfCreation
                 ? yield* threadManagement
                     .getThreadShell(threadId)
                     .pipe(Effect.mapError(threadManagementFailure))
@@ -3968,7 +3974,7 @@ const make = Effect.gen(function* () {
                 request.interactionMode,
               );
               yield* assertTargetEnabledForProject(parent, commandId, target);
-              if (!isRetryOfAcceptedCreation)
+              if (!isRetryOfCreation)
                 yield* requireAccountWithRoom(
                   {
                     selection: target.modelSelection,

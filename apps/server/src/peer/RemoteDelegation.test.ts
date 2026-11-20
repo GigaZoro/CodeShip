@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EventId,
+  GitCommandError,
   MessageId,
   NodeId,
   type OrchestrationV2Run,
@@ -25,6 +26,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -111,10 +113,10 @@ interface BoxThread {
   readonly delegatedFrom: Ref.Ref<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>;
   /** The model and modes it was launched with. */
   readonly launchedWith: Ref.Ref<LaunchedWith | null>;
-  /** The workspace the thread there was launched with. */
-  readonly workspaceStrategy: Ref.Ref<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>;
   /** The project the thread there was launched in. */
   readonly launchedProject: Ref.Ref<ProjectId | null>;
+  /** The checkout the thread there was launched in. */
+  readonly launchedWorkspace: Ref.Ref<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>;
   /** The first message the thread there was launched with. */
   readonly message: Ref.Ref<string | null>;
   readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
@@ -150,6 +152,8 @@ interface BoxThread {
   readonly releaseStop: Deferred.Deferred<void>;
   /** Messages sent to the thread there after its launch, each starting a later run. */
   readonly sent: Ref.Ref<ReadonlyArray<string>>;
+  /** Runs as the launch there starts, before its thread exists. */
+  readonly beforeLaunch: Ref.Ref<Effect.Effect<void>>;
   /** Runs as the launch there is answered, before the laptop hears back. */
   readonly afterLaunch: Ref.Ref<Effect.Effect<void>>;
   /** The threads settled there, in order. */
@@ -162,6 +166,10 @@ interface BoxThread {
   readonly question: Ref.Ref<boolean>;
   /** A run after the task's own on the thread there, with this status. */
   readonly laterRun: Ref.Ref<OrchestrationV2Run["status"] | null>;
+  /** A checkout there whose remotes changed since its identity was cached, by workspace root. */
+  readonly remotesNow: Ref.Ref<ReadonlyMap<string, RepositoryIdentity>>;
+  /** Whether the last project list there read the remotes as they are now. */
+  readonly listedFresh: Ref.Ref<boolean | null>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -176,10 +184,10 @@ const makeBoxThread = Effect.gen(function* () {
     ),
     delegatedFrom: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>(null),
     launchedWith: yield* Ref.make<LaunchedWith | null>(null),
-    workspaceStrategy: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>(
+    launchedProject: yield* Ref.make<ProjectId | null>(null),
+    launchedWorkspace: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"] | null>(
       null,
     ),
-    launchedProject: yield* Ref.make<ProjectId | null>(null),
     message: yield* Ref.make<string | null>(null),
     status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
     reply: yield* Ref.make<string | null>("Working…"),
@@ -203,12 +211,15 @@ const makeBoxThread = Effect.gen(function* () {
     stopStarted: yield* Deferred.make<void>(),
     releaseStop: yield* Deferred.make<void>(),
     sent: yield* Ref.make<ReadonlyArray<string>>([]),
+    beforeLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     afterLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
     settles: yield* Ref.make<ReadonlyArray<ThreadId>>([]),
     settledOnce: yield* Deferred.make<void>(),
     dropSettles: yield* Ref.make(0),
     question: yield* Ref.make(false),
     laterRun: yield* Ref.make<OrchestrationV2Run["status"] | null>(null),
+    remotesNow: yield* Ref.make<ReadonlyMap<string, RepositoryIdentity>>(new Map()),
+    listedFresh: yield* Ref.make<boolean | null>(null),
   } satisfies BoxThread;
 });
 
@@ -244,6 +255,22 @@ const boxProjects: ReadonlyArray<Project> = [
     deletedAt: null,
   },
 ];
+
+/** Another repository there, whose remote shows it is not this one. */
+const docsProject: Project = {
+  ...boxProjects.at(-1)!,
+  id: ProjectId.make("project:box-docs"),
+  title: "docs",
+  workspaceRoot: "/srv/docs",
+  repositoryIdentity: {
+    canonicalKey: "github.com/acme/docs",
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "git@github.com:acme/docs.git",
+    },
+  },
+};
 
 const boxScratchProject = ProjectId.make("project:box-scratch");
 
@@ -535,15 +562,15 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
       ),
   });
   const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
-    checkWorktreeBase: () => Effect.void,
     launch: (input) =>
-      Ref.get(thread.runless).pipe(
+      Effect.flatten(Ref.get(thread.beforeLaunch)).pipe(
+        Effect.andThen(Ref.get(thread.runless)),
         Effect.flatMap((runless) =>
           Ref.set(thread.launched, input.threadId!).pipe(
             Effect.andThen(Ref.set(thread.linkOrigin, input.linkOrigin ?? null)),
             Effect.andThen(Ref.set(thread.delegatedFrom, input.delegatedFrom ?? null)),
             Effect.andThen(Ref.set(thread.launchedProject, input.projectId)),
-            Effect.andThen(Ref.set(thread.workspaceStrategy, input.workspaceStrategy)),
+            Effect.andThen(Ref.set(thread.launchedWorkspace, input.workspaceStrategy)),
             Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
             Effect.andThen(
               Ref.set(thread.launchedWith, {
@@ -578,6 +605,7 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
           ),
         ),
       ),
+    checkWorktreeBase: () => Effect.void,
   });
   return Layer.mergeAll(
     McpHttpServer.layerOrchestratorToolkit,
@@ -610,7 +638,14 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
         ensureScratchProject: Effect.succeed({ projectId: boxScratchProject }),
       }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    // The box's repository has origin/main, which its new worktrees start from.
+    Layer.provide(
+      Layer.mock(GitVcsDriver.GitVcsDriver)({
+        resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+        resolveDefaultBranchName: () => Effect.succeed("main"),
+        resolveCommit: () => Effect.succeed({ commitSha: "b0x" }),
+      }),
+    ),
     Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-remote-delegation-box-" }).pipe(
@@ -625,20 +660,33 @@ const boxToolkitLayer = (thread: BoxThread, projects: ReadonlyArray<Project>) =>
         list: () => Effect.succeed(boxProviders.map((provider) => provider.instanceId)),
       }),
     ),
-    Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+      ),
+    ),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: () => Effect.succeedNone,
+        getById: (id) =>
+          Effect.succeed(Option.fromUndefinedOr(projects.find((project) => project.id === id))),
         // More than a page, so finding the project with this repository pages.
-        listPage: ({ cursor, limit }) =>
-          Effect.succeed({
-            projects: projects.slice(cursor, cursor + limit),
-            nextCursor: cursor + limit < projects.length ? cursor + limit : null,
-          }),
+        listPage: ({ cursor, limit, refreshRepositoryIdentity = false }) =>
+          Ref.set(thread.listedFresh, refreshRepositoryIdentity).pipe(
+            Effect.andThen(Ref.get(thread.remotesNow)),
+            Effect.map((now) => ({
+              projects: projects.slice(cursor, cursor + limit).map((project) => ({
+                ...project,
+                repositoryIdentity:
+                  (refreshRepositoryIdentity ? now.get(project.workspaceRoot) : undefined) ??
+                  project.repositoryIdentity,
+              })),
+              nextCursor: cursor + limit < projects.length ? cursor + limit : null,
+            })),
+          ),
       }),
     ),
-    Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
-    Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
     Layer.provide(Layer.merge(ServerSettings.layerTest(), MemoryAdmission.layerTest())),
     Layer.provide(NodeServices.layer),
   );
@@ -678,12 +726,12 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
-  identity = { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
-  /** Whether the parent checkout's commit is on a remote. */
-  pushed = true,
+  identity: RepositoryIdentity | null = laptopIdentity,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
+    /** The project's checkout commit, which a test moves as a new local commit would. */
+    const head = yield* Ref.make(pushedHead);
     const layerDatabase = Layer.succeedContext(database);
     const layerOrchestrator = Layer.mergeAll(
       layerDatabase,
@@ -701,8 +749,37 @@ const makeLaptop = (
         }),
       ),
     );
-    const layerThreads = ThreadManagement.layer.pipe(
-      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+    /** How many of the next results recorded here fail, as a busy database would fail them. */
+    const failCompletes = yield* Ref.make(0);
+    const layerThreads = Layer.effect(
+      ThreadManagement.ThreadManagementService,
+      Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        return {
+          ...threads,
+          dispatch: (command) =>
+            command.type !== "delegated_task.remote.complete"
+              ? threads.dispatch(command)
+              : Ref.modify(failCompletes, (left) => [left > 0, Math.max(0, left - 1)]).pipe(
+                  Effect.flatMap((fail) =>
+                    fail
+                      ? Effect.fail(
+                          new Orchestrator.OrchestratorDispatchError({
+                            commandId: command.commandId,
+                            commandType: command.type,
+                          }),
+                        )
+                      : threads.dispatch(command),
+                  ),
+                ),
+        };
+      }),
+    ).pipe(
+      Layer.provide(
+        ThreadManagement.layer.pipe(
+          Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+        ),
+      ),
       Layer.provideMerge(
         Layer.mergeAll(layerOrchestrator, ServerSettings.layerTest(), MemoryAdmission.layerTest()),
       ),
@@ -734,6 +811,32 @@ const makeLaptop = (
               resolve: (cwd) => Effect.succeed(cwd === "/home/me/app" ? identity : null),
             }),
           ),
+          // The project's checkout is pushed as cs/feature; any other checkout's commit is not.
+          Layer.provide(
+            Layer.mock(GitVcsDriver.GitVcsDriver)({
+              resolveCommit: ({ cwd }) =>
+                (cwd === "/home/me/app" ? Ref.get(head) : Effect.succeed(unpushedHead)).pipe(
+                  Effect.map((commitSha) => ({ commitSha })),
+                ),
+              // Only the project's checkout has the remotes the match read.
+              listRemoteBranchesAt: ({ cwd, remoteName, commitSha }) =>
+                cwd !== "/home/me/app"
+                  ? Effect.succeed(["cs/elsewhere"])
+                  : commitSha === unansweredHead
+                    ? Effect.fail(
+                        new GitCommandError({
+                          operation: "GitVcsDriver.listRemoteBranchesAt",
+                          command: "git",
+                          cwd,
+                          detail: remoteSilence,
+                          diagnostics: remoteDiagnosis,
+                        }),
+                      )
+                    : Effect.succeed(
+                        commitSha === pushedHead ? (pushedBranchOn[remoteName] ?? []) : [],
+                      ),
+            }),
+          ),
         ),
       ),
       Layer.provide(Layer.succeedContext(linking)),
@@ -753,20 +856,14 @@ const makeLaptop = (
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
-      Layer.provide(
-        Layer.mock(GitVcsDriver.GitVcsDriver)({
-          resolveCommit: () => Effect.succeed({ commitSha: parentCommit } as never),
-          execute: () =>
-            Effect.succeed({
-              stdout: pushed ? "refs/remotes/origin/main\n" : "",
-            } as never),
-        }),
-      ),
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
       Layer.fresh,
     );
     const here = yield* Layer.build(layerHere);
     const server = Context.get(here, McpServer.McpServer);
     return {
+      head,
+      failCompletes,
       links: Context.get(linking, PeerLinks.PeerLinks),
       settings: Context.get(linking, ServerSettings.ServerSettingsService),
       orchestrator: Context.get(here, Orchestrator.OrchestratorV2),
@@ -785,6 +882,24 @@ const makeLaptop = (
   });
 
 const laptopScratchProject = ProjectId.make("project:laptop-scratch");
+const laptopIdentity = {
+  canonicalKey: "github.com/acme/app",
+  locator: {
+    source: "git-remote",
+    remoteName: "origin",
+    remoteUrl: "git@github.com:acme/app.git",
+  },
+} satisfies RepositoryIdentity;
+const pushedHead = "c0ffee0000000000000000000000000000000000";
+/** Where the laptop's remotes have `pushedHead`: each remote names its own branches. */
+const pushedBranchOn: Partial<Record<string, ReadonlyArray<string>>> = {
+  origin: ["cs/feature"],
+  upstream: ["cs/upstream-feature"],
+};
+const unpushedHead = "dead000000000000000000000000000000000000";
+const unansweredHead = "0ff0000000000000000000000000000000000000";
+const remoteSilence = "The remote did not answer within 30 s.";
+const remoteDiagnosis = "fatal: unable to access 'https://github.com/acme/app.git/'";
 const parentThreadId = ThreadId.make("thread:laptop-parent");
 const parentRunId = RunId.make("run:laptop-parent");
 const parentRootNode = NodeId.make("node:laptop-parent:root");
@@ -805,6 +920,7 @@ const parentScope: McpInvocationContext.McpInvocationScope = {
 const seedParent = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   projectId = ProjectId.make("project:laptop"),
+  worktreePath: string | null = null,
 ) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
@@ -821,7 +937,7 @@ const seedParent = (
       runtimeMode: "full-access",
       interactionMode: "default",
       branch: null,
-      worktreePath: null,
+      worktreePath,
     });
     yield* laptopEnv.sink.write({
       commandId: CommandId.make("command:seed:laptop-parent"),
@@ -934,6 +1050,14 @@ const delegateToBox = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>)
     );
 
 /** Waits until the task here has the result its thread there ended with. */
+const onSpanEnd = (span: Tracer.NativeSpan, record: () => void) => {
+  const end = span.end.bind(span);
+  span.end = (endTime, exit) => {
+    end(endTime, exit);
+    record();
+  };
+};
+
 const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, taskId: NodeId) =>
   laptopEnv.orchestrator
     .streamStoredEventsFrom({
@@ -1013,9 +1137,7 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       const tracer = Tracer.make({
         span(options) {
           const span = new Tracer.NativeSpan(options);
-          const end = span.end.bind(span);
-          span.end = (endTime, exit) => {
-            end(endTime, exit);
+          onSpanEnd(span, () => {
             const query = span.attributes.get("db.query.text");
             if (
               typeof query === "string" &&
@@ -1023,7 +1145,7 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
             ) {
               messageReads.push(query);
             }
-          };
+          });
           return span;
         },
       });
@@ -1313,7 +1435,7 @@ it.effect.each([
   },
   {
     side: "there",
-    laptopIdentity: { canonicalKey: "github.com/acme/app" } as RepositoryIdentity,
+    laptopIdentity,
     projects: boxProjects.map((project) =>
       project.id === boxProject ? { ...project, repositoryIdentity: forkIdentity } : project,
     ),
@@ -1441,9 +1563,291 @@ it.effect("a driver the box has no instance of is refused with the box's instanc
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-const parentCommit = "0123456789abcdef0123456789abcdef01234567";
+it.effect("a worktree task runs there in a new worktree at the parent's pushed commit", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread, [...boxProjects, docsProject]);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "auto");
+      yield* seedParent(a);
 
-it.effect("starts a task there in a new worktree from the parent's pushed commit", () =>
+      const worktree = {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId },
+        isolation: "worktree",
+        clientRequestId: "worktree",
+      };
+      const result = yield* a.call("delegate_task", worktree);
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchedProject)).toBe(boxProject);
+      expect(yield* Ref.get(thread.listedFresh)).toBe(true);
+      // The commit goes with its branch, so a branch that moves on there cannot move the child.
+      expect(yield* Ref.get(thread.launchedWorkspace)).toEqual({
+        type: "worktree",
+        baseRef: "cs/feature",
+        startFromOrigin: true,
+        baseCommit: pushedHead,
+      });
+
+      // A retry after a new local commit answers with the task it started, not a refusal.
+      yield* Ref.set(a.head, unpushedHead);
+      const retried = yield* a.call("delegate_task", worktree);
+      expect(retried.isError, JSON.stringify(retried.content)).toBe(false);
+      expect(retried.structuredContent).toMatchObject({
+        taskId: (result.structuredContent as { taskId: NodeId }).taskId,
+      });
+      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
+
+      // A remote that does not answer says so, with Git's reason, rather than asking for a push.
+      yield* Ref.set(a.head, unansweredHead);
+      const unanswered = yield* a.call("delegate_task", {
+        ...worktree,
+        clientRequestId: "unanswered",
+      });
+      expect(unanswered.isError).toBe(true);
+      expect(JSON.stringify(unanswered.content)).toContain("did not list its branches");
+      expect(JSON.stringify(unanswered.content)).toContain(remoteSilence);
+      expect(JSON.stringify(unanswered.content)).toContain(remoteDiagnosis);
+      expect(JSON.stringify(unanswered.content)).not.toContain("git push");
+
+      // The parent's commit means nothing in another repository there: its default branch.
+      const other = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId, projectId: docsProject.id },
+        isolation: "worktree",
+        clientRequestId: "other",
+      });
+      expect(other.isError, JSON.stringify(other.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchedWorkspace)).toEqual({
+        type: "worktree",
+        baseRef: "origin/main",
+        startFromOrigin: true,
+      });
+
+      // Without isolation it runs in that project's own checkout.
+      const shared = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId },
+        clientRequestId: "shared",
+      });
+      expect(shared.isError, JSON.stringify(shared.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchedWorkspace)).toEqual({ type: "root" });
+      // Any project of this repository will do there, so the list is read as cached.
+      expect(yield* Ref.get(thread.listedFresh)).toBe(false);
+
+      // A project is judged by its remotes as they are now, not as they were cached.
+      yield* Ref.set(a.head, pushedHead);
+      yield* Ref.set(
+        thread.remotesNow,
+        new Map([
+          [docsProject.workspaceRoot, boxProjects.at(-1)!.repositoryIdentity!],
+          [boxProjects.at(-1)!.workspaceRoot, docsProject.repositoryIdentity!],
+        ]),
+      );
+      const repointed = yield* a.call("delegate_task", {
+        ...worktree,
+        target: { environmentId: box.environmentId, projectId: docsProject.id },
+        clientRequestId: "repointed",
+      });
+      expect(repointed.isError, JSON.stringify(repointed.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchedWorkspace)).toEqual({
+        type: "worktree",
+        baseRef: "cs/feature",
+        startFromOrigin: true,
+        baseCommit: pushedHead,
+      });
+      const swapped = yield* a.call("delegate_task", { ...worktree, clientRequestId: "swapped" });
+      expect(swapped.isError, JSON.stringify(swapped.content)).toBe(false);
+      expect(yield* Ref.get(thread.launchedProject)).toBe(docsProject.id);
+      yield* Ref.set(
+        thread.remotesNow,
+        new Map([[docsProject.workspaceRoot, boxProjects.at(-1)!.repositoryIdentity!]]),
+      );
+      const tied = yield* a.call("delegate_task", { ...worktree, clientRequestId: "tied" });
+      expect(tied.isError).toBe(true);
+      expect(JSON.stringify(tied.content)).toContain(
+        `Several projects there have this repository: app (${boxProject}), docs (${docsProject.id}).`,
+      );
+      const missing = yield* a.call("delegate_task", {
+        ...worktree,
+        target: { environmentId: box.environmentId, projectId: "project:box-gone" },
+        clientRequestId: "missing",
+      });
+      expect(missing.isError).toBe(true);
+      expect(JSON.stringify(missing.content)).toContain("No project project:box-gone there.");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([
+  { remotes: "origin and its upstream", identity: forkIdentity, baseRef: "cs/feature" },
+  {
+    remotes: "upstream and no origin",
+    identity: { ...laptopIdentity, locator: { ...laptopIdentity.locator, remoteName: "upstream" } },
+    baseRef: "cs/upstream-feature",
+  },
+])(
+  "a worktree task from a checkout with $remotes starts from the branch of the remote it matched",
+  ({ identity, baseRef }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, undefined, identity);
+        yield* linkTo(a.links, b, "auto");
+        yield* seedParent(a);
+
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId },
+          isolation: "worktree",
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        expect(yield* Ref.get(thread.launchedWorkspace)).toMatchObject({ baseRef });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a worktree task from a chat with nothing to match there is refused before launching",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a, laptopScratchProject);
+        const worktreeTask = {
+          task: "Run the suite on the box.",
+          target: { environmentId: box.environmentId },
+          isolation: "worktree",
+        };
+
+        const result = yield* a.call("delegate_task", worktreeTask);
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain("target.projectId");
+        // A worktree of a named project there starts its default branch, which one with no remote lacks.
+        const noBranch = yield* a.call("delegate_task", {
+          ...worktreeTask,
+          target: { ...worktreeTask.target, projectId: "project:box-other-0" },
+          clientRequestId: "no-branch",
+        });
+        expect(noBranch.isError).toBe(true);
+        expect(JSON.stringify(noBranch.content)).toContain("has none");
+
+        // A project with no remote: naming a project there alone would be refused the same way.
+        const unidentified = yield* makeLaptop(
+          yield* SqlitePersistence.layerMemory.pipe(Layer.build),
+          offers,
+          undefined,
+          null,
+        );
+        yield* linkTo(unidentified.links, b, "full-access");
+        yield* seedParent(unidentified);
+        const noRemote = yield* unidentified.call("delegate_task", worktreeTask);
+        expect(noRemote.isError).toBe(true);
+        expect(JSON.stringify(noRemote.content)).toContain(
+          "Omit isolation and pass target.projectId",
+        );
+
+        // A repository that no project there clones.
+        const unrelated = yield* makeLaptop(
+          yield* SqlitePersistence.layerMemory.pipe(Layer.build),
+          offers,
+          undefined,
+          {
+            canonicalKey: "github.com/acme/unrelated",
+            locator: {
+              source: "git-remote",
+              remoteName: "origin",
+              remoteUrl: "git@github.com:acme/unrelated.git",
+            },
+          },
+        );
+        yield* linkTo(unrelated.links, b, "full-access");
+        yield* seedParent(unrelated);
+        const unmatched = yield* unrelated.call("delegate_task", worktreeTask);
+        expect(unmatched.isError).toBe(true);
+        expect(JSON.stringify(unmatched.content)).toContain("No project there has this repository");
+        expect(yield* Ref.get(thread.launched)).toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a worktree task is refused when that machine cannot fetch the parent's commit", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread, [...boxProjects, forkOfFork]);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a, ProjectId.make("project:laptop"), "/home/me/app-wip");
+
+      const result = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId },
+        isolation: "worktree",
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain(unpushedHead);
+
+      // A fork of this repository there fetches from its own origin, which lacks this branch.
+      const fork = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId, projectId: forkOfFork.id },
+        isolation: "worktree",
+        clientRequestId: "fork",
+      });
+      expect(fork.isError).toBe(true);
+      expect(JSON.stringify(fork.content)).toContain("fork or the upstream");
+
+      // A project there with no remote could be a clone of this repository or another one.
+      const unknown = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId, projectId: "project:box-other-0" },
+        isolation: "worktree",
+        clientRequestId: "unknown",
+      });
+      expect(unknown.isError).toBe(true);
+      expect(JSON.stringify(unknown.content)).toContain("no remote to tell which");
+
+      // Forks that tie are refused as a fork is, not as a choice between them.
+      yield* Ref.set(
+        thread.remotesNow,
+        new Map([[boxProjects.at(-1)!.workspaceRoot, forkOfFork.repositoryIdentity!]]),
+      );
+      const forks = yield* a.call("delegate_task", {
+        task: "Run the suite on the box.",
+        target: { environmentId: box.environmentId },
+        isolation: "worktree",
+        clientRequestId: "forks",
+      });
+      expect(forks.isError).toBe(true);
+      expect(JSON.stringify(forks.content)).toContain("fork or the upstream");
+      expect(yield* Ref.get(thread.launched)).toBeNull();
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a retry of a task whose record was refused launches nothing there", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -1453,25 +1857,120 @@ it.effect("starts a task there in a new worktree from the parent's pushed commit
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
       const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, b, "auto");
+      yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
+      yield* CommandReceiptStore.CommandReceiptStoreV2.pipe(
+        Effect.flatMap((receipts) =>
+          Effect.flatMap(DateTime.now, (acceptedAt) =>
+            receipts.insertIfAbsent({
+              commandId: CommandId.make(
+                `command:mcp:${encodeURIComponent(parentScope.requestNamespace)}:remote-delegate:refused`,
+              ),
+              threadId: parentThreadId,
+              commandType: "delegated_task.remote.request",
+              acceptedAt,
+              resultSequence: 1,
+              status: "rejected",
+              error: "The parent run ended.",
+            }),
+          ),
+        ),
+        Effect.provide(
+          CommandReceiptStore.layer.pipe(Layer.provide(Layer.succeedContext(database))),
+        ),
+      );
 
       const result = yield* a.call("delegate_task", {
         task: "Run the suite on the box.",
         target: { environmentId: box.environmentId },
-        isolation: "worktree",
+        clientRequestId: "refused",
       });
-      expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      expect(yield* Ref.get(thread.workspaceStrategy)).toEqual({
-        type: "worktree",
-        baseRef: parentCommit,
-        startFromOrigin: true,
-      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("Unable to record the delegated task.");
+      // The task is recorded before its launch, so a refused record never reached the box.
+      expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("refuses worktree isolation for a commit that is not pushed, naming it", () =>
+it.effect(
+  "a retry while the first call still launches waits for it and answers the same task",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const launching = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Ref.set(
+          thread.afterLaunch,
+          Deferred.succeed(launching, undefined).pipe(Effect.andThen(Deferred.await(release))),
+        );
+        // The retry's arrival and each call's own work, as their spans start and end.
+        const retryArrived = Deferred.makeUnsafe<void>();
+        const calls: Array<"start" | "end"> = [];
+        let arrivals = 0;
+        const tracer = Tracer.make({
+          span(options) {
+            const span = new Tracer.NativeSpan(options);
+            if (options.name === "RemoteDelegation.delegate" && ++arrivals === 2) {
+              Deferred.doneUnsafe(retryArrived, Effect.void);
+            }
+            if (options.name === "RemoteDelegation.delegateOnce") {
+              calls.push("start");
+              onSpanEnd(span, () => calls.push("end"));
+            }
+            return span;
+          },
+        });
+
+        const first = yield* delegateToBox(a).pipe(Effect.withTracer(tracer), Effect.forkScoped);
+        yield* Deferred.await(launching);
+        const retry = yield* delegateToBox(a).pipe(Effect.withTracer(tracer), Effect.forkScoped);
+        yield* Deferred.await(retryArrived);
+        yield* Deferred.succeed(release, undefined);
+        const delegated = yield* Fiber.join(first);
+        const retried = yield* Fiber.join(retry);
+
+        expect(retried.taskId).toBe(delegated.taskId);
+        // The retry read the task only once the first call had ended, so it never followed a
+        // thread that was not there yet.
+        expect(calls).toEqual(["start", "end", "start", "end"]);
+        expect(retried.status).toBe("running");
+
+        // A retry once the run that called has ended still answers with the task it recorded.
+        const parent = yield* a.projections.getThreadRecords(parentThreadId, ["runs"]);
+        const parentRun = parent.runs.find((run) => run.id === parentRunId);
+        if (parentRun === undefined) return yield* Effect.die("The parent run was not seeded.");
+        const now = yield* DateTime.now;
+        yield* a.sink.write({
+          commandId: CommandId.make("command:end-laptop-parent-run"),
+          events: [
+            {
+              id: EventId.make("event:end-laptop-parent-run"),
+              type: "run.updated",
+              threadId: parentThreadId,
+              runId: parentRunId,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: { ...parentRun, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        const late = yield* delegateToBox(a);
+        expect(late.taskId).toBe(delegated.taskId);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a call interrupted while it launches still launches and follows its task", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -1480,18 +1979,297 @@ it.effect("refuses worktree isolation for a commit that is not pushed, naming it
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers, undefined, undefined, false);
-      yield* linkTo(a.links, b, "auto");
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
+      const launching = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Ref.set(
+        thread.beforeLaunch,
+        Deferred.succeed(launching, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      );
 
-      const result = yield* a.call("delegate_task", {
-        task: "Run the suite on the box.",
-        target: { environmentId: box.environmentId },
-        isolation: "worktree",
+      // When the launch's call there ends, and when the retry starts to wait and answers.
+      const retryWaits = Deferred.makeUnsafe<void>();
+      const ended: Array<"launch" | "retry"> = [];
+      const launchTracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          // The forwarder names its tool once its span runs, so the name is read at the end.
+          if (options.name === "PeerForwarding.forward") {
+            onSpanEnd(span, () => {
+              if (span.attributes.get("peer.tool") === "t3_thread_launch") ended.push("launch");
+            });
+          }
+          return span;
+        },
       });
-      expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.content)).toContain(parentCommit);
+      const retryTracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          if (options.name === "RemoteDelegation.awaitLaunch") {
+            Deferred.doneUnsafe(retryWaits, Effect.void);
+          }
+          if (options.name === "RemoteDelegation.delegateOnce") {
+            onSpanEnd(span, () => ended.push("retry"));
+          }
+          return span;
+        },
+      });
+
+      // The task is on record and its launch has reached the box when the call is cut.
+      const first = yield* delegateToBox(a).pipe(
+        Effect.withTracer(launchTracer),
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(launching);
+      yield* Fiber.interrupt(first);
+      const retry = yield* delegateToBox(a).pipe(Effect.withTracer(retryTracer), Effect.forkScoped);
+      yield* Deferred.await(retryWaits);
+      yield* Deferred.succeed(release, undefined);
+      const retried = yield* Fiber.join(retry);
+
+      // The retry answered once the launch it found running had, so it never followed a
+      // thread that was not there yet.
+      expect(ended).toEqual(["launch", "retry"]);
+      expect(yield* Ref.get(thread.launched)).toBe(retried.remoteChild.threadId);
+      expect(retried.status).toBe("running");
+      yield* Ref.set(thread.reply, "Done on the box.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      expect(yield* taskResult(a, retried.taskId)).toMatchObject({ result: "Done on the box." });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a retry while a cut call's launch fails there answers with its failed task", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const launching = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Ref.set(
+        thread.beforeLaunch,
+        Deferred.succeed(launching, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.andThen(Effect.die("launch refused")),
+        ),
+      );
+      const retryWaits = Deferred.makeUnsafe<void>();
+      const tracer = Tracer.make({
+        span(options) {
+          if (options.name === "RemoteDelegation.awaitLaunch") {
+            Deferred.doneUnsafe(retryWaits, Effect.void);
+          }
+          return new Tracer.NativeSpan(options);
+        },
+      });
+
+      const first = yield* delegateToBox(a).pipe(Effect.forkScoped);
+      yield* Deferred.await(launching);
+      yield* Fiber.interrupt(first);
+      const retry = yield* delegateToBox(a).pipe(Effect.withTracer(tracer), Effect.forkScoped);
+      yield* Deferred.await(retryWaits);
+      yield* Deferred.succeed(release, undefined);
+
+      // The task is on record, so the retry answers with it, as a later retry would.
+      const retried = yield* Fiber.join(retry);
+      expect(retried.status).toBe("failed");
+      expect(yield* taskResult(a, retried.taskId)).toMatchObject({ status: "failed" });
       expect(yield* Ref.get(thread.launched)).toBeNull();
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a launch that fails there still ends its task when recording that fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      yield* Ref.set(thread.beforeLaunch, Effect.die("launch refused"));
+      yield* Ref.set(a.failCompletes, 1);
+
+      const refused = yield* a.call("delegate_task", {
+        task: "Run the full suite on the box.",
+        target: {
+          environmentId: box.environmentId,
+          providerInstanceId: instanceId,
+          model: "gpt-5.4",
+        },
+        mode: "async",
+      });
+      expect(refused.isError).toBe(true);
+
+      // Its follower finds nothing there and records the failure the launch could not.
+      const { subagents } = yield* a.threads.getThreadRecords(parentThreadId, ["subagents"]);
+      const taskId = subagents[0]?.id;
+      if (taskId === undefined) return yield* Effect.die("The task was not recorded.");
+      expect(yield* taskResult(a, taskId)).toMatchObject({ status: "failed" });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a stop owed while its task still launches reaches its thread there once it exists", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      // The task's follower, which the owed stop runs on, once it waits for the launch or has
+      // given up on the thread there. The delegate call also waits for launches, outside one.
+      const followerParked = Deferred.makeUnsafe<void>();
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const parent = Option.getOrUndefined(options.parent);
+          if (
+            options.name === "RemoteDelegation.awaitLaunch" &&
+            parent?._tag === "Span" &&
+            parent.name === "RemoteDelegation.followOnce"
+          ) {
+            Deferred.doneUnsafe(followerParked, Effect.void);
+          }
+          // A pass that ends is not given up: the follower looks again, maybe after the launch.
+          if (options.name === "RemoteDelegation.followFailed") {
+            Deferred.doneUnsafe(followerParked, Effect.void);
+          }
+          return span;
+        },
+      });
+      yield* a.remote.start().pipe(Effect.withTracer(tracer));
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const launching = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Ref.set(
+        thread.beforeLaunch,
+        Deferred.succeed(launching, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      );
+
+      // The task is on record and its launch has reached the box, but its thread is not there.
+      const first = yield* delegateToBox(a).pipe(Effect.withTracer(tracer), Effect.forkScoped);
+      yield* Deferred.await(launching);
+      // The first Stop ends the task here; the second owes its thread there a stop.
+      for (const stop of ["first", "second"]) {
+        yield* a.threads.stopDelegatedTasks({
+          threadId: parentThreadId,
+          commandId: CommandId.make(`command:stop:laptop-parent-${stop}`),
+        });
+      }
+      yield* Deferred.await(followerParked);
+      yield* Deferred.succeed(release, undefined);
+      const delegated = yield* Fiber.join(first);
+
+      yield* stoppedThere(a, delegated.taskId);
+      expect(yield* Ref.get(thread.stops)).toContain("thread.stop");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a cancel while its task still launches stops its thread there once it exists", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const launching = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Ref.set(
+        thread.beforeLaunch,
+        Deferred.succeed(launching, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      );
+      // The cancel, once it waits for the launch or has answered without waiting.
+      const cancelParked = Deferred.makeUnsafe<void>();
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          if (options.name === "RemoteDelegation.awaitLaunch") {
+            Deferred.doneUnsafe(cancelParked, Effect.void);
+          }
+          if (options.name === "RemoteDelegation.cancel") {
+            onSpanEnd(span, () => Deferred.doneUnsafe(cancelParked, Effect.void));
+          }
+          return span;
+        },
+      });
+
+      // The task is on record and its launch has reached the box, but its thread is not there.
+      const first = yield* delegateToBox(a).pipe(Effect.forkScoped);
+      yield* Deferred.await(launching);
+      const taskId = (yield* a.projections.getOpenRemoteDelegatedTasks)[0]?.taskId;
+      if (taskId === undefined) return yield* Effect.die("The task was not recorded.");
+      const cancel = yield* a
+        .call("task_cancel", { taskId })
+        .pipe(Effect.withTracer(tracer), Effect.forkScoped);
+      yield* Deferred.await(cancelParked);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(first);
+
+      expect((yield* Fiber.join(cancel)).isError).toBe(false);
+      expect(yield* taskResult(a, taskId)).toMatchObject({
+        status: "cancelled",
+        result: "Cancelled.",
+      });
+      expect(yield* Ref.get(thread.stops)).toContain("thread.stop");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a cancel answers with the result its task ended with while it stopped there", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+
+      // Its run there ends, and is recorded here, while the cancel's stop is on its way.
+      yield* Ref.set(thread.holdFirstStop, true);
+      const cancel = yield* a
+        .call("task_cancel", { taskId: delegated.taskId })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(thread.stopStarted);
+      yield* Ref.set(thread.reply, "All green.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* taskResult(a, delegated.taskId);
+      yield* Deferred.succeed(thread.releaseStop, undefined);
+
+      expect((yield* Fiber.join(cancel)).structuredContent).toEqual({
+        taskId: delegated.taskId,
+        status: "completed",
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

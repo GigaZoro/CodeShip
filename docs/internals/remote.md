@@ -154,12 +154,45 @@ the task holds a completed result, the follower settles it through the same link
 a queued message or a pending request, since settling would hide or cancel them,
 and a refused settle is left to auto-settlement there.
 
-A task with `isolation: "worktree"` branches its child's worktree there from the
-parent checkout's HEAD commit, passed as a SHA `baseRef` with `startFromOrigin`.
-The other machine can only fetch a pushed commit, so `RemoteDelegation` refuses an
-unpushed one by name, and `ThreadLaunchService` fetches a SHA base from the primary
-remote when the checkout lacks it. This is how a Windows-only test run happens
-at an exact commit.
+A worktree task there starts from the parent's commit, like one here, but the
+other machine can only fetch a branch: Git has no portable fetch of a bare
+commit. So the parent names a branch whose tip is that commit on the remote its
+repository was matched by (`origin`, else `upstream`, else the first remote by
+name: `groupingRemoteNameOf`), as that remote lists it now
+(`GitVcsDriver.listRemoteBranchesAt`, read line by line since a remote can list
+more heads than the output cap holds), not as a tracking ref last saw it, and
+refuses an unpushed commit by
+its hash rather than starting the child from something else. The other side
+fetches a pinned base from the remote its own project is matched by, by the same
+rule (`ThreadLaunchService` reads its repository identity), whatever a local
+branch of that name tracks there, so this needs a project there with the same
+origin (match rank 0). Both sides read the remotes as they are when the task
+starts, never from an identity cache: the parent lists the projects there with
+`refreshRepositoryIdentity`, which a peer too old to take it refuses, so a
+remote changed since a cache filled cannot decide the match or the branch.
+Remotes at a local path identify no repository, so a pin in a repository with
+only those is not fetched and starts only at a commit already there. A clone
+whose `upstream` remote shows it holds a fork or the upstream is refused for the same reason, and so is a named project whose
+repository either side cannot identify, since that decides between the commit
+and the default branch. A project of another repository, a fork whose remotes do
+not show the relation included, starts from its default branch, and only when
+`target.projectId` names it: a call that names none and matches no project there
+is refused. The launch carries the commit as
+`baseCommit` beside the branch, and the other side starts the worktree at that
+commit once the fetch has it and fails preparation by its hash when it does not,
+so a branch that moved on, or a fetch that fell back to a stale tracking ref,
+cannot start the child anywhere else. The task is recorded here before the launch
+there, under a thread id derived from the call's key, so a reply lost after the
+launch leaves a task whose follower finds its thread. From the record on, the
+launch runs in the service's scope, not the call's, so a call interrupted then
+still launches and follows its task. A retry with the same `clientRequestId`
+waits for any call still running with that key. Until a launch ends its thread
+there may not exist yet, so the retry, the task's follower (which also carries a
+Stop's stop there) and a cancel each wait for the launch first; otherwise they
+would find no thread there and fail the task, or record a stop that never reached
+it. The retry then answers an accepted record with that task before any of these checks,
+because the commit here may have moved and its parent run may have ended since.
+A refused record launched nothing, so its retry is refused again.
 
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:

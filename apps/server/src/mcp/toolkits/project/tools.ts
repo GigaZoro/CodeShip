@@ -57,6 +57,8 @@ const ProjectListTool = Tool.make("t3_project_list", {
     environmentId: OrchestratorMcpEnvironmentTarget,
     cursor: Schema.optional(NonNegativeInt),
     limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+    /** Each project's remotes as they are now, not as cached: a linked environment matches by them. */
+    refreshRepositoryIdentity: Schema.optional(Schema.Boolean),
   }),
   success: Schema.Struct({
     projects: Schema.Array(Project),
@@ -162,7 +164,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     workspaceStrategy: Schema.optional(
       LaunchWorkspaceStrategy.annotate({
         description:
-          "'worktree': new checkout from `baseRef`, else from the project's default branch, fetched first. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Stack: parent branch as `baseRef`, `startFromOrigin: false`. Uncommitted edits are not copied.",
+          "'worktree': new checkout from `baseRef` (at `baseCommit` if set, which needs `baseRef` as a branch of `origin`, else `upstream`, else the first remote), else from the project's default branch, fetched first. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Stack: parent branch as `baseRef`, `startFromOrigin: false`. Uncommitted edits are not copied.",
       }),
     ),
     message: Schema.optional(

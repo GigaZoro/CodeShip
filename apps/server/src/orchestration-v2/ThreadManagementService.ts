@@ -434,8 +434,17 @@ export interface ThreadManagementServiceShape {
     readonly projectId: ProjectId;
     readonly instanceId: ProviderInstanceId;
   }) => Effect.Effect<boolean>;
-  /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
-  readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  /**
+   * The command id's receipt, undefined before its first dispatch. A retry replays either status without starting
+   * work, so it skips the admission a new command needs: settings changed since cannot refuse an accepted retry,
+   * and a rejected one reserves no account room and provisions no worktree before its rejection replays.
+   */
+  readonly receiptStatus: (
+    commandId: CommandId,
+  ) => Effect.Effect<
+    CommandReceiptStore.CommandReceiptV2Status | undefined,
+    CommandReceiptStore.CommandReceiptStoreV2Error
+  >;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
@@ -679,11 +688,10 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const hasReceipt: ThreadManagementServiceShape["hasReceipt"] = (commandId) =>
-    receipts.getByCommandId(commandId).pipe(
-      Effect.orElseSucceed(() => Option.none()),
-      Effect.map(Option.isSome),
-    );
+  const receiptStatus: ThreadManagementServiceShape["receiptStatus"] = (commandId) =>
+    receipts
+      .getByCommandId(commandId)
+      .pipe(Effect.map((receipt) => Option.getOrUndefined(receipt)?.status));
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -1734,7 +1742,7 @@ const make = Effect.gen(function* () {
     sendToThread,
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
-    hasReceipt,
+    receiptStatus,
     waitForThread,
     organizeAfterRun,
     organizeThread,

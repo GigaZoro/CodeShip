@@ -1336,7 +1336,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>
@@ -2030,7 +2030,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           getThreadRecords: () => Effect.succeed(parentProjection([])),
         }),
         ServerSettings.layerTest(),
@@ -2090,8 +2090,12 @@ describe("OrchestratorMcpService provider resolution", () => {
     {
       name: "names a reachable full-access linked machine",
       links: [peer("reachable", "full-access")],
-      includes: ["Zoro-VPS, environmentId env-vps", "target.environmentId"],
-      excludes: ["Do the work inline"],
+      includes: [
+        "Zoro-VPS, environmentId env-vps",
+        "target.environmentId",
+        'With isolation "worktree" the child starts there',
+      ],
+      excludes: ["Do the work inline", "no isolation"],
     },
     {
       name: "advises inline work when no linked machine can take it",
@@ -2104,7 +2108,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           getThreadRecords: () => Effect.succeed(parentProjection([])),
         }),
         ServerSettings.layerTest(),
@@ -2277,7 +2281,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           getThreadRecords: (threadId) =>
             Effect.succeed(
               threadId === parentThreadId
@@ -2417,7 +2421,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                 assert.equal(id, derive.delegatedTaskThread({ commandId: command.commandId }));
                 return { ...liveThreadShell(id), modelSelection: selection };
               }),
-            hasReceipt: () => Ref.get(accepted),
+            receiptStatus: () =>
+              Ref.get(accepted).pipe(
+                Effect.map((isAccepted) => (isAccepted ? ("accepted" as const) : undefined)),
+              ),
             isProviderInstanceEnabledForProject: () =>
               Ref.get(everyCandidateDisabled).pipe(Effect.map((disabled) => !disabled)),
             assertProviderInstanceEnabled: ({ projectId, instanceId }) =>
@@ -2923,7 +2930,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const layerDependencies = Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
-              hasReceipt: () => Effect.succeed(false),
+              receiptStatus: () => Effect.undefined,
               assertProviderInstanceEnabled: () => Effect.void,
               isProviderInstanceEnabledForProject: () => Effect.succeed(true),
               getThreadRecords: (threadId) =>
@@ -5317,7 +5324,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const dependencies = Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
-              hasReceipt: () => Effect.succeed(false),
+              receiptStatus: () => Effect.undefined,
               assertProviderInstanceEnabled: () => Effect.void,
               getThreadRecords: (threadId) =>
                 Effect.succeed(
@@ -5404,7 +5411,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           assertProviderInstanceEnabled: () => Effect.void,
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection([]) : childProjection),
@@ -5479,7 +5486,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           assertProviderInstanceEnabled: () => Effect.void,
           getThreadRecords: (threadId) =>
             Effect.succeed(
@@ -5561,7 +5568,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>
@@ -5649,7 +5656,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          receiptStatus: () => Effect.undefined,
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>

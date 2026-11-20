@@ -102,6 +102,11 @@ function buildRepositoryOrigin(
   return { canonicalKey: originKey, remoteUrl: originUrl, ...(displayName ? { displayName } : {}) };
 }
 
+/** The remote whose repository `repositoryGroupingKeyOf` keys: `origin` is only ever the remote named so. */
+export function groupingRemoteNameOf(identity: RepositoryIdentity): string {
+  return identity.origin === undefined ? identity.locator.remoteName : "origin";
+}
+
 function buildRepositoryIdentity(input: {
   readonly remoteName: string;
   readonly remoteUrl: string;

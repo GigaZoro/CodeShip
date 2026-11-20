@@ -196,6 +196,7 @@ interface ExecuteGitOptions {
   env?: NodeJS.ProcessEnv | undefined;
   maxOutputBytes?: number | undefined;
   appendTruncationMarker?: boolean | undefined;
+  keepLineCallbacksAfterTruncation?: boolean | undefined;
   progress?: GitVcsDriver.ExecuteGitProgress | undefined;
   writesSharedConfig?: boolean | undefined;
 }
@@ -1346,6 +1347,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ...(options.appendTruncationMarker !== undefined
         ? { appendTruncationMarker: options.appendTruncationMarker }
         : {}),
+      ...(options.keepLineCallbacksAfterTruncation
+        ? { keepLineCallbacksAfterTruncation: true }
+        : {}),
       ...(options.progress ? { progress: options.progress } : {}),
       ...(options.writesSharedConfig ? { writesSharedConfig: true } : {}),
     }).pipe(
@@ -1421,7 +1425,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const result = yield* executeGitWithStableDiagnostics(input.operation, input.cwd, input.args, {
       env: NON_INTERACTIVE_GIT_ENV,
       allowNonZeroExit: true,
-      progress: timeline.progress,
+      ...(input.onStdoutLine === undefined
+        ? { progress: timeline.progress }
+        : {
+            progress: { ...timeline.progress, onStdoutLine: input.onStdoutLine },
+            appendTruncationMarker: true,
+            keepLineCallbacksAfterTruncation: true,
+          }),
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
     }).pipe(
       Effect.catchIf(
@@ -1964,6 +1974,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["show-ref", "--verify", "--quiet", `refs/remotes/${input.remoteName}/${input.refName}`],
       1,
     );
+
+  const listRemoteBranchesAt: GitVcsDriver.GitVcsDriver["Service"]["listRemoteBranchesAt"] =
+    Effect.fn("GitVcsDriver.listRemoteBranchesAt")(function* (input) {
+      // Tracking refs can name a branch deleted there, and miss one the fetch refspec leaves out.
+      // A remote can list more heads than the output cap holds, so lines are read as they come.
+      const branches: Array<string> = [];
+      yield* executeRemote({
+        operation: "GitVcsDriver.listRemoteBranchesAt",
+        cwd: input.cwd,
+        args: ["ls-remote", "--heads", "--", input.remoteName],
+        fallbackErrorDetail: "git ls-remote failed.",
+        onStdoutLine: (line) =>
+          Effect.sync(() => {
+            const [commitSha = "", refName = ""] = line.split("\t");
+            if (commitSha === input.commitSha && refName.startsWith("refs/heads/"))
+              branches.push(refName.slice("refs/heads/".length));
+          }),
+      });
+      return branches;
+    });
 
   const remoteExists: GitVcsDriver.GitVcsDriver["Service"]["remoteExists"] = (input) =>
     probeGit(
@@ -5391,6 +5421,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }),
     remoteExists,
     remoteBranchExists,
+    listRemoteBranchesAt,
     resolveRemoteTrackingCommit,
     resolveWorktreeBaseRemote,
     fetchWorktreeBaseCommit: Effect.fnUntraced(function* (input) {

@@ -48,6 +48,7 @@ import { isLostConnection } from "../vcs/GitVcsDriverCore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -71,7 +72,14 @@ export type ThreadLaunchWorkspaceStrategy =
       readonly baseRef: string;
       readonly branch?: string | undefined;
       readonly startFromOrigin?: boolean | undefined;
+      readonly baseCommit?: string | undefined;
     };
+
+/** A pinned commit is fetched by its branch unless the caller says the base is already here. */
+export const fetchesWorktreeBase = (strategy: {
+  readonly startFromOrigin?: boolean | undefined;
+  readonly baseCommit?: string | undefined;
+}) => strategy.startFromOrigin ?? strategy.baseCommit !== undefined;
 
 export interface ThreadLaunchInitialMessage {
   readonly messageId?: MessageId;
@@ -177,6 +185,25 @@ export class ThreadLaunchBaseRefError extends Schema.TaggedError<ThreadLaunchBas
 
 const isCommitSha = (ref: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(ref);
 
+/** An unpinned commit SHA names no branch to fetch; a pushed one is brought in whole. */
+const fetchesCommitSha = (strategy: {
+  readonly baseRef: string;
+  readonly startFromOrigin?: boolean | undefined;
+  readonly baseCommit?: string | undefined;
+}) =>
+  strategy.baseCommit === undefined &&
+  fetchesWorktreeBase(strategy) &&
+  isCommitSha(strategy.baseRef);
+
+export class ScratchPinnedWorktreeError extends Schema.TaggedError<ScratchPinnedWorktreeError>()(
+  "ScratchPinnedWorktreeError",
+  {},
+) {
+  override get message(): string {
+    return "A thread without a project has no Git repository, so it cannot start at a pinned commit. Pick the project whose repository has the commit.";
+  }
+}
+
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
@@ -233,6 +260,7 @@ const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
+  const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const preparationScope = yield* Scope.make("sequential");
   // Preparation belongs to the run, so a replayed launch and a retry share one reservation.
   // The value is the command that owns it.
@@ -289,30 +317,54 @@ const make = Effect.gen(function* () {
     if (remote !== null) yield* git.fetchRemote({ cwd, remoteName: remote.remoteName });
   });
 
+  /**
+   * Where a worktree's base is fetched from, or null when nothing is. A pinned base is a branch on
+   * the remote the project's repository is matched by, as a linked machine matched it, whatever a
+   * local branch of that name tracks here. Local-path remotes identify no repository, so without
+   * another remote a pin is not fetched and needs its commit here.
+   */
+  const worktreeBaseRemote = Effect.fn("ThreadLaunchService.worktreeBaseRemote")(function* (
+    cwd: string,
+    strategy: { readonly baseRef: string; readonly baseCommit?: string | undefined },
+  ) {
+    if (strategy.baseCommit === undefined)
+      return isCommitSha(strategy.baseRef)
+        ? null
+        : yield* git.resolveWorktreeBaseRemote({ cwd, refName: strategy.baseRef });
+    const identity = yield* repositoryIdentities.resolve(cwd, { refresh: true });
+    return identity === null
+      ? null
+      : {
+          remoteName: RepositoryIdentityResolver.groupingRemoteNameOf(identity),
+          branchName: strategy.baseRef,
+        };
+  });
+
   const checkWorktreeBase: ThreadLaunchService["Service"]["checkWorktreeBase"] = Effect.fn(
     "ThreadLaunchService.checkWorktreeBase",
   )(function* (input) {
     const strategy = input.workspaceStrategy;
-    // `:/text` is a commit search, which cannot be asked for a commit type.
-    if (strategy.type !== "worktree" || strategy.baseRef.startsWith(":")) return;
-    const { baseRef } = strategy;
+    if (strategy.type !== "worktree") return;
+    const { baseRef, baseCommit } = strategy;
+    // `:/text` is a commit search, which cannot be asked for a commit type. A pin checks its commit.
+    if (baseCommit === undefined && baseRef.startsWith(":")) return;
     const unresolved = yield* Effect.gen(function* () {
       const project = Option.getOrUndefined(yield* projects.getById(input.projectId));
       if (project === undefined) return undefined;
       const cwd = project.workspaceRoot;
+      // A pinned worktree starts at its commit, whatever its branch is called here.
       // `git worktree add` reads `-` as the previous checkout.
-      if (yield* git.hasCommit({ cwd, refName: baseRef === "-" ? "@{-1}" : baseRef }))
-        return undefined;
-      if (strategy.startFromOrigin === true && isCommitSha(baseRef)) {
+      const startRef = baseCommit ?? (baseRef === "-" ? "@{-1}" : baseRef);
+      if (yield* git.hasCommit({ cwd, refName: startRef })) return undefined;
+      if (fetchesCommitSha(strategy)) {
         yield* fetchCommitFromOrigin(cwd, baseRef);
         if (yield* git.hasCommit({ cwd, refName: baseRef })) return undefined;
       }
-      if (
-        strategy.startFromOrigin === true &&
-        (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
-      )
+      if (fetchesWorktreeBase(strategy) && (yield* worktreeBaseRemote(cwd, strategy)) !== null)
         return undefined;
       // git worktree add accepts remote-tracking branches; let Git decide when any matching ref exists.
+      // Nothing can bring a missing pin here, even when HEAD is unborn.
+      if (baseCommit !== undefined) return project;
       if (yield* git.hasRefNamed({ cwd, refName: baseRef })) return undefined;
       return (yield* git.hasCommit({ cwd, refName: "HEAD" })) ? project : undefined;
     }).pipe(Effect.orElseSucceed(() => undefined));
@@ -321,7 +373,7 @@ const make = Effect.gen(function* () {
         projectId: unresolved.id,
         projectTitle: unresolved.title,
         workspaceRoot: unresolved.workspaceRoot,
-        baseRef,
+        baseRef: baseCommit ?? baseRef,
       });
   });
 
@@ -430,25 +482,16 @@ const make = Effect.gen(function* () {
         }
         let startRef = input.workspaceStrategy.baseRef;
         let baseRefName = input.workspaceStrategy.baseRef;
-        // A commit SHA names no branch to fetch; a pushed one is brought in whole.
-        if (
-          input.workspaceStrategy.startFromOrigin === true &&
-          isCommitSha(input.workspaceStrategy.baseRef)
-        ) {
+        if (fetchesCommitSha(input.workspaceStrategy)) {
           yield* fetchCommitFromOrigin(project.workspaceRoot, input.workspaceStrategy.baseRef).pipe(
             Effect.mapError(mapError(input, "provision-worktree", threadId)),
           );
         }
-        const remote =
-          input.workspaceStrategy.startFromOrigin === true &&
-          !isCommitSha(input.workspaceStrategy.baseRef)
-            ? yield* git
-                .resolveWorktreeBaseRemote({
-                  cwd: project.workspaceRoot,
-                  refName: input.workspaceStrategy.baseRef,
-                })
-                .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))
-            : null;
+        const remote = fetchesWorktreeBase(input.workspaceStrategy)
+          ? yield* worktreeBaseRemote(project.workspaceRoot, input.workspaceStrategy).pipe(
+              Effect.mapError(mapError(input, "provision-worktree", threadId)),
+            )
+          : null;
         const shouldFetch = remote !== null;
         yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
         if (remote !== null) {
@@ -465,6 +508,23 @@ const make = Effect.gen(function* () {
           }
         }
         if (shouldFetch) yield* setupTracker.stageStatus(threadId, "fetch", "done");
+        const { baseCommit } = input.workspaceStrategy;
+        if (baseCommit !== undefined) {
+          const fetched = yield* git
+            .hasCommit({ cwd: project.workspaceRoot, refName: baseCommit })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          if (!fetched)
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )(
+              remote === null
+                ? `Commit ${baseCommit} is not in this repository, and no remote is fetched for it.`
+                : `Commit ${baseCommit} is not in ${baseRefName}. Push it to that branch, then start the thread again.`,
+            );
+          startRef = baseCommit;
+        }
         if (
           branch !== null &&
           isTemporaryWorktreeBranch(branch) &&
@@ -864,34 +924,42 @@ const make = Effect.gen(function* () {
 
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (request) {
-      // Scratch has no Git repository. Normalize before folder allocation so
-      // durable preparation and retries use the thread's own Scratch folder.
-      const input: ThreadLaunchInput =
-        request.workspaceStrategy.type === "worktree" &&
-        (yield* managedFolders.isScratchProject(request.projectId))
-          ? { ...request, workspaceStrategy: { type: "root" } }
-          : request;
       yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
         type: "thread.create",
-        projectId: input.projectId,
-      }).pipe(Effect.mapError(mapError(input, "resolve-project")));
-      const project = yield* projects.getById(input.projectId).pipe(
-        Effect.mapError(mapError(input, "resolve-project")),
+        projectId: request.projectId,
+      }).pipe(Effect.mapError(mapError(request, "resolve-project")));
+      const project = yield* projects.getById(request.projectId).pipe(
+        Effect.mapError(mapError(request, "resolve-project")),
         Effect.flatMap(
           Option.match({
-            onNone: () => Effect.fail(mapError(input, "resolve-project")("Project not found.")),
+            onNone: () => Effect.fail(mapError(request, "resolve-project")("Project not found.")),
             onSome: Effect.succeed,
           }),
         ),
       );
-      if (input.reuseExistingThread === true && input.threadId === undefined) {
+      if (request.reuseExistingThread === true && request.threadId === undefined) {
         return yield* mapError(
-          input,
+          request,
           "update-thread",
         )("Reusing an existing thread requires a thread id.");
       }
 
-      const launchReceipt = yield* readReceipt(input, input.commandId);
+      const launchReceipt = yield* readReceipt(request, request.commandId);
+      // Scratch has no Git repository. Normalize before folder allocation so durable preparation
+      // and retries use the thread's own Scratch folder. No folder there holds a pinned commit, so
+      // only an accepted launch, which replays what it recorded, may still ask for one.
+      const scratchWorktree =
+        request.workspaceStrategy.type === "worktree" &&
+        (yield* managedFolders.isScratchProject(request.projectId))
+          ? request.workspaceStrategy
+          : undefined;
+      if (scratchWorktree?.baseCommit !== undefined && Option.isNone(launchReceipt)) {
+        return yield* mapError(request, "resolve-project")(new ScratchPinnedWorktreeError());
+      }
+      const input: ThreadLaunchInput =
+        scratchWorktree === undefined
+          ? request
+          : { ...request, workspaceStrategy: { type: "root" } };
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
         commandId: input.commandId,
@@ -959,6 +1027,10 @@ const make = Effect.gen(function* () {
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 expectedEmpty: true,
+                // Bound as a new thread would be, so a retried preparation never reuses a
+                // checkout the thread held before this launch.
+                branch: initialBranch,
+                worktreePath: initialWorktreePath,
               })
             : threads.dispatch({
                 type: "thread.create",
@@ -1107,7 +1179,11 @@ const make = Effect.gen(function* () {
                     );
               if (preparationStillRequired) {
                 yield* schedulePreparation(
-                  { ...input, workspaceStrategy: preparationStrategy },
+                  {
+                    ...input,
+                    projectId: projection.thread.projectId,
+                    workspaceStrategy: preparationStrategy,
+                  },
                   threadId,
                   runId,
                 );

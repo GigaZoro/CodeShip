@@ -85,6 +85,7 @@ const layerDispatchChokepointTest =
     options: {
       readonly autoAccount?: boolean;
       readonly accountRouting?: Layer.Layer<AccountRouting.AccountRouting>;
+      readonly receipts?: Layer.Layer<CommandReceiptStore.CommandReceiptStoreV2>;
     } = {},
   ) =>
   (dispatched: Array<OrchestrationV2ServerCommand>) => {
@@ -117,9 +118,25 @@ const layerDispatchChokepointTest =
       ),
       Layer.provide(options.accountRouting ?? Layer.empty),
       Layer.provide(settingsLayer),
-      Layer.provideMerge(layerReceiptsTest),
+      Layer.provideMerge(options.receipts ?? layerReceiptsTest),
     );
   };
+
+it.effect("a receipt that cannot be read fails instead of reading as never dispatched", () => {
+  const commandId = CommandId.make("command:thread-management:unreadable-receipt");
+  const layerTest = layerDispatchChokepointTest(ServerSettings.layerTest({}), {
+    receipts: Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+      getByCommandId: (id) =>
+        Effect.fail(new CommandReceiptStore.CommandReceiptStoreReadError({ commandId: id })),
+    }),
+  })([]);
+
+  return Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const error = yield* Effect.flip(threads.receiptStatus(commandId));
+    expect(error).toBeInstanceOf(CommandReceiptStore.CommandReceiptStoreReadError);
+  }).pipe(Effect.provide(layerTest));
+});
 
 it.effect(
   "the dispatch chokepoint refuses a continuation message.dispatch on a project-disabled instance before reaching the orchestrator",

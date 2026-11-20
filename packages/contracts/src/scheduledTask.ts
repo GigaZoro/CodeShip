@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import {
   CommandId,
@@ -26,6 +27,15 @@ import { ThreadFolder } from "./threadFolders.ts";
 const TimeOfDay = TrimmedNonEmptyString.check(
   Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/),
 ).annotate({ description: "Local time as HH:MM, such as 09:30." });
+
+/** A pinned commit belongs to one launch; a task that runs again starts from its branch each time. */
+export const ScheduledTaskWorkspaceStrategy =
+  OrchestrationV2ThreadLaunchWorkspaceStrategy.mapMembers(([root, existingWorktree, worktree]) => [
+    root,
+    existingWorktree,
+    worktree.mapFields(Struct.omit(["baseCommit"])),
+  ]);
+export type ScheduledTaskWorkspaceStrategy = typeof ScheduledTaskWorkspaceStrategy.Type;
 
 export const ScheduledTaskPlacement = Schema.Literals(["none", "chat", "pinned"]);
 export type ScheduledTaskPlacement = typeof ScheduledTaskPlacement.Type;
@@ -684,7 +694,7 @@ export const ScheduledTask = Schema.Struct({
   schedule: ScheduledTaskSchedule,
   projectId: ProjectId,
   threadId: Schema.NullOr(ThreadId),
-  workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  workspaceStrategy: ScheduledTaskWorkspaceStrategy,
   modelSelection: ModelSelection,
   fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   runtimeMode: RuntimeMode,
@@ -835,7 +845,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   schedule: ScheduledTaskUpsertSchedule,
   projectId: ProjectId,
   threadId: Schema.optional(Schema.NullOr(ThreadId)),
-  workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  workspaceStrategy: ScheduledTaskWorkspaceStrategy,
   modelSelection: ModelSelection,
   fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.optional(Schema.Boolean).annotate({
@@ -891,7 +901,7 @@ export const ScheduledTaskSharedCopy = Schema.Struct({
   prompt: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
   schedule: ScheduledTaskSchedule,
-  workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  workspaceStrategy: ScheduledTaskWorkspaceStrategy,
   modelSelection: ModelSelection,
   fallbackModelSelections: Schema.optional(Schema.Array(ModelSelection)),
   followsDefaultModel: Schema.Boolean,

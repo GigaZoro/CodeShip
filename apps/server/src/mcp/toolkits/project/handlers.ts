@@ -38,6 +38,7 @@ import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../t
 import { type LaunchWorkspaceStrategy, ProjectToolkit } from "./tools.ts";
 
 const isAboveCeilingError = Schema.is(OrchestratorRuntimeModeAboveCeilingError);
+const isScratchPinnedWorktreeError = Schema.is(ThreadLaunch.ScratchPinnedWorktreeError);
 
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
@@ -81,6 +82,13 @@ const withWorktreeBase = Effect.fn("mcp.withWorktreeBase")(function* <R>(
 ) {
   if (requested?.type !== "worktree") return requested;
   if (requested.baseRef !== undefined) return { ...requested, baseRef: requested.baseRef };
+  // The default base names a remote-tracking ref, and a pinned commit is fetched by its branch name.
+  if (requested.baseCommit !== undefined)
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message:
+        "baseCommit needs baseRef: the branch that has the commit on the project's origin, else upstream, else first remote.",
+    });
   const project = yield* readProject;
   if (project === undefined)
     return yield* new OrchestratorMcpFailure({
@@ -217,7 +225,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 new OrchestratorMcpFailure({
                   code: "invalid_request",
                   message: `${error.message} No thread was created. Pass a branch, tag, or commit that exists there${
-                    strategy.startFromOrigin === true
+                    ThreadLaunch.fetchesWorktreeBase(strategy)
                       ? "; the project has no usable remote to fetch it from."
                       : ", or set startFromOrigin:true if it exists only on a remote."
                   }`,
@@ -345,8 +353,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                     message: error.message,
                   });
                 }
-                // The administrator's ceiling refuses the mode; say so rather than "unavailable".
-                if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
+                // The administrator's ceiling refuses the mode, and No project a pin; say so rather
+                // than "unavailable".
+                if (
+                  error._tag === "ThreadLaunchError" &&
+                  (isAboveCeilingError(error.cause) || isScratchPinnedWorktreeError(error.cause))
+                ) {
                   return new OrchestratorMcpFailure({
                     code: "invalid_request",
                     message: error.cause.message,
@@ -375,7 +387,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
       const projects = yield* access;
       // Identities are resolved: linked environments find this side's project by repository.
       return yield* projects
-        .listPage({ cursor: input.cursor ?? 0, limit: input.limit ?? 20 })
+        .listPage({
+          cursor: input.cursor ?? 0,
+          limit: input.limit ?? 20,
+          refreshRepositoryIdentity: input.refreshRepositoryIdentity === true,
+        })
         .pipe(Effect.mapError(unavailable));
     }),
   ),

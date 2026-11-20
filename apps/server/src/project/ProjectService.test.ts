@@ -113,18 +113,24 @@ it.effect("resolves only the requested active project page in creation order", (
     const inspected = yield* Ref.make<ReadonlySet<string>>(new Set());
     const note = (workspaceRoot: string) =>
       Ref.update(inspected, (roots) => new Set([...roots, workspaceRoot]));
+    // Like the real resolver's cache, only a refresh sees a remote changed since the first read.
+    const repointed = yield* Ref.make(false);
     const metadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
-        resolve: (workspaceRoot) =>
+        resolve: (workspaceRoot, options) =>
           note(workspaceRoot).pipe(
-            Effect.as({
-              canonicalKey: `example.test${workspaceRoot}`,
-              locator: {
-                source: "git-remote" as const,
-                remoteName: "origin",
-                remoteUrl: `https://example.test${workspaceRoot}.git`,
-              },
-              rootPath: workspaceRoot,
+            Effect.andThen(Ref.get(repointed)),
+            Effect.map((moved) => {
+              const key = `example.test${moved && options?.refresh === true ? "/moved" : ""}${workspaceRoot}`;
+              return {
+                canonicalKey: key,
+                locator: {
+                  source: "git-remote" as const,
+                  remoteName: "origin",
+                  remoteUrl: `https://${key}.git`,
+                },
+                rootPath: workspaceRoot,
+              };
             }),
           ),
       }),
@@ -186,6 +192,19 @@ it.effect("resolves only the requested active project page in creation order", (
         projects: [],
         nextCursor: null,
       });
+
+      // A linked environment matching a repository asks for the remotes as they are now.
+      yield* Ref.set(repointed, true);
+      const keysOf = (page: { readonly projects: ReadonlyArray<Project> }) =>
+        page.projects.map((project) => project.repositoryIdentity?.canonicalKey);
+      assert.deepEqual(keysOf(yield* service.listPage({ cursor: 0, limit: 2 })), [
+        "example.test/work/page-0",
+        "example.test/work/page-2",
+      ]);
+      assert.deepEqual(
+        keysOf(yield* service.listPage({ cursor: 0, limit: 2, refreshRepositoryIdentity: true })),
+        ["example.test/moved/work/page-0", "example.test/moved/work/page-2"],
+      );
     }).pipe(Effect.scoped, Effect.provide(layerTestFor(metadata)));
   }),
 );

@@ -147,6 +147,7 @@ const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
     params: unknown,
   ) {
+    yield* Effect.annotateCurrentSpan({ "peer.tool": toolName });
     const limits = yield* callerLimits(scope);
     const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
       params,

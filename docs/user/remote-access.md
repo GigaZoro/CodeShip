@@ -406,6 +406,23 @@ it active again. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
+With `isolation: "worktree"` the task there gets a new worktree of that project,
+from the commit this thread is on, so a test that only runs on the other machine
+runs on exactly that commit. The other machine fetches it by branch name from
+its project's `origin` (else its `upstream`, else its first remote), so push the
+commit first: a branch of this checkout's remote picked the same way must end at
+it, and the project there must clone the same repository. An unpushed commit is refused: push it and
+repeat the call with the same `clientRequestId`. A project there whose
+`upstream` remote shows it clones a fork or the upstream instead is refused
+too. The child starts at that exact commit even if someone pushes more to the
+branch first. The other machine needs this version of T3.CodeShip or later. A project there with another repository, or a fork with no
+`upstream` remote, starts from its default branch when `target.projectId` names
+it; a call that names none and finds no project of this repository there is
+refused. A project with no remote,
+there or in this thread, is refused, since nothing tells which repository it
+holds. A link below full access
+skips the project's setup script there.
+
 ### Shared settings
 
 Machines that follow shared settings keep the same settings. A shared setting saved with **All

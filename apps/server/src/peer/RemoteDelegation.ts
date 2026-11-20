@@ -17,13 +17,16 @@ import {
   type RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { derive } from "@t3tools/provider-core/server/IdAllocator";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as RcMap from "effect/RcMap";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -32,7 +35,7 @@ import * as Hex from "effect/encoding/Hex";
 import type * as Tool from "effect/ai/Tool";
 
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
+import { type LaunchWorkspaceStrategy, ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
   resolveInteractionMode,
   resolveRuntimeMode,
@@ -46,6 +49,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { remoteFailureText } from "../vcs/GitVcsDriverCore.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
@@ -69,6 +73,22 @@ export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>
 );
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
+type ProjectThere = Tool.Success<typeof ProjectToolkit.tools.t3_project_list>["projects"][number];
+
+/**
+ * The `repositoryMatchRank` of a project there with this checkout's origin: that machine fetches a
+ * pinned base from the remote its project is matched by, so only such a project can start from this commit.
+ */
+const SAME_ORIGIN = 0;
+
+/**
+ * Whether each `delegate_task` isolation gives the task its own worktree there, so a new
+ * isolation in the contract needs a decision for linked environments before it compiles.
+ */
+const ownWorktreeThere = {
+  shared: false,
+  worktree: true,
+} as const satisfies Record<NonNullable<OrchestratorMcpDelegateTaskInput["isolation"]>, boolean>;
 
 /**
  * `delegate_task` to a linked environment. The task's child is an ordinary
@@ -139,6 +159,23 @@ const make = Effect.gen(function* () {
   );
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
+  // One delegate_task call per key at a time, so a retry reads what the call before it left.
+  const delegations = yield* RcMap.make({ lookup: (_commandId: CommandId) => Semaphore.make(1) });
+  // A recorded task's launch there runs with the followers, so a call interrupted after
+  // recording still launches and follows its task, and a retry answers what that launch did.
+  const launching = new Map<
+    NodeId,
+    Fiber.Fiber<{ readonly taskId: NodeId }, OrchestratorMcpFailure>
+  >();
+
+  /**
+   * Waits for the task's launch there to end, if one runs. Until then its thread there may not
+   * exist yet, so a follower, a stop or a retry would find nothing there.
+   */
+  const awaitLaunch = Effect.fn("RemoteDelegation.awaitLaunch")(function* (taskId: NodeId) {
+    const launch = launching.get(taskId);
+    if (launch !== undefined) yield* Fiber.await(launch);
+  });
 
   // One follower runs per open task and holds what it read across a wait of
   // up to FOLLOW_WAIT_MS, so it reads its own task, never the parent's whole
@@ -149,60 +186,177 @@ const make = Effect.gen(function* () {
       .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
       .pipe(Effect.map(({ thread, subagents }) => ({ thread, task: subagents[0] })));
 
+  const readProject = (projectId: ProjectId) =>
+    projects.getById(projectId).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.orElseSucceed(() => undefined),
+    );
+
   /**
-   * Where the task runs there: the project the caller named, the peer's own No project for a
-   * thread in No project (it has no repository to match), else the peer's project with this
-   * thread's repository, by its origin before its upstream.
+   * Every project there, read a page at a time. `fresh` reads each one's remotes as they are now,
+   * which a peer too old to take it refuses: its cached identities could decide the match.
+   */
+  const projectsThere = Effect.fn("RemoteDelegation.projectsThere")(function* (
+    scope: ThreadScope,
+    environmentId: EnvironmentId,
+    fresh: boolean,
+  ) {
+    const listed: Array<ProjectThere> = [];
+    let cursor: number | null = 0;
+    while (cursor !== null) {
+      const page: Tool.Success<typeof ProjectToolkit.tools.t3_project_list> = yield* forwarding
+        .call(scope, ProjectToolkit.tools.t3_project_list, environmentId, {
+          cursor,
+          limit: 100,
+          ...(fresh ? { refreshRepositoryIdentity: true } : {}),
+        })
+        .pipe(
+          Effect.mapError((error) =>
+            fresh && error.code === "invalid_request"
+              ? new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: `${error.message} Isolation "worktree" matches this repository by the remotes each project there has now; omit isolation to work in the project's checkout there.`,
+                })
+              : error,
+          ),
+        );
+      listed.push(...page.projects);
+      cursor = page.nextCursor;
+    }
+    return listed;
+  });
+
+  /**
+   * The named project there, the peer's No project for a No-project thread, else its project of
+   * this repository, origin before upstream. `rank` (worktree only) starts this commit, or at -1
+   * that project's default branch. `remoteName` is the remote of `checkout` the match compared.
+   * A worktree's match reads both sides' remotes as they are now, never a cache.
    */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
     scope: ThreadScope,
     environmentId: EnvironmentId,
     parentProjectId: ProjectId,
     requested: ProjectId | undefined,
+    worktree: boolean,
   ) {
-    if (requested !== undefined) return { projectId: requested } as const;
-    if (yield* managedFolders.isScratchProject(parentProjectId)) return { scratch: true } as const;
-    const here = yield* projects.getById(parentProjectId).pipe(
-      Effect.map(Option.getOrUndefined),
-      Effect.orElseSucceed(() => undefined),
-    );
-    // The project's own identity is a one-minute cache that reads blank when
-    // cold, so resolve it here, as the other side's t3_project_list does.
-    const identity =
-      here === undefined ? null : yield* repositoryIdentities.resolve(here.workspaceRoot);
-    if (identity === null) {
-      return yield* new OrchestratorMcpFailure({
-        code: "target_required",
-        message: "Pass target.projectId: this thread's project has no repository to match there.",
-      });
-    }
-    const keys = repositoryKeysOf(identity);
-    let matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
-    let bestRank = Number.POSITIVE_INFINITY;
-    let cursor: number | null = 0;
-    while (cursor !== null) {
-      const listed: Tool.Success<typeof ProjectToolkit.tools.t3_project_list> =
-        yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_list, environmentId, {
-          cursor,
-          limit: 100,
+    if (requested !== undefined && !worktree)
+      return { where: { projectId: requested }, rank: -1 } as const;
+    const namedIn = (listed: ReadonlyArray<ProjectThere>, projectId: ProjectId) => {
+      const named = listed.find((project) => project.id === projectId);
+      return named === undefined
+        ? Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: `No project ${projectId} there. t3_project_list with this environmentId lists them.`,
+            }),
+          )
+        : Effect.succeed(named);
+    };
+    if (yield* managedFolders.isScratchProject(parentProjectId)) {
+      if (requested === undefined) return { where: { scratch: true }, rank: -1 } as const;
+      const named = yield* namedIn(yield* projectsThere(scope, environmentId, true), requested);
+      if (named.repositoryIdentity == null)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `Isolation "worktree" needs a project with a remote there, and project "${named.title}" has none. Omit isolation to work in its folder there.`,
         });
-      for (const project of listed.projects) {
-        const rank = repositoryMatchRank(identity, project.repositoryIdentity);
-        if (rank === -1 || rank > bestRank) continue;
-        if (rank < bestRank) matches = [];
-        bestRank = rank;
-        matches.push(project);
-      }
-      cursor = listed.nextCursor;
+      return { where: { projectId: requested }, rank: -1 } as const;
     }
-    if (matches.length === 1) return { projectId: matches[0]!.id } as const;
+    const checkout = (yield* readProject(parentProjectId))?.workspaceRoot;
+    // The project's own identity is a cache that reads blank when cold and
+    // misses a changed remote, so read the checkout's remotes as they are now.
+    const identity =
+      checkout === undefined
+        ? null
+        : yield* repositoryIdentities.resolve(checkout, { refresh: true });
+    const unidentified = (project: string, omit: string) =>
+      new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: `Isolation "worktree" there starts from this checkout's commit in a clone of this repository and from the default branch in another, but ${project} has no remote to tell which. ${omit} to work in that project's checkout there.`,
+      });
+    if (checkout === undefined || identity === null) {
+      if (!worktree)
+        return yield* new OrchestratorMcpFailure({
+          code: "target_required",
+          message: "Pass target.projectId: this thread's project has no repository to match there.",
+        });
+      return yield* unidentified(
+        "this thread's project",
+        requested === undefined ? "Omit isolation and pass target.projectId" : "Omit isolation",
+      );
+    }
+    const remoteName = RepositoryIdentityResolver.groupingRemoteNameOf(identity);
+    const listed = yield* projectsThere(scope, environmentId, worktree);
+    if (requested !== undefined) {
+      const named = yield* namedIn(listed, requested);
+      if (named.repositoryIdentity == null)
+        return yield* unidentified(`project "${named.title}"`, "Omit isolation");
+      const rank = repositoryMatchRank(identity, named.repositoryIdentity);
+      return { where: { projectId: requested }, rank, remoteName, checkout } as const;
+    }
+    const ranked = listed.flatMap((project) => {
+      const rank = repositoryMatchRank(identity, project.repositoryIdentity);
+      return rank === -1 ? [] : [{ project, rank }];
+    });
+    const bestRank = Math.min(...ranked.map(({ rank }) => rank));
+    const matches = ranked.flatMap(({ project, rank }) => (rank === bestRank ? [project] : []));
+    // Forks that tie are all refused for a worktree, so picking one would not help.
+    if (matches.length === 1 || (worktree && matches.length > 1 && bestRank > SAME_ORIGIN))
+      return {
+        where: { projectId: matches[0]!.id },
+        rank: bestRank,
+        remoteName,
+        checkout,
+      } as const;
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message:
-        matches.length === 0
-          ? `No project there has this repository (${keys.join(" or ")}). Pass target.projectId; t3_project_list with this environmentId lists them. To bring the repository there, use t3_project_clone and then t3_project_create with this environmentId.`
-          : `Several projects there have this repository: ${matches.map((project) => `${project.title} (${project.id})`).join(", ")}. Pass target.projectId.`,
+        matches.length > 1
+          ? `Several projects there have this repository: ${matches.map((project) => `${project.title} (${project.id})`).join(", ")}. Pass target.projectId.`
+          : `No project there has this repository (${repositoryKeysOf(identity).join(" or ")}). Pass target.projectId; t3_project_list with this environmentId lists them. To bring the repository there, use t3_project_clone and then t3_project_create with this environmentId.`,
     });
+  });
+
+  /**
+   * A worktree there starts from this thread's commit, fetched from that project's remote, so the
+   * commit must be a branch tip on `remoteName`, the remote of `checkout` it was matched by; an
+   * unpushed one is refused by name. The commit travels with the branch, so a moved branch or a
+   * stale fetch cannot start it elsewhere.
+   */
+  const pushedWorktree = Effect.fn("RemoteDelegation.pushedWorktree")(function* (
+    worktreePath: string | null,
+    checkout: string,
+    remoteName: string,
+  ) {
+    const unresolved = () =>
+      new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: `Isolation "worktree" there starts from this checkout's commit, but HEAD of ${worktreePath ?? checkout} could not be read. Restore that checkout and repeat this call, or omit isolation to work in the project's checkout there.`,
+      });
+    const { commitSha } = yield* git
+      .resolveCommit({ cwd: worktreePath ?? checkout, revision: "HEAD" })
+      .pipe(Effect.mapError(unresolved));
+    const notPushed = (why: string) =>
+      new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: `Isolation "worktree" there starts from this checkout's commit ${commitSha}, but ${why}. Push it to a branch (git push <remote> HEAD:refs/heads/<branch>) and repeat this call with the same clientRequestId, which also finds a task an earlier attempt started there; or omit isolation to work in the project's checkout there.`,
+      });
+    const [branch] = yield* git.listRemoteBranchesAt({ cwd: checkout, remoteName, commitSha }).pipe(
+      Effect.mapError(
+        (error) =>
+          new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: `Isolation "worktree" there starts from this checkout's commit ${commitSha} on a branch of ${remoteName}, but ${remoteName} did not list its branches. Repeat this call with the same clientRequestId once it answers, or omit isolation to work in the project's checkout there. ${remoteFailureText(error)}`,
+          }),
+      ),
+    );
+    if (branch === undefined) return yield* notPushed(`no branch on ${remoteName} ends at it`);
+    return {
+      type: "worktree",
+      baseRef: branch,
+      startFromOrigin: true,
+      baseCommit: commitSha,
+    } as const;
   });
 
   /**
@@ -233,142 +387,154 @@ const make = Effect.gen(function* () {
     return usable.providerInstanceId;
   });
 
-  /**
-   * A new worktree there, from the commit this thread's checkout is on. The other machine can
-   * only fetch a commit that is pushed, so an unpushed one is refused by name.
-   */
-  const parentCommitWorktree = Effect.fn("RemoteDelegation.parentCommitWorktree")(
-    function* (parent: { readonly projectId: ProjectId; readonly worktreePath: string | null }) {
-      const project = yield* projects.getById(parent.projectId).pipe(
-        Effect.map(Option.getOrUndefined),
-        Effect.orElseSucceed(() => undefined),
-      );
-      const cwd = parent.worktreePath ?? project?.workspaceRoot;
-      const unresolved = new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message:
-          'Isolation "worktree" in a linked environment branches from this thread\'s checkout commit, which could not be read. Omit isolation, or pass target.projectId and use t3_thread_launch with environmentId and a worktree workspaceStrategy.',
-      });
-      if (cwd === undefined) return yield* unresolved;
-      const head = yield* git
-        .resolveCommit({ cwd, revision: "HEAD" })
-        .pipe(Effect.mapError(() => unresolved));
-      const pushedTo = yield* git
-        .execute({
-          operation: "RemoteDelegation.parentCommitWorktree",
-          cwd,
-          args: [
-            "for-each-ref",
-            "--count=1",
-            "--format=%(refname)",
-            "--contains",
-            head.commitSha,
-            "refs/remotes",
-          ],
-        })
-        .pipe(Effect.mapError(() => unresolved));
-      if (pushedTo.stdout.trim() === "") {
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: `Commit ${head.commitSha} is not pushed, so the other environment cannot fetch it. Push it, or omit isolation to run in that project's checkout.`,
-        });
-      }
-      return { type: "worktree", baseRef: head.commitSha, startFromOrigin: true } as const;
-    },
-  );
-
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
     function* (scope, input) {
-      const parent = yield* threads.getThreadRecords(scope.thread.threadId, ["runs"]).pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "thread_not_found",
-              message: "The calling thread was not found.",
-            }),
-        ),
-      );
-      const parentRun = parent.runs
-        .filter(ThreadManagement.isActiveRun)
-        .toSorted((left, right) => right.ordinal - left.ordinal)[0];
-      if (
-        parentRun === undefined ||
-        parentRun.rootNodeId === null ||
-        parentRun.providerInstanceId !== scope.thread.providerInstanceId
-      ) {
-        return yield* new OrchestratorMcpFailure({
-          code: "parent_not_active",
-          message: "Delegated tasks require an active run owned by this MCP provider session.",
-        });
-      }
-      const parentNodeId = parentRun.rootNodeId;
-      const { target } = input;
-      const workspaceStrategy =
-        input.isolation === "worktree" ? yield* parentCommitWorktree(parent.thread) : undefined;
-      // The provider and model inherit as they do for a task here. Another
-      // provider there has no model to inherit, so the caller names one.
-      const inherited = parent.thread.modelSelection;
-      const instanceId =
-        target.providerInstanceId ??
-        (target.driverKind === undefined
-          ? inherited.instanceId
-          : yield* resolveRemoteInstance(scope, target.environmentId, target.driverKind));
-      const model =
-        target.model ?? (instanceId === inherited.instanceId ? inherited.model : undefined);
-      if (model === undefined) {
-        return yield* new OrchestratorMcpFailure({
-          code: "target_required",
-          message: `Pass target.model from orchestrator_capabilities with this environmentId (instance ${instanceId} there).`,
-        });
-      }
-      const options =
-        target.options ??
-        (instanceId === inherited.instanceId && model === inherited.model
-          ? inherited.options
-          : undefined);
-      // Modes asked for are checked against this thread. Omitted ones are left
-      // to the other side, which inherits this thread's modes capped by the
-      // link's access, so a narrower link still takes the task.
-      const runtimeMode =
-        input.runtimeMode === undefined || input.runtimeMode === "inherit"
-          ? undefined
-          : yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
-      const interactionMode =
-        input.interactionMode === undefined || input.interactionMode === "inherit"
-          ? undefined
-          : yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
-      const where = yield* resolveRemoteProject(
-        scope,
-        target.environmentId,
-        parent.thread.projectId,
-        target.projectId,
-      );
       // One key for the launch there and the record here, so a retry finds both.
       // Both are scoped to the provider session, as every key a caller passes is:
       // the forwarder scopes the launch's, and the record's names it.
       const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
-      const task = taskPrompt(input);
-      // The thread there is named here, from the same scope and key, so the task is recorded
-      // before the launch: a crash or lost reply after the launch leaves a task whose follower
-      // finds its thread, and one before it a task whose thread is gone, which the follower fails.
-      // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the namespace apart from the key.
-      const keyBytes = new TextEncoder().encode(JSON.stringify([scope.requestNamespace, key]));
-      const digest = yield* crypto.digest("SHA-256", keyBytes).pipe(Effect.orDie);
-      const remoteThreadId = ThreadId.make(`remote-delegate:${Hex.encode(digest)}`);
-      const link = yield* links.get(target.environmentId).pipe(
-        Effect.map(Option.getOrUndefined),
-        Effect.orElseSucceed(() => undefined),
-      );
       const commandId = CommandId.make(
         `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
       );
-      const remoteChild: OrchestrationV2RemoteTaskChild = {
-        environmentId: target.environmentId,
-        threadId: remoteThreadId,
-        label: link?.label ?? target.environmentId,
-      };
-      const modelSelection = { instanceId, model, ...(options === undefined ? {} : { options }) };
-      const recorded = yield* threads
+      // A retry while the first call still launches would start a follower that finds no thread
+      // there yet and fails the task, so it waits for that call, and then for its launch.
+      const lock = yield* RcMap.get(delegations, commandId);
+      return yield* lock.withPermits(1)(delegateOnce(scope, input, key, commandId));
+    },
+    Effect.scoped,
+  );
+
+  const delegateOnce = Effect.fn("RemoteDelegation.delegateOnce")(function* (
+    scope: ThreadScope,
+    input: Parameters<RemoteDelegation["Service"]["delegate"]>[1],
+    key: string,
+    commandId: CommandId,
+  ) {
+    // The task's id derives from its command, so a retry finds the one recorded the first time.
+    const taskId = derive.delegatedTaskNode({ commandId });
+    // A call cut while it launched left its launch running; its record decides this answer.
+    yield* awaitLaunch(taskId);
+    // An accepted retry answers with its task before checking what changed since, such as this
+    // checkout's commit or the run that called. Its launch has ended, so the task's thread is
+    // there or never will be, and its follower finds which. A refused record launched nothing.
+    const recorded = yield* threads
+      .receiptStatus(commandId)
+      .pipe(
+        Effect.mapError(
+          (error) =>
+            new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+        ),
+      );
+    if (recorded === "accepted") {
+      yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
+      return { taskId };
+    }
+    const parent = yield* threads.getThreadRecords(scope.thread.threadId, ["runs"]).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "thread_not_found",
+            message: "The calling thread was not found.",
+          }),
+      ),
+    );
+    const parentRun = parent.runs
+      .filter(ThreadManagement.isActiveRun)
+      .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+    if (
+      parentRun === undefined ||
+      parentRun.rootNodeId === null ||
+      parentRun.providerInstanceId !== scope.thread.providerInstanceId
+    ) {
+      return yield* new OrchestratorMcpFailure({
+        code: "parent_not_active",
+        message: "Delegated tasks require an active run owned by this MCP provider session.",
+      });
+    }
+    const parentNodeId = parentRun.rootNodeId;
+    const { target } = input;
+    // The provider and model inherit as they do for a task here. Another
+    // provider there has no model to inherit, so the caller names one.
+    const inherited = parent.thread.modelSelection;
+    const instanceId =
+      target.providerInstanceId ??
+      (target.driverKind === undefined
+        ? inherited.instanceId
+        : yield* resolveRemoteInstance(scope, target.environmentId, target.driverKind));
+    const model =
+      target.model ?? (instanceId === inherited.instanceId ? inherited.model : undefined);
+    if (model === undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "target_required",
+        message: `Pass target.model from orchestrator_capabilities with this environmentId (instance ${instanceId} there).`,
+      });
+    }
+    const options =
+      target.options ??
+      (instanceId === inherited.instanceId && model === inherited.model
+        ? inherited.options
+        : undefined);
+    // Modes asked for are checked against this thread. Omitted ones are left
+    // to the other side, which inherits this thread's modes capped by the
+    // link's access, so a narrower link still takes the task.
+    const runtimeMode =
+      input.runtimeMode === undefined || input.runtimeMode === "inherit"
+        ? undefined
+        : yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
+    const interactionMode =
+      input.interactionMode === undefined || input.interactionMode === "inherit"
+        ? undefined
+        : yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
+    const worktree = ownWorktreeThere[input.isolation ?? "shared"];
+    const there = yield* resolveRemoteProject(
+      scope,
+      target.environmentId,
+      parent.thread.projectId,
+      target.projectId,
+      worktree,
+    );
+    const { where } = there;
+    if (worktree && "scratch" in where) {
+      return yield* new OrchestratorMcpFailure({
+        code: "target_required",
+        message:
+          'Isolation "worktree" needs a project with a repository there, and this thread is in No project. Pass target.projectId (t3_project_list with this environmentId lists them), or omit isolation.',
+      });
+    }
+    if (worktree && there.rank > SAME_ORIGIN) {
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message:
+          'Isolation "worktree" there starts from this checkout\'s commit, but the project it would run in there clones a fork or the upstream of this repository, not its origin, so it cannot fetch the commit. Pass target.projectId of a clone of this origin there, or omit isolation.',
+      });
+    }
+    // A project there with another repository starts from its own default branch, as a
+    // worktree of another local project does.
+    const workspaceStrategy: LaunchWorkspaceStrategy | undefined = !worktree
+      ? undefined
+      : there.rank === SAME_ORIGIN
+        ? yield* pushedWorktree(parent.thread.worktreePath, there.checkout, there.remoteName)
+        : { type: "worktree" };
+    const task = taskPrompt(input);
+    // The thread there is named here, from the same scope and key, so the task is recorded
+    // before the launch: a crash or lost reply after the launch leaves a task whose follower
+    // finds its thread, and one before it a task whose thread is gone, which the follower fails.
+    // @effect-diagnostics-next-line preferSchemaOverJson:off - a JSON pair keeps the namespace apart from the key.
+    const keyBytes = new TextEncoder().encode(JSON.stringify([scope.requestNamespace, key]));
+    const digest = yield* crypto.digest("SHA-256", keyBytes).pipe(Effect.orDie);
+    const remoteThreadId = ThreadId.make(`remote-delegate:${Hex.encode(digest)}`);
+    const link = yield* links.get(target.environmentId).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.orElseSucceed(() => undefined),
+    );
+    const remoteChild: OrchestrationV2RemoteTaskChild = {
+      environmentId: target.environmentId,
+      threadId: remoteThreadId,
+      label: link?.label ?? target.environmentId,
+    };
+    const modelSelection = { instanceId, model, ...(options === undefined ? {} : { options }) };
+    const launchThere = Effect.gen(function* () {
+      yield* threads
         .dispatch({
           type: "delegated_task.remote.request",
           commandId,
@@ -399,26 +565,6 @@ const make = Effect.gen(function* () {
               }),
           ),
         );
-      const taskEvent = recorded.storedEvents.find(
-        (stored) => stored.event.type === "subagent.updated",
-      );
-      const existing = yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
-        Effect.map(({ subagents }) =>
-          subagents.find((candidate) => candidate.remoteChild?.threadId === remoteThreadId),
-        ),
-        Effect.orElseSucceed(() => undefined),
-      );
-      const taskId =
-        taskEvent?.event.type === "subagent.updated" ? taskEvent.event.payload.id : existing?.id;
-      if (taskId === undefined) {
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: "The delegated task was not recorded.",
-        });
-      }
-      // A replayed request whose task already has its result (its thread was found gone, or it
-      // ended) has nothing to launch.
-      if (taskEvent === undefined && existing?.result != null) return { taskId };
       const launched = yield* forwarding
         .call(scope, ProjectToolkit.tools.t3_thread_launch, target.environmentId, {
           ...where,
@@ -472,7 +618,7 @@ const make = Effect.gen(function* () {
                       `The task could not be started in ${remoteChild.label}: ${error.message}`,
                       "stopped",
                     )
-                  : followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers)),
+                  : Effect.void,
               ),
               Effect.ignoreCause({ log: true }),
             ),
@@ -496,10 +642,25 @@ const make = Effect.gen(function* () {
             Effect.ignore,
           );
       }
-      yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
       return { taskId };
-    },
-  );
+    });
+    // From the record on, the launch runs with the followers, so interrupting this call
+    // cannot leave a recorded task that nothing launches or follows.
+    const launch = yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        const fiber = yield* launchThere.pipe(Effect.forkIn(followers));
+        launching.set(taskId, fiber);
+        // Also runs for a launch the closing scope interrupts before it starts.
+        fiber.addObserver(() => {
+          if (launching.get(taskId) === fiber) launching.delete(taskId);
+        });
+        // It waits for the launch, so it also ends a task whose launch failed to record that.
+        yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
+        return fiber;
+      }),
+    );
+    return yield* Fiber.join(launch);
+  });
 
   /**
    * Completes `task` here with its thread there's final state. Each attempt is its own
@@ -783,6 +944,7 @@ const make = Effect.gen(function* () {
     parentThreadId: ThreadId,
     taskId: NodeId,
   ) {
+    yield* awaitLaunch(taskId);
     const sequence = yield* threads.getThreadEventSequence(parentThreadId);
     const { thread, task } = yield* readTask(parentThreadId, taskId);
     if (task?.remoteChild === undefined) return true;
@@ -941,7 +1103,24 @@ const make = Effect.gen(function* () {
     });
 
   const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(
-    function* (scope, task, input) {
+    function* (scope, given, input) {
+      const read = readTask(given.threadId, given.id).pipe(
+        Effect.map(({ task }) => task),
+        Effect.mapError(
+          (error) =>
+            new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+        ),
+      );
+      // A launch still running may end the task, and its thread there may not exist yet. One
+      // that ended after the caller read the task may have ended it, so it is read again.
+      yield* awaitLaunch(given.id);
+      const task = yield* read;
+      if (task === undefined) {
+        return yield* new OrchestratorMcpFailure({
+          code: "task_not_found",
+          message: `Delegated task ${given.id} no longer exists.`,
+        });
+      }
       const remote = task.remoteChild;
       if (remote === undefined) {
         return yield* new OrchestratorMcpFailure({
@@ -973,10 +1152,7 @@ const make = Effect.gen(function* () {
         );
         return {
           taskId: task.id,
-          status:
-            task.status === "completed" || task.status === "failed" || task.status === "interrupted"
-              ? task.status
-              : "cancelled",
+          status: terminalStatus(task.status),
         } satisfies OrchestratorMcpTaskCancelResult;
       }
       // A link that is gone or a machine that is down still cancels the task
@@ -1007,9 +1183,12 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+      // Its follower may have seen it end there during the stop; that result stands.
+      const stored = yield* read;
+      const ended = stored?.result == null ? "cancelled" : terminalStatus(stored.status);
       return {
         taskId: task.id,
-        status: "cancel_requested",
+        status: ended === "cancelled" ? "cancel_requested" : ended,
       } satisfies OrchestratorMcpTaskCancelResult;
     },
   );
