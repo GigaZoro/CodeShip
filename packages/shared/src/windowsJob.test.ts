@@ -146,6 +146,15 @@ const compileFixture = Effect.fn("WindowsJobTest.compile")(function* (
   return executable;
 });
 
+const nativeSource = Effect.fn("WindowsJobTest.source")(function* () {
+  const implementation = yield* Effect.tryPromise(() =>
+    NodeFSP.readFile(new URL("./windowsJob.ts", import.meta.url), "utf8"),
+  );
+  const source = /const SOURCE = String.raw`([\s\S]*?)`;/u.exec(implementation)?.[1];
+  assert.isDefined(source);
+  return source!;
+});
+
 describe.runIf(isWindowsHost)("a Windows job", () => {
   it.live("finishes SDK cleanup when the host exits before publishing child identity", () =>
     Effect.gen(function* () {
@@ -174,9 +183,7 @@ describe.runIf(isWindowsHost)("a Windows job", () => {
   it.live("fails a stop when the job stays active beyond its termination budget", () =>
     Effect.gen(function* () {
       const { home, spawner } = yield* fixture;
-      const implementation = yield* Effect.tryPromise(() =>
-        NodeFSP.readFile(new URL("./windowsJob.ts", import.meta.url), "utf8"),
-      );
+      const implementation = yield* nativeSource();
       const stop = / static void Stop\(IntPtr job\) \{[\s\S]*?\n \}/.exec(implementation)?.[0];
       assert.isDefined(stop);
       // Compile the actual wait against a stuck kernel response and a clock already at its limit.
@@ -233,11 +240,11 @@ class Fixture {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.live.each([false, true])(
-    "releases stdout before an owned child exits or receives stdin EOF, raw %s",
-    (raw) =>
+  it.live.each(["owned", "owned-raw", "run", "run-raw", "git-path"] as const)(
+    "releases stdout before a child exits or receives stdin EOF, %s",
+    (mode) =>
       Effect.gen(function* () {
-        const { host, home } = yield* fixture;
+        const { host, home, path, fs, name } = yield* fixture;
         const executable = yield* compileFixture(
           home,
           `using System;
@@ -271,9 +278,43 @@ class Fixture {
  }
 }`,
         );
+        let mergedHost = host;
+        const owned = mode === "owned" || mode === "owned-raw";
+        if (!owned) {
+          const mergeHome = path.join(home, "merged-host");
+          yield* fs.makeDirectory(mergeHome);
+          // Set the actual inherited standard handles to the same pipe before entering the host.
+          mergedHost = yield* compileFixture(
+            mergeHome,
+            (yield* nativeSource()).replace("public static int Main(", "public static int Run(") +
+              `
+class TestEntry {
+ [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int number);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetStdHandle(int number,IntPtr handle);
+ static int Main(string[] args) {
+  if(!SetStdHandle(-12,GetStdHandle(-11))) throw new Win32Exception();
+  return CodeShipJobHost.Run(args);
+ }
+}`,
+          );
+        }
         const child = yield* Effect.acquireRelease(
           Effect.sync(() =>
-            windowsJobSpawn(host)(executable, [], { windowsVerbatimArguments: raw }),
+            owned
+              ? windowsJobSpawn(host)(executable, [], {
+                  windowsVerbatimArguments: mode === "owned-raw",
+                })
+              : NodeChildProcess.spawn(
+                  mergedHost,
+                  mode === "git-path" ? [mode, name, executable] : [mode, name, "", executable],
+                  {
+                    windowsHide: true,
+                    env: {
+                      ...process.env,
+                      T3CODE_WINDOWS_JOB_DIAGNOSTIC: path.join(home, "host-error.log"),
+                    },
+                  },
+                ),
           ),
           (child) =>
             Effect.sync(() => {
@@ -281,11 +322,36 @@ class Fixture {
             }),
         );
         const exit = exited(child);
-        yield* Effect.tryPromise(() => NodeStreamConsumers.buffer(child.stdout));
+        yield* Effect.tryPromise(() => NodeStreamConsumers.buffer(child.stdout!));
         assert.isNull(child.exitCode, "stdout EOF must precede the child's exit");
-        child.stdin.end();
+        child.stdin!.end();
         assert.equal((yield* Effect.promise(() => exit))[0], 0);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("keeps a post-start job stop failure out of launch status", () =>
+    Effect.gen(function* () {
+      const { home, path, fs, name, spawner } = yield* fixture;
+      const source = yield* nativeSource();
+      const stopping = "   Stop(job);\n   return unchecked((int)code);";
+      assert.include(source, stopping);
+      const host = yield* compileFixture(
+        home,
+        source.replace(
+          stopping,
+          '   throw new TimeoutException("injected job termination timeout");',
+        ),
+      );
+      const child = yield* spawner.spawn(
+        ChildProcess.make(host, ["run", name, path.join(home, "pid"), process.execPath, "-e", ""]),
+      );
+      assert.equal(yield* child.exitCode, 125);
+      assert.isTrue(yield* fs.exists(path.join(home, "pid")));
+      assert.isFalse(yield* fs.exists(path.join(home, "exit-status")));
+      const output = yield* fs.readFileString(path.join(home, "output.log"));
+      assert.include(output, "Could not end the command's job: injected job termination timeout");
+      assert.notInclude(output, "Could not start the command");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live("rebuilds a truncated cached host before executing it", () =>
@@ -431,7 +497,7 @@ class Fixture {
     "preserves binary streams, extra descriptors, arguments, environment and exit code through %s",
     (mode) =>
       Effect.gen(function* () {
-        const { host, home, name } = yield* fixture;
+        const { host, home, name, path } = yield* fixture;
         const args = ["space here", 'a"quote', "trailing\\", "", "日本語"];
         const source = [
           "process.stdin.pipe(process.stdout);",
@@ -447,7 +513,11 @@ class Fixture {
             [...(mode === "SDK" ? [] : ["run", name, "", process.execPath]), "-e", source, ...args],
             {
               cwd: home,
-              env: { ...process.env, T3_JOB_TEST: "inherited" },
+              env: {
+                ...process.env,
+                T3_JOB_TEST: "inherited",
+                T3CODE_WINDOWS_JOB_DIAGNOSTIC: path.join(home, "host-error.log"),
+              },
               windowsHide: true,
               stdio: ["pipe", "pipe", "pipe", "pipe"],
             },

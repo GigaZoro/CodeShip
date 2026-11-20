@@ -134,10 +134,9 @@ public static class CodeShipJobHost {
   handles.Remove(IntPtr.Zero); handles.Remove(new IntPtr(-1)); handles.Remove(new IntPtr(-2));
   return handles;
  }
- static void ReleaseStreams(Startup startup, IntPtr control, IntPtr reply, bool keepError) {
+ static void ReleaseStreams(Startup startup, IntPtr control, IntPtr reply) {
   var handles=StreamHandles(startup);
   handles.Remove(control); handles.Remove(reply);
-  if(keepError) handles.Remove(startup.error);
   // Runtime-created copies are not necessarily present in STARTUPINFO's descriptor table.
   uint entrySize=IntPtr.Size==8 ? 136u : 104u;
   IntPtr snapshot=IntPtr.Zero, marker=IntPtr.Zero, entry=Marshal.AllocHGlobal((int)entrySize);
@@ -152,7 +151,7 @@ public static class CodeShipJobHost {
     if(status==259) break;
     if(status!=0) throw new Win32Exception((int)status);
     IntPtr candidate=Marshal.ReadIntPtr(entry);
-    if(CompareObjectHandles(candidate,control) || CompareObjectHandles(candidate,reply) || (keepError && CompareObjectHandles(candidate,startup.error))) continue;
+    if(CompareObjectHandles(candidate,control) || CompareObjectHandles(candidate,reply)) continue;
     foreach(var handle in handles) if(CompareObjectHandles(candidate,handle)) { copies.Add(candidate); break; }
    }
   } finally {
@@ -170,9 +169,10 @@ public static class CodeShipJobHost {
  public static int Main(string[] args) {
   IntPtr job=IntPtr.Zero;
   IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero, descriptors=IntPtr.Zero, inheritedList=IntPtr.Zero, control=IntPtr.Zero, reply=IntPtr.Zero;
-  bool initialized=false;
+  bool initialized=false, started=false;
   ProcessInfo child=new ProcessInfo();
-  string record = args.Length > 2 && args[0] == "run" ? args[2] : "";
+  string diagnostic=null;
+  string record = args.Length > 2 && (args[0] == "run" || args[0] == "run-raw") ? args[2] : "";
   try {
    if(args.Length < 2) throw new ArgumentException("Expected an operation and a job name or pid.");
    if(args[0]=="stop-process") {
@@ -219,6 +219,14 @@ public static class CodeShipJobHost {
    }
    bool owned=args[0]=="owned" || args[0]=="owned-raw";
    if((args[0]!="run" && args[0]!="run-raw" && !owned) || args.Length < 4) throw new ArgumentException("Expected run or owned, job name, pid file or control descriptor and command.");
+   if(!owned) {
+    string destination=record.Length==0 ? Environment.GetEnvironmentVariable("T3CODE_WINDOWS_JOB_DIAGNOSTIC") : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(record)),"output.log");
+    Environment.SetEnvironmentVariable("T3CODE_WINDOWS_JOB_DIAGNOSTIC",null);
+    if(String.IsNullOrEmpty(destination)) throw new ArgumentException("An unrecorded command host requires a separate diagnostic file.");
+    diagnostic=Path.GetFullPath(destination);
+    // cmd.exe opens redirected output without sharing existing writers.
+    using(var writable=new FileStream(diagnostic,FileMode.Append,FileAccess.Write,FileShare.ReadWrite)) {}
+   }
    Startup startup;
    GetStartupInfo(out startup);
    if(owned) {
@@ -275,27 +283,31 @@ public static class CodeShipJobHost {
    Check(UpdateProcThreadAttribute(attributes,0,new IntPtr(0x20002),inheritedList,new IntPtr(IntPtr.Size*inherited.Count),IntPtr.Zero,IntPtr.Zero));
    var extended=new StartupEx { startup=startup, attributes=attributes };
    Check(CreateProcess(null,command,IntPtr.Zero,IntPtr.Zero,true,0x80004,IntPtr.Zero,null,ref extended,out child));
-   ReleaseStreams(startup,control,reply,!owned);
+   ReleaseStreams(startup,control,reply);
    Directory.SetCurrentDirectory(Environment.SystemDirectory);
    if(record.Length != 0) Publish(record, child.pid + " " + Created(child.process));
    if(owned) SendControl(reply,"S " + child.pid + " " + Created(child.process));
    Check(ResumeThread(child.thread)!=0xffffffff);
+   started=true;
    Check(WaitForSingleObject(child.process,0xffffffff)!=0xffffffff);
    uint code;
    Check(GetExitCodeProcess(child.process,out code));
    Stop(job);
    return unchecked((int)code);
   } catch(Exception error) {
-   if(reply==IntPtr.Zero) Console.Error.WriteLine(error.Message);
+   string message=(started ? "Could not end the command's job: " : "Could not start the command: ")+error.Message;
+   if(diagnostic!=null) File.AppendAllText(diagnostic,message+Environment.NewLine);
+   else if(reply==IntPtr.Zero) Console.Error.WriteLine(message);
    if(reply!=IntPtr.Zero) {
-    try { SendControl(reply,"E " + (error is Win32Exception ? ((Win32Exception)error).NativeErrorCode : 0) + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes(error.Message))); } catch {}
+    try { SendControl(reply,"E " + (error is Win32Exception ? ((Win32Exception)error).NativeErrorCode : 0) + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes(started ? message : error.Message))); } catch {}
    }
-   if(record.Length != 0) {
+   if(!started && record.Length != 0) {
     try {
-     string folder = Path.GetDirectoryName(record);
-     File.AppendAllText(Path.Combine(folder, "output.log"), "Could not start the command: " + error.Message + Environment.NewLine);
-     Publish(Path.Combine(folder, "exit-status"), "125");
-    } catch(Exception outputError) { Console.Error.WriteLine(outputError.Message); }
+     Publish(Path.Combine(Path.GetDirectoryName(record), "exit-status"), "125");
+    } catch(Exception outputError) {
+     if(diagnostic!=null) File.AppendAllText(diagnostic,outputError.Message+Environment.NewLine);
+     else Console.Error.WriteLine(outputError.Message);
+    }
    }
    return 125;
   }
