@@ -58,15 +58,23 @@ const withFakeSystemd = <A, E>(
   {
     oomPolicy = true,
     stopFails = false,
+    showFails = false,
+    runtimeDir = "/run/user/1",
     memoryPolicy,
   }: {
     readonly oomPolicy?: boolean;
     readonly stopFails?: boolean;
+    readonly showFails?: boolean;
+    readonly runtimeDir?: string;
     readonly memoryPolicy?: string;
   } = {},
 ) =>
   Effect.gen(function* () {
-    const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
+    // A simulated POSIX PATH must not contain a Windows drive colon.
+    const bin = NodePath.relative(
+      process.cwd(),
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-")),
+    );
     for (const name of ["systemd-run", "systemctl", "agent"]) {
       NodeFS.writeFileSync(NodePath.join(bin, name), "", { mode: 0o755 });
     }
@@ -100,6 +108,7 @@ const withFakeSystemd = <A, E>(
             return output("", 1);
           }
           const [, verb, unit = ""] = args;
+          if (showFails && verb === "show") return output("", 1);
           if (stopFails && verb === "stop") {
             return {
               ...output(""),
@@ -124,15 +133,22 @@ const withFakeSystemd = <A, E>(
       Effect.provideService(HostProcess.Platform, "linux"),
       Effect.provideService(HostProcess.Environment, {
         PATH: bin,
-        XDG_RUNTIME_DIR: "/run/user/1",
+        XDG_RUNTIME_DIR: runtimeDir,
         ...(memoryPolicy === undefined ? {} : { T3CODE_AGENT_SLICE_MEMORY_POLICY: memoryPolicy }),
       }),
       Effect.provideService(FileSystem.FileSystem, {
         ...fileSystem,
         readFileString: (path, encoding) =>
-          fileSystem.readFileString(path.replace("/sys/fs/cgroup", cgroupRoot), encoding),
+          fileSystem.readFileString(
+            path.replaceAll("\\", "/").replace("/sys/fs/cgroup", cgroupRoot),
+            encoding,
+          ),
         writeFileString: (path, data, options) =>
-          fileSystem.writeFileString(path.replace("/sys/fs/cgroup", cgroupRoot), data, options),
+          fileSystem.writeFileString(
+            path.replaceAll("\\", "/").replace("/sys/fs/cgroup", cgroupRoot),
+            data,
+            options,
+          ),
       }),
     );
     const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -384,6 +400,33 @@ describe("AgentScope service", () => {
     ),
   );
 
+  it.effect.each(["populated", "unreadable", "stop failed", "manager unavailable"] as const)(
+    "keeps command cleanup pending when its scope is %s",
+    (failure) =>
+      withFakeSystemd(
+        ({ scope, units, cgroupRoot, calls }) =>
+          Effect.gen(function* () {
+            const unit = "t3code-command-owned.scope";
+            exitedAgent(units, cgroupRoot, unit, { populated: true, oomKills: undefined });
+            expect(yield* scope.stopCommand(unit)).toBe(false);
+            if (failure === "populated") {
+              expect(stopsOf(calls)).toEqual([["--user", "stop", "--no-block", unit]]);
+              exitedAgent(units, cgroupRoot, unit, { populated: false, oomKills: undefined });
+              expect(yield* scope.stopCommand(unit)).toBe(true);
+              units.get(unit)!.activeState = "inactive";
+              expect(yield* scope.stopCommand(unit)).toBe(true);
+              units.delete(unit);
+              expect(yield* scope.stopCommand(unit)).toBe(true);
+            }
+          }),
+        {
+          showFails: failure === "unreadable",
+          stopFails: failure === "stop failed",
+          runtimeDir: failure === "manager unavailable" ? "" : "/run/user/1",
+        },
+      ),
+  );
+
   it.effect("stops leftover processes only in an active agent scope", () =>
     withFakeSystemd(({ scope, units, calls, cgroupRoot }) =>
       Effect.gen(function* () {
@@ -476,7 +519,11 @@ describe("AgentScope service", () => {
 
   it.effect("launches macOS agents through the launcher that runs them below the server", () =>
     Effect.gen(function* () {
-      const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
+      // A simulated POSIX PATH must not contain a Windows drive colon.
+      const bin = NodePath.relative(
+        process.cwd(),
+        NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-")),
+      );
       const agentPath = NodePath.join(bin, "agent");
       NodeFS.writeFileSync(agentPath, "", { mode: 0o755 });
       yield* Effect.addFinalizer(() =>

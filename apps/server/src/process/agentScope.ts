@@ -373,6 +373,26 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const stopCommand = Effect.fn("AgentScope.stopCommand")(function* (unit: string) {
+    if (!unit.startsWith("t3code-command-") || !unit.endsWith(".scope")) return false;
+    if (!hostEnvironment.XDG_RUNTIME_DIR) return false;
+    // Persisted command scopes remain ours even when the launch-capability probe fails.
+    const systemctl = yield* resolve("systemctl", hostEnvironment);
+    if (systemctl === null) return false;
+    const isEmpty = (state: ScopeState | undefined) =>
+      state !== undefined &&
+      (state.loadState === "not-found" ||
+        state.activeState === "inactive" ||
+        state.activeState === "failed" ||
+        state.populated === false);
+    const before = yield* readScope(systemctl, unit);
+    if (isEmpty(before)) return true;
+    if (before === undefined || before.loadState !== "loaded") return false;
+    const stopped = yield* run(systemctl, ["--user", "stop", "--no-block", unit]);
+    if (stopped._tag === "None" || stopped.value.code !== 0) return false;
+    return isEmpty(yield* readScope(systemctl, unit));
+  });
+
   const kill: AgentScopeShape["kill"] = Effect.fn("AgentScope.kill")(function* (threadId) {
     const tracked = scopeByThread.get(threadId);
     if (tracked === undefined || tracked.shared) return false;
@@ -466,6 +486,7 @@ export const make = Effect.gen(function* () {
     }),
     oomKilled,
     stop,
+    stopCommand,
     kill,
     clear,
   } satisfies AgentScopeShape;
