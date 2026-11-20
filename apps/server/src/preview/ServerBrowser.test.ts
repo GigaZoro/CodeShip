@@ -233,6 +233,7 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
     newPage: async () => page as unknown as Page,
     grantPermissions: vi.fn(async () => {}),
     newCDPSession: async (target: unknown) => {
+      if (cdpSessionFailure) throw cdpSessionFailure;
       const session = makeSession(
         target === page ? undefined : (target as ReturnType<typeof makeFrame>),
         cssViewport,
@@ -337,6 +338,8 @@ let pageCopy = "";
 let keyCopy = "";
 let focusedFrame: ReturnType<typeof makeFrame> | null = null;
 let contextFailure: Error | null = null;
+/** Fails every CDP session a context opens from then on, after its page exists. */
+let cdpSessionFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
 let desktopPageUrl = "about:blank";
@@ -512,6 +515,7 @@ beforeEach(() => {
   decodedTarget = null;
   encodedAtStop = null;
   contextFailure = null;
+  cdpSessionFailure = null;
   initialNavigation = null;
   pageCopy = "";
   keyCopy = "";
@@ -782,6 +786,176 @@ it.effect("an agent closing a tab that waits for the desktop ends its open at on
       expect(error.message).toContain("does not exist");
       expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
       expect(contexts).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("an agent closes a tab the desktop let go without waiting for it to come back", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      desktopRendersNext = true;
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      yield* Effect.promise(() => desktopDetachReady.promise);
+      desktopTabs.delete(opened.tabId!);
+      desktopAttach = "waits";
+      desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
+      yield* Effect.promise(() => desktopReleased.promise);
+
+      // Settles on the close, or on a new desktop wait the close would block on.
+      const waitedFor = yield* Effect.raceFirst(
+        broker
+          .invoke<void>({
+            scope,
+            tabId: PreviewTabId.make(opened.tabId!),
+            operation: "close",
+            input: {},
+          })
+          .pipe(Effect.as(null)),
+        Effect.promise(() => desktopAttachWaits.promise),
+      );
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+
+      expect(waitedFor).toBeNull();
+      expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
+      expect(desktopConnections).toHaveLength(1);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a tab that fails to set up releases its desktop page or headless context", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker } = yield* ready;
+      cdpSessionFailure = new Error("CDP session refused");
+      const open = broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        })
+        .pipe(Effect.flip);
+      desktopRendersNext = true;
+      yield* open;
+      yield* open;
+
+      expect(desktopConnections).toHaveLength(1);
+      expect(releasedDesktopTabs).toEqual([
+        desktopConnections[0]!.endpoint.slice("ws://desktop/".length),
+      ]);
+      expect(contexts).toHaveLength(2);
+      expect(contexts[1]!.close).toHaveBeenCalled();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a tab setting that arrives while an agent closes the tab is dropped quietly", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const other = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      yield* browser.attachViewer(viewerInput(other.tabId, false));
+      const otherResized = Promise.withResolvers<void>();
+      const otherPage = contexts[1]!.page;
+      const setViewportSize = otherPage.setViewportSize.getMockImplementation()!;
+      otherPage.setViewportSize.mockImplementation(async (size) => {
+        await setViewportSize(size);
+        if (size?.width === 900) otherResized.resolve();
+      });
+      const realClose = manager.close;
+      const closing = Promise.withResolvers<void>();
+      const finishClose = Promise.withResolvers<void>();
+      vi.spyOn(manager, "close").mockImplementation((input) => {
+        closing.resolve();
+        return Effect.promise(() => finishClose.promise).pipe(Effect.andThen(realClose(input)));
+      });
+      const unobserved: Array<unknown> = [];
+      const onUnhandled = (reason: unknown) => unobserved.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => process.off("unhandledRejection", onUnhandled)),
+      );
+      const close = yield* broker
+        .invoke<void>({ scope, tabId, operation: "close", input: {} })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => closing.promise);
+
+      // The agent's close ended the tab's control; its session closes only after these.
+      yield* manager.resize({
+        threadId: scope.thread.threadId,
+        tabId,
+        viewport: { _tag: "freeform", width: 800, height: 600 },
+      });
+      yield* manager.resize({
+        threadId: scope.thread.threadId,
+        tabId: other.tabId,
+        viewport: { _tag: "freeform", width: 900, height: 700 },
+      });
+      yield* Effect.promise(() => otherResized.promise);
+      // Two macrotask turns: Node reports a rejection nobody observed after the first.
+      for (let turn = 0; turn < 2; turn++) {
+        // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- Node emits unhandledRejection only between macrotasks; no promise can mark that point.
+        yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
+      }
+      finishClose.resolve();
+      yield* Fiber.join(close);
+
+      expect(unobserved).toEqual([]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("a tab setting that fails does not hold up the tab's later settings", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const other = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      yield* browser.attachViewer(viewerInput(other.tabId, false));
+      // Settles on the later setting, or on a rejection nobody observed, whichever comes first.
+      const settled = Promise.withResolvers<void>();
+      const otherPage = contexts[1]!.page;
+      const setViewportSize = otherPage.setViewportSize.getMockImplementation()!;
+      otherPage.setViewportSize.mockImplementation(async (size) => {
+        if (size?.width === 800) throw new Error("The page navigated away mid-resize.");
+        await setViewportSize(size);
+        if (size?.width === 900) settled.resolve();
+      });
+      const unobserved: Array<unknown> = [];
+      const onUnhandled = (reason: unknown) => {
+        unobserved.push(reason);
+        settled.resolve();
+      };
+      process.on("unhandledRejection", onUnhandled);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => process.off("unhandledRejection", onUnhandled)),
+      );
+
+      yield* manager.resize({
+        threadId: scope.thread.threadId,
+        tabId: other.tabId,
+        viewport: { _tag: "freeform", width: 800, height: 600 },
+      });
+      yield* manager.resize({
+        threadId: scope.thread.threadId,
+        tabId: other.tabId,
+        viewport: { _tag: "freeform", width: 900, height: 700 },
+      });
+      yield* Effect.promise(() => settled.promise);
+      // Two macrotask turns: Node reports a rejection nobody observed after the first.
+      for (let turn = 0; turn < 2; turn++) {
+        // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- Node emits unhandledRejection only between macrotasks; no promise can mark that point.
+        yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
+      }
+
+      expect(unobserved).toEqual([]);
+      expect(otherPage.setViewportSize).toHaveBeenLastCalledWith({ width: 900, height: 700 });
     }),
   ).pipe(Effect.provide(layer)),
 );

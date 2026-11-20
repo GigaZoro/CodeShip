@@ -336,6 +336,9 @@ describe("SessionControl", () => {
     const closed = control.close();
     await expect(control.take("viewer")).rejects.toThrow("closed");
     await expect(control.agent("agent", async () => "new")).rejects.toThrow("closed");
+    // A caller that only attaches `.catch` must see the closed tab too.
+    await expect(control.system(async () => "new")).rejects.toThrow("closed");
+    await expect(control.observe(async () => "read")).rejects.toThrow("closed");
     finish.resolve();
     await expect(running).resolves.toBe("finished");
     await Promise.all([queued, closed]);
