@@ -96,6 +96,10 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — A chat that cannot read Claude's settings says where and how
+
+- When a chat cannot start because Claude's settings could not be resolved, the failure now names the step (settings files, account worker, `--settings` check or organization policy) and the kind (timeout, could not start, non-zero exit, unreadable output or SDK error) instead of one generic sentence. It never includes settings, launch arguments, command output or other raw error text.
+
 ## 2026-11-20 — Turn items stop storing values their columns already hold
 
 - Maintainers: a stored turn item no longer repeats its id, thread, run, node, provider ids, parent, ordinal, type, status and update time inside its JSON, since the row's columns hold them; every read puts them back. A resumable migration (098) converts existing rows in steps, and a test proves the rebuilt payload equals the original. The database and snapshot reads carry less data per item. No change to the app's behavior.
