@@ -282,6 +282,17 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * A key built from several parts, fixed in length: the caller's own key may already be at the
+   * 256-character limit the forwarded tool's schema checks before the forwarder shortens it.
+   * Equal parts give the same key, so a retry still finds its first result.
+   */
+  const composedKey = (...parts: ReadonlyArray<string>) =>
+    crypto.digest("SHA-256", new TextEncoder().encode(JSON.stringify(parts))).pipe(
+      Effect.map((digest) => Hex.encode(digest)),
+      Effect.orDie,
+    );
+
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
     function* (scope, input) {
       const parent = yield* threads.getThreadRecords(scope.thread.threadId, ["runs"]).pipe(
@@ -449,7 +460,7 @@ const make = Effect.gen(function* () {
           ...(interactionMode === undefined ? {} : { interactionMode }),
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
           message: task,
-          clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
+          clientRequestId: yield* composedKey("delegate", scope.thread.threadId, key),
           launchId: remoteThreadId,
           // The thread there shows it is this thread's subagent, with a way back.
           delegatedFrom: {
@@ -583,20 +594,19 @@ const make = Effect.gen(function* () {
    * messages, pull request watches and delegated tasks. `key` names the stop (the follower
    * sends one, each cancel its own), and each is recorded there once however often it is sent.
    */
-  const stopThere = (
+  const stopThere = Effect.fn("RemoteDelegation.stopThere")(function* (
     scope: ThreadScope,
     remote: OrchestrationV2RemoteTaskChild,
     key: string,
     reason?: string,
-  ) =>
-    forwarding
-      .interruptThread(scope, remote.environmentId, {
-        threadId: remote.threadId,
-        stop: true,
-        ...(reason === undefined ? {} : { reason }),
-        clientRequestId: `${key}:${remote.threadId}`,
-      })
-      .pipe(Effect.asVoid);
+  ) {
+    yield* forwarding.interruptThread(scope, remote.environmentId, {
+      threadId: remote.threadId,
+      stop: true,
+      ...(reason === undefined ? {} : { reason }),
+      clientRequestId: yield* composedKey("stop", key, remote.threadId),
+    });
+  });
 
   /**
    * The last reply `runId` gave on the task's thread there, which is its

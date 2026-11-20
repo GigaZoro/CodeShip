@@ -1649,6 +1649,39 @@ it.effect("fails the task when the box revokes the link, and cancel interrupts i
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("a delegate and its cancel work with a caller key at the 256-character limit", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const longKey = "k".repeat(256);
+
+      const launched = yield* a.call("delegate_task", {
+        task: "Run the full suite on the box.",
+        target: {
+          environmentId: box.environmentId,
+          providerInstanceId: instanceId,
+          model: "gpt-5.4",
+        },
+        mode: "async",
+        clientRequestId: longKey,
+      });
+      expect(launched.isError, JSON.stringify(launched.content)).toBe(false);
+      const { taskId } = launched.structuredContent as { taskId: NodeId };
+
+      const cancel = yield* a.call("task_cancel", { taskId, clientRequestId: longKey });
+      expect(cancel.isError, JSON.stringify(cancel.content)).toBe(false);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("a task's result is its own run's whole last reply, not a later run's", () =>
   Effect.scoped(
     Effect.gen(function* () {
