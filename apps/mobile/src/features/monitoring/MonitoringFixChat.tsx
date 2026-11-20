@@ -9,7 +9,6 @@ import {
 import type { MonitoringFixChatTarget } from "@t3tools/client-runtime/monitoring";
 import { monitoringFixChatFailureMessage } from "@t3tools/client-runtime/monitoring-text";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
-import { Atom } from "effect/reactivity";
 import { useRef, useState } from "react";
 import { View } from "react-native";
 
@@ -20,10 +19,6 @@ import { uuidv4 } from "../../lib/uuid";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOpenScheduledTaskThread } from "../settings/ScheduledTaskRunsRouteScreen";
-
-const NO_FIX_CHAT_PERMISSION_ATOM = Atom.make(false).pipe(
-  Atom.withLabel("mobile-monitoring:fix-chat:none"),
-);
 
 /**
  * Starts a chat that traces one weak point in `target`'s chats to its root cause and fixes it, and
@@ -41,9 +36,7 @@ export function MonitoringFixChatAction({
     reportFailure: false,
   });
   const allowed = useAtomValue(
-    target === null
-      ? NO_FIX_CHAT_PERMISSION_ATOM
-      : serverEnvironment.startMonitoringFixChat.permissionAtom(target.environmentId),
+    serverEnvironment.startMonitoringFixChat.permissionAtom(target?.environmentId ?? null),
   );
   const navigation = useNavigation();
   const openThread = useOpenScheduledTaskThread();

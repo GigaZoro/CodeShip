@@ -88,10 +88,6 @@ export function refreshMonitoringThread(
   );
 }
 
-const NO_FIX_CHAT_PERMISSION_ATOM = Atom.make(false).pipe(
-  Atom.withLabel("web-monitoring:fix-chat:none"),
-);
-
 export interface MonitoringFixChat {
   /** False when no chat shows the weak point or this client may not start chats on its machine. */
   readonly available: boolean;
@@ -112,9 +108,7 @@ export function useMonitoringFixChat(
     reportFailure: false,
   });
   const allowed = useAtomValue(
-    target === null
-      ? NO_FIX_CHAT_PERMISSION_ATOM
-      : serverEnvironment.startMonitoringFixChat.permissionAtom(target.environmentId),
+    serverEnvironment.startMonitoringFixChat.permissionAtom(target?.environmentId ?? null),
   );
   const navigate = useNavigate();
   const router = useRouter();
