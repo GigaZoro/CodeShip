@@ -132,25 +132,36 @@ export const autoUpdateRetryDelay = (attempts: number): Duration.Duration =>
     AUTO_UPDATE_RETRY_MAX,
   );
 
+// A clock change can push a skipped time past midnight into the next day, or repeat a whole day,
+// so the latest install time can fall on a local date other than today or yesterday.
+const INSTALL_TIME_DAYS = [1, 0, -1, -2, -3] as const;
+
 function latestInstallTime(now: DateTime.Zoned, time: string): number {
   const hour = Number(time.slice(0, 2));
   const minute = Number(time.slice(3));
-  const occurrence = (day: DateTime.Zoned) => {
-    const { year, month, day: date } = DateTime.toParts(day);
-    const parts = { year, month, day: date, hour, minute };
-    const options = { timeZone: now.zone, adjustForTimeZone: true };
-    // "later" advances a nonexistent time by the gap and otherwise gives the last occurrence.
-    const later = DateTime.makeZonedUnsafe(parts, { ...options, disambiguation: "later" });
-    if (DateTime.toEpochMillis(later) <= DateTime.toEpochMillis(now)) {
-      return DateTime.toEpochMillis(later);
+  const nowMillis = DateTime.toEpochMillis(now);
+  const today = DateTime.toParts(now);
+  const options = { timeZone: now.zone, adjustForTimeZone: true } as const;
+  let latest = Number.NEGATIVE_INFINITY;
+  for (const days of INSTALL_TIME_DAYS) {
+    const date = new Date(Date.UTC(today.year, today.month - 1, today.day + days));
+    const parts = {
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      hour,
+      minute,
+    };
+    // "compatible" gives the first of two occurrences and "later" the second; both move a
+    // skipped time forward past the gap.
+    for (const disambiguation of ["compatible", "later"] as const) {
+      const millis = DateTime.toEpochMillis(
+        DateTime.makeZonedUnsafe(parts, { ...options, disambiguation }),
+      );
+      if (millis <= nowMillis && millis > latest) latest = millis;
     }
-    // Between two occurrences, the first is due. For a gap, "compatible" also advances.
-    return DateTime.toEpochMillis(DateTime.makeZonedUnsafe(parts, options));
-  };
-  const today = occurrence(now);
-  return today <= DateTime.toEpochMillis(now)
-    ? today
-    : occurrence(DateTime.subtract(now, { days: 1 }));
+  }
+  return latest;
 }
 
 const higherVersion = (current: string | undefined, candidate: string) =>

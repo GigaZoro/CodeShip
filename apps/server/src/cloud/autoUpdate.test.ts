@@ -102,6 +102,55 @@ describe("automatic update eligibility in America/New_York", () => {
   );
 });
 
+describe("automatic update eligibility across clock changes that cross a day", () => {
+  it.effect.each([
+    // Nuuk springs forward at 23:00 on 28 March, so that day's 23:30 reads as 00:30 on the 29th.
+    [
+      "a skipped time moved past midnight, before it",
+      "America/Nuuk",
+      "23:30",
+      "2026-03-29T01:10:00Z",
+      "2026-03-29T01:05:00Z",
+      false,
+    ],
+    [
+      "a skipped time moved past midnight, once it came",
+      "America/Nuuk",
+      "23:30",
+      "2026-03-29T01:40:00Z",
+      "2026-03-29T01:05:00Z",
+      true,
+    ],
+    // Kwajalein turned its clocks back 23 hours on 1 October 1969: 30 September came twice.
+    [
+      "a repeated day, before its second 03:00",
+      "Pacific/Kwajalein",
+      "03:00",
+      "1969-09-30T14:00:00Z",
+      "1969-09-29T17:00:00Z",
+      false,
+    ],
+    [
+      "a repeated day, after its second 03:00",
+      "Pacific/Kwajalein",
+      "03:00",
+      "1969-09-30T16:30:00Z",
+      "1969-09-29T17:00:00Z",
+      true,
+    ],
+  ] as const)("%s", ([_name, timeZone, time, checked, published, due]) =>
+    Effect.gen(function* () {
+      const now = DateTime.makeZonedUnsafe(checked, { timeZone });
+      const releases = Stream.make(
+        { version: "1.1.0", publishedAtMillis: Date.parse(published) },
+        { version: "1.0.0", publishedAtMillis: Date.parse("1969-01-01T00:00:00Z") },
+      );
+      const target = yield* AutoUpdate.automaticUpdateTarget(releases, "1.0.0", now, time);
+      expect(Option.getOrUndefined(target)?.due).toBe(due ? "1.1.0" : undefined);
+    }),
+  );
+});
+
 describe("automatic update target", () => {
   const now = DateTime.makeZonedUnsafe("2026-11-18T12:00:00Z", { timeZone: "America/New_York" });
   const beforeCutoff = Date.parse("2026-11-18T07:00:00Z");
