@@ -5,12 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const {
-  NOT_PASSED_EXIT,
-  githubRepository,
-  main,
-  waitForWindowsCheck,
-} = require("./windows-check.cjs");
+const { githubRepository, main, waitForWindowsCheck } = require("./windows-check.cjs");
 
 // A hook exports GIT_DIR and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
 for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
@@ -28,25 +23,28 @@ const RUN_URL = "https://github.com/example/app/actions/runs/7";
 const WORKFLOW_URL = "https://github.com/example/app/actions/workflows/windows-check-fork.yml";
 const MINUTE = 60 * 1000;
 const WALL_START = Date.UTC(2026, 10, 20, 12);
+const OUT_OF_REQUESTS = "GitHub allows this address no more requests before the time limit.";
 
-/** A 403 for an address out of requests until `resetInMs` after the moment GitHub answers. */
-const rateLimited = (resetInMs) => (now) =>
-  new Response("{}", {
-    status: 403,
-    headers: {
-      "x-ratelimit-remaining": "0",
-      "x-ratelimit-reset": String(Math.ceil((now + resetInMs) / 1000)),
-    },
-  });
+/**
+ * GitHub's answer when it allows this address no more requests until `resetInMs` after it answers: `body` when this
+ * request was the last one allowed, a 403 when none was.
+ */
+const rateLimited = (resetInMs, body) => (now) => {
+  const headers = {
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": String(Math.ceil((now + resetInMs) / 1000)),
+  };
+  return body ? Response.json(body, { headers }) : new Response("{}", { status: 403, headers });
+};
 
 /**
  * GitHub's answers, each list in order with its last repeated: `runs` for the listing of `commit`'s push runs, `run`
- * for the run by its id. A run is an object, an HTTP status a number, a network failure an Error. Only `sleep` moves
- * the clocks.
+ * for the run by its id. A run is an object, an HTTP status a number, a network failure an Error, and a function gets
+ * the wall clock and returns the Response. Only `sleep` moves the clocks; `requests` lists the minute of each request.
  */
 function github({ runs = [], run = [], jobs = [], annotations = {}, commit = COMMIT }) {
   let elapsed = 0;
-  const sleeps = [];
+  const requests = [];
   const next = (answers) => (answers.length > 1 ? answers.shift() : answers[0]);
   const answer = (value, body) => {
     if (value instanceof Error) throw value;
@@ -56,6 +54,7 @@ function github({ runs = [], run = [], jobs = [], annotations = {}, commit = COM
   };
   const fetch = async (url) => {
     const { pathname, searchParams } = new URL(url);
+    requests.push(elapsed / MINUTE);
     if (pathname === "/repos/example/app/actions/workflows/windows-check-fork.yml/runs") {
       const ofCommit =
         searchParams.get("head_sha") === commit && searchParams.get("event") === "push";
@@ -80,11 +79,10 @@ function github({ runs = [], run = [], jobs = [], annotations = {}, commit = COM
     clock: () => elapsed,
     now: () => WALL_START + elapsed,
     sleep: async (ms) => {
-      sleeps.push(ms);
       elapsed += ms;
     },
     elapsed: () => elapsed,
-    sleeps,
+    requests,
   };
 }
 
@@ -165,11 +163,12 @@ test("a failed run whose jobs or annotations GitHub does not answer reports what
   }
 });
 
-test("a run that passed, one GitHub skips and a repository without the workflow end the wait at once", async () => {
+test("a run that passed, one GitHub skips and a workflow GitHub does not show end the wait at once", async () => {
   for (const [runs, status, url] of [
     [[{ status: "completed", conclusion: "success" }], "passed", RUN_URL],
     [[{ status: "completed", conclusion: "skipped" }], "none", RUN_URL],
-    [[404], "none", WORKFLOW_URL],
+    // A private repository answers 404 without a token, so its check is unread, not missing.
+    [[404], "unreadable", WORKFLOW_URL],
   ]) {
     const fake = github({ runs });
     const result = await waitForWindowsCheck(fake);
@@ -200,7 +199,7 @@ test("no run is reported as not started only when GitHub answered, and a run tha
     reason: "It is still running.",
   });
 
-  // A run GitHub listed and then stopped showing is not a repository without the workflow.
+  // A run GitHub listed and then stopped showing is not a workflow GitHub does not show.
   const vanished = github({ runs: [{ status: "in_progress" }], run: [404] });
   assert.deepEqual(await waitForWindowsCheck(vanished), {
     status: "unfinished",
@@ -209,47 +208,85 @@ test("no run is reported as not started only when GitHub answered, and a run tha
   });
 });
 
-test("an address out of requests waits for GitHub's reset, but never past the time limit", async () => {
+test("an address out of requests asks again only after GitHub's reset, and not once it falls past the time limit", async () => {
   const limited = github({ runs: [rateLimited(120 * MINUTE)] });
 
   const result = await waitForWindowsCheck(limited);
 
-  assert.deepEqual(limited.sleeps, [120 * MINUTE, 120 * MINUTE, 120 * MINUTE, 40 * MINUTE]);
-  assert.deepEqual(result, {
-    status: "unfinished",
-    url: WORKFLOW_URL,
-    reason: "GitHub answered 403.",
-  });
+  assert.deepEqual(limited.requests, [0, 120, 240, 360]);
+  assert.deepEqual(result, { status: "unfinished", url: WORKFLOW_URL, reason: OUT_OF_REQUESTS });
 });
 
-test("the command checks the run of the full commit pushed to origin and exits 3 when it did not pass", async (t) => {
+test("a failed run found with the address's last request reads its failures only after GitHub's reset", async () => {
+  const failed = {
+    workflow_runs: [{ id: 7, html_url: RUN_URL, status: "completed", conclusion: "failure" }],
+  };
+  const jobs = [{ id: 11, name: "Windows", conclusion: "failure", steps: [] }];
+  for (const [resetInMs, requests, failures] of [
+    [30 * MINUTE, [0, 30, 30], []],
+    [500 * MINUTE, [0], [`${OUT_OF_REQUESTS} (the run's jobs)`]],
+  ]) {
+    const fake = github({ runs: [rateLimited(resetInMs, failed)], jobs });
+    const result = await waitForWindowsCheck(fake);
+    assert.deepEqual(
+      [result.status, result.failures, fake.requests],
+      ["failed", failures, requests],
+    );
+  }
+});
+
+test("the command checks the run of the full commit on origin's GitHub push URL and exits 3 when it did not pass", async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "windows-check-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main");
-  git("commit", "-q", "--allow-empty", "-m", "landed");
-  // Fetches come from a mirror, while the commit was pushed to GitHub.
-  git("remote", "add", "origin", "https://git.cafe/example/app.git");
-  git("remote", "set-url", "--push", "origin", "https://github.com/example/app.git");
+  git("commit", "-q", "--allow-empty", "-m", "before the workflow");
+  const before = git("rev-parse", "HEAD");
+  fs.mkdirSync(path.join(root, ".github/workflows"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".github/workflows/windows-check-fork.yml"), "on: push\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "landed");
   const commit = git("rev-parse", "HEAD");
-  const { fetch, sleep, clock, now } = github({ ...structuredClone(failedRun), commit });
-  const lines = [];
+  // Fetches come from a mirror, while a push goes to the mirror and to GitHub.
+  git("remote", "add", "origin", "https://git.cafe/example/app.git");
+  git("remote", "set-url", "--add", "--push", "origin", "https://git.cafe/example/app.git");
+  git("remote", "set-url", "--add", "--push", "origin", "git@github.com:example/app.git");
+  const check = async (target, answers) => {
+    const { fetch, sleep, clock, now } = github({ ...answers, commit });
+    const lines = [];
+    const options = { cwd: root, log: (line) => lines.push(line), fetch, sleep, clock, now };
+    const code = await main([target], options);
+    const [{ commit: checked, status, url }] = lines.map((line) => JSON.parse(line));
+    return { code, commit: checked, status, url };
+  };
 
-  const code = await main([commit.slice(0, 12)], {
-    cwd: root,
-    log: (line) => lines.push(line),
-    fetch,
-    sleep,
-    clock,
-    now,
+  assert.deepEqual(await check(commit.slice(0, 12), structuredClone(failedRun)), {
+    code: 3,
+    commit,
+    status: "failed",
+    url: RUN_URL,
+  });
+  assert.deepEqual(
+    await check(commit, { runs: [{ status: "completed", conclusion: "success" }] }),
+    {
+      code: 0,
+      commit,
+      status: "passed",
+      url: RUN_URL,
+    },
+  );
+  // A commit from before the workflow has no Windows check, so GitHub is not asked.
+  assert.deepEqual(await check(before, { runs: [new Error("asked GitHub")] }), {
+    code: 0,
+    commit: before,
+    status: "none",
+    url: null,
   });
 
-  assert.equal(code, NOT_PASSED_EXIT);
-  assert.deepEqual(
-    lines
-      .map((line) => JSON.parse(line))
-      .map(({ commit, status, url }) => ({ commit, status, url })),
-    [{ commit, status: "failed", url: RUN_URL }],
+  git("remote", "set-url", "--add", "--push", "origin", "https://github.com/example/fork.git");
+  await assert.rejects(
+    check(commit, structuredClone(failedRun)),
+    /several GitHub repositories \(example\/app, example\/fork\)/,
   );
 });
 
@@ -261,6 +298,8 @@ test("only GitHub remotes name a repository, with or without credentials, a port
     ["git@github.com:GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
     ["ssh://git@github.com/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
     ["ssh://git@github.com:22/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
+    ["ssh://git@ssh.github.com:443/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
+    ["https://ssh.github.com/GigaZoro/CodeShip.git", null],
     ["https://github.com.example.invalid/GigaZoro/CodeShip.git", null],
     ["https://github.com/GigaZoro/CodeShip/tree/main", null],
     ["https://git.cafe/GigaZoro/CodeShip.git", null],

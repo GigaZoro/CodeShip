@@ -13,8 +13,8 @@ Invoking `/ship` is the developer's go-ahead to commit and push to the default b
 - `git status --short --untracked-files=all`, `git branch --show-current`, `git worktree list`, `git remote -v`.
 - Default branch: `git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `main`.
 - The first `git worktree list` entry is the main checkout. Note whether you are in a separate worktree.
-- Already on the default branch: do steps 2-5, push it, report, and skip cleanup.
-- Nothing to land: the tree is clean and, after `git fetch origin`, `git merge-base --is-ancestor HEAD origin/<default>` holds. The work is already on the default branch, so skip to step 7, then report and settle.
+- Already on the default branch: do steps 2-6, report, and skip cleanup.
+- Nothing to land: the tree is clean and, after `git fetch origin`, `git merge-base --is-ancestor HEAD origin/<default>` holds. The work is already on the default branch. When this chat landed it and has no result of its Windows check yet (a restart can cut that wait), wait for it as step 6 says, with the commit it landed. Then skip to step 7, report and settle.
 
 ## 2. Stage deliberately
 
@@ -53,7 +53,7 @@ Main's push also runs `check:changed` on Windows on GitHub ([windows-check-fork.
 
 `node .github/scripts/windows-check.cjs <landed commit>`
 
-Exit status 3 means the commit is on main but that check did not pass: read `failures` and the run at `url`. Fix a failure in code or tests your change touched, commit, and land again. Name any other failure, or a run that never started or finished, as a follow-up in your report with its `url`.
+Exit status 3 means the commit is on main but that check did not pass or could not be read: read `status`, `reason`, `failures` and the run at `url`. Fix a failure in code or tests your change touched, commit, and land again. Name any other failure, or a run that never started or finished, as a follow-up in your report with its `url`.
 
 ## 7. Clean up
 
