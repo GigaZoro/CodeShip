@@ -1,3 +1,7 @@
+## 2026-11-20 — Commands whose process check failed are re-checked
+
+- A background command whose process identity could not be read when the server picked it up is now checked again on later passes. If another process has taken its pid, the command is reported lost instead of showing as running until its deadline.
+
 ## 2026-11-20 — Added Codex accounts keep their own sign-in
 
 - A test now checks that chats on an added Codex account start in that account's own folder. Version 2026.1116 could run them under the default Codex login, which left a resumed chat waiting until it failed.

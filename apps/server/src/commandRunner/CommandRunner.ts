@@ -461,6 +461,8 @@ const make = Effect.gen(function* () {
   );
   /** Commands whose end has not reached their task yet, by task id. */
   const watched = new Map<string, CommandRunRow>();
+  /** Watched commands whose start read could not tell wrapper from pid reuse; each check asks again. */
+  const unconfirmed = new Set<string>();
   /** Every change to a watched command, so its process is stopped or delivered once. */
   const lock = yield* Semaphore.make(1);
   /** Open once start() has adopted the commands an earlier server left, so run() never races it. */
@@ -507,10 +509,13 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** Why `pid` no longer names the process this command started; undefined while it does. */
+  /**
+   * Why `pid` no longer names the process this command started; undefined while it does, and
+   * "unconfirmed" while the start read could not tell.
+   */
   const lossOf = Effect.fn("CommandRunner.lossOf")(function* (
     row: CommandRunRow,
-  ): Effect.fn.Return<Loss | undefined> {
+  ): Effect.fn.Return<Loss | "unconfirmed" | undefined> {
     const probe_error = row.probe_error;
     if (row.pid === null) return { lost_reason: row.lost_reason ?? "no-pid", probe_error };
     if (yield* rebootedSince(row)) return { lost_reason: "rebooted", probe_error };
@@ -518,13 +523,15 @@ const make = Effect.gen(function* () {
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
     if (row.process_started_at === null) return undefined;
     const startedAt = yield* startedAtOf(row.pid);
-    // ps reports whole seconds. Unknown identity stays conservative.
-    return startedAt === undefined || Math.abs(startedAt - row.process_started_at) <= 1_000
+    // ps reports whole seconds.
+    if (startedAt === undefined) return "unconfirmed";
+    return Math.abs(startedAt - row.process_started_at) <= 1_000
       ? undefined
       : { lost_reason: "pid-reused", probe_error };
   });
   const isSameProcess = (row: CommandRunRow) =>
-    lossOf(row).pipe(Effect.map((loss) => loss === undefined));
+    // Unknown identity stays conservative for a stop: the wrapper's group is signalled.
+    lossOf(row).pipe(Effect.map((loss) => loss === undefined || loss === "unconfirmed"));
 
   /** SIGTERM to the whole group, then SIGKILL to what is left of it after the grace period. */
   const killGroup = Effect.fn("CommandRunner.killGroup")(function* (pid: number) {
@@ -590,7 +597,10 @@ const make = Effect.gen(function* () {
   /** A command is watched until its end is delivered. */
   const remember = (row: CommandRunRow) => {
     if (row.delivered_at === null) watched.set(row.task_id, row);
-    else watched.delete(row.task_id);
+    else {
+      watched.delete(row.task_id);
+      unconfirmed.delete(row.task_id);
+    }
   };
 
   /** Records a watched command's new state. */
@@ -952,6 +962,11 @@ const make = Effect.gen(function* () {
       }
     } else {
       // Written once a wall-clock minute, for the next server; a loss writes the exact time.
+      if (unconfirmed.has(row.task_id)) {
+        const loss = yield* lossOf(row);
+        if (loss === undefined) unconfirmed.delete(row.task_id);
+        else if (loss !== "unconfirmed") return yield* lose(loss);
+      }
       const seen: CommandRunRow = { ...row, last_alive_at: yield* nowIso };
       const minuteOf = (at: string | null) =>
         at === null ? -1 : Math.floor(Date.parse(at) / 60_000);
@@ -1500,7 +1515,8 @@ const make = Effect.gen(function* () {
     }
     // A pid reused by another process means this command ended while no server watched it.
     const loss = yield* lossOf(row);
-    if (loss === undefined) {
+    if (loss === undefined || loss === "unconfirmed") {
+      if (loss === "unconfirmed") unconfirmed.add(row.task_id);
       watched.set(row.task_id, row);
       return;
     }

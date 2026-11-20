@@ -958,6 +958,51 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
   });
 
   describe.skipIf(isWindowsHost)("POSIX shell and process groups", () => {
+    it.effect(
+      "reports a command lost when a later start read finds another process under its pid",
+      () =>
+        Effect.gen(function* () {
+          const chat = yield* liveChat("command-unconfirmed-identity");
+          const started = yield* withServer((runner) =>
+            runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
+          );
+          yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          const sql = yield* SqlClient.SqlClient;
+          // A start time that differs from the real one stands for a process that took the pid.
+          yield* sql`
+          UPDATE command_runs SET process_started_at = process_started_at - 3600000
+          WHERE task_id = ${started.taskId}
+        `;
+          const processRunner = yield* ProcessRunner.ProcessRunner;
+          let startReads = 0;
+          yield* withServer(() => nextWake(chat.threadId)).pipe(
+            Effect.provideService(ProcessRunner.ProcessRunner, {
+              run: (input) => {
+                if (input.command !== "ps") return processRunner.run(input);
+                startReads += 1;
+                // Adoption's read fails, as it does on a loaded machine.
+                return startReads === 1
+                  ? Effect.succeed({
+                      stdout: "",
+                      stderr: "",
+                      code: ChildProcessSpawner.ExitCode(1),
+                      timedOut: false,
+                      stdoutTruncated: false,
+                      stderrTruncated: false,
+                      stdoutInvalidUtf8: false,
+                      stderrInvalidUtf8: false,
+                    })
+                  : processRunner.run(input);
+              },
+            }),
+          );
+          const row = yield* commandRow(started.taskId);
+          assert.equal(row?.status, "lost");
+          assert.equal(row?.lost_reason, "pid-reused");
+          assert.isAbove(startReads, 1);
+        }),
+    );
+
     it.effect.each([
       ["the group its ended wrapper's pid names", "command-rebooted-orphaned", true],
       ["a process of unknown start under its wrapper's pid", "command-rebooted-reused", false],
