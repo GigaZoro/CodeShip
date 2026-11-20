@@ -133,7 +133,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // before the thread exists.
         const threadId =
           input.launchId !== undefined && input.delegatedFrom !== undefined && caller === undefined
-            ? input.launchId
+            ? ThreadId.make(input.launchId)
             : ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         if (

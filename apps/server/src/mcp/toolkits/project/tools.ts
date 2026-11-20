@@ -179,7 +179,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
     /** Set by a linked environment that recorded its delegated task before launching it here; ignored otherwise. */
-    launchId: Schema.optional(ThreadId.check(Schema.isPattern(REMOTE_DELEGATE_THREAD_ID))),
+    launchId: Schema.optional(Schema.String.check(Schema.isPattern(REMOTE_DELEGATE_THREAD_ID))),
   }),
   success: Schema.Struct({
     threadId: ThreadId,
