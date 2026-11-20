@@ -1,3 +1,7 @@
+## 2026-11-20 — Landings on main take turns in the order they started waiting
+
+- Maintainers: landers waiting for main's landing turn now queue first come, first served. Before, whoever polled first after a release took the turn, so a chat landing commit after commit kept it, and a lander that had waited six hours gave up. A lander killed while waiting holds no place after three minutes. The landing tests also run on Windows again: a stalled push no longer leaves a process that keeps its test folder from being deleted. No change to the app.
+
 ## 2026-11-20 — A clock change no longer makes a running command look lost
 
 - Background commands are now recognized by their start in ticks since boot on Linux and by the creation time Windows stored, instead of a start time derived from the wall clock. A clock change after a command started no longer reports it lost or leaves it running unwatched, and on Windows a stop still reaches what the command started.

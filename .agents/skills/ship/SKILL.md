@@ -38,7 +38,7 @@ Main has one landing turn, so a pass of `vp run check:changed` covers the tree t
 
 `node .github/scripts/landing-turn.cjs land`
 
-It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. A pass records the tree it checked, uncommitted and untracked files included, so `land` refuses to start in a worktree with anything uncommitted or untracked. Main refuses a push from anyone who does not hold the turn, or for a tree no `check:changed` pass covers (`.vite-hooks/pre-push`), so never push to main any other way, never pass `--no-verify`, and never use `--force` or `--force-with-lease`.
+It takes the turn (a lease on `refs/heads/landing-lease/main` on origin, after the landers that started waiting before it), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. A pass records the tree it checked, uncommitted and untracked files included, so `land` refuses to start in a worktree with anything uncommitted or untracked. Main refuses a push from anyone who does not hold the turn, or for a tree no `check:changed` pass covers (`.vite-hooks/pre-push`), so never push to main any other way, never pass `--no-verify`, and never use `--force` or `--force-with-lease`.
 
 - A check that fails ends the landing with exit status 1 and the turn released: fix the cause, commit, and land again.
 - A rebase that conflicts stops the landing with the turn released: resolve it, then land again.

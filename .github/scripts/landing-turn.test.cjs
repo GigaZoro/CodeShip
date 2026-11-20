@@ -1,12 +1,15 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { execFileSync } = require("node:child_process");
+const { once } = require("node:events");
 const fs = require("node:fs");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 
 const {
   LEASE_REF,
+  QUEUE_PREFIX,
   TURN_ENV,
   acquire,
   land,
@@ -235,6 +238,107 @@ test("a waiting lander takes the turn over from a holder whose lease expired, an
   }
 });
 
+test("a lander that starts waiting later takes the turn only after the waiter ahead of it, whichever polls first", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const holder = clone("holder");
+    const early = clone("early");
+    const late = clone("late");
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const start = Date.now();
+    let lateQueue = null;
+    const pauses = [
+      () => {
+        // The turn comes free, and a lander that started later polls before the early one does.
+        release({ cwd: holder, remote: origin }, held);
+        let minutes = 0;
+        assert.throws(
+          () =>
+            acquire({
+              cwd: late,
+              remote: origin,
+              now: () => start + 1,
+              maxWaitMs: 60_000,
+              clock: () => minutes * 60_000,
+              sleep: () => {
+                minutes += 1;
+                lateQueue = queue().split("\n").length;
+              },
+            }),
+          /still holds/,
+        );
+      },
+    ];
+
+    const turn = acquire({
+      cwd: early,
+      remote: origin,
+      now: () => start,
+      sleep: () => pauses.shift()(),
+    });
+
+    // The late lander queued behind the early one, and each left the queue when it gave up or took the turn.
+    assert.deepEqual(
+      [lateQueue, git(origin, "rev-parse", "landing-lease/main"), queue()],
+      [2, turn, ""],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a dead waiter's entry holds no place once it has gone three minutes unrenamed, and is deleted", () => {
+  const { root, origin, git, clone } = setup();
+  try {
+    const waiter = clone("waiter");
+    // A waiter that died while it waited: its entry sorts first and is never renamed again. A branch under the queue's
+    // prefix that is no entry holds no place either, and is not the waiters' to delete.
+    const dead = "000000000000001-dead.1";
+    git(
+      waiter,
+      "push",
+      "-q",
+      origin,
+      `HEAD:${QUEUE_PREFIX}${dead}`,
+      `HEAD:${QUEUE_PREFIX}maintenance`,
+    );
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    const names = () =>
+      queue()
+        .split("\n")
+        .map((ref) => ref.slice(QUEUE_PREFIX.length).replace(/^\d{15}-[\da-f-]{36}/, "own"));
+    let minutes = 0;
+    const seen = [];
+
+    const turn = acquire({
+      cwd: waiter,
+      remote: origin,
+      clock: () => minutes * 60_000,
+      sleep: () => {
+        seen.push(names());
+        minutes += 1;
+      },
+    });
+
+    // It waited three minutes behind the dead entry, renaming its own each minute rather than adding names.
+    assert.deepEqual(
+      [seen, git(origin, "rev-parse", "landing-lease/main"), queue()],
+      [
+        [
+          [dead, "own.1", "maintenance"],
+          [dead, "own.2", "maintenance"],
+          [dead, "own.3", "maintenance"],
+        ],
+        turn,
+        `${QUEUE_PREFIX}maintenance`,
+      ],
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a waiting lander waits through failed reads of origin, and only failures that go on or come from its checkout end its wait", () => {
   const { root, origin, git, clone } = setup();
   try {
@@ -292,23 +396,52 @@ test("a waiting lander waits through failed reads of origin, and only failures t
   }
 });
 
-test("a waiting lander that cannot fetch the holder's lease leaves it in place", () => {
+test("a waiting lander that cannot fetch the holder's lease leaves it in place, and keeps its place in the queue", () => {
   const { root, origin, git, clone } = setup();
   try {
     const holder = clone("holder");
     const waiter = clone("waiter");
     const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
-    // Origin lists the lease but cannot send its commit, as when the fetch after the listing fails.
-    fs.rmSync(path.join(origin, "objects", held.slice(0, 2), held.slice(2)));
+    // Origin lists the lease and takes pushes but cannot send its commit, as when the fetch after the listing fails.
+    // Git for Windows' sh reads forward slashes, and an ext:: URL splits its arguments on bare spaces.
+    const slash = (file) => file.replaceAll("\\", "/");
+    const unsent = slash(path.join(root, "unsent.sh"));
+    fs.writeFileSync(
+      unsent,
+      `[ "$1" = upload-pack ] && exec git -c uploadpack.packObjectsHook=false upload-pack "${slash(origin)}"\nexec git "$1" "${slash(origin)}"\n`,
+    );
+    git(waiter, "config", "protocol.ext.allow", "always");
+    const script = unsent.replaceAll("%", "%%").replaceAll(" ", "% ");
+    git(waiter, "config", "remote.unsent.url", `ext::sh ${script} %s`);
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    let minutes = 0;
+    const renames = [];
 
-    assert.throws(() => acquire({ cwd: waiter, remote: origin, maxWaitMs: 0 }), /git fetch failed/);
-    assert.equal(git(waiter, "ls-remote", "--refs", origin, LEASE_REF).split("\t")[0], held);
+    assert.throws(
+      () =>
+        acquire({
+          cwd: waiter,
+          remote: "unsent",
+          failingMs: 3 * 60_000,
+          clock: () => minutes * 60_000,
+          sleep: () => {
+            renames.push(queue().split(".").pop());
+            minutes += 1;
+          },
+        }),
+      /git fetch failed/,
+    );
+    // It renamed its entry each minute while the reads failed, so other waiters saw it alive, and left when it gave up.
+    assert.deepEqual(
+      [renames, git(waiter, "ls-remote", "--refs", origin, LEASE_REF).split("\t")[0], queue()],
+      [["1", "2", "3"], held, ""],
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("a take whose push fails or times out is the lander's when origin took it, and a failed poll when it did not", () => {
+test("a take whose push fails or times out is the lander's when origin took it, and a failed poll when it did not", async () => {
   const { root, origin, git, clone } = setup();
   try {
     const lander = clone("lander");
@@ -342,14 +475,52 @@ test("a take whose push fails or times out is the lander's when origin took it, 
     release({ cwd: lander, remote: path.join(root, "missing.git") }, turn);
     release({ cwd: lander, remote: origin }, turn);
 
-    // Origin stops answering and never takes the lease: the push runs out of time, which is a failed poll.
-    const stall = path.join(hooks, "pre-receive");
-    fs.writeFileSync(stall, "#!/bin/sh\nsleep 6\nexit 1\n", { mode: 0o755 });
-    assert.throws(
-      () => acquire({ cwd: lander, remote: origin, maxWaitMs: 0, callMs: 2000 }),
-      /git push failed: did not finish within 2 seconds/,
-    );
-    fs.rmSync(stall);
+    // A take that reached origin unacknowledged is found by the wait's next poll even when a waiter ahead of it has
+    // appeared by then, and that waiter keeps its place. A live holder keeps the first poll from taking the lease; in
+    // the pause the lease becomes the one such a take leaves, carrying the run id of the wait's queue entry.
+    const holder = clone("holder");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    const queue = () => git(origin, "for-each-ref", "--format=%(refname)", QUEUE_PREFIX);
+    const ahead = `${QUEUE_PREFIX}000000000000001-ahead.1`;
+    const pauses = [
+      () => {
+        const [, waitId] = /\/\d{15}-([^.]+)\.1$/.exec(queue());
+        release({ cwd: holder, remote: origin }, held);
+        tryAcquire({ cwd: holder, remote: origin, runId: waitId });
+        git(holder, "push", "-q", origin, `HEAD:${ahead}`);
+      },
+    ];
+    const ownTurn = acquire({
+      cwd: lander,
+      remote: origin,
+      clock: () => 0,
+      sleep: () => pauses.shift()(),
+    });
+    assert.deepEqual([git(origin, "rev-parse", "landing-lease/main"), queue()], [ownTurn, ahead]);
+    release({ cwd: lander, remote: origin }, ownTurn);
+    git(origin, "update-ref", "-d", ahead);
+
+    // Origin stops answering pushes and never takes the lease: the push runs out of time, which is a failed poll. A
+    // git:// listener stalls it with no process of its own, which on Windows would keep the fixture from being deleted
+    // while it outlived the push; its connection is closed only after the push, which blocks this process, has ended.
+    const silent = net.createServer((socket) => socket.destroy());
+    silent.listen(0, "127.0.0.1");
+    await once(silent, "listening");
+    try {
+      git(lander, "config", "remote.stall.url", origin);
+      git(
+        lander,
+        "config",
+        "remote.stall.pushurl",
+        `git://127.0.0.1:${silent.address().port}/origin.git`,
+      );
+      assert.throws(
+        () => acquire({ cwd: lander, remote: "stall", maxWaitMs: 0, callMs: 2000 }),
+        /git push failed: did not finish within 2 seconds/,
+      );
+    } finally {
+      silent.close();
+    }
 
     git(lander, "config", "remote.origin.pushurl", path.join(root, "missing.git"));
     assert.throws(

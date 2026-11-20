@@ -1,7 +1,7 @@
 // The landing turn for origin's main. `node .github/scripts/landing-turn.cjs land` takes a lease on the remote
 // (refs/heads/landing-lease/main), rebases onto main, runs the checks once and pushes while it holds the lease; every
-// other lander waits. The pre-push hook (`verify`) refuses a push to main from anyone who does not hold it, so main
-// cannot move under the checked tree and one verification covers the landed tree.
+// other lander waits its turn in a first-come queue. The pre-push hook (`verify`) refuses a push to main from anyone who
+// does not hold it, so main cannot move under the checked tree and one verification covers the landed tree.
 const { spawnSync } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
 const { MERGE_DRIVER_CONFIG, notesMergeProblem } = require("./release-notes.cjs");
@@ -18,6 +18,21 @@ const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
 const FAILING_MS = 10 * 60 * 1000;
 // One read or write of the lease; a remote that stops answering must not hold a wait past its limits.
 const LEASE_CALL_MS = 60 * 1000;
+// First come, first served, so a lander landing commit after commit cannot keep the turn from one waiting longer. A
+// waiter publishes QUEUE_PREFIX<zero-padded wait start>-<run id>.<n>, names that sort in queue order, and only the head
+// takes a free lease. It renames its entry every QUEUE_REFRESH_MS (no new object); a name a reader has seen for
+// QUEUE_STALE_MS is a dead waiter's, which holds no place and is deleted.
+const QUEUE_PREFIX = "refs/heads/landing-lease/queue/";
+const QUEUE_REFRESH_MS = 60 * 1000;
+const QUEUE_STALE_MS = 3 * 60 * 1000;
+const QUEUE_PRUNE_MAX = 10;
+const QUEUE_NAME = /^(\d{15}-[^.]+)\.\d+$/;
+const LANDER_IDENTITY = {
+  GIT_AUTHOR_NAME: "landing-turn",
+  GIT_AUTHOR_EMAIL: "landing-turn@localhost",
+  GIT_COMMITTER_NAME: "landing-turn",
+  GIT_COMMITTER_EMAIL: "landing-turn@localhost",
+};
 
 function git(cwd, args, { env, config = [], allowFailure = false, timeoutMs } = {}) {
   const flags = config.flatMap(([key, value]) => ["-c", `${key}=${value}`]);
@@ -94,33 +109,100 @@ function moveLease(lease, from, to) {
 /**
  * Takes the lease when it is free or expired. Returns the lease commit, or null while another lander holds it.
  * `runId` names one wait: a live lease that carries it is that wait's own, as when a take reached origin although its
- * push reported a failure.
+ * push reported a failure. With `take` false it only finds that wait's own lease.
  */
-function tryAcquire({ runId, now = () => Date.now(), ...lease }) {
+function tryAcquire({ runId, now = () => Date.now(), take = true, ...lease }) {
   const held = remoteLease(lease);
   if (held) {
     const holder = readHolder(lease, held);
     // A lease nobody can read is one nobody can release, so it expires like any other.
     const expired = !holder || !(Date.parse(holder.expires_at) > now());
     if (!expired) return holder.run_id === runId ? held : null;
-    if (!moveLease(lease, held, null)) return null;
   }
+  if (!take) return null;
+  if (held && !moveLease(lease, held, null)) return null;
   const acquiredAt = now();
-  const message = JSON.stringify({
+  const sha = markerCommit(lease.cwd, {
     run_id: runId,
     acquired_at: new Date(acquiredAt).toISOString(),
     expires_at: new Date(acquiredAt + LEASE_TTL_MS).toISOString(),
   });
-  const sha = git(lease.cwd, ["commit-tree", EMPTY_TREE, "-m", `${message}\n[skip ci]`], {
-    env: {
-      GIT_AUTHOR_NAME: "landing-turn",
-      GIT_AUTHOR_EMAIL: "landing-turn@localhost",
-      GIT_COMMITTER_NAME: "landing-turn",
-      GIT_COMMITTER_EMAIL: "landing-turn@localhost",
-    },
-  }).stdout;
   // A push that creates the ref is atomic: when two landers race, the remote takes one and refuses the other.
   return moveLease(lease, null, sha) ? sha : null;
+}
+
+function markerCommit(cwd, fields) {
+  const message = `${JSON.stringify(fields)}\n[skip ci]`;
+  return git(cwd, ["commit-tree", EMPTY_TREE, "-m", message], { env: LANDER_IDENTITY }).stdout;
+}
+
+/** One wait's entry in main's landing queue. `clock` is the wait's monotonic clock. */
+function joinQueue({ cwd, remote, callMs = LEASE_CALL_MS, runId, waitingSince, clock }) {
+  const stem = `${String(waitingSince).padStart(15, "0")}-${runId}`;
+  const firstSeen = new Map();
+  let ownNames = [];
+  let commit = null;
+  let renames = 0;
+  let publishedAt = null;
+  const list = (pattern) => {
+    const listing = remoteGit(cwd, ["ls-remote", "--refs", remote, pattern], callMs).stdout;
+    return listing ? listing.split("\n").map((line) => line.split(/\s+/)[1]) : [];
+  };
+  const stemOf = (ref) => QUEUE_NAME.exec(ref.slice(QUEUE_PREFIX.length))?.[1] ?? null;
+  return {
+    /** Whether no live waiter is ahead of this one. Deletes some of the dead ones' names. */
+    atHead() {
+      // Only entry names: any other ref under the prefix is no waiter's, and is neither waited for nor deleted.
+      const refs = list(`${QUEUE_PREFIX}*`).filter(
+        (ref) => ref.startsWith(QUEUE_PREFIX) && stemOf(ref) !== null,
+      );
+      const now = clock();
+      for (const ref of firstSeen.keys()) if (!refs.includes(ref)) firstSeen.delete(ref);
+      const others = refs.filter((ref) => stemOf(ref) !== stem);
+      for (const ref of others) if (!firstSeen.has(ref)) firstSeen.set(ref, now);
+      const dead = others.filter((ref) => now - firstSeen.get(ref) >= QUEUE_STALE_MS);
+      if (dead.length) {
+        // Another waiter may delete a name first, which fails this push; the next read lists what is left.
+        const deletes = dead.slice(0, QUEUE_PRUNE_MAX).map((ref) => `:${ref}`);
+        remoteGit(cwd, ["push", "--quiet", remote, ...deletes], callMs, { allowFailure: true });
+      }
+      ownNames = refs.filter((ref) => stemOf(ref) === stem);
+      return !others.some((ref) => !dead.includes(ref) && stemOf(ref) < stem);
+    },
+    /** Publishes the entry, or renames it once it is due, so readers see this waiter alive. */
+    refresh() {
+      if (ownNames.length && clock() - publishedAt < QUEUE_REFRESH_MS) return;
+      commit ??= markerCommit(cwd, {
+        run_id: runId,
+        waiting_since: new Date(waitingSince).toISOString(),
+      });
+      renames += 1;
+      remoteGit(
+        cwd,
+        ["push", "--quiet", remote, `${commit}:${QUEUE_PREFIX}${stem}.${renames}`],
+        callMs,
+      );
+      publishedAt = clock();
+      // A name left behind goes stale, and other waiters delete it.
+      if (ownNames.length) {
+        const deletes = ownNames.map((ref) => `:${ref}`);
+        remoteGit(cwd, ["push", "--quiet", remote, ...deletes], callMs, { allowFailure: true });
+      }
+    },
+    /** Removes the entry; one left behind holds no place once other waiters find it stale. */
+    leave() {
+      if (commit === null) return;
+      try {
+        const own = list(`${QUEUE_PREFIX}${stem}.*`);
+        if (own.length)
+          remoteGit(cwd, ["push", "--quiet", remote, ...own.map((ref) => `:${ref}`)], callMs);
+      } catch (error) {
+        process.stderr.write(
+          `landing turn: this wait's queue entry stays until other waiters find it stale: ${error.message}\n`,
+        );
+      }
+    },
+  };
 }
 
 function release(lease, sha) {
@@ -139,8 +221,8 @@ function sleepSync(ms) {
 }
 
 /**
- * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait. The wait makes its
- * own run id, so no other wait can carry it.
+ * Waits for the turn on the monotonic clock, so a stepped wall clock cannot cut or stretch the wait, and takes it once
+ * no earlier waiter is left in the queue. The wait makes its own run id, so no other wait can carry it.
  */
 function acquire({
   maxWaitMs = MAX_WAIT_MS,
@@ -148,32 +230,50 @@ function acquire({
   pollMs = POLL_MS,
   sleep = sleepSync,
   clock = () => performance.now(),
+  now = () => Date.now(),
   ...options
 }) {
   const started = clock();
   const runId = randomUUID();
+  const queue = joinQueue({ ...options, runId, waitingSince: now(), clock });
   let failingSince = null;
-  for (;;) {
-    let failure = null;
-    try {
-      const sha = tryAcquire({ ...options, runId });
+  try {
+    for (;;) {
+      let failure = null;
+      // A step that cannot reach origin fails the poll but not the steps after it, so a waiter that cannot read the
+      // lease still renames its entry and keeps its place.
+      const step = (run) => {
+        try {
+          return run();
+        } catch (error) {
+          if (!(error instanceof RemoteFailure)) throw error;
+          failure ??= error;
+          return null;
+        }
+      };
+      // Behind other waiters, a wait still looks for its own lease: its take may have reached origin unacknowledged.
+      const sha = step(() => tryAcquire({ ...options, runId, now, take: queue.atHead() }));
       if (sha) return sha;
-      failingSince = null;
-    } catch (error) {
-      if (!(error instanceof RemoteFailure)) throw error;
-      failure = error;
+      if (clock() - started < maxWaitMs) step(() => queue.refresh());
+      const waited = clock();
+      if (waited - started >= maxWaitMs) {
+        throw (
+          failure ??
+          new Error("landing turn: another lander still holds main's landing turn or waits ahead.")
+        );
+      }
+      if (failure) {
+        const first = failingSince === null;
+        if (first) failingSince = waited;
+        if (waited - failingSince >= failingMs) throw failure;
+        if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
+      } else {
+        failingSince = null;
+      }
+      sleep(pollMs);
     }
-    const now = clock();
-    if (now - started >= maxWaitMs) {
-      throw failure ?? new Error("landing turn: another lander still holds main's landing turn.");
-    }
-    if (failure) {
-      const first = failingSince === null;
-      if (first) failingSince = now;
-      if (now - failingSince >= failingMs) throw failure;
-      if (first) process.stderr.write(`landing turn: ${failure.message}\nTrying again.\n`);
-    }
-    sleep(pollMs);
+  } finally {
+    queue.leave();
   }
 }
 
@@ -290,4 +390,14 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LEASE_REF, TURN_ENV, tryAcquire, release, acquire, withTurn, verifyPush, land };
+module.exports = {
+  LEASE_REF,
+  QUEUE_PREFIX,
+  TURN_ENV,
+  tryAcquire,
+  release,
+  acquire,
+  withTurn,
+  verifyPush,
+  land,
+};
