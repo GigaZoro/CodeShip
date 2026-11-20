@@ -560,7 +560,11 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
           ),
         );
         const task = yield* taskOf(chat.threadId, started.taskId);
-        assert.match(task?.result ?? "", /^Exited with code 0 after .+\.\nLast output:\nadopted\n/);
+        assert.match(
+          task?.result ?? "",
+          /^Exited with code 0 after .+\.\nLast output:\nadopted\n/,
+          JSON.stringify(yield* commandRow(started.taskId)),
+        );
         assert.isNotNull((yield* commandRow(started.taskId))?.pid);
       }),
   );
@@ -1686,6 +1690,11 @@ const windowsFixture = Effect.gen(function* () {
     stopError: "",
     probeCalls: 0,
     beforeProbe: Effect.void as Effect.Effect<void>,
+    sleep: (duration: Duration.Duration) => clock.sleep(duration),
+    signalGroup: (pid: number, signal: string | number | undefined) => {
+      if (!groups.has(pid)) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      if (signal !== 0) groups.delete(pid);
+    },
     launch: (_input: ProcessRunner.ProcessRunInput, directory: string) =>
       Effect.gen(function* () {
         const pid = nextPid++;
@@ -1705,8 +1714,7 @@ const windowsFixture = Effect.gen(function* () {
   const spy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
     if (pid < 0 && processes.has(-pid)) {
       groupSignals.push(signal);
-      if (!groups.has(-pid)) throw Object.assign(new Error("gone"), { code: "ESRCH" });
-      if (signal !== 0) groups.delete(-pid);
+      fixture.signalGroup(-pid, signal);
       return true;
     }
     const known = processes.get(pid);
@@ -1732,7 +1740,7 @@ const windowsFixture = Effect.gen(function* () {
       currentTimeNanosUnsafe: () => BigInt(fixture.now) * 1_000_000n,
       monotonicTimeNanos: clock.monotonicTimeNanos,
       monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
-      sleep: (duration) => clock.sleep(duration),
+      sleep: (duration) => fixture.sleep(duration),
     }),
     Layer.succeed(HostProcess.Platform, "win32"),
     Layer.succeed(WindowsJobHost, Effect.succeed("job-host.exe")),
@@ -2034,6 +2042,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       Effect.gen(function* () {
         const chat = yield* liveChat("posix-late-pid");
         const fixture = yield* windowsFixture;
+        fixture.state.now = Math.floor(fixture.state.now / 1_000) * 1_000;
         const first = yield* withServer((runner) =>
           runner.run(callerOf(chat.threadId), {
             command: "echo late identity",
@@ -2102,6 +2111,7 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
 
   it.effect.each([
     "observed replacement",
+    "one second replacement",
     "recorded replacement",
     "recorded reboot",
     "systemd unit",
@@ -2109,6 +2119,8 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
     Effect.gen(function* () {
       const chat = yield* liveChat(`posix-group-${evidence}`);
       const fixture = yield* windowsFixture;
+      fixture.state.now = Math.floor(fixture.state.now / 1_000) * 1_000;
+      const observed = evidence === "observed replacement" || evidence === "one second replacement";
       const first = yield* withServer((runner) =>
         runner.run(callerOf(chat.threadId), {
           command: "echo original group",
@@ -2123,15 +2135,15 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
             : null;
       const unit = evidence === "systemd unit" ? "original.scope" : null;
       yield* sql`UPDATE command_runs SET unit = ${unit}, lost_reason = ${reason},
-        status = ${evidence === "observed replacement" ? "running" : "stopped"}
+        status = ${observed ? "running" : "stopped"}
         WHERE task_id = ${first.taskId}`;
       const entry = fixture.processes.get(2147483000)!;
-      entry.identity += 5_000;
+      entry.identity += evidence === "one second replacement" ? 1_000 : 5_000;
       if (evidence === "observed replacement")
         fixture.state.beforeProbe = Effect.sync(() => {
           entry.alive = false;
         });
-      else entry.alive = false;
+      else if (!observed) entry.alive = false;
       const delivered = yield* Deferred.make<void>();
       const agentScope = yield* AgentScope;
       const units: string[] = [];
@@ -2156,9 +2168,167 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
       assert.deepEqual(units, unit === null ? [] : [unit]);
       assert.equal(
         (yield* commandRow(first.taskId))?.lost_reason,
-        evidence === "observed replacement" ? "pid-reused" : reason,
+        observed ? "pid-reused" : reason,
       );
     }),
+  );
+
+  it.effect("retains replacement evidence when cancellation changes the probed row", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("posix-reuse-cancel-race");
+      const fixture = yield* windowsFixture;
+      fixture.state.now = Math.floor(fixture.state.now / 1_000) * 1_000;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), { command: "echo original" }),
+      ).pipe(Effect.provide(fixture.layer));
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE command_runs SET unit = NULL WHERE task_id = ${first.taskId}`;
+      const entry = fixture.processes.get(2147483000)!;
+      entry.identity += 5_000;
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const proof = yield* Deferred.make<void>();
+      const reported = yield* Deferred.make<void>();
+      const delivered = yield* Deferred.make<void>();
+      let probes = 0;
+      fixture.state.beforeProbe = Effect.gen(function* () {
+        if (++probes === 1) {
+          yield* Deferred.succeed(entered, undefined);
+          yield* Deferred.await(release);
+        } else yield* Deferred.await(proof);
+        entry.alive = false;
+      });
+      yield* withServer(() =>
+        Effect.gen(function* () {
+          yield* Deferred.await(entered);
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(cancellationOf(chat.threadId, first.taskId));
+          yield* Deferred.await(reported);
+          yield* Deferred.succeed(release, undefined);
+          yield* Deferred.await(proof);
+          yield* Deferred.await(delivered);
+          assert.isTrue(fixture.groups.has(2147483000));
+          assert.deepEqual(fixture.groupSignals, []);
+        }),
+      ).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (...args) => {
+          const [statement, client] = args;
+          const [query, params] = statement.compile();
+          if (
+            query.includes("UPDATE command_runs") &&
+            params.at(-1) === first.taskId &&
+            params[6] === null &&
+            params[9] === "pid-reused"
+          )
+            return statement.pipe(
+              Effect.provideService(Statement.CurrentTransformer, undefined),
+              Effect.orDie,
+              Effect.andThen(Deferred.succeed(proof, undefined)),
+              Effect.as(client`SELECT 1 WHERE 0`),
+            );
+          return params[6] === null
+            ? observeDelivery(first.taskId, reported, "reported_at")(...args)
+            : observeDelivery(first.taskId, delivered)(...args);
+        }),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(fixture.layer),
+        Effect.ensuring(Deferred.succeed(release, undefined)),
+        Effect.ensuring(Deferred.succeed(proof, undefined)),
+      );
+    }),
+  );
+
+  it.effect("revalidates the POSIX owner before escalating a group stop", () =>
+    Effect.gen(function* () {
+      const chat = yield* liveChat("posix-reuse-grace");
+      const fixture = yield* windowsFixture;
+      fixture.state.now = Math.floor(fixture.state.now / 1_000) * 1_000;
+      const first = yield* withServer((runner) =>
+        runner.run(callerOf(chat.threadId), { command: "echo original" }),
+      ).pipe(Effect.provide(fixture.layer));
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE command_runs SET unit = NULL, status = 'stopped' WHERE task_id = ${first.taskId}`;
+      const grace = yield* Deferred.make<void>();
+      const entered = yield* Deferred.make<void>();
+      const delivered = yield* Deferred.make<void>();
+      const sleep = fixture.state.sleep;
+      fixture.state.sleep = (duration) =>
+        Duration.toMillis(duration) === 5_000
+          ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(grace)))
+          : sleep(duration);
+      fixture.state.signalGroup = (pid, signal) => {
+        if (signal === "SIGKILL") fixture.groups.delete(pid);
+      };
+      yield* withServer(() =>
+        Effect.gen(function* () {
+          yield* Deferred.await(entered);
+          fixture.processes.get(2147483000)!.identity += 5_000;
+          yield* Deferred.succeed(grace, undefined);
+          yield* Deferred.await(delivered);
+          assert.isTrue(fixture.groups.has(2147483000));
+          assert.notInclude(fixture.groupSignals, "SIGKILL");
+          assert.equal((yield* commandRow(first.taskId))?.lost_reason, "pid-reused");
+        }),
+      ).pipe(
+        Effect.provideService(
+          Statement.CurrentTransformer,
+          observeDelivery(first.taskId, delivered),
+        ),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provide(fixture.layer),
+        Effect.ensuring(Deferred.succeed(grace, undefined)),
+      );
+    }),
+  );
+
+  it.effect.each(["SIGTERM", "probe", "SIGKILL", "still populated"] as const)(
+    "keeps POSIX cleanup watched after a failed group stop: %s",
+    (failure) =>
+      Effect.gen(function* () {
+        const chat = yield* liveChat(`posix-stop-${failure}`);
+        const fixture = yield* windowsFixture;
+        fixture.state.now = Math.floor(fixture.state.now / 1_000) * 1_000;
+        const first = yield* withServer((runner) =>
+          runner.run(callerOf(chat.threadId), { command: "echo original" }),
+        ).pipe(Effect.provide(fixture.layer));
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE command_runs SET unit = NULL, status = 'stopped' WHERE task_id = ${first.taskId}`;
+        const attempts = yield* Queue.unbounded<void>();
+        const delivered = yield* Deferred.make<void>();
+        let failing = true;
+        const target =
+          failure === "probe" ? 0 : failure === "still populated" ? "SIGKILL" : failure;
+        fixture.state.signalGroup = (pid, signal) => {
+          if (!fixture.groups.has(pid)) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+          if (failing && signal === target) {
+            Queue.offerUnsafe(attempts, undefined);
+            if (failure !== "still populated")
+              throw Object.assign(new Error("access denied"), { code: "EPERM" });
+          }
+          if (!failing && signal !== 0) fixture.groups.delete(pid);
+        };
+        const sleep = fixture.state.sleep;
+        fixture.state.sleep = (duration) =>
+          Duration.toMillis(duration) === 5_000 ? Effect.void : sleep(duration);
+        yield* withServer(() =>
+          Effect.gen(function* () {
+            yield* Queue.take(attempts);
+            yield* Queue.take(attempts);
+            assert.isNull((yield* commandRow(first.taskId))?.delivered_at);
+            assert.isTrue(fixture.groups.has(2147483000));
+            failing = false;
+            yield* Deferred.await(delivered);
+            assert.isFalse(fixture.groups.has(2147483000));
+          }),
+        ).pipe(
+          Effect.provideService(
+            Statement.CurrentTransformer,
+            observeDelivery(first.taskId, delivered),
+          ),
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provide(fixture.layer),
+        );
+      }),
   );
 
   it.effect.each([null, "pid-reused"] as const)(
@@ -2400,7 +2570,11 @@ it.layer(layerTest, { excludeTestServices: true })("launch reconciliation", (it)
           const directory = yield* Deferred.await(entered);
           const task = yield* runner.run(callerOf(chat.threadId), request);
           fixture.state.now += 60_000;
-          yield* Queue.take(fixture.renamed);
+          yield* Queue.take(fixture.renamed).pipe(
+            Effect.repeat({
+              while: (file) => file !== NodePath.join(directory, "launch-cancelled"),
+            }),
+          );
           assert.isTrue(NodeFS.existsSync(NodePath.join(directory, "launch-cancelled")));
           yield* nextWake(chat.threadId);
           assert.equal((yield* commandRow(task.taskId))?.status, "timed_out");
