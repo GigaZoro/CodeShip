@@ -291,9 +291,7 @@ describe("the tree a Muse host leaves", () => {
     await host.close();
 
     expect(stopTree.mock.calls).toEqual(
-      Array.from({ length: stops }, () => [
-        expect.objectContaining({ pid: MOCK_HOST_PID, ended: expect.any(Number) }),
-      ]),
+      Array.from({ length: stops }, () => [{ pid: MOCK_HOST_PID }]),
     );
   });
 });

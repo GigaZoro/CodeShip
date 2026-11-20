@@ -38,6 +38,7 @@ const fakeWindowsSpawner = (options: {
   readonly running: boolean;
   readonly output: "ends" | "held";
   readonly job?: WindowsJob;
+  readonly stopCodes?: Array<number>;
 }) => {
   const job = options.job ?? {
     host: "job-host.exe",
@@ -77,7 +78,10 @@ const fakeWindowsSpawner = (options: {
         ]);
         jobsStopped.push(command.args[1]!);
         if (options.job === undefined) events.push("walk");
-        return handle(Stream.empty);
+        return {
+          ...handle(Stream.empty),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(options.stopCodes?.shift() ?? 0)),
+        };
       }
       if (command._tag === "StandardCommand" && command.command === "powershell.exe") {
         events.push("walk");
@@ -99,6 +103,19 @@ const readToEnd: Use = (handle) => Stream.runDrain(handle.all);
 const readNothing: Use = () => Effect.void;
 
 describe("endingWindowsTrees stops a Windows tree", () => {
+  it.effect("retries a failed job stop and shares its later successful cleanup", () =>
+    Effect.gen(function* () {
+      const fake = fakeWindowsSpawner({ running: false, output: "ends", stopCodes: [1, 0] });
+      const child = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
+        ChildProcess.make("leader"),
+      );
+      const failed = yield* Effect.flip(child.kill());
+      assert.include(failed.message, "Stop helper exited 1");
+      yield* child.kill();
+      yield* child.kill();
+      assert.lengthOf(fake.jobsStopped, 2);
+    }).pipe(Effect.scoped),
+  );
   it.effect("refuses to infer membership from an unowned pid", () =>
     Effect.gen(function* () {
       const spawner = ChildProcessSpawner.make(() =>
