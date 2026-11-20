@@ -559,6 +559,28 @@ describe("V2 environment commands", () => {
       }).pipe(Effect.provide(layerTestCrypto)),
   );
 
+  it.effect.each([true, false])(
+    "composer Stop uses the server capability with a selected run (%s)",
+    (advertiseThreadStop) =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const runId = RunId.make("composer-run");
+        const supervisor = yield* makeSupervisor({ commands, projects: [], advertiseThreadStop });
+        yield* interruptThreadTurn({ threadId: v2ThreadId, runId }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        expect(commands).toEqual([
+          {
+            commandId: expect.any(String),
+            threadId: v2ThreadId,
+            ...(advertiseThreadStop
+              ? { type: "thread.stop" }
+              : { type: "run.interrupt", runId, holdQueue: true }),
+          },
+        ]);
+      }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("stops a thread without relying on background work in the history window", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
