@@ -217,24 +217,28 @@ export function sortInboxThreadsByReturn<T extends InboxThreadInput>(
 
 type WorkingSortInput = Pick<
   EnvironmentThreadShell,
-  "id" | "environmentId" | "createdAt" | "latestRun" | "latestUserAuthoredMessageAt"
+  "id" | "environmentId" | "createdAt" | "latestUserMessageAt" | "latestUserAuthoredMessageAt"
 >;
 
-export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: readonly T[]): T[] {
-  const timestamps = new Map(
-    threads.map((thread) => [
-      thread,
-      Math.max(
-        toSortableTimestamp(thread.createdAt) ?? 0,
-        toSortableTimestamp(
-          (thread.latestUserAuthoredMessageAt === undefined
-            ? thread.latestRun?.requestedAt
-            : thread.latestUserAuthoredMessageAt) ?? undefined,
-        ) ?? 0,
-      ),
-    ]),
+/**
+ * When the user last sent to the thread or created it, in epoch ms; streamed output never moves it.
+ * An older server omits `latestUserAuthoredMessageAt`, so its latest user-role message stands in, which an agent wake also moves.
+ */
+export function threadLastSendAt(thread: WorkingSortInput): number {
+  const authored = thread.latestUserAuthoredMessageAt;
+  return Math.max(
+    toSortableTimestamp(thread.createdAt) ?? 0,
+    toSortableTimestamp(
+      (authored === undefined ? thread.latestUserMessageAt : authored) ?? undefined,
+    ) ?? 0,
   );
-  return sortNewestFirst(threads, timestamps);
+}
+
+export function sortWorkingThreadsBySend<T extends WorkingSortInput>(threads: readonly T[]): T[] {
+  return sortNewestFirst(
+    threads,
+    new Map(threads.map((thread) => [thread, threadLastSendAt(thread)])),
+  );
 }
 
 function sortNewestFirst<T extends Pick<EnvironmentThreadShell, "id" | "environmentId">>(

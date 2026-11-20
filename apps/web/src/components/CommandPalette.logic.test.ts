@@ -195,13 +195,13 @@ describe("buildThreadActionItems", () => {
         makeThread({
           id: ThreadId.make("thread-context-match"),
           title: "Fix navbar spacing",
-          updatedAt: "2026-03-20T00:00:00.000Z",
+          latestUserMessageAt: "2026-03-20T00:00:00.000Z",
         }),
         makeThread({
           id: ThreadId.make("thread-title-match"),
           title: "Project kickoff notes",
           createdAt: "2026-03-02T00:00:00.000Z",
-          updatedAt: "2026-03-19T00:00:00.000Z",
+          latestUserMessageAt: "2026-03-19T00:00:00.000Z",
         }),
       ],
       projectByKey: new Map([[`${LOCAL_ENVIRONMENT_ID}:${PROJECT_ID}`, { title: "Project" }]]),
@@ -215,6 +215,7 @@ describe("buildThreadActionItems", () => {
       isInSubmenu: false,
       projectSearchItems: [],
       threadSearchItems: threadItems,
+      now: Date.parse("2026-03-20T00:00:00.000Z"),
     });
 
     expect(groups).toHaveLength(1);
@@ -643,12 +644,12 @@ describe("buildThreadActionItems", () => {
     const idThread = makeThread({
       id: ThreadId.make("thread-alpha-1234"),
       title: "Unrelated work",
-      updatedAt: "2026-03-05T00:00:00.000Z",
+      latestUserMessageAt: "2026-03-05T00:00:00.000Z",
     });
     const titleThread = makeThread({
       id: ThreadId.make("thread-other-9999"),
       title: "Fix thread-alpha-1234 flakes",
-      updatedAt: "2026-03-04T00:00:00.000Z",
+      latestUserMessageAt: "2026-03-04T00:00:00.000Z",
     });
     const items = buildThreadActionItems({
       threads: [idThread, titleThread],
@@ -664,6 +665,7 @@ describe("buildThreadActionItems", () => {
       projectSearchItems: [],
       settingsSearchItems: [],
       threadSearchItems: items,
+      now: Date.parse("2026-03-05T00:00:00.000Z"),
     });
 
     expect(groups.flatMap((group) => group.items)).toEqual([
@@ -713,18 +715,18 @@ describe("buildThreadActionItems", () => {
         makeThread({
           id: ThreadId.make("mid-word"),
           title: "Fix oauth redirect",
-          updatedAt: "2026-03-20T00:00:00.000Z",
+          latestUserMessageAt: "2026-03-20T00:00:00.000Z",
         }),
         makeThread({
           id: ThreadId.make("word-start"),
           title: "Clean up auth tokens",
-          updatedAt: "2026-03-02T00:00:00.000Z",
+          latestUserMessageAt: "2026-03-02T00:00:00.000Z",
         }),
         makeThread({
           id: ThreadId.make("branch-word-start"),
           title: "Refactor login",
           branch: "feature/auth-cleanup",
-          updatedAt: "2026-03-01T00:00:00.000Z",
+          latestUserMessageAt: "2026-03-01T00:00:00.000Z",
         }),
       ],
       projectByKey: new Map(),
@@ -738,6 +740,7 @@ describe("buildThreadActionItems", () => {
       isInSubmenu: false,
       projectSearchItems: [],
       threadSearchItems: items,
+      now: Date.parse("2026-03-20T00:00:00.000Z"),
     });
 
     expect(groups[0]?.items.map((item) => item.value)).toEqual([

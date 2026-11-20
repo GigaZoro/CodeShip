@@ -1,3 +1,4 @@
+import { threadLastSendAt } from "@t3tools/client-runtime/state/thread-inbox";
 import { resolveThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import { t } from "~/i18n";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -7,25 +8,13 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ComposerThreadTarget, useComposerDraftStore } from "~/composerDraftStore";
 import { composerDraftHasUserContent } from "~/composerDraftStore";
 import { cn } from "~/lib/utils";
-import { useProjects, useVisibleThreadShells } from "~/state/entities";
+import { useDelegatedUnderParent, useProjects, useVisibleThreadShells } from "~/state/entities";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { useUiStateStore } from "~/uiStateStore";
-import {
-  hasUnseenCompletion,
-  isSidebarHiddenThread,
-  resolveThreadLastVisitedAt,
-} from "../Sidebar.logic";
+import { hasUnseenCompletion, resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "../sidebar/threadRowStatus";
-
-const RECENT_THREAD_LIMIT = 5;
-
-function selectRecentThreads(threads: ReadonlyArray<EnvironmentThreadShell>) {
-  return threads
-    .filter((thread) => thread.archivedAt === null && !isSidebarHiddenThread(thread))
-    .toSorted((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-    .slice(0, RECENT_THREAD_LIMIT);
-}
+import { selectRecentThreads } from "./DraftRecentThreads.logic";
 
 function RecentThreadRow(props: {
   readonly thread: EnvironmentThreadShell;
@@ -68,7 +57,7 @@ function RecentThreadRow(props: {
           </span>
         )}
         <span className="w-16 shrink-0 whitespace-nowrap text-right text-muted-foreground text-xs tabular-nums">
-          {formatRelativeTimeLabel(thread.updatedAt)}
+          {formatRelativeTimeLabel(new Date(threadLastSendAt(thread)).toISOString())}
         </span>
       </button>
     </li>
@@ -82,8 +71,9 @@ export function DraftRecentThreads(props: { readonly draftTarget: ComposerThread
   );
   const threads = useVisibleThreadShells(!hasDraftContent);
   const projects = useProjects();
+  const delegatedUnderParent = useDelegatedUnderParent();
   if (hasDraftContent) return null;
-  const recent = selectRecentThreads(threads);
+  const recent = selectRecentThreads(threads, delegatedUnderParent);
   if (recent.length === 0) return null;
   const projectNameByKey = new Map(
     projects.map((project) => [`${project.environmentId}:${project.id}`, project.title] as const),

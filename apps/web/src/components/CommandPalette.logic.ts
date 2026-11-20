@@ -422,9 +422,7 @@ export type BuildThreadActionItemsThread = Pick<
       SidebarThreadSummary,
       "pullRequests" | "linkedPullRequest" | "branchPullRequest" | "opens" | "latestUserMessageAt"
     >
-  > & {
-    updatedAt: string;
-  };
+  >;
 
 export function buildThreadActionItems<TThread extends BuildThreadActionItemsThread>(input: {
   threads: ReadonlyArray<TThread>;
@@ -468,24 +466,28 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
       ? input.renderDescription(thread, { projectTitle })
       : descriptionParts.join(` · `);
 
+    const threadSearch = threadSearchSubject(
+      {
+        ...thread,
+        latestUserMessageAt: thread.latestUserMessageAt ?? null,
+        opens: thread.opens ?? null,
+      },
+      projectTitle,
+      input.environmentLabelOf?.(thread),
+    );
+
     return Object.assign(
       {
         kind: "action" as const,
         value: `thread:${thread.environmentId}:${thread.id}`,
         searchTerms: [thread.title],
-        threadSearch: threadSearchSubject(
-          {
-            ...thread,
-            latestUserMessageAt: thread.latestUserMessageAt ?? null,
-            opens: thread.opens ?? null,
-          },
-          projectTitle,
-          input.environmentLabelOf?.(thread),
-        ),
+        threadSearch,
         title: thread.title,
         description,
         timestamp: formatRelativeTimeLabel(
-          thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+          threadSearch.activityAt === null
+            ? thread.createdAt
+            : new Date(threadSearch.activityAt).toISOString(),
         ),
         icon: input.icon,
       },

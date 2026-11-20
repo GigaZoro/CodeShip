@@ -20,7 +20,6 @@ function shell(
     title,
     branch: null,
     createdAt: "2026-10-01T00:00:00.000Z",
-    updatedAt: "2026-10-01T00:00:00.000Z",
     latestUserMessageAt: null,
     opens: null,
     archivedAt: null,
@@ -33,7 +32,7 @@ it("ranks thread mentions like the palette and leaves out subagent threads", () 
   const items = matchComposerThreadItems({
     shells: [
       shell("newer-mid-word", "Remodel the settings page", {
-        updatedAt: "2026-10-20T00:00:00.000Z",
+        latestUserAuthoredMessageAt: "2026-10-20T00:00:00.000Z",
       }),
       shell("word", "Fix model picker"),
       shell("subagent", "Model review", {
