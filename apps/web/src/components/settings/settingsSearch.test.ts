@@ -16,17 +16,11 @@ import {
   movedSettingsPath,
   consolidatedSettingsAnchor,
   searchSettings,
-  SETTINGS_NAV_GROUPS,
   SETTINGS_SEARCH_ITEMS,
   sourceControlHostSearchItems,
   sourceControlHostSettingsSearchId,
   type SettingsSearchItem,
 } from "./settingsSearch";
-
-vi.mock("~/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("~/env")>()),
-  isSecretsFeatureEnabled: false,
-}));
 
 const ITEMS: ReadonlyArray<SettingsSearchItem> = [
   {
@@ -119,9 +113,26 @@ describe("searchSettings", () => {
     }
   });
 
-  it("hides the Secrets page from nav and search while the secrets feature is disabled", () => {
-    expect(SETTINGS_NAV_GROUPS.flatMap((group) => group.paths)).not.toContain("/settings/secrets");
-    expect(searchSettings("1password").map((item) => item.to)).not.toContain("/settings/secrets");
+  it.each([
+    { scenario: "shows Secrets by default", flag: undefined, visible: true },
+    { scenario: "shows Secrets with a blank build flag", flag: "  ", visible: true },
+    { scenario: "hides Secrets with a zero build flag", flag: "0", visible: false },
+    { scenario: "hides Secrets with a false build flag", flag: " false ", visible: false },
+  ])("$scenario in navigation and 1Password search", async ({ flag, visible }) => {
+    vi.resetModules();
+    vi.stubEnv("T3CODE_FEATURE_SECRETS", flag);
+
+    try {
+      const { SETTINGS_NAV_GROUPS, searchSettings } = await import("./settingsSearch");
+
+      expect({
+        navigation: SETTINGS_NAV_GROUPS.some((group) => group.paths.includes("/settings/secrets")),
+        search: searchSettings("1password").some((item) => item.to === "/settings/secrets"),
+      }).toEqual({ navigation: visible, search: visible });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 
   it("matches normalized title substrings", () => {

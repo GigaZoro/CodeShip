@@ -1,5 +1,6 @@
-import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
+import { spawnAndCollect, type CommandResult } from "@t3tools/provider-core/server/snapshotProbe";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
@@ -8,9 +9,14 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import { ChildProcess } from "effect/process";
 
-import { definition, type OnePasswordAccount } from "../shared/definition.ts";
+import {
+  definition,
+  isOnePasswordLinuxServiceAccountReference,
+  type OnePasswordAccount,
+} from "../shared/definition.ts";
 
 const ONE_PASSWORD_BINARY = "op";
+const SUDO_BINARY = "/usr/bin/sudo";
 // Bounds a read long enough to reach for a fingerprint reader, short enough not to wedge a rebuild.
 const READ_TIMEOUT = Duration.seconds(45);
 
@@ -28,11 +34,7 @@ const runOnePassword = Effect.fn("OnePasswordDriver.runOnePassword")(function* (
 // A secret is passed on verbatim; surrounding whitespace can be part of it.
 const nonEmpty = (value: string) => (value.trim().length > 0 ? value : undefined);
 
-const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
-  account: OnePasswordAccount,
-  reference: string,
-) {
-  const result = yield* runOnePassword(["read", `--account=${account}`, "--no-newline", reference]);
+const readValue = Effect.fn("OnePasswordDriver.readValue")(function* (result: CommandResult) {
   if (result.code !== 0) {
     yield* Effect.logWarning("Could not read secret from 1Password", {
       stage: "read",
@@ -41,6 +43,32 @@ const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
     return undefined;
   }
   return nonEmpty(result.stdout);
+});
+
+const readWithServiceAccount = Effect.fn("OnePasswordDriver.readWithServiceAccount")(function* (
+  reference: string,
+) {
+  if (!isOnePasswordLinuxServiceAccountReference(reference)) return;
+  // Only the exact per-field command may receive the credential from sudo policy.
+  const result = yield* spawnAndCollect(
+    SUDO_BINARY,
+    ChildProcess.make(
+      SUDO_BINARY,
+      [
+        "-n",
+        "-u",
+        "codeship-op",
+        "--",
+        "/usr/bin/op",
+        "--cache=false",
+        "read",
+        "--no-newline",
+        reference,
+      ],
+      { cwd: "/", env: {}, extendEnv: false, shell: false },
+    ),
+  );
+  return yield* readValue(result);
 });
 
 // One `op inject` costs one unlock for every reference in the template. `op` ignores piped stdin
@@ -98,7 +126,18 @@ const bounded = <A, E extends { readonly _tag: string }, R>(
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
   definition,
-  read: Effect.fn("OnePasswordDriver.read")(function* ({ account }, references) {
+  read: Effect.fn("OnePasswordDriver.read")(function* (config, references) {
+    if (config.auth === "linux-service-account") {
+      if ((yield* HostProcess.Platform) !== "linux") {
+        yield* Effect.logWarning("1Password service account reads require Linux");
+        return references.map(() => undefined);
+      }
+      return yield* Effect.forEach(references, (reference) =>
+        bounded("read", readWithServiceAccount(reference)).pipe(Effect.map(Option.getOrUndefined)),
+      );
+    }
+
+    const { account } = config;
     if (references.length > 1) {
       const together = yield* bounded("inject", readTogether(account, references));
       // Reading one by one after a timeout would only wait that long again for each reference.
@@ -106,7 +145,12 @@ export const driver = defineSecretProviderDriver({
       if (together.value !== undefined) return together.value;
     }
     return yield* Effect.forEach(references, (reference) =>
-      bounded("read", readOne(account, reference)).pipe(Effect.map(Option.getOrUndefined)),
+      bounded(
+        "read",
+        runOnePassword(["read", `--account=${account}`, "--no-newline", reference]).pipe(
+          Effect.flatMap(readValue),
+        ),
+      ).pipe(Effect.map(Option.getOrUndefined)),
     );
   }),
 });

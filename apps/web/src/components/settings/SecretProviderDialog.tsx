@@ -16,9 +16,11 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
   draftFromSecretProvider,
   secretProviderFromDraft,
+  type SecretProviderAuth,
   type SecretProviderDraft,
 } from "./SecretProviderDialog.logic";
 
@@ -27,20 +29,24 @@ export function SecretProviderDialog({
   onClose,
   environmentId,
   environmentLabel,
+  serviceAccountSupported,
   existingIds,
   existing,
 }: {
   readonly onClose: () => void;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
+  readonly serviceAccountSupported: boolean;
   readonly existingIds: ReadonlySet<string>;
   readonly existing?: { readonly id: SecretProviderId; readonly config: SecretProviderConfig };
 }) {
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
-  const [draft, setDraft] = useState<SecretProviderDraft>(
-    existing ? draftFromSecretProvider(existing.config) : { name: "", account: "" },
-  );
+  const initialDraft = draftFromSecretProvider(existing?.config);
+  const [draft, setDraft] = useState(initialDraft);
   const [submitted, setSubmitted] = useState(false);
+  const serviceAccountAllowed =
+    serviceAccountSupported || initialDraft.auth === "linux-service-account";
+  const authUnavailable = draft.auth === "linux-service-account" && !serviceAccountAllowed;
   const result = secretProviderFromDraft(
     draft,
     existingIds,
@@ -53,7 +59,7 @@ export function SecretProviderDialog({
   const update = (patch: Partial<SecretProviderDraft>) => setDraft({ ...draft, ...patch });
   const save = () => {
     setSubmitted(true);
-    if (Result.isFailure(result)) return;
+    if (authUnavailable || Result.isFailure(result)) return;
     updateSettings({ secretProviders: { [result.success.id]: result.success.config } });
     onClose();
   };
@@ -113,34 +119,76 @@ export function SecretProviderDialog({
               ) : null}
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="secret-provider-account">{t("Account")}</Label>
-              <Input
-                id="secret-provider-account"
-                placeholder={"my.1password.com"}
-                value={draft.account}
-                onChange={(event) => update({ account: event.target.value })}
-                maxLength={253}
-                spellCheck={false}
-                aria-invalid={accountError !== undefined}
-                aria-describedby={
-                  accountError !== undefined ? "secret-provider-account-error" : undefined
-                }
-              />
-              {accountError !== undefined ? (
-                <p
-                  id="secret-provider-account-error"
-                  role="alert"
-                  className="text-xs text-destructive-foreground"
+              <Label htmlFor="secret-provider-auth">{t("Authentication method")}</Label>
+              <Select<SecretProviderAuth>
+                value={draft.auth}
+                onValueChange={(auth) => {
+                  if (auth !== null) update({ auth });
+                }}
+              >
+                <SelectTrigger
+                  id="secret-provider-auth"
+                  aria-invalid={authUnavailable}
+                  aria-describedby={
+                    !serviceAccountSupported ? "secret-provider-auth-unavailable" : undefined
+                  }
                 >
-                  {accountError}
+                  <SelectValue>
+                    {draft.auth === "desktop"
+                      ? t("Desktop integration")
+                      : t("Linux service account")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value="desktop">{t("Desktop integration")}</SelectItem>
+                  <SelectItem value="linux-service-account" disabled={!serviceAccountAllowed}>
+                    {t("Linux service account")}
+                  </SelectItem>
+                </SelectPopup>
+              </Select>
+              {!serviceAccountSupported ? (
+                <p id="secret-provider-auth-unavailable" className="text-xs text-muted-foreground">
+                  {t("This host does not support Linux service accounts.")}
                 </p>
               ) : null}
+            </div>
+            {draft.auth === "desktop" ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="secret-provider-account">{t("Account")}</Label>
+                <Input
+                  id="secret-provider-account"
+                  placeholder={"my.1password.com"}
+                  value={draft.account}
+                  onChange={(event) => update({ account: event.target.value })}
+                  maxLength={253}
+                  spellCheck={false}
+                  aria-invalid={accountError !== undefined}
+                  aria-describedby={
+                    accountError !== undefined ? "secret-provider-account-error" : undefined
+                  }
+                />
+                {accountError !== undefined ? (
+                  <p
+                    id="secret-provider-account-error"
+                    role="alert"
+                    className="text-xs text-destructive-foreground"
+                  >
+                    {accountError}
+                  </p>
+                ) : null}
+                <p className="text-xs text-muted-foreground">
+                  {t(
+                    "The account shorthand, sign-in address without https://, or ID that op account list shows.",
+                  )}
+                </p>
+              </div>
+            ) : (
               <p className="text-xs text-muted-foreground">
                 {t(
-                  "The account shorthand, sign-in address without https://, or ID that op account list shows.",
+                  "Ask the host administrator to set up a 1Password service account and allow the fields CodeShip may read without prompts.",
                 )}
               </p>
-            </div>
+            )}
           </form>
         </DialogPanel>
         <DialogFooter variant="bare">
@@ -150,7 +198,7 @@ export function SecretProviderDialog({
           <Button
             type="submit"
             form="secret-provider-form"
-            disabled={submitted && Result.isFailure(result)}
+            disabled={authUnavailable || (submitted && Result.isFailure(result))}
           >
             {existing ? t("Save changes") : t("Add provider")}
           </Button>

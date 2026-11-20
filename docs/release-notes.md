@@ -1,3 +1,7 @@
+## 2026-11-20 — Use 1Password credentials with agent providers
+
+- In **Settings → Secrets**, add a 1Password source and choose which fields to supply to Claude, Codex, or another provider. Linux hosts can use a read-only service account for unattended runs with an administrator grant for each field.
+
 ## 2026-11-20 — Shared schedules keep their fallback models
 
 - Shared tasks carry their ordered fallback models when CodeShip syncs them between connected machines. A machine that already has the current task can fill in a missing fallback list from a complete copy.

@@ -277,6 +277,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isNetworkPath } from "@t3tools/shared/path";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { isTelemetryIdHash } from "@t3tools/shared/telemetryId";
@@ -1897,6 +1898,7 @@ export const layerWsRpc = (
           threadFind: true,
           threadFindProgressive: true,
           secretProviderSettings: true,
+          onePasswordServiceAccount: (yield* HostProcess.Platform) === "linux",
           secretReferences: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),

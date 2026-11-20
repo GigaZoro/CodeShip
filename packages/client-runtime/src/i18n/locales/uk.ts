@@ -2086,9 +2086,9 @@ const catalog: MessageCatalog = {
   "Add {name} to favorites": "Додати {name} до вибраного",
   "Add {name} to this app": "Додати {name} до застосунку",
   "Add {variable} to {provider}": "Додати {variable} до {provider}",
-  "Add a 1Password account, then pick it as the source of a provider variable.":
-    "Додайте обліковий запис 1Password, а потім виберіть його джерелом змінної провайдера.",
   "Add a 1Password provider": "Додати провайдера 1Password",
+  "Add a 1Password provider, then pick it as the source of a provider variable.":
+    "Додайте провайдера 1Password, а потім виберіть його як джерело значення змінної провайдера.",
   "Add a CLIProxyAPI hub": "Додати хаб CLIProxyAPI",
   "Add a comment…": "Додати коментар…",
   "Add a computer": "Додати комп’ютер",
@@ -2627,6 +2627,8 @@ const catalog: MessageCatalog = {
   "Ask the agent to inspect the repo, run a command, or continue the active thread.":
     "Попросіть агента переглянути репозиторій, виконати команду або продовжити активний чат.",
   "Ask the agent: {action}": "Запитати агента: {action}",
+  "Ask the host administrator to set up a 1Password service account and allow the fields CodeShip may read without prompts.":
+    "Попросіть адміністратора хоста налаштувати службовий обліковий запис 1Password і вказати поля, які CodeShip може читати без підтвердження.",
   "Ask the owner for a new link. Each link works in one browser.":
     "Попросіть власника надіслати нове посилання. Кожне посилання працює в одному браузері.",
   "ask to link": "запитати зв’язування з",
@@ -2699,6 +2701,7 @@ const catalog: MessageCatalog = {
   "Authenticated as": "Автентифіковано як",
   "Authenticated as {account}": "Автентифіковано як {account}",
   "Authentication failed.": "Автентифікація не вдалася.",
+  "Authentication method": "Спосіб автентифікації",
   "Authentication request expired": "Термін дії запиту автентифікації минув",
   Author: "Автор",
   Authored: "Створені мною",
@@ -5057,6 +5060,7 @@ const catalog: MessageCatalog = {
   "Desktop app relaunched on {version}.": "Десктопний застосунок перезапущено на версії {version}.",
   "Desktop config": "Конфігурація настільного застосунку",
   "Desktop host signals not connected": "Сигнали хоста застосунку не підключено",
+  "Desktop integration": "Інтеграція з настільним застосунком",
   "Desktop network access is unavailable.": "Мережевий доступ десктопного застосунку недоступний.",
   "Desktop only": "Лише для комп’ютера",
   "Desktop shortcut: {label}": "Скорочення робочого стола: {label}",
@@ -7091,6 +7095,7 @@ const catalog: MessageCatalog = {
   "Linking...": "Прив’язування...",
   "Linking…": "Зв’язування…",
   Lint: "Лінт",
+  "Linux service account": "Службовий обліковий запис Linux",
   "Linux/WSL": "Linux/WSL",
   "Liquid Glass": "Liquid Glass",
   list: "показати список",
@@ -12971,6 +12976,8 @@ const catalog: MessageCatalog = {
   "This guide was rewritten. Go back to start the new tour.":
     "Цей посібник переписано. Поверніться назад, щоб почати новий тур.",
   "This host could not be read.": "Не вдалося прочитати дані цього хоста.",
+  "This host does not support Linux service accounts.":
+    "Цей хост не підтримує службові облікові записи Linux.",
   "This host keeps no shared record of which files you have read, so these ticks are kept by this environment. They follow you between the apps connected to it, but the host's own web UI will not show them.":
     "Цей хост не веде спільного обліку прочитаних вами файлів, тому позначки зберігає це середовище. Вони синхронізуються між підключеними до нього застосунками, але вебінтерфейс самого хоста їх не показуватиме.",
   "this image": "це зображення",
@@ -14003,6 +14010,8 @@ const catalog: MessageCatalog = {
   "Use a {kind} URL, checkout command, 123, or #123.":
     "Використайте URL ({kind}), команду переходу, 123 або #123.",
   "Use a {term} URL, 123, or #123.": "Використайте URL {term}, 123 або #123.",
+  "Use a 1Password reference without spaces or query parameters. Use IDs for names with spaces.":
+    "Введіть посилання 1Password без пробілів і параметрів запиту. Для назв із пробілами використовуйте ідентифікатори.",
   "Use a different account": "Використати інший обліковий запис",
   "Use a pull request URL, 123, or #123.": "Використайте URL пул-реквесту, 123 або #123.",
   "Use a reset credit?": "Використати кредит скидання?",
