@@ -549,10 +549,12 @@ status and does not cancel work.
 
 ### `t3_thread_interrupt`
 
-Interrupts a selected active run through the normal V2 `run.interrupt` command.
-Without `runId`, it selects the newest interruptible run. A terminal run is
-returned unchanged, and a thread with no active provider turn returns
-`no_active_run`.
+Interrupts a selected run through the V2 `run.interrupt` command. An explicit
+`runId` follows its restart chain, including a queued continuation or a delayed
+retry. Cancelling a pending restart also interrupts provider work and settles
+delegated work owned by that chain. A terminal run with no pending restart
+returns `already_terminal`. Without `runId`, the tool selects the newest
+active run and returns `no_active_run` when the thread has none.
 
 ## Delegated Task Lifecycle
 
