@@ -9221,8 +9221,6 @@ const catalog: MessageCatalog = {
   "Provider-managed agent": "Агент під керуванням провайдера",
   "Provider-managed agent. Its work appears in the transcript.":
     "Агент під керуванням провайдера. Його робота відображається в транскрипті.",
-  "Provider, network or other errors ended runs.":
-    "Помилки провайдера, мережі чи інші завершили запуски.",
   Providers: "Провайдери",
   "Providers & models": "Провайдери й моделі",
   "Providers or models": "Провайдери або моделі",
@@ -10365,6 +10363,8 @@ const catalog: MessageCatalog = {
   "Runs before each scheduled run, in the project folder, as one program with its arguments (no shell; ~/ is your home folder). Exit code 0 starts the chat, 10 skips the run, anything else starts the chat anyway. Run now skips the check.":
     "Виконується перед кожним запланованим запуском у теці проєкту як одна програма з аргументами (без оболонки; ~/ це ваша домашня тека). Код завершення 0 запускає чат, 10 пропускає запуск, будь-який інший усе одно запускає чат. «Запустити зараз» пропускає перевірку.",
   "Runs failed": "Запуски завершились збоєм",
+  "Runs failed, or hit provider, network or other errors.":
+    "Запуски завершились збоєм або натрапили на помилки провайдера, мережі чи інші.",
   "Runs in this thread": "Запускається в цьому чаті",
   "Runs on": "Виконується на",
   "Runs on {label}. Connect to it to open the thread there.":

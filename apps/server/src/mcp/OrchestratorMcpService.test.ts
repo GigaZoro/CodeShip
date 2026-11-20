@@ -5063,7 +5063,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         remote: null,
         remoteDefault: null,
         refs: ["refs/heads/develop"],
-        baseRef: "main",
+        baseRef: "develop",
       },
       {
         name: "no recorded HEAD, remote main and a stale local master",
@@ -5132,6 +5132,13 @@ describe("OrchestratorMcpService provider resolution", () => {
                   refs.includes(revision)
                     ? Effect.succeed({ commitSha: "abc123" })
                     : Effect.fail(gitFailure(cwd, "Needed a single revision")),
+                // Every repository here has its first local branch checked out.
+                resolveBranchName: () =>
+                  Effect.succeed(
+                    refs
+                      .find((ref) => ref.startsWith("refs/heads/"))
+                      ?.slice("refs/heads/".length) ?? null,
+                  ),
               },
               saved,
             ),

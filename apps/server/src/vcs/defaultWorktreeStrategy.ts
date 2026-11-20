@@ -6,11 +6,14 @@ const CONVENTIONAL_DEFAULT_BRANCHES = ["main", "master"];
 
 /**
  * Where a new worktree starts when its caller names no base: the project's default branch,
- * fetched from its remote first. Scheduled tasks and agent launches both start here.
+ * fetched from its remote first. Scheduled tasks, agent launches and chats started for the user
+ * start here; `fromOrigin: false` starts from the local branch instead, as the "start from
+ * origin" setting can ask of a new chat.
  */
 export const defaultWorktreeStrategy = Effect.fn("vcs.defaultWorktreeStrategy")(function* (
   git: GitVcsDriver.GitVcsDriver["Service"],
   cwd: string,
+  { fromOrigin }: { readonly fromOrigin: boolean } = { fromOrigin: true },
 ) {
   const refExists = (revision: string) =>
     git.resolveCommit({ cwd, revision }).pipe(
@@ -21,14 +24,19 @@ export const defaultWorktreeStrategy = Effect.fn("vcs.defaultWorktreeStrategy")(
     const remoteName = yield* git
       .resolvePrimaryRemoteName(cwd)
       .pipe(Effect.orElseSucceed(() => null));
-    if (remoteName !== null) {
-      const remoteDefault = yield* git
-        .resolveDefaultBranchName(cwd, remoteName)
-        .pipe(Effect.orElseSucceed(() => null));
-      // Fetch does not update a recorded HEAD, so it can outlive the branch it names.
-      for (const branch of remoteDefault === null
+    const remoteDefault =
+      remoteName === null
+        ? null
+        : yield* git
+            .resolveDefaultBranchName(cwd, remoteName)
+            .pipe(Effect.orElseSucceed(() => null));
+    const branches =
+      remoteDefault === null
         ? CONVENTIONAL_DEFAULT_BRANCHES
-        : [remoteDefault, ...CONVENTIONAL_DEFAULT_BRANCHES]) {
+        : [remoteDefault, ...CONVENTIONAL_DEFAULT_BRANCHES];
+    if (remoteName !== null && fromOrigin) {
+      // Fetch does not update a recorded HEAD, so it can outlive the branch it names.
+      for (const branch of branches) {
         // Launch resolves a bare name through a local branch's upstream, or else assumes `origin`.
         if (yield* refExists(`refs/remotes/${remoteName}/${branch}`)) {
           return `${remoteName}/${branch}`;
@@ -36,14 +44,18 @@ export const defaultWorktreeStrategy = Effect.fn("vcs.defaultWorktreeStrategy")(
       }
     }
     // Local-only repositories, or a remote with neither a usable HEAD nor a conventional branch.
-    for (const branch of CONVENTIONAL_DEFAULT_BRANCHES) {
+    for (const branch of branches) {
       if (yield* refExists(`refs/heads/${branch}`)) return branch;
     }
-    return "main";
+    // A repository whose branches follow no convention, such as one with only `trunk`.
+    const checkedOut = yield* git
+      .resolveBranchName(cwd, "HEAD")
+      .pipe(Effect.orElseSucceed(() => null));
+    return checkedOut ?? "main";
   });
   return {
     type: "worktree" as const,
     baseRef: yield* resolveBaseRef,
-    startFromOrigin: true,
+    startFromOrigin: fromOrigin,
   };
 });

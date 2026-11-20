@@ -251,12 +251,14 @@ describe("fixChatRequest", () => {
   let ids = 0;
   const newId = () => `id-${(ids += 1)}`;
 
-  it("resends an unanswered request from the same place, even once the target changed", () => {
+  it("resends an unanswered request from the same place to the same machine, even once its chats changed", () => {
     const first = fixChatRequest(target("a"), "slow_command", "web", newId);
     const moved = { ...target("a"), projectId: ProjectId.make("p2"), threadIds: [] };
     expect(fixChatRequest(moved, "slow_command", "web", newId)).toBe(first);
     expect(fixChatRequest(target("a"), "retries", "web", newId)).not.toBe(first);
     expect(fixChatRequest(target("b"), "slow_command", "web", newId)).not.toBe(first);
+    const elsewhere = { ...target("a"), environmentId: EnvironmentId.make("env-other") };
+    expect(fixChatRequest(elsewhere, "slow_command", "web", newId)).not.toBe(first);
   });
 
   it.each([
@@ -270,7 +272,7 @@ describe("fixChatRequest", () => {
           requiredScope: AuthOrchestrationOperateScope,
         }),
       ),
-      true,
+      false,
     ],
     [
       "a failed launch",

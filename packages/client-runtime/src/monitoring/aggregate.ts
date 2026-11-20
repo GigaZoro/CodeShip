@@ -442,7 +442,10 @@ export function rankFindings(
 }
 
 export interface MonitoringFixChatTarget {
-  /** The button's place. A retry from the same place resends the request it did not hear back from. */
+  /**
+   * The button's place on the page. A retry from the same place to the same machine resends the
+   * request it did not hear back from.
+   */
   readonly origin: string;
   readonly environmentId: EnvironmentId;
   /** Where the fix chat starts: the project that lost the most time, where the cause most likely lives. */
@@ -514,7 +517,7 @@ export function threadFixChatTarget(
   summary: Pick<MonitoringThreadSummary, "threadId" | "projectId">,
 ): MonitoringFixChatTarget {
   return {
-    origin: `thread:${environmentId}:${summary.threadId}`,
+    origin: `thread:${summary.threadId}`,
     environmentId,
     projectId: summary.projectId,
     threadIds: [summary.threadId],
@@ -527,14 +530,14 @@ export interface MonitoringFixChatRequest {
 }
 
 /**
- * Fix-chat requests that got no answer. They outlive the page that sent them, so a retry from a
- * page opened again resends the same request, even once a new analysis changed the target, and
- * opens the chat a lost answer started instead of starting a second one.
+ * Fix-chat requests that got no answer. They outlive the page, so a retry from the same place to
+ * the same machine resends the request, even once its chats were analyzed again, and opens the
+ * chat a lost answer started instead of a second one.
  */
 const unansweredFixChats = new Map<string, MonitoringFixChatRequest>();
 
 const fixChatKey = (target: MonitoringFixChatTarget, code: MonitoringFindingCode) =>
-  JSON.stringify([target.origin, code]);
+  JSON.stringify([target.origin, target.environmentId, code]);
 
 /** The request that starts a fix chat: the one from this place that got no answer, or a new one. */
 export function fixChatRequest(
@@ -572,11 +575,14 @@ export function fixChatFailureReason(
   return isAuthorizationError(error) ? "unauthorized" : "offline";
 }
 
-/** Refusals that start no chat, so a resend could only be refused again. */
+/**
+ * The server's refusals, which start no chat, so a resend could only be refused again. A refused
+ * grant is not one: this client also reports it when it cannot read its session, as while
+ * reconnecting, and a chat a lost answer started must stay reachable then.
+ */
 const REFUSED: ReadonlySet<ReturnType<typeof fixChatFailureReason>> = new Set([
   "no-chats",
   "no-model",
-  "unauthorized",
 ]);
 
 /**

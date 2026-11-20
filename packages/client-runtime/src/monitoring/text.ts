@@ -32,7 +32,7 @@ export const FINDING_TEXT: Readonly<Record<MonitoringFindingCode, FindingText>> 
   },
   run_failures: {
     title: msg("Runs failed"),
-    explanation: msg("Provider, network or other errors ended runs."),
+    explanation: msg("Runs failed, or hit provider, network or other errors."),
     advice: msg(
       "Recurring network errors point at the connection or the provider; others at the setup.",
     ),

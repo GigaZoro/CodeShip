@@ -117,11 +117,13 @@ export const makeStartChatAsUser = Effect.gen(function* () {
   const projectFiles = yield* T3ProjectFileLoader.T3ProjectFileLoader;
 
   /** A folder that is not a git repository has no worktrees, so its chat runs in it, as from the composer. */
-  const worktreeIfRepository = (cwd: string) =>
+  const worktreeIfRepository = (cwd: string, fromOrigin: boolean) =>
     git.statusDetailsLocal(cwd, { includeDivergence: false }).pipe(
       Effect.mapError(() => failure("launch-failed", "Could not read the project's git status.")),
       Effect.flatMap((status): Effect.Effect<ThreadLaunch.ThreadLaunchWorkspaceStrategy> =>
-        status.isRepo ? defaultWorktreeStrategy(git, cwd) : Effect.succeed({ type: "root" }),
+        status.isRepo
+          ? defaultWorktreeStrategy(git, cwd, { fromOrigin })
+          : Effect.succeed({ type: "root" }),
       ),
     );
 
@@ -179,7 +181,7 @@ export const makeStartChatAsUser = Effect.gen(function* () {
       input.workspace === "project-default" &&
       defaults.defaultThreadEnvMode === "worktree" &&
       project !== undefined
-        ? yield* worktreeIfRepository(project.workspaceRoot)
+        ? yield* worktreeIfRepository(project.workspaceRoot, defaults.newWorktreesStartFromOrigin)
         : ({ type: "root" } as const);
     return yield* threadLaunch
       .launch({
