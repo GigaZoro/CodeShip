@@ -11,21 +11,9 @@ import { useProjects, useVisibleThreadShells } from "~/state/entities";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { buildThreadRouteParams } from "~/threadRoutes";
 import { useUiStateStore } from "~/uiStateStore";
-import {
-  hasUnseenCompletion,
-  isSidebarHiddenThread,
-  resolveThreadLastVisitedAt,
-} from "../Sidebar.logic";
+import { hasUnseenCompletion, resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { resolveThreadRowStatus, ThreadRowStatusContent } from "../sidebar/threadRowStatus";
-
-const RECENT_THREAD_LIMIT = 5;
-
-function selectRecentThreads(threads: ReadonlyArray<EnvironmentThreadShell>) {
-  return threads
-    .filter((thread) => thread.archivedAt === null && !isSidebarHiddenThread(thread))
-    .toSorted((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-    .slice(0, RECENT_THREAD_LIMIT);
-}
+import { selectRecentThreads } from "./DraftRecentThreads.logic";
 
 function RecentThreadRow(props: {
   readonly thread: EnvironmentThreadShell;
@@ -68,7 +56,7 @@ function RecentThreadRow(props: {
           </span>
         )}
         <span className="w-16 shrink-0 whitespace-nowrap text-right text-muted-foreground text-xs tabular-nums">
-          {formatRelativeTimeLabel(thread.updatedAt)}
+          {formatRelativeTimeLabel(thread.latestUserMessageAt ?? thread.updatedAt)}
         </span>
       </button>
     </li>

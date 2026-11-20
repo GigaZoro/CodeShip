@@ -1,3 +1,7 @@
+## 2026-11-20 — Recent threads keep their places while chats run
+
+- The recent threads under an empty draft and the thread picker for linking a pull request no longer reorder as running chats stream output. Both now order by your latest message, as the sidebar does, and the draft list shows that time.
+
 ## 2026-11-19 — Windows Git driver checks
 
 - The Git driver tests use local repositories to check SSH errors, nested paths and submodule checkouts on Windows. Related tests run in separate files within the existing time budget.

@@ -172,6 +172,7 @@ export interface EnvironmentThreadShell {
   readonly itemCount: number;
   readonly visibleItemCount: number;
   readonly createdAt: string;
+  /** Moves with every event, streamed output included; order thread lists with `sortThreads`. */
   readonly updatedAt: string;
   readonly archivedAt: string | null;
   readonly settledOverride: "settled" | "active" | null;
