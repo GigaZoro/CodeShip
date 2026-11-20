@@ -41,14 +41,19 @@ Main has one landing turn, so a pass of `vp run check:changed` covers the tree t
 It takes the turn (a lease on `refs/heads/landing-lease/main` on origin), rebases onto `origin/main`, runs `vp run check:changed` once (it gets the next free check slot ahead of other runs), pushes `HEAD` to `main` as a fast-forward and gives the turn back. A pass records the tree it checked, uncommitted and untracked files included, so `land` refuses to start in a worktree with anything uncommitted or untracked. Main refuses a push from anyone who does not hold the turn, or for a tree no `check:changed` pass covers (`.vite-hooks/pre-push`), so never push to main any other way, never pass `--no-verify`, and never use `--force` or `--force-with-lease`.
 
 - A check that fails ends the landing with exit status 1 and the turn released: fix the cause, commit, and land again.
-- After the push, the command waits for the landed commit's Windows check on GitHub ([windows-check-fork.yml](../../../.github/workflows/windows-check-fork.yml): `check:changed` on Windows, up to a few hours for a large push) and prints its result as `windows`. Exit status 3 means the commit is on main but that check did not pass: read `windows.failures` and the run at `windows.url`. Fix a failure in code or tests your change touched, commit, and land again. Name any other failure, or a run that never started or finished, as a follow-up in your report with the run's URL.
 - A rebase that conflicts stops the landing with the turn released: resolve it, then land again.
 - Branch protection that refuses the push: stop and offer a PR instead.
 - Confirm with `git fetch origin && git merge-base --is-ancestor HEAD origin/<default>`.
 
 ## 6. Verify the landing
 
-The command prints the landed commit as soon as it pushes, and again in its result. The rebase may have changed your commit's id, so use the printed one in your report.
+The command prints the landed commit. The rebase may have changed your commit's id, so use the printed one in your report.
+
+Main's push also runs `check:changed` on Windows on GitHub ([windows-check-fork.yml](../../../.github/workflows/windows-check-fork.yml)), the only check a change landed from macOS or Linux gets there. Wait for it with `t3_command_run` (`timeoutMinutes: 420`; a large push can take a few hours):
+
+`node .github/scripts/windows-check.cjs <landed commit>`
+
+Exit status 3 means the commit is on main but that check did not pass: read `failures` and the run at `url`. Fix a failure in code or tests your change touched, commit, and land again. Name any other failure, or a run that never started or finished, as a follow-up in your report with its `url`.
 
 ## 7. Clean up
 

@@ -848,6 +848,11 @@ describe("large text preview recovery", () => {
         visibleRow().getBoundingClientRect().top - viewport().getBoundingClientRect().top;
       await screen.rerender(view(1_000_000));
       await vi.waitFor(() => {
+        // Chromium keeps scrollTop in whole pixels, and one pixel of the scaled track moves a row by
+        // offsetHeight / (29 * scale), so the restored row may land up to half of that away.
+        const scale =
+          (viewport().scrollHeight - viewport().clientHeight) /
+          ((1_000_000 - Math.floor(viewport().clientHeight / 29)) * 29);
         expect(visibleRow().dataset.previewRow).toBe(before);
         expect(
           Math.abs(
@@ -855,7 +860,7 @@ describe("large text preview recovery", () => {
               viewport().getBoundingClientRect().top -
               offset,
           ),
-        ).toBeLessThan(Math.max(5, visibleRow().offsetHeight / 29 + 1));
+        ).toBeLessThan(Math.max(5, visibleRow().offsetHeight / (2 * 29 * scale) + 1));
       });
     },
   );

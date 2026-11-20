@@ -1,7 +1,9 @@
-## 2026-11-20 — Landing waits for its Windows check
+## 2026-11-20 — Landers wait for their Windows check
 
-- Maintainers: `landing-turn.cjs land` now waits for the landed commit's `check:changed` run on Windows and exits 3 with its failing steps and test lines when it does not pass, so a Windows-only failure reaches the chat that landed it. `node .github/scripts/windows-check.cjs <commit>` waits for one commit's run, which the upstream sync uses after it lands.
+- Maintainers: after landing, the ship skill and the upstream sync run `node .github/scripts/windows-check.cjs <commit>`. It waits for that commit's `check:changed` run on Windows and exits 3 with its failing steps and test lines when it does not pass, so a Windows-only failure reaches the chat that landed it.
 - The Windows check may run for 6 hours, so a large push that selects every test file finishes instead of failing at 1 hour with no failing test.
+- An attachment preview browser test no longer fails on Windows when it restores the source row in a million-line file. Its tolerance now allows for Chromium rounding the scroll position to whole pixels.
+- Web browser tests run with the en-US locale on every machine. They no longer fail where the system formats numbers differently, such as `1 000` for `1,000`.
 
 ## 2026-11-19 — Windows Git driver checks
 

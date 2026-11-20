@@ -1,7 +1,7 @@
 // A push to main runs check:changed on Windows (.github/workflows/windows-check-fork.yml), the one place a change landed
-// from macOS or Linux meets Windows. A red run there reaches no one unless the lander waits for it, so landing waits
-// here and reports the run's failures to the chat that can fix them. `node .github/scripts/windows-check.cjs <commit>`
-// waits for one landed commit's run: exit 0 when it passed or no Windows check runs for the repository, 3 otherwise.
+// from macOS or Linux meets Windows. A red run there reaches no one unless the lander waits for it, so after landing the
+// ship skill and the upstream sync run `node .github/scripts/windows-check.cjs <commit>`: it waits for that commit's run
+// and prints its result, exiting 0 when it passed or no Windows check runs for the repository, 3 otherwise.
 const { spawnSync } = require("node:child_process");
 
 const WORKFLOW = "windows-check-fork.yml";
@@ -18,14 +18,21 @@ const NOT_PASSED_EXIT = 3;
 
 /** The GitHub owner and repository a remote URL points at, or null for any other host. */
 function githubRepository(url) {
-  const match =
-    /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(
-      url,
-    );
+  const scp = /^[^@/:]+@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url);
+  if (scp) return `${scp[1]}/${scp[2]}`;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!["https:", "http:", "ssh:", "git:"].includes(parsed.protocol)) return null;
+  if (parsed.hostname.toLowerCase() !== "github.com") return null;
+  const match = /^\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(parsed.pathname);
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
-async function get(fetch, path) {
+async function request(fetch, path) {
   const response = await fetch(`${API}${path}`, {
     headers: {
       accept: "application/vnd.github+json",
@@ -34,37 +41,67 @@ async function get(fetch, path) {
     },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  return { status: response.status, response, body: response.ok ? await response.json() : null };
+  if (!response.ok) await response.body?.cancel();
+  return {
+    status: response.status,
+    headers: response.headers,
+    body: response.ok ? await response.json() : null,
+  };
+}
+
+/** How long GitHub asks this address to wait before its next request; `now` is the wall clock its reset time is on. */
+function backoffMs(headers, now) {
+  const retryAfter = Number(headers.get("retry-after"));
+  if (retryAfter > 0) return retryAfter * 1000;
+  const reset = Number(headers.get("x-ratelimit-reset"));
+  if (headers.get("x-ratelimit-remaining") === "0" && reset > 0) {
+    return Math.max(0, reset * 1000 - now());
+  }
+  return 0;
 }
 
 async function failuresOf(fetch, repository, run) {
-  const jobs = await get(fetch, `/repos/${repository}/actions/runs/${run.id}/jobs?per_page=30`);
-  if (!jobs.body) return [`GitHub answered ${jobs.status} for the run's jobs.`];
   const failures = [];
-  for (const job of jobs.body.jobs) {
+  const read = async (path, what) => {
+    try {
+      const answer = await request(fetch, path);
+      if (answer.body) return answer.body;
+      failures.push(`GitHub answered ${answer.status} for ${what}.`);
+    } catch (error) {
+      failures.push(`GitHub could not be reached for ${what}: ${error.message}`);
+    }
+    return null;
+  };
+  const jobs = await read(
+    `/repos/${repository}/actions/runs/${run.id}/jobs?per_page=30`,
+    "the run's jobs",
+  );
+  for (const job of jobs?.jobs ?? []) {
     if (job.conclusion === "success" || job.conclusion === "skipped") continue;
     for (const step of job.steps ?? []) {
       if (step.conclusion === "failure") failures.push(`${job.name}: step "${step.name}" failed`);
     }
-    const annotations = await get(
-      fetch,
+    const annotations = await read(
       `/repos/${repository}/check-runs/${job.id}/annotations?per_page=50`,
+      `the annotations of ${job.name}`,
     );
-    for (const annotation of annotations.body ?? []) {
+    for (const annotation of annotations ?? []) {
       if (annotation.annotation_level !== "failure") continue;
       // GitHub files a job-level message, such as an exceeded time limit, under the path ".github".
       const where =
         annotation.path === ".github" ? "" : `${annotation.path}:${annotation.start_line} `;
-      failures.push(`${where}${annotation.message.split("\n")[0]}`);
+      const text = (annotation.message ?? annotation.title ?? "").split("\n")[0] || "(no message)";
+      failures.push(`${where}${text}`);
     }
   }
   return failures.slice(0, MAX_FAILURES);
 }
 
 /**
- * Waits for the Windows check of `commit` (a full SHA) on `repository` ("owner/name") and returns its result:
- * `passed`, `failed` (with `failures`), `none` when the repository runs no Windows check, `not-started` when no
- * run appeared, or `unfinished` when it did not finish within the job's time limit. Waits on the monotonic clock.
+ * Waits for the Windows check of `commit` (a full SHA) on `repository` ("owner/name") and returns its result with a
+ * `url` to read: `passed`, `failed` (with `failures`), `none` when the repository runs no Windows check, `not-started`
+ * when no run appeared, or `unfinished` when it did not finish within the job's time limit. Waits on the monotonic
+ * `clock`; `now` is the wall clock, read only against GitHub's rate-limit reset time.
  */
 async function waitForWindowsCheck({
   repository,
@@ -72,26 +109,32 @@ async function waitForWindowsCheck({
   fetch = globalThis.fetch,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   clock = () => performance.now(),
+  now = () => Date.now(),
 }) {
   const started = clock();
-  const runs = `/repos/${repository}/actions/workflows/${WORKFLOW}/runs?head_sha=${commit}&event=push&per_page=1`;
+  const workflowUrl = `https://github.com/${repository}/actions/workflows/${WORKFLOW}`;
+  const listing = `/repos/${repository}/actions/workflows/${WORKFLOW}/runs?head_sha=${commit}&event=push&per_page=1`;
   let run = null;
   let problem = null;
   for (;;) {
     let wait = POLL_MS;
     try {
-      const listing = await get(fetch, runs);
-      // A repository without the workflow, or one GitHub does not show without a token, has no Windows check.
-      if (listing.status === 404) {
-        return { status: "none", reason: `GitHub shows no ${WORKFLOW} for ${repository}.` };
-      }
-      if (listing.body) {
-        run = listing.body.workflow_runs[0] ?? null;
+      const answer = await request(
+        fetch,
+        run ? `/repos/${repository}/actions/runs/${run.id}` : listing,
+      );
+      wait = Math.max(wait, backoffMs(answer.headers, now));
+      if (answer.body) {
+        run = run ? answer.body : (answer.body.workflow_runs[0] ?? null);
         problem = null;
+      } else if (answer.status === 404 && !run) {
+        return {
+          status: "none",
+          url: workflowUrl,
+          reason: `GitHub shows no ${WORKFLOW} for ${repository}: it has none, or it is private.`,
+        };
       } else {
-        problem = `GitHub answered ${listing.status}.`;
-        const retryAfter = Number(listing.response.headers.get("retry-after"));
-        if (retryAfter > 0) wait = Math.max(wait, retryAfter * 1000);
+        problem = `GitHub answered ${answer.status}.`;
       }
     } catch (error) {
       problem = `GitHub could not be reached: ${error.message}`;
@@ -102,56 +145,59 @@ async function waitForWindowsCheck({
       if (run.conclusion === "skipped") {
         return { status: "none", url, reason: "The Windows check is skipped in this repository." };
       }
-      let failures;
-      try {
-        failures = await failuresOf(fetch, repository, run);
-      } catch (error) {
-        failures = [`Its failures could not be read: ${error.message}`];
-      }
+      const failures = await failuresOf(fetch, repository, run);
       return { status: "failed", url, conclusion: run.conclusion, failures };
     }
     const elapsed = clock() - started;
     if (!run && !problem && elapsed >= START_LIMIT_MS) {
-      return { status: "not-started", reason: `No ${WORKFLOW} run started for ${commit}.` };
+      return {
+        status: "not-started",
+        url: workflowUrl,
+        reason: `No ${WORKFLOW} run started for ${commit}.`,
+      };
     }
     if (elapsed >= FINISH_LIMIT_MS) {
       return {
         status: "unfinished",
-        url: run?.html_url,
+        url: run?.html_url ?? workflowUrl,
         reason: problem ?? "It is still running.",
       };
     }
-    await sleep(wait);
+    await sleep(Math.min(wait, FINISH_LIMIT_MS - elapsed));
   }
 }
 
 /** Waits for the Windows check of a commit pushed to `remote`; a remote off GitHub has none. */
 async function windowsCheck({ cwd, remote, commit, ...options }) {
-  const url = spawnSync("git", ["-C", cwd, "remote", "get-url", remote], {
+  const pushUrl = spawnSync("git", ["-C", cwd, "remote", "get-url", "--push", remote], {
     encoding: "utf8",
     windowsHide: true,
-  }).stdout.trim();
-  const repository = githubRepository(url);
+  });
+  if (pushUrl.status !== 0) {
+    const detail = pushUrl.error?.message ?? pushUrl.stderr.trim();
+    throw new Error(`windows check: no push URL for ${remote}: ${detail}`);
+  }
+  const repository = githubRepository(pushUrl.stdout.trim());
   if (!repository) return { status: "none", reason: `${remote} is not a GitHub repository.` };
   return waitForWindowsCheck({ repository, commit, ...options });
 }
 
 const passed = (result) => result.status === "passed" || result.status === "none";
 
-async function main(argv) {
+async function main(argv, { cwd = process.cwd(), log = console.log, ...options } = {}) {
   const [commit] = argv;
   if (!commit) {
     console.error("usage: windows-check.cjs <commit>");
     return 2;
   }
-  const cwd = process.cwd();
   const resolved = spawnSync("git", ["-C", cwd, "rev-parse", "--verify", `${commit}^{commit}`], {
     encoding: "utf8",
     windowsHide: true,
   });
   if (resolved.status !== 0) throw new Error(`windows check: unknown commit ${commit}`);
-  const result = await windowsCheck({ cwd, remote: "origin", commit: resolved.stdout.trim() });
-  console.log(JSON.stringify(result));
+  const full = resolved.stdout.trim();
+  const result = await windowsCheck({ ...options, cwd, remote: "origin", commit: full });
+  log(JSON.stringify({ commit: full, ...result }));
   return passed(result) ? 0 : NOT_PASSED_EXIT;
 }
 
@@ -167,10 +213,4 @@ if (require.main === module) {
   );
 }
 
-module.exports = {
-  NOT_PASSED_EXIT,
-  githubRepository,
-  passed,
-  waitForWindowsCheck,
-  windowsCheck,
-};
+module.exports = { NOT_PASSED_EXIT, githubRepository, main, waitForWindowsCheck };

@@ -1,79 +1,135 @@
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { test } = require("node:test");
 
-const { githubRepository, waitForWindowsCheck } = require("./windows-check.cjs");
+const {
+  NOT_PASSED_EXIT,
+  githubRepository,
+  main,
+  waitForWindowsCheck,
+} = require("./windows-check.cjs");
+
+// A hook exports GIT_DIR and GIT_INDEX_FILE. Git for Windows opens /dev/null, not os.devNull (\\.\nul).
+for (const name of Object.keys(process.env)) if (/^GIT_/i.test(name)) delete process.env[name];
+Object.assign(process.env, {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_AUTHOR_NAME: "Fixture",
+  GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+  GIT_COMMITTER_NAME: "Fixture",
+  GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+});
 
 const COMMIT = "a".repeat(40);
 const RUN_URL = "https://github.com/example/app/actions/runs/7";
+const WORKFLOW_URL = "https://github.com/example/app/actions/workflows/windows-check-fork.yml";
 const MINUTE = 60 * 1000;
+const WALL_START = Date.UTC(2026, 10, 20, 12);
 
-/** GitHub's answers by path, the run listing's in order; a clock that only `sleep` moves. */
-function github({ runs, jobs = [], annotations = {} }) {
-  let now = 0;
-  const pending = [...runs];
+/** A 403 for an address out of requests until `resetInMs` after the moment GitHub answers. */
+const rateLimited = (resetInMs) => (now) =>
+  new Response("{}", {
+    status: 403,
+    headers: {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(Math.ceil((now + resetInMs) / 1000)),
+    },
+  });
+
+/**
+ * GitHub's answers, each list in order with its last repeated: `runs` for the listing of `commit`'s push runs, `run`
+ * for the run by its id. A run is an object, an HTTP status a number, a network failure an Error. Only `sleep` moves
+ * the clocks.
+ */
+function github({ runs = [], run = [], jobs = [], annotations = {}, commit = COMMIT }) {
+  let elapsed = 0;
+  const sleeps = [];
+  const next = (answers) => (answers.length > 1 ? answers.shift() : answers[0]);
+  const answer = (value, body) => {
+    if (value instanceof Error) throw value;
+    if (typeof value === "function") return value(WALL_START + elapsed);
+    if (typeof value === "number") return new Response("{}", { status: value });
+    return Response.json(body(value));
+  };
   const fetch = async (url) => {
-    const { pathname } = new URL(url);
-    if (pathname.endsWith("/actions/workflows/windows-check-fork.yml/runs")) {
-      const next = pending.length > 1 ? pending.shift() : pending[0];
-      if (next instanceof Error) throw next;
-      if (typeof next === "number") return new Response("{}", { status: next });
-      return Response.json({ workflow_runs: next ? [{ id: 7, html_url: RUN_URL, ...next }] : [] });
+    const { pathname, searchParams } = new URL(url);
+    if (pathname === "/repos/example/app/actions/workflows/windows-check-fork.yml/runs") {
+      const ofCommit =
+        searchParams.get("head_sha") === commit && searchParams.get("event") === "push";
+      return answer(next(runs), (found) => ({
+        workflow_runs: found && ofCommit ? [{ id: 7, html_url: RUN_URL, ...found }] : [],
+      }));
     }
-    if (pathname === "/repos/example/app/actions/runs/7/jobs") return Response.json({ jobs });
+    if (pathname === "/repos/example/app/actions/runs/7") {
+      return answer(next(run), (found) => ({ id: 7, html_url: RUN_URL, ...found }));
+    }
+    if (pathname === "/repos/example/app/actions/runs/7/jobs") {
+      return answer(jobs, (found) => ({ jobs: found }));
+    }
     const job = /\/check-runs\/(\d+)\/annotations$/.exec(pathname);
-    if (job) return Response.json(annotations[job[1]] ?? []);
+    if (job) return answer(annotations[job[1]] ?? [], (found) => found);
     return new Response("{}", { status: 404 });
   };
   return {
     repository: "example/app",
-    commit: COMMIT,
+    commit,
     fetch,
-    clock: () => now,
+    clock: () => elapsed,
+    now: () => WALL_START + elapsed,
     sleep: async (ms) => {
-      now += ms;
+      sleeps.push(ms);
+      elapsed += ms;
     },
-    elapsed: () => now,
+    elapsed: () => elapsed,
+    sleeps,
   };
 }
 
-test("a lander waits through a queued and running check and gets a failed run's failing steps and test lines", async () => {
-  const fake = github({
-    runs: [
-      { status: "queued" },
-      { status: "in_progress" },
-      { status: "completed", conclusion: "failure" },
-    ],
-    jobs: [
-      {
-        id: 11,
-        name: "check:changed on Windows",
-        conclusion: "failure",
-        steps: [
-          { name: "Install", conclusion: "success" },
-          { name: "Check the pushed commits", conclusion: "failure" },
-        ],
-      },
-    ],
-    annotations: {
-      11: [
-        {
-          annotation_level: "failure",
-          path: "apps/web/src/Preview.browser.test.tsx",
-          start_line: 858,
-          message: "AssertionError: expected 2 to be 1\n    at stack",
-        },
-        { annotation_level: "warning", path: "README.md", start_line: 1, message: "noise" },
-        {
-          annotation_level: "failure",
-          path: ".github",
-          start_line: 1,
-          message: "Process completed with exit code 1.",
-        },
+const failedRun = {
+  runs: [{ status: "queued" }],
+  run: [{ status: "in_progress" }, { status: "completed", conclusion: "failure" }],
+  jobs: [
+    {
+      id: 11,
+      name: "check:changed on Windows",
+      conclusion: "failure",
+      steps: [
+        { name: "Install", conclusion: "success" },
+        { name: "Check the pushed commits", conclusion: "failure" },
       ],
     },
-  });
+  ],
+  annotations: {
+    11: [
+      {
+        annotation_level: "failure",
+        path: "apps/web/src/Preview.browser.test.tsx",
+        start_line: 858,
+        message: "AssertionError: expected 2 to be 1\n    at stack",
+      },
+      { annotation_level: "warning", path: "README.md", start_line: 1, message: "noise" },
+      {
+        annotation_level: "failure",
+        path: "apps/server/src/Slow.test.ts",
+        start_line: 12,
+        message: null,
+        title: "Test timed out in 5000ms",
+      },
+      {
+        annotation_level: "failure",
+        path: ".github",
+        start_line: 1,
+        message: "Process completed with exit code 1.",
+      },
+    ],
+  },
+};
 
-  const result = await waitForWindowsCheck(fake);
+test("a lander waits through a queued and running check and gets a failed run's failing steps and test lines", async () => {
+  const result = await waitForWindowsCheck(github(structuredClone(failedRun)));
 
   assert.deepEqual(result, {
     status: "failed",
@@ -82,50 +138,131 @@ test("a lander waits through a queued and running check and gets a failed run's 
     failures: [
       'check:changed on Windows: step "Check the pushed commits" failed',
       "apps/web/src/Preview.browser.test.tsx:858 AssertionError: expected 2 to be 1",
+      "apps/server/src/Slow.test.ts:12 Test timed out in 5000ms",
       "Process completed with exit code 1.",
     ],
   });
 });
 
+test("a failed run whose jobs or annotations GitHub does not answer reports what it could read", async () => {
+  const failing = { status: "completed", conclusion: "failure" };
+  const step = { name: "Check the pushed commits", conclusion: "failure" };
+  for (const [answers, failures] of [
+    [{ jobs: 500 }, ["GitHub answered 500 for the run's jobs."]],
+    [
+      {
+        jobs: [{ id: 11, name: "Windows", conclusion: "failure", steps: [step] }],
+        annotations: { 11: 500 },
+      },
+      [
+        'Windows: step "Check the pushed commits" failed',
+        "GitHub answered 500 for the annotations of Windows.",
+      ],
+    ],
+  ]) {
+    const result = await waitForWindowsCheck(github({ runs: [failing], ...answers }));
+    assert.deepEqual(result.failures, failures);
+  }
+});
+
 test("a run that passed, one GitHub skips and a repository without the workflow end the wait at once", async () => {
-  for (const [runs, status] of [
-    [[{ status: "completed", conclusion: "success" }], "passed"],
-    [[{ status: "completed", conclusion: "skipped" }], "none"],
-    [[404], "none"],
+  for (const [runs, status, url] of [
+    [[{ status: "completed", conclusion: "success" }], "passed", RUN_URL],
+    [[{ status: "completed", conclusion: "skipped" }], "none", RUN_URL],
+    [[404], "none", WORKFLOW_URL],
   ]) {
     const fake = github({ runs });
     const result = await waitForWindowsCheck(fake);
-    assert.equal(result.status, status);
-    assert.equal(fake.elapsed(), 0);
+    assert.deepEqual([result.status, result.url, fake.elapsed()], [status, url, 0]);
   }
 });
 
 test("no run is reported as not started only when GitHub answered, and a run that never ends as unfinished", async () => {
   const missing = github({ runs: [null] });
-  assert.equal((await waitForWindowsCheck(missing)).status, "not-started");
-  assert.ok(missing.elapsed() >= 15 * MINUTE && missing.elapsed() < 20 * MINUTE);
+  assert.deepEqual(await waitForWindowsCheck(missing), {
+    status: "not-started",
+    url: WORKFLOW_URL,
+    reason: `No windows-check-fork.yml run started for ${COMMIT}.`,
+  });
+  assert.equal(missing.elapsed(), 15 * MINUTE);
 
   // An address over GitHub's hourly limit, then an outage: neither means the run is missing.
   const unreachable = github({ runs: [403, new Error("ECONNRESET")] });
   const result = await waitForWindowsCheck(unreachable);
-  assert.equal(result.status, "unfinished");
+  assert.deepEqual([result.status, result.url], ["unfinished", WORKFLOW_URL]);
   assert.match(result.reason, /ECONNRESET/);
-  assert.ok(unreachable.elapsed() >= 400 * MINUTE);
+  assert.equal(unreachable.elapsed(), 400 * MINUTE);
 
-  const running = github({ runs: [{ status: "in_progress" }] });
+  const running = github({ runs: [{ status: "in_progress" }], run: [{ status: "in_progress" }] });
   assert.deepEqual(await waitForWindowsCheck(running), {
     status: "unfinished",
     url: RUN_URL,
     reason: "It is still running.",
   });
+
+  // A run GitHub listed and then stopped showing is not a repository without the workflow.
+  const vanished = github({ runs: [{ status: "in_progress" }], run: [404] });
+  assert.deepEqual(await waitForWindowsCheck(vanished), {
+    status: "unfinished",
+    url: RUN_URL,
+    reason: "GitHub answered 404.",
+  });
 });
 
-test("only GitHub remotes name a repository, with or without credentials or .git", () => {
+test("an address out of requests waits for GitHub's reset, but never past the time limit", async () => {
+  const limited = github({ runs: [rateLimited(120 * MINUTE)] });
+
+  const result = await waitForWindowsCheck(limited);
+
+  assert.deepEqual(limited.sleeps, [120 * MINUTE, 120 * MINUTE, 120 * MINUTE, 40 * MINUTE]);
+  assert.deepEqual(result, {
+    status: "unfinished",
+    url: WORKFLOW_URL,
+    reason: "GitHub answered 403.",
+  });
+});
+
+test("the command checks the run of the full commit pushed to origin and exits 3 when it did not pass", async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "windows-check-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  git("commit", "-q", "--allow-empty", "-m", "landed");
+  // Fetches come from a mirror, while the commit was pushed to GitHub.
+  git("remote", "add", "origin", "https://git.cafe/example/app.git");
+  git("remote", "set-url", "--push", "origin", "https://github.com/example/app.git");
+  const commit = git("rev-parse", "HEAD");
+  const { fetch, sleep, clock, now } = github({ ...structuredClone(failedRun), commit });
+  const lines = [];
+
+  const code = await main([commit.slice(0, 12)], {
+    cwd: root,
+    log: (line) => lines.push(line),
+    fetch,
+    sleep,
+    clock,
+    now,
+  });
+
+  assert.equal(code, NOT_PASSED_EXIT);
+  assert.deepEqual(
+    lines
+      .map((line) => JSON.parse(line))
+      .map(({ commit, status, url }) => ({ commit, status, url })),
+    [{ commit, status: "failed", url: RUN_URL }],
+  );
+});
+
+test("only GitHub remotes name a repository, with or without credentials, a port or .git", () => {
   for (const [url, repository] of [
     ["https://github.com/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
     ["https://x-access-token:secret@github.com/GigaZoro/CodeShip", "GigaZoro/CodeShip"],
+    ["https://GitHub.com/GigaZoro/CodeShip/", "GigaZoro/CodeShip"],
     ["git@github.com:GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
     ["ssh://git@github.com/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
+    ["ssh://git@github.com:22/GigaZoro/CodeShip.git", "GigaZoro/CodeShip"],
+    ["https://github.com.example.invalid/GigaZoro/CodeShip.git", null],
+    ["https://github.com/GigaZoro/CodeShip/tree/main", null],
     ["https://git.cafe/GigaZoro/CodeShip.git", null],
     ["C:/Users/fixture/origin.git", null],
   ]) {
