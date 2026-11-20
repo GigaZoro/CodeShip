@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -428,50 +428,59 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
     }),
   );
 
-  it.effect.each([
-    // An interrupted append cut this record short.
-    { name: "an unterminated launcher record", recorded: "/opt/t", cut: "" },
-    // Another process's append is cut short after prune reads the records.
-    { name: "a record cut short after the read", recorded: "/opt/t3\n", cut: "/opt/t" },
-  ])("remembers a launcher found on PATH after $name", ({ recorded, cut }) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const { baseDir, versionsDir } = yield* setup(["1.0.0", "1.1.0"]);
-      const binDir = path.join(baseDir, "custom-bin");
-      yield* fs.makeDirectory(binDir);
-      yield* fs.symlink(path.join(versionsDir, "1.0.0", "t3"), path.join(binDir, "t3"));
-      const launchersFile = path.join(baseDir, "runtime", "launchers");
-      yield* fs.writeFileString(launchersFile, recorded);
-      const prune = (environment: Record<string, string>) =>
-        prunePinnedRuntimes({ baseDir, keep: [] }).pipe(
-          Effect.provideService(ProcessRunner.ProcessRunner, lsofRunner("p1\nftxt\nn/bin/sh\n")),
-          Effect.provideService(HostProcess.Platform, "darwin"),
-          Effect.provideService(HostProcess.Environment, environment),
-          Effect.provideService(HostProcess.HomeDirectory, baseDir),
-        );
-
-      yield* prune({ PATH: binDir }).pipe(
-        Effect.provideService(FileSystem.FileSystem, {
-          ...fs,
-          readFileString: (file, encoding) =>
-            fs
-              .readFileString(file, encoding)
-              .pipe(
-                Effect.tap(() =>
-                  file === launchersFile
-                    ? fs.writeFileString(file, cut, { flag: "a" })
-                    : Effect.void,
-                ),
+  // Emulates a darwin host with a symlinked `t3` launcher, which a Windows temp path does not match.
+  describe.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "with a launcher on PATH",
+    () => {
+      it.effect.each([
+        // An interrupted append cut this record short.
+        { name: "an unterminated launcher record", recorded: "/opt/t", cut: "" },
+        // Another process's append is cut short after prune reads the records.
+        { name: "a record cut short after the read", recorded: "/opt/t3\n", cut: "/opt/t" },
+      ])("remembers a launcher found on PATH after $name", ({ recorded, cut }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const { baseDir, versionsDir } = yield* setup(["1.0.0", "1.1.0"]);
+          const binDir = path.join(baseDir, "custom-bin");
+          yield* fs.makeDirectory(binDir);
+          yield* fs.symlink(path.join(versionsDir, "1.0.0", "t3"), path.join(binDir, "t3"));
+          const launchersFile = path.join(baseDir, "runtime", "launchers");
+          yield* fs.writeFileString(launchersFile, recorded);
+          const prune = (environment: Record<string, string>) =>
+            prunePinnedRuntimes({ baseDir, keep: [] }).pipe(
+              Effect.provideService(
+                ProcessRunner.ProcessRunner,
+                lsofRunner("p1\nftxt\nn/bin/sh\n"),
               ),
+              Effect.provideService(HostProcess.Platform, "darwin"),
+              Effect.provideService(HostProcess.Environment, environment),
+              Effect.provideService(HostProcess.HomeDirectory, baseDir),
+            );
+
+          yield* prune({ PATH: binDir }).pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: (file, encoding) =>
+                fs
+                  .readFileString(file, encoding)
+                  .pipe(
+                    Effect.tap(() =>
+                      file === launchersFile
+                        ? fs.writeFileString(file, cut, { flag: "a" })
+                        : Effect.void,
+                    ),
+                  ),
+            }),
+          );
+          // A service that cannot see the interactive PATH.
+          const removed = yield* prune({});
+
+          assert.deepEqual(removed, []);
+          assert.isTrue(yield* fs.exists(path.join(versionsDir, "1.0.0", "t3")));
         }),
       );
-      // A service that cannot see the interactive PATH.
-      const removed = yield* prune({});
-
-      assert.deepEqual(removed, []);
-      assert.isTrue(yield* fs.exists(path.join(versionsDir, "1.0.0", "t3")));
-    }),
+    },
   );
 
   it.effect("matches a Windows shim whatever its casing", () =>

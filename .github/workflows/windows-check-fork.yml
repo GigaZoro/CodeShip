@@ -4,7 +4,7 @@ name: Windows check (fork)
 # change landed from macOS or Linux would otherwise never run its tests on
 # Windows. This runs check:changed on Windows for every push to a fork's main,
 # against the commit main was at before the push. GitHub-hosted runners cost
-# nothing for a public repository; upstream has the manual windows-tests.yml.
+# nothing for a public repository; ci.yml runs the server shards on Windows.
 
 on:
   push:
