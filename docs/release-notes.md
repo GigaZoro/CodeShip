@@ -375,6 +375,10 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — Stopping a Windows command's process tree always says when its first process started and ended
+
+- When T3.CodeShip stops a command on Windows together with what it started, a process that took the first process's id after that process ended was in some cases still taken for it, and its children ended. This happened when the command's process had been seen to exit but the stop did not pass that moment on, and when the stop could not read when the first process had started. The command runner and the process worker now pass the moment they saw the first process exit, and every stop must state both when the first process started (or that this is unknown) and whether it ended, so a new caller can no longer leave either out.
+
 ## 2026-11-20 — The server test suite runs on Windows in CI
 
 - Every CI run that touches the server now also runs its tests on Windows, in eight shards beside the Linux ones. Maintainers: the manual Windows Tests workflow is gone; its lane is the `Test Server Windows` job in `ci.yml`.

@@ -995,7 +995,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         const since = Date.parse(row.started_at);
         const bounds = identityWindow(row.process_identity)!;
         assert.deepEqual(yield* Queue.clear(windows.stops), [
-          windowsStopTreeArgs({ pid: windows.wrapper, since, created: bounds }),
+          windowsStopTreeArgs({ pid: windows.wrapper, since, created: bounds, ended: "running" }),
         ]);
         // By the step alone, which no stall widens.
         assert.equal(since - bounds.from, clock.stepsBack);
@@ -1035,6 +1035,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             pid: windows.wrapper,
             since: made,
             created: { from: made, to: made },
+            ended: "running",
           }),
         ]);
       }),
@@ -1061,6 +1062,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             pid: windows.wrapper,
             since: from,
             created: { from, to: launched },
+            ended: "running",
           }),
         ]);
       }),
@@ -1105,6 +1107,7 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
                       pid: windows.wrapper,
                       since: Date.parse(row.started_at),
                       created: { from: 0, to: 0 },
+                      ended: "running",
                     }),
                   ],
                 ],
@@ -1211,7 +1214,14 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             "lost",
             "pid-reused",
             windows.wrapper,
-            [windowsStopTreeArgs({ pid: windows.wrapper, since, created: bounds })],
+            [
+              windowsStopTreeArgs({
+                pid: windows.wrapper,
+                since,
+                created: bounds,
+                ended: "running",
+              }),
+            ],
           ],
         );
       }),
@@ -1241,7 +1251,12 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
         assert.deepEqual(yield* Queue.clear(windows.stops), [
           // Whatever holds a gone wrapper's pid is another process, so it is no root. No clock
           // reading caps its children: one taken after a step back can come before their starts.
-          windowsStopTreeArgs({ pid, since, ...(gone ? { created: { from: 0, to: 0 } } : {}) }),
+          windowsStopTreeArgs({
+            pid,
+            since,
+            created: gone ? { from: 0, to: 0 } : "unknown",
+            ended: "running",
+          }),
         ]);
       }),
   );

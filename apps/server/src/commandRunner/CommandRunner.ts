@@ -655,7 +655,8 @@ const make = Effect.gen(function* () {
             args: windowsStopTreeArgs({
               pid,
               since,
-              ...(created === undefined ? {} : { created }),
+              created: created ?? "unknown",
+              ended: row.ended_at === null ? "running" : Date.parse(row.ended_at),
             }),
             timeout: Duration.seconds(30),
             maxOutputBytes: 16_384,

@@ -110,8 +110,10 @@ const isAlive = (entry) => {
 };
 // Windows has no process groups, and taskkill finds descendants only through a running leader, so
 // this walks the tree in PowerShell (windowsProcessTree.ts), also after the leader exited.
-const stopTree = ({ pid, since, spawnedAt }, done) => {
-  const call = " " + [pid, since, since, spawnedAt].join(" ");
+// "ended" is when the leader's exit was seen, or "running": a walk bounds an ended root's children
+// by it and never takes a later holder of its pid for the root.
+const stopTree = ({ pid, since, spawnedAt, ended }, done) => {
+  const call = " " + [pid, since, since, spawnedAt, ...(ended === "running" ? [] : ["-ended", ended])].join(" ");
   const args = STOP_TREE_ARGS.map((arg, index) => (index === STOP_TREE_ARGS.length - 1 ? arg + call : arg));
   const failed = (why) => done(new Error("Could not stop the process tree of " + pid + ": " + why));
   try {
@@ -134,7 +136,7 @@ const signalGroup = (entry, signal, done) => {
   const fallback = () =>
     done(entry.child.kill(signal) ? undefined : new Error("Failed to kill child process"));
   if (process.platform === "win32") {
-    return stopTree(entry.root, (error) => (error !== undefined && entry.exit === null ? fallback() : done(error)));
+    return stopTree({ ...entry.root, ended: entry.exit === null ? "running" : entry.exit.at }, (error) => (error !== undefined && entry.exit === null ? fallback() : done(error)));
   }
   if (groupEnded(entry)) return done(undefined);
   try {
@@ -252,8 +254,8 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
     // Linux hands waitpid the ptrace stop of a child that made this process its tracer, and Node
     // reports it as an exit. That leader still holds its pid, stopped or, once killed, as a zombie;
     // any other holder took the pid after a real reap.
-    entry.exit = { code, signal, reaped: !isLeader(entry) };
-    post({ type: "exit", id, code, signal, reaped: entry.exit.reaped });
+    entry.exit = { code, signal, reaped: !isLeader(entry), at: Date.now() };
+    post({ type: "exit", id, code, signal, reaped: entry.exit.reaped, at: entry.exit.at });
     // A Windows tree walk starts PowerShell, too slow for every failed command; see leftBehind.
     if (code !== 0 && code !== null && process.platform !== "win32" && !groupEnded(entry)) {
       try {
@@ -338,7 +340,7 @@ parentPort.on("message", (message) => {
     return scheduleTurn();
   }
   // The worker that ran these children stopped.
-  if (message.type === "killTree") return stopTree(message.root, (error) => reply(undefined, message.seq, error));
+  if (message.type === "killTree") return stopTree({ ...message.root, ended: message.ended }, (error) => reply(undefined, message.seq, error));
   if (message.type === "abandon" && queued.delete(message.id)) return;
   const { id, seq } = message;
   const entry = children.get(id);
@@ -415,6 +417,7 @@ type WorkerEvent =
       readonly code: number | null;
       readonly signal: string | null;
       readonly reaped: boolean;
+      readonly at: number;
     }
   | {
       readonly type: "done";
@@ -464,6 +467,8 @@ interface RemoteChild {
   readonly exit: Deferred.Deferred<ExitStatus, PlatformError.PlatformError>;
   // The worker relayed an exit that reaped the leader, not a ptrace stop Node reports as one.
   reaped: boolean;
+  // The system clock when the worker saw the leader exit; a Windows tree walk bounds the root by it.
+  exitedAt: number | undefined;
   readonly outputs: ReadonlyMap<number, OutputQueue>;
   readonly open: Set<number>;
   starting: ((outcome: StartedChild | PlatformError.PlatformError) => void) | undefined;
@@ -626,15 +631,17 @@ const sigkill = (pid: number) => {
 interface Orphan {
   readonly child: RemoteChild;
   readonly root: StartedChild;
+  readonly ended: number | "running";
 }
 
 // Only for when no worker can start, as starting PowerShell blocks this thread. A stopped worker
 // relays no exits, so a leader's pid alone may name an unrelated process by now.
-const stopTreeHere = ({ child, root }: Orphan) => {
+const stopTreeHere = ({ child, root, ended }: Orphan) => {
   const args = windowsStopTreeArgs({
     pid: root.pid,
     since: root.since,
     created: { from: root.since, to: root.spawnedAt },
+    ended,
   });
   const failed = (why: string) => {
     const cause = new Error(`Could not stop the process tree of ${root.pid}: ${why}`);
@@ -671,7 +678,7 @@ const killTrees = (trees: ReadonlyArray<Orphan>) => {
     for (const orphan of trees) stopTreeHere(orphan);
     return;
   }
-  for (const { child, root } of trees) {
+  for (const { child, root, ended } of trees) {
     const seq = nextSeq++;
     connection.replies.set(seq, {
       method: "kill",
@@ -681,7 +688,7 @@ const killTrees = (trees: ReadonlyArray<Orphan>) => {
       },
     });
     hold(connection);
-    post(connection, { type: "killTree", root, seq });
+    post(connection, { type: "killTree", root, ended, seq });
   }
 };
 
@@ -693,7 +700,7 @@ const killOrphans = (children: Iterable<RemoteChild>) => {
     const root = child.root;
     if (!child.referenced || root === undefined) continue;
     if (child.kills === "tree") {
-      trees.push({ child, root });
+      trees.push({ child, root, ended: child.exitedAt ?? "running" });
       continue;
     }
     // As in the worker's groupEnded, a process holding a reaped leader's pid means the group ended. A
@@ -780,6 +787,7 @@ const receive = (connection: Connection, event: WorkerEvent) => {
     }
     case "exit":
       child.reaped = event.reaped;
+      child.exitedAt = event.at;
       Deferred.doneUnsafe(child.exit, Exit.succeed([event.code, event.signal] as const));
       if (child.holdsWorker) {
         child.holdsWorker = false;
@@ -880,6 +888,7 @@ const launch = (
       report,
       exit: Deferred.makeUnsafe(),
       reaped: false,
+      exitedAt: undefined,
       outputs,
       open: new Set(outputs.keys()),
       starting: undefined,
