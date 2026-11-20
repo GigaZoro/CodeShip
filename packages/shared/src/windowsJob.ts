@@ -416,6 +416,7 @@ export interface WindowsJob {
   readonly host: string;
   readonly name: string;
   child?: { readonly pid: number; readonly created: number };
+  hostExited?: true;
 }
 
 const jobs = new WeakMap<object, WindowsJob>();

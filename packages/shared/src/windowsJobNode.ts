@@ -48,6 +48,9 @@ export const windowsJobSpawn = (host: string): typeof NodeChildProcess.spawn => 
       },
     );
     attachWindowsJob(child, job);
+    child.once("exit", () => {
+      job.hostExited = true;
+    });
     const control = child.stdio[fd] as NodeStream.Writable;
     const replies = child.stdio[fd + 1] as NodeStream.Readable;
     const lines = NodeReadline.createInterface({ input: replies });
