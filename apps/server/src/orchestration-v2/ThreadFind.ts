@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/sql/SqlClient";
+import { turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
 import {
   ProjectionStoreReadError,
   ProjectionStoreThreadNotFoundError,
@@ -206,9 +207,9 @@ export const makeThreadFind = Effect.fn("makeThreadFind")(function* (
       entry_id: string;
       item_type: OrchestrationV2TurnItem["type"];
     }>`
-      SELECT item.thread_id, item.turn_item_id, item.payload_json,
+      SELECT item.thread_id, item.turn_item_id, ${sql.literal(turnItemPayloadSql("item"))} AS payload_json,
         COALESCE(json_extract(item.payload_json, '$.messageId'), item.turn_item_id) AS entry_id,
-        json_extract(item.payload_json, '$.type') AS item_type
+        item.type AS item_type
       FROM orchestration_v2_projection_turn_items AS item
       JOIN json_each(${sources}) AS wanted
         ON item.thread_id = json_extract(wanted.value, '$.threadId')

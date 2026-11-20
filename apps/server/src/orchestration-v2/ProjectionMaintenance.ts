@@ -17,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { stripTurnItemPayloadColumns, turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 
 export interface ProjectionVerificationV2 {
@@ -550,6 +551,7 @@ export const layer: Layer.Layer<
           readonly status: string;
           readonly updated_at: string;
           readonly payload_json: string | null;
+          readonly stored_json: string | null;
         }>`
           SELECT
             turn_item_id,
@@ -560,8 +562,14 @@ export const layer: Layer.Layer<
               WHEN type IN ('command_execution', 'dynamic_tool')
                 AND status IN ${sql.in(SETTLED_ITEM_STATUSES)}
                 AND updated_at < ${input.idleBefore}
+              THEN ${sql.literal(turnItemPayloadSql())}
+            END AS payload_json,
+            CASE
+              WHEN type IN ('command_execution', 'dynamic_tool')
+                AND status IN ${sql.in(SETTLED_ITEM_STATUSES)}
+                AND updated_at < ${input.idleBefore}
               THEN payload_json
-            END AS payload_json
+            END AS stored_json
           FROM orchestration_v2_projection_turn_items
           WHERE thread_id = ${input.threadId}
             AND (ordinal, turn_item_id) > (${ordinalCursor}, ${itemCursor})
@@ -577,8 +585,12 @@ export const layer: Layer.Layer<
           const pruned = yield* prunedItemPayload(row.payload_json);
           if (pruned === undefined) unreadableItemCount += 1;
           // A pass that stopped before rewriting the events left this row pruned.
-          else if (pruned === row.payload_json) prunedItemIds.add(row.turn_item_id);
-          else if (pruned !== null) updates.push({ row, json: pruned });
+          else if (pruned === null) continue;
+          else {
+            const stored = stripTurnItemPayloadColumns(pruned);
+            if (stored === row.stored_json) prunedItemIds.add(row.turn_item_id);
+            else updates.push({ row, json: stored });
+          }
         }
         yield* Effect.yieldNow;
         if (updates.length > 0) {

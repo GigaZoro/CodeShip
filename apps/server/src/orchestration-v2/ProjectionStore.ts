@@ -7,6 +7,7 @@ import {
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { MODEL_NOT_SUPPORTED_FAILURE_CODE } from "@t3tools/provider-core/server/failure";
 import { nodePayloadSql, stripNodePayloadColumns } from "./NodePayloadColumns.ts";
+import { TURN_ITEM_PAYLOAD_REMOVE_PATHS, turnItemPayloadSql } from "./TurnItemPayloadColumns.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -2816,7 +2817,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ${event.payload.type},
                 ${event.payload.status},
                 ${updatedAt},
-                ${payloadJson}
+                json_remove(${payloadJson}, ${sql.literal(TURN_ITEM_PAYLOAD_REMOVE_PATHS)})
               )
               ON CONFLICT(turn_item_id)
               DO UPDATE SET
@@ -3337,7 +3338,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ? []
             : window === undefined
               ? yield* sql<PayloadRow>`
-                SELECT payload_json
+                SELECT ${sql.literal(turnItemPayloadSql())} AS payload_json
                 FROM orchestration_v2_projection_turn_items
                 WHERE thread_id = ${threadId}
                   ${filter?.turnItemTypes === undefined ? sql`` : sql`AND type IN (SELECT value FROM json_each(${encodeIdList(filter.turnItemTypes)}))`}
@@ -3352,7 +3353,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 -- CROSS JOIN keeps the sorted IDs as the outer loop, so SQLite
                 -- skips sorting again once the payloads are attached. Carry the
                 -- rowid through selection to avoid a second string-key index lookup.
-                SELECT item.payload_json, tail.turn_item_id AS work_last_id,
+                SELECT ${sql.literal(turnItemPayloadSql("item"))} AS payload_json, tail.turn_item_id AS work_last_id,
                   deferred.last_ordinal AS work_last_ordinal, deferred.item_count AS work_item_count
                 FROM retained
                 CROSS JOIN orchestration_v2_projection_turn_items AS item
@@ -4169,7 +4170,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         }>`
           SELECT t.payload_json, r.run_id, r.completed_at, r.provider_instance_id,
             json_extract(r.payload_json, '$.modelSelection.model') AS run_model,
-            item.payload_json AS failure_payload_json,
+            ${sql.literal(turnItemPayloadSql("item"))} AS failure_payload_json,
             ${stopRequestedColumn},
             (
               SELECT json_extract(session.payload_json, '$.lastError')
@@ -4317,7 +4318,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         }>`
           SELECT t.payload_json, r.run_id, r.provider_instance_id,
             json_extract(r.payload_json, '$.activeAttemptId') AS attempt_id,
-            held.payload_json AS held_payload_json,
+            ${sql.literal(turnItemPayloadSql("held"))} AS held_payload_json,
             ${stopRequestedColumn}
           FROM orchestration_v2_projection_turn_items held
           INNER JOIN orchestration_v2_projection_runs r ON r.run_id = held.run_id
@@ -4542,7 +4543,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly model_scope: string | null;
         }>`
           WITH refusals AS (
-            SELECT failure.thread_id, failure.run_id, failure.node_id, failure.payload_json
+            SELECT failure.thread_id, failure.run_id, failure.node_id, ${sql.literal(turnItemPayloadSql("failure"))} AS payload_json
             FROM orchestration_v2_projection_turn_items failure
             WHERE failure.type = 'error' AND failure.status = 'failed'
               AND json_extract(failure.payload_json, '$.failure.class') = 'usage_limit'
@@ -4555,7 +4556,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             UNION ALL
             -- A model this account's login cannot run holds that model like a model-scoped limit
             -- with no reset: the account's own model list still offers it.
-            SELECT refused.thread_id, refused.run_id, refused.node_id, refused.payload_json
+            SELECT refused.thread_id, refused.run_id, refused.node_id, ${sql.literal(turnItemPayloadSql("refused"))} AS payload_json
             FROM orchestration_v2_projection_turn_items refused
             WHERE refused.type = 'error' AND refused.status = 'failed'
               AND json_extract(refused.payload_json, '$.failure.code') = ${MODEL_NOT_SUPPORTED_FAILURE_CODE}
@@ -4563,7 +4564,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             UNION ALL
             -- A turn the provider holds until the reset; the first status term matches the
             -- live-item partial index.
-            SELECT held.thread_id, held.run_id, held.node_id, held.payload_json
+            SELECT held.thread_id, held.run_id, held.node_id, ${sql.literal(turnItemPayloadSql("held"))} AS payload_json
             FROM orchestration_v2_projection_turn_items held
             WHERE held.status IN ('pending', 'running', 'waiting')
               AND held.status = 'running'
@@ -5049,7 +5050,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT rowid AS row_id, ${sql(table.id)} AS entity_id,
                 ${sql(table.name === "context_transfers" ? "source_thread_id" : "thread_id")} AS thread_id,
                 ${table.name === "context_transfers" ? sql`target_thread_id` : sql`NULL`} AS target_thread_id,
-                ${table.name === "nodes" ? sql.literal(`${nodePayloadSql()} AS payload_json`) : sql`payload_json`}
+                ${table.name === "nodes" ? sql.literal(`${nodePayloadSql()} AS payload_json`) : table.name === "turn_items" ? sql.literal(`${turnItemPayloadSql()} AS payload_json`) : sql`payload_json`}
               FROM ${sql(`orchestration_v2_projection_${table.name}`)}
               WHERE rowid > ${afterRowId}
               ORDER BY rowid ASC LIMIT ${pageSize}
@@ -5154,7 +5155,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE source_thread_id = ${threadId} OR target_thread_id = ${threadId} ORDER BY rowid ASC
             `.pipe(Effect.flatMap(decodeRows(decodeContextTransferPayload, threadId)));
             const turnItems = yield* sql<PayloadRow>`
-              SELECT payload_json FROM orchestration_v2_projection_turn_items
+              SELECT ${sql.literal(turnItemPayloadSql())} AS payload_json FROM orchestration_v2_projection_turn_items
               -- Look up one run's items by key, not by walking the thread's whole history in ordinal order.
               INDEXED BY orchestration_v2_projection_turn_items_run_ordinal_idx
               WHERE thread_id = ${threadId} AND run_id = ${runId} ORDER BY ordinal ASC, turn_item_id ASC
@@ -5217,7 +5218,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     )(
       function* (threadId, runIds) {
         const rows = yield* sql<PayloadRow>`
-          SELECT payload_json FROM orchestration_v2_projection_turn_items
+          SELECT ${sql.literal(turnItemPayloadSql())} AS payload_json FROM orchestration_v2_projection_turn_items
           WHERE thread_id = ${threadId}
             AND type IN ('user_message','assistant_message','command_execution','error',
               'run_interrupt_result','file_change','proposed_plan')
@@ -5504,7 +5505,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ORDER BY message.created_at ASC, message.message_id ASC
             `,
             sql<PayloadRow>`
-              SELECT item.payload_json FROM orchestration_v2_projection_turn_items AS item
+              SELECT ${sql.literal(turnItemPayloadSql("item"))} AS payload_json FROM orchestration_v2_projection_turn_items AS item
               WHERE item.thread_id = ${threadId}
                 AND item.status IN ('pending', 'running', 'waiting')
                 AND (
@@ -5641,7 +5642,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           )}
         `;
             const itemRows = yield* sql<PayloadRow>`
-          SELECT payload_json FROM orchestration_v2_projection_turn_items
+          SELECT ${sql.literal(turnItemPayloadSql())} AS payload_json FROM orchestration_v2_projection_turn_items
           WHERE thread_id = ${threadId} AND provider_turn_id = ${providerTurnId}
             AND type = 'user_input_request'
         `;
@@ -5896,7 +5897,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               yield* sql<PayloadRow>`SELECT ${sql.literal(nodePayloadSql())} AS payload_json FROM orchestration_v2_projection_nodes
           WHERE thread_id = ${threadId} AND node_id = ${request.nodeId}`;
             const itemRows =
-              yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_turn_items
+              yield* sql<PayloadRow>`SELECT ${sql.literal(turnItemPayloadSql())} AS payload_json FROM orchestration_v2_projection_turn_items
           WHERE thread_id = ${threadId} AND node_id = ${request.nodeId} AND type IN ('approval_request', 'user_input_request')
             AND json_extract(payload_json, '$.requestId') = ${requestId}
           ORDER BY ordinal ASC LIMIT 1`;
@@ -6217,7 +6218,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       );
 
     const getTurnItem: ProjectionStoreV2Shape["getTurnItem"] = ({ threadId, itemId }) =>
-      sql<{ payload_json: string }>`SELECT payload_json
+      sql<{ payload_json: string }>`SELECT ${sql.literal(turnItemPayloadSql())} AS payload_json
         FROM orchestration_v2_projection_turn_items
         WHERE turn_item_id = ${itemId} AND thread_id = ${threadId}`.pipe(
         Effect.flatMap((rows) =>
@@ -6562,7 +6563,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 turn_item_id: string;
                 payload_json: string;
               }>`
-          SELECT item.thread_id, item.turn_item_id, item.payload_json
+          SELECT item.thread_id, item.turn_item_id, ${sql.literal(turnItemPayloadSql("item"))} AS payload_json
           FROM orchestration_v2_projection_turn_items item JOIN json_each(${sources}) wanted
           ON item.thread_id = json_extract(wanted.value, '$.threadId')
             AND item.turn_item_id = json_extract(wanted.value, '$.id')`;
@@ -6644,7 +6645,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               turn_item_id: string;
               payload_json: string;
             }>`
-          SELECT item.thread_id, item.turn_item_id, item.payload_json
+          SELECT item.thread_id, item.turn_item_id, ${sql.literal(turnItemPayloadSql("item"))} AS payload_json
           FROM orchestration_v2_projection_turn_items item JOIN json_each(${sources}) wanted
           ON item.thread_id = json_extract(wanted.value, '$.threadId')
             AND item.turn_item_id = json_extract(wanted.value, '$.id')`;
@@ -6860,7 +6861,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS last_error,
               (
-                SELECT item.payload_json
+                SELECT ${sql.literal(turnItemPayloadSql("item"))}
                 FROM orchestration_v2_projection_turn_items item
                 INNER JOIN orchestration_v2_projection_runs r ON r.run_id = item.run_id
                 WHERE r.run_id = presented.run_id
@@ -6881,7 +6882,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   AND stop_request.type = 'run_interrupt_request'
               ) AS blocking_run_stop_requested,
               (
-                SELECT item.payload_json
+                SELECT ${sql.literal(turnItemPayloadSql("item"))}
                 FROM orchestration_v2_projection_turn_items item
                 WHERE item.thread_id = t.thread_id
                   AND item.run_id = blocked.run_id
@@ -6899,7 +6900,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS pending_request_payload_json,
               (
-                SELECT secret.payload_json
+                SELECT ${sql.literal(turnItemPayloadSql("secret"))}
                 -- Keep runs outermost so completed history is never scanned for a pending secret.
                 FROM orchestration_v2_projection_runs r
                 CROSS JOIN orchestration_v2_projection_turn_items secret
@@ -6912,7 +6913,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS pending_secret_request_payload_json,
               (
-                SELECT link.payload_json
+                SELECT ${sql.literal(turnItemPayloadSql("link"))}
                 FROM orchestration_v2_projection_turn_items link
                   INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
                 WHERE link.thread_id = t.thread_id
@@ -7066,7 +7067,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       threadIds?: ReadonlyArray<ThreadId>,
       activeRunIds: ReadonlyArray<string> = [],
     ) => sql<ShellPendingTurnItemRow>`
-      SELECT i.thread_id, i.payload_json, p.provider_instance_id AS owning_provider_instance_id
+      SELECT i.thread_id, ${sql.literal(turnItemPayloadSql("i"))} AS payload_json, p.provider_instance_id AS owning_provider_instance_id
       FROM orchestration_v2_projection_turn_items i
       LEFT JOIN orchestration_v2_projection_provider_threads p
         ON p.provider_thread_id = i.provider_thread_id
@@ -7082,7 +7083,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           : sql`
         -- Preserve the pending-item partial index; read other work only from running runs.
         UNION ALL
-        SELECT i.thread_id, i.payload_json, NULL AS owning_provider_instance_id
+        SELECT i.thread_id, ${sql.literal(turnItemPayloadSql("i"))} AS payload_json, NULL AS owning_provider_instance_id
         FROM orchestration_v2_projection_turn_items i
         WHERE i.run_id IN (SELECT value FROM json_each(${encodeIdList(activeRunIds)}))
           AND i.type IN ('file_change', 'file_search', 'web_search', 'compaction')

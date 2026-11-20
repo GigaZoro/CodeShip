@@ -58,6 +58,10 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — Turn items stop storing values their columns already hold
+
+- Maintainers: a stored turn item no longer repeats its id, thread, run, node, provider ids, parent, ordinal, type, status and update time inside its JSON, since the row's columns hold them; every read puts them back. A resumable migration (098) converts existing rows in steps, and a test proves the rebuilt payload equals the original. The database and snapshot reads carry less data per item. No change to the app's behavior.
+
 ## 2026-11-20 — The machine check compares each machine's Node with the project's pin
 
 - `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. It now reports the mismatch before anyone runs `check:changed`, which refuses to run on the wrong Node. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
