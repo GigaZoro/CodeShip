@@ -327,9 +327,9 @@ const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
 const decodeDescription = Schema.decodeUnknownEffect(
   Schema.optional(Schema.NullOr(ScheduledTaskDescription)),
 );
-const decodeDescriptionJson = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.NullOr(ScheduledTaskDescription)),
-);
+const DescriptionJson = Schema.fromJsonString(Schema.NullOr(ScheduledTaskDescription));
+const decodeDescriptionJson = Schema.decodeUnknownEffect(DescriptionJson);
+const encodeDescriptionJson = Schema.encodeSync(DescriptionJson);
 const decodeScheduleJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.schedule),
 );
@@ -1707,7 +1707,7 @@ export const layer = Layer.effect(
         SELECT
           ${task.id},
           ${task.title},
-          ${task.description === undefined ? null : JSON.stringify(task.description)},
+          ${task.description === undefined ? null : encodeDescriptionJson(task.description)},
           ${task.prompt},
           ${task.enabled ? 1 : 0},
           ${JSON.stringify(task.schedule)},
@@ -5112,7 +5112,8 @@ export const layer = Layer.effect(
               WHERE task_id = ${taskId} AND fallback_model_selections_json IS NULL
               RETURNING task_id
             `;
-            const descriptionJson = description === undefined ? null : JSON.stringify(description);
+            const descriptionJson =
+              description === undefined ? null : encodeDescriptionJson(description);
             const filledDescription =
               descriptionJson === null
                 ? []

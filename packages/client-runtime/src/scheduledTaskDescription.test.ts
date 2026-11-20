@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { scheduledTaskDescriptionField, scheduledTaskPreview } from "./scheduledTaskDescription";
+import { scheduledTaskDescriptionField, scheduledTaskPreview } from "./scheduledTaskDescription.ts";
 
 describe("scheduled task description", () => {
   it("uses the prompt preview for tasks without a description", () => {
