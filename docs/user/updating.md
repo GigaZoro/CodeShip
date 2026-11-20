@@ -99,7 +99,10 @@ off to cancel the wait, or use the manual update controls to install at any time
 
 Chats the update interrupted resume after the restart according to **Continue threads after
 restarts**, which is on by default. On desktop, the app installs even when its window is closed
-if it is still running. You can start updates manually on a server you run with `t3 serve`.
+if it is still running. The install restarts every server the app runs, such as its WSL server,
+so the waits cover the chats and scheduled starts on each of them; if the app cannot read what one
+of them is running, it does not install and tries again later. You can start updates manually on a
+server you run with `t3 serve`.
 
 An update that fails, or restarts the same version, is tried again after 15 minutes, then after
 twice as long each time, up to six hours, also across restarts. A release the launcher rolled

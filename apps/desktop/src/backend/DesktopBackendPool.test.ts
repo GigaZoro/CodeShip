@@ -56,6 +56,9 @@ function layerPool(labelRef: Ref.Ref<string>): Layer.Layer<DesktopBackendPool.De
           updateCancellations: Stream.empty,
           updateReports: Stream.empty,
           latestUpdateReport: Effect.succeedNone,
+          setServingBackend: () => Effect.void,
+          removeServingBackend: () => Effect.void,
+          servingBackends: Stream.empty,
         }),
         DesktopBrowserHost.layer,
         Layer.succeed(DesktopBackendConfiguration.DesktopBackendConfiguration, {

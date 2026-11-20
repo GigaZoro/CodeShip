@@ -1,15 +1,21 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Ref from "effect/Ref";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 /**
- * Holds an automatic update keeps on scheduled starts while running turns finish and the install
- * hands off; a start that came due meanwhile runs after the install. A count, so a hold that ends
- * inside another leaves the outer one in place.
+ * How many holds keep this server's scheduled starts waiting: its own update's, and each drain
+ * link the primary holds open to it. A count, so a hold that ends inside another leaves the outer
+ * one in place. A start that came due meanwhile runs after the install.
  */
-export class UpdateDrain extends Context.Reference<Ref.Ref<number>>("t3/cloud/UpdateDrain", {
-  defaultValue: () => Ref.makeUnsafe(0),
-}) {}
+export class UpdateDrain extends Context.Reference<SubscriptionRef.SubscriptionRef<number>>(
+  "t3/cloud/UpdateDrain",
+  { defaultValue: () => Effect.runSync(SubscriptionRef.make(0)) },
+) {}
+
+const take = (drain: SubscriptionRef.SubscriptionRef<number>) =>
+  SubscriptionRef.update(drain, (holders) => holders + 1);
+const give = (drain: SubscriptionRef.SubscriptionRef<number>) =>
+  SubscriptionRef.update(drain, (holders) => holders - 1);
 
 /** Holds scheduled starts for the life of `effect`, however it ends. */
 export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(function* <A, E, R>(
@@ -17,9 +23,9 @@ export const whileDraining = Effect.fn("cloud.update_drain.while_draining")(func
 ) {
   const drain = yield* UpdateDrain;
   return yield* Effect.acquireUseRelease(
-    Ref.update(drain, (holds) => holds + 1),
+    take(drain),
     () => effect,
-    () => Ref.update(drain, (holds) => holds - 1),
+    () => give(drain),
   );
 });
 
@@ -32,13 +38,19 @@ export const drainInBackground = Effect.fn("cloud.update_drain.drain_in_backgrou
   E,
 >(effect: Effect.Effect<A, E>) {
   const drain = yield* UpdateDrain;
-  yield* Ref.update(drain, (holds) => holds + 1);
-  return yield* effect.pipe(
-    Effect.ensuring(Ref.update(drain, (holds) => holds - 1)),
-    Effect.forkDetach,
+  return yield* Effect.uninterruptibleMask((restore) =>
+    take(drain).pipe(
+      Effect.andThen(restore(effect).pipe(Effect.ensuring(give(drain)), Effect.forkDetach)),
+    ),
   );
 });
 
+/** Holds scheduled starts until the scope closes. */
+export const drainUntilClosed = Effect.gen(function* () {
+  const drain = yield* UpdateDrain;
+  yield* Effect.acquireRelease(take(drain), () => give(drain));
+});
+
 export const isDraining = Effect.fn("cloud.update_drain.is_draining")(function* () {
-  return (yield* Ref.get(yield* UpdateDrain)) > 0;
+  return (yield* SubscriptionRef.get(yield* UpdateDrain)) > 0;
 });

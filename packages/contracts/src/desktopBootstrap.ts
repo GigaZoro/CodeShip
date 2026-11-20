@@ -34,6 +34,9 @@ export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;
 
 export const DESKTOP_UPDATE_CONTROL_PATH = "/api/desktop/update-control";
 
+/** A desktop backend's restart hold, streamed to the primary that installs updates for the app. */
+export const DESKTOP_RESTART_HOLD_PATH = "/api/desktop/restart-hold";
+
 /** Written to `<t3Home>/runtime` before update shutdown so the backend retains its managed tunnel. */
 export const DESKTOP_UPDATE_RESTART_MARKER_FILE = "desktop-update-restart";
 

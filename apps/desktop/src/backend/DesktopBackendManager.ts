@@ -1188,6 +1188,29 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
       ),
   );
 
+  if (spec.id !== PRIMARY_INSTANCE_ID) {
+    // The primary's automatic update waits for this backend's chats, as the install stops it too.
+    yield* SubscriptionRef.changes(state).pipe(
+      Stream.map((current) =>
+        current.ready
+          ? Option.getOrNull(Option.map(current.config, (config) => config.httpBaseUrl.href))
+          : null,
+      ),
+      Stream.changes,
+      Stream.runForEach((httpBaseUrl) =>
+        httpBaseUrl === null
+          ? desktopTelemetryPublisher.removeServingBackend(spec.id)
+          : spec.label.pipe(
+              Effect.flatMap((label) =>
+                desktopTelemetryPublisher.setServingBackend({ id: spec.id, label, httpBaseUrl }),
+              ),
+            ),
+      ),
+      Effect.ensuring(desktopTelemetryPublisher.removeServingBackend(spec.id)),
+      Effect.forkScoped,
+    );
+  }
+
   yield* Effect.addFinalizer(() => stop());
 
   return {

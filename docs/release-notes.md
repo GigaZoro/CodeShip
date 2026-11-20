@@ -865,6 +865,10 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — Automatic desktop updates wait for chats on the WSL server too
+
+- The desktop app's automatic update waits for chats, background work and scheduled starts on every server the app runs, such as its WSL server, because the install restarts them all. Before, an idle Windows server could install and cut chats running in WSL. If the app cannot read what another of its servers is running, the update waits and tries again later.
+
 ## 2026-11-20 — A desktop preview tab's viewers and recordings no longer fight over its screencast
 
 - When a viewer and a recording streamed the same desktop browser tab, each one's screencast settings replaced the other's: a scrolling viewer shrank the recording's frames to half size and lower quality, and a settled viewer's size kept capping the recording. The tab now runs one screencast at the best quality and largest size any streaming session asked for, and re-merges when a session starts, stops or closes.

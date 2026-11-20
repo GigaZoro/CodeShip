@@ -2,7 +2,7 @@ import {
   DESKTOP_UPDATE_CONTROL_PATH,
   DesktopUpdateControlCommand,
   type DesktopUpdateControlAcknowledgement,
-  type DesktopUpdateStatusReport,
+  type DesktopUpdateControlReport,
 } from "@t3tools/contracts";
 import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
 import * as Clock from "effect/Clock";
@@ -31,7 +31,7 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
 
   const post = (
     target: { readonly url: URL; readonly token: string },
-    message: DesktopUpdateStatusReport | DesktopUpdateControlAcknowledgement,
+    message: DesktopUpdateControlReport | DesktopUpdateControlAcknowledgement,
   ) =>
     HttpClientRequest.post(target.url).pipe(
       HttpClientRequest.bearerToken(target.token),
@@ -42,13 +42,13 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
     );
 
   const sendReport = Effect.fn("DesktopUpdateHttpControl.sendReport")(function* (
-    report: DesktopUpdateStatusReport,
+    report: DesktopUpdateControlReport,
   ) {
     const target = yield* endpoint;
     if (target === null) return;
     yield* post(target, report).pipe(
       Effect.catch((error) =>
-        Effect.logDebug("Could not report the WSL desktop update.", { error }),
+        Effect.logDebug("Could not send a desktop report to the WSL backend.", { error }),
       ),
     );
   });
@@ -63,6 +63,8 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
     }
     const latest = yield* publisher.latestUpdateReport;
     if (Option.isSome(latest)) yield* sendReport(latest.value);
+    const backends = yield* Stream.runHead(publisher.servingBackends);
+    if (Option.isSome(backends)) yield* sendReport(backends.value);
     const command = yield* client
       .execute(HttpClientRequest.get(target.url).pipe(HttpClientRequest.bearerToken(target.token)))
       .pipe(
@@ -91,5 +93,6 @@ export const listen = Effect.fn("DesktopUpdateHttpControl.listen")(function* () 
   );
 
   yield* Effect.forkScoped(Stream.runForEach(publisher.updateReports, sendReport));
+  yield* Effect.forkScoped(Stream.runForEach(publisher.servingBackends, sendReport));
   yield* Effect.forkScoped(readCommands);
 });

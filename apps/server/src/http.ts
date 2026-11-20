@@ -2,6 +2,7 @@ import * as Mime from "effect/http/Mime";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  DESKTOP_RESTART_HOLD_PATH,
   DESKTOP_UPDATE_CONTROL_PATH,
   DesktopUpdateControlPost,
   EnvironmentHttpApi,
@@ -34,6 +35,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { OtlpTracer, OtlpSerialization } from "effect/observability";
 
 import * as ServerConfig from "./config.ts";
+import { MachineRestartHold } from "./cloud/machineRestartHold.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { ASSET_ROUTE_PREFIX, readMcpAppHtml, resolveAsset } from "./assets/AssetAccess.ts";
 import { sourceControlMediaResponse } from "./assets/sourceControlMediaResponse.ts";
@@ -331,10 +333,11 @@ export const layerServerEnvironmentHttpApi = HttpApiBuilder.group(
   }),
 );
 
-const authenticatedDesktopUpdateControl = Effect.gen(function* () {
+/** The desktop app and its backends share one bootstrap secret, so either can call these. */
+const authenticatedDesktopBackendCaller = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const request = yield* HttpServerRequest.HttpServerRequest;
-  if (config.mode !== "desktop" || !config.desktopUpdateHttpControl) return false;
+  if (config.mode !== "desktop") return false;
   const authorization = request.headers.authorization;
   return (
     config.desktopBootstrapSecret !== undefined &&
@@ -345,6 +348,11 @@ const authenticatedDesktopUpdateControl = Effect.gen(function* () {
       yield* Clock.currentTimeMillis,
     )
   );
+});
+
+const authenticatedDesktopUpdateControl = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  return config.desktopUpdateHttpControl === true && (yield* authenticatedDesktopBackendCaller);
 });
 
 export const layerDesktopUpdateControlRoutes = Layer.merge(
@@ -376,11 +384,32 @@ export const layerDesktopUpdateControlRoutes = Layer.merge(
       if (message.type === "desktopUpdateControlAcknowledgement") {
         yield* receiver.acknowledgeDesktopUpdateCommand(message);
       } else {
-        yield* receiver.receiveDesktopUpdateReport(message);
+        yield* receiver.receiveDesktopReport(message);
       }
       return HttpServerResponse.empty({ status: 204 });
     }),
   ),
+);
+
+export const layerDesktopRestartHoldRoute = HttpRouter.add(
+  "GET",
+  DESKTOP_RESTART_HOLD_PATH,
+  Effect.gen(function* () {
+    if (!(yield* authenticatedDesktopBackendCaller)) {
+      return HttpServerResponse.empty({ status: 404 });
+    }
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const drain = Option.exists(
+      HttpServerRequest.toURL(request),
+      (url) => url.searchParams.get("drain") === "1",
+    );
+    const machine = yield* MachineRestartHold;
+    // The compression middleware buffers a body it compresses; no-transform keeps lines flowing.
+    return HttpServerResponse.stream(machine.serveToPrimary(drain), {
+      contentType: "application/x-ndjson",
+      headers: { "Cache-Control": "no-store, no-transform" },
+    });
+  }),
 );
 
 class DecodeOtlpTraceRecordsError extends Data.TaggedError("DecodeOtlpTraceRecordsError")<{

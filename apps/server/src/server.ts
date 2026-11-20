@@ -187,6 +187,7 @@ import {
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as EnvironmentAuthPolicy from "./auth/EnvironmentAuthPolicy.ts";
 import * as CloudHttp from "./cloud/http.ts";
+import * as MachineRestartHold from "./cloud/machineRestartHold.ts";
 import * as GuestHttp from "./guest/http.ts";
 import * as CloudLink from "./cloud/CloudLink.ts";
 import * as ConnectReachability from "./cloud/ConnectReachability.ts";
@@ -318,6 +319,10 @@ const layerHostPowerMonitor = HostPowerMonitor.layer.pipe(
 
 // A fresh receiver layer would open a second reader on the desktop telemetry fd.
 const layerDesktopAppUpdate = DesktopAppUpdate.layer.pipe(
+  Layer.provide(layerDesktopTelemetryReceiver),
+);
+
+const layerMachineRestartHold = MachineRestartHold.layer.pipe(
   Layer.provide(layerDesktopTelemetryReceiver),
 );
 
@@ -935,6 +940,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
     ServerHttp.layerDesktopUpdateControlRoutes.pipe(Layer.provide(layerDesktopTelemetryReceiver)),
+    ServerHttp.layerDesktopRestartHoldRoute,
     GuestHttp.layer,
     ThreadPageCheckAccessHttp.layer,
     DeviceHubProxy.layer,
@@ -1351,6 +1357,8 @@ const layerMakeServer = Layer.unwrap(
       routerConfig: HTTP_ROUTER_CONFIG,
     }).pipe(
       withUntracedRequests,
+      // Route handlers resolve their services here, so the update and the route share one.
+      Layer.provide(layerMachineRestartHold),
       Layer.tap(() => Deferred.succeed(routesReady, undefined).pipe(Effect.orDie)),
     );
     const layerServerApplication = Layer.mergeAll(

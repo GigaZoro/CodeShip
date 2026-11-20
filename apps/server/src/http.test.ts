@@ -25,12 +25,81 @@ import {
   injectMcpAppThemeBootstrap,
   MCP_APP_MAX_HTML_BYTES,
 } from "@t3tools/shared/mcpApp";
-import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
+import {
+  DESKTOP_UPDATE_CONTROL_PATH,
+  type DesktopBackendEndpoint,
+  ORCHESTRATION_PROTOCOL_HEADER,
+} from "@t3tools/contracts";
+import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import * as Clock from "effect/Clock";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "./config.ts";
+import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
+import * as ServerSettings from "./serverSettings.ts";
 
 import { assetResponseHeaders, assetFileResponse, downloadContentDisposition } from "./http.ts";
 import * as ServerHttp from "./http.ts";
+
+describe("desktop update control", () => {
+  it.effect("records the backends only the desktop app posts to a primary it controls", () =>
+    Effect.gen(function* () {
+      const secret = "desktop-test-secret";
+      const config = {
+        ...(yield* ServerConfig.ServerConfig),
+        mode: "desktop" as const,
+        desktopUpdateHttpControl: true,
+        desktopBootstrapSecret: secret,
+      };
+      const receiver = yield* DesktopTelemetryReceiver.make().pipe(
+        Effect.provideService(ServerConfig.ServerConfig, config),
+      );
+      const services = yield* Layer.build(
+        HttpRouter.serve(ServerHttp.layerDesktopUpdateControlRoutes, {
+          disableListenLog: true,
+          disableLogger: true,
+        }).pipe(
+          Layer.provideMerge(NodeHttpServer.layerTest),
+          Layer.provide(
+            Layer.mergeAll(
+              ServerConfig.layer(config),
+              Layer.succeed(DesktopTelemetryReceiver.DesktopTelemetryReceiver, receiver),
+            ),
+          ),
+        ),
+      );
+      const client = Context.get(services, HttpClient.HttpClient);
+      const backends: ReadonlyArray<DesktopBackendEndpoint> = [
+        { id: "windows", label: "Windows", httpBaseUrl: "http://172.20.0.1:3773" },
+      ];
+      const post = (bearer: string | undefined) =>
+        HttpClientRequest.post(DESKTOP_UPDATE_CONTROL_PATH).pipe(
+          HttpClientRequest.bodyJsonUnsafe({ version: 1, type: "desktopBackends", backends }),
+          bearer === undefined ? (request) => request : HttpClientRequest.bearerToken(bearer),
+          client.execute,
+          Effect.map((response) => response.status),
+        );
+      const servingBackends = Stream.runHead(receiver.desktopBackends);
+      const now = yield* Clock.currentTimeMillis;
+
+      expect(yield* post(undefined)).toBe(404);
+      expect(yield* post(currentDesktopBootstrapToken("another-secret", now))).toBe(404);
+      expect(yield* servingBackends).toEqual(Option.some([]));
+
+      expect(yield* post(currentDesktopBootstrapToken(secret, now))).toBe(204);
+      expect(yield* servingBackends).toEqual(Option.some(backends));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "http-desktop-control-test-" }),
+          ServerSettings.layerTest(),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+});
 
 describe("MCP app asset responses", () => {
   it.effect(

@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -119,6 +120,7 @@ function decodeBootstrap(raw: string) {
 }
 
 interface MakeInstanceInput {
+  readonly id?: DesktopBackendManager.BackendInstanceId;
   readonly spawnerLayer: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>;
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient>;
   readonly backendOutputLog?: Partial<DesktopObservability.DesktopBackendOutputLogShape>;
@@ -174,6 +176,9 @@ function makeTestInstance(input: MakeInstanceInput) {
       updateCancellations: Stream.empty,
       updateReports: Stream.empty,
       latestUpdateReport: Effect.succeedNone,
+      setServingBackend: () => Effect.void,
+      removeServingBackend: () => Effect.void,
+      servingBackends: Stream.empty,
       ...input.desktopTelemetryPublisher,
     }),
     DesktopBrowserHost.layer,
@@ -183,7 +188,7 @@ function makeTestInstance(input: MakeInstanceInput) {
   );
 
   const instance = DesktopBackendManager.makeBackendInstance({
-    id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
+    id: input.id ?? DesktopBackendManager.PRIMARY_INSTANCE_ID,
     label: Effect.succeed("Windows"),
     configResolve: input.configResolve ?? Effect.succeed(input.config ?? baseConfig),
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
@@ -237,6 +242,49 @@ describe("DesktopBackendManager", () => {
         assert.isTrue(yield* Fiber.join(waiter));
         yield* instance.stop();
         assert.isFalse(yield* instance.waitForReady(Duration.seconds(15)));
+      }),
+    ),
+  );
+
+  it.effect("lists a secondary backend for the primary's update only while it serves", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const listed = yield* SubscriptionRef.make(Option.none<string>());
+        const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+        const instance = yield* makeTestInstance({
+          id: DesktopBackendManager.BackendInstanceId("wsl"),
+          spawnerLayer: Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.acquireRelease(
+                Effect.succeed(
+                  makeProcess({
+                    exitCode: Deferred.await(exit),
+                    kill: () =>
+                      Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
+                  }),
+                ),
+                () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
+              ),
+            ),
+          ),
+          desktopTelemetryPublisher: {
+            setServingBackend: (backend) =>
+              SubscriptionRef.set(listed, Option.some(backend.httpBaseUrl)),
+            removeServingBackend: () => SubscriptionRef.set(listed, Option.none()),
+          },
+        });
+        const listedAs = (serving: boolean) =>
+          SubscriptionRef.changes(listed).pipe(
+            Stream.filter((httpBaseUrl) => Option.isSome(httpBaseUrl) === serving),
+            Stream.runHead,
+            Effect.map(Option.flatten),
+          );
+
+        yield* instance.start;
+        assert.deepStrictEqual(yield* listedAs(true), Option.some("http://127.0.0.1:3773/"));
+        yield* instance.stop();
+        assert.deepStrictEqual(yield* listedAs(false), Option.none());
       }),
     ),
   );

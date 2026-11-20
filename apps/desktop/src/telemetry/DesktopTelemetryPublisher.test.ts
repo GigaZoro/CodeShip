@@ -63,27 +63,68 @@ function layerElectronApp(
   } satisfies ElectronApp.ElectronApp["Service"]);
 }
 
+function layerPowerMonitor(getSystemIdleTime: Effect.Effect<number>) {
+  return Layer.succeed(
+    ElectronPowerMonitor.ElectronPowerMonitor,
+    ElectronPowerMonitor.ElectronPowerMonitor.of({
+      isOnBatteryPower: Effect.succeed(false),
+      getSystemIdleTime,
+      getSystemIdleState: () => Effect.succeed("active"),
+      getCurrentThermalState: Effect.succeed("nominal"),
+      onSimpleEvent: () => Effect.void,
+      onThermalStateChange: () => Effect.void,
+      onSpeedLimitChange: () => Effect.void,
+    }),
+  );
+}
+
 describe("DesktopTelemetryPublisher", () => {
+  it.effect("tells a backend that connects later which other backends serve now", () =>
+    Effect.gen(function* () {
+      const context = yield* Layer.build(
+        DesktopTelemetryPublisher.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              layerElectronApp([]),
+              layerPowerMonitor(Effect.never),
+              layerHistory,
+              Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
+                installIntoProcess: Effect.succeed(true),
+                awaitDiscovery: Effect.succeed(true),
+                updates: Stream.empty,
+              }),
+            ),
+          ),
+        ),
+      );
+      const publisher = Context.get(context, DesktopTelemetryPublisher.DesktopTelemetryPublisher);
+      yield* publisher.setServingBackend({
+        id: "wsl",
+        label: "WSL",
+        httpBaseUrl: "http://172.20.0.2:3773/",
+      });
+
+      const report = yield* publisher.encoded.pipe(
+        Stream.map((bytes) => new TextDecoder().decode(bytes)),
+        Stream.filter((line) => line.includes("desktopBackends")),
+        Stream.runHead,
+      );
+
+      assert.include(Option.getOrThrow(report), "http://172.20.0.2:3773/");
+    }),
+  );
+
   it.effect(
     "forwards shell discovery while a telemetry sample is pending and stops on scope close",
     () =>
       Effect.gen(function* () {
         const pollStarted = yield* Deferred.make<void>();
         const blockPoll = yield* Deferred.make<void>();
-        const layerPower = Layer.succeed(
-          ElectronPowerMonitor.ElectronPowerMonitor,
-          ElectronPowerMonitor.ElectronPowerMonitor.of({
-            isOnBatteryPower: Effect.succeed(false),
-            getSystemIdleTime: Deferred.succeed(pollStarted, undefined).pipe(
-              Effect.andThen(Deferred.await(blockPoll)),
-              Effect.as(0),
-            ),
-            getSystemIdleState: () => Effect.succeed("active"),
-            getCurrentThermalState: Effect.succeed("nominal"),
-            onSimpleEvent: () => Effect.void,
-            onThermalStateChange: () => Effect.void,
-            onSpeedLimitChange: () => Effect.void,
-          }),
+        const layerPower = layerPowerMonitor(
+          Deferred.succeed(pollStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(blockPoll)),
+            Effect.as(0),
+          ),
         );
         const layer = DesktopTelemetryPublisher.layer.pipe(
           Layer.provide(

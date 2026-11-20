@@ -5,6 +5,7 @@ import * as NodeTls from "node:tls";
 
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import {
+  type DesktopBackendEndpoint,
   DesktopHostTelemetryMessage,
   type DesktopHostTelemetryMessage as DesktopHostTelemetryMessageValue,
   type DesktopHostTelemetrySnapshot,
@@ -13,6 +14,7 @@ import {
   type DesktopUpdateChannel,
   type DesktopUpdateControlAcknowledgement,
   type DesktopUpdateControlCommand,
+  type DesktopUpdateControlReport,
   type DesktopUpdateStatusReport,
   type ResourceTelemetrySourceStatus,
 } from "@t3tools/contracts";
@@ -205,7 +207,9 @@ export class DesktopTelemetryReceiver extends Context.Service<
     readonly acknowledgeDesktopUpdateCommand: (
       acknowledgement: DesktopUpdateControlAcknowledgement,
     ) => Effect.Effect<void>;
-    readonly receiveDesktopUpdateReport: (report: DesktopUpdateStatusReport) => Effect.Effect<void>;
+    readonly receiveDesktopReport: (report: DesktopUpdateControlReport) => Effect.Effect<void>;
+    /** The other backends the desktop app runs now, the current set first. */
+    readonly desktopBackends: Stream.Stream<ReadonlyArray<DesktopBackendEndpoint>>;
     readonly desktopUpdates: Effect.Effect<
       {
         readonly latest: Option.Option<DesktopUpdateStatusReport>;
@@ -432,11 +436,14 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
   const httpUpdateCommands = yield* SubscriptionRef.make<
     ReadonlyArray<DesktopUpdateControlCommand>
   >([]);
-  const receiveDesktopUpdateReport = (report: DesktopUpdateStatusReport) =>
-    Ref.set(latestUpdateReport, Option.some(report)).pipe(
-      Effect.andThen(PubSub.publish(updateReportChanges, report)),
-      Effect.asVoid,
-    );
+  const servingBackends = yield* SubscriptionRef.make<ReadonlyArray<DesktopBackendEndpoint>>([]);
+  const receiveDesktopReport = (report: DesktopUpdateControlReport) =>
+    report.type === "desktopBackends"
+      ? SubscriptionRef.set(servingBackends, report.backends)
+      : Ref.set(latestUpdateReport, Option.some(report)).pipe(
+          Effect.andThen(PubSub.publish(updateReportChanges, report)),
+          Effect.asVoid,
+        );
   const controlMutex = yield* Semaphore.make(1);
   const snapshotMutex = yield* Semaphore.make(1);
   const health = yield* Ref.make<DesktopTelemetryReceiverHealth>({
@@ -629,8 +636,8 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
           return recordContact.pipe(Effect.andThen(applyShellSnapshot(message)));
         }
 
-        if (message.type === "desktopUpdateStatus") {
-          return recordContact.pipe(Effect.andThen(receiveDesktopUpdateReport(message)));
+        if (message.type === "desktopUpdateStatus" || message.type === "desktopBackends") {
+          return recordContact.pipe(Effect.andThen(receiveDesktopReport(message)));
         }
 
         const sampledAt = DateTime.makeUnsafe(message.sampledAtUnixMs);
@@ -778,7 +785,8 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
           : pending;
       }),
     ),
-    receiveDesktopUpdateReport,
+    receiveDesktopReport,
+    desktopBackends: SubscriptionRef.changes(servingBackends),
     desktopUpdates: Effect.gen(function* () {
       const subscription = yield* PubSub.subscribe(updateReportChanges);
       const initial = yield* Ref.get(latestUpdateReport);
@@ -842,9 +850,10 @@ export const layerTest = (
       acknowledgeDesktopUpdateCommand: Effect.fn(
         "DesktopTelemetryReceiver.acknowledgeDesktopUpdateCommand",
       )(() => Effect.void),
-      receiveDesktopUpdateReport: Effect.fn("DesktopTelemetryReceiver.receiveDesktopUpdateReport")(
+      receiveDesktopReport: Effect.fn("DesktopTelemetryReceiver.receiveDesktopReport")(
         () => Effect.void,
       ),
+      desktopBackends: Stream.make([]),
       desktopUpdates:
         overrides.desktopUpdates ??
         Effect.succeed({

@@ -22,7 +22,6 @@ import * as Stream from "effect/Stream";
 import { FetchHttpClient, HttpClient } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
-import { ProviderRuntimeRecoveryService } from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { managedUpdateRefusal } from "../policy/managedUpdates.ts";
 import * as ServerConfig from "../config.ts";
@@ -31,8 +30,8 @@ import * as Settings from "../serverSettings.ts";
 import * as ReleaseIndex from "./releaseIndex.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
+import { MachineRestartHold } from "./machineRestartHold.ts";
 import { compareExactServiceVersions } from "./serviceProtocol.ts";
-import { drainInBackground, whileDraining } from "./updateDrain.ts";
 
 /**
  * Releases land every few minutes, and each install restarts the server. Checking this rarely,
@@ -142,16 +141,12 @@ function latestInstallTime(now: DateTime.Zoned, time: string): number {
   const nowMillis = DateTime.toEpochMillis(now);
   const today = DateTime.toParts(now);
   const options = { timeZone: now.zone, adjustForTimeZone: true } as const;
+  // Calendar days, counted in UTC so no clock change makes a day shorter or longer.
+  const todayDate = DateTime.makeUnsafe({ year: today.year, month: today.month, day: today.day });
   let latest = Number.NEGATIVE_INFINITY;
   for (const days of INSTALL_TIME_DAYS) {
-    const date = new Date(Date.UTC(today.year, today.month - 1, today.day + days));
-    const parts = {
-      year: date.getUTCFullYear(),
-      month: date.getUTCMonth() + 1,
-      day: date.getUTCDate(),
-      hour,
-      minute,
-    };
+    const date = DateTime.toPartsUtc(DateTime.add(todayDate, { days }));
+    const parts = { year: date.year, month: date.month, day: date.day, hour, minute };
     // "compatible" gives the first of two occurrences and "later" the second; both move a
     // skipped time forward past the gap.
     for (const disambiguation of ["compatible", "later"] as const) {
@@ -238,7 +233,8 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
   const settings = yield* Settings.ServerSettingsService;
   const selfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
-  const recovery = yield* ProviderRuntimeRecoveryService;
+  // Every backend the install stops: on desktop it stops the app's other backends too.
+  const machineHold = yield* MachineRestartHold;
   const lookup = yield* ServerReleaseLookup;
   const policy = yield* ManagedPolicy.ManagedPolicy;
   const config = yield* ServerConfig.ServerConfig;
@@ -324,14 +320,14 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     ),
   );
 
-  const waitUntilIdle = untilRestartHoldIsEmpty(recovery.watchRestartHold, (hold) =>
+  const waitUntilIdle = untilRestartHoldIsEmpty(machineHold.watchRestartHold, (hold) =>
     Effect.logInfo("Automatic update waiting for chats to finish.", {
       backgroundWork: hold.work.length,
       runningTurns: hold.runningTurns?.length ?? 0,
     }),
   ).pipe(Stream.runHead, Effect.map(Option.isSome));
 
-  const waitForListedWork = untilListedRestartHoldWorkEnds(recovery.watchRestartHold, (work) =>
+  const waitForListedWork = untilListedRestartHoldWorkEnds(machineHold.watchRestartHold, (work) =>
     Effect.logInfo("Automatic update waiting for background work to end.", {
       backgroundWork: work.length,
     }),
@@ -356,7 +352,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     const refusal = managedUpdateRefusal(policy.document, schedule.channel);
     if (refusal !== undefined) return { reason: refusal, chats: false };
     if (afterPatience) return undefined;
-    const hold = yield* recovery.restartHold.pipe(Effect.option);
+    const hold = yield* machineHold.restartHold.pipe(Effect.option);
     if (Option.isNone(hold)) return { reason: "background work could not be read", chats: false };
     if (isRestartHoldEmpty(hold.value)) return undefined;
     return {
@@ -413,7 +409,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
     yield* Effect.logInfo("Automatic update drains: new scheduled starts wait for it.", {
       targetVersion: installerVersion(target),
     });
-    return yield* whileDraining(
+    return yield* machineHold.whileDraining(
       drainThenInstall(installerVersion(target), schedule, waitFor, idleBefore),
     );
   });
@@ -432,7 +428,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
       if (drained === "busy") break;
       if ((yield* handOff(schedule, false)) !== "chats") return;
     }
-    const hold = yield* recovery.restartHold.pipe(Effect.option);
+    const hold = yield* machineHold.restartHold.pipe(Effect.option);
     yield* Effect.logWarning("Automatic update stops waiting for chats to be idle.", {
       targetVersion: version,
       cutThreadIds: Option.match(hold, {
@@ -499,7 +495,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
           }).pipe(
             // The installer stops this server shortly; until then no scheduled start may begin.
             Effect.andThen(
-              drainInBackground(
+              machineHold.drainInBackground(
                 Effect.sleep(AUTO_UPDATE_HANDOFF_STOP_LIMIT).pipe(
                   Effect.andThen(
                     Effect.logWarning("Automatic update handoff did not stop this server.", {
@@ -533,7 +529,7 @@ export const make = Effect.fn("cloud.auto_update.make")(function* () {
         ),
       );
     // Held while the release is prepared, so no scheduled start begins under the handoff.
-    yield* whileDraining(Effect.raceFirst(prepare, cancelPreparation));
+    yield* machineHold.whileDraining(Effect.raceFirst(prepare, cancelPreparation));
     return (yield* Ref.get(heldOff))?.chats === true ? ("chats" as const) : undefined;
   });
 

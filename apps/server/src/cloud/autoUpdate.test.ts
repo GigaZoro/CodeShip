@@ -12,9 +12,11 @@ import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -23,13 +25,17 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import { FetchHttpClient } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import { ProviderRuntimeRecoveryService } from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as Settings from "../serverSettings.ts";
 import * as AutoUpdate from "./autoUpdate.ts";
+import * as MachineRestartHold from "./machineRestartHold.ts";
+import { DESKTOP_TEST_SECRET, serveDesktopBackend } from "./machineRestartHold.testkit.ts";
 import { UpdateDrain } from "./updateDrain.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
@@ -200,6 +206,8 @@ interface HarnessOptions {
   readonly desktop?: boolean;
   readonly answering?: boolean;
   readonly notAppliedDesktopVersion?: string;
+  /** The hold of another backend the desktop app runs beside this primary. */
+  readonly otherBackend?: OrchestrationV2RestartHold;
 }
 
 const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
@@ -227,7 +235,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
       Effect.asVoid,
     );
   // Each test gets its own drain: a hold kept past the handoff must not leak into the next test.
-  const drain = yield* Ref.make(0);
+  const drain = yield* SubscriptionRef.make(0);
   const hold = yield* SubscriptionRef.make<OrchestrationV2RestartHold>({
     work: options.hold ?? [],
     runningTurns: options.answering === true ? answering : [],
@@ -245,12 +253,20 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
   const serverConfig = yield* ServerConfig.ServerConfig.pipe(
     Effect.provide(ServerConfig.layerTest(baseDir, baseDir)),
   );
+  const otherHold = yield* SubscriptionRef.make<OrchestrationV2RestartHold>(
+    options.otherBackend ?? { work: [] },
+  );
+  const otherBackends =
+    options.otherBackend === undefined
+      ? []
+      : [(yield* serveDesktopBackend(otherHold, baseDir)).endpoint];
 
   const dependencies = Layer.mergeAll(
     ServerConfig.layer({
       ...serverConfig,
       mode: options.desktop === true ? "desktop" : "web",
       desktopTelemetryControlFd: options.desktop === true ? 5 : undefined,
+      desktopBootstrapSecret: DESKTOP_TEST_SECRET,
     }),
     Layer.succeed(
       ServiceLauncherClient.ServiceLauncherClient,
@@ -315,12 +331,21 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     ),
     ManagedPolicy.layerTest(),
   );
-  const made = yield* AutoUpdate.make().pipe(Effect.provide(dependencies));
-  const auto = { check: () => made.check().pipe(Effect.provideService(UpdateDrain, drain)) };
-  const startDesktop = AutoUpdate.start().pipe(
-    Effect.provide(dependencies),
-    Effect.provideService(UpdateDrain, drain),
+  // Built in the test's scope, so the restart hold's drain links live as long as the test.
+  const services = yield* Layer.build(
+    Layer.effect(MachineRestartHold.MachineRestartHold, MachineRestartHold.make()).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          DesktopTelemetryReceiver.layerTest({ desktopBackends: Stream.make(otherBackends) }),
+          FetchHttpClient.layer,
+          Layer.succeed(UpdateDrain, drain),
+        ),
+      ),
+      Layer.provideMerge(dependencies),
+    ),
   );
+  const auto = yield* AutoUpdate.make().pipe(Effect.provide(services));
+  const startDesktop = AutoUpdate.start().pipe(Effect.provide(services));
   const writeRecord = (record: unknown) =>
     fs
       .makeDirectory(path.dirname(recordPath), { recursive: true })
@@ -341,7 +366,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     duringLookup,
     failUpdates,
     updateSettings,
-    draining: Ref.get(drain).pipe(Effect.map((holds) => holds > 0)),
+    draining: SubscriptionRef.get(drain).pipe(Effect.map((holds) => holds > 0)),
     writeRecord,
     hold,
     holdSeen,
@@ -350,6 +375,7 @@ const makeHarness = Effect.fn("test.make_auto_update_harness")(function* (
     handedOff,
     startDesktop,
     recordPath,
+    otherHold,
   };
 });
 
@@ -382,6 +408,43 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
       yield* Fiber.join(check);
 
       expect(harness.events).toEqual(["answered", `update ${NEWER}`, `handoff ${NEWER}`]);
+    }),
+  );
+
+  it.effect("waits for a turn another desktop backend runs, as the install stops it too", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        desktop: true,
+        otherBackend: { work: [], runningTurns: answering },
+      });
+      const waiting = yield* Deferred.make<void>();
+      const check = yield* Effect.forkChild(
+        harness.auto.check().pipe(
+          Effect.provide(
+            Logger.layer([
+              Logger.make(({ message }) => {
+                if (
+                  Array.isArray(message) &&
+                  message[0] === "Automatic update waiting for chats to finish."
+                ) {
+                  Deferred.doneUnsafe(waiting, Exit.void);
+                }
+              }),
+            ]),
+          ),
+        ),
+      );
+      const first = yield* Effect.raceFirst(
+        Deferred.await(waiting).pipe(Effect.as("waiting")),
+        Fiber.join(check).pipe(Effect.as("installed")),
+      );
+      expect(first).toBe("waiting");
+
+      yield* Effect.sync(() => harness.events.push("released"));
+      yield* SubscriptionRef.set(harness.otherHold, { work: [], runningTurns: [] });
+      yield* Fiber.join(check);
+
+      expect(harness.events).toEqual(["released", `update ${NEWER}`, `handoff ${NEWER}`]);
     }),
   );
 
@@ -596,18 +659,15 @@ it.layer(NodeServices.layer)("automatic server update", (it) => {
       const check = yield* Effect.forkChild(harness.auto.check());
       yield* Deferred.await(harness.holdSeen);
 
-      yield* TestClock.adjust(
-        Duration.sum(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE, Duration.minutes(1)),
-      );
-      yield* TestClock.adjust(
-        Duration.sum(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT, Duration.minutes(1)),
-      );
+      // Each phase starts when the one before it runs out, so the grace ends a minute after this.
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_IDLE_PATIENCE);
+      yield* TestClock.adjust(AutoUpdate.AUTO_UPDATE_DRAIN_LIMIT);
       yield* TestClock.adjust(
         Duration.subtract(AutoUpdate.AUTO_UPDATE_CUT_GRACE, Duration.minutes(1)),
       );
       expect(harness.events).toEqual([]);
 
-      yield* TestClock.adjust(Duration.minutes(2));
+      yield* TestClock.adjust(Duration.minutes(1));
       yield* Fiber.join(check);
       expect(harness.events).toEqual([`update ${NEWER}`, `handoff ${NEWER}`]);
     }),

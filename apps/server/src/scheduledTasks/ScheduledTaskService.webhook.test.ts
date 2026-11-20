@@ -24,6 +24,7 @@ import * as Ref from "effect/Ref";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
@@ -166,7 +167,7 @@ it.effect("persists immediate and coalesced webhooks across a draining restart",
           }),
         ),
       { sql, workers },
-    ).pipe(Effect.provideService(UpdateDrain, Ref.makeUnsafe(false)));
+    ).pipe(Effect.provideServiceEffect(UpdateDrain, SubscriptionRef.make(0)));
 
     const restartedWorkers = new Map<string, Effect.Effect<void>>();
     yield* withService(

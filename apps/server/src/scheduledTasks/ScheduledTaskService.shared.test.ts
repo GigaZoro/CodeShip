@@ -22,6 +22,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
 import { UpdateDrain } from "../cloud/updateDrain.ts";
@@ -1428,7 +1429,6 @@ it.effect("an update that drains over the time a one-machine turn was waiting fo
     type: "fixed_time",
     timeOfDay: `${two(dueLocal.hour)}:${two(dueLocal.minute)}`,
   };
-  const draining = Ref.makeUnsafe(0);
   const nextDue = DUE + 24 * HOUR_MS;
   return runScenario(
     [OTHER, HERE_ENVIRONMENT_ID],
@@ -1451,10 +1451,11 @@ it.effect("an update that drains over the time a one-machine turn was waiting fo
           VALUES ('scheduled-task:shared', ${iso(DUE)}, ${watchedTo})
         `;
         // The update drains from just before that time until half an hour after it.
-        yield* Ref.set(draining, 1);
+        const draining = yield* UpdateDrain;
+        yield* SubscriptionRef.set(draining, 1);
         yield* scenario.tick(nextDue - 4 * MINUTE_MS);
         yield* scenario.tick(nextDue + 30 * MINUTE_MS);
-        yield* Ref.set(draining, 0);
+        yield* SubscriptionRef.set(draining, 0);
 
         yield* scenario.tick(nextDue + 31 * MINUTE_MS);
         yield* scenario.settled;
@@ -1479,7 +1480,7 @@ it.effect("an update that drains over the time a one-machine turn was waiting fo
         ]);
       }),
     schedule,
-  ).pipe(Effect.provideService(UpdateDrain, draining));
+  ).pipe(Effect.provideServiceEffect(UpdateDrain, SubscriptionRef.make(0)));
 });
 
 // Fires the task when it is next due and waits for what that tick published.

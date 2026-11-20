@@ -311,6 +311,29 @@ export const DesktopUpdateStatusReport = Schema.Struct({
 });
 export type DesktopUpdateStatusReport = typeof DesktopUpdateStatusReport.Type;
 
+/** A backend besides the primary that the desktop app runs. Its install stops it too. */
+export const DesktopBackendEndpoint = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  httpBaseUrl: TrimmedNonEmptyString,
+});
+export type DesktopBackendEndpoint = typeof DesktopBackendEndpoint.Type;
+
+/** Every other backend that serves now, sent to the primary whenever that set changes. */
+export const DesktopBackendsReport = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("desktopBackends"),
+  backends: Schema.Array(DesktopBackendEndpoint),
+});
+export type DesktopBackendsReport = typeof DesktopBackendsReport.Type;
+
+/** What the desktop app posts to a primary it controls over HTTP. */
+export const DesktopUpdateControlReport = Schema.Union([
+  DesktopUpdateStatusReport,
+  DesktopBackendsReport,
+]);
+export type DesktopUpdateControlReport = typeof DesktopUpdateControlReport.Type;
+
 export const ShellEnvironmentPatch = Schema.Struct({
   PATH: Schema.optionalKey(Schema.NullOr(Schema.String)),
   DBUS_SESSION_BUS_ADDRESS: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -355,6 +378,7 @@ export const DesktopHostTelemetryMessage = Schema.Union([
   DesktopShellEnvironmentSnapshot,
   DesktopHostTelemetrySnapshot,
   DesktopUpdateStatusReport,
+  DesktopBackendsReport,
 ]);
 export type DesktopHostTelemetryMessage = typeof DesktopHostTelemetryMessage.Type;
 
@@ -417,6 +441,7 @@ export type DesktopUpdateControlAcknowledgement = typeof DesktopUpdateControlAck
 
 export const DesktopUpdateControlPost = Schema.Union([
   DesktopUpdateStatusReport,
+  DesktopBackendsReport,
   DesktopUpdateControlAcknowledgement,
 ]);
 

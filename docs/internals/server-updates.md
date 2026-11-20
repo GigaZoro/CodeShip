@@ -133,6 +133,24 @@ manual task starts remain available. A fixed-time occurrence held during the dra
 `scheduled_task_drain_holds`. When the drain ends or the server restarts, it runs once if its
 scheduled time is closer than the next regular occurrence, regardless of its catch-up setting.
 
+On desktop the policy runs only in the primary backend, while Electron's install stops every
+backend the app runs, such as a WSL backend beside the Windows one. So the waits and the drain go
+through [`MachineRestartHold`](../../apps/server/src/cloud/machineRestartHold.ts), which merges the
+primary's own hold with the hold of each other backend that serves. Electron lists the serving
+backends and their addresses for the primary: over the telemetry descriptor as a `desktopBackends`
+message, which each new stream replays, or, for a WSL primary, by posting it to the update control
+path. Each listed backend streams its hold as JSON lines from `GET /api/desktop/restart-hold`,
+authenticated with the shared desktop bootstrap secret, and repeats an unchanged hold every 20
+seconds, so the primary treats a minute of silence or a closed stream as a failed read. The drain
+opens the same stream with `drain=1`: while it is open, that backend's `UpdateDrain` holds its own
+scheduled starts, and closing it releases them however the primary ends. Every drain the primary
+holds (the wait's, each preparation's and the one an accepted handoff keeps) shares one set of these
+links, open while any of them holds, so a drain that hands over to the next never lets another
+backend start anything between the two. A drain stream that drops is opened again while the
+backend stays listed. A listed backend whose hold cannot be read fails
+the read with a `BackendRestartHoldError` naming it, and the automatic install backs off as for any
+other failed read instead of cutting chats it cannot see. A backend that stops leaves the list.
+
 The final check runs after preparation. It reads the setting and managed policy again, and
 checks that the restart hold is still empty if the wait ended before the cut phase. When a chat
 started during preparation, the service waits again with the same two-hour or drain deadline, so

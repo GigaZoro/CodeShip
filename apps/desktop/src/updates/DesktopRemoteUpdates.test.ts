@@ -66,6 +66,9 @@ function runRemoteUpdatesTest(
         updateRequests: Stream.fromQueue(requests),
         updateCommits: Stream.fromQueue(commits),
         updateCancellations: Stream.fromQueue(cancellations),
+        setServingBackend: () => Effect.void,
+        removeServingBackend: () => Effect.void,
+        servingBackends: Stream.empty,
       });
 
       const updates = yield* DesktopUpdates.DesktopUpdates;
