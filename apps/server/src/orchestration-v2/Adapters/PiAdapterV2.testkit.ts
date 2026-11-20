@@ -16,7 +16,6 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
@@ -323,7 +322,6 @@ class PiReplayController {
   private fail(cause: unknown): void {
     if (this.failure !== null) return;
     this.failure = cause;
-    console.error('PIDEBUG ' + JSON.stringify(cause, (_k, v) => (typeof v === 'bigint' ? String(v) : v)).slice(0, 3000));
     for (const process of this.processes) Queue.endUnsafe(process.stdout);
   }
 }
@@ -331,11 +329,37 @@ class PiReplayController {
 /** Deliberately outside the valid pid range so PiRpc's group kill never lands. */
 const REPLAY_PID = 999_999_999;
 
+function isWindowsTreeStop(command: unknown): boolean {
+  return (
+    typeof command === "object" &&
+    command !== null &&
+    "command" in command &&
+    command.command === "powershell.exe"
+  );
+}
+
 function makePiReplaySpawner(
   controller: PiReplayController,
 ): ChildProcessSpawner.ChildProcessSpawner["Service"] {
   return ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
+      // On win32 PiRpc ends its tree with a PowerShell stop of the replay pid; it is not a replayed
+      // process, so it exits at once instead of counting as an unexpected process start.
+      if (isWindowsTreeStop(command)) {
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(REPLAY_PID + 1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.empty,
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }
       const process = controller.spawn(command, yield* Queue.unbounded<Uint8Array, Cause.Done>());
       yield* Effect.addFinalizer(() => Effect.sync(() => controller.close(process)));
       const split = makeLineSplitter();
@@ -386,9 +410,6 @@ export function layer<E, R>(input: {
         TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
         NodeServices.layer,
         IdAllocator.layer,
-        // On win32 PiRpc ends its tree by spawning PowerShell through this replay spawner, which
-        // never exits that process, so each session close waited out the 30 s stop timeout.
-        Layer.succeed(HostProcess.Platform, "linux"),
       ),
     ),
   );
