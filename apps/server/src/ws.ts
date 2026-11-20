@@ -1900,6 +1900,7 @@ export const layerWsRpc = (
           secretProviderSettings: true,
           onePasswordServiceAccount: (yield* HostProcess.Platform) === "linux",
           secretReferences: true,
+          mcpBearerTokenVariables: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
             onSome: (root) => ({ scratchWorkspaceRoot: root }),

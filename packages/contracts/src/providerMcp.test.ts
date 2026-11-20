@@ -1,6 +1,10 @@
 import { assert, it } from "@effect/vitest";
 
-import { providerMcpServerSettings, resolveProviderMcpServerEdit } from "./providerMcp.ts";
+import {
+  providerMcpBearerTokenError,
+  providerMcpServerSettings,
+  resolveProviderMcpServerEdit,
+} from "./providerMcp.ts";
 
 it("providerMcpServerSettings sends names but never stored values or a keyed address", () => {
   assert.deepEqual(
@@ -75,5 +79,35 @@ it("resolveProviderMcpServerEdit keeps stored values for empty ones and drops na
         env: { API_KEY: "secret" },
       },
     },
+  );
+});
+it("keeps the bearer variable across legacy edits and rejects conflicting authentication", () => {
+  const stored = {
+    transport: "http" as const,
+    url: "https://notes.example/mcp",
+    headers: {},
+    bearerTokenEnvVar: "NOTES_TOKEN",
+  };
+  assert.deepEqual(resolveProviderMcpServerEdit(stored, { transport: "http", headers: {} }), {
+    server: stored,
+  });
+  assert.deepEqual(
+    resolveProviderMcpServerEdit(stored, {
+      transport: "http",
+      headers: {},
+      bearerTokenEnvVar: null,
+    }),
+    { server: { transport: "http", url: stored.url, headers: {} } },
+  );
+  assert.isDefined(providerMcpBearerTokenError({ ...stored, url: "http://notes.example/mcp" }));
+  assert.isDefined(
+    providerMcpBearerTokenError({ ...stored, headers: { authorization: "Bearer conflicting" } }),
+  );
+  assert.isUndefined(providerMcpBearerTokenError(stored));
+  assert.isDefined(
+    providerMcpBearerTokenError({ ...stored, url: "https://other.example/mcp" }, stored),
+  );
+  assert.isUndefined(
+    providerMcpBearerTokenError({ ...stored, url: "https://notes.example/mcp/v2" }, stored),
   );
 });

@@ -57,6 +57,17 @@ approve instead. Copy the address from its address bar, paste it into the dialog
 
 **Sign out** removes the provider's saved sign-in for that server on this account only.
 
+### Use a token from Secrets
+
+For a Claude or Codex MCP server that accepts a bearer token, add a sensitive
+environment variable to the provider account and select its secret source in
+**Settings → Providers & models**. In the MCP server's **Add** or **Edit** form,
+enter that variable's name under **Bearer token variable**. Use an HTTPS
+endpoint. The provider sends the token in new sessions and stores only the
+variable name in its MCP config. Clear the field to remove the binding.
+
+Servers that require an OAuth grant use the browser sign-in above.
+
 ## Things to know
 
 - Servers marked **Plugin**, **claude.ai**, **Managed**, or **Built in** come from a plugin, your

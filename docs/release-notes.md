@@ -1,3 +1,7 @@
+## 2026-11-21 — Use 1Password tokens for MCP servers
+
+- In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
+
 ## 2026-11-20 — Use 1Password credentials with agent providers
 
 - In **Settings → Secrets**, add a 1Password source and choose which fields to supply to Claude, Codex, or another provider. Linux hosts can use a read-only service account for unattended runs with an administrator grant for each field.

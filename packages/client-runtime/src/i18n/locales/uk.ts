@@ -1912,6 +1912,8 @@ const catalog: MessageCatalog = {
   "90d": "90 д",
   "90th percentile": "90-й процентиль",
   "A background prompt could not be sent": "Не вдалося надіслати фоновий запит",
+  "A bearer token variable requires an HTTPS endpoint.":
+    "Для змінної токена доступу потрібна адреса HTTPS.",
   "A chat is carrying out your decision.": "Чат виконує ваше рішення.",
   "A comment is anchored to the whole change, so switch to All commits to write one.":
     "Коментар прив’язується до всіх змін, тому перемкніться на «Усі коміти», щоб його написати.",
@@ -2735,9 +2737,9 @@ const catalog: MessageCatalog = {
   "auto-settle": "автозавершення",
   "Auto-settle": "Автозавершення",
   "Auto-settle behavior": "Поведінка автозавершення",
+  "Auto-settle completed scheduled threads": "Автоматично завершувати виконані чати за розкладом",
   "Auto-settle defaults differ": "Типові значення автозавершення відрізняються",
   "Auto-settle inactive threads": "Автоматично завершувати неактивні чати",
-  "Auto-settle completed scheduled threads": "Автоматично завершувати виконані чати за розкладом",
   "Auto-settle merged threads": "Автоматично завершувати злиті чати",
   "auto-settle on merge": "автозавершення після злиття",
   "auto-show floating preview": "автопоказ плаваючого перегляду",
@@ -2845,6 +2847,7 @@ const catalog: MessageCatalog = {
     "Основа: {base}. Відкрийте шар, щоб переглянути його або злити стек до цього шару.",
   Battery: "Акумулятор",
   "Battery saver": "Економія заряду",
+  "Bearer token variable (optional)": "Змінна токена доступу (необов’язково)",
   "Before a thread you wrote in settles on its own, commit its worktree's unmerged changes and open a pull request. A thread you never wrote in, such as a scheduled run or a subagent, stays active instead. Off keeps every such thread active.":
     "Перш ніж чат, у якому ви писали, завершиться сам, закомітьте незлиті зміни в його worktree і відкрийте пул-реквест. Чат, у якому ви не писали, наприклад запланований запуск чи субагент, натомість залишається активним. Якщо вимкнено, усі такі чати залишаються активними.",
   "Before settling": "До завершення",
@@ -5536,9 +5539,12 @@ const catalog: MessageCatalog = {
   "Enter a port from 1 to 65535.": "Введіть порт від 1 до 65535.",
   "Enter a positive duration.": "Введіть додатну тривалість.",
   "Enter a project path.": "Введіть шлях до проєкту.",
+  "Enter a provider environment variable name. Its value can come from Secrets.":
+    "Введіть назву змінної середовища провайдера. Її значення можна отримати із секретів.",
   "Enter a repository path and press Enter to look it up.":
     "Введіть шлях до репозиторію та натисніть Enter, щоб його знайти.",
   "Enter a URL": "Введіть URL",
+  "Enter a valid environment variable name.": "Введіть дійсну назву змінної середовища.",
   "Enter a valid secret reference.": "Введіть дійсне посилання на секрет.",
   "Enter a value for {name}, or remove its line.":
     "Введіть значення для {name} або приберіть цей рядок.",
@@ -10855,8 +10861,6 @@ const catalog: MessageCatalog = {
   "Settings...": "Налаштування...",
   settle: "завершити",
   Settle: "Завершити",
-  "Settle threads started by a scheduled task when they finish and have no pending work.":
-    "Завершувати чати, запущені за розкладом, після виконання, якщо не залишилося незавершених дій.",
   "Settle “{title}”?": "Завершити «{title}»?",
   "Settle ({count})": "Завершити ({count})",
   "Settle {count} finished threads": {
@@ -10876,6 +10880,8 @@ const catalog: MessageCatalog = {
     "Завершувати чат, коли його пул-реквест злито. Закриті пул-реквести так само завершують чат автоматично.",
   "Settle finished threads": "Завершити готові чати",
   "Settle thread": "Завершити чат",
+  "Settle threads started by a scheduled task when they finish and have no pending work.":
+    "Завершувати чати, запущені за розкладом, після виконання, якщо не залишилося незавершених дій.",
   Settled: "Завершені",
   "Settled {count} threads": {
     one: "Завершено {count} чат",
@@ -14038,6 +14044,8 @@ const catalog: MessageCatalog = {
   "Use devices": "Використовувати пристрої",
   "Use each machine's worktree cleanup settings.":
     "Використовувати налаштування очищення worktree кожного комп’ютера.",
+  "Use either the bearer token variable or an Authorization header.":
+    "Використовуйте змінну токена доступу або заголовок Authorization.",
   "Use environment defaults for this project":
     "Використовувати типові значення середовища для цього проєкту",
   "Use environment skill availability for this project":

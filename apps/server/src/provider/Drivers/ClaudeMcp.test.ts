@@ -263,7 +263,14 @@ it.layer(NodeServices.layer)("makeClaudeMcpManagement", (it) => {
       yield* mcp.edit("docs", {
         transport: "http",
         url: "https://docs.example/v2/mcp",
-        headers: { Authorization: "Bearer new" },
+        headers: {},
+        bearerTokenEnvVar: "DOCS_TOKEN",
+      });
+      assert.deepEqual(yield* mcp.read("docs"), {
+        transport: "http",
+        url: "https://docs.example/v2/mcp",
+        headers: {},
+        bearerTokenEnvVar: "DOCS_TOKEN",
       });
       yield* mcp.setEnabled("docs", false);
       yield* mcp.setEnabled("docs", false);
@@ -275,7 +282,7 @@ it.layer(NodeServices.layer)("makeClaudeMcpManagement", (it) => {
           docs: {
             type: "http",
             url: "https://docs.example/v2/mcp",
-            headers: { Authorization: "Bearer new" },
+            headers: { Authorization: "Bearer ${DOCS_TOKEN}" },
             oauth: { clientId: "kept" },
           },
           tools: { command: "tools", args: [] },

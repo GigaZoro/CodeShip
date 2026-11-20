@@ -114,6 +114,7 @@ export const ProviderMcpServerConfig = Schema.Union([
     transport: Schema.Literal("http"),
     url: ProviderMcpUrl,
     headers: ProviderMcpHeaders,
+    bearerTokenEnvVar: Schema.optionalKey(ProviderInstanceEnvironmentVariableName),
   }),
   ProviderMcpStdioServerConfig,
 ]);
@@ -161,6 +162,7 @@ export const ProviderMcpServerSettings = Schema.Union([
     headerNames: Schema.Array(Schema.String.check(Schema.isMaxLength(256))).check(
       Schema.isMaxLength(64),
     ),
+    bearerTokenEnvVar: Schema.optionalKey(ProviderInstanceEnvironmentVariableName),
   }),
   Schema.Struct({
     transport: Schema.Literal("stdio"),
@@ -185,6 +187,8 @@ export const ProviderMcpServerEdit = Schema.Union([
     /** Absent keeps the stored address. */
     url: Schema.optionalKey(ProviderMcpUrl),
     headers: ProviderMcpHeaders,
+    /** Omission keeps the saved binding. Null removes it. */
+    bearerTokenEnvVar: Schema.optionalKey(Schema.NullOr(ProviderInstanceEnvironmentVariableName)),
   }),
   ProviderMcpStdioServerConfig,
 ]);
@@ -315,6 +319,9 @@ export function providerMcpServerSettings(
     url: urlHasSecret ? (displayProviderMcpUrl(stored.url) ?? "") : stored.url,
     urlHasSecret,
     headerNames: Object.keys(stored.headers),
+    ...(stored.bearerTokenEnvVar === undefined
+      ? {}
+      : { bearerTokenEnvVar: stored.bearerTokenEnvVar }),
   };
 }
 
@@ -345,7 +352,42 @@ export function resolveProviderMcpServerEdit(
   const url = edit.url ?? (stored.transport === "http" ? stored.url : undefined);
   if (url === undefined) return { missing: "URL" };
   const headers = keep(edit.headers, stored.transport === "http" ? stored.headers : {});
+  const bearerTokenEnvVar =
+    edit.bearerTokenEnvVar === undefined && stored.transport === "http"
+      ? stored.bearerTokenEnvVar
+      : (edit.bearerTokenEnvVar ?? undefined);
   return typeof headers === "string"
     ? { missing: headers }
-    : { server: { transport: "http", url, headers } };
+    : {
+        server: {
+          transport: "http",
+          url,
+          headers,
+          ...(bearerTokenEnvVar === undefined ? {} : { bearerTokenEnvVar }),
+        },
+      };
+}
+
+export function providerMcpBearerTokenError(
+  server: ProviderMcpServerConfig,
+  stored?: ProviderMcpServerConfig,
+): string | undefined {
+  if (server.transport !== "http" || server.bearerTokenEnvVar === undefined) return undefined;
+  const url = URL.canParse(server.url) ? new URL(server.url) : undefined;
+  const keepsBinding =
+    stored?.transport === "http" && stored.bearerTokenEnvVar === server.bearerTokenEnvVar;
+  if (keepsBinding && stored.url !== server.url) {
+    const previousOrigin = URL.canParse(stored.url) ? new URL(stored.url).origin : undefined;
+    if (previousOrigin !== url?.origin) {
+      return "Clear the bearer token variable before changing the server's origin.";
+    }
+  }
+  // Keep accepting an unchanged native config when editing unrelated settings.
+  if (url?.protocol !== "https:" && !(keepsBinding && stored.url === server.url)) {
+    return "A bearer token variable requires an HTTPS endpoint.";
+  }
+  if (Object.keys(server.headers).some((name) => name.toLowerCase() === "authorization")) {
+    return "Use either the bearer token variable or an Authorization header.";
+  }
+  return undefined;
 }
