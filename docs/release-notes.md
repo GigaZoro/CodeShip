@@ -41,6 +41,13 @@
 
 - In a Claude or Codex MCP server's settings, point **Bearer token variable** at a provider variable backed by Secrets. New provider sessions use it for servers that accept bearer tokens.
 
+## 2026-11-20 — Stop reaches work continued after a server restart
+
+- On web and mobile, Stop cancels queued restart continuations, holds ordinary queued messages, and stops background work and delegated tasks across the thread. Sending a new message or resuming the queue cannot revive a stopped continuation.
+- Interrupting a run by ID follows its restart chain. It interrupts the chain's provider turns and stops its delegated commands, child runs, and descendants. Independent runs keep their work, including a new follow-up in a reused child thread.
+- An MCP interrupt settles owned work when it cancels a queued restart or delayed retry. A terminal run with no pending restart returns `already_terminal`. The response identifies the run reached and includes the requested ID when it differs.
+- A busy thread lock during shutdown preserves the restart request for startup. Related change AB#5487 (`7672a1cfb7`) settles a finished delegated chat once its parent has the result.
+
 ## 2026-11-20 — The machine check compares each machine's Node with the project's pin
 
 - `machine-config.json` now declares `toolchain.node` as `package.json`, so `node ~/.agents/tools/machine-config.mjs check <checkout>` reports when a machine runs another Node than `engines.node`, and names the binary that answered. It now reports the mismatch before anyone runs `check:changed`, which refuses to run on the wrong Node. Zoro-PC, where CodeShip is developed, is now listed under `machines`, so the daily check of its checkout no longer reports it as unknown. No change to the app.
@@ -335,10 +342,6 @@
 ## 2026-11-18 — A worktree fetch that times out starts from the last fetched base
 
 - When a new worktree's fetch of its base branch got no answer in time (a sleeping or overloaded machine), the run failed in workspace preparation. If an earlier fetch left that branch's remote-tracking ref, the worktree now starts from it, possibly a little behind, and the server log records that. Without such a ref the timeout still fails and preparation retries it as before.
-
-## 2026-11-16 — Run cancellation survives server restarts
-
-- Cancelling agent work by its run ID also stops its restart continuations, including pending delivery, queued runs waiting on a usage limit, and failed starts awaiting retry. A late session close cannot enqueue another continuation after Stop commits. Cancelling an ended chain leaves manual continuations and unrelated later turns untouched. Thread-wide Stop ends background work, cancels queued restart continuations and holds ordinary queued messages for resume. MCP results identify the run cancellation reached and preserve the requested run ID when it differs.
 
 ## 2026-11-16 — On Windows, an agent session also stops what its CLI left running
 
