@@ -30,6 +30,26 @@ const v2TableCount = Effect.gen(function* () {
 });
 
 describe("runMigrations", () => {
+  it.effect("keeps exact Windows identity separate from legacy millisecond evidence", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 101 });
+      yield* sql`INSERT INTO command_runs (task_id, thread_id, run_id, command, cwd, directory, status, started_at, deadline_at, process_started_at)
+        VALUES ('legacy-ms', 'thread', 'run', 'true', '/tmp', '/tmp/old', 'running', '2026-11-19T00:00:00Z', '2026-11-19T01:00:00Z', 1795046400123)`;
+      yield* runMigrations();
+      assert.deepEqual(
+        yield* sql`SELECT process_started_at, windows_created_at FROM command_runs WHERE task_id = 'legacy-ms'`,
+        [{ process_started_at: 1795046400123, windows_created_at: null }],
+      );
+      const exact = "134395200001234567";
+      yield* sql`UPDATE command_runs SET windows_created_at = ${exact} WHERE task_id = 'legacy-ms'`;
+      assert.deepEqual(
+        yield* sql`SELECT windows_created_at, typeof(windows_created_at) AS storage FROM command_runs WHERE task_id = 'legacy-ms'`,
+        [{ windows_created_at: exact, storage: "text" }],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect.each([96, 97, 98, 99, 100])(
     "adds launch evidence after migration %s already ran",
     (id) =>
@@ -67,13 +87,14 @@ describe("runMigrations", () => {
           yield* sql`SELECT reported_at, delivered_at FROM command_runs WHERE task_id = 'old-delivered'`,
           [{ reported_at: "2026-11-19T00:01:00Z", delivered_at: "2026-11-19T00:01:00Z" }],
         );
-        assert.deepEqual((yield* history).slice(-6), [
+        assert.deepEqual((yield* history).slice(-7), [
           [96, "MonitoringThreadAnalyses"],
           [97, "NodePayloadWithoutColumnKeys"],
           [98, "CommandRunProcessIdentity"],
           [99, "ScheduledTaskDescriptions"],
           [100, "CommandLaunchError"],
           [101, "CommandResultReported"],
+          [102, "CommandWindowsIdentity"],
         ]);
         assert.deepEqual(yield* runMigrations(), []);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

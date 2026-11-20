@@ -1,5 +1,9 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { WindowsJobHost } from "@t3tools/shared/windowsJob";
+import {
+  WindowsJobHost,
+  parseWindowsProcessIdentity,
+  windowsCreationTimeMillis,
+} from "@t3tools/shared/windowsJob";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -132,30 +136,45 @@ export const clearPersistedServerRuntimeState = Effect.fn(
   );
 });
 
-/**
- * When `pid` started, in epoch milliseconds, to tell a process from a later one that reuses
- * its pid; undefined when it cannot be read. POSIX `ps` reports whole seconds.
- */
+export const readWindowsProcessIdentity = Effect.fn(
+  "serverRuntimeState.readWindowsProcessIdentity",
+)(function* (pid: number, timeout: Duration.Input = Duration.seconds(2)) {
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const host = yield* (yield* WindowsJobHost).pipe(Effect.option);
+  if (Option.isNone(host)) return undefined;
+  const result = yield* runner
+    .run({
+      command: host.value,
+      args: ["identity", String(pid)],
+      timeout,
+      maxOutputBytes: 16_384,
+    })
+    .pipe(Effect.option);
+  if (Option.isNone(result) || result.value.code !== 0) return undefined;
+  return parseWindowsProcessIdentity(result.value.stdout.trim());
+});
+
+/** Millisecond timestamps support runtime diagnostics; Windows stop ownership uses full FILETIME. */
 export const readProcessStartedAt = Effect.fn("serverRuntimeState.readProcessStartedAt")(function* (
   pid: number,
   timeout: Duration.Input = Duration.seconds(2),
 ) {
-  const windows = (yield* HostProcess.Platform) === "win32";
+  if ((yield* HostProcess.Platform) === "win32") {
+    const identity = yield* readWindowsProcessIdentity(pid, timeout);
+    return identity === undefined ? undefined : windowsCreationTimeMillis(identity);
+  }
   const runner = yield* ProcessRunner.ProcessRunner;
-  const host = windows ? yield* (yield* WindowsJobHost).pipe(Effect.option) : Option.none();
-  if (windows && Option.isNone(host)) return undefined;
   const result = yield* runner
     .run({
-      command: Option.isSome(host) ? host.value : "ps",
-      args: windows ? ["identity", String(pid)] : ["-p", String(pid), "-o", "lstart="],
+      command: "ps",
+      args: ["-p", String(pid), "-o", "lstart="],
       env: { LC_ALL: "C", TZ: "UTC" },
       timeout,
       maxOutputBytes: 16_384,
     })
     .pipe(Effect.option);
   if (Option.isNone(result) || result.value.code !== 0) return undefined;
-  const output = result.value.stdout.trim();
-  const startedAt = windows && output !== "" ? Number(output) : Date.parse(`${output} UTC`);
+  const startedAt = Date.parse(`${result.value.stdout.trim()} UTC`);
   return Number.isFinite(startedAt) ? startedAt : undefined;
 });
 

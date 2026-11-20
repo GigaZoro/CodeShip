@@ -42,7 +42,7 @@ const fakeWindowsSpawner = (options: {
   const job = options.job ?? {
     host: "job-host.exe",
     name: "Global\\CodeShip.Job.fake",
-    child: { pid: 1, created: 1234 },
+    child: { pid: 1, created: "134395200001234567" },
   };
   const events: Array<"kill" | "walk"> = [];
   const jobsStopped: Array<string> = [];
@@ -117,7 +117,7 @@ describe("endingWindowsTrees stops a Windows tree", () => {
       const job = {
         host: "job-host.exe",
         name: "Global\\CodeShip.Job.test",
-        child: { pid: 1, created: 1234 },
+        child: { pid: 1, created: "134395200001234567" },
       };
       const fake = fakeWindowsSpawner({ running: false, output: "ends", job });
       const outer = endingWindowsTrees(endingWindowsTrees(fake.spawner, "win32"), "win32");

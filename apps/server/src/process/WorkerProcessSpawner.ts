@@ -6,6 +6,8 @@ import { isProcessAlive } from "@t3tools/shared/processProbe";
 import {
   WindowsJobHost,
   attachWindowsJob,
+  parseWindowsProcessIdentity,
+  windowsCreationTimeMillis,
   windowsHostSpawnError,
   type WindowsJob,
 } from "@t3tools/shared/windowsJob";
@@ -44,6 +46,8 @@ const STAT_PPID = 1;
 const STAT_START_TIME = 19;
 const STOP_TREE_TIMEOUT_MS = ${STOP_TREE_TIMEOUT_MS};
 const hostSpawnError = ${windowsHostSpawnError.toString()};
+const parseIdentity = ${parseWindowsProcessIdentity.toString()};
+const identityMillis = ${windowsCreationTimeMillis.toString()};
 const children = new Map();
 const post = (message, transfer) => parentPort.postMessage(message, transfer);
 const describe = (error) => ({
@@ -277,9 +281,10 @@ const start = ({ id, command, args, options, outputs, inputs, encoding, killSign
         if (line === "W") { entry.ownership.write("R"); continue; }
         if (line === "R" || line === "U") { reply(id, entry.refReplies.shift(), undefined); continue; }
         const fields = line.split(" ");
-        if (fields[0] === "S" && Number(fields[1]) > 0 && Number(fields[2]) > 0) {
-          job.child = { pid: Number(fields[1]), created: Number(fields[2]) };
-          entry.root = { pid: Number(fields[1]), since: Number(fields[2]), spawnedAt: Number(fields[2]), job };
+        const identity = parseIdentity(fields[2]);
+        if (fields[0] === "S" && Number.isSafeInteger(Number(fields[1])) && Number(fields[1]) > 0 && identity !== undefined) {
+          job.child = { pid: Number(fields[1]), created: identity };
+          entry.root = { pid: Number(fields[1]), since: identityMillis(identity), spawnedAt: identityMillis(identity), job };
           started();
         } else if (fields[0] === "E") {
           const code = Number(fields[1]);
