@@ -542,9 +542,16 @@ const make = Effect.gen(function* () {
       Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
       Effect.provideService(FileSystem.FileSystem, fs),
     );
-  /** Linux reads the start in ticks since boot, which a step of the wall clock cannot move. */
-  const identityOf = Effect.fn("CommandRunner.identityOf")(function* (pid: number) {
-    if (platform === "linux") {
+  /**
+   * Linux reads the start in ticks since boot, which a step of the wall clock cannot move. A
+   * `recorded` identity that holds a wall-clock start, as records from before boot identities do,
+   * is read on that clock.
+   */
+  const identityOf = Effect.fn("CommandRunner.identityOf")(function* (
+    pid: number,
+    recorded: string | null = null,
+  ) {
+    if (platform === "linux" && identityTime(recorded) === undefined) {
       const read = yield* Effect.all([
         fs.readFileString(`/proc/${pid}/stat`),
         fs.readFileString("/proc/sys/kernel/random/boot_id"),
@@ -606,7 +613,10 @@ const make = Effect.gen(function* () {
     if (probe.state === "gone") return { lost_reason: "gone", probe_error: probe.code };
     if (row.process_identity === null) return undefined;
     if (row.process_identity === ENDED_IDENTITY) return { lost_reason: "pid-reused", probe_error };
-    const verdict = compareIdentity(row.process_identity, yield* identityOf(row.pid));
+    const verdict = compareIdentity(
+      row.process_identity,
+      yield* identityOf(row.pid, row.process_identity),
+    );
     if (verdict === "unknown") return "unconfirmed";
     return verdict === "same" ? undefined : { lost_reason: "pid-reused", probe_error };
   });
@@ -624,15 +634,21 @@ const make = Effect.gen(function* () {
    * neither does, an unrelated group can take the number, which `kill(-pid, 0)` would count too.
    */
   const ownsGroup = (row: CommandRunRow) =>
-    Effect.try(() => isFifoHolderHeld(holderPathOf(row))).pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("command-runner.holder-check-failed", {
-          taskId: row.task_id,
-          cause,
-        }).pipe(Effect.as(false)),
-      ),
+    isHeld(row).pipe(
       Effect.flatMap((held) => (held ? Effect.succeed(true) : isCertainlySameProcess(row))),
     );
+  /** Whether its holder runs, which keeps the wrapper's pid from changing hands too. */
+  const isHeld = (row: CommandRunRow) =>
+    windows
+      ? Effect.succeed(false)
+      : Effect.try(() => isFifoHolderHeld(holderPathOf(row))).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("command-runner.holder-check-failed", {
+              taskId: row.task_id,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
 
   /** Lets the group's number go once nothing will signal the group again. */
   const releaseHolder = (directory: string) =>
@@ -1916,36 +1932,40 @@ const make = Effect.gen(function* () {
     if (!isProcessAlive(pid)) {
       return { ...row, pid, process_identity: ENDED_IDENTITY };
     }
-    // Windows keeps its creation time from the launch; elsewhere the wrapper recorded its own
-    // identity before it named itself, which no step of the clock can move. A file without one
-    // (an older server's, or an unreadable start) gives no ownership: the group is left running.
-    const recorded =
-      platform === "win32"
-        ? undefined
-        : recordedIdentity(
-            platform,
-            yield* fs
-              .readFileString(path.join(row.directory, IDENTITY_FILE))
-              .pipe(Effect.option, Effect.map(Option.getOrElse(() => ""))),
-          );
-    if (platform !== "win32") {
-      if (recorded === undefined || compareIdentity(recorded, yield* identityOf(pid)) === "other") {
+    let identity: string | null = null;
+    if (!windows) {
+      // The wrapper recorded its own identity before it named itself, which no step of the clock
+      // can move. While its holder runs, the number and so the pid are still the command's.
+      const recorded = recordedIdentity(
+        platform,
+        yield* fs
+          .readFileString(path.join(row.directory, IDENTITY_FILE))
+          .pipe(Effect.option, Effect.map(Option.getOrElse(() => ""))),
+      );
+      if (yield* isHeld(row)) {
+        identity = recorded ?? (yield* identityOf(pid)) ?? null;
+      } else if (
+        recorded === undefined ||
+        compareIdentity(recorded, yield* identityOf(pid)) === "other"
+      ) {
+        // A file without one (an older server's, or an unreadable start) gives no ownership.
         return { ...row, lost_reason: "pid-reused" as const };
+      } else {
+        identity = recorded;
       }
     } else {
+      // It started before it wrote the file, to the second; a later process under the pid did not.
+      // The identity is read first, so a process that took the pid since fails the check. Without
+      // both times it has no identity.
+      const read = yield* identityOf(pid);
       const startedAt = yield* startedAtOf(pid);
       const writtenAt = named.writtenAt?.getTime();
-      // It started before it wrote the file; a later process reusing the pid did not. ps reports
-      // whole seconds.
-      if (startedAt !== undefined && writtenAt !== undefined && startedAt > writtenAt + 1_000) {
-        return { ...row, lost_reason: "pid-reused" as const };
+      if (startedAt !== undefined && writtenAt !== undefined) {
+        if (startedAt > writtenAt + 1_000) return { ...row, lost_reason: "pid-reused" as const };
+        identity = read ?? null;
       }
     }
-    const recovered: CommandRunRow = {
-      ...row,
-      pid,
-      process_identity: recorded ?? (yield* identityOf(pid)) ?? null,
-    };
+    const recovered: CommandRunRow = { ...row, pid, process_identity: identity };
     yield* writeRow(recovered);
     return recovered;
   });

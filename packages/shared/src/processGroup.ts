@@ -336,6 +336,11 @@ export interface GroupLaunch {
 export type HoldOptions = {
   /** The child's fd the holder reads, above every fd the command is given. */
   readonly fd: number;
+  /**
+   * A child's fd above `fd` that only the holder keeps once the command runs, so its reader sees
+   * EOF when the holder quits or never started.
+   */
+  readonly beacon?: number | undefined;
 } & (
   | {
       /**
@@ -435,7 +440,7 @@ const holderScript = (
   options: HoldOptions,
   restore: { readonly assignments: string; readonly unsetPwd: boolean },
 ) => {
-  const { fd } = options;
+  const { fd, beacon } = options;
   let job: string;
   const setup: Array<string> = [];
   if ("fifo" in options) {
@@ -467,7 +472,7 @@ const holderScript = (
     "set -m",
     `( (exec </dev/null >/dev/null 2>&1${otherFds}; unset TMOUT; ${job}) & )`,
     "set +m",
-    `exec ${fd}<&-`,
+    `exec ${fd}<&-${beacon === undefined ? "" : ` ${beacon}>&-`}`,
     ...(restore.unsetPwd ? ["unset PWD"] : []),
     `${restore.assignments}exec -a "$0" "$@"`,
   ].join("\n");
@@ -658,6 +663,7 @@ const spawnHeld = Effect.fnUntraced(function* (
   const { options } = command;
   const fds = Object.keys(options.additionalFds ?? {}).map(ChildProcess.parseFdName);
   const fd = 1 + Math.max(2, ...fds.map((fd) => fd ?? 2));
+  const beacon = fd + 1;
   const fifo = yield* HoldThroughFifo;
   const held = holdProcessGroup(
     {
@@ -667,7 +673,7 @@ const spawnHeld = Effect.fnUntraced(function* (
       env: options.extendEnv ? { ...process.env, ...options.env } : options.env,
       shell: options.shell,
     },
-    fifo === undefined ? { fd } : { fd, fifo },
+    fifo === undefined ? { fd, beacon } : { fd, beacon, fifo },
   );
   if (held === undefined) return yield* spawner.spawn(command);
   const restore = reportAs(
@@ -691,7 +697,11 @@ const spawnHeld = Effect.fnUntraced(function* (
         ChildProcess.make(held.command, held.args, {
           ...options,
           shell: false,
-          additionalFds: { ...options.additionalFds, [`fd${fd}`]: { type: "input" } },
+          additionalFds: {
+            ...options.additionalFds,
+            [`fd${fd}`]: { type: "input" },
+            [`fd${beacon}`]: { type: "output" },
+          },
         }),
       )
       .pipe(
@@ -704,6 +714,16 @@ const spawnHeld = Effect.fnUntraced(function* (
         ),
       ),
   ).pipe(Effect.mapError(restore));
+  // Once bash runs the command only the holder keeps the beacon, so its end means the number is
+  // free to go: the holder quit, was killed, or never started.
+  yield* Effect.ignore(Stream.runDrain(handle.getOutputFd(beacon))).pipe(
+    Effect.andThen(
+      Effect.sync(() => {
+        hold.held = false;
+      }),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+  );
   const heldHandle = ChildProcessSpawner.makeHandle({
     pid: handle.pid,
     exitCode: Effect.mapError(handle.exitCode, restore),
