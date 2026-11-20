@@ -73,7 +73,6 @@ import { AgentScope, agentScopeCommand } from "@t3tools/shared/AgentScope";
 import { sleepAwake, timeoutAwakeOrElse } from "@t3tools/shared/AwakeTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
-  endedWindowsTreeRoot,
   type WindowsProcessTreeRoot,
   windowsTreeStopper,
 } from "@t3tools/shared/windowsProcessTree";
@@ -438,10 +437,7 @@ function spawnClaudeProcessTree(
   return {
     child,
     exited,
-    ended:
-      root === undefined
-        ? Promise.resolve()
-        : exited.then(() => stopTree(endedWindowsTreeRoot(root))),
+    ended: root === undefined ? Promise.resolve() : exited.then(() => stopTree(root)),
   };
 }
 

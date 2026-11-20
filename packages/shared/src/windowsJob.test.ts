@@ -646,7 +646,13 @@ class TestEntry {
         if (action === "stop") yield* invoke(["stop", name, String(pid), String(created)]);
         else yield* leader.kill();
         yield* member.ended;
-        yield* leader.exitCode;
+        if (action === "stop") {
+          yield* leader.exitCode;
+        } else {
+          const interrupted = yield* Effect.flip(leader.exitCode);
+          assert.equal(interrupted.reason.method, "exitCode");
+          assert.include(String(interrupted.cause), "receipt of signal: 'SIGTERM'");
+        }
         assert.equal(Number(yield* invoke(["count", name])), 0);
         assert.isTrue(yield* outsider.isRunning);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
