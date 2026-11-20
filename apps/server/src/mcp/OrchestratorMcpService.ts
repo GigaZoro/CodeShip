@@ -1725,8 +1725,6 @@ const make = Effect.gen(function* () {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
-    /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
-    readonly skipProjectEnablementFilter?: boolean;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
@@ -1757,12 +1755,10 @@ const make = Effect.gen(function* () {
         ...healthyCandidates.filter((candidate) => candidate !== inheritedCandidate),
       ];
       for (const candidate of orderedCandidates) {
-        const enabledForProject =
-          input.skipProjectEnablementFilter === true ||
-          (yield* threadManagement.isProviderInstanceEnabledForProject({
-            projectId: input.parent.thread.projectId,
-            instanceId: candidate.instanceId,
-          }));
+        const enabledForProject = yield* threadManagement.isProviderInstanceEnabledForProject({
+          projectId: input.parent.thread.projectId,
+          instanceId: candidate.instanceId,
+        });
         if (enabledForProject) {
           instanceId = candidate.instanceId;
           break;
@@ -1782,11 +1778,7 @@ const make = Effect.gen(function* () {
         (instanceId === inherited.instanceId
           ? inherited.model
           : candidates.find((provider) => provider.instanceId === instanceId)?.models[0]?.slug);
-      if (
-        input.skipProjectEnablementFilter !== true &&
-        driverModel !== undefined &&
-        Option.isSome(accountRouting)
-      ) {
+      if (driverModel !== undefined && Option.isSome(accountRouting)) {
         const parentCanRun =
           instanceId === inherited.instanceId &&
           inheritedCandidate !== undefined &&
@@ -3936,24 +3928,28 @@ const make = Effect.gen(function* () {
                       parent.thread.projectId,
                     )
                   : undefined;
-              const resolved = yield* resolveTargetRechecking({
-                parent,
-                target:
-                  committedThread !== null
-                    ? {
-                        ...request.target,
-                        providerInstanceId: committedThread.modelSelection.instanceId,
-                      }
-                    : autoPick !== undefined
-                      ? { providerInstanceId: autoPick.instanceId }
-                      : request.target,
-                providers,
-                skipProjectEnablementFilter: isRetryOfAcceptedCreation,
-              });
+              // An accepted entry answers from its committed thread: its provider instance may be gone by now.
+              const resolved: ResolvedTarget =
+                committedThread !== null
+                  ? {
+                      modelSelection: committedThread.modelSelection,
+                      supportedRuntimeModes: providers.find(
+                        (provider) =>
+                          provider.instanceId === committedThread.modelSelection.instanceId,
+                      )?.supportedRuntimeModes,
+                    }
+                  : yield* resolveTargetRechecking({
+                      parent,
+                      target:
+                        autoPick !== undefined
+                          ? { providerInstanceId: autoPick.instanceId }
+                          : request.target,
+                      providers,
+                    });
               const target =
                 autoPick !== undefined
                   ? { ...resolved, modelSelection: autoPick }
-                  : request.auto === false
+                  : request.auto === false && committedThread === null
                     ? {
                         ...resolved,
                         modelSelection: withAutoAccount(resolved.modelSelection, false),

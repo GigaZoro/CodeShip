@@ -2567,6 +2567,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                 Effect.die("These tests exercise committed commands before provider execution."),
             })),
           );
+          const registered = yield* Ref.make<ReadonlyArray<ServerProvider>>([
+            providerSnapshot({ instanceId: codexInstanceId, driver, model: "gpt-5.4" }),
+            providerSnapshot({ instanceId: altInstanceId, driver, model: "gpt-5.5" }),
+          ]);
           const limit = yield* Ref.make<AccountRouting.LaunchLimit | null>(null);
           const layerDatabase = SqlitePersistence.layerMemory;
           const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
@@ -2601,10 +2605,10 @@ describe("OrchestratorMcpService provider resolution", () => {
                 NodeServices.layer,
                 layerRegistry,
                 layerSettings,
-                providerRegistryLayer([
-                  providerSnapshot({ instanceId: codexInstanceId, driver, model: "gpt-5.4" }),
-                  providerSnapshot({ instanceId: altInstanceId, driver, model: "gpt-5.5" }),
-                ]),
+                Layer.mock(ProviderRegistry.ProviderRegistry)({
+                  getProviders: Ref.get(registered),
+                  refreshInstance: () => Ref.get(registered),
+                }),
                 Layer.mock(ProjectService.ProjectService)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(RemoteDelegation.RemoteDelegation)({}),
@@ -2724,6 +2728,10 @@ describe("OrchestratorMcpService provider resolution", () => {
             assert.deepEqual(after.thread.modelSelection, selection);
             assert.deepEqual(after.runs, before.runs);
             assert.deepEqual(after.messages, before.messages);
+
+            // A retry of an accepted entry does not depend on the provider still being registered.
+            yield* Ref.set(registered, []);
+            assert.deepEqual(yield* service.createThreads(scope, withPrompt), started);
 
             const freshError = yield* service
               .createThreads(scope, {
