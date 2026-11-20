@@ -42,13 +42,14 @@ it.effect("endingWindowsTrees refuses a pipeline, whose earlier processes it can
 /**
  * A Windows spawner whose process has exited unless `running`, whose kill fails if `killFails`, and
  * whose `exit` ends it, or fails its exit code with the method it names. A walk told it ran finds it
- * `gone` if set, as it `exits` then or `lingers`; the walk `walks` lists at its place says and exits so.
+ * `gone` if set, as it `exits`, `fails` as a lost worker or `lingers`, and says it saw so at 60 s;
+ * the walk `walks` lists at its place says and exits so.
  */
 const fakeWindowsSpawner = (options: {
   readonly running: boolean;
   readonly output: "ends" | "held";
   readonly killFails?: boolean;
-  readonly gone?: "exits" | "lingers";
+  readonly gone?: "exits" | "fails" | "lingers";
   readonly walks?: ReadonlyArray<{ readonly says: string; readonly code: number }>;
 }) => {
   const events: Array<"kill" | "walk"> = [];
@@ -113,9 +114,10 @@ const fakeWindowsSpawner = (options: {
         told.push(ended === null ? (running ? "running" : undefined) : Number(ended[1]));
         carried.push(/ -left (\S+)/.exec(call)?.[1]);
         if (running && options.gone === "exits") exit();
+        if (running && options.gone === "fails") exit("worker");
         const scripted = options.walks?.[told.length - 1];
         if (scripted !== undefined) return walk(scripted.says, scripted.code);
-        return walk(running && options.gone !== undefined ? "ended\r\n" : "", 0);
+        return walk(running && options.gone !== undefined ? "ended 60000\r\n" : "", 0);
       }
       // What a leader left running holds a pipe it inherited open.
       return handle(options.output === "ends" ? byte : Stream.concat(byte, Stream.never), leader);
@@ -264,34 +266,34 @@ describe("endingWindowsTrees stops a Windows tree", () => {
     }),
   );
 
-  it.effect(
-    "failing when a walk told it ran finds it gone and its exit is not reported, then again",
-    () =>
-      Effect.gen(function* () {
-        let now = 0;
-        using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
-        const fake = fakeWindowsSpawner({
-          running: true,
-          output: "ends",
-          killFails: true,
-          gone: "lingers",
-        });
-        const leader = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
-          ChildProcess.make("leader"),
-        );
-        const killing = yield* Effect.forkChild(Effect.flip(leader.kill()), {
-          startImmediately: true,
-        });
+  it.effect.each<[string, "lingers" | "fails" | "exits"]>([
+    ["goes unreported for 5 s", "lingers"],
+    ["fails without saying how the process ended", "fails"],
+    ["is reported later", "exits"],
+  ])("again, told when a walk told it ran found it gone, when its exit then %s", ([, gone]) =>
+    Effect.gen(function* () {
+      let now = 0;
+      using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const fake = fakeWindowsSpawner({
+        running: true,
+        output: "ends",
+        killFails: true,
+        gone,
+        walks: [{ says: "ended 500\r\n", code: 0 }],
+      });
+      const leader = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
+        ChildProcess.make("leader"),
+      );
+      now = 1_000;
+      const killing = yield* Effect.forkChild(Effect.exit(leader.kill()), {
+        startImmediately: true,
+      });
 
-        yield* TestClock.adjust("5 seconds");
+      yield* TestClock.adjust("5 seconds");
+      yield* Fiber.join(killing);
 
-        const error = yield* Fiber.join(killing);
-        now = 1_000;
-        yield* fake.exit();
-        yield* Effect.exit(leader.kill());
-
-        assert.deepEqual([error.reason._tag, fake.told], ["TimedOut", ["running", 1_000]]);
-      }).pipe(Effect.scoped),
+      assert.deepEqual(fake.told, ["running", 500]);
+    }).pipe(Effect.scoped),
   );
 
   it.effect(
@@ -305,7 +307,7 @@ describe("endingWindowsTrees stops a Windows tree", () => {
           output: "ends",
           killFails: true,
           gone: "exits",
-          walks: [{ says: "ended\r\nleft 7 638\r\n", code: 1 }],
+          walks: [{ says: "ended 2000\r\nleft 7 638\r\n", code: 1 }],
         });
         const leader = yield* endingWindowsTrees(fake.spawner, "win32").spawn(
           ChildProcess.make("leader"),
@@ -496,7 +498,7 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
   // $real is when CIM shows the target was created and $near the microsecond after; $soon, $late and
   // $next stand for Node's clock 500 and 50 ms before and 300 ms after $real. No process holds $gone.
   // A snapshot that lists the target at $near saw another process hold its pid. The last column is
-  // what the stop output, when anything.
+  // what the stop output, if anything, with ended for ended and a time read while the stop ran.
   it.each<[string, string, string, string, "stopped" | "spared", number, string?]>([
     ["ends the target the walk saw", "$target 0", "(P $target 0 $real)", "", "stopped", 2],
     [
@@ -632,6 +634,14 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       2,
     ],
     [
+      "ends what a process an earlier stop left started, at every level, once that process ended",
+      "$gone $early $early $early -left ($gone - 1),(Ticks $real.AddSeconds(-2))",
+      "(P ($gone - 1) 0 $real.AddSeconds(-2)), (P ($gone - 2) ($gone - 1) $real.AddSeconds(-1)), (P $target ($gone - 2) $real)",
+      "",
+      "stopped",
+      2,
+    ],
+    [
       "spares a process holding the pid of one an earlier stop left, created a microsecond from it",
       "$gone $early $early $early -left $target,(Ticks $real)",
       "(P $target 0 $near)",
@@ -659,7 +669,9 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
         "$next = Ms $real.AddMilliseconds(300)",
         "$gone = [int]::MaxValue",
         ...snapshots(first, later),
+        "Ms ([DateTimeOffset]::UtcNow)",
         `Stop-T3ProcessTree ${stop}`,
+        "Ms ([DateTimeOffset]::UtcNow)",
         "$global:walks",
       );
     } finally {
@@ -667,11 +679,16 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     }
     const code = await exited;
     const lines = output.trim().split(/\r?\n/);
+    const [before, after] = [Number(lines[0]), Number(lines.at(-2))];
+    const says = lines.slice(1, -2).map((line) => {
+      const at = Number(/^ended (\d+)$/.exec(line)?.[1]);
+      return at >= before && at <= after ? "ended" : line;
+    });
     assert.deepEqual(
       {
         outcome: code === 7 ? "spared" : "stopped",
         walks: lines.at(-1),
-        said: lines.slice(0, -1).join(" "),
+        said: says.join(" "),
       },
       { outcome: expected, walks: String(walked), said },
     );
@@ -885,6 +902,31 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
       { compared: true, cut: true },
       `processes, least and most ticks past CIM's time: ${range}`,
     );
+  });
+
+  // The stop says what it will not end as soon as it knows, so a stop cut short as it waits still
+  // passes it on: here a child it may not open, the System process, and a root whose kill fails.
+  it("says what it leaves before it waits", () => {
+    const report = runPowerShell(
+      `$root = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru`,
+      "try {",
+      "  $null = $root.get_Handle()",
+      "  $made = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $root.Id)).CreationDate",
+      ...snapshots(
+        "(P $root.Id 0 $made), (P 4 $root.Id $made.AddSeconds(1))",
+        "(P 4 0 $made.AddSeconds(1))",
+      ),
+      "  $opener = ${function:Open-T3Process}",
+      "  function Open-T3Process($id, $created) { $p = & $opener $id $created; if ($p) { $p | Add-Member ScriptMethod Kill { throw 'the kill failed' } -Force; $p | Add-Member ScriptMethod WaitForExit { [void]$global:order.Add('wait'); $false } -Force }; $p }",
+      "  $global:order = New-Object System.Collections.ArrayList",
+      "  try { Stop-T3ProcessTree $root.Id 0 | ForEach-Object { [void]$global:order.Add($_) } } catch { [void]$global:order.Add($_.Exception.GetBaseException().NativeErrorCode) }",
+      "  'left 4 {0}' -f (Ticks $made.AddSeconds(1))",
+      "  'left {0} {1}' -f $root.Id, (Ticks $made)",
+      "  $global:order",
+      "} finally { if (-not $root.HasExited) { $root.Kill() } }",
+    );
+    const [child = "", leader = "", ...order] = report.trim().split(/\r?\n/);
+    assert.deepEqual(order, [child, leader, "wait", "5"], report);
   });
 
   // The protected System process refuses to be opened, as any process the stop may not end does,
