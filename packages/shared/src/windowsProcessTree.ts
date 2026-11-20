@@ -49,17 +49,21 @@ export const withoutWindowsTreeEnding = (spawner: Spawner): Spawner =>
 export const stopWindowsProcessTree = Effect.fn("WindowsProcessTree.stop")(
   function* (root: WindowsProcessTreeRoot) {
     const spawner = withoutWindowsTreeEnding(yield* ChildProcessSpawner.ChildProcessSpawner);
-    if (root.job === undefined)
+    if (root.job?.child === undefined)
       return yield* stopFailed(
         root,
         "BadResource",
-        "No retained Windows job owns this process family",
+        "No published child identity proves Windows job ownership",
       );
     const handle = yield* spawner.spawn(
-      ChildProcess.make(root.job.host, ["stop", root.job.name], {
-        stdin: "ignore",
-        stdout: "ignore",
-      }),
+      ChildProcess.make(
+        root.job.host,
+        ["stop", root.job.name, String(root.job.child.pid), String(root.job.child.created)],
+        {
+          stdin: "ignore",
+          stdout: "ignore",
+        },
+      ),
     );
     const [stderr, exitCode] = yield* Effect.all(
       [

@@ -13,6 +13,8 @@ import * as HostProcess from "./HostProcess.ts";
 // The native host creates the child inside the job; its private handle survives a server restart.
 const SOURCE = String.raw`using System;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -40,7 +42,14 @@ public static class CodeShipJobHost {
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job, int kind, IntPtr data, uint size);
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int kind, IntPtr data, uint size, IntPtr returned);
  [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr job, uint code);
+ [DllImport("kernel32.dll", SetLastError=true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool member);
  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+ [DllImport("kernelbase.dll")] static extern bool CompareObjectHandles(IntPtr first, IntPtr second);
+ [DllImport("kernel32.dll")] static extern uint PssCaptureSnapshot(IntPtr process, uint flags, uint context, out IntPtr snapshot);
+ [DllImport("kernel32.dll")] static extern uint PssFreeSnapshot(IntPtr process, IntPtr snapshot);
+ [DllImport("kernel32.dll")] static extern uint PssWalkMarkerCreate(IntPtr allocator, out IntPtr marker);
+ [DllImport("kernel32.dll")] static extern uint PssWalkMarkerFree(IntPtr marker);
+ [DllImport("kernel32.dll")] static extern uint PssWalkSnapshot(IntPtr snapshot, int kind, IntPtr marker, IntPtr buffer, uint size);
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcess(string app, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string cwd, ref StartupEx startup, out ProcessInfo process);
  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern void GetStartupInfo(out Startup startup);
  [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int number);
@@ -109,7 +118,49 @@ public static class CodeShipJobHost {
  static void Stop(IntPtr job) {
   Limits(job,true);
   Check(TerminateJobObject(job,1));
-  while(Count(job)!=0) Thread.Sleep(10);
+  var wait=Stopwatch.StartNew();
+  while(Count(job)!=0) {
+   if(wait.ElapsedMilliseconds>=20000) throw new TimeoutException("Windows job still has active processes after 20 seconds of termination.");
+   Thread.Sleep(10);
+  }
+ }
+ static HashSet<IntPtr> StreamHandles(Startup startup) {
+  var handles=new HashSet<IntPtr> { startup.input, startup.output, startup.error };
+  if(startup.reservedData!=IntPtr.Zero && startup.reservedSize>=4) {
+   int count=Marshal.ReadInt32(startup.reservedData);
+   if(count<0 || count>(startup.reservedSize-4)/(1+IntPtr.Size)) throw new IOException("Invalid inherited stream handles.");
+   for(int fd=0;fd<count;fd++) handles.Add(Marshal.ReadIntPtr(startup.reservedData,4+count+fd*IntPtr.Size));
+  }
+  handles.Remove(IntPtr.Zero); handles.Remove(new IntPtr(-1)); handles.Remove(new IntPtr(-2));
+  return handles;
+ }
+ static void ReleaseStreams(Startup startup, IntPtr control, IntPtr reply, bool keepError) {
+  var handles=StreamHandles(startup);
+  handles.Remove(control); handles.Remove(reply);
+  if(keepError) handles.Remove(startup.error);
+  // Runtime-created copies are not necessarily present in STARTUPINFO's descriptor table.
+  uint entrySize=IntPtr.Size==8 ? 136u : 104u;
+  IntPtr snapshot=IntPtr.Zero, marker=IntPtr.Zero, entry=Marshal.AllocHGlobal((int)entrySize);
+  var copies=new HashSet<IntPtr>();
+  try {
+   uint status=PssCaptureSnapshot(new IntPtr(-1),4,0,out snapshot);
+   if(status!=0) throw new Win32Exception((int)status);
+   status=PssWalkMarkerCreate(IntPtr.Zero,out marker);
+   if(status!=0) throw new Win32Exception((int)status);
+   for(;;) {
+    status=PssWalkSnapshot(snapshot,2,marker,entry,entrySize);
+    if(status==259) break;
+    if(status!=0) throw new Win32Exception((int)status);
+    IntPtr candidate=Marshal.ReadIntPtr(entry);
+    if(CompareObjectHandles(candidate,control) || CompareObjectHandles(candidate,reply) || (keepError && CompareObjectHandles(candidate,startup.error))) continue;
+    foreach(var handle in handles) if(CompareObjectHandles(candidate,handle)) { copies.Add(candidate); break; }
+   }
+  } finally {
+   Marshal.FreeHGlobal(entry);
+   if(marker!=IntPtr.Zero) PssWalkMarkerFree(marker);
+   if(snapshot!=IntPtr.Zero) PssFreeSnapshot(new IntPtr(-1),snapshot);
+  }
+  foreach(var handle in copies) CloseHandle(handle);
  }
  static string Quote(string arg) {
   if(arg.IndexOf('\0') >= 0) throw new ArgumentException("A process argument contains NUL.");
@@ -118,7 +169,7 @@ public static class CodeShipJobHost {
  }
  public static int Main(string[] args) {
   IntPtr job=IntPtr.Zero;
-  IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero, descriptors=IntPtr.Zero, control=IntPtr.Zero, reply=IntPtr.Zero;
+  IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero, descriptors=IntPtr.Zero, inheritedList=IntPtr.Zero, control=IntPtr.Zero, reply=IntPtr.Zero;
   bool initialized=false;
   ProcessInfo child=new ProcessInfo();
   string record = args.Length > 2 && args[0] == "run" ? args[2] : "";
@@ -149,8 +200,21 @@ public static class CodeShipJobHost {
    }
    if(args[0]=="stop" || args[0]=="count") {
     job=OpenJobObject(14,false,args[1]);
-    if(job==IntPtr.Zero) { if(Marshal.GetLastWin32Error()==2) { if(args[0]=="count") Console.WriteLine(0); return 0; } throw new Win32Exception(); }
-    if(args[0]=="stop") Stop(job); else Console.WriteLine(Count(job));
+    if(job==IntPtr.Zero) { if(Marshal.GetLastWin32Error()==2) { Console.WriteLine(args[0]=="count" ? "0" : "Job already gone."); return 0; } throw new Win32Exception(); }
+    if(args[0]=="count") { Console.WriteLine(Count(job)); return 0; }
+    if(args.Length!=4) throw new ArgumentException("Stopping a job requires its recorded child pid and creation time.");
+    IntPtr owner=OpenProcess(0x1000,false,int.Parse(args[2]));
+    if(owner==IntPtr.Zero) {
+     if(Marshal.GetLastWin32Error()==87) { Console.WriteLine("Job not ours: recorded child is gone."); return 0; }
+     throw new Win32Exception();
+    }
+    try {
+     bool member;
+     if(Created(owner)!=long.Parse(args[3])) { Console.WriteLine("Job not ours: child identity changed."); return 0; }
+     Check(IsProcessInJob(owner,job,out member));
+     if(!member) { Console.WriteLine("Job not ours: recorded child is not a member."); return 0; }
+     Stop(job);
+    } finally { CloseHandle(owner); }
     return 0;
    }
    bool owned=args[0]=="owned" || args[0]=="owned-raw";
@@ -193,15 +257,25 @@ public static class CodeShipJobHost {
    var command=new StringBuilder();
    for(int i=3;i<args.Length;i++) { if(i>3)command.Append(' '); command.Append((args[0]=="owned-raw" || args[0]=="run-raw") && i>3 ? args[i] : Quote(args[i])); }
    IntPtr size=IntPtr.Zero;
-   InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size);
+   InitializeProcThreadAttributeList(IntPtr.Zero,2,0,ref size);
    attributes=Marshal.AllocHGlobal(size);
-   Check(InitializeProcThreadAttributeList(attributes,1,0,ref size));
+   Check(InitializeProcThreadAttributeList(attributes,2,0,ref size));
    initialized=true;
    jobList=Marshal.AllocHGlobal(IntPtr.Size);
    Marshal.WriteIntPtr(jobList,job);
    Check(UpdateProcThreadAttribute(attributes,0,new IntPtr(0x2000D),jobList,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero));
+   var inherited=StreamHandles(startup);
+   inherited.Remove(control); inherited.Remove(reply);
+   inheritedList=Marshal.AllocHGlobal(IntPtr.Size*inherited.Count);
+   int index=0;
+   foreach(var handle in inherited) {
+    Check(SetHandleInformation(handle,1,1));
+    Marshal.WriteIntPtr(inheritedList,index++*IntPtr.Size,handle);
+   }
+   Check(UpdateProcThreadAttribute(attributes,0,new IntPtr(0x20002),inheritedList,new IntPtr(IntPtr.Size*inherited.Count),IntPtr.Zero,IntPtr.Zero));
    var extended=new StartupEx { startup=startup, attributes=attributes };
    Check(CreateProcess(null,command,IntPtr.Zero,IntPtr.Zero,true,0x80004,IntPtr.Zero,null,ref extended,out child));
+   ReleaseStreams(startup,control,reply,!owned);
    Directory.SetCurrentDirectory(Environment.SystemDirectory);
    if(record.Length != 0) Publish(record, child.pid + " " + Created(child.process));
    if(owned) SendControl(reply,"S " + child.pid + " " + Created(child.process));
@@ -212,7 +286,7 @@ public static class CodeShipJobHost {
    Stop(job);
    return unchecked((int)code);
   } catch(Exception error) {
-   Console.Error.WriteLine(error.Message);
+   if(reply==IntPtr.Zero) Console.Error.WriteLine(error.Message);
    if(reply!=IntPtr.Zero) {
     try { SendControl(reply,"E " + (error is Win32Exception ? ((Win32Exception)error).NativeErrorCode : 0) + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes(error.Message))); } catch {}
    }
@@ -231,6 +305,7 @@ public static class CodeShipJobHost {
    if(initialized)DeleteProcThreadAttributeList(attributes);
    if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);
    if(jobList!=IntPtr.Zero)Marshal.FreeHGlobal(jobList);
+   if(inheritedList!=IntPtr.Zero)Marshal.FreeHGlobal(inheritedList);
    if(descriptors!=IntPtr.Zero)Marshal.FreeHGlobal(descriptors);
    if(job!=IntPtr.Zero)CloseHandle(job);
   }
@@ -253,6 +328,10 @@ export const windowsJobName = (nonce: string) => `Global\\CodeShip.Job.${nonce}`
 const isFileError = (error: unknown, code: string) =>
   error instanceof Error && "code" in error && error.code === code;
 
+const verifiedHosts = new Map<string, string>();
+const sha256 = (bytes: Uint8Array | string) =>
+  NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+
 /** The framework compiler ships with Windows PowerShell; immutable cached hosts also serve older jobs. */
 export const prepareWindowsJobHost = Effect.fn("WindowsJob.prepare")(function* () {
   const home = yield* HostProcess.HomeDirectory;
@@ -263,11 +342,18 @@ export const prepareWindowsJobHost = Effect.fn("WindowsJob.prepare")(function* (
   return yield* Effect.tryPromise({
     try: async (signal) => {
       const cache = NodePath.join(home, ".cache", "t3", "windows-job");
-      const digest = NodeCrypto.createHash("sha256").update(SOURCE).digest("hex");
-      const executable = NodePath.join(cache, `${digest}.exe`);
+      const manifest = NodePath.join(cache, `${sha256(SOURCE)}.sha256`);
+      const verified = verifiedHosts.get(manifest);
+      if (verified !== undefined) return verified;
       try {
-        await NodeFSP.stat(executable);
-        return executable;
+        const expected = (await NodeFSP.readFile(manifest, "utf8")).trim();
+        if (/^[a-f0-9]{64}$/.test(expected)) {
+          const executable = NodePath.join(cache, `${expected}.exe`);
+          if (sha256(await NodeFSP.readFile(executable)) === expected) {
+            verifiedHosts.set(manifest, executable);
+            return executable;
+          }
+        }
       } catch (error) {
         if (!isFileError(error, "ENOENT")) throw error;
       }
@@ -295,11 +381,21 @@ export const prepareWindowsJobHost = Effect.fn("WindowsJob.prepare")(function* (
                 : reject(new Error(`${error.message}: ${stdout}${stderr}`)),
           );
         });
+        const digest = sha256(await NodeFSP.readFile(binary));
+        const executable = NodePath.join(cache, `${digest}.exe`);
         try {
           await NodeFSP.link(binary, executable);
         } catch (error) {
           if (!isFileError(error, "EEXIST")) throw error;
+          if (sha256(await NodeFSP.readFile(executable)) !== digest) {
+            await NodeFSP.unlink(executable);
+            await NodeFSP.link(binary, executable);
+          }
         }
+        const prepared = NodePath.join(build, "host.sha256");
+        await NodeFSP.writeFile(prepared, digest);
+        await NodeFSP.rename(prepared, manifest);
+        verifiedHosts.set(manifest, executable);
         return executable;
       } finally {
         await NodeFSP.rm(build, { recursive: true, force: true });
@@ -319,6 +415,7 @@ export const WindowsJobHost = Context.Reference<ReturnType<typeof prepareWindows
 export interface WindowsJob {
   readonly host: string;
   readonly name: string;
+  child?: { readonly pid: number; readonly created: number };
 }
 
 const jobs = new WeakMap<object, WindowsJob>();
