@@ -1,3 +1,7 @@
+## 2026-11-26 — The ACP idle-error test waits for the late subagent event
+
+- Maintainers: after observing the failed turn, the test tells the mock agent to complete its subagent and waits for that completion event. This keeps the test reliable on busy machines.
+
 ## 2026-11-26 — More accurate CPU waits for background commands
 
 - On Linux, commands can start while lower-priority threads use the CPUs. Work at a command’s own priority still counts when a process mixes thread priorities or its workers exit between readings.

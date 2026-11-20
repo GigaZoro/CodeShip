@@ -1522,6 +1522,7 @@ describe("AcpAdapterV2", () => {
         const instanceId = ProviderInstanceId.make(`idle-error-${details}`);
         const threadId = ThreadId.make(`thread-idle-error-${details}`);
         const childSessionId = "mock-child-session-idle-error";
+        const native: { current?: AcpSessionRuntime.AcpSessionRuntime["Service"] } = {};
         const adapter = yield* makeAcpAdapterV2({
           instanceId,
           selfInvocation: yield* resolveSelfInvocation(),
@@ -1551,6 +1552,10 @@ describe("AcpAdapterV2", () => {
                 new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
               ),
               environment: { T3_ACP_IDLE_ERROR: details },
+              wrapRuntime: (runtime) => {
+                native.current = runtime;
+                return runtime;
+              },
             }),
           },
         });
@@ -1599,15 +1604,16 @@ describe("AcpAdapterV2", () => {
           failed.childTurnsContinue,
           "the run keeps ingesting work that outlives the failed prompt",
         );
+        assert.isDefined(native.current);
+        yield* native.current.request("_test/complete-idle-error-subagent", {});
         const lateSubagent = yield* runtime.events.pipe(
           Stream.filter(
             (event) => event.type === "subagent.updated" && event.subagent.status === "completed",
           ),
           Stream.runHead,
-          Effect.timeoutOption("2 seconds"),
         );
         assert.isTrue(
-          Option.isSome(lateSubagent) && Option.isSome(lateSubagent.value),
+          Option.isSome(lateSubagent),
           "a subagent finishing after the failed prompt still reports to the run",
         );
         assert.deepEqual(
