@@ -136,18 +136,17 @@ export const WINDOWS_PROCESS_TREE_FUNCTIONS = [
   "        foreach ($id in @($below.Keys)) { $targets[$id] = $below[$id] }",
   "      }",
   "      if ($targets.Count -eq 0) { break }",
-  "      $lost = $null; $refused = New-Object System.Collections.ArrayList",
-  "      $new = @(foreach ($id in @($targets.Keys)) {",
-  "        $ticksOf[[long]$id] = Ticks $targets[$id]",
-  "        try { $process = Open-T3Process $id $targets[$id] } catch { if (-not $failed) { $failed = $_ }; [void]$refused.Add([long]$id); continue }",
-  "        if ($process) { $open[$id] = $process; [void]$starts.Add(@($id, $ticksOf[[long]$id], [long]::MaxValue)); $process }",
-  "        elseif ($running -and -not $pass -and $id -eq $root) { $lost = Ms ([DateTimeOffset]::UtcNow) }",
-  "      })",
   // What the first pass found while the root was listed is the root's, so a stop that then cannot
   // open the root still ends it. It says when it saw the root gone, which the root had exited by,
-  // so the caller's next walk counts only what the root started before then.
-  "      if ($lost) { 'ended {0}' -f $lost }",
-  "      foreach ($id in $refused) { 'left {0} {1}' -f $id, $ticksOf[$id] }",
+  // so the caller's next walk counts only what the root started before then. A loop whose output
+  // were assigned would hold these lines back until every target was opened.
+  "      $new = [Collections.Generic.List[psobject]]::new()",
+  "      foreach ($id in @($targets.Keys)) {",
+  "        $ticksOf[[long]$id] = Ticks $targets[$id]",
+  "        try { $process = Open-T3Process $id $targets[$id] } catch { if (-not $failed) { $failed = $_ }; 'left {0} {1}' -f $id, $ticksOf[[long]$id]; continue }",
+  "        if ($process) { $open[$id] = $process; [void]$starts.Add(@($id, $ticksOf[[long]$id], [long]::MaxValue)); $new.Add($process) }",
+  "        elseif ($running -and -not $pass -and $id -eq $root) { 'ended {0}' -f (Ms ([DateTimeOffset]::UtcNow)) }",
+  "      }",
   "      if ($new.Count -and $pass -eq 5 -and -not $failed) { $failed = 'The tree of {0} still started processes after 5 passes' -f $root }",
   "      $stop = @{ failed = $null }",
   "      Stop-T3Processes $new $ticksOf $stop",

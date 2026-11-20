@@ -904,29 +904,48 @@ describe.runIf(isWindowsHost)("a Windows process tree", () => {
     );
   });
 
-  // The stop says what it will not end as soon as it knows, so a stop cut short as it waits still
-  // passes it on: here a child it may not open, the System process, and a root whose kill fails.
-  it("says what it leaves before it waits", () => {
+  // The stop says what it found ended or will not end as soon as it knows, so a stop cut short as it
+  // opens or waits still passes it on: here a root gone before its open, a child it may not open (the
+  // System process), and a child whose kill fails. No process holds the root's pid.
+  it("says what it found ended or leaves before it opens the next target or waits", () => {
+    const gone = 2 ** 31 - 1;
     const report = runPowerShell(
-      `$root = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru`,
+      `$stuck = Start-Process -FilePath '${process.execPath}' -ArgumentList '-e', 'setTimeout(Object,600000)' -WindowStyle Hidden -PassThru`,
       "try {",
-      "  $null = $root.get_Handle()",
-      "  $made = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $root.Id)).CreationDate",
+      "  $null = $stuck.get_Handle()",
+      "  $made = (Get-CimInstance Win32_Process -Filter ('ProcessId = {0}' -f $stuck.Id)).CreationDate",
       ...snapshots(
-        "(P $root.Id 0 $made), (P 4 $root.Id $made.AddSeconds(1))",
+        `(P ${gone} 0 $made.AddSeconds(-1)), (P $stuck.Id ${gone} $made), (P 4 ${gone} $made.AddSeconds(1))`,
         "(P 4 0 $made.AddSeconds(1))",
       ),
       "  $opener = ${function:Open-T3Process}",
-      "  function Open-T3Process($id, $created) { $p = & $opener $id $created; if ($p) { $p | Add-Member ScriptMethod Kill { throw 'the kill failed' } -Force; $p | Add-Member ScriptMethod WaitForExit { [void]$global:order.Add('wait'); $false } -Force }; $p }",
+      "  function Open-T3Process($id, $created) { [void]$global:order.Add('open {0}' -f $id); $p = & $opener $id $created; if ($p) { $p | Add-Member ScriptMethod Kill { throw 'the kill failed' } -Force; $p | Add-Member ScriptMethod WaitForExit { [void]$global:order.Add('wait'); $false } -Force }; $p }",
       "  $global:order = New-Object System.Collections.ArrayList",
-      "  try { Stop-T3ProcessTree $root.Id 0 | ForEach-Object { [void]$global:order.Add($_) } } catch { [void]$global:order.Add($_.Exception.GetBaseException().NativeErrorCode) }",
+      "  $began = Ms $made.AddSeconds(-1)",
+      `  try { Stop-T3ProcessTree ${gone} 0 $began $began -running | ForEach-Object { [void]$global:order.Add($_) } } catch { [void]$global:order.Add($_.Exception.GetBaseException().NativeErrorCode) }`,
       "  'left 4 {0}' -f (Ticks $made.AddSeconds(1))",
-      "  'left {0} {1}' -f $root.Id, (Ticks $made)",
+      "  'left {0} {1}' -f $stuck.Id, (Ticks $made)",
+      "  'open {0}' -f $stuck.Id",
       "  $global:order",
-      "} finally { if (-not $root.HasExited) { $root.Kill() } }",
+      "} finally { if (-not $stuck.HasExited) { $stuck.Kill() } }",
     );
-    const [child = "", leader = "", ...order] = report.trim().split(/\r?\n/);
-    assert.deepEqual(order, [child, leader, "wait", "5"], report);
+    const [child = "", leader = "", held = "", ...order] = report
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^ended \d+$/, "ended"));
+    const said: Record<string, ReadonlyArray<string>> = {
+      [`open ${gone}`]: ["ended"],
+      "open 4": [child],
+    };
+    const opened = order.filter((line) => line.startsWith("open "));
+    assert.deepEqual(
+      { opened: opened.toSorted(), order },
+      {
+        opened: [`open ${gone}`, "open 4", held].toSorted(),
+        order: [...opened.flatMap((open) => [open, ...(said[open] ?? [])]), leader, "wait", "5"],
+      },
+      report,
+    );
   });
 
   // The protected System process refuses to be opened, as any process the stop may not end does,
