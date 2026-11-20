@@ -997,18 +997,47 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const fs = yield* FileSystem.FileSystem;
         const { stateDir } = yield* ServerConfig.ServerConfig;
         const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-driver-" });
-        const create = (
+        const launchHomes = new Map<string, string>();
+        const create = Effect.fn(function* (
           id: string,
           config: Partial<ReturnType<typeof CodexDriver.defaultConfig>> = {},
           environment: ReadonlyArray<{ name: string; value: string; sensitive: false }> = [],
-        ) =>
-          CodexDriver.create({
-            instanceId: ProviderInstanceId.make(id),
+        ) {
+          const instanceId = ProviderInstanceId.make(id);
+          const instance = yield* CodexDriver.create({
+            instanceId,
             displayName: id,
             enabled: false,
             environment: [...environment],
-            config: { ...CodexDriver.defaultConfig(), ...config },
-          });
+            config: {
+              ...CodexDriver.defaultConfig(),
+              binaryPath: NodePath.join(tempDir, "codex"),
+              ...config,
+            },
+          }).pipe(
+            Effect.provideService(
+              CodexAdapterV2.CodexAppServerClientFactory,
+              CodexAdapterV2.CodexAppServerClientFactory.of({
+                open: (launch) =>
+                  Effect.sync(() => launchHomes.set(id, launch.settings.homePath)).pipe(
+                    Effect.andThen(Effect.die("The fixture stops after recording the launch")),
+                  ),
+              }),
+            ),
+          );
+          yield* instance.orchestrationAdapter
+            .openSession({
+              threadId: ThreadId.make(`${id}-thread`),
+              providerSessionId: ProviderSessionId.make(`${id}-session`),
+              modelSelection: { instanceId, model: "gpt-5.4" },
+              runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                cwd: tempDir,
+              }),
+            })
+            .pipe(Effect.scoped, Effect.exit);
+        });
         const shadow = (id: string) => NodePath.join(stateDir, "providers", "codex", id, "shadow");
 
         yield* create("codex-added");
@@ -1025,6 +1054,13 @@ it.layer(layerTest)("CodexDriver", (it) => {
 
         yield* create("codex", { privateLogin: true });
         expect(yield* fs.exists(shadow("codex"))).toBe(true);
+
+        // regression: the chat session read the stored config, so an added account's turns ran
+        // under the default Codex login in the shared home.
+        expect(launchHomes.get("codex-added")).toBe(shadow("codex-added"));
+        expect(launchHomes.get("codex")).toBe(shadow("codex"));
+        expect(launchHomes.get("codex-own-home")).toBe(NodePath.join(tempDir, "own"));
+        expect(launchHomes.get("codex-env-home")).toBe(NodePath.join(tempDir, "env"));
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
         Effect.scoped,

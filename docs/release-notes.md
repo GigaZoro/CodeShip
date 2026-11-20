@@ -1,3 +1,7 @@
+## 2026-11-20 — Added Codex accounts keep their own sign-in
+
+- A test now checks that chats on an added Codex account start in that account's own folder. Version 2026.1116 could run them under the default Codex login, which left a resumed chat waiting until it failed.
+
 ## 2026-11-20 — Push gate stays on after install
 
 - Installing dependencies no longer repoints Git's hooks at generated shims, so the checked push gate on `main` keeps running in every checkout.
