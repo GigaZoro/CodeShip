@@ -105,6 +105,7 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
     target: { environmentId: ENVIRONMENT_ID },
     session: yield* SubscriptionRef.make(
       Option.some({
+        initialConfig: Effect.succeed({ environment: { capabilities: { threadStop: true } } }),
         client: {
           [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
             Effect.gen(function* () {
@@ -197,7 +198,7 @@ describe("history loading", () => {
       const results = yield* Effect.promise(() => Promise.all([history, send, control]));
 
       expect(first.command).toMatchObject({ type: "message.dispatch", threadId: THREAD_ID });
-      expect(second.command).toMatchObject({ type: "run.interrupt", threadId: controlThreadId });
+      expect(second.command).toMatchObject({ type: "thread.stop", threadId: controlThreadId });
       expect(results.map((value) => value._tag)).toEqual(["Success", "Success", "Success"]);
     }),
   );
@@ -213,8 +214,8 @@ describe("interrupt turn", () => {
         input: { threadId: THREAD_ID, runId: RunId.make("finished-run") },
       });
       const request = yield* Queue.take(h.requests);
-      expect(request.command.type).toBe("run.interrupt");
-      yield* Deferred.fail(request.reply, new Error("Run is not interruptible"));
+      expect(request.command.type).toBe("thread.stop");
+      yield* Deferred.fail(request.reply, new Error("Thread has no work to stop"));
       expect((yield* Effect.promise(() => result))._tag).toBe("Failure");
       expect(yield* Queue.take(h.reconciled)).toBe(THREAD_ID);
     }),
