@@ -71,8 +71,8 @@ interface AttachedTab {
    */
   agentUsed: boolean;
   focusReleasing: boolean;
-  /** The sessions streaming the guest; one stopping leaves the others' screencasts running. */
-  readonly screencasts: Set<string | undefined>;
+  /** Each streaming session's screencast parameters; one stopping leaves the others' screencasts running. */
+  readonly screencasts: Map<string | undefined, Record<string, unknown>>;
   readonly onMessage: (
     event: Electron.Event,
     method: string,
@@ -81,6 +81,30 @@ interface AttachedTab {
   ) => void;
   readonly onNewDocument: () => void;
 }
+
+/**
+ * Chromium runs one screencast per debugger client, so the sessions sharing it get the most
+ * demanding of their parameters: the best quality and the largest frames, as often as any wants.
+ */
+const mergeScreencastParams = (streams: Iterable<Record<string, unknown>>) => {
+  const sessions = [...streams];
+  const merged: Record<string, unknown> = {
+    format: sessions.some((params) => params["format"] === "png") ? "png" : "jpeg",
+    everyNthFrame: Math.min(
+      ...sessions.map((params) =>
+        typeof params["everyNthFrame"] === "number" ? params["everyNthFrame"] : 1,
+      ),
+    ),
+  };
+  for (const key of ["quality", "maxWidth", "maxHeight"] as const) {
+    const values = sessions.map((params) => params[key]);
+    const numbers = values.filter((value): value is number => typeof value === "number");
+    // A session without a size limit wants the guest's full size.
+    const unlimited = key !== "quality" && numbers.length < values.length;
+    if (numbers.length > 0 && !unlimited) merged[key] = Math.max(...numbers);
+  }
+  return merged;
+};
 
 export class DesktopBrowserHost extends Context.Service<
   DesktopBrowserHost,
@@ -356,10 +380,16 @@ export const make = Effect.gen(function* () {
         send: (method, params, sessionId, owner) => {
           // A child session's screencast is not the page's, such as a late one on a detached session.
           if (sessionId === undefined && method === "Page.startScreencast") {
-            tab.screencasts.add(owner);
+            tab.screencasts.set(owner, params);
             if (owner !== undefined) streamingOwners.add(owner);
+            params = mergeScreencastParams(tab.screencasts.values());
           } else if (sessionId === undefined && method === "Page.stopScreencast") {
             tab.screencasts.delete(owner);
+            // The others keep streaming at their own parameters.
+            if (tab.screencasts.size > 0) {
+              method = "Page.startScreencast";
+              params = mergeScreencastParams(tab.screencasts.values());
+            }
           }
           // A person's input through a viewer, or Playwright's own housekeeping, is not the agent's.
           if (
@@ -395,9 +425,17 @@ export const make = Effect.gen(function* () {
                 })
               : holdFocus(tab, method, owner, forward);
         },
+        streamsScreencast: (owner) => tab.screencasts.has(owner),
         sessionDetached: (owner) => {
           detachedOwners.add(owner);
+          const wasStreaming = tab.screencasts.has(owner);
           dropSessionHolds(tab, owner);
+          if (wasStreaming && tab.screencasts.size > 0) {
+            void send(
+              "Page.startScreencast",
+              mergeScreencastParams(tab.screencasts.values()),
+            ).catch(() => {});
+          }
         },
         targetId: () =>
           debuggee
@@ -483,7 +521,7 @@ export const make = Effect.gen(function* () {
       painting: false,
       agentUsed: false,
       focusReleasing: false,
-      screencasts: new Set(),
+      screencasts: new Map(),
       onMessage: (_event, method, params, sessionId) => {
         if (method === "Page.downloadWillBegin") {
           const guid = (params as { guid?: unknown } | undefined)?.guid;

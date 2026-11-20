@@ -1,3 +1,8 @@
+## 2026-11-20 — A desktop preview tab's viewers and recordings no longer fight over its screencast
+
+- When a viewer and a recording streamed the same desktop browser tab, each one's screencast settings replaced the other's: a scrolling viewer shrank the recording's frames to half size and lower quality, and a settled viewer's size kept capping the recording. The tab now runs one screencast at the best quality and largest size any streaming session asked for, and re-merges when a session starts, stops or closes.
+- Frames now reach only the sessions that are streaming, so a viewer paused during a screenshot or a recording session no longer receives and acknowledges another session's frames.
+
 ## 2026-11-20 — Checkouts clean up leftover git objects after a day
 
 - Every machine's CodeShip checkout now deletes unreachable git objects after one day instead of two weeks, so automatic git cleanup can keep up with the objects agent worktrees, rebases and checkpoints leave behind. Before, a checkout could collect over 200,000 of them (2 GB) while cleanup only warned.
