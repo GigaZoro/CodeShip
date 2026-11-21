@@ -13,7 +13,6 @@ const {
   checkBudgetSeconds,
   acquire,
   land,
-  overlappingWorktrees,
   release,
   tryAcquire,
   verifyPush,
@@ -458,6 +457,10 @@ test("a rebase that conflicts is aborted, and a worktree in a stopped rebase is 
     const stopped = land({ cwd: lander, remote: origin, check: () => assert.fail("checked") });
     assert.equal(stopped.status, "rebase-in-progress");
     assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("a landing lists other worktrees with unmerged work on the same files, and none that share nothing", () => {
   const { root, git, clone, commit } = setup();
