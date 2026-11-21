@@ -32,7 +32,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 97 });
+      yield* runMigrations({ toMigrationInclusive: 99 });
       // More rows than one step, so the cursor has to carry the migration across steps.
       for (let index = 1; index <= 1_200; index++) {
         const payload = item(index);
@@ -48,7 +48,7 @@ it.effect(
         )
       `;
       }
-      yield* runMigrations({ toMigrationInclusive: 98 });
+      yield* runMigrations({ toMigrationInclusive: 100 });
       const stored = yield* sql<{ readonly payload_json: string }>`
       SELECT payload_json FROM orchestration_v2_projection_turn_items WHERE turn_item_id = 'item:777'
     `;
