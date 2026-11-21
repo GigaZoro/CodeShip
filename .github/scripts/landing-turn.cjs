@@ -158,7 +158,7 @@ function macAwakeMs(spawn = spawnSync) {
   let result = read();
   if (result.error?.code === "ETIMEDOUT") result = read();
   const match = /^(\d+)\s*$/.exec(result.stdout ?? "");
-  if (result.status !== 0 || !match) {
+  if (result.error || result.status !== 0 || !match) {
     throw new Error(
       `osascript NSProcessInfo.systemUptime failed: ${result.error?.message ?? (result.stderr.trim() || result.stdout.trim())}`,
     );

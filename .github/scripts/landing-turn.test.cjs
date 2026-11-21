@@ -367,7 +367,9 @@ test("a Mac's awake clock is read again when the Mac slept through a read, and a
     macAwakeMs(reads(timedOut, { status: 0, stdout: "153885715\n", stderr: "" })),
     153885715,
   );
-  assert.throws(() => macAwakeMs(reads(timedOut, timedOut)), /systemUptime failed: .*ETIMEDOUT/);
+  // A child can still print and exit 0 when the timeout kills it: the timeout decides.
+  const killedLate = { ...timedOut, status: 0, stdout: "153885715\n" };
+  assert.throws(() => macAwakeMs(reads(timedOut, killedLate)), /systemUptime failed: .*ETIMEDOUT/);
   assert.throws(
     () => macAwakeMs(reads({ status: 1, stdout: "", stderr: "execution error: -2700" })),
     /systemUptime failed: execution error: -2700/,
