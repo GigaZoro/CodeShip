@@ -883,6 +883,88 @@ export const suiteSteps = (
     serial: true,
   }));
 
+// Without -z, Git quotes a path that holds a quote, backslash, control or non-ASCII character.
+const gitNames = (root: string, objects: string, args: ReadonlyArray<string>) =>
+  Effect.flatMap(
+    git(root, args, { GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectory(objects) }),
+    (stdout) => Effect.try({ try: () => gitPaths(stdout), catch: String }),
+  );
+
+// Cached passes key on the files tests read, which leave out modes. Git's modes leave out the
+// execute bits of files it trusts the index for, of symlinks it checks out as files, and of the
+// files in embedded repositories, so also key on HEAD, working-tree types and modes, and the
+// on-disk execute bits and access of every file outside .git and installed node_modules.
+export const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (input: {
+  readonly root: string;
+  readonly objects: string;
+  readonly head: string;
+  readonly tree: string;
+}) {
+  const { root, objects, head, tree } = input;
+  const inRoot = (file: string) => NodePath.join(root, file);
+  const names = (args: ReadonlyArray<string>) => gitNames(root, objects, args);
+  const hash = NodeCrypto.createHash("sha256").update(`${head}\0`);
+  const fields = yield* names(["diff-tree", "-r", "-z", "--no-renames", head, tree]);
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const [from, to] = fields[index]!.slice(1).split(" ");
+    const modeChanged = from !== "000000" && to !== "000000" && from !== to;
+    if (modeChanged || (from === "000000" && to !== "100644")) {
+      hash.update(`${to}\0${fields[index + 1]}\0`);
+    }
+  }
+  // Windows files carry no execute bits.
+  if ((yield* HostProcess.Platform) === "win32") return hash.digest("hex");
+  const target = Option.liftThrowable((file: string) => NodeFS.statSync(inRoot(file)));
+  const runnable = Option.liftThrowable((file: string) =>
+    NodeFS.accessSync(inRoot(file), NodeFS.constants.X_OK),
+  );
+  const executables: Array<string> = [];
+  // Git lists an embedded repository, and checks out a gitlink, as one directory.
+  const add = (file: string): void => {
+    const entry = unlessAbsent(() => NodeFS.lstatSync(inRoot(file)));
+    if (entry?.isDirectory()) {
+      for (const child of NodeFS.readdirSync(inRoot(file), {
+        encoding: "buffer",
+        withFileTypes: true,
+      })) {
+        const [name] = gitPaths(child.name);
+        if (!(child.isDirectory() && (name === ".git" || name === "node_modules"))) {
+          add(`${file}/${name}`);
+        }
+      }
+      return;
+    }
+    // A link that leads nowhere or loops is no file anyone may run.
+    const info = entry?.isSymbolicLink() ? Option.getOrUndefined(target(file)) : entry;
+    // A runner in the file's group, or outside it, may run a file its owner may not, so any
+    // execute bit is an input, beside whether this runner may.
+    if (info?.isFile() && (info.mode & 0o111) !== 0) {
+      const bits = (info.mode & 0o111).toString(8);
+      executables.push(`executable on disk\0${bits}\0${Option.isSome(runnable(file))}\0${file}\0`);
+    }
+  };
+  // Where core.ignoreCase is on, Git's listings leave out an untracked file whose name differs from
+  // a tracked one only in case.
+  const others = yield* names([
+    "-c",
+    "core.ignoreCase=false",
+    "ls-files",
+    "-z",
+    "--others",
+    "--",
+    ":(exclude,glob)**/node_modules/**",
+  ]);
+  const listed = new Set([...(yield* names(["ls-files", "-z"])), ...others].filter(Boolean));
+  yield* Effect.try({
+    try: () => {
+      for (const file of listed) add(file.replace(/\/$/, ""));
+    },
+    catch: (cause) => `check:changed cannot read the checkout's files: ${String(cause)}`,
+  });
+  for (const entry of executables.sort()) hash.update(entry);
+  return hash.digest("hex");
+});
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
@@ -958,12 +1040,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
 
   // The checked tree's objects, which in the repository nothing would reference.
   const objects = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-objects-" });
-  // Without -z, Git quotes a path that holds a quote, backslash, control or non-ASCII character.
-  const names = (args: ReadonlyArray<string>) =>
-    Effect.flatMap(
-      git(root, args, { GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateObjectDirectory(objects) }),
-      (stdout) => Effect.try({ try: () => gitPaths(stdout), catch: String }),
-    );
+  const names = (args: ReadonlyArray<string>) => gitNames(root, objects, args);
   const paths = (command: string, ...args: Array<string>) =>
     names([command, "-z", ...args]).pipe(Effect.map((listed) => listed.filter(Boolean)));
 
@@ -1127,81 +1204,6 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       ),
     );
     return hash.update(install).digest("hex");
-  });
-  // Cached passes key on the files tests read, which leave out modes. Git's modes leave out the
-  // execute bits of files it trusts the index for, of symlinks it checks out as files, and of the
-  // files in embedded repositories, so also key on HEAD, working-tree types and modes, and the
-  // on-disk execute bits and access of every file outside .git and installed node_modules.
-  const checkoutState = Effect.fn("checkChanged.checkoutState")(function* (head: string) {
-    const hash = NodeCrypto.createHash("sha256").update(`${head}\0`);
-    const fields = yield* names([
-      "diff-tree",
-      "-r",
-      "-z",
-      "--no-renames",
-      head,
-      yield* checkedTree,
-    ]);
-    for (let index = 0; index + 1 < fields.length; index += 2) {
-      const [from, to] = fields[index]!.slice(1).split(" ");
-      const modeChanged = from !== "000000" && to !== "000000" && from !== to;
-      if (modeChanged || (from === "000000" && to !== "100644")) {
-        hash.update(`${to}\0${fields[index + 1]}\0`);
-      }
-    }
-    // Windows files carry no execute bits.
-    if (platform === "win32") return hash.digest("hex");
-    const target = Option.liftThrowable((file: string) => NodeFS.statSync(inRoot(file)));
-    const runnable = Option.liftThrowable((file: string) =>
-      NodeFS.accessSync(inRoot(file), NodeFS.constants.X_OK),
-    );
-    const executables: Array<string> = [];
-    // Git lists an embedded repository, and checks out a gitlink, as one directory.
-    const add = (file: string): void => {
-      const entry = unlessAbsent(() => NodeFS.lstatSync(inRoot(file)));
-      if (entry?.isDirectory()) {
-        for (const child of NodeFS.readdirSync(inRoot(file), {
-          encoding: "buffer",
-          withFileTypes: true,
-        })) {
-          const [name] = gitPaths(child.name);
-          if (!(child.isDirectory() && (name === ".git" || name === "node_modules"))) {
-            add(`${file}/${name}`);
-          }
-        }
-        return;
-      }
-      // A link that leads nowhere or loops is no file anyone may run.
-      const info = entry?.isSymbolicLink() ? Option.getOrUndefined(target(file)) : entry;
-      // A runner in the file's group, or outside it, may run a file its owner may not, so any
-      // execute bit is an input, beside whether this runner may.
-      if (info?.isFile() && (info.mode & 0o111) !== 0) {
-        const bits = (info.mode & 0o111).toString(8);
-        executables.push(
-          `executable on disk\0${bits}\0${Option.isSome(runnable(file))}\0${file}\0`,
-        );
-      }
-    };
-    // Where core.ignoreCase is on, Git's listings leave out an untracked file whose name differs from
-    // a tracked one only in case.
-    const others = yield* names([
-      "-c",
-      "core.ignoreCase=false",
-      "ls-files",
-      "-z",
-      "--others",
-      "--",
-      ":(exclude,glob)**/node_modules/**",
-    ]);
-    const listed = new Set([...(yield* paths("ls-files")), ...others.filter(Boolean)]);
-    yield* Effect.try({
-      try: () => {
-        for (const file of listed) add(file.replace(/\/$/, ""));
-      },
-      catch: (cause) => `check:changed cannot read the checkout's files: ${String(cause)}`,
-    });
-    for (const entry of executables.sort()) hash.update(entry);
-    return hash.digest("hex");
   });
   const fingerprints = Effect.fn("checkChanged.fingerprints")(function* (against: string) {
     const hash = yield* sourceFingerprint(against);
@@ -1467,7 +1469,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-check-changed-tests-" });
           const head = yield* gitCommit(root, "HEAD");
           const install = yield* installed();
-          const state = yield* checkoutState(head);
+          const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
           const cache = path.join(temp, "cache");
           const { finish } = yield* stageTestCache(
             yield* testCachePartition(path.join(slotDirectory, "tests"), head),
@@ -1477,7 +1479,8 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
               if ((yield* gitCommit(root, "HEAD")) !== head) return "";
               const fingerprint = yield* testFingerprint(head, yield* installed());
               const git = yield* Effect.try({ try: () => gitEnvironment(), catch: String });
-              return `${fingerprint}\0${yield* checkoutState(head)}\0${git}`;
+              const state = yield* checkoutState({ root, objects, head, tree: yield* checkedTree });
+              return `${fingerprint}\0${state}\0${git}`;
             }),
           );
           const request = path.join(temp, "tests.json");

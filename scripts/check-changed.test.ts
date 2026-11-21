@@ -4,7 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { expect, vi } from "vite-plus/test";
+import { expect, onTestFinished, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Option from "effect/Option";
 import { assert, describe, it } from "@effect/vitest";
@@ -24,6 +24,7 @@ import { isLinuxHost, isWindowsHost } from "@t3tools/shared/testing/hostPlatform
 import {
   argumentBatches,
   adjacentTests,
+  checkoutState,
   comparisonBase,
   defaultConcurrency,
   dependencyChangeFiles,
@@ -41,6 +42,7 @@ import {
 import { cachedTestTasks } from "./lib/cached-tests.ts";
 import { stageTestCache, testCachePartition } from "./lib/staged-test-cache.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
+import { workingTree } from "../.github/scripts/check-changed-receipt.cjs";
 
 const GiB = 1024 ** 3;
 
@@ -890,14 +892,14 @@ function fixture(remotes: Record<string, "A" | "B">) {
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-check-changed-")),
   );
   const commits: Record<string, string> = {};
+  const write = (file: string, content: string) => {
+    const path = NodePath.join(root, file);
+    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+    NodeFS.writeFileSync(path, content);
+  };
+  const git = (...args: Array<string>) =>
+    NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", env }).trim();
   try {
-    const write = (file: string, content: string) => {
-      const path = NodePath.join(root, file);
-      NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
-      NodeFS.writeFileSync(path, content);
-    };
-    const git = (...args: Array<string>) =>
-      NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8", env }).trim();
     git("init");
     for (const name of ["A", "B", "C"]) {
       write(`${name}.txt`, name);
@@ -916,6 +918,8 @@ function fixture(remotes: Record<string, "A" | "B">) {
   return {
     commits,
     root,
+    git,
+    write,
     [Symbol.dispose]() {
       NodeFS.rmSync(root, { recursive: true, force: true });
     },
@@ -1562,91 +1566,137 @@ it("skips a test by the host capabilities the run probes, which key its cached r
   expect(next.stdout).toContain("ran with symlinks");
 });
 
-function rerunsAfterModeChange(
+// workingTree runs Git with this process's environment, which a hook can point at another repository.
+function isolateGit() {
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith("GIT_")) vi.stubEnv(name, undefined);
+  }
+  for (const [name, value] of Object.entries(env)) {
+    if (name.startsWith("GIT_")) vi.stubEnv(name, value);
+  }
+  onTestFinished(() => {
+    vi.unstubAllEnvs();
+  });
+}
+
+const stateChangesWithMode = (
   kind: string,
   mode: string,
   fileMode: boolean,
   name: string,
   from = 0o755,
-) {
-  using project = launcherFixture();
-  const tool = NodePath.join(project.root, name);
-  const commit = (file = name) => {
-    project.git("add", file);
-    project.git("commit", "-m", "tool");
-  };
-  if (kind === "case-folded untracked") {
-    project.write(name.toLowerCase(), "#!/bin/sh\necho other\n");
-    commit(name.toLowerCase());
-    project.git("config", "core.ignoreCase", "true");
-  }
-  project.write(name, "#!/bin/sh\necho tool\n");
-  if (kind === "plain tracked") commit();
-  if (kind === "symlink placeholder") {
-    // Git checks a symlink out as a file holding its target where core.symlinks is false.
-    project.git("config", "core.symlinks", "false");
-    const blob = project.git("hash-object", "-w", name).toString().trim();
-    project.git("update-index", "--add", "--cacheinfo", `120000,${blob},${name}`);
-    commit();
-  }
-  if (kind.endsWith("embedded repository")) {
-    const nested = NodePath.join(project.root, name.split("/")[0]!);
-    for (const args of [["init"], ["add", "."], ["commit", "--allow-empty", "-m", "nested"]]) {
-      project.git("-C", nested, ...args);
+) =>
+  Effect.gen(function* () {
+    isolateGit();
+    const project = yield* Effect.acquireRelease(
+      Effect.sync(() => fixture({})),
+      (project) => Effect.sync(() => project[Symbol.dispose]()),
+    );
+    const { git, root, write } = project;
+    const tool = NodePath.join(root, name);
+    const commit = (file = name) => {
+      git("add", file);
+      git("commit", "-m", "tool");
+    };
+    write(".gitignore", ".env*\n");
+    commit(".gitignore");
+    if (kind === "case-folded untracked") {
+      write(name.toLowerCase(), "#!/bin/sh\necho other\n");
+      commit(name.toLowerCase());
+      git("config", "core.ignoreCase", "true");
     }
-  }
-  NodeFS.chmodSync(tool, from);
-  if (kind === "tracked") commit();
-  project.git("config", "core.fileMode", String(fileMode));
-  // The mode check stands for a runner that is not the file's owner.
-  project.write(
-    "fixture.test.ts",
-    `import { execFileSync } from "node:child_process";
-    import { statSync } from "node:fs";
-    import { it, expect } from "vite-plus/test";
-    it("runs the tool", () => {
-      expect(statSync(${JSON.stringify(name)}).mode & 0o111).toBe(${from & 0o111});
-      ${from & 0o100 ? `expect(execFileSync(${JSON.stringify(`./${name}`)}, { encoding: "utf8" })).toBe("tool\\n");` : ""}
-    });`,
-  );
-  const first = project.run();
-  expect(first.status, first.stdout + first.stderr).toBe(0);
-  NodeFS.chmodSync(tool, mode);
-  const next = project.run();
-  expect(next.status, next.stdout + next.stderr).toBe(1);
-  expect(next.stdout).toContain("FAIL  test");
-}
+    write(name, "#!/bin/sh\necho tool\n");
+    if (kind === "plain tracked") commit();
+    if (kind === "symlink placeholder") {
+      // Git checks a symlink out as a file holding its target where core.symlinks is false.
+      git("config", "core.symlinks", "false");
+      const blob = git("hash-object", "-w", name);
+      git("update-index", "--add", "--cacheinfo", `120000,${blob},${name}`);
+      commit();
+    }
+    if (kind.endsWith("embedded repository")) {
+      const nested = NodePath.join(root, name.split("/")[0]!);
+      for (const args of [["init"], ["add", "."], ["commit", "--allow-empty", "-m", "nested"]]) {
+        git("-C", nested, ...args);
+      }
+    }
+    NodeFS.chmodSync(tool, from);
+    if (kind === "tracked") commit();
+    git("config", "core.fileMode", String(fileMode));
+    const objects = NodePath.join(root, ".git", "checked-objects");
+    NodeFS.mkdirSync(objects);
+    const head = git("rev-parse", "HEAD");
+    const state = Effect.suspend(() =>
+      checkoutState({ root, objects, head, tree: workingTree(root, objects) }),
+    ).pipe(Effect.provide(NodeServices.layer));
+    const before = yield* state;
+    expect(yield* state).toBe(before);
+    NodeFS.chmodSync(tool, mode);
+    expect(yield* state).not.toBe(before);
+  });
 
 // Git for Windows records no executable bit.
-it.skipIf(isWindowsHost).each([
-  ["tracked", "644", true, "tool.sh"],
-  ["tracked", "644", false, "tool.sh"],
-  ["tracked", "744", true, "tool.sh"],
-  ["plain tracked", "744", false, "tool.sh"],
-  ["untracked", "644", false, "tool.sh"],
-  ["untracked", "644", false, 'tool"one.sh'],
-  ["ignored", "644", true, ".env.tool"],
-  ["ignored", "655", true, ".env.tool"],
-  ["symlink placeholder", "744", true, "tool.sh"],
-  ["ignored embedded repository", "744", true, ".env.nested/tool.sh"],
-  ["untracked embedded repository", "744", true, "nested/tool.sh"],
-  // Git never lists a file named .git, which only a walk into the repository finds.
-  ["untracked embedded repository", "744", true, "nested/fixture/.git"],
-])(
-  "reruns a test after a %s file it runs changes from mode 755 to %s, with core.fileMode %s (%s)",
-  rerunsAfterModeChange,
-);
+describe.skipIf(isWindowsHost)("checkoutState", () => {
+  it.effect.each([
+    ["tracked", "644", true, "tool.sh"],
+    ["tracked", "644", false, "tool.sh"],
+    ["tracked", "744", true, "tool.sh"],
+    ["plain tracked", "744", false, "tool.sh"],
+    ["untracked", "644", false, "tool.sh"],
+    ["untracked", "644", false, 'tool"one.sh'],
+    ["ignored", "644", true, ".env.tool"],
+    ["ignored", "655", true, ".env.tool"],
+    ["symlink placeholder", "744", true, "tool.sh"],
+    ["ignored embedded repository", "744", true, ".env.nested/tool.sh"],
+    ["untracked embedded repository", "744", true, "nested/tool.sh"],
+    // Git never lists a file named .git, which only a walk into the repository finds.
+    ["untracked embedded repository", "744", true, "nested/fixture/.git"],
+  ] as const)(
+    "keys the checkout state on a %s file changing from mode 755 to %s, with core.fileMode %s (%s)",
+    ([kind, mode, fileMode, name]) => stateChangesWithMode(kind, mode, fileMode, name),
+  );
 
-// A runner in the file's group may run it though its owner may not.
+  // A runner in the file's group may run it though its owner may not.
+  it.effect(
+    "keys the checkout state on a file only its group may run changing from mode 654 to 644",
+    () => stateChangesWithMode("tracked", "644", true, "tool.sh", 0o654),
+  );
+
+  // Only a disk that tells case apart holds both names.
+  it.effect.runIf(isLinuxHost)(
+    "keys the checkout state on an untracked file whose name differs in case from a tracked one changing mode",
+    () => stateChangesWithMode("case-folded untracked", "744", true, "Tool.sh"),
+  );
+});
+
+// Where core.fileMode is false, Git sees no mode change, so only the checkout state reruns the test.
 it.skipIf(isWindowsHost)(
-  "reruns a test after a file only its group may run changes from mode 654 to 644",
-  () => rerunsAfterModeChange("tracked", "644", true, "tool.sh", 0o654),
-);
-
-// Only a disk that tells case apart holds both names.
-it.runIf(isLinuxHost)(
-  "reruns a test after an untracked file whose name differs in case from a tracked one changes mode",
-  () => rerunsAfterModeChange("case-folded untracked", "744", true, "Tool.sh"),
+  "reruns a test after a tracked file it runs changes mode where Git ignores modes",
+  () => {
+    using project = launcherFixture();
+    const tool = NodePath.join(project.root, "tool.sh");
+    project.write("tool.sh", "#!/bin/sh\necho tool\n");
+    project.git("add", "tool.sh");
+    project.git("commit", "-m", "tool");
+    NodeFS.chmodSync(tool, 0o755);
+    project.git("config", "core.fileMode", "false");
+    project.write(
+      "fixture.test.ts",
+      `import { execFileSync } from "node:child_process";
+      import { statSync } from "node:fs";
+      import { it, expect } from "vite-plus/test";
+      it("runs the tool", () => {
+        expect(statSync("tool.sh").mode & 0o111).toBe(0o111);
+        expect(execFileSync("./tool.sh", { encoding: "utf8" })).toBe("tool\\n");
+      });`,
+    );
+    const first = project.run();
+    expect(first.status, first.stdout + first.stderr).toBe(0);
+    NodeFS.chmodSync(tool, 0o744);
+    const next = project.run();
+    expect(next.status, next.stdout + next.stderr).toBe(1);
+    expect(next.stdout).toContain("FAIL  test");
+  },
 );
 
 // The push gate records the tree a commit of the checkout would hold under Git's own settings.
