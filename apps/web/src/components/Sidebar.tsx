@@ -135,6 +135,7 @@ import {
 } from "../threadSelectionStore";
 import {
   canTurnThreadIntoProject,
+  topOfPinnedRunOrderKey,
   useAcknowledgeThreadWoke,
   useThreadActions,
 } from "../hooks/useThreadActions";
@@ -228,6 +229,8 @@ import {
   sidebarUserFolderKey,
   partitionSidebarUserFolders,
   buildBulkTitleRegenerationContextMenuItem,
+  buildBulkPinContextMenuItem,
+  pinOrderKeyBetween,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
@@ -2803,9 +2806,9 @@ export default function Sidebar({
   ) {
     setOptimisticDrop(null);
   }
-  const attemptPin = (threadRef: ScopedThreadRef) => {
+  const attemptPin = (threadRef: ScopedThreadRef, orderKey?: string) => {
     void (async () => {
-      const result = await pinThread(threadRef);
+      const result = await pinThread(threadRef, orderKey === undefined ? {} : { orderKey });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -3263,6 +3266,12 @@ export default function Sidebar({
       const archivableThreads = selectedThreads.filter((thread) =>
         threadRuntimeCanArchive(thread.runtime),
       );
+      const unpinnedSelectedThreads = selectedThreads.filter(
+        (thread) => serverConfigs.has(thread.environmentId) && thread.pinnedAt == null,
+      );
+      const pinMenuItem = buildBulkPinContextMenuItem({
+        unpinnedCount: unpinnedSelectedThreads.length,
+      });
       const unpinMenuItem = buildBulkUnpinContextMenuItem({
         pinnedCount: pinnedSelectedThreads.length,
       });
@@ -3281,6 +3290,9 @@ export default function Sidebar({
       const clicked = await settlePromise(() =>
         api.contextMenu.show(
           [
+            ...(pinMenuItem
+              ? [{ ...pinMenuItem, disabled: !canOperateThreads(unpinnedSelectedThreads) }]
+              : []),
             ...(unpinMenuItem
               ? [{ ...unpinMenuItem, disabled: !canOperateThreads(pinnedSelectedThreads) }]
               : []),
@@ -3350,20 +3362,22 @@ export default function Sidebar({
       );
       if (clicked._tag === "Failure" || clicked.value === null) return;
       const actionTargets =
-        clicked.value === "unpin"
-          ? pinnedSelectedThreads
-          : clicked.value === "regenerate-title"
-            ? regeneratableTitleThreads
-            : clicked.value === "archive"
-              ? archivableThreads
-              : clicked.value === "settle"
-                ? settlingThreads.flatMap((thread) => {
-                    const current = threadByKeyRef.current.get(
-                      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-                    );
-                    return current && current.settledOverride !== "settled" ? [current] : [];
-                  })
-                : selectedThreads;
+        clicked.value === "pin"
+          ? unpinnedSelectedThreads
+          : clicked.value === "unpin"
+            ? pinnedSelectedThreads
+            : clicked.value === "regenerate-title"
+              ? regeneratableTitleThreads
+              : clicked.value === "archive"
+                ? archivableThreads
+                : clicked.value === "settle"
+                  ? settlingThreads.flatMap((thread) => {
+                      const current = threadByKeyRef.current.get(
+                        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                      );
+                      return current && current.settledOverride !== "settled" ? [current] : [];
+                    })
+                  : selectedThreads;
       if (clicked.value === "settle" && actionTargets.length === 0) return;
       if (clicked.value !== "mark-unread" && !checkThreadOperations(actionTargets)) return;
       if (isThreadFolderMenuAction(clicked.value)) {
@@ -3417,6 +3431,18 @@ export default function Sidebar({
             );
           }
         }
+        return;
+      }
+      if (clicked.value === "pin") {
+        // Each pin takes its own key, so threads pinned in one go keep their selection order.
+        let orderKey = topOfPinnedRunOrderKey();
+        const pinOrder: Array<[ScopedThreadRef, string | undefined]> = [];
+        for (const thread of unpinnedSelectedThreads.toReversed()) {
+          pinOrder.push([scopeThreadRef(thread.environmentId, thread.id), orderKey]);
+          orderKey = pinOrderKeyBetween(null, orderKey ?? null) ?? undefined;
+        }
+        for (const [threadRef, key] of pinOrder) attemptPin(threadRef, key);
+        clearSelection();
         return;
       }
       if (clicked.value === "unpin") {
@@ -4605,6 +4631,7 @@ export default function Sidebar({
                             onUnsettle={attemptUnsettle}
                             onSnooze={attemptSnooze}
                             onUnsnooze={attemptUnsnooze}
+                            onPin={attemptPin}
                             onUnpin={attemptUnpin}
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}

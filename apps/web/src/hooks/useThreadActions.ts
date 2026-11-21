@@ -119,7 +119,7 @@ export class ThreadSnoozeBlockedError extends Schema.TaggedError<ThreadSnoozeBlo
   }
 }
 
-function topOfPinnedRunOrderKey(): string | undefined {
+export function topOfPinnedRunOrderKey(): string | undefined {
   let firstKey: string | null = null;
   for (const shell of readThreadShells()) {
     if (shell.pinnedAt == null || shell.pinOrderKey == null) continue;
