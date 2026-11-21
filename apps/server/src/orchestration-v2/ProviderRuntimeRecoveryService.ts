@@ -84,13 +84,27 @@ export interface ProviderRuntimeReconciliationSummary {
   readonly requeuedEffects: number;
 }
 
+type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
+
+const isLiveSession = (session: Pick<RecoverySession, "status">) =>
+  session.status !== "stopped" && session.status !== "error";
+
 export class ProviderRuntimeRecoveryService extends Context.Service<
   ProviderRuntimeRecoveryService,
   {
+    /**
+     * Cuts the work a restart stops and records the continuation of each run it cuts. Shutdown
+     * passes the sessions `prepareForShutdown` saw live, since closing them marks them stopped first.
+     */
     readonly reconcile: (
       trigger: "startup" | "shutdown",
+      sessionsLiveAtShutdown?: ReadonlyArray<RecoverySession>,
     ) => Effect.Effect<ProviderRuntimeReconciliationSummary, ProviderRuntimeRecoveryError>;
-    readonly prepareForShutdown: Effect.Effect<void, ProviderRuntimeRecoveryError>;
+    /** Records the continuations shutdown owes and returns the provider sessions still live. */
+    readonly prepareForShutdown: Effect.Effect<
+      ReadonlyArray<RecoverySession>,
+      ProviderRuntimeRecoveryError
+    >;
     readonly recover: Effect.Effect<ProviderRuntimeRecoverySummary, ProviderRuntimeRecoveryError>;
     /** Work chats wait on that a restart would stop now, as its restart note would list it. */
     readonly restartHold: Effect.Effect<OrchestrationV2RestartHold, ProviderRuntimeRecoveryError>;
@@ -422,18 +436,20 @@ export const make = Effect.gen(function* () {
       );
     if (!runStopRequested(run.id, turnItems)) return run;
   });
-  type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
-  /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
-  const sessionsLiveAtStart = (
+  /**
+   * Shared sessions stop on their first recovered thread, and shutdown closes every session before
+   * it reconciles, so each thread decides its wake from the liveness before either.
+   */
+  const sessionsLiveBeforePass = (
     projection: ProjectionStore.ProjectionRuntimeRecoveryState,
-    stoppedThisPass: ReadonlyMap<string, RecoverySession>,
+    liveBeforePass: ReadonlyMap<string, RecoverySession>,
   ) => {
     const sessions = new Map(projection.providerSessions.map((session) => [session.id, session]));
     for (const providerThread of projection.providerThreads) {
       const stopped =
         providerThread.providerSessionId === null
           ? undefined
-          : stoppedThisPass.get(providerThread.providerSessionId);
+          : liveBeforePass.get(providerThread.providerSessionId);
       if (stopped !== undefined) sessions.set(stopped.id, stopped);
     }
     return [...sessions.values()];
@@ -476,19 +492,20 @@ export const make = Effect.gen(function* () {
       trigger: "startup" | "shutdown",
       continueAfterRestart: boolean,
       lastCommittedAt: DateTime.Utc | null,
-      stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
+      liveBeforePass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
       // Cut work stopped with the server, not when this pass noticed; scheduled recovery reads it.
       const stoppedAt = lastCommittedAt === null ? now : DateTime.min(lastCommittedAt, now);
       const runs = yield* cutRuns(projection);
-      const continuationRun =
-        continueAfterRestart && trigger === "startup"
-          ? yield* unstoppedRestartResumeRun(
-              { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
-              now,
-            )
-          : undefined;
+      // The continuation commits with the cut it continues: shutdown prepared from an unlocked read,
+      // and a command holding the lock then may have started or resumed another run.
+      const continuationRun = continueAfterRestart
+        ? yield* unstoppedRestartResumeRun(
+            { ...projection, providerSessions: sessionsLiveBeforePass(projection, liveBeforePass) },
+            now,
+          )
+        : undefined;
       const { questions, messageRequestNodeIds, requests } = pendingRequestRecovery(projection);
       const cancelledBackgroundWork = restartCancelledBackgroundWork(
         projection,
@@ -860,9 +877,7 @@ export const make = Effect.gen(function* () {
           },
         });
       }
-      for (const session of projection.providerSessions.filter(
-        (candidate) => candidate.status !== "stopped" && candidate.status !== "error",
-      )) {
+      for (const session of projection.providerSessions.filter(isLiveSession)) {
         events.push({
           id: yield* allocateEventId(),
           type: "provider-session.updated",
@@ -923,11 +938,9 @@ export const make = Effect.gen(function* () {
             }),
           ]
         : [];
-      const stoppedSessions = projection.providerSessions.filter(
-        (candidate) => candidate.status !== "stopped" && candidate.status !== "error",
-      ).length;
+      const stoppedSessions = projection.providerSessions.filter(isLiveSession).length;
       let retiredEffects: number;
-      if (events.length === 0) {
+      if (events.length === 0 && effects.length === 0) {
         const retiredEffectIds = yield* outbox
           .cancelUnsettled({
             threadId: projection.thread.id,
@@ -983,6 +996,7 @@ export const make = Effect.gen(function* () {
 
   const reconcile = Effect.fn("ProviderRuntimeRecoveryService.reconcile")(function* (
     trigger: "startup" | "shutdown",
+    sessionsLiveAtShutdown: ReadonlyArray<RecoverySession> = [],
   ) {
     const continueAfterRestart = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     const resumeRequested = yield* restartResumeRequest;
@@ -1007,7 +1021,7 @@ export const make = Effect.gen(function* () {
     let stoppedSessions = 0;
     let closedRequests = 0;
     let retiredEffects = 0;
-    const stoppedThisPass = new Map<string, RecoverySession>();
+    const liveBeforePass = new Map(sessionsLiveAtShutdown.map((session) => [session.id, session]));
     for (const threadId of threadIds) {
       // Shutdown does not drain admitted commands, so read and commit under the lock they plan under.
       const reconcileThread = Effect.gen(function* () {
@@ -1031,11 +1045,11 @@ export const make = Effect.gen(function* () {
           trigger,
           enabled,
           lastCommittedAt,
-          stoppedThisPass,
+          liveBeforePass,
         );
         return { projection, result };
       });
-      // A busy thread keeps its pre-reconciliation state for startup. Shutdown already recorded its intent.
+      // A thread still busy keeps its state for startup, which cuts and continues what it then shows.
       const reconciled = yield* trigger === "shutdown"
         ? threadDispatch.withLockIfAvailable(threadId, reconcileThread)
         : threadDispatch.withLock(threadId, reconcileThread).pipe(Effect.asSome);
@@ -1044,10 +1058,8 @@ export const make = Effect.gen(function* () {
         continue;
       }
       const { projection, result } = reconciled.value;
-      for (const session of projection.providerSessions) {
-        if (session.status !== "stopped" && session.status !== "error") {
-          stoppedThisPass.set(session.id, session);
-        }
+      for (const session of projection.providerSessions.filter(isLiveSession)) {
+        liveBeforePass.set(session.id, session);
       }
       terminalizedRuns += result.terminalizedRuns;
       stoppedSessions += result.stoppedSessions;
@@ -1071,12 +1083,17 @@ export const make = Effect.gen(function* () {
   const prepareForShutdown = Effect.gen(function* () {
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     const resumeRequested = yield* restartResumeRequest;
-    if (!enabled && !resumeRequested) return;
+    if (!enabled && !resumeRequested) return [];
+    const liveSessions = new Map<string, RecoverySession>();
     const threadIds = yield* projections.getRecoveryThreadIds("runtime");
     for (const threadId of threadIds) {
       yield* Effect.gen(function* () {
-        // The outbox checks Stop atomically at insertion and the worker revalidates the source.
+        // Reads without the thread lock, so reconciliation also records the run it cuts. The outbox
+        // checks Stop atomically at insertion and the worker revalidates the source.
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
+        for (const session of projection.providerSessions.filter(isLiveSession)) {
+          liveSessions.set(session.id, session);
+        }
         if (!continuesAfterRestart(resumeRequested, enabled, projection.thread.projectId)) return;
         const run = yield* unstoppedRestartResumeRun(projection, yield* DateTime.now);
         if (!run) return;
@@ -1096,6 +1113,7 @@ export const make = Effect.gen(function* () {
         ),
       );
     }
+    return [...liveSessions.values()];
   }).pipe(
     Effect.mapError((cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause })),
   );

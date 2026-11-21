@@ -785,9 +785,18 @@ it.effect.each([
             ),
           ),
         );
-        if (trigger === "shutdown") yield* recovery.prepareForShutdown;
-        yield* recovery.reconcile(trigger);
-        const recorded = [...writes.flatMap((write) => write.effects), ...commits[0]!.effects];
+        const sessionsLiveAtShutdown =
+          trigger === "shutdown" ? yield* recovery.prepareForShutdown : [];
+        yield* recovery.reconcile(trigger, sessionsLiveAtShutdown);
+        // The outbox keeps one row per effect id: shutdown's prepare and its cut record one wake.
+        const recorded = [
+          ...new Map(
+            [...writes.flatMap((write) => write.effects), ...commits[0]!.effects].map((effect) => [
+              effect.id,
+              effect,
+            ]),
+          ).values(),
+        ];
         assert.deepEqual(
           recorded.map((effect) => effect.request),
           wakes ? [{ type: "provider-runtime.continue", sourceRunId: runId }] : [],
@@ -943,8 +952,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
         ),
       ),
     );
-    yield* recovery.prepareForShutdown;
-    yield* recovery.reconcile("shutdown");
+    yield* recovery.reconcile("shutdown", yield* recovery.prepareForShutdown);
     assert.isFalse(
       commits.some((commit) => commit.events.some((event) => event.type === "run.updated")),
     );
@@ -1370,119 +1378,195 @@ it.effect(
     }),
 );
 
+// A command or provider event admitted before shutdown can hold a chat's lock while shutdown prepares,
+// and change the chat's run before it lets go. Reconciliation records the continuation of the run it
+// actually cuts, with the sessions live before shutdown closed them.
 it.effect.each([
-  "lock stays held",
-  "lock released during session shutdown",
-  "projection fails",
-] as const)("recovers a continuation through shutdown and startup when one %s", (scenario) =>
-  Effect.gen(function* () {
-    const busyThreadId = ThreadId.make("thread:busy");
-    const busyRunId = RunId.make("run:busy");
-    const base = makeProjection();
-    let busy = {
-      ...base,
-      thread: { ...base.thread, id: busyThreadId },
-      runs: [{ ...base.runs[0]!, id: busyRunId }],
-      providerThreads: [{ ...base.providerThreads[0]!, appThreadId: busyThreadId }],
-    };
-    const prepared = new Map<string, EffectOutbox.PendingOrchestrationEffectV2>();
-    const reconciled: ThreadId[] = [];
-    const acquired = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor.pipe(
-      Effect.provide(ThreadCommandExecutor.layer),
-    );
-    const holder = yield* locks
-      .withLock(
-        busyThreadId,
-        Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
-      )
-      .pipe(Effect.forkScoped);
-    yield* Deferred.await(acquired);
-    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, locks),
-          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-          Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getRecoveryThreadIds: () => Effect.succeed([busyThreadId, threadId]),
-            getThreadRecords: () => Effect.succeed(base),
-            getRuntimeRecoveryProjection: (id) =>
-              id === busyThreadId && scenario === "projection fails"
-                ? Effect.fail(
-                    new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
-                  )
-                : Effect.succeed(id === busyThreadId ? busy : base),
+  ["lock stays held", "changes nothing"],
+  ["lock stays held", "starts a follow-up"],
+  ["lock released during session shutdown", "changes nothing"],
+  ["lock released during session shutdown", "starts a follow-up"],
+  ["lock released during session shutdown", "resumes a wait"],
+  ["projection fails", "changes nothing"],
+] as const)(
+  "recovers the run a restart cuts through shutdown and startup when one %s and its holder %s",
+  ([scenario, change]) =>
+    Effect.gen(function* () {
+      const busyThreadId = ThreadId.make("thread:busy");
+      const busyRunId = RunId.make("run:busy");
+      const followUpRunId = RunId.make("run:busy-next");
+      const base = makeProjection();
+      let busy = {
+        ...base,
+        thread: { ...base.thread, id: busyThreadId },
+        runs: [
+          {
+            ...base.runs[0]!,
+            id: busyRunId,
+            status: change === "resumes a wait" ? "waiting" : "running",
+          },
+        ],
+        providerThreads: [{ ...base.providerThreads[0]!, appThreadId: busyThreadId }],
+        providerTurns: [
+          {
+            ...base.providerTurns[0]!,
+            status: change === "resumes a wait" ? "completed" : "running",
+          },
+        ],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const merged = <T extends { readonly id: string }>(records: ReadonlyArray<T>, record: T) =>
+        records.some((candidate) => candidate.id === record.id)
+          ? records.map((candidate) => (candidate.id === record.id ? record : candidate))
+          : [...records, record];
+      const enqueued = new Map<string, EffectOutbox.PendingOrchestrationEffectV2>();
+      const reconciled: ThreadId[] = [];
+      const acquired = yield* Deferred.make<void>();
+      const mayCommit = yield* Deferred.make<void>();
+      const committed = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor.pipe(
+        Effect.provide(ThreadCommandExecutor.layer),
+      );
+      const holder = yield* locks
+        .withLock(
+          busyThreadId,
+          Effect.gen(function* () {
+            yield* Deferred.succeed(acquired, undefined);
+            // The holder commits after shutdown read the chat.
+            yield* Deferred.await(mayCommit);
+            if (change === "starts a follow-up") {
+              const completedAt = yield* DateTime.now;
+              busy = {
+                ...busy,
+                runs: [
+                  { ...busy.runs[0]!, status: "completed", completedAt },
+                  {
+                    ...busy.runs[0]!,
+                    id: followUpRunId,
+                    ordinal: 2,
+                    status: "starting",
+                    activeAttemptId: RunAttemptId.make("attempt:busy-next"),
+                  },
+                ],
+                providerTurns: [{ ...busy.providerTurns[0]!, status: "completed" }],
+              };
+            }
+            if (change === "resumes a wait") {
+              busy = {
+                ...busy,
+                runs: [{ ...busy.runs[0]!, status: "running" }],
+                providerTurns: [{ ...busy.providerTurns[0]!, status: "running" }],
+              };
+            }
+            yield* Deferred.succeed(committed, undefined);
+            yield* Deferred.await(release);
           }),
-          Layer.mock(EventSink.EventSinkV2)({
-            lastCommittedAt: Effect.succeed(null),
-            writeWithEffects: ({ effects }) =>
-              Effect.sync(() => {
-                for (const effect of effects) prepared.set(effect.id, effect);
-                return [];
-              }),
-            commitCommand: (input) =>
-              Effect.sync(() => {
-                reconciled.push(input.threadId);
-                if (input.threadId === busyThreadId) {
-                  for (const event of input.events) {
-                    if (event.type === "run.updated") busy.runs = [event.payload];
-                    if (event.type === "provider-turn.updated")
-                      busy.providerTurns = [event.payload];
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(acquired);
+      const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(ThreadCommandExecutor.ThreadCommandExecutor, locks),
+            ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getRecoveryThreadIds: () => Effect.succeed([busyThreadId, threadId]),
+              getThreadRecords: () => Effect.succeed(base),
+              getRuntimeRecoveryProjection: (id) =>
+                id === busyThreadId && scenario === "projection fails"
+                  ? Effect.fail(
+                      new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
+                    )
+                  : Effect.succeed(id === busyThreadId ? busy : base),
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              lastCommittedAt: Effect.succeed(null),
+              writeWithEffects: ({ effects }) =>
+                Effect.sync(() => {
+                  for (const effect of effects) enqueued.set(effect.id, effect);
+                  return [];
+                }),
+              commitCommand: (input) =>
+                Effect.sync(() => {
+                  reconciled.push(input.threadId);
+                  for (const effect of input.effects ?? []) enqueued.set(effect.id, effect);
+                  if (input.threadId === busyThreadId) {
+                    for (const event of input.events) {
+                      if (event.type === "run.updated")
+                        busy = { ...busy, runs: merged(busy.runs, event.payload) };
+                      if (event.type === "provider-turn.updated")
+                        busy = {
+                          ...busy,
+                          providerTurns: merged(busy.providerTurns, event.payload),
+                        };
+                    }
                   }
-                }
-                return { committed: true, cancelledEffectCount: 0 } as never;
-              }),
-          }),
-          IdAllocator.layer,
-          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
-          Layer.mock(EffectOutbox.EffectOutboxV2)({
-            cancelUnsettled: () => Effect.succeed([]),
-            signalCancellations: () => Effect.void,
-            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
-          }),
+                  return { committed: true, cancelledEffectCount: 0 } as never;
+                }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
+            Layer.mock(EffectOutbox.EffectOutboxV2)({
+              cancelUnsettled: () => Effect.succeed([]),
+              signalCancellations: () => Effect.void,
+              reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+            }),
+          ),
         ),
-      ),
-    );
-    const shutdown = yield* Effect.gen(function* () {
-      yield* recovery.prepareForShutdown;
-      // ProviderSessionManager closes sessions between prepare and reconcile in the runtime finalizer.
-      busy = {
-        ...busy,
-        providerSessions: busy.providerSessions.map((session) => ({
-          ...session,
-          status: "stopped",
-        })),
-      };
-      if (scenario === "lock released during session shutdown") {
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(holder);
+      );
+      const shutdown = yield* Effect.gen(function* () {
+        const sessionsLiveAtShutdown = yield* recovery.prepareForShutdown;
+        yield* Deferred.succeed(mayCommit, undefined);
+        yield* Deferred.await(committed);
+        // ProviderSessionManager closes sessions between prepare and reconcile in the runtime finalizer.
+        busy = {
+          ...busy,
+          providerSessions: busy.providerSessions.map((session) => ({
+            ...session,
+            status: "stopped",
+          })),
+        };
+        if (scenario === "lock released during session shutdown") {
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(holder);
+        }
+        yield* recovery.reconcile("shutdown", sessionsLiveAtShutdown);
+      }).pipe(Effect.timeoutOption("5 seconds"), Effect.forkScoped);
+      yield* TestClock.adjust("6 seconds");
+      assert.isTrue(Option.isSome(yield* Fiber.join(shutdown)), "shutdown waited for a held lock");
+      assert.isTrue(enqueued.has(EffectOutbox.restartContinuationEffectId(runId)));
+      assert.deepEqual(
+        reconciled,
+        scenario === "lock released during session shutdown"
+          ? [busyThreadId, threadId]
+          : [threadId],
+      );
+      if (scenario === "projection fails") return;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holder);
+      yield* recovery.recover;
+      const cutRunId = change === "starts a follow-up" ? followUpRunId : busyRunId;
+      assert.deepEqual(enqueued.get(EffectOutbox.restartContinuationEffectId(cutRunId))?.request, {
+        type: "provider-runtime.continue",
+        sourceRunId: cutRunId,
+      });
+      assert.equal(busy.runs.find((run) => run.id === cutRunId)?.status, "cancelled");
+      if (change === "starts a follow-up") {
+        // The follow-up never reached its provider, so it starts again with its own message.
+        assert.deepEqual(
+          (yield* resumeCommands(busy, followUpRunId)).commands.map((command) => command.commandId),
+          [CommandId.make(`command:restart-retry:${followUpRunId}:1`)],
+        );
+        assert.deepEqual(yield* continuationDispatches(busy, busyRunId), []);
+        return;
       }
-      yield* recovery.reconcile("shutdown");
-    }).pipe(Effect.timeoutOption("5 seconds"), Effect.forkScoped);
-    yield* TestClock.adjust("6 seconds");
-    assert.isTrue(Option.isSome(yield* Fiber.join(shutdown)), "shutdown waited for a held lock");
-    assert.isTrue(prepared.has(EffectOutbox.restartContinuationEffectId(runId)));
-    assert.deepEqual(
-      reconciled,
-      scenario === "lock released during session shutdown" ? [busyThreadId, threadId] : [threadId],
-    );
-    if (scenario === "projection fails") return;
-    assert.deepEqual(prepared.get(EffectOutbox.restartContinuationEffectId(busyRunId))?.request, {
-      type: "provider-runtime.continue",
-      sourceRunId: busyRunId,
-    });
-    yield* Deferred.succeed(release, undefined);
-    yield* Fiber.join(holder);
-    yield* recovery.recover;
-    assert.equal(busy.runs[0]?.status, "cancelled");
-    assert.deepEqual(
-      (yield* continuationDispatches(busy, busyRunId)).map(
-        (command) => command.restartContinuationOfRunId,
-      ),
-      [busyRunId],
-    );
-  }).pipe(Effect.provide(TestClock.layer())),
+      assert.deepEqual(
+        (yield* continuationDispatches(busy, busyRunId)).map(
+          (command) => command.restartContinuationOfRunId,
+        ),
+        [busyRunId],
+      );
+    }).pipe(Effect.provide(TestClock.layer())),
 );
 
 // The restart keeps a question answerable by message, and the answer continues the thread. Every
@@ -1598,10 +1682,10 @@ const cutBeforePrompt = (extra: Record<string, unknown> = {}) =>
     providerTurns: [],
   }) as unknown as OrchestrationV2ThreadProjection;
 
-const resumeCommands = (projection: OrchestrationV2ThreadProjection) =>
+const resumeCommands = (projection: OrchestrationV2ThreadProjection, sourceRunId: RunId = runId) =>
   Effect.gen(function* () {
     const commands: Array<OrchestrationV2ServerCommand> = [];
-    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+    yield* continueRestartedRun({ threadId: projection.thread.id, sourceRunId }).pipe(
       Effect.provide(
         Layer.merge(
           Layer.mock(ThreadManagementService.ThreadManagementService)({

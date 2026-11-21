@@ -274,7 +274,12 @@ in the durable outbox. That intent survives another restart before provider star
 Continuation effects wait for activation; a slow provider must not delay the server's
 readiness or the launcher's commit boundary. Graceful shutdown captures intent before
 closing providers, then reconciles after ingestion has stopped so a late completion
-cannot be overwritten by a stale cancellation.
+cannot be overwritten by a stale cancellation. Capture reads each chat without its lock,
+so a command or provider event admitted earlier can still start or resume a run before
+reconciliation takes the lock. Reconciliation therefore commits the continuation of the
+run it cuts together with the cut, judging liveness by the sessions capture saw open,
+since closing providers marks them stopped. A chat whose lock stays held is left for
+startup, which cuts and continues the run it then finds.
 
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, provider selection, newer user work, a stop the user requested,
