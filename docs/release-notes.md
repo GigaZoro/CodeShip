@@ -1,3 +1,7 @@
+## 2026-11-21 — Libraries are upgraded every week
+
+- A weekly task now moves every library, Node, pnpm, Electron, Expo and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It ports local patches, keeps upstream's mobile forks as they are, and lands only after the full checks and two reviewers pass. A version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+
 ## 2026-11-21 — A landing reads real git history and refuses marked files
 
 - The landing turn, its checks receipt, the pre-push hook, `check:changed` and the upstream sync read git history past replace refs and grafts, so an invented ancestry can no longer let a push move main past a commit it never held.
