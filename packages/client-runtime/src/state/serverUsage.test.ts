@@ -21,6 +21,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import {
@@ -80,6 +81,10 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
     input: UsageSummaryInput,
   ) => Effect.Effect<void, UsageReadError> = () => Effect.void,
   sources: (input: UsageSummaryInput) => readonly UsageSource[] = () => [],
+  progress?: (request: number) => {
+    readonly output: number;
+    readonly partialReason?: UsageSummary["partialReason"];
+  },
 ) {
   const events = yield* Queue.unbounded<ServerConfigStreamEvent>();
   let settings = DEFAULT_SERVER_SETTINGS;
@@ -94,10 +99,11 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
       ),
     [WS_METHODS.serverGetUsageSummary]: (input: UsageSummaryInput) =>
       Effect.gen(function* () {
-        requests += 1;
+        const ordinal = ++requests;
         inputs.push(input);
         const price = settings.usagePriceOverrides["custom-model"]?.inputCostPerMillionTokens ?? 0;
-        yield* beforeRead(requests, input);
+        yield* beforeRead(ordinal, input);
+        const step = progress?.(ordinal);
         return {
           contractVersion: USAGE_CONTRACT_VERSION,
           readAt: "2026-09-04T12:00:00Z",
@@ -111,7 +117,7 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
                 uncachedInputTokens: 1_000_000,
                 cachedInputTokens: 0,
                 cacheCreationTokens: 0,
-                outputTokens: 0,
+                outputTokens: step?.output ?? 0,
                 reasoningTokens: 0,
               },
               costUsd: price,
@@ -123,6 +129,7 @@ const makeHarness = Effect.fn("ServerUsageTest.makeHarness")(function* (
             },
           ],
           sources: sources(input),
+          ...(step?.partialReason === undefined ? {} : { partialReason: step.partialReason }),
           pricing: PRICING,
           scanDurationMs: 0,
         } satisfies UsageSummary;
@@ -329,6 +336,40 @@ it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
         },
       ]);
       expect(harness.requests()).toBe(2);
+      unmount();
+    }),
+  ),
+);
+
+it.effect("updates the same Usage query from five to twelve tokens after a partial follow-up", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(
+        (request) =>
+          request === 2
+            ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        (input) => [cursorSource(!input.awaitRefresh)],
+        (request) =>
+          request === 2
+            ? { output: 5, partialReason: "scanTimedOut" }
+            : { output: request === 1 ? 5 : 12 },
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(started);
+      const current = harness.registry.get(summary);
+      expect(AsyncResult.isSuccess(current) && current.value.buckets[0]?.totals.outputTokens).toBe(
+        5,
+      );
+      yield* Deferred.succeed(release, undefined);
+      yield* TestClock.adjust("1 second");
+      expect(
+        (yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens,
+      ).toBe(12);
+      expect(harness.requests()).toBe(3);
       unmount();
     }),
   ),

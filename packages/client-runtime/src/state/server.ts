@@ -13,6 +13,7 @@ import {
   type ServerProviderWorkspaceSnapshot,
   type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateResult,
+  type UsageSummary,
   offlineVacuumBytes,
   shouldRecommendDatabaseCompaction,
   WS_METHODS,
@@ -869,6 +870,27 @@ export function recordFetchedWorkspaceSnapshot(
   return [...kept, { instanceId: input.instanceId, snapshot, basis }].slice(
     -MAX_FETCHED_WORKSPACE_SNAPSHOTS,
   );
+}
+
+/** A failed follow-up leaves these figures final, so a source still refreshing shows as partial. */
+function markUnrefreshedSources(summary: UsageSummary): UsageSummary {
+  return {
+    ...summary,
+    sources: summary.sources.map(({ refreshing, ...source }) =>
+      refreshing !== true
+        ? source
+        : {
+            ...source,
+            status: source.status === "failed" ? ("failed" as const) : ("partial" as const),
+            message: [
+              t("Could not refresh this usage source. Showing its last values."),
+              source.message,
+            ]
+              .filter(Boolean)
+              .join(" "),
+          },
+    ),
+  };
 }
 
 export function createServerEnvironmentAtoms<R, E>(
@@ -1866,43 +1888,33 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
-      execute: (input, emit) =>
-        request(WS_METHODS.serverGetUsageSummary, input).pipe(
-          Effect.filterOrElse(
-            (summary) => !summary.sources.some((source) => source.refreshing === true),
-            (summary) =>
-              emit(summary).pipe(
-                Effect.andThen(
-                  request(WS_METHODS.serverGetUsageSummary, { ...input, awaitRefresh: true }),
-                ),
-                Effect.catch((error) =>
-                  Effect.logWarning("Could not refresh slow usage sources.").pipe(
-                    Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
-                    Effect.as({
-                      ...summary,
-                      sources: summary.sources.map(({ refreshing, ...source }) =>
-                        refreshing !== true
-                          ? source
-                          : {
-                              ...source,
-                              status:
-                                source.status === "failed"
-                                  ? ("failed" as const)
-                                  : ("partial" as const),
-                              message: [
-                                t("Could not refresh this usage source. Showing its last values."),
-                                source.message,
-                              ]
-                                .filter(Boolean)
-                                .join(" "),
-                            },
-                      ),
-                    }),
-                  ),
-                ),
+      execute: Effect.fn("ServerEnvironment.readUsageSummary")(function* (input, emit) {
+        let summary = yield* request(WS_METHODS.serverGetUsageSummary, input);
+        for (let attempt = 0; attempt < 20; attempt++) {
+          if (
+            summary.partialReason === undefined &&
+            !summary.sources.some((source) => source.refreshing)
+          )
+            break;
+          yield* emit(summary);
+          if (attempt > 0) yield* Effect.sleep("1 second");
+          const refreshed = yield* request(WS_METHODS.serverGetUsageSummary, {
+            ...input,
+            awaitRefresh: true,
+          }).pipe(
+            Effect.asSome,
+            Effect.catch((error) =>
+              Effect.logWarning("Could not refresh slow usage sources.").pipe(
+                Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
+                Effect.as(Option.none()),
               ),
-          ),
-        ),
+            ),
+          );
+          if (Option.isNone(refreshed)) return markUnrefreshedSources(summary);
+          summary = refreshed.value;
+        }
+        return summary;
+      }),
     }),
     resourceTelemetry: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry",
