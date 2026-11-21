@@ -13,6 +13,7 @@ const {
   checkBudgetSeconds,
   acquire,
   land,
+  overlappingWorktrees,
   release,
   tryAcquire,
   verifyPush,
