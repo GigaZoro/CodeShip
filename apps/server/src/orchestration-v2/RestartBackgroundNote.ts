@@ -635,16 +635,23 @@ export function continuationFailedBeforePrompt(
 
 const CONTINUATION_START_RETRY_DELAYS_MS = [60_000, 180_000];
 
-/** Backoff before restarting a continuation that failed to start, or undefined to let it fail. */
+/**
+ * Backoff before restarting a continuation that failed to start, or undefined to let it fail. A
+ * Stop's marker on the run ends its retries.
+ */
 export function continuationStartRetryDelayMs(
   run: OrchestrationV2Run,
   projection: {
     readonly runs: ReadonlyArray<OrchestrationV2Run>;
     readonly providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId">>;
-    readonly turnItems: Parameters<typeof latestRootProviderFailure>[1];
+    readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
   },
 ): number | undefined {
-  if (!continuationFailedBeforePrompt(run, projection.providerTurns)) return;
+  if (
+    !continuationFailedBeforePrompt(run, projection.providerTurns) ||
+    runStopRequested(run.id, projection.turnItems)
+  )
+    return;
   // These fail the same way however often they start.
   const failureClass = latestRootProviderFailure(run, projection.turnItems)?.class;
   if (

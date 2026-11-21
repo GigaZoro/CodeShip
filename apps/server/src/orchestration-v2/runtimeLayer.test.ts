@@ -6613,7 +6613,12 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  it.effect.each([false, true, "interrupt-before-retry"] as const)(
+  it.effect.each([
+    false,
+    true,
+    "interrupt-before-retry",
+    "interrupt-before-retry beside a starting run",
+  ] as const)(
     "restarts a continuation that failed before its prompt, unless stopped (%s)",
     (stopped) =>
       Effect.gen(function* () {
@@ -6722,8 +6727,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           );
         const retryReady = yield* Deferred.make<void>();
         const releaseRetry = yield* Deferred.make<void>();
+        const retryDecided = yield* Deferred.make<void>();
         const withLock = executor.withLock;
-        let pauseRetry = stopped === "interrupt-before-retry";
+        const interruptsBeforeRetry = typeof stopped === "string";
+        let pauseRetry = interruptsBeforeRetry;
         const pauseBeforeRetry: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] =
           (key, effect) => {
             if (key !== threadId || !pauseRetry) return withLock(key, effect);
@@ -6731,6 +6738,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             return Deferred.succeed(retryReady, undefined).pipe(
               Effect.andThen(Deferred.await(releaseRetry)),
               Effect.andThen(withLock(key, effect)),
+              Effect.ensuring(Deferred.succeed(retryDecided, undefined)),
             );
           };
         using _lock = vi.spyOn(executor, "withLock").mockImplementation(pauseBeforeRetry);
@@ -6769,7 +6777,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             },
           },
         ]);
-        if (stopped === "interrupt-before-retry") {
+        let unrelated: OrchestrationV2Run | undefined;
+        if (interruptsBeforeRetry) {
           yield* Deferred.await(retryReady);
           assert.equal((yield* runFor("continuation"))!.status, "failed");
           assert.isTrue(
@@ -6777,6 +6786,23 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
               yield* outbox.get(EffectOutbox.restartContinuationEffectId(continuation.id)),
             ),
           );
+          if (stopped === "interrupt-before-retry beside a starting run") {
+            // It supersedes the chain only until it is cancelled before it starts.
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make(`${threadId}:message:unrelated`),
+              threadId,
+              messageId: messageId("unrelated"),
+              text: "Unrelated work",
+              attachments: [],
+              modelSelection,
+              dispatchMode: { type: "start_immediately" },
+            });
+            unrelated = yield* runFor("unrelated");
+            assert.include(["preparing", "starting", "running"], unrelated?.status);
+          }
           const interrupted = yield* threads.interruptThread({
             projectId: ProjectId.make(`${threadId}:project`),
             threadId,
@@ -6784,10 +6810,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             commandId: CommandId.make(`${threadId}:interrupt-cut`),
           });
           assert.equal(interrupted.type, "interrupt_requested");
+          if (unrelated !== undefined)
+            assert.equal((yield* runFor("unrelated"))?.status, unrelated.status);
           yield* Deferred.succeed(releaseRetry, undefined);
         }
-        yield* Fiber.join(held);
-        if (stopped === "interrupt-before-retry") {
+        // The unrelated run leaves the queue as it was; the failure holds it only when it ran last.
+        yield* unrelated === undefined ? Fiber.join(held) : Deferred.await(retryDecided);
+        if (interruptsBeforeRetry) {
           assert.isTrue(
             Option.isNone(
               yield* outbox.get(EffectOutbox.restartContinuationEffectId(continuation.id)),

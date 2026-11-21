@@ -932,6 +932,80 @@ it.effect("interrupting the restart source stops children owned by every run in 
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect.each(["run.interrupt", "run.interrupt only if active", "thread.stop"] as const)(
+  "%s cancels a chain's delayed restart while another run is active",
+  (stop) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread:stop-restart-beside-active-run");
+      yield* createWatchingThread(threadId, 22);
+      yield* send(threadId, "cut", "start_immediately");
+      yield* send(threadId, "continue", "queue_after_active");
+      const [cut, continuation] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+      assert.isDefined(cut);
+      assert.isDefined(continuation);
+      const now = yield* DateTime.now;
+      yield* projections.apply({
+        id: EventId.make("beside-active:cut"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...cut, status: "cancelled", startedAt: now, completedAt: now },
+      });
+      yield* projections.apply({
+        id: EventId.make("beside-active:continuation-failed"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...continuation,
+          restartContinuationOfRunId: cut.id,
+          status: "failed",
+          startedAt: null,
+          completedAt: now,
+        },
+      });
+      yield* send(threadId, "unrelated", "start_immediately");
+      const active = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+      // Setup effects would start the runs on a provider; only Stop's effects run.
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+      yield* outbox.enqueue([
+        EffectOutbox.restartContinuationEffect({
+          commandId: CommandId.make("retry-beside-active-run"),
+          threadId,
+          sourceRunId: continuation.id,
+          availableAt: DateTime.add(now, { minutes: 1 }),
+        }),
+      ]);
+      assert.include(["preparing", "starting", "running"], active.status);
+      assert.isTrue(yield* orchestrator.restartContinuationPending(continuation));
+
+      const commandId = CommandId.make("stop-restart-beside-active-run");
+      yield* orchestrator.dispatch(
+        stop === "thread.stop"
+          ? { type: stop, commandId, threadId }
+          : {
+              type: "run.interrupt",
+              commandId,
+              threadId,
+              runId: cut.id,
+              ...(stop === "run.interrupt" ? {} : { onlyIfActive: true }),
+            },
+      );
+      assert.isFalse(yield* orchestrator.restartContinuationPending(continuation));
+      if (stop === "thread.stop") return;
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(after.runs.find((run) => run.id === active.id)?.status, active.status);
+      assert.notInclude(
+        (yield* outbox.listByCommandId(commandId)).map(({ request }) => request.type),
+        "provider-turn.interrupt",
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect.each(["pending retry", "owed wake"] as const)(
   "thread Stop reaches the restart a completed run's lost work still owes (%s)",
   (owing) =>

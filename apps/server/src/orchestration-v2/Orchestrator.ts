@@ -2837,7 +2837,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { turnItemTypes: ["error", "run_interrupt_request"], turnItemRunIds: [runId] },
     );
     const run = projection.runs.find((candidate) => candidate.id === runId);
-    if (run === undefined || runStopRequested(runId, projection.turnItems)) return;
+    if (run === undefined) return;
     const delayMs = continuationStartRetryDelayMs(run, projection);
     if (delayMs === undefined) return;
     const commandId = CommandId.make(`command:restart-continuation-retry:${run.id}`);
@@ -14200,7 +14200,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runs: ReadonlyArray<OrchestrationV2Run>,
       scope: "pending-restart" | "shutdown-candidate" = "shutdown-candidate",
     ) {
-      if (supersededRun(run, runs)) return false;
+      // A later run cancelled before it starts stops superseding this one, so a restart or a start
+      // retry this run is owed still runs then.
+      const superseded = supersededRun(run, runs);
+      if (
+        superseded &&
+        !(run.status === "failed" && run.restartContinuationOfRunId !== undefined) &&
+        !(yield* awaitsRestartContinuation(run))
+      )
+        return false;
       const records = yield* projectionStore.getThreadRecords(
         run.threadId,
         ["providerTurns", "turnItems"],
@@ -14209,7 +14217,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (runStopRequested(run.id, records.turnItems)) return false;
       if (yield* awaitsRestartContinuation(run)) return true;
       if (continuationStartRetryDelayMs(run, { ...records, runs }) !== undefined) return true;
-      if (!isSettledRun(run)) return false;
+      if (superseded || !isSettledRun(run)) return false;
       // A user's session close records lost work too, with no wake: the record is a pending restart
       // only while the producer that wrote it still owes the wake, which the check above reads.
       if (scope === "pending-restart") return false;
