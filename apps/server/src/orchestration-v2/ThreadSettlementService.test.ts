@@ -441,7 +441,7 @@ describe("resolveAutoSettlementAt", () => {
         pullRequest: { state: "closed", closedAt: DateTime.formatIso(at(-1)) },
         autoSettleOnMerge: false,
       }),
-    ).toEqual(shell().createdAt);
+    ).toBeNull();
   });
 
   it("settles on merge after agent-started runs, but not after the user writes again", () => {
@@ -1182,6 +1182,35 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* startHarness(service, fixture.activation, fixture.snapshotReads);
           const commands = yield* Ref.get(fixture.commands);
           expect(commands.map((command) => command.threadId)).toEqual([thread.id]);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("settles a closed pull request only in the project whose merge rule is on", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const optedIn = makeThread("closed-opted-in", { branch: "feature" });
+        const optedOut = makeThread("closed-opted-out", {
+          branch: "feature",
+          projectId: ProjectId.make("other-project"),
+        });
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([optedIn, optedOut]),
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            sidebarAutoSettleAfterDays: null,
+            sidebarAutoSettleOnMerge: false,
+            projectSettingsOverrides: { [PROJECT_ID]: { sidebarAutoSettleOnMerge: true } },
+          },
+          branchPullRequest: () => Effect.succeed(makeBranchPullRequest("closed")),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          const commands = yield* Ref.get(fixture.commands);
+          expect(commands.map((command) => command.threadId)).toEqual([optedIn.id]);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),

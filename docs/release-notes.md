@@ -1,3 +1,7 @@
+## 2026-11-21 — A closed pull request settles only where the merge rule is on
+
+- Turning on automatic settlement for one project no longer settles threads in a project that has both settlement rules off because their pull request was closed. A closed pull request now follows the project's "settle when merged" rule.
+
 ## 2026-11-21 — Thread details show what the agent is doing
 
 - The thread details card now leads with information instead of buttons. A new **Agent status** section shows whether the agent is working, waiting for you (on its own approval or question, or a subagent's approval), waiting on another thread or a background task, queued, stopped, reverted or at a usage limit, for how long, on which model and effort, and the full command or the edit it is running now. Context and usage meters follow it.
