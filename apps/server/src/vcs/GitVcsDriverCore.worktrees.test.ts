@@ -13,7 +13,11 @@ import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { type WorktreeSubmodules } from "@t3tools/contracts";
-import { makeGitVcsDriverCore, parseGitCheckoutProgressLine } from "./GitVcsDriverCore.ts";
+import {
+  gitFailureFacts,
+  makeGitVcsDriverCore,
+  parseGitCheckoutProgressLine,
+} from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import {
   layerServerConfig,
@@ -320,6 +324,88 @@ it.layer(layerTest)("Git worktree creation", (it) => {
           NodeFS.realpathSync.native(worktreePath),
         );
       }),
+  );
+
+  it.effect("keeps Git's exit code when the new branch already exists", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+
+      const error = yield* driver
+        .createWorktree({
+          cwd,
+          path: path.join(yield* makeTmpDir("git-worktrees-"), "taken"),
+          refName: initialBranch,
+          newRefName: initialBranch,
+        })
+        .pipe(Effect.flip);
+
+      assert.deepInclude(error, {
+        operation: "GitVcsDriver.createWorktree.createBranch",
+        reason: "branch_already_exists",
+        exitCode: 128,
+      });
+      assert.include(error.message, "Exit code 128.");
+      // A classified failure never quotes its stderr, which names refs and paths.
+      assert.notInclude(error.message, "Git said");
+    }),
+  );
+
+  it.effect("names Git's reason when the base commit is not in the repository", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const missingCommit = "0123456789abcdef0123456789abcdef01234567";
+      const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "missing-base");
+
+      const error = yield* driver
+        .createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: missingCommit,
+          newRefName: "t3/from-missing-commit",
+        })
+        .pipe(Effect.flip);
+
+      // The failing step is `git branch`, not `git worktree add`, and the message must say so.
+      assert.deepInclude(error, {
+        operation: "GitVcsDriver.createWorktree.createBranch",
+        detail: "git branch create failed",
+        exitCode: 128,
+      });
+      assert.notProperty(error, "reason");
+      assert.include(
+        error.message,
+        `Exit code 128. Git said: fatal: not a valid branch point: '${missingCommit}'`,
+      );
+      assert.notProperty(error, "stderr");
+    }),
+  );
+
+  it.effect("quotes Git's lines only for a command that asks and strips URL credentials", () =>
+    Effect.gen(function* () {
+      const stderr = "fatal: odd failure at https://user:token@example.com/repo.git?key=secret\n";
+      const facts = gitFailureFacts({ exitCode: 2, stdout: "", stderr }, { quoteGitLines: true });
+
+      assert.equal(
+        facts.diagnostics,
+        "Exit code 2. Git said: fatal: odd failure at https://example.com/repo.git",
+      );
+      assert.equal(facts.stderrLength, stderr.length);
+      // Arguments can carry a secret that Git echoes, so the default keeps the exit code only.
+      assert.equal(
+        gitFailureFacts({ exitCode: 2, stdout: "", stderr }).diagnostics,
+        "Exit code 2.",
+      );
+      assert.deepEqual(gitFailureFacts({ exitCode: null, stdout: "", stderr: "" }), {
+        stdoutLength: 0,
+        stderrLength: 0,
+      });
+    }),
   );
 
   it.effect("creates worktrees under the configured worktrees directory", () =>

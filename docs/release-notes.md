@@ -14,6 +14,11 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — A failed worktree launch says why Git refused
+
+- Starting a thread in a new worktree from a commit that exists only on another machine is now refused up front, naming the commit, instead of failing later with only "git worktree add failed". A fetch no longer counts as proof that the remote holds the commit.
+- A failed Git command now reports its exit code, and for worktree and branch creation, status and similar commands with fixed arguments, Git's own last lines. The step that creates the branch is no longer reported as "git worktree add failed".
+
 ## 2026-11-21 — Claude uses fewer tokens for one-off text generation
 
 - On Claude versions that support safe mode, thread titles, commit messages and other one-off generations skip your personal `CLAUDE.md` and plugins. Account launch settings still apply.

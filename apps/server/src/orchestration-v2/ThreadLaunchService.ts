@@ -279,14 +279,19 @@ const make = Effect.gen(function* () {
     }
   });
 
-  /** Fetches the primary remote when it holds `sha` and the checkout does not yet. */
+  /**
+   * Fetches the primary remote when the checkout lacks `sha`, and says whether it has it now. A
+   * fetch that succeeds proves nothing: the remote only has the commit if some branch holds it.
+   */
   const fetchCommitFromOrigin = Effect.fn("ThreadLaunchService.fetchCommitFromOrigin")(function* (
     cwd: string,
     sha: string,
   ) {
-    if (yield* git.hasCommit({ cwd, refName: sha })) return;
+    if (yield* git.hasCommit({ cwd, refName: sha })) return true;
     const remote = yield* git.resolveWorktreeBaseRemote({ cwd, refName: sha });
-    if (remote !== null) yield* git.fetchRemote({ cwd, remoteName: remote.remoteName });
+    if (remote === null) return false;
+    yield* git.fetchRemote({ cwd, remoteName: remote.remoteName });
+    return yield* git.hasCommit({ cwd, refName: sha });
   });
 
   const checkWorktreeBase: ThreadLaunchService["Service"]["checkWorktreeBase"] = Effect.fn(
@@ -303,10 +308,10 @@ const make = Effect.gen(function* () {
       // `git worktree add` reads `-` as the previous checkout.
       if (yield* git.hasCommit({ cwd, refName: baseRef === "-" ? "@{-1}" : baseRef }))
         return undefined;
-      if (strategy.startFromOrigin === true && isCommitSha(baseRef)) {
-        yield* fetchCommitFromOrigin(cwd, baseRef);
-        if (yield* git.hasCommit({ cwd, refName: baseRef })) return undefined;
-      }
+      // A commit names no remote branch, so the remote lookup below would find `origin` for any
+      // hash and call a commit the remote does not hold resolved.
+      if (strategy.startFromOrigin === true && isCommitSha(baseRef))
+        return (yield* fetchCommitFromOrigin(cwd, baseRef)) ? undefined : project;
       if (
         strategy.startFromOrigin === true &&
         (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
@@ -435,9 +440,23 @@ const make = Effect.gen(function* () {
           input.workspaceStrategy.startFromOrigin === true &&
           isCommitSha(input.workspaceStrategy.baseRef)
         ) {
-          yield* fetchCommitFromOrigin(project.workspaceRoot, input.workspaceStrategy.baseRef).pipe(
-            Effect.mapError(mapError(input, "provision-worktree", threadId)),
-          );
+          const present = yield* fetchCommitFromOrigin(
+            project.workspaceRoot,
+            input.workspaceStrategy.baseRef,
+          ).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          if (!present)
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )(
+              new ThreadLaunchBaseRefError({
+                projectId: project.id,
+                projectTitle: project.title,
+                workspaceRoot: project.workspaceRoot,
+                baseRef: input.workspaceStrategy.baseRef,
+              }),
+            );
         }
         const remote =
           input.workspaceStrategy.startFromOrigin === true &&

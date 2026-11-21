@@ -198,6 +198,8 @@ interface ExecuteGitOptions {
   appendTruncationMarker?: boolean | undefined;
   progress?: GitVcsDriver.ExecuteGitProgress | undefined;
   writesSharedConfig?: boolean | undefined;
+  /** For a command whose arguments hold no secret: a failure then carries Git's own lines. */
+  quoteGitLines?: boolean | undefined;
 }
 
 function parseBranchAb(value: string): { ahead: number; behind: number } {
@@ -639,6 +641,37 @@ export function gitErrorLines(stderr: string): string {
     .slice(-MAX_FETCH_DIAGNOSTIC_LINES)
     .map((line) => withoutUrlCredentials(line).slice(0, MAX_FETCH_DIAGNOSTIC_LINE_LENGTH))
     .join(" | ");
+}
+
+/**
+ * What a failed Git command leaves on its error: the exit code, the output sizes, and with
+ * `quoteGitLines` Git's last lines. Those lines can echo the command's arguments, so only a command
+ * whose arguments hold no secret asks for them. A classified failure never quotes them: they name
+ * refs and paths, and its reason already says what went wrong.
+ */
+export function gitFailureFacts(
+  result: {
+    readonly exitCode: number | null;
+    readonly stdout: string;
+    readonly stderr: string;
+  },
+  options: { readonly quoteGitLines?: boolean | undefined } = {},
+) {
+  const reason = classifyGitFailure(result.stderr);
+  const lines = reason === null && options.quoteGitLines ? gitErrorLines(result.stderr) : "";
+  const diagnostics = [
+    result.exitCode === null ? "" : `Exit code ${result.exitCode}.`,
+    lines === "" ? "" : `Git said: ${lines}`,
+  ]
+    .filter((part) => part !== "")
+    .join(" ");
+  return {
+    ...(reason === null ? {} : { reason }),
+    ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+    stdoutLength: result.stdout.length,
+    stderrLength: result.stderr.length,
+    ...(diagnostics === "" ? {} : { diagnostics }),
+  } as const;
 }
 
 const formatSeconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
@@ -1235,14 +1268,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         yield* trace2Monitor.flush;
 
         if (!input.allowNonZeroExit && exitCode !== 0) {
-          const reason = classifyGitFailure(stderr.text);
+          const facts = gitFailureFacts({ exitCode, stdout: stdout.text, stderr: stderr.text });
           return yield* new GitCommandError({
             ...gitCommandContext(commandInput),
-            ...(reason === null ? {} : { reason }),
-            detail: gitFailureDetail(reason),
-            exitCode,
-            stdoutLength: stdout.text.length,
-            stderrLength: stderr.text.length,
+            ...facts,
+            detail: gitFailureDetail(facts.reason ?? null),
           });
         }
 
@@ -1353,15 +1383,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         if (options.allowNonZeroExit || result.exitCode === 0) {
           return Effect.succeed(result);
         }
-        const reason = classifyGitFailure(result.stderr);
+        const facts = gitFailureFacts(result, { quoteGitLines: options.quoteGitLines });
         return Effect.fail(
           new GitCommandError({
             ...gitCommandContext({ operation, cwd, args }),
-            ...(reason === null ? {} : { reason }),
-            detail: options.fallbackErrorDetail ?? gitFailureDetail(reason),
-            ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-            stdoutLength: result.stdout.length,
-            stderrLength: result.stderr.length,
+            ...facts,
+            detail: options.fallbackErrorDetail ?? gitFailureDetail(facts.reason ?? null),
           }),
         );
       }),
@@ -1373,14 +1400,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     args: readonly string[],
     result: GitVcsDriver.ExecuteGitResult,
   ) => {
-    const reason = classifyGitFailure(result.stderr);
+    const facts = gitFailureFacts(result);
     return new GitCommandError({
       ...gitCommandContext({ operation, cwd, args }),
-      ...(reason === null ? {} : { reason }),
-      detail: gitFailureDetail(reason),
-      ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-      stdoutLength: result.stdout.length,
-      stderrLength: result.stderr.length,
+      ...facts,
+      detail: gitFailureDetail(facts.reason ?? null),
     });
   };
 
@@ -1687,10 +1711,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           cwd,
           args: ["rev-parse", "--git-common-dir"],
         }),
+        ...gitFailureFacts(commonDirResult, { quoteGitLines: true }),
         detail: "Failed to resolve the Git common directory.",
-        exitCode: commonDirResult.exitCode,
-        stdoutLength: commonDirResult.stdout.length,
-        stderrLength: commonDirResult.stderr.length,
       });
     }
 
@@ -2283,10 +2305,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             cwd,
             args: ["rev-parse", "--symbolic-full-name", "HEAD"],
           }),
+          ...gitFailureFacts(branchResult, { quoteGitLines: true }),
           detail: "Git branch lookup failed.",
-          exitCode: branchResult.exitCode,
-          stdoutLength: branchResult.stdout.length,
-          stderrLength: branchResult.stderr.length,
         });
       }
 
@@ -2467,10 +2487,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                   cwd,
                   args: ["diff-index", "-M", "--numstat", "-z", "HEAD", "--"],
                 }),
+                ...gitFailureFacts(result, { quoteGitLines: true }),
                 detail: "git diff-index HEAD --numstat failed.",
-                exitCode: result.exitCode,
-                stdoutLength: result.stdout.length,
-                stderrLength: result.stderr.length,
               }),
             );
           }),
@@ -2504,10 +2522,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           cwd,
           args: statusArgs,
         }),
+        ...gitFailureFacts(statusResult, { quoteGitLines: true }),
         detail: "Git status failed.",
-        exitCode: statusResult.exitCode,
-        stdoutLength: statusResult.stdout.length,
-        stderrLength: statusResult.stderr.length,
       });
     }
 
@@ -3171,14 +3187,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
     }
     if (result.exitCode !== 0) {
-      const reason = classifyGitFailure(result.stderr);
       return yield* new GitCommandError({
         ...gitCommandContext({ operation: "GitVcsDriver.pullCurrentBranch.pull", cwd, args }),
-        ...(reason === null ? {} : { reason }),
+        ...gitFailureFacts(result, { quoteGitLines: true }),
         detail: remoteFailureDetail(result.stderr) ?? "git pull failed",
-        exitCode: result.exitCode,
-        stdoutLength: result.stdout.length,
-        stderrLength: result.stderr.length,
       });
     }
     const afterSha = yield* runGitStdout(
@@ -4019,7 +4031,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       operation,
       input.cwd,
       ["branch", "--no-track", "--", input.branch, startPoint],
-      { fallbackErrorDetail },
+      { fallbackErrorDetail, quoteGitLines: true },
     );
     const startRef = yield* executeGit(
       `${operation}.resolveStartPoint`,
@@ -4464,7 +4476,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           branch: input.newRefName,
           startPoint: yield* resolveWorktreeStartPoint(input.cwd, input.refName),
         },
-        "git worktree add failed",
+        "git branch create failed",
       );
     }
     const args = ["worktree", "add", "--", worktreePath, input.newRefName ?? input.refName];
@@ -4488,6 +4500,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["-c", `checkout.workers=${checkoutWorkers}`, ...args],
       {
         fallbackErrorDetail: "git worktree add failed",
+        quoteGitLines: true,
         // Large checkouts and post-checkout hooks can legitimately run for many
         // minutes; a fixed deadline kills them and leaves an orphaned worktree.
         timeoutMs: null,
@@ -5086,10 +5099,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         cwd: input.cwd,
         args: result.args,
       }),
+      ...gitFailureFacts(result, { quoteGitLines: true }),
       detail: "git worktree remove failed",
-      ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-      stdoutLength: result.stdout.length,
-      stderrLength: result.stderr.length,
     });
   });
 

@@ -2662,6 +2662,13 @@ it.effect.each([
     startFromOrigin: false,
     origin: true,
   },
+  // The fetch succeeds, yet no branch of the remote holds a commit that was never pushed.
+  {
+    name: "is a commit the remote still lacks after a fetch",
+    baseRef: "0123456789abcdef0123456789abcdef01234567",
+    startFromOrigin: true,
+    origin: true,
+  },
 ])("refuses a new worktree whose base ref $name", (testCase) =>
   Effect.gen(function* () {
     const harness = makeHarness({
@@ -2670,6 +2677,7 @@ it.effect.each([
         resolveWorktreeBaseRemote: () =>
           Effect.succeed(testCase.origin ? { remoteName: "origin", branchName: "main" } : null),
         hasRefNamed: () => Effect.succeed(false),
+        fetchRemote: () => Effect.void,
       },
     });
     yield* Effect.gen(function* () {
@@ -2720,6 +2728,39 @@ it.effect("fetches a pushed commit SHA that the checkout does not have yet", () 
     }).pipe(Effect.provide(harness.layer));
   }),
 );
+
+it.effect("fails preparing a worktree from a commit the remote lacks, naming the commit", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const harness = makeHarness({
+    hasCommit: ({ refName }) => Effect.succeed(refName === "HEAD"),
+    git: {
+      resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: sha }),
+      fetchRemote: () => Effect.void,
+    },
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:launch:unpushed-commit",
+        thread: "thread:launch:unpushed-commit",
+        message: "Start from a commit",
+        workspace: { type: "worktree", baseRef: sha, startFromOrigin: true },
+      }),
+    );
+    yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+      Stream.filter(
+        (stored) => stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+      ),
+      Stream.runHead,
+    );
+    const projection = yield* threads.getThreadProjection(launched.threadId);
+    const failure = projection.turnItems.find((item) => item.type === "error")?.failure;
+    assert.include(failure?.message ?? "", `Base ref "${sha}" does not resolve to a commit`);
+    assert.equal(harness.createWorktree.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("replays an accepted send after the project disables the instance", () => {
   const harness = makeHarness();

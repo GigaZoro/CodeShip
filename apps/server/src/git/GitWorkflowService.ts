@@ -38,6 +38,7 @@ import * as GitManager from "./GitManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { gitFailureFacts } from "../vcs/GitVcsDriverCore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 
@@ -460,9 +461,7 @@ export const make = Effect.gen(function* () {
         command: "git symbolic-ref",
         cwd,
         argumentCount: 3,
-        ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
-        stdoutLength: result.stdout.length,
-        stderrLength: result.stderr.length,
+        ...gitFailureFacts(result, { quoteGitLines: true }),
         detail: "Failed to read the checked-out branch.",
       });
     }),
