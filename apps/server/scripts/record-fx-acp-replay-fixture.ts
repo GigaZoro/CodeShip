@@ -31,6 +31,7 @@ import { ORCHESTRATOR_REPLAY_FIXTURES } from "../src/orchestration-v2/testkit/fi
 import { materializeFixtureInput } from "../src/orchestration-v2/testkit/fixtures/shared.ts";
 import { runOrchestratorV2Scenario } from "../src/orchestration-v2/testkit/OrchestratorScenario.ts";
 import * as ProviderReplayHarness from "../src/orchestration-v2/testkit/ProviderReplayHarness.ts";
+import { parseRecorderArguments } from "./replayRecorderArguments.ts";
 
 const wallClock = Clock.Clock.defaultValue();
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -54,10 +55,9 @@ interface WireMessage {
   readonly message: JsonRpcMessage;
 }
 
-function readArgValues(name: string): ReadonlyArray<string> {
-  const args = process.argv.slice(2);
-  return args.flatMap((arg, index) => (arg === name && args[index + 1] ? [args[index + 1]!] : []));
-}
+const { values: options } = parseRecorderArguments({
+  options: { out: { type: "string" }, scenario: { type: "string", multiple: true, default: [] } },
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -483,7 +483,7 @@ const recordScenario = Effect.fn("recordFxScenario")(function* (fixtureName: str
     ],
   };
 
-  const outputPath = readArgValues("--out")[0] ?? (yield* path.fromFileUrl(variant.transcriptFile));
+  const outputPath = options.out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const liveFailure = yield* Effect.try(() => variant.assertOutput(result, transcript)).pipe(
     Effect.flip,
     Effect.option,
@@ -513,7 +513,7 @@ const recordScenario = Effect.fn("recordFxScenario")(function* (fixtureName: str
   yield* Console.log(`Wrote ${transcriptEntries.length} fx ACP replay entries to ${outputPath}`);
 });
 
-const scenarios = readArgValues("--scenario").flatMap((value) => value.split(","));
+const scenarios = options.scenario.flatMap((value) => value.split(","));
 if (scenarios.length === 0) {
   throw new Error("Pass --scenario <fixture name>[,<fixture name>...]");
 }

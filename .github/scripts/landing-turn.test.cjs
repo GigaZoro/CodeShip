@@ -14,6 +14,7 @@ const {
   acquire,
   land,
   overlappingWorktrees,
+  main,
   release,
   tryAcquire,
   verifyPush,
@@ -1263,6 +1264,30 @@ test("a replace ref cannot make main look contained in a commit that does not ho
     assert.equal(result.status, "landed");
     assert.equal(git(origin, "merge-base", "--is-ancestor", newer, "main") ?? "", "");
     assert.equal(git(origin, "show", "main:newer.txt"), "newer.txt");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a command given an argument it does not take is refused before it takes the turn or pushes", (t) => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const dir = clone("lander");
+    commit(dir, "change.txt");
+    const main_ = git(origin, "rev-parse", "main");
+    const errors = [];
+    t.mock.method(console, "error", (line) => errors.push(line));
+    // `land` first: a mistyped flag there once started a real landing. `verify` would wait on stdin.
+    const refused = [["land", "--quick-precheck"], ["push", "HEAD"], ["precheck"], [], ["verify"]];
+    for (const argv of [...refused, ["verify", "origin", "extra"]]) {
+      assert.equal(main(argv, { cwd: dir }), 2, JSON.stringify(argv));
+    }
+    assert.deepEqual(
+      errors,
+      Array(6).fill("usage: landing-turn.cjs land | push | verify <remote>"),
+    );
+    assert.equal(git(origin, "rev-parse", "main"), main_);
+    assert.equal(git(origin, "for-each-ref", "refs/heads/landing-lease"), "");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

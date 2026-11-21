@@ -54,6 +54,7 @@ import {
 } from "../src/orchestration-v2/testkit/fixtures/shared.ts";
 import { codexReplayRecordingOutputRecords } from "./codexReplayRecordingRecords.ts";
 import { makeReplayRecorderDeferredRegistry } from "./replayRecorderDeferredRegistry.ts";
+import { parseRecorderArguments } from "./replayRecorderArguments.ts";
 
 const CODEX_REPLAY_PLAN_MODE_DEVELOPER_INSTRUCTIONS =
   process.env.T3_CODEX_REPLAY_PLAN_DEVELOPER_INSTRUCTIONS ??
@@ -64,8 +65,16 @@ const CODEX_CLIENT_CAPABILITIES = {
   optOutNotificationMethods: ["turn/diff/updated"],
   extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } },
 } as const;
+const { values: options } = parseRecorderArguments({
+  options: {
+    model: { type: "string" },
+    scenario: { type: "string", multiple: true, default: [] },
+    "out-dir": { type: "string" },
+    out: { type: "string" },
+  },
+});
 const CODEX_REPLAY_DEFAULT_MODEL = "gpt-6-luna";
-const CODEX_REPLAY_MODEL_OVERRIDE = readArgValue("--model") ?? process.env.T3_CODEX_REPLAY_MODEL;
+const CODEX_REPLAY_MODEL_OVERRIDE = options.model ?? process.env.T3_CODEX_REPLAY_MODEL;
 
 const SCENARIO_NAMES = [
   "simple",
@@ -171,17 +180,6 @@ interface Recorder {
   readonly flush: () => Effect.Effect<void, PlatformError.PlatformError>;
 }
 
-function readArgValue(name: string): string | undefined {
-  const args = process.argv.slice(2);
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-}
-
-function readArgValues(name: string): ReadonlyArray<string> {
-  const args = process.argv.slice(2);
-  return args.flatMap((arg, index) => (arg === name && args[index + 1] ? [args[index + 1]!] : []));
-}
-
 function defaultTranscriptUrl(scenario: ReplayScenario): URL {
   return new URL(
     `../src/orchestration-v2/testkit/fixtures/${scenario.name}/codex_transcript.ndjson`,
@@ -195,7 +193,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseScenarios(): ReadonlyArray<ScenarioName> {
   const rawValues = [
-    ...readArgValues("--scenario"),
+    ...options.scenario,
     ...(process.env.T3_CODEX_REPLAY_SCENARIOS ? [process.env.T3_CODEX_REPLAY_SCENARIOS] : []),
   ];
   const requested = rawValues.length > 0 ? rawValues : ["simple"];
@@ -1490,8 +1488,8 @@ const program = Effect.gen(function* () {
   const path = yield* Path.Path;
   const requestedScenarios = parseScenarios();
   const allScenarios = scenarios();
-  const outDir = readArgValue("--out-dir") ?? process.env.T3_CODEX_REPLAY_OUT_DIR;
-  const singleOutPath = readArgValue("--out") ?? process.env.T3_CODEX_REPLAY_OUT;
+  const outDir = options["out-dir"] ?? process.env.T3_CODEX_REPLAY_OUT_DIR;
+  const singleOutPath = options.out ?? process.env.T3_CODEX_REPLAY_OUT;
   const selected = allScenarios.filter((scenario) => requestedScenarios.includes(scenario.name));
 
   if (selected.length === 0) {

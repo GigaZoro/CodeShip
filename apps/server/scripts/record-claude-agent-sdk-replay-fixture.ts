@@ -74,6 +74,7 @@ import {
   validateClaudeReplayRecordingSelection,
   type ClaudeRecordingQueryMode,
 } from "./claudeReplayRecordingConfig.ts";
+import { parseRecorderArguments } from "./replayRecorderArguments.ts";
 
 const CLAUDE_RECORDINGS = {
   simple: {
@@ -299,14 +300,20 @@ const CLAUDE_RECORDINGS = {
   },
 } as const;
 
-function readArgValue(name: string): string | undefined {
-  const args = process.argv.slice(2);
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
+const { values: options, positionals } = parseRecorderArguments({
+  allowPositionals: true,
+  options: {
+    "query-mode": { type: "string" },
+    scenario: { type: "string" },
+    out: { type: "string" },
+  },
+});
+if (positionals.length > 1) {
+  throw new Error(`Pass at most one output path, not ${positionals.join(" ")}.`);
 }
 
 function selectedQueryMode(defaultMode: ClaudeRecordingQueryMode): ClaudeRecordingQueryMode {
-  const raw = readArgValue("--query-mode") ?? process.env.T3_CLAUDE_REPLAY_QUERY_MODE;
+  const raw = options["query-mode"] ?? process.env.T3_CLAUDE_REPLAY_QUERY_MODE;
   if (raw === undefined) {
     return defaultMode;
   }
@@ -328,7 +335,7 @@ function selectedQueryMode(defaultMode: ClaudeRecordingQueryMode): ClaudeRecordi
   );
 }
 
-const scenario = readArgValue("--scenario") ?? process.env.T3_CLAUDE_REPLAY_SCENARIO ?? "simple";
+const scenario = options.scenario ?? process.env.T3_CLAUDE_REPLAY_SCENARIO ?? "simple";
 const recording = CLAUDE_RECORDINGS[scenario as keyof typeof CLAUDE_RECORDINGS];
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -336,13 +343,12 @@ if (recording === undefined) {
   throw new Error(`Claude replay fixture '${scenario}' is not configured.`);
 }
 
-const positionalOutputPath = process.argv[2]?.startsWith("--") ? undefined : process.argv[2];
 const path = await Effect.runPromise(
   Effect.service(Path.Path).pipe(Effect.provide(NodeServices.layer)),
 );
 const outputPath =
-  readArgValue("--out") ??
-  positionalOutputPath ??
+  options.out ??
+  positionals[0] ??
   (await Effect.runPromise(
     path.fromFileUrl(
       new URL(

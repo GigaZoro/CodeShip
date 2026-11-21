@@ -158,8 +158,13 @@ const trimCodex = (native: Native) => {
   return { reasoning, instructions, text, tool_choice, input };
 };
 
-const [harness, capturePath, outPath] = process.argv.slice(2);
-if ((harness !== "claude" && harness !== "codex") || !capturePath || !outPath) {
+const [harness, capturePath, outPath, ...unread] = process.argv.slice(2);
+if (
+  (harness !== "claude" && harness !== "codex") ||
+  !capturePath ||
+  !outPath ||
+  unread.length > 0
+) {
   throw new Error("Usage: trim-capture.ts <claude|codex> <capture.json> <out.json.gz>");
 }
 const native: Native = JSON.parse(NodeFS.readFileSync(capturePath, "utf8")).request.provider_native;

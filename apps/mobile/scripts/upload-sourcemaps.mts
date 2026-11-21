@@ -19,20 +19,21 @@ const warn = (message: string) => {
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 async function main() {
-  const [mode, distDir] = process.argv.slice(2);
+  const [mode, distDir, ...unread] = process.argv.slice(2);
+  // Checked before the credentials, so a wrong command line shows where they are not set too.
+  const otaDir = mode === "ota" && unread.length === 0 && distDir ? distDir : undefined;
+  if (otaDir === undefined && !(mode === "build" && distDir === undefined)) {
+    throw new Error("Usage: upload-sourcemaps.mts ota <dist-dir> | build");
+  }
   const credentials = parseCredentials(process.env.MOBILE_SOURCEMAPS_R2);
   if (!credentials) {
     warn("MOBILE_SOURCEMAPS_R2 is not set; crash stacks from this bundle stay minified.");
     return;
   }
-  let uploads: ReadonlyArray<SourceMapUpload>;
-  if (mode === "ota" && distDir) {
-    uploads = otaSourceMapUploads(distDir);
-  } else if (mode === "build") {
-    uploads = [buildSourceMapUpload(process.env, process.cwd())];
-  } else {
-    throw new Error("Usage: upload-sourcemaps.mts ota <dist-dir> | build");
-  }
+  const uploads: ReadonlyArray<SourceMapUpload> =
+    otaDir === undefined
+      ? [buildSourceMapUpload(process.env, process.cwd())]
+      : otaSourceMapUploads(otaDir);
   if (uploads.length === 0) warn("Found no source maps to upload.");
   for (const upload of uploads) {
     try {

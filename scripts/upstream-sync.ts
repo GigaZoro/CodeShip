@@ -4,7 +4,12 @@
 import * as NodeChildProcess from "node:child_process";
 import { begin, checkCommand, land, status } from "./lib/upstream-sync.ts";
 
-const command = process.argv[2];
+const [command = "", ...unread] = process.argv.slice(2);
+// No command takes an argument: one it would not read, such as a mistyped flag, must not start a merge or a push.
+if (!["begin", "status", "land", "check"].includes(command) || unread.length > 0) {
+  console.error("Usage: node scripts/upstream-sync.ts begin | status | land | check");
+  process.exit(2);
+}
 const now = new Date();
 if (command === "check") {
   const { args, env } = checkCommand(process.cwd(), process.env);
@@ -17,11 +22,5 @@ const result =
     ? begin(process.cwd(), now)
     : command === "status"
       ? status(process.cwd(), now)
-      : command === "land"
-        ? land(process.cwd(), now)
-        : undefined;
-if (result === undefined) {
-  console.error("Usage: node scripts/upstream-sync.ts begin | status | land | check");
-  process.exit(2);
-}
+      : land(process.cwd(), now);
 console.log(JSON.stringify(result));

@@ -30,6 +30,7 @@ import {
   checkpointWorkspace,
   makeCheckpointWorkspace,
 } from "@t3tools/provider-testing/replayWorkspace";
+import { parseRecorderArguments } from "./replayRecorderArguments.ts";
 
 // Exclude user context; --approve lets the throwaway workspace's `.pi/settings.json` load.
 const HERMETIC_LAUNCH_ARGS =
@@ -38,12 +39,11 @@ const HERMETIC_LAUNCH_ARGS =
 const WORKSPACE_PI_SETTINGS = { compaction: { keepRecentTokens: 50 } };
 const CLOCK_TICK = Duration.millis(20);
 
-function readArgValue(name: string): string | undefined {
-  const index = process.argv.indexOf(name);
-  return index === -1 ? undefined : process.argv[index + 1];
-}
+const { values: options } = parseRecorderArguments({
+  options: { scenario: { type: "string" }, out: { type: "string" } },
+});
 
-const scenario = readArgValue("--scenario");
+const scenario = options.scenario;
 const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((entry) => entry.name === scenario);
 const variant = fixture?.providers.find((provider) => provider.driver === PI_PROVIDER);
 if (fixture === undefined || variant === undefined) {
@@ -192,7 +192,7 @@ const record = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const piVersion = yield* readPiVersion;
-  const outputPath = readArgValue("--out") ?? (yield* path.fromFileUrl(variant.transcriptFile));
+  const outputPath = options.out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const fixtureInput = fixture.buildInput();
   const workspace = yield* Effect.promise(() =>
     makeCheckpointWorkspace(`pi-rpc-record-${fixture.name}`, fixtureInput.workspaceFiles),

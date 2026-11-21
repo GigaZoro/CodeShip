@@ -17,6 +17,7 @@ import {
 } from "../src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { makeCheckpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import { parseRecorderArguments } from "./replayRecorderArguments.ts";
 
 const SCENARIO = "thread_fork_native_fork_local_rollback";
 const DEFAULT_OUTPUT = new URL(
@@ -75,12 +76,6 @@ class PromptQueue implements AsyncIterable<ReturnType<typeof makeClaudeUserMessa
       },
     };
   }
-}
-
-function readArgValue(name: string): string | undefined {
-  const args = process.argv.slice(2);
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
 }
 
 function dirname(filePath: string): string {
@@ -211,7 +206,10 @@ function encodeTranscript(input: {
   ].join("\n");
 }
 
-const outputPath = readArgValue("--out") ?? DEFAULT_OUTPUT;
+const { values: options } = parseRecorderArguments({
+  options: { out: { type: "string" } },
+});
+const outputPath = options.out ?? DEFAULT_OUTPUT;
 const cwd =
   process.env.T3_CLAUDE_REPLAY_CWD ??
   (await makeCheckpointWorkspace(`claude-agent-sdk-record-${SCENARIO}`));

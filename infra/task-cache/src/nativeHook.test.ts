@@ -77,7 +77,7 @@ it("does not execute hook modules supplied by ancestor package manifests", async
         "-e",
         `import { startRunHook } from ${JSON.stringify(new URL("./nativeRunHook.js", import.meta.url).href)}; await startRunHook("run", ${JSON.stringify(path.join(root, "project"))});`,
       ],
-      { env: { ...process.env, HOME: root, NODE_OPTIONS: "" } },
+      { env: { ...process.env, HOME: root, USERPROFILE: root, NODE_OPTIONS: "" } },
     );
     expect(result.stderr).toBe("");
   } finally {

@@ -7,19 +7,28 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeReadlinePromises from "node:readline/promises";
+import * as NodeUtil from "node:util";
 import { patchNativeCli } from "../src/nativeHook.js";
 
+// parseArgs refuses an option it does not know: a mistyped --uninstall must not install.
+const { values: options } = NodeUtil.parseArgs({
+  options: {
+    "non-interactive": { type: "boolean", default: false },
+    uninstall: { type: "boolean", default: false },
+    entrypoint: { type: "string", multiple: true, default: [] },
+  },
+});
 const home = NodeOS.homedir();
 const root = NodePath.resolve(import.meta.dirname, "../../..");
 const state = NodePath.join(home, ".config/t3-task-cache");
-const nonInteractive = process.argv.includes("--non-interactive");
+const nonInteractive = options["non-interactive"];
 const installed = NodePath.join(home, ".local/share/t3-task-cache");
 const hookConfig = NodePath.join(home, ".config/vite-plus/run-hook.json");
 const legacySourceLine = '. "$HOME/.config/t3-task-cache/env"';
 const sourceLine =
   '[ ! -r "$HOME/.config/t3-task-cache/env" ] || . "$HOME/.config/t3-task-cache/env"';
 const profiles = [".profile", ".bashrc", ".bash_profile", ".bash_login", ".zshenv", ".zshrc"];
-if (process.argv.includes("--uninstall")) {
+if (options.uninstall) {
   for (const file of profiles) {
     const path = NodePath.join(home, file);
     try {
@@ -185,13 +194,7 @@ for (const directory of [
 ]) {
   if (directory) candidates.push(NodePath.join(directory, "node_modules/vite-plus/dist/bin.js"));
 }
-for (let index = 0; index < process.argv.length; index++) {
-  if (process.argv[index] === "--entrypoint") {
-    const entrypoint = process.argv[++index];
-    if (!entrypoint) throw new Error("Missing --entrypoint path");
-    candidates.push(entrypoint);
-  }
-}
+candidates.push(...options.entrypoint);
 const targets = new Map<string, { original: string; patched: string }>();
 for (const candidate of candidates) {
   try {

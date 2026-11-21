@@ -32,6 +32,7 @@ import * as ProviderReplayHarness from "../src/orchestration-v2/testkit/Provider
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { makeGrokAcpRuntime } from "@t3tools/provider-grok/testing";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { parseRecorderArguments } from "./replayRecorderArguments.ts";
 
 const wallClock = Clock.Clock.defaultValue();
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -53,10 +54,9 @@ interface WireMessage {
   readonly message: JsonRpcMessage;
 }
 
-function readArgValues(name: string): ReadonlyArray<string> {
-  const args = process.argv.slice(2);
-  return args.flatMap((arg, index) => (arg === name && args[index + 1] ? [args[index + 1]!] : []));
-}
+const { values: options } = parseRecorderArguments({
+  options: { out: { type: "string" }, scenario: { type: "string", multiple: true, default: [] } },
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -529,7 +529,7 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
     ],
   };
 
-  const outputPath = readArgValues("--out")[0] ?? (yield* path.fromFileUrl(variant.transcriptFile));
+  const outputPath = options.out ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const { entries: transcriptEntries, ...header } = transcript;
   yield* fs.writeFileString(
     outputPath,
@@ -550,7 +550,7 @@ const recordScenario = Effect.fn("recordGrokScenario")(function* (fixtureName: s
   }
 });
 
-const scenarios = readArgValues("--scenario").flatMap((value) => value.split(","));
+const scenarios = options.scenario.flatMap((value) => value.split(","));
 if (scenarios.length === 0) {
   throw new Error("Pass --scenario <fixture name>[,<fixture name>...]");
 }

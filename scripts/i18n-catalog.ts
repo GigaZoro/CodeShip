@@ -264,8 +264,8 @@ function merge(inputs: readonly string[]) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-if (command === "check") check();
-else if (command === "missing" && args[0]) writeMissing(args[0]);
+if (command === "check" && args.length === 0) check();
+else if (command === "missing" && args.length === 1 && args[0]) writeMissing(args[0]);
 else if (command === "merge" && args.length > 0) merge(args);
 else {
   console.error("Usage: node scripts/i18n-catalog.ts check | missing <file> | merge <file>...");

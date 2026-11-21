@@ -421,9 +421,16 @@ function land({
   });
 }
 
-function main(argv) {
+// How many arguments each command takes: an argument `land` does not take, such as a mistyped flag, must not start
+// a real landing.
+const ARGUMENTS = { land: 0, push: 0, verify: 1 };
+
+function main(argv, { cwd = process.cwd() } = {}) {
   const [command, ...rest] = argv;
-  const cwd = process.cwd();
+  if (!Object.hasOwn(ARGUMENTS, command) || rest.length !== ARGUMENTS[command]) {
+    console.error("usage: landing-turn.cjs land | push | verify <remote>");
+    return 2;
+  }
   if (command === "verify") {
     // The pre-push hook passes the remote's URL, then git writes one `<local ref> <sha> <remote ref> <sha>` line per ref.
     const refs = require("node:fs")
@@ -453,18 +460,14 @@ function main(argv) {
     console.log(JSON.stringify(result));
     return result.status === "landed" ? 0 : 1;
   }
-  if (command === "push") {
-    // For a tree that was verified against main's current commit elsewhere (the upstream sync): the push is
-    // a fast-forward, so the push takes the turn alone and a main that moved makes git refuse it.
-    withTurn({ cwd, remote: "origin" }, (turn) => {
-      git(cwd, ["push", "--quiet", "origin", "HEAD:refs/heads/main"], {
-        env: { [TURN_ENV]: turn },
-      });
+  // push: for a tree that was verified against main's current commit elsewhere (the upstream sync). The push is
+  // a fast-forward, so the push takes the turn alone and a main that moved makes git refuse it.
+  withTurn({ cwd, remote: "origin" }, (turn) => {
+    git(cwd, ["push", "--quiet", "origin", "HEAD:refs/heads/main"], {
+      env: { [TURN_ENV]: turn },
     });
-    return 0;
-  }
-  console.error("usage: landing-turn.cjs land | push | verify <remote>");
-  return 2;
+  });
+  return 0;
 }
 
 if (require.main === module) {
@@ -489,4 +492,5 @@ module.exports = {
   verifyPush,
   land,
   overlappingWorktrees,
+  main,
 };

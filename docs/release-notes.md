@@ -93,6 +93,14 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — Repository commands refuse arguments they do not take
+
+- The landing, upstream sync, CI, release, translation, task cache, relay push and replay recording scripts check their whole command line before they act. Before, most of them ignored an argument they did not read, so `landing-turn.cjs land --quick-precheck` started a real landing and a mistyped `--uninstall` made the task cache installer install. A test runs each command with an extra argument and fails when a new script reads its command line without checking it. No change to the app.
+- The landing lease test of a push that runs out of time passes on Windows: its unresponsive origin now waits outside the test's folder, which Windows would not delete while a process works in it.
+- `vp run --filter @t3tools/mobile generate` starts again. The theme file it loads imported the app's `i18n.tsx`, which Node cannot load, so the generator failed before it wrote anything; a test now runs it the way the package script does and fails when the committed theme files are out of date.
+- The Android push watcher no longer loads the relay's whole delivery service, database layer included, to build an alert, so it starts in about half the time.
+- The task cache tests pass on Windows. They now point Windows' home folder at the test home as well, and pass the preload to Node as a file URL, the form the installer writes.
+
 ## 2026-11-21 — A machine that comes back reconnects without a click
 
 - A linked machine that was away for a while (shut down, asleep, without power, or restarting for an update) could stay **Reconnecting** in the sidebar for up to 5 minutes after it was back, because the wait between tries grew to 5 minutes. While the app is open, it now waits at most 30 seconds after a failed try before trying again, so such a machine reconnects without a click on **Reconnect**.

@@ -25,11 +25,14 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Socket from "effect/socket/Socket";
 
 import * as RelayConfiguration from "../src/Config.ts";
-import { androidActivityData, fitFcmData } from "../src/agentActivity/fcmPayloads.ts";
+import {
+  androidActivityData,
+  androidAlertForState,
+  fitFcmData,
+} from "../src/agentActivity/fcmPayloads.ts";
 import * as WebCrypto from "../src/WebCrypto.ts";
 import * as FcmAssertionSigner from "../src/agentActivity/FcmAssertionSigner.ts";
 import * as FcmClient from "../src/agentActivity/FcmClient.ts";
-import * as FcmDeliveries from "../src/agentActivity/FcmDeliveries.ts";
 import { makeAggregateState } from "../src/agentActivity/agentActivityAggregate.ts";
 
 const Device = Schema.Struct({
@@ -61,7 +64,14 @@ class WatchStoppedError extends Schema.TaggedError<WatchStoppedError>()("WatchSt
   }
 }
 
+class WatchUsageError extends Schema.TaggedError<WatchUsageError>()("WatchUsageError", {}) {
+  override get message() {
+    return "Usage: node scripts/android-push-watch.ts <service-account.json> <device.json> <connection.json>";
+  }
+}
+
 const isWatchUnregisteredDeviceError = Schema.is(WatchUnregisteredDeviceError);
+const isWatchUsageError = Schema.is(WatchUsageError);
 
 const preferences = {
   notificationsEnabled: true,
@@ -73,11 +83,9 @@ const preferences = {
 };
 
 const main = Effect.gen(function* () {
-  const [credentialsPath, devicePath, connectionPath] = process.argv.slice(2);
-  if (!credentialsPath || !devicePath || !connectionPath) {
-    return yield* Effect.logError(
-      "Usage: node scripts/android-push-watch.ts <service-account.json> <device.json> <connection.json>",
-    );
+  const [credentialsPath, devicePath, connectionPath, ...unread] = process.argv.slice(2);
+  if (!credentialsPath || !devicePath || !connectionPath || unread.length > 0) {
+    return yield* new WatchUsageError({});
   }
   const credentials = yield* readFile(credentialsPath);
   const device = yield* readFile(devicePath).pipe(
@@ -176,7 +184,7 @@ const main = Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const alert =
             state && state.phase !== previous?.phase && item.kind !== "snapshot"
-              ? FcmDeliveries.androidAlertForState(state, preferences, now)
+              ? androidAlertForState(state, preferences, now)
               : null;
           const aggregate = makeAggregateState({
             activeStates: [...next.values()],
@@ -217,7 +225,8 @@ NodeRuntime.runMain(
     Effect.catchCause((cause) => {
       const failure = Cause.findErrorOption(cause);
       return Effect.fail(
-        Option.isSome(failure) && isWatchUnregisteredDeviceError(failure.value)
+        Option.isSome(failure) &&
+          (isWatchUnregisteredDeviceError(failure.value) || isWatchUsageError(failure.value))
           ? failure.value
           : new WatchStoppedError({ cause }),
       );

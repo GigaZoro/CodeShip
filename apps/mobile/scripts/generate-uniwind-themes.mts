@@ -2,6 +2,7 @@
 
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 import tailwindColors from "tailwindcss/colors";
 import { BUILT_IN_THEME_IDS, type BuiltInThemeId } from "@t3tools/shared/themePalettes";
 
@@ -282,7 +283,9 @@ const writeFileAtomically = (filename: string, contents: string) => {
 };
 
 if (import.meta.main) {
-  const checkOnly = process.argv.includes("--check");
+  // parseArgs refuses an option this does not take: a mistyped --check must not rewrite the files.
+  const checkOnly = NodeUtil.parseArgs({ options: { check: { type: "boolean", default: false } } })
+    .values.check;
   for (const [filename, contents] of getGeneratedUniwindThemeOutputs()) {
     if (checkOnly) {
       const current = NodeFS.existsSync(filename) ? NodeFS.readFileSync(filename, "utf8") : null;
