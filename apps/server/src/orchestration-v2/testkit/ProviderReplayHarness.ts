@@ -309,21 +309,40 @@ export function layerWithRegistry<Error, SettingsError = never>(
   const layerProvidedRegistry = registryLayer.pipe(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
-  const layerServerSettings =
+  const layerServerSettings: Layer.Layer<
+    ServerSettings.ServerSettingsService,
+    Error | SettingsError
+  > =
     options.serverSettingsLayer ??
     Layer.unwrap(
-      Effect.map(ManagedPolicy.fromDocument("/test/policy.json", options.managedPolicy), (policy) =>
-        ServerSettings.layerTest(
+      Effect.gen(function* () {
+        const policy = yield* ManagedPolicy.fromDocument(
+          "/test/policy.json",
+          options.managedPolicy,
+        );
+        // A user adds a provider's instance before running it; thread management refuses
+        // continuations for an instance the settings leave off.
+        const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+        const providerInstances = Object.fromEntries(
+          yield* Effect.forEach(yield* registry.list(), (instanceId) =>
+            Effect.map(
+              registry.get(instanceId),
+              (adapter) => [instanceId, { driver: adapter.driver, enabled: true }] as const,
+            ),
+          ),
+        );
+        return ServerSettings.layerTest(
           {
             responseStreamingMode: "turn",
+            providerInstances,
             ...(options.continueThreadsAfterServerUpdate === undefined
               ? {}
               : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
           },
           policy.summary,
-        ),
-      ),
-    ).pipe(Layer.orDie);
+        ).pipe(Layer.orDie);
+      }).pipe(Effect.orDie),
+    ).pipe(Layer.provide(layerProvidedRegistry));
   const layerStores = Layer.mergeAll(
     EventStore.layer,
     ProjectionStore.layer,
@@ -562,7 +581,7 @@ export function layerWithRegistry<Error, SettingsError = never>(
   // Build recovery before runtime so it commits before the effect worker claims work.
   const layerStartupRecovery: Layer.Layer<
     never,
-    SettingsError | MigrationError | PlatformError.PlatformError | SqlError
+    Error | SettingsError | MigrationError | PlatformError.PlatformError | SqlError
   > =
     options.recoverOnStartup === true
       ? Layer.effectDiscard(
