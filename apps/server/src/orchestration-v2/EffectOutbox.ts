@@ -299,6 +299,16 @@ export interface EffectOutboxV2Shape {
    */
   readonly oweRestartWake: (sourceRunId: RunId) => Effect.Effect<Effect.Effect<void>>;
   readonly restartWakeOwed: (sourceRunId: RunId) => Effect.Effect<boolean>;
+  /** A run's restart continuation is pending while a producer owes its wake or its row is unsettled. */
+  readonly restartContinuationPending: (
+    sourceRunId: RunId,
+  ) => Effect.Effect<boolean, EffectOutboxError>;
+  /** Resolves once {@link restartContinuationPending} would answer false. */
+  readonly awaitRestartContinuation: (sourceRunId: RunId) => Effect.Effect<void, EffectOutboxError>;
+  /** The source runs of a thread's pending or running restart continuations. */
+  readonly listUnsettledRestartSources: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<RunId>, EffectOutboxError>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
@@ -381,6 +391,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
     const settledSignals = new Map<string, Deferred.Deferred<void>>();
     const owedRestartWakes = new Map<RunId, number>();
+    const owedRestartWakesPaid = new Map<RunId, Deferred.Deferred<void>>();
     const signalSettled = (effectIds: ReadonlyArray<string>) =>
       Effect.forEach(
         effectIds,
@@ -649,11 +660,65 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             if (settled) return;
             settled = true;
             const remaining = (owedRestartWakes.get(sourceRunId) ?? 1) - 1;
-            if (remaining > 0) owedRestartWakes.set(sourceRunId, remaining);
-            else owedRestartWakes.delete(sourceRunId);
+            if (remaining > 0) {
+              owedRestartWakes.set(sourceRunId, remaining);
+              return;
+            }
+            owedRestartWakes.delete(sourceRunId);
+            const paid = owedRestartWakesPaid.get(sourceRunId);
+            owedRestartWakesPaid.delete(sourceRunId);
+            if (paid !== undefined) Deferred.doneUnsafe(paid, Effect.void);
           });
         }),
       restartWakeOwed: (sourceRunId) => Effect.sync(() => owedRestartWakes.has(sourceRunId)),
+      restartContinuationPending: Effect.fn("EffectOutbox.restartContinuationPending")(
+        function* (sourceRunId) {
+          if (owedRestartWakes.has(sourceRunId)) return true;
+          const effect = yield* service.get(restartContinuationEffectId(sourceRunId));
+          return Option.exists(
+            effect,
+            ({ status }) => status === "pending" || status === "running",
+          );
+        },
+      ),
+      awaitRestartContinuation: Effect.fn("EffectOutbox.awaitRestartContinuation")(
+        function* (sourceRunId) {
+          // The producer enqueues before it settles the wake it owes, so the row exists by then.
+          const paid = Effect.sync(() => {
+            if (!owedRestartWakes.has(sourceRunId)) return undefined;
+            const existing = owedRestartWakesPaid.get(sourceRunId);
+            if (existing !== undefined) return existing;
+            const created = Deferred.makeUnsafe<void>();
+            owedRestartWakesPaid.set(sourceRunId, created);
+            return created;
+          });
+          const owed = yield* paid;
+          if (owed !== undefined) yield* Deferred.await(owed);
+          yield* service.awaitSettled(restartContinuationEffectId(sourceRunId));
+        },
+      ),
+      listUnsettledRestartSources: (threadId) =>
+        sql<EffectRow>`
+          SELECT *
+          FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId}
+            AND status IN ('pending', 'running')
+            AND effect_type = 'provider-runtime.continue'
+          ORDER BY created_at ASC, effect_id ASC
+        `.pipe(
+          NodeSqliteClient.readOnly,
+          Effect.flatMap((rows) => decodeRows("list-restart-sources", rows)),
+          Effect.map((effects) =>
+            effects.flatMap(({ request }) =>
+              request.type === "provider-runtime.continue" ? [request.sourceRunId] : [],
+            ),
+          ),
+          Effect.mapError((cause) =>
+            isEffectOutboxError(cause)
+              ? cause
+              : new EffectOutboxError({ operation: "list-restart-sources", cause }),
+          ),
+        ),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
         const cancelledRows = yield* sql<{ readonly effect_id: string }>`

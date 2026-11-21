@@ -12339,6 +12339,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
   });
 
+  /**
+   * A Stop cancels the pending restart of each run it marks in its own commit. A run an older Stop
+   * already marked counts too: a server that predates that commit left its retry pending.
+   */
+  const stoppedRestartSources = Effect.fn("Orchestrator.stoppedRestartSources")(function* (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "run.interrupt" | "thread.stop" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const sources = yield* effectOutbox
+      .listUnsettledRestartSources(command.threadId)
+      .pipe(mapDispatchError(command));
+    if (sources.length === 0) return [];
+    const marking = new Set(
+      (yield* Ref.get(events)).flatMap((event) =>
+        event.type === "turn-item.updated" &&
+        event.payload.type === "run_interrupt_request" &&
+        event.payload.runId !== null
+          ? [event.payload.runId]
+          : [],
+      ),
+    );
+    const { turnItems } = yield* projectionStore
+      .getThreadRecords(command.threadId, ["turnItems"], {
+        turnItemTypes: ["run_interrupt_request"],
+        turnItemRunIds: sources,
+      })
+      .pipe(mapDispatchError(command));
+    return sources.filter((runId) => marking.has(runId) || runStopRequested(runId, turnItems));
+  });
+
   /** Late tool calls and restart continuations must not outlive Stop. */
   const stopReachedRun = (
     command: OrchestrationV2ServerCommand,
@@ -12498,13 +12531,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const bufferedMessageIds = new Set(
       queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
     );
+    const outstandingRestarts = new Set(
+      yield* effectOutbox
+        .listUnsettledRestartSources(thread.id)
+        .pipe(mapDispatchError(input.command)),
+    );
     for (const run of runs) {
       // A resumed queue can have a lower ordinal than a pending continuation source.
-      // Stop must reach those sources even when interrupting the resumed run succeeds.
+      // Stop must reach those sources even when interrupting the resumed run succeeds,
+      // and a completed run whose lost work a producer is waking.
       if (
-        (run.status === "cancelled" ||
-          (run.status === "failed" && run.restartContinuationOfRunId !== undefined)) &&
-        (yield* canAutomaticallyContinueRun(run, runs).pipe(mapDispatchError(input.command)))
+        run.status !== "queued" &&
+        !isLiveRun(run) &&
+        (outstandingRestarts.has(run.id) ||
+          (yield* effectOutbox.restartWakeOwed(run.id)) ||
+          ((run.status === "cancelled" ||
+            (run.status === "failed" && run.restartContinuationOfRunId !== undefined)) &&
+            (yield* canAutomaticallyContinueRun(run, runs).pipe(mapDispatchError(input.command)))))
       ) {
         yield* markStoppedRun({ ...input, thread, run });
       }
@@ -14149,13 +14192,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   const awaitsRestartContinuation = (run: OrchestrationV2Run) =>
-    effectOutbox
-      .get(EffectOutbox.restartContinuationEffectId(run.id))
-      .pipe(
-        Effect.map(
-          Option.exists((effect) => effect.status === "pending" || effect.status === "running"),
-        ),
-      );
+    effectOutbox.restartContinuationPending(run.id);
 
   const canAutomaticallyContinueRun = Effect.fn("Orchestrator.canAutomaticallyContinueRun")(
     function* (
@@ -14174,8 +14211,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (continuationStartRetryDelayMs(run, { ...records, runs }) !== undefined) return true;
       if (!isSettledRun(run)) return false;
       // A user's session close records lost work too, with no wake: the record is a pending restart
-      // only while the producer that wrote it still owes the wake.
-      if (scope === "pending-restart") return yield* effectOutbox.restartWakeOwed(run.id);
+      // only while the producer that wrote it still owes the wake, which the check above reads.
+      if (scope === "pending-restart") return false;
       if (isRestartContinuationSource(run, records.providerTurns)) return true;
       // A live wait may need recovery at a future shutdown, but it has no restart to interrupt yet.
       const recovery = yield* projectionStore.getRuntimeRecoveryProjection(run.threadId);
@@ -15007,6 +15044,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
         readonly reason: string;
       };
+      readonly stoppedRestartSourceRunIds?: ReadonlyArray<RunId>;
       readonly result?: CommandResultV2;
     },
     OrchestratorV2Error
@@ -15505,10 +15543,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       default:
         return yield* dispatchUnsupported(command);
     }
+    const stoppedRestartSourceRunIds =
+      command.type === "run.interrupt" || command.type === "thread.stop"
+        ? yield* stoppedRestartSources(command, events)
+        : [];
     return {
       events: yield* Ref.get(events),
       effects: yield* Ref.get(effects),
       ...(cancelUnsettledEffects === undefined ? {} : { cancelUnsettledEffects }),
+      ...(stoppedRestartSourceRunIds.length === 0 ? {} : { stoppedRestartSourceRunIds }),
       ...(result === undefined ? {} : { result }),
     };
   });
@@ -15598,6 +15641,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.filterOrFail(
         (planned) =>
           planned.events.length > 0 ||
+          // Cancelling the restart an older Stop left pending is this Stop's work.
+          planned.stoppedRestartSourceRunIds !== undefined ||
           command.type === "thread.background-work.settle" ||
           command.type === "thread.interrupt.unresponsive" ||
           // Someone may have answered, or the run is attended.
@@ -15676,7 +15721,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
-    if (plan.events.length === 0 && plan.effects.length === 0) {
+    if (
+      plan.events.length === 0 &&
+      plan.effects.length === 0 &&
+      plan.stoppedRestartSourceRunIds === undefined
+    ) {
       // A settle that ended nothing still records its receipt: a replayed Stop
       // effect then finds it instead of settling work that appeared since.
       const { resultSequence, inserted, result } = yield* Effect.gen(function* () {
@@ -15724,6 +15773,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
+        ...(plan.stoppedRestartSourceRunIds === undefined
+          ? {}
+          : { stoppedRestartSourceRunIds: plan.stoppedRestartSourceRunIds }),
         ...(plan.result === undefined ? {} : { result: plan.result }),
       })
       .pipe(
@@ -16178,9 +16230,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     ),
     awaitRestartContinuation: Effect.fn("OrchestratorV2.awaitRestartContinuation")(function (run) {
-      return effectOutbox
-        .awaitSettled(EffectOutbox.restartContinuationEffectId(run.id))
-        .pipe(Effect.ignore);
+      return effectOutbox.awaitRestartContinuation(run.id).pipe(Effect.ignore);
     }),
     dispatch: dispatchWithReceipt,
     autoArmLimitRecovery: Effect.fn("OrchestratorV2.autoArmLimitRecovery")(function (input) {

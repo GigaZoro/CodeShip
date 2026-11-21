@@ -932,6 +932,140 @@ it.effect("interrupting the restart source stops children owned by every run in 
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect.each(["pending retry", "owed wake"] as const)(
+  "thread Stop reaches the restart a completed run's lost work still owes (%s)",
+  (owing) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make(`thread:stop-completed-restart:${owing}`);
+      yield* createWatchingThread(threadId, 23);
+      yield* send(threadId, "source", "start_immediately");
+      yield* send(threadId, "later", "queue_after_active");
+      const [source, later] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+      assert.isDefined(source);
+      assert.isDefined(later);
+      const now = yield* DateTime.now;
+      for (const run of [source, later]) {
+        yield* projections.apply({
+          id: EventId.make(`completed:${run.id}`),
+          type: "run.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+        });
+      }
+      // Setup effects would start the runs on a provider; only Stop's effects run.
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+      // Lost background work of a run the thread moved on from wakes that run again.
+      const wake = EffectOutbox.restartContinuationEffect({
+        commandId: CommandId.make(`lost-work-wake:${owing}`),
+        threadId,
+        sourceRunId: source.id,
+        availableAt: DateTime.add(now, { minutes: 3 }),
+      });
+      const settle = owing === "owed wake" ? yield* outbox.oweRestartWake(source.id) : Effect.void;
+      if (owing === "pending retry") yield* outbox.enqueue([wake]);
+      assert.isTrue(yield* orchestrator.restartContinuationPending(source));
+
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make(`stop-completed-restart:${owing}`),
+        threadId,
+      });
+      if (owing === "owed wake") {
+        yield* outbox.enqueue([wake]);
+        yield* settle;
+      }
+      assert.isFalse(yield* orchestrator.restartContinuationPending(source));
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.isTrue(
+        after.turnItems.some(
+          (item) => item.type === "run_interrupt_request" && item.runId === source.id,
+        ),
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["thread.stop", "run.interrupt", "run.interrupt only if active"] as const)(
+  "a repeated %s cancels the retry an older server left on a run it stopped",
+  (stop) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make(`thread:repeat-stop-old-marker:${stop}`);
+      yield* createWatchingThread(threadId, 24);
+      yield* send(threadId, "cut", "start_immediately");
+      const [cut] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+      assert.isDefined(cut);
+      const now = yield* DateTime.now;
+      yield* projections.apply({
+        id: EventId.make("old-marker:cut"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...cut, status: "cancelled", startedAt: now, completedAt: now },
+      });
+      yield* sql`DELETE FROM orchestration_v2_effect_outbox`;
+      yield* outbox.enqueue([
+        EffectOutbox.restartContinuationEffect({
+          commandId: CommandId.make("old-retry"),
+          threadId,
+          sourceRunId: cut.id,
+          availableAt: DateTime.add(now, { minutes: 3 }),
+        }),
+      ]);
+      // An older server's Stop marked the run but left its retry pending.
+      yield* projections.apply({
+        id: EventId.make("old-marker:item"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make("item:old-marker"),
+          threadId,
+          runId: cut.id,
+          nodeId: cut.rootNodeId,
+          providerThreadId: cut.providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 99,
+          status: "completed",
+          title: "Interrupt requested",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "run_interrupt_request",
+          message: "Stopped",
+        },
+      });
+      assert.isTrue(yield* orchestrator.restartContinuationPending(cut));
+
+      const commandId = CommandId.make(`repeat-stop-old-marker:${stop}`);
+      yield* orchestrator.dispatch(
+        stop === "thread.stop"
+          ? { type: stop, commandId, threadId }
+          : {
+              type: "run.interrupt",
+              commandId,
+              threadId,
+              runId: cut.id,
+              ...(stop === "run.interrupt" ? {} : { onlyIfActive: true }),
+            },
+      );
+      assert.isFalse(yield* orchestrator.restartContinuationPending(cut));
+      assert.include(
+        (yield* outbox.listByCommandId(commandId)).map(({ request }) => request.type),
+        "delegated-task.recover",
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("a repeated Stop that changes nothing still stops the delegated tasks", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1703,6 +1837,11 @@ it.effect.each(["no wake owed", "a wake owed"] as const)(
       // A process that ended on its own records the same way and enqueues its wake right after.
       const settle =
         scenario === "a wake owed" ? yield* outbox.oweRestartWake(source.id) : Effect.void;
+      // Stop, waits and delegated deliveries read one answer: the owed wake is a pending restart.
+      assert.strictEqual(
+        yield* orchestrator.restartContinuationPending(source),
+        scenario === "a wake owed",
+      );
       const childBefore = yield* orchestrator.getThreadProjection(childThreadId);
       const result = yield* threads.interruptThread({
         projectId: before.thread.projectId,

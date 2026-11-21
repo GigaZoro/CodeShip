@@ -162,6 +162,11 @@ export interface EventSinkV2Shape {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
     };
+    /**
+     * Runs a Stop reached whose restart continuation it cancels, besides those its stored
+     * run_interrupt_request items name: a run an older Stop marked has no new item.
+     */
+    readonly stoppedRestartSourceRunIds?: ReadonlyArray<RunId>;
     /** Stored with the receipt, in the same transaction, for the command's replays. */
     readonly result?: CommandReceiptStore.CommandResultV2;
   }) => Effect.Effect<
@@ -735,10 +740,11 @@ const layerBase: Layer.Layer<
             commandId: input.commandId,
             events: normalized,
           });
-          // A Stop that changes nothing can still queue the stop of its delegated tasks.
+          // A Stop that changes nothing can still queue the stop of its delegated tasks, or
+          // cancel the restart an older Stop left pending.
           const sequence =
             storedEvents.at(-1)?.sequence ??
-            (input.effects.length === 0
+            (input.effects.length === 0 && (input.stoppedRestartSourceRunIds ?? []).length === 0
               ? undefined
               : yield* eventStore.latestSequence({ threadId: input.threadId }));
           if (sequence === undefined) {
@@ -768,6 +774,12 @@ const layerBase: Layer.Layer<
                 });
           // Stop and its delayed retries settle in one transaction. Notify their waiters only after commit.
           const stoppedRestarts = new Map<string, { threadId: ThreadId; sourceRunId: RunId }>();
+          for (const sourceRunId of input.stoppedRestartSourceRunIds ?? []) {
+            stoppedRestarts.set(EffectOutbox.restartContinuationEffectId(sourceRunId), {
+              threadId: input.threadId,
+              sourceRunId,
+            });
+          }
           for (const { event } of storedEvents) {
             if (
               event.type === "turn-item.updated" &&
