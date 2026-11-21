@@ -112,7 +112,7 @@ describe("threadSelectionStore", () => {
       expect(state.selectedThreadKeys.size).toBe(4);
 
       using shown = new DisposableStack();
-      shown.defer(publishShownThreadKeys(new Set([THREAD_E, THREAD_D, THREAD_A])));
+      shown.defer(publishShownThreadKeys(new Set<string>([THREAD_E, THREAD_D, THREAD_A])));
       expect(state.shownSelection()).toEqual([THREAD_A, THREAD_D]);
     });
   });
