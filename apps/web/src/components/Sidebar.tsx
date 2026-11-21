@@ -135,11 +135,9 @@ import {
 } from "../threadSelectionStore";
 import {
   canTurnThreadIntoProject,
-  topOfPinnedRunOrderKey,
   useAcknowledgeThreadWoke,
   useThreadActions,
 } from "../hooks/useThreadActions";
-import { useReopenLastArchivedThread } from "../hooks/useReopenLastArchivedThread";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { useProjectPin } from "../hooks/useProjectGroupUpdate";
@@ -231,7 +229,6 @@ import {
   partitionSidebarUserFolders,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkPinContextMenuItem,
-  pinOrderKeyBetween,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
@@ -1422,6 +1419,7 @@ export default function Sidebar({
     snoozeThread,
     unsnoozeThread,
     pinThread,
+    pinThreadsAtTop,
     unpinThread,
     confirmAndUnpinThread,
     setThreadAutoSettle,
@@ -1434,7 +1432,6 @@ export default function Sidebar({
     archiveThread,
     deleteThread,
   } = useThreadActions();
-  const reopenLastArchivedThread = useReopenLastArchivedThread();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -2808,11 +2805,13 @@ export default function Sidebar({
   ) {
     setOptimisticDrop(null);
   }
-  const attemptPin = (threadRef: ScopedThreadRef, orderKey?: string) => {
+  const attemptPin = (threadRefs: ReadonlyArray<ScopedThreadRef>) => {
     void (async () => {
-      const result = await pinThread(threadRef, orderKey === undefined ? {} : { orderKey });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
+      const failure = (await pinThreadsAtTop(threadRefs)).find(
+        (result) => result._tag === "Failure" && !isAtomCommandInterrupted(result),
+      );
+      if (failure !== undefined && failure._tag === "Failure") {
+        const error = squashAtomCommandFailure(failure);
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -2823,6 +2822,7 @@ export default function Sidebar({
       }
     })();
   };
+  const attemptPinThread = (threadRef: ScopedThreadRef) => attemptPin([threadRef]);
   const attemptUnpin = (threadRef: ScopedThreadRef) => {
     void (async () => {
       const result = await confirmAndUnpinThread(threadRef);
@@ -3436,14 +3436,9 @@ export default function Sidebar({
         return;
       }
       if (clicked.value === "pin") {
-        // Each pin takes its own key, so threads pinned in one go keep their selection order.
-        let orderKey = topOfPinnedRunOrderKey();
-        const pinOrder: Array<[ScopedThreadRef, string | undefined]> = [];
-        for (const thread of unpinnedSelectedThreads.toReversed()) {
-          pinOrder.push([scopeThreadRef(thread.environmentId, thread.id), orderKey]);
-          orderKey = pinOrderKeyBetween(null, orderKey ?? null) ?? undefined;
-        }
-        for (const [threadRef, key] of pinOrder) attemptPin(threadRef, key);
+        attemptPin(
+          unpinnedSelectedThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),
+        );
         clearSelection();
         return;
       }
@@ -3787,7 +3782,7 @@ export default function Sidebar({
             putBackNeedsYou(threadRef);
             return;
           case "pin":
-            attemptPin(threadRef);
+            attemptPinThread(threadRef);
             return;
           case "unpin":
             attemptUnpin(threadRef);
@@ -3976,12 +3971,6 @@ export default function Sidebar({
         navigateToThreadKey(next === null ? null : threadShellKey(next));
         return;
       }
-      if (command === "thread.reopenLastArchived") {
-        event.preventDefault();
-        event.stopPropagation();
-        void reopenLastArchivedThread();
-        return;
-      }
       const traversalDirection = threadTraversalDirectionFromCommand(command);
       if (traversalDirection !== null) {
         navigateToThreadKey(
@@ -4003,7 +3992,6 @@ export default function Sidebar({
     keybindings,
     navigateToThread,
     needsYouNowThreads,
-    reopenLastArchivedThread,
     orderedThreadKeys,
     routeRowThreadKey,
     routeThreadRef,
@@ -4640,7 +4628,7 @@ export default function Sidebar({
                             onUnsettle={attemptUnsettle}
                             onSnooze={attemptSnooze}
                             onUnsnooze={attemptUnsnooze}
-                            onPin={attemptPin}
+                            onPin={attemptPinThread}
                             onUnpin={attemptUnpin}
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}

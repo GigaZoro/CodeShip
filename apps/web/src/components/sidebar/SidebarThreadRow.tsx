@@ -1389,12 +1389,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {scheduledIndicator}
               {variant === "line" && pinIndicator !== null ? (
                 // One-line pinned rows sit under the Pinned header, so the pin shows as Unpin on hover.
-                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none">
+                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 group-focus-visible/sidebar-row:opacity-100 motion-reduce:transition-none">
                   {pinIndicator}
                 </span>
               ) : canPinOnHover ? (
                 // The slot is always reserved so revealing Pin never moves the title.
-                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 motion-reduce:transition-none">
+                <span className="inline-flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-any-hover/sidebar-row:opacity-100 group-focus-visible/sidebar-row:opacity-100 motion-reduce:transition-none">
                   {renderPinButton(
                     "inline-flex cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                     "size-3 shrink-0",

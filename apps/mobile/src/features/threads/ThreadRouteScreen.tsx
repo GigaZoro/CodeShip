@@ -373,7 +373,8 @@ function ThreadRouteContent(
     selectedThread?.environmentId ?? null,
     AuthOrchestrationOperateScope,
   );
-  const threadPin = useThreadPinAction(selectedThread);
+  // A queued creation's shell is made up here until the server acknowledges the thread.
+  const threadPin = useThreadPinAction(selectedThreadDetailRef === null ? null : selectedThread);
   const canReadTerminal = useEnvironmentScope(
     selectedThread?.environmentId ?? null,
     AuthTerminalReadScope,
