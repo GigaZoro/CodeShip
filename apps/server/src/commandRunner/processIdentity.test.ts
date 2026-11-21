@@ -56,11 +56,19 @@ describe("processIdentity", () => {
       [
         identityWindow(timeIdentity(7)),
         identityWindow(windowIdentity(-5, 9)),
+        identityWindow(windowIdentity(9, -5)),
         identityWindow("window:5"),
         identityWindow("boot:a:5"),
         identityWindow(null),
       ],
-      [{ from: 7, to: 7 }, { from: -5, to: 9 }, undefined, undefined, undefined],
+      [
+        { from: 7, to: 7 },
+        { from: -5, to: 9 },
+        { from: -5, to: 9 },
+        undefined,
+        undefined,
+        undefined,
+      ],
     );
   });
 

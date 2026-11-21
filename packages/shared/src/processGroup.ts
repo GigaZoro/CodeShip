@@ -336,6 +336,21 @@ export interface GroupLaunch {
   readonly shell?: boolean | string | undefined;
 }
 
+/** A hold through a FIFO, for a group that outlives this process. */
+export interface FifoHold {
+  /**
+   * A FIFO the holder makes, unless it exists, and opens as `fd`: `isFifoHolderHeld`,
+   * `releaseFifoHolder` and `stopFifoHolderGroup` reach it from any later process. Where it cannot,
+   * the holder reads `fd` as given, and without one, the group runs unheld.
+   */
+  readonly fifo: string;
+  /**
+   * A file that must exist once the FIFO is open, or the launch exits before its command runs. A
+   * process that removes it and then finds no reader on the FIFO knows the command will not run.
+   */
+  readonly claim?: string | undefined;
+}
+
 export type HoldOptions = {
   /** The child's fd the holder reads, above every fd the command is given. */
   readonly fd: number;
@@ -353,15 +368,7 @@ export type HoldOptions = {
        */
       readonly endGroupAfterSeconds?: number | undefined;
     }
-  | {
-      /**
-       * A FIFO the holder makes, unless it exists, and opens as `fd`, for a group that outlives
-       * this process: `isFifoHolderHeld`, `releaseFifoHolder` and `stopFifoHolderGroup` reach it
-       * from any later one.
-       * Where it cannot, the holder reads `fd` as given, and without one, the group runs unheld.
-       */
-      readonly fifo: string;
-    }
+  | FifoHold
 );
 
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
@@ -461,6 +468,9 @@ const holderScript = (
     setup.push(
       `{ [ -p ${fifo} ] || command -p mkfifo -m 600 ${fifo} 2>/dev/null; } && exec ${fd}<>${fifo}`,
     );
+    // Checked after the open: a `stopFifoHolderGroup` sent after the claim went reaches this
+    // reader, and one that found no reader came before this check.
+    if (options.claim !== undefined) setup.push(`[ -e ${quote(options.claim)} ] || exit`);
     job = `while read -r -u ${fd} m; do case $m in q) exit;; k) ${endGroupAfter(FIFO_HOLDER_STOP_SECONDS)}; exit;; esac; done`;
   } else {
     job =
@@ -632,10 +642,10 @@ const reportAs = (heldText: string, text: string) => (error: PlatformError.Platf
 };
 
 /**
- * A FIFO through which `layerHeldProcessGroups` holds the groups it spawns, so that each number
+ * A FIFO hold through which `layerHeldProcessGroups` holds the groups it spawns, so that each number
  * stays held after this process ends, until `releaseFifoHolder`, as well as through the scope.
  */
-export const HoldThroughFifo = Context.Reference<string | undefined>(
+export const HoldThroughFifo = Context.Reference<FifoHold | undefined>(
   "@t3tools/shared/processGroup/HoldThroughFifo",
   { defaultValue: () => undefined },
 );
@@ -694,7 +704,7 @@ const spawnHeld = Effect.fnUntraced(function* (
       env: options.extendEnv ? { ...process.env, ...options.env } : options.env,
       shell: options.shell,
     },
-    fifo === undefined ? { fd, beacon } : { fd, beacon, fifo },
+    fifo === undefined ? { fd, beacon } : { fd, beacon, ...fifo },
   );
   if (held === undefined) return yield* spawner.spawn(command);
   const restore = reportAs(
@@ -729,7 +739,8 @@ const spawnHeld = Effect.fnUntraced(function* (
         Effect.tap((handle) =>
           Effect.sync(() => {
             const endPipe = Effect.ignore(Stream.run(Stream.empty, handle.getInputFd(fd)));
-            release = fifo === undefined ? endPipe : Effect.andThen(releaseFifo(fifo), endPipe);
+            release =
+              fifo === undefined ? endPipe : Effect.andThen(releaseFifo(fifo.fifo), endPipe);
             hold.held = true;
           }),
         ),
