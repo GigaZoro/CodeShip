@@ -214,10 +214,12 @@ export function land(worktree: string, now: Date): SyncResult {
   let main = gitOrThrow(worktree, "rev-parse", "origin/main");
   if (main === state.base) {
     // Main refuses a push from anyone who does not hold its landing turn (.github/scripts/landing-turn.cjs).
-    const pushRun = NodeChildProcess.spawnSync(process.execPath, [LANDING_TURN, "push"], {
-      cwd: worktree,
-      encoding: "utf8",
-    });
+    const candidate = gitOrThrow(worktree, "rev-parse", "HEAD");
+    const pushRun = NodeChildProcess.spawnSync(
+      process.execPath,
+      [LANDING_TURN, "push", candidate],
+      { cwd: worktree, encoding: "utf8" },
+    );
     const pushed = { ok: pushRun.status === 0, stderr: pushRun.stderr.trim() };
     if (pushed.ok) return landed(worktree);
     gitOrThrow(worktree, "fetch", "-q", "origin");

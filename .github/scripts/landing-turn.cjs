@@ -333,6 +333,22 @@ function land({
   });
 }
 
+/**
+ * Pushes `commit` to main under the turn, for a tree that was checked against main's current commit elsewhere (the
+ * upstream sync, the dependency upgrade). The commit is resolved before the wait, so what lands is the commit the
+ * caller checked, whatever its checkout does while the push waits; a main that moved makes git refuse the fast-forward.
+ */
+function push({ cwd, remote, commit, branch = "main", ...rest }) {
+  if (!commit) throw new Error("usage: landing-turn.cjs push <commit>");
+  const sha = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${commit}^{commit}`]).stdout;
+  withTurn({ cwd, remote, ...rest }, (turn) => {
+    git(cwd, ["push", "--quiet", remote, `${sha}:refs/heads/${branch}`], {
+      env: { [TURN_ENV]: turn },
+    });
+  });
+  return sha;
+}
+
 function main(argv) {
   const [command, ...rest] = argv;
   const cwd = process.cwd();
@@ -366,16 +382,15 @@ function main(argv) {
     return result.status === "landed" ? 0 : 1;
   }
   if (command === "push") {
-    // For a tree that was verified against main's current commit elsewhere (the upstream sync): the push is
-    // a fast-forward, so the push takes the turn alone and a main that moved makes git refuse it.
-    withTurn({ cwd, remote: "origin" }, (turn) => {
-      git(cwd, ["push", "--quiet", "origin", "HEAD:refs/heads/main"], {
-        env: { [TURN_ENV]: turn },
-      });
-    });
+    console.log(
+      JSON.stringify({
+        status: "landed",
+        commit: push({ cwd, remote: "origin", commit: rest[0] }),
+      }),
+    );
     return 0;
   }
-  console.error("usage: landing-turn.cjs land | push | verify <remote>");
+  console.error("usage: landing-turn.cjs land | push <commit> | verify <remote>");
   return 2;
 }
 
@@ -400,5 +415,6 @@ module.exports = {
   withTurn,
   verifyPush,
   land,
+  push,
   overlappingWorktrees,
 };

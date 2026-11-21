@@ -14,6 +14,7 @@ const {
   acquire,
   land,
   overlappingWorktrees,
+  push,
   release,
   tryAcquire,
   verifyPush,
@@ -360,6 +361,35 @@ test("a take whose push fails or times out is the lander's when origin took it, 
       () => acquire({ cwd: lander, remote: "origin", maxWaitMs: 0 }),
       /git push failed/,
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("push lands the commit it was given, not one its checkout made while it waited, and needs one", () => {
+  const { root, origin, git, clone, commit } = setup();
+  try {
+    const holder = clone("holder");
+    const pusher = clone("pusher");
+    const held = tryAcquire({ cwd: holder, remote: origin, runId: "holder" });
+    commit(pusher, "checked.txt");
+    const checked = git(pusher, "rev-parse", "HEAD");
+    assert.throws(() => push({ cwd: pusher, remote: origin }), /usage/);
+    assert.equal(git(origin, "rev-parse", LEASE_REF), held);
+
+    const pushed = push({
+      cwd: pusher,
+      remote: origin,
+      commit: "HEAD",
+      sleep: () => {
+        commit(pusher, "unchecked.txt");
+        release({ cwd: holder, remote: origin }, held);
+      },
+    });
+
+    assert.equal(pushed, checked);
+    assert.equal(git(origin, "rev-parse", "main"), checked);
+    assert.notEqual(git(pusher, "rev-parse", "HEAD"), checked);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
