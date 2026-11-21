@@ -1,3 +1,7 @@
+## 2026-11-21 — check:changed records the files as they are on disk
+
+- Maintainers: `vp run check:changed` and the push gate no longer read a file rewritten at the same size within the second the index was last written as its earlier content. A pass could name a tree the checks never ran on, and check:changed's own tests failed at random on macOS.
+
 ## 2026-11-21 — On macOS and Linux, stopping a process spares a program that took its group number
 
 - On macOS and Linux, CodeShip stops what a command or agent session left running by signalling its process group, also after its own process exited. Once that group emptied, an unrelated program could start a group under the same number, and the stop then reached that program's processes. Each group CodeShip starts now keeps its number while a small bash process outside the group runs, and once the group's own process exited CodeShip signals the group only while that bash process still holds the number. This covers the commands and git runs the server starts, Claude, OpenCode, Pi and ACP agent sessions such as Grok, and `t3_command_run` commands. The earlier check looked for a process under the old process id, so it missed such a group once the process that started it had exited.
