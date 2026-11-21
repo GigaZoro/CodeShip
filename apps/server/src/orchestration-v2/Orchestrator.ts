@@ -13853,6 +13853,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       awaitsRestartContinuation,
     ).pipe(Effect.map((pending) => pending.includes(true)));
 
+  // A Stop that ends a restart still owed to the run interrupts it; the cut or the failed start
+  // that the restart would have retried is not how it ended.
+  const delegatedRunOutcome = Effect.fn("Orchestrator.delegatedRunOutcome")(function* (
+    child: ProjectionRecords<"runs" | "providerTurns">,
+    run: OrchestrationV2Run,
+  ) {
+    const outcome = runOutcome(run);
+    if (outcome !== "failed" && outcome !== "cancelled") return outcome;
+    const chainRunIds: Array<RunId> = [];
+    for (
+      let current: OrchestrationV2Run | undefined = run;
+      current !== undefined && !chainRunIds.includes(current.id);
+      current = child.runs.find((candidate) => candidate.restartContinuationOfRunId === current?.id)
+    )
+      chainRunIds.push(current.id);
+    const { turnItems } = yield* projectionStore.getThreadRecords(run.threadId, ["turnItems"], {
+      turnItemTypes: ["error", "run_interrupt_request"],
+      turnItemRunIds: chainRunIds,
+    });
+    const owedRestart =
+      isRestartContinuationSource(run, child.providerTurns) ||
+      continuationStartRetryDelayMs(run, {
+        runs: child.runs,
+        providerTurns: child.providerTurns,
+        turnItems,
+      }) !== undefined;
+    return owedRestart && chainRunIds.some((id) => runStopRequested(id, turnItems))
+      ? "interrupted"
+      : outcome;
+  });
+
   const planDelegatedCompletionDelivery = Effect.fn(
     "orchestrationV2.planDelegatedCompletionDelivery",
   )(function* (input: {
@@ -14057,7 +14088,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : undefined
           : taskRuns.toSorted((a, b) => b.ordinal - a.ordinal)[0];
       if (childRun === undefined) return;
-      const outcome = runOutcome(childRun);
+      const outcome = yield* delegatedRunOutcome(childControls, childRun);
       const terminalStatus = delegatedTaskTerminalStatus(outcome);
       if (terminalStatus === null) {
         if (childRun.delegatedTaskId === undefined || childRun.id !== options.syncRunId) return;
@@ -14364,7 +14395,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const { resultRun } = progress;
     if (progress.state !== "result_available" || resultRun === undefined) return;
-    const status = delegatedTaskTerminalStatus(runOutcome(resultRun));
+    const status = delegatedTaskTerminalStatus(
+      yield* delegatedRunOutcome(childControls, resultRun),
+    );
     if (status !== "cancelled" && status !== "interrupted") return;
     if (
       yield* childAwaitsRestartContinuation(
@@ -15622,12 +15655,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // A child whose run ends while its background tasks or its own subagents still run has no
   // result yet. When that work settles there is no run update to finalize it, so these events
-  // do it. A background roster counts once it stops holding after it was seen holding.
+  // do it. A background roster counts once it stops holding after it was seen holding. Stop of
+  // an ended run cancels its pending restart without a run update, so its request counts too.
   const providerThreadsWithBackgroundWork = new Set<string>();
   const settlesChildWork = (stored: OrchestrationV2StoredEvent) => {
     const { event } = stored;
     if (event.type === "subagent.updated")
       return !isOrchestrationV2WorkActive(event.payload.status);
+    if (event.type === "turn-item.updated") return event.payload.type === "run_interrupt_request";
     if (event.type !== "provider-thread.updated") return false;
     if (backgroundWorkHoldsCompletion(event.payload.pendingBackgroundTasks ?? [])) {
       providerThreadsWithBackgroundWork.add(event.payload.id);
@@ -15635,12 +15670,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     return providerThreadsWithBackgroundWork.delete(event.payload.id);
   };
-  yield* Stream.merge(
-    eventSink.stream({
-      afterSequence: terminalEventsAfterSequence,
-      eventType: "provider-thread.updated",
-    }),
-    eventSink.stream({ afterSequence: terminalEventsAfterSequence, eventType: "subagent.updated" }),
+  yield* Stream.mergeAll(
+    (["provider-thread.updated", "subagent.updated", "turn-item.updated"] as const).map(
+      (eventType) => eventSink.stream({ afterSequence: terminalEventsAfterSequence, eventType }),
+    ),
+    { concurrency: "unbounded" },
   ).pipe(
     Stream.filter(settlesChildWork),
     Stream.runForEach((stored) =>
