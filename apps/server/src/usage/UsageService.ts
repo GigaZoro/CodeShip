@@ -374,6 +374,7 @@ export const make = Effect.gen(function* () {
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
     settings: ServerSettingsValue,
     retentionCutoffMs: number,
+    onProgress: () => void,
   ) {
     const dirs: Array<TranscriptSource> = [];
     const seen = new Set<string>();
@@ -381,7 +382,7 @@ export const make = Effect.gen(function* () {
       const { provider, format } = reader;
       const directories = yield* Effect.forEach(
         yield* usageInstances(driver, settings),
-        (instance) => reader.directories(instance),
+        (instance) => reader.directories(instance).pipe(Effect.tap(() => Effect.sync(onProgress))),
       );
       for (const { dir: directory, fileName } of directories.flat()) {
         const sourceKey = provider + "\0" + directory;
@@ -389,7 +390,9 @@ export const make = Effect.gen(function* () {
         const dir = yield* fileSystem
           .realPath(directory)
           .pipe(Effect.orElseSucceed(() => previous?.dir ?? directory));
+        onProgress();
         const currentVolumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
+        onProgress();
         const hasRetainedHistory = fileCache
           .entries()
           .some(
@@ -819,7 +822,7 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  /** Reads may finish in any order. Aggregation orders live and retained files together for duplicate credit. */
+  /** The earliest first record wins duplicate credit, with byte-ordered paths breaking ties. */
   const readFileRecords = Effect.fn("UsageService.readFileRecords")(function* (
     filePath: string,
     size: number,
@@ -1152,7 +1155,7 @@ export const make = Effect.gen(function* () {
       undefined,
       completedProviders,
     ).pipe(Effect.forkChild);
-    const dirs = yield* resolveTranscriptDirs(settings, retentionCutoffMs).pipe(
+    const dirs = yield* resolveTranscriptDirs(settings, retentionCutoffMs, onProgress).pipe(
       Effect.provideContext(readerContext),
     );
     const scanListings = new Map<string, Listing>();

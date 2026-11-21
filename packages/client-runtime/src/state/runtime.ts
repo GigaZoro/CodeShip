@@ -91,6 +91,7 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
   readonly execute: (
     input: Input,
     emit: (value: A) => Effect.Effect<void>,
+    previous: A | undefined,
   ) => Effect.Effect<A, E, R>;
   readonly persistence?: QueryPersistence<A>;
   readonly staleTimeMs?: number;
@@ -744,13 +745,16 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
         > => {
           if (connection === null) return Effect.never;
           const [connectionState, session] = connection;
+          const previous = Option.getOrUndefined(
+            Option.flatMap(get.self<AsyncResult.AsyncResult<A, unknown>>(), AsyncResult.value),
+          );
           switch (connectionState.phase) {
             case "connected":
               return Option.isSome(session)
                 ? runInEnvironment(
                     target.environmentId,
                     options
-                      .execute(target.input, emit)
+                      .execute(target.input, emit, previous)
                       .pipe(pendingOnceSessionReplaced(session.value)),
                   )
                 : Effect.never;
@@ -937,6 +941,7 @@ export function createEnvironmentRpcQueryAtomFamily<
     readonly execute?: (
       input: EnvironmentRpcInput<TTag>,
       emit: (value: EnvironmentRpcSuccess<TTag>) => Effect.Effect<void>,
+      previous: EnvironmentRpcSuccess<TTag> | undefined,
     ) => Effect.Effect<
       EnvironmentRpcSuccess<TTag>,
       EnvironmentRpcFailure<TTag> | EnvironmentRpcUnavailableError,
@@ -972,7 +977,8 @@ export function createEnvironmentRpcQueryAtomFamily<
     execute: (
       input: EnvironmentRpcInput<TTag>,
       emit: (value: EnvironmentRpcSuccess<TTag>) => Effect.Effect<void>,
-    ) => options.execute?.(input, emit) ?? request(options.tag, input),
+      previous: EnvironmentRpcSuccess<TTag> | undefined,
+    ) => options.execute?.(input, emit, previous) ?? request(options.tag, input),
   });
 }
 

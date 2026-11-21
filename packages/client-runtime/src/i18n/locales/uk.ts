@@ -14073,6 +14073,7 @@ const catalog: MessageCatalog = {
   "Usage breakdown": "Розбивка використання",
   "Usage breakdown by time": "Розбивка використання за часом",
   "Usage chart style": "Стиль діаграми використання",
+  "Usage figures may be incomplete": "Дані про використання можуть бути неповними",
   "Usage limit": "Ліміт використання",
   "Usage limit reached": "Досягнуто ліміту використання",
   "Usage limit reached after {progress} retries": {

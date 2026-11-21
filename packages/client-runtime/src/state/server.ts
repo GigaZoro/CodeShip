@@ -1,5 +1,6 @@
 import {
   UsageReadError,
+  USAGE_CONTRACT_VERSION,
   type UsageSummary,
   type EnvironmentId,
   type ThreadId,
@@ -19,6 +20,7 @@ import {
   shouldRecommendDatabaseCompaction,
   WS_METHODS,
 } from "@t3tools/contracts";
+import { isCompatibleUsageContractVersion } from "@t3tools/shared/usageMerge";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
@@ -1889,7 +1891,7 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
-      execute: Effect.fn("ServerEnvironment.readUsageSummary")(function* (input, emit) {
+      execute: Effect.fn("ServerEnvironment.readUsageSummary")(function* (input, emit, prior) {
         let previous: UsageSummary | undefined;
         for (let attempt = 0; attempt <= 20; attempt++) {
           if (attempt > 1) yield* Effect.sleep("1 second");
@@ -1917,6 +1919,11 @@ export function createServerEnvironmentAtoms<R, E>(
           yield* emit(summary);
         }
         if (previous !== undefined) return previous;
+        if (
+          prior?.partialReason !== undefined &&
+          isCompatibleUsageContractVersion(prior.contractVersion, USAGE_CONTRACT_VERSION)
+        )
+          return prior;
         return yield* new UsageReadError({
           reason: "scanFailed",
           detail: "The usage scan timed out.",

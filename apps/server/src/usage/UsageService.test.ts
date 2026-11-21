@@ -4093,6 +4093,111 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.live.each(["progressing", "hung"] as const)(
+    "keeps a %s transcript root probe under the stall watchdog",
+    (scenario) =>
+      Effect.gen(function* () {
+        const { transcript, settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const extraHomes = [
+          NodePath.join(home, "claude-extra-a"),
+          NodePath.join(home, "claude-extra-b"),
+        ];
+        const roots = [
+          NodePath.join(home, "claude", "projects"),
+          ...extraHomes.map((dir) => NodePath.join(dir, "projects")),
+        ];
+        yield* Effect.promise(async () => {
+          for (const root of roots.slice(1)) await NodeFSP.mkdir(root, { recursive: true });
+          await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        });
+        const gates = roots.map(() => ({
+          entered: Promise.withResolvers<void>(),
+          release: Promise.withResolvers<void>(),
+        }));
+        const actual = yield* Effect.promise(() =>
+          vi.importActual<typeof NodeFSP>("node:fs/promises"),
+        );
+        using stat = vi.spyOn(NodeFSP, "stat").mockImplementation(async (...args) => {
+          const index = typeof args[0] === "string" ? roots.indexOf(args[0]) : -1;
+          if (index >= 0) {
+            gates[index]!.entered.resolve();
+            await gates[index]!.release.promise;
+          }
+          return actual.stat(...args);
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            for (const gate of gates) gate.release.resolve();
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* UsageService.make;
+          const caller = yield* service.readSummary(WINDOW).pipe(Effect.result, Effect.forkChild);
+          yield* Effect.promise(() => gates[0]!.entered.promise);
+          for (let index = 0; index < 2; index++) {
+            yield* TestClock.adjust("2 minutes");
+            gates[index]!.release.resolve();
+            yield* Effect.promise(() => gates[index + 1]!.entered.promise);
+          }
+          const initial = yield* Fiber.join(caller);
+          assert.strictEqual(initial._tag === "Failure" && initial.failure.reason, "scanPending");
+
+          if (scenario === "hung") {
+            yield* TestClock.adjust("299 seconds");
+            const atCutoff = yield* service
+              .readSummary({ ...WINDOW, awaitRefresh: true })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* TestClock.adjust("1 second");
+            const stopped = yield* Fiber.join(atCutoff);
+            assert.strictEqual(stopped._tag === "Failure" && stopped.failure.reason, "scanPending");
+            assert.lengthOf(
+              stat.mock.calls.filter(([directory]) => directory === roots[0]),
+              1,
+            );
+            gates[2]!.release.resolve();
+            assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+            assert.lengthOf(
+              stat.mock.calls.filter(([directory]) => directory === roots[0]),
+              2,
+            );
+          } else {
+            yield* TestClock.adjust("2 minutes");
+            const followUp = yield* service
+              .readSummary({ ...WINDOW, awaitRefresh: true })
+              .pipe(Effect.forkChild);
+            gates[2]!.release.resolve();
+            assert.strictEqual(totalOutputTokens(yield* Fiber.join(followUp)), 5);
+            for (const root of roots) {
+              assert.lengthOf(
+                stat.mock.calls.filter(([directory]) => directory === root),
+                1,
+              );
+            }
+          }
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-root-discovery-stall",
+              home,
+              settings: {
+                ...settings,
+                providerInstances: {
+                  ...settings.providerInstances,
+                  ...Object.fromEntries(
+                    extraHomes.map((homePath, index) => [
+                      ProviderInstanceId.make(`claude-extra-${index}`),
+                      { driver: ProviderDriverKind.make("claudeAgent"), config: { homePath } },
+                    ]),
+                  ),
+                },
+              },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.live("waits for a stuck transcript stat and close before opening its path again", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

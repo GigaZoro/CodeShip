@@ -413,6 +413,50 @@ it.effect("keeps five partial tokens when the Usage follow-up budget runs out", 
   ),
 );
 
+it.effect("keeps the same window's partial figures through a scanPending-only refresh", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const first = yield* Deferred.make<void>();
+      const retry = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(
+        (request) =>
+          request <= 21
+            ? Deferred.succeed(first, undefined)
+            : Deferred.succeed(retry, undefined).pipe(
+                Effect.andThen(
+                  Effect.fail(new UsageReadError({ reason: "scanPending", detail: "Scanning" })),
+                ),
+              ),
+        () => [
+          { ...cursorSource(false), status: "partial", message: "Usage is still refreshing." },
+        ],
+        () => ({ output: 5, partialReason: "scanTimedOut" }),
+      );
+      const summary = harness.summary();
+      const unmount = harness.registry.mount(summary);
+      yield* Deferred.await(first);
+      yield* TestClock.adjust("20 seconds");
+      expect(
+        (yield* settledSummary(harness.registry, summary)).buckets[0]?.totals.outputTokens,
+      ).toBe(5);
+
+      harness.registry.refresh(summary);
+      yield* Deferred.await(retry);
+      yield* TestClock.adjust("20 seconds");
+      const settled = yield* AtomRegistry.toStream(harness.registry, summary).pipe(
+        Stream.filter((result) => !result.waiting && !AsyncResult.isInitial(result)),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(AsyncResult.isSuccess(settled) && settled.value.buckets[0]?.totals.outputTokens).toBe(
+        5,
+      );
+      expect(harness.requests()).toBe(42);
+      unmount();
+    }),
+  ),
+);
+
 it.effect("keeps the cached usage summary when the awaited refresh fails", () =>
   Effect.scoped(
     Effect.gen(function* () {

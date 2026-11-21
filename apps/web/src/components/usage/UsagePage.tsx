@@ -1493,7 +1493,7 @@ function UsageCoverageNotice({
   );
 }
 
-function UsageEnvironmentFilter({
+export function UsageEnvironmentFilter({
   environments,
   selectedEnvironments,
   selectedEnvironmentIds,
@@ -1579,7 +1579,9 @@ function UsageEnvironmentFilter({
                       ? t("Refreshing…")
                       : progress.phase === "partway"
                         ? updatingProvidersLabel(progress.providers, providerLabel)
-                        : t("Ready");
+                        : progress.phase === "incomplete"
+                          ? t("Usage figures may be incomplete")
+                          : t("Ready");
           return (
             <MenuCheckboxItem
               key={environment.environmentId}

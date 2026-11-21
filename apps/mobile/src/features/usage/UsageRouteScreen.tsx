@@ -17,20 +17,11 @@ import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { ChatGptUsageSummary } from "./ChatGptUsageSummary";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
-import { EnvironmentId, USAGE_CONTRACT_VERSION, type UsageProviderKind } from "@t3tools/contracts";
+import { EnvironmentId, type UsageProviderKind } from "@t3tools/contracts";
 import { type RouteProp, useIsFocused, useRoute } from "@react-navigation/native";
 import { cursorKeychainAccessEnvironments } from "@t3tools/client-runtime/state/usage";
-import {
-  updatingProvidersLabel,
-  usageEnvironmentProgress,
-  usageProgress,
-} from "@t3tools/client-runtime/state/usage-progress";
-import {
-  isCompatibleUsageContractVersion,
-  isModelCostUnknown,
-  type DailyTotals,
-  type MergedUsage,
-} from "@t3tools/shared/usageMerge";
+import { usageProgress } from "@t3tools/client-runtime/state/usage-progress";
+import { isModelCostUnknown, type DailyTotals, type MergedUsage } from "@t3tools/shared/usageMerge";
 import {
   enumerateDays,
   enumerateHourStarts,
@@ -67,6 +58,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { UsageDailyChart } from "./UsageDailyChart";
 import { toggleUsageEnvironment } from "./usageEnvironmentSelection";
+import { usageEnvironmentStatus } from "./usageEnvironmentStatus";
 import { useRefreshLimits } from "./UsageLimitsSection";
 import { UsageLimitsSection } from "./UsageLimitsPooled";
 import { Menu } from "../../components/ui/Menu";
@@ -258,6 +250,7 @@ function UsageScreen(props: {
         : usageEnvironmentStatus(
             environment,
             refreshingEnvironmentIds.has(environment.environmentId),
+            providerLabel,
             coverage?.gaps.find(
               (gap) => gap.environment.environmentId === environment.environmentId,
             )?.message,
@@ -1149,25 +1142,4 @@ function ModelsSection(props: {
       </View>
     </SettingsSection>
   );
-}
-
-function usageEnvironmentStatus(
-  environment: EnvironmentUsageStatus,
-  refreshing: boolean,
-  gap?: string,
-): string {
-  if (!environment.isConnected) return t("Waiting for connection…");
-  if (
-    environment.summary !== null &&
-    !isCompatibleUsageContractVersion(environment.summary.contractVersion, USAGE_CONTRACT_VERSION)
-  )
-    return t("Update required.");
-  if (gap) return gap;
-  if (environment.error !== null) return environment.error;
-  const progress = usageEnvironmentProgress(environment, refreshing);
-  if (progress.phase === "loading") return t("Loading usage…");
-  if (progress.phase === "stale") return t("Updating usage…");
-  if (progress.phase === "partway")
-    return updatingProvidersLabel(progress.providers, providerLabel);
-  return t("Usage up to date");
 }

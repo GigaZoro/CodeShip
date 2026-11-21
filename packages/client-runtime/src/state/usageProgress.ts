@@ -37,7 +37,8 @@ export function usageEnvironmentProgress(
   if (!environment.isConnected || environment.error !== null) return { phase: "inactive" } as const;
   if (summary === null) return { phase: "loading" } as const;
   if (refreshing) return { phase: "stale" } as const;
-  if (!environment.isPending) return { phase: "ready" } as const;
+  if (!environment.isPending)
+    return { phase: summary.partialReason === "scanTimedOut" ? "incomplete" : "ready" } as const;
   const providers = [
     ...new Set(
       summary.sources.flatMap((source) => (source.refreshing ? [source.fingerprint.provider] : [])),
