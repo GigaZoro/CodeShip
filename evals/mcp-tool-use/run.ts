@@ -35,6 +35,7 @@ import { Tool } from "effect/ai";
 import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
+import { GIT_OUTPUT_MAX_BYTES } from "../../.github/scripts/git-history.cjs";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
@@ -2400,6 +2401,7 @@ const main = Effect.gen(function* () {
   const commit = yield* Effect.try(() =>
     NodeChildProcess.execFileSync("git", ["describe", "--always", "--dirty"], {
       encoding: "utf8",
+      maxBuffer: GIT_OUTPUT_MAX_BYTES,
     }).trim(),
   ).pipe(Effect.orElseSucceed(() => "unknown"));
   const inFlight = yield* Semaphore.make(flags.concurrency);

@@ -5,6 +5,8 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 
+import { GIT_OUTPUT_MAX_BYTES } from "../.github/scripts/git-history.cjs";
+
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
 const SHOWCASE_PROJECT_ID = "t3code";
@@ -255,6 +257,7 @@ function minutesBefore(now: number, minutes: number): string {
 async function runGit(workspaceRoot: string, args: ReadonlyArray<string>): Promise<void> {
   await execFile("git", [...args], {
     cwd: workspaceRoot,
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
     env: {
       ...process.env,
       GIT_AUTHOR_NAME: "Alex Rivera",

@@ -1,3 +1,7 @@
+## 2026-11-24 — Maintainer scripts share one limit for Git output
+
+- Maintainers: the PR size label no longer fails on a pull request that changes thousands of files, such as a sync of the vendored references. It, the release-notes driver, the evals, `test-cached`, the background-live verifier and the mobile showcase read Git output up to the shared 256 MiB limit, instead of Node's 1 MiB default or their own 32 MiB and 64 MiB limits.
+
 ## 2026-11-24 — A landing takes over a turn its lander left on the same machine
 
 - Maintainers: a lander records the landing lease it takes in its clone's Git folder, and on Linux a lander waiting in another worktree of that clone takes the turn over once that lander has exited in the same kernel boot and PID namespace with no push to main in flight, instead of waiting up to three hours for its lease to expire. `node .github/scripts/landing-turn.cjs holder` prints the current lease and, when a worktree of this clone took it, the checkout and process that hold it.

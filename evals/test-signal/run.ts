@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { GIT_OUTPUT_MAX_BYTES } from "../../.github/scripts/git-history.cjs";
 import { proxyConfig } from "../shared/proxy.ts";
 import { cases, type Case } from "./cases.ts";
 import { grade, testRange, type Comment } from "./grade.ts";
@@ -45,7 +46,7 @@ const git = (args: ReadonlyArray<string>) => {
   const result = NodeChildProcess.spawnSync("git", args, {
     cwd: repo,
     encoding: "utf8",
-    maxBuffer: 1 << 26,
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
   });
   return result.status === 0 ? result.stdout : undefined;
 };
@@ -69,6 +70,7 @@ const world = (entry: Case) => {
   const raw = NodeChildProcess.spawnSync("git", ["diff", "--no-index", "before", "after"], {
     cwd: directory,
     encoding: "utf8",
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
   }).stdout;
   NodeFS.rmSync(directory, { recursive: true });
   const diff = raw

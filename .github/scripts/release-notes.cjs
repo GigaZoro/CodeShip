@@ -167,7 +167,12 @@ function mergeFiles(basePath, oursPath, theirsPath) {
  */
 function notesMergeProblem(cwd, env = process.env) {
   const git = (dir, ...args) => {
-    const result = spawnSync("git", args, { cwd: dir, encoding: "utf8", env });
+    const result = spawnSync("git", args, {
+      cwd: dir,
+      encoding: "utf8",
+      env,
+      maxBuffer: GIT_OUTPUT_MAX_BYTES,
+    });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
     // A path can end in a space, so only the line break goes.
@@ -184,7 +189,10 @@ function notesMergeProblem(cwd, env = process.env) {
 }
 
 function configureMergeDriver(root) {
-  const localVars = spawnSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" });
+  const localVars = spawnSync("git", ["rev-parse", "--local-env-vars"], {
+    encoding: "utf8",
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
+  });
   if (localVars.status !== 0) return;
   // A hook or wrapper can export another repository's location; find the one at `root` instead. Windows reads
   // these names in any case.
@@ -192,7 +200,8 @@ function configureMergeDriver(root) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([name]) => !selectors.has(name.toUpperCase())),
   );
-  const git = (...args) => spawnSync("git", args, { cwd: root, encoding: "utf8", env });
+  const git = (...args) =>
+    spawnSync("git", args, { cwd: root, encoding: "utf8", env, maxBuffer: GIT_OUTPUT_MAX_BYTES });
   // An unpacked source archive has no repository of its own; the one around it, if any, is not ours to configure.
   if (git("rev-parse", "--is-inside-work-tree", "--show-prefix").stdout !== "true\n\n") return;
   for (const [key, value] of MERGE_DRIVER_CONFIG) {

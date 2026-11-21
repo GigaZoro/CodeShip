@@ -25,6 +25,7 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 
+import { GIT_OUTPUT_MAX_BYTES } from "../../../.github/scripts/git-history.cjs";
 const { values } = parseCommandLine({
   options: {
     model: { type: "string", default: "claude-sonnet-4-6" },
@@ -109,26 +110,30 @@ const evidence = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-backgroun
 const home = NodePath.join(evidence, "home");
 const project = NodePath.join(evidence, "project");
 NodeFS.mkdirSync(project);
-NodeChildProcess.execFileSync("git", ["init", "-q", project]);
-NodeChildProcess.execFileSync("git", [
-  "-C",
-  project,
-  "-c",
-  "user.name=Verifier",
-  "-c",
-  "user.email=verifier@localhost",
-  "commit",
-  "--allow-empty",
-  "-qm",
-  "initial",
-]);
+NodeChildProcess.execFileSync("git", ["init", "-q", project], { stdio: "inherit" });
+NodeChildProcess.execFileSync(
+  "git",
+  [
+    "-C",
+    project,
+    "-c",
+    "user.name=Verifier",
+    "-c",
+    "user.email=verifier@localhost",
+    "commit",
+    "--allow-empty",
+    "-qm",
+    "initial",
+  ],
+  { stdio: "inherit" },
+);
 console.log(`Evidence: ${evidence}`);
 NodeFS.copyFileSync(import.meta.filename, NodePath.join(evidence, "verifier.ts"));
 NodeFS.writeFileSync(
   NodePath.join(evidence, "working-tree.patch"),
   NodeChildProcess.execFileSync("git", ["diff", "--binary", "HEAD"], {
     cwd: root,
-    maxBuffer: 32 * 1024 * 1024,
+    maxBuffer: GIT_OUTPUT_MAX_BYTES,
   }),
 );
 NodeFS.writeFileSync(
@@ -138,10 +143,12 @@ NodeFS.writeFileSync(
       revision: NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], {
         cwd: root,
         encoding: "utf8",
+        maxBuffer: GIT_OUTPUT_MAX_BYTES,
       }).trim(),
       dirty: NodeChildProcess.execFileSync("git", ["status", "--porcelain"], {
         cwd: root,
         encoding: "utf8",
+        maxBuffer: GIT_OUTPUT_MAX_BYTES,
       }),
       provider: values.provider,
       model: values.model,

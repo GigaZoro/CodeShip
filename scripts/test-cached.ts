@@ -10,6 +10,7 @@ import {
   positiveInteger,
 } from "./lib/command-line.ts";
 
+import { GIT_OUTPUT_MAX_BYTES } from "../.github/scripts/git-history.cjs";
 import { localVitePlusCommand } from "./check-changed-command.ts";
 import {
   matchesTestPath,
@@ -86,7 +87,7 @@ if (import.meta.main) {
     candidates = NodeChildProcess.execFileSync(
       "git",
       ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-      { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+      { cwd: root, encoding: "utf8", maxBuffer: GIT_OUTPUT_MAX_BYTES },
     ).split("\0");
   }
   const canonicalPath = testPathResolver(root);
