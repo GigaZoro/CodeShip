@@ -721,6 +721,8 @@ it.layer(layerTest, { excludeTestServices: true })("a command run apart from its
             runner.run(callerOf(chat.threadId), { command: `${STOP_NOTING_CHILD} wait` }),
           );
           yield* awaitFile(NodePath.join(chat.workspace, "ready"));
+          // A running holder keeps the pid the command's, whatever the file says.
+          yield* hideHolder(NodePath.dirname(started.logPath));
           const file = NodePath.join(NodePath.dirname(started.logPath), "identity");
           if (otherStart && isLinuxHost) {
             const [, boot = ""] = NodeFS.readFileSync(file, "utf8").split("\n");
