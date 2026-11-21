@@ -6222,8 +6222,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
     // A reviewer's answer is readable in its own thread as soon as its run completes, before the
-    // parent records it, so that run answers the round. A reviewer in another environment has no
-    // thread here; the parent's record answers its round.
+    // parent records it, so that run answers the round. A rollback there rewrites the run's status,
+    // so the parent's records of completed work in that thread, follow-ups included, keep the round
+    // answered. A reviewer in another environment has no thread here; its own record answers it.
     const getLatestReviewRound: ProjectionStoreV2Shape["getLatestReviewRound"] = (threadId) =>
       sql<{ part: number; round: number; newPartReason: string | null; answered: number }>`
         SELECT
@@ -6231,7 +6232,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           json_extract(reviewer.payload_json, '$.review.round') AS round,
           MAX(json_extract(reviewer.payload_json, '$.review.newPartReason')) AS newPartReason,
           MAX(
-            reviewer.status = 'completed' OR EXISTS (
+            reviewer.status = 'completed'
+            OR EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_subagents AS work
+              WHERE work.child_thread_id = reviewer.child_thread_id
+                AND work.thread_id = reviewer.thread_id
+                AND work.status = 'completed'
+            )
+            OR EXISTS (
               SELECT 1 FROM orchestration_v2_projection_runs AS run
               WHERE run.thread_id = reviewer.child_thread_id AND run.status = 'completed'
             )

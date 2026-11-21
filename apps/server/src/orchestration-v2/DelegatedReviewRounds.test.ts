@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   EventId,
   MessageId,
+  NodeId,
   type OrchestrationV2DelegatedReviewRequest,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -112,7 +113,7 @@ const endReviewerRun = (
   parent: Parent,
   key: string,
   ordinal: number,
-  status: "completed" | "failed",
+  status: "completed" | "failed" | "rolled_back",
 ) =>
   Effect.gen(function* () {
     const threadId = (yield* taskFor(parent, key)).childThreadId!;
@@ -130,10 +131,10 @@ const endReviewerRun = (
     };
     yield* EventSink.EventSinkV2.use((sink) =>
       sink.write({
-        commandId: CommandId.make(`command:reviewer-run:${key}:${ordinal}`),
+        commandId: CommandId.make(`command:reviewer-run:${key}:${ordinal}:${status}`),
         events: [
           {
-            id: EventId.make(`event:reviewer-run:${key}:${ordinal}`),
+            id: EventId.make(`event:reviewer-run:${key}:${ordinal}:${status}`),
             type: "run.updated",
             threadId,
             runId: run.id,
@@ -155,6 +156,40 @@ const taskFor = (parent: Parent, key: string) =>
       projection.subagents.find((task) => task.prompt === `Review the diff (${key}).`)!,
     ),
   );
+
+/** The parent's record of a completed follow-up in a reviewer's thread; it holds no review. */
+const recordCompletedFollowup = (parent: Parent, key: string) =>
+  Effect.gen(function* () {
+    const { review: _review, ...original } = yield* taskFor(parent, key);
+    const now = yield* DateTime.now;
+    const followup = {
+      ...original,
+      id: NodeId.make(`node:followup:${key}`),
+      prompt: `Finish the review (${key}).`,
+      status: "completed" as const,
+      result: "Found a blocking defect.",
+      completedAt: now,
+      updatedAt: now,
+    };
+    yield* EventSink.EventSinkV2.use((sink) =>
+      sink.write({
+        commandId: CommandId.make(`command:followup:${key}`),
+        events: [
+          {
+            id: EventId.make(`event:followup:${key}`),
+            type: "subagent.updated",
+            threadId: parent.threadId,
+            ...(followup.runId === null ? {} : { runId: followup.runId }),
+            nodeId: followup.id,
+            driver: followup.driver,
+            providerInstanceId: followup.providerInstanceId,
+            occurredAt: now,
+            payload: followup,
+          },
+        ],
+      }),
+    );
+  });
 
 const answer = (parent: Parent, key: string) =>
   Effect.gen(function* () {
@@ -246,6 +281,23 @@ it.layer(layerFor(SqlitePersistence.layerMemory))("delegated review rounds", (it
           round: 2,
         });
       }),
+  );
+
+  it.effect("keep a round answered after the reviewer's thread rolls its answer back", () =>
+    Effect.gen(function* () {
+      const parent = yield* seedLiveParent("answer-rolled-back");
+      yield* requestLocalReview(parent, "rolled-back");
+      yield* endReviewerRun(parent, "rolled-back", 1, "failed");
+      yield* endReviewerRun(parent, "rolled-back", 2, "completed");
+      yield* recordCompletedFollowup(parent, "rolled-back");
+      yield* endReviewerRun(parent, "rolled-back", 2, "rolled_back");
+
+      yield* requestReview(parent, "after-the-rollback");
+      assert.deepEqual((yield* taskFor(parent, "after-the-rollback")).review, {
+        part: 1,
+        round: 2,
+      });
+    }),
   );
 
   it.effect("start a part split off while a round is open, shared by its reviewers", () =>
