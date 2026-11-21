@@ -174,6 +174,10 @@
 - Landings on main now wait in a first-come, first-served queue. A later landing can no longer jump ahead by polling first when the lease is released. If a waiting lander crashes, its entry stops blocking the queue after it goes stale.
 - A landing that joins the queue comes after every landing it finds waiting there, even when that landing's machine clock runs ahead; landings that join at the same moment, before either can see the other, go in the order of their machines' clocks. A queue of any length keeps moving, and a waiter reads a bounded part of it per poll. Entries origin will not delete block no one and are reported once: a crashed lander's, or a waiter's own old names, which no longer keep it from a free lease, and the waiter keeps renewing its entry, so it keeps its place. A landing whose entry origin refused joins again behind the landings that came meanwhile. A lander whose take reached origin while its answer was lost keeps the turn instead of waiting behind itself, unless the lease expired before the take was confirmed, and its checks get the time that lease has left.
 
+## 2026-11-21 — Weekly library upgrades are ready
+
+- A weekly task is ready to move every library, Node, pnpm, Electron, the Rust crates' dependencies and the GitHub Actions to their newest stable releases, the day after the sync from T3 Code. It takes only releases at least 3 days old, reads every changed install script before it runs, ports local patches, and lands only after the full checks and two reviewers pass. The mobile app's native packages keep following T3 Code, and a version it cannot take yet is recorded as a hold and retried every week. No change to the app.
+
 ## 2026-11-21 — Monitoring stays visible while it updates
 
 - Monitoring keeps the last overview and chat rows visible while a connection recovers or a period or filter loads, and labels results that are out of date. Refresh spins only when you request it, and a slow environment times out.
