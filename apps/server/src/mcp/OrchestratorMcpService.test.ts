@@ -2149,6 +2149,85 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect(
+    "a re-check that outlasts one wait piece finishes on its own while the request is answered",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-11-13T00:01:00.000Z"));
+        let installed = false;
+        let refreshes = 0;
+        const snapshot = (): ServerProvider => ({
+          ...providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+          ...(installed ? {} : { installed: false, status: "error" as const }),
+          checkedAt: installed ? "2026-11-13T00:02:20.000Z" : "2026-11-13T00:00:00.000Z",
+        });
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: () => Effect.succeed(parentProjection([])),
+          }),
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.sync(() => [snapshot()]),
+            // A probe slower than a linked machine's request may stay silent.
+            refreshInstance: () =>
+              Effect.sleep("80 seconds").pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    refreshes += 1;
+                    installed = true;
+                    return [snapshot()];
+                  }),
+                ),
+              ),
+          }),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const answered = <A, E>(fiber: Fiber.Fiber<A, E>) =>
+            TestClock.withLive(Fiber.join(fiber).pipe(Effect.timeout("10 seconds")));
+
+          const reading = yield* service.capabilities(scope).pipe(Effect.forkChild);
+          const delegating = yield* service
+            .delegateTask(scope, {
+              task: "Summarize the diff.",
+              target: { providerInstanceId: codexInstanceId },
+              mode: "async",
+              clientRequestId: "delegate-while-checking",
+            })
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* TestClock.adjust("50 seconds");
+          const read = yield* answered(reading);
+          assert.isFalse(read.providers[0]!.canRunChildTask);
+          assert.include(
+            read.providers[0]!.constraints,
+            "A new check of this provider is still running; ask again for its result.",
+          );
+          const refused = yield* answered(delegating);
+          assert.equal(refused.code, "provider_unavailable");
+          assert.isTrue(refused.message.endsWith("ask again for its result."), refused.message);
+
+          yield* TestClock.adjust("30 seconds");
+          const again = yield* service.capabilities(scope);
+          assert.deepEqual(
+            { usable: again.providers[0]!.canRunChildTask, refreshes },
+            { usable: true, refreshes: 1 },
+          );
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
+  );
+
   it.effect("rejects delegation to a provider without a registered adapter", () =>
     Effect.gen(function* () {
       const forkOnlyInstanceId = ProviderInstanceId.make("forkOnly");

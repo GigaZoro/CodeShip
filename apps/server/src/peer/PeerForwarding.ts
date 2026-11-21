@@ -16,6 +16,7 @@ import {
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
@@ -30,14 +31,24 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 
-/**
- * A peer's `/mcp` holds a wait open for its whole timeout without sending
- * anything, and T3 Connect's edge drops a request idle for about 100 s, so a
- * forwarded wait goes out in pieces no longer than this.
- */
-export const FORWARDED_WAIT_CHUNK_MS = 50_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
+
+const TOOL_REQUEST_DEADLINES: Readonly<Record<string, Duration.Duration>> = {
+  // Worktree preparation is asynchronous, but preflighting a base can fetch and retry a ref lock.
+  t3_thread_launch: Duration.seconds(90),
+  // A page can carry up to 100 items of 50,000 characters plus metadata and MCP encoding.
+  t3_thread_read: Duration.minutes(2),
+  // The synchronous clone can try both SSH and HTTPS, with up to 120 s per attempt.
+  t3_project_clone: Duration.seconds(270),
+  // A prompt file read can do two 60 s Git network operations before reading the blob.
+  schedule_task: Duration.minutes(3),
+  run_scheduled_task_now: Duration.minutes(3),
+  // Guide generation runs in the background, but the request can preflight 20 PR heads in batches.
+  write_pull_request_guides: Duration.minutes(5),
+  // A guide read refreshes forge metadata, including an optional credential fallback.
+  read_pull_request_guide: Duration.minutes(2),
+};
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -172,6 +183,9 @@ const make = Effect.gen(function* () {
       limits,
       success: success as Schema.Decoder<A>,
       ...(ignorableArguments === undefined ? {} : { ignorableArguments }),
+      deadline: Object.hasOwn(TOOL_REQUEST_DEADLINES, toolName)
+        ? TOOL_REQUEST_DEADLINES[toolName]
+        : undefined,
     });
   });
 
@@ -208,7 +222,7 @@ const make = Effect.gen(function* () {
     );
     let runId = input.runId;
     while (true) {
-      const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
+      const chunk = Math.min(remaining, PeerMcpClient.FORWARDED_WAIT_CHUNK_MS);
       const result = yield* forward<OrchestratorMcpThreadWaitResult>(
         scope,
         "t3_thread_wait",

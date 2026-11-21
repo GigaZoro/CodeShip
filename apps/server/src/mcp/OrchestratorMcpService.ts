@@ -110,6 +110,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -171,6 +172,7 @@ import {
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -189,6 +191,13 @@ const DEFAULT_THREAD_RUN_LIMIT = 10;
 const DEFAULT_THREAD_ITEM_MAX_CHARS = 20_000;
 // Bounds re-checks when agents ask repeatedly; PATH lookups stay cached this long anyway.
 const UNUSABLE_PROVIDER_RECHECK_AFTER_MS = 30_000;
+/**
+ * The longest provider re-checks hold a request. A linked machine's request comes through
+ * T3 Connect, which drops one idle for about 100 s, and a provider's probe can outlast that,
+ * so a request waits at most one forwarded wait piece and a slower check finishes on its own.
+ */
+const PROVIDER_RECHECK_WAIT = Duration.millis(PeerMcpClient.FORWARDED_WAIT_CHUNK_MS);
+const STILL_CHECKING = "A new check of this provider is still running; ask again for its result.";
 
 /** An enabled instance its last check found unusable; a new check may find it installed or signed in. */
 const isRecheckable = (provider: ServerProvider) =>
@@ -1611,28 +1620,45 @@ const make = Effect.gen(function* () {
   const checkedAtOf = (providers: ReadonlyArray<ServerProvider>, instanceId: ProviderInstanceId) =>
     providers.find((provider) => provider.instanceId === instanceId)?.checkedAt;
 
-  /** Concurrent callers share one check: an instance checked since `seen` was read is not checked again. */
-  const recheckInstances = (
+  /**
+   * Concurrent callers share one check: an instance checked since `seen` was read is not checked
+   * again. A check runs detached, so one that outlasts `PROVIDER_RECHECK_WAIT` still updates the
+   * registry; `checking` names those instances.
+   */
+  const recheckInstances = Effect.fn("OrchestratorMcpService.recheckInstances")(function* (
     instanceIds: ReadonlyArray<ProviderInstanceId>,
     seen: ReadonlyArray<ServerProvider>,
-  ) =>
-    Effect.forEach(
+  ) {
+    if (instanceIds.length === 0) {
+      return { providers: seen, checking: new Set<ProviderInstanceId>() };
+    }
+    const outlasted = yield* Effect.forEach(
       instanceIds,
       (instanceId) => {
         const lock = recheckLocks.get(instanceId) ?? Semaphore.makeUnsafe(1);
         recheckLocks.set(instanceId, lock);
-        return lock.withPermits(1)(
-          loadProviders.pipe(
-            Effect.flatMap((current) =>
-              checkedAtOf(current, instanceId) === checkedAtOf(seen, instanceId)
-                ? providerRegistry.refreshInstance(instanceId)
-                : Effect.void,
+        return lock
+          .withPermits(1)(
+            loadProviders.pipe(
+              Effect.flatMap((current) =>
+                checkedAtOf(current, instanceId) === checkedAtOf(seen, instanceId)
+                  ? providerRegistry.refreshInstance(instanceId)
+                  : Effect.void,
+              ),
             ),
-          ),
-        );
+          )
+          .pipe(
+            Effect.forkDetach,
+            Effect.flatMap((check) =>
+              Fiber.join(check).pipe(Effect.timeoutOption(PROVIDER_RECHECK_WAIT)),
+            ),
+            Effect.map((checked) => (Option.isNone(checked) ? [instanceId] : [])),
+          );
       },
-      { concurrency: "unbounded", discard: true },
-    ).pipe(Effect.andThen(loadProviders));
+      { concurrency: "unbounded" },
+    );
+    return { providers: yield* loadProviders, checking: new Set(outlasted.flat()) };
+  });
 
   const resolveTargetRechecking = (input: Parameters<typeof resolveTarget>[0]) => {
     const requestedDriver =
@@ -1648,28 +1674,40 @@ const make = Effect.gen(function* () {
         (error) => error.code === "provider_unavailable" && instanceIds.length > 0,
         () =>
           recheckInstances(instanceIds, input.providers).pipe(
-            Effect.flatMap((providers) => resolveTarget({ ...input, providers })),
+            Effect.flatMap(({ providers, checking }) =>
+              resolveTarget({ ...input, providers }).pipe(
+                Effect.mapError((error) =>
+                  error.code === "provider_unavailable" &&
+                  instanceIds.some((instanceId) => checking.has(instanceId))
+                    ? failure("provider_unavailable", `${error.message} ${STILL_CHECKING}`)
+                    : error,
+                ),
+              ),
+            ),
           ),
       ),
     );
   };
 
-  /** Re-checks providers last seen unusable, so a since-installed or signed-in one is reported usable. */
+  /**
+   * Re-checks providers last seen unusable, so a since-installed or signed-in one is reported
+   * usable, and with `usage`, those whose usage reading is stale.
+   */
   const loadProvidersRechecked = Effect.fn("OrchestratorMcpService.loadProvidersRechecked")(
-    function* () {
+    function* (usage: boolean) {
       const providers = yield* loadProviders;
       const nowMs = yield* Clock.currentTimeMillis;
-      const stale = providers.filter(
-        (provider) =>
-          isRecheckable(provider) &&
-          nowMs - Date.parse(provider.checkedAt) >= UNUSABLE_PROVIDER_RECHECK_AFTER_MS,
+      return yield* recheckInstances(
+        providers
+          .filter(
+            (provider) =>
+              (isRecheckable(provider) &&
+                nowMs - Date.parse(provider.checkedAt) >= UNUSABLE_PROVIDER_RECHECK_AFTER_MS) ||
+              (usage && publishesUsage(provider) && usageReadingStale(provider, nowMs)),
+          )
+          .map((provider) => provider.instanceId),
+        providers,
       );
-      return stale.length === 0
-        ? providers
-        : yield* recheckInstances(
-            stale.map((provider) => provider.instanceId),
-            providers,
-          );
     },
   );
 
@@ -3244,21 +3282,7 @@ const make = Effect.gen(function* () {
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {
       const { parent, limits } = yield* loadCaller(scope);
-      const checkedProviders = yield* loadProvidersRechecked();
-      const nowMs = yield* Clock.currentTimeMillis;
-      const staleUsage =
-        input.usage === true
-          ? checkedProviders.filter(
-              (provider) => publishesUsage(provider) && usageReadingStale(provider, nowMs),
-            )
-          : [];
-      const providers =
-        staleUsage.length === 0
-          ? checkedProviders
-          : yield* recheckInstances(
-              staleUsage.map((provider) => provider.instanceId),
-              checkedProviders,
-            );
+      const { providers, checking } = yield* loadProvidersRechecked(input.usage === true);
       const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
       const settings = yield* readSettings;
       const availability = Option.isNone(accountRouting)
@@ -3308,6 +3332,10 @@ const make = Effect.gen(function* () {
             )
           ) {
             constraints.push("Disabled for this project.");
+          }
+          // A usable provider whose usage reading is still being taken stays usable.
+          if (constraints.length > 0 && checking.has(provider.instanceId)) {
+            constraints.push(STILL_CHECKING);
           }
           const limitedUntil = availability.accounts.get(provider.instanceId);
           const prepaidCredits = availability.credits.get(provider.instanceId);

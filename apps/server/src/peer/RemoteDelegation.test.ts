@@ -3345,6 +3345,51 @@ it.effect("a parent stopped while the task's result is read still stops its thre
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("a follower retries a peer that hangs after the request deadline and its back-off", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const backingOff = yield* Deferred.make<void>();
+      const retry = (yield* RemoteDelegation.FollowRetrySchedule).pipe(
+        Schedule.tap(() => Deferred.succeed(backingOff, undefined)),
+      );
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(RemoteDelegation.FollowRetrySchedule, retry),
+      );
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+
+      yield* Ref.set(thread.holdRead, true);
+      yield* Ref.set(thread.reply, "Done on the box.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* Deferred.await(thread.readStarted);
+      yield* TestClock.adjust(119_999);
+      expect(yield* Deferred.isDone(backingOff)).toBe(false);
+
+      const failed = yield* Deferred.await(backingOff).pipe(
+        Effect.timeoutOption(2),
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust(2);
+      expect(yield* Fiber.join(failed)).toEqual(Option.some(undefined));
+
+      yield* Ref.set(thread.holdRead, false);
+      const result = yield* taskResult(a, delegated.taskId).pipe(Effect.forkScoped);
+      yield* TestClock.adjust(1_998);
+      expect(result.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust(1);
+      expect(yield* Fiber.join(result)).toMatchObject({ result: "Done on the box." });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("a stop the box refuses because the parent was lowered ends instead of retrying", () =>
   Effect.scoped(
     Effect.gen(function* () {

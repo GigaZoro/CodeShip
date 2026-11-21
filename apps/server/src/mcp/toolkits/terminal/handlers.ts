@@ -22,7 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 
-import { FORWARDED_WAIT_CHUNK_MS } from "../../../peer/PeerForwarding.ts";
+import { FORWARDED_WAIT_CHUNK_MS } from "../../../peer/PeerMcpClient.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";

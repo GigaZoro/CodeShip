@@ -114,6 +114,18 @@ Unlinking on the linking side only forgets the token.
 - **All callers on one side share the link's single session on the other**,
   so idempotency keys are hashed with the caller's namespace before they
   leave. Without that, two agents reusing a key would collide on the far side.
+- **Each peer MCP POST has a 75 s deadline**, including reading its response
+  body. A missed deadline is recorded as a transport failure and fails as
+  `no_answer`, so delegated work backs off and retries. Worktree launches have 90 s for Git preflight,
+  thread pages and PR guide reads have 2 minutes, repository clones have
+  270 s for SSH and HTTPS attempts, scheduled task saves and manual runs have
+  3 minutes for prompt-file fetches, and PR guide batches have 5 minutes for
+  forge checks. T3 Connect still drops idle requests after about 100 s on
+  relay routes. Background settings and scheduled-task reads and claims keep
+  their separate 20 s budget. Provider re-checks hold `orchestrator_capabilities`
+  and a delegation's target resolution for at most one wait piece (50 s); a
+  slower check finishes in the background, and the answer says it is still
+  running.
 - **A forwarded wait is split into calls of at most 50 s**, because the
   receiving `/mcp` sends nothing while a wait is open and T3 Connect's edge
   drops idle requests after about 100 s. A link's `terminal_write` instead

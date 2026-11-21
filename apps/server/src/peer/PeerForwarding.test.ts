@@ -42,6 +42,7 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import { FORWARDED_WAIT_CHUNK_MS } from "./PeerMcpClient.ts";
 import * as SharedSettings from "../sharedSettings/SharedSettings.ts";
 import * as PeerLinkBack from "./PeerLinkBack.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -524,9 +525,9 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
       expect(
         (yield* Ref.get(seen)).waits.map(({ timeoutMs, runId }) => [timeoutMs, runId]),
       ).toEqual([
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, undefined],
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
+        [FORWARDED_WAIT_CHUNK_MS, undefined],
+        [FORWARDED_WAIT_CHUNK_MS, boxRun],
+        [FORWARDED_WAIT_CHUNK_MS, boxRun],
       ]);
 
       const send = (caller: string, clientRequestId: string) =>
