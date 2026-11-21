@@ -1,3 +1,7 @@
+## 2026-11-24 — A landing's check no longer fails when another check looks at its place in line
+
+- Maintainers: on Windows, `vp run check:changed` in a landing on main could fail with EPERM as it took a free check slot, when another check:changed run was looking at the file that marks the landing's wait. That file now stays in place, like the slot files. No change to the app.
+
 ## 2026-11-24 — Export a thread as Markdown
 
 - Choose **Export as Markdown** in a thread's menu or the command palette to save it as a `.md` file; on mobile, the same action on a thread row shares the file. Each message renders in the file as it does in the chat, formulas and chat-only formatting included: it is kept as written where it reads the same there, rewritten where it would not, and shown as a Markdown code block in the rare case neither works. References and footnotes stay within their message, and raw HTML shows as text, an HTML block as a code block. Failed commands and tools are marked, the window stays responsive while a long thread exports, and on mobile a new export cancels the one in progress.
