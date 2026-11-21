@@ -2441,6 +2441,7 @@ export default function ChatView(props: ChatViewProps) {
     setBranchMismatchDismissTick,
     showBranchMismatchBanner,
     threadStatusLine,
+    threadPin,
     shortcuts: threadLifecycleShortcuts,
   } = useThreadLifecycle({
     environmentId,
@@ -3541,6 +3542,7 @@ export default function ChatView(props: ChatViewProps) {
               activeThreadTitle={activeThread.title}
               activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
               activeProject={activeProject ?? null}
+              threadPin={threadPin}
               parentThreadLink={headerParentThreadLink}
               onOpenThread={onOpenRelatedThreadStable}
               onNewThreadInProject={handleNewThreadInActiveProjectStable}
