@@ -26,6 +26,33 @@ import {
 } from "./GitVcsDriverCore.testkit.ts";
 
 it.layer(layerTest)("Git worktree creation", (it) => {
+  it.effect("starts a new branch from a branch that exists only on the remote", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      yield* initRepoWithCommit(cwd);
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const remote = yield* makeTmpDir("git-remote-");
+      yield* git(remote, ["init", "--bare"]);
+      yield* git(cwd, ["remote", "add", "origin", remote]);
+      yield* git(cwd, ["push", "origin", "HEAD:refs/heads/cs/remote-only"]);
+      yield* git(cwd, ["fetch", "origin"]);
+      const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "remote-only");
+
+      yield* driver.createWorktree({
+        cwd,
+        path: worktreePath,
+        refName: "cs/remote-only",
+        newRefName: "land/remote-only",
+      });
+
+      assert.equal(
+        yield* git(worktreePath, ["rev-parse", "HEAD"]),
+        yield* git(cwd, ["rev-parse", "origin/cs/remote-only"]),
+      );
+    }),
+  );
+
   it.effect("uses parallel checkout without skipping filters or hooks", () =>
     Effect.gen(function* () {
       const cwd = yield* makeTmpDir();

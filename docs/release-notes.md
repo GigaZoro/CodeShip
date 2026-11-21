@@ -1,3 +1,7 @@
+## 2026-11-21 — Start a worktree from a branch that exists only on the remote
+
+- Creating a worktree on a new branch from a base that exists only on the remote, such as a branch pushed from another machine and never checked out here, now starts from the remote copy instead of failing with "git worktree add failed".
+
 ## 2026-11-21 — Relay install tests run on Windows
 
 - The relay client install and version-selection tests build every path with the Path service and the host's PATH delimiter, so they run on Windows hosts instead of being skipped.

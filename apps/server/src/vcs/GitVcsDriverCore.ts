@@ -4367,6 +4367,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  // `git worktree add <path> <branch>` finds a branch that exists only on the remote, but
+  // `git branch <new> <start>` does not, so a remote-only start point is named in full.
+  const resolveWorktreeStartPoint = Effect.fn("resolveWorktreeStartPoint")(function* (
+    cwd: string,
+    refName: string,
+  ) {
+    const local = yield* executeGit(
+      "GitVcsDriver.resolveWorktreeStartPoint",
+      cwd,
+      ["rev-parse", "--verify", "--quiet", `${refName}^{commit}`],
+      { allowNonZeroExit: true },
+    );
+    if (local.exitCode === 0) return refName;
+    const remoteName = yield* findPrimaryRemoteName(cwd);
+    return remoteName !== null && (yield* remoteBranchExists({ cwd, remoteName, refName }))
+      ? `${remoteName}/${refName}`
+      : refName;
+  });
+
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
@@ -4407,7 +4426,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       // Kept apart from the checkout so the shared-config lock only covers the tracking write.
       yield* createBranchAt(
         "GitVcsDriver.createWorktree.createBranch",
-        { cwd: input.cwd, branch: input.newRefName, startPoint: input.refName },
+        {
+          cwd: input.cwd,
+          branch: input.newRefName,
+          startPoint: yield* resolveWorktreeStartPoint(input.cwd, input.refName),
+        },
         "git worktree add failed",
       );
     }
