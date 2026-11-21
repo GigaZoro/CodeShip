@@ -11,13 +11,22 @@ import * as NodeUtil from "node:util";
 import { patchNativeCli } from "../src/nativeHook.js";
 
 // parseArgs refuses an option it does not know: a mistyped --uninstall must not install.
-const { values: options } = NodeUtil.parseArgs({
+const { values: options, tokens } = NodeUtil.parseArgs({
+  tokens: true,
   options: {
     "non-interactive": { type: "boolean", default: false },
     uninstall: { type: "boolean", default: false },
     entrypoint: { type: "string", multiple: true, default: [] },
   },
 });
+for (const flag of ["uninstall", "non-interactive"]) {
+  if (tokens.filter((token) => token.kind === "option" && token.name === flag).length > 1) {
+    throw new Error("Pass --" + flag + " at most once.");
+  }
+}
+if (options.uninstall && (options.entrypoint.length > 0 || options["non-interactive"])) {
+  throw new Error("--uninstall cannot be combined with --entrypoint or --non-interactive.");
+}
 const home = NodeOS.homedir();
 const root = NodePath.resolve(import.meta.dirname, "../../..");
 const state = NodePath.join(home, ".config/t3-task-cache");
