@@ -15,14 +15,12 @@ export function ReopenLastArchivedShortcut() {
   const reopenLastArchivedThread = useReopenLastArchivedThread();
   const running = useRef(false);
 
-  const reopen = useEffectEvent(async () => {
+  const reopen = useEffectEvent(() => {
     if (running.current) return;
     running.current = true;
-    try {
-      await reopenLastArchivedThread();
-    } finally {
+    void reopenLastArchivedThread().finally(() => {
       running.current = false;
-    }
+    });
   });
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to window keydown for the reopen last archived thread shortcut
@@ -35,7 +33,7 @@ export function ReopenLastArchivedShortcut() {
       if (command !== "thread.reopenLastArchived" || isInsideModalDialog(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat) void reopen();
+      if (!event.repeat) reopen();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
